@@ -1,0 +1,439 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "T-Mem MCP Tools",
+  "description": "Model Context Protocol tool definitions for T-Mem daemon",
+  "version": "0.1.0",
+  "tools": {
+    "set_workspace": {
+      "description": "Bind the connection to a specific Git repository workspace. Must be called before any workspace-scoped operations.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to Git repository root directory"
+          }
+        },
+        "required": ["path"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Hash identifier for the workspace"
+          },
+          "path": {
+            "type": "string",
+            "description": "Canonicalized workspace path"
+          },
+          "task_count": {
+            "type": "integer",
+            "description": "Number of tasks in workspace"
+          },
+          "hydrated": {
+            "type": "boolean",
+            "description": "Whether workspace was freshly hydrated from files"
+          }
+        },
+        "required": ["workspace_id", "path", "task_count", "hydrated"]
+      },
+      "errors": [1001, 1002, 1004, 2001, 2002, 2003]
+    },
+    "get_daemon_status": {
+      "description": "Get daemon health and operational metrics. Does not require workspace binding.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Daemon version string"
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "description": "Seconds since daemon started"
+          },
+          "active_workspaces": {
+            "type": "integer",
+            "description": "Number of active workspace bindings"
+          },
+          "active_connections": {
+            "type": "integer",
+            "description": "Number of connected clients"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "description": "Current memory usage in bytes"
+          },
+          "model_loaded": {
+            "type": "boolean",
+            "description": "Whether embedding model is loaded"
+          },
+          "model_name": {
+            "type": "string",
+            "description": "Name of loaded embedding model"
+          }
+        },
+        "required": ["version", "uptime_seconds", "active_workspaces", "active_connections", "memory_bytes", "model_loaded"]
+      },
+      "errors": []
+    },
+    "get_workspace_status": {
+      "description": "Get status of currently bound workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace path"
+          },
+          "task_count": {
+            "type": "integer",
+            "description": "Total number of tasks"
+          },
+          "context_count": {
+            "type": "integer",
+            "description": "Total number of context nodes"
+          },
+          "last_flush": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of last dehydration"
+          },
+          "stale_files": {
+            "type": "boolean",
+            "description": "Whether .tmem/ files have external modifications"
+          },
+          "connection_count": {
+            "type": "integer",
+            "description": "Number of connections to this workspace"
+          }
+        },
+        "required": ["path", "task_count", "context_count", "stale_files", "connection_count"]
+      },
+      "errors": [1003]
+    },
+    "query_memory": {
+      "description": "Perform hybrid semantic + keyword search across specs and context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language search query",
+            "maxLength": 2000
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum results to return",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": ["query"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Record ID"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["spec", "context"],
+                  "description": "Result type"
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Matched content snippet"
+                },
+                "score": {
+                  "type": "number",
+                  "description": "Relevance score (0-1)"
+                }
+              },
+              "required": ["id", "type", "content", "score"]
+            }
+          },
+          "total_matches": {
+            "type": "integer",
+            "description": "Total matching documents before limit"
+          }
+        },
+        "required": ["results", "total_matches"]
+      },
+      "errors": [1003, 4001, 4002, 4003]
+    },
+    "get_task_graph": {
+      "description": "Get task dependency tree starting from a root task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "root_task_id": {
+            "type": "string",
+            "description": "Task ID to start from (e.g., task:abc123)"
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Maximum traversal depth",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 20
+          }
+        },
+        "required": ["root_task_id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/TaskNode"
+          }
+        },
+        "required": ["root"]
+      },
+      "errors": [1003, 3001]
+    },
+    "check_status": {
+      "description": "Get current status for work item IDs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "work_item_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of external work item IDs to check"
+          }
+        },
+        "required": ["work_item_ids"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "statuses": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string",
+                  "description": "Internal task ID"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["todo", "in_progress", "done", "blocked"]
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            },
+            "description": "Map of work_item_id to status info"
+          }
+        },
+        "required": ["statuses"]
+      },
+      "errors": [1003]
+    },
+    "update_task": {
+      "description": "Update task status and append progress notes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Task ID (e.g., task:abc123)"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["todo", "in_progress", "done", "blocked"],
+            "description": "New task status"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Progress note to append to context"
+          }
+        },
+        "required": ["id", "status"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Updated task ID"
+          },
+          "previous_status": {
+            "type": "string",
+            "description": "Status before update"
+          },
+          "new_status": {
+            "type": "string",
+            "description": "Status after update"
+          },
+          "context_id": {
+            "type": "string",
+            "description": "ID of created context node (if notes provided)"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["task_id", "previous_status", "new_status", "updated_at"]
+      },
+      "errors": [1003, 3001, 3002]
+    },
+    "add_blocker": {
+      "description": "Set task status to blocked and record reason.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to block"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Explanation of why task is blocked"
+          }
+        },
+        "required": ["task_id", "reason"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "blocker_context_id": {
+            "type": "string",
+            "description": "ID of context node with blocker reason"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["task_id", "blocker_context_id", "updated_at"]
+      },
+      "errors": [1003, 3001, 3004]
+    },
+    "register_decision": {
+      "description": "Record an architectural decision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "Decision topic/title"
+          },
+          "decision": {
+            "type": "string",
+            "description": "The decision content and rationale"
+          }
+        },
+        "required": ["topic", "decision"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "decision_id": {
+            "type": "string",
+            "description": "ID of created decision context"
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Path where decision will be written on flush"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["decision_id", "file_path", "created_at"]
+      },
+      "errors": [1003]
+    },
+    "flush_state": {
+      "description": "Dehydrate workspace state to .tmem/ files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "files_written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of files written"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Any warnings during flush"
+          },
+          "flush_timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["files_written", "warnings", "flush_timestamp"]
+      },
+      "errors": [1003, 5001, 5002]
+    }
+  },
+  "$defs": {
+    "TaskNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["todo", "in_progress", "done", "blocked"]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskNode"
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskNode"
+          }
+        }
+      },
+      "required": ["id", "title", "status"]
+    }
+  }
+}
