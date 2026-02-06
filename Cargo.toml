@@ -1,0 +1,47 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "t-mem"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "T-Mem Core MCP daemon"
+license = "MIT"
+publish = false
+
+authors = ["T-Mem Contributors"]
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+mcp-sdk = "0.1"
+surrealdb = { version = "2", features = ["kv-surrealkv"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pulldown-cmark = "0.10"
+fastembed = "3"
+thiserror = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+similar = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "5"
+tokio-stream = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+sysinfo = { version = "0.30", default-features = false, features = ["system", "cpu", "memory"] }
+
+[dev-dependencies]
+proptest = "1"
+tokio-test = "0.4"
+
+[[bin]]
+name = "t-mem"
+path = "src/bin/t-mem.rs"

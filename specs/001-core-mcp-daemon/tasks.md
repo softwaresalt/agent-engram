@@ -25,12 +25,12 @@
 
 **Purpose**: Project initialization and Cargo workspace structure
 
-- [ ] T001 Create Cargo.toml workspace manifest with dependencies per research.md
-- [ ] T002 [P] Create src/lib.rs with crate-level attributes (`#![forbid(unsafe_code)]`, `#![warn(clippy::pedantic)]`)
-- [ ] T003 [P] Create src/bin/t-mem.rs binary entrypoint skeleton
-- [ ] T004 [P] Configure .cargo/config.toml for clippy and rustfmt settings
-- [ ] T005 [P] Create rust-toolchain.toml specifying Rust 2024 edition (1.82+)
-- [ ] T006 [P] Create .github/workflows/ci.yml for cargo fmt, clippy, test, audit
+- [X] T001 Create Cargo.toml workspace manifest with dependencies per research.md
+- [X] T002 [P] Create src/lib.rs with crate-level attributes (`#![forbid(unsafe_code)]`, `#![warn(clippy::pedantic)]`)
+- [X] T003 [P] Create src/bin/t-mem.rs binary entrypoint skeleton
+- [X] T004 [P] Configure .cargo/config.toml for clippy and rustfmt settings
+- [X] T005 [P] Create rust-toolchain.toml specifying Rust 2024 edition (1.82+)
+- [X] T006 [P] Create .github/workflows/ci.yml for cargo fmt, clippy, test, audit
 
 ---
 
@@ -42,33 +42,33 @@
 
 ### Error Infrastructure
 
-- [ ] T007 Create src/errors/mod.rs with TMemError enum wrapping all error types
-- [ ] T008 [P] Create src/errors/codes.rs with error code constants (1xxx-5xxx per error taxonomy)
-- [ ] T009 [P] Implement MCP-compatible JSON error response serialization in src/errors/mod.rs
+- [X] T007 Create src/errors/mod.rs with TMemError enum wrapping all error types
+- [X] T008 [P] Create src/errors/codes.rs with error code constants (1xxx-5xxx per error taxonomy)
+- [X] T009 [P] Implement MCP-compatible JSON error response serialization in src/errors/mod.rs
 
 ### Domain Models
 
-- [ ] T010 Create src/models/mod.rs re-exporting all model types
-- [ ] T011 [P] Create src/models/task.rs with Task struct and TaskStatus enum per data-model.md
-- [ ] T012 [P] Create src/models/spec.rs with Spec struct per data-model.md
-- [ ] T013 [P] Create src/models/context.rs with Context struct per data-model.md
-- [ ] T014 [P] Create src/models/graph.rs with DependencyType enum and relationship types
+- [X] T010 Create src/models/mod.rs re-exporting all model types
+- [X] T011 [P] Create src/models/task.rs with Task struct and TaskStatus enum per data-model.md
+- [X] T012 [P] Create src/models/spec.rs with Spec struct per data-model.md
+- [X] T013 [P] Create src/models/context.rs with Context struct per data-model.md
+- [X] T014 [P] Create src/models/graph.rs with DependencyType enum and relationship types
 
 ### Database Layer
 
-- [ ] T015 Create src/db/mod.rs with database connection management
-- [ ] T016 Create src/db/schema.rs with SurrealDB schema definitions (DEFINE TABLE statements)
-- [ ] T017 [P] Create src/db/queries.rs with query builder functions
+- [X] T015 Create src/db/mod.rs with database connection management
+- [X] T016 Create src/db/schema.rs with SurrealDB schema definitions (DEFINE TABLE statements)
+- [X] T017 [P] Create src/db/queries.rs with query builder functions
 
 ### Configuration
 
-- [ ] T018 Create src/config/mod.rs with Config struct (port, timeout, paths)
-- [ ] T019 [P] Implement environment variable and CLI arg parsing in src/config/mod.rs
+- [X] T018 Create src/config/mod.rs with Config struct (port, timeout, paths)
+- [X] T019 [P] Implement environment variable and CLI arg parsing in src/config/mod.rs
 
 ### Observability
 
-- [ ] T020 Create tracing subscriber initialization in src/lib.rs with JSON/pretty format toggle
-- [ ] T021 [P] Add correlation ID middleware structure in src/server/mod.rs placeholder
+- [X] T020 Create tracing subscriber initialization in src/lib.rs with JSON/pretty format toggle
+- [X] T021 [P] Add correlation ID middleware structure in src/server/mod.rs placeholder
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 
@@ -84,28 +84,28 @@
 
 > **TDD: Write tests FIRST, ensure they FAIL, then implement**
 
-- [ ] T022 [P] [US1] Contract test for set_workspace in tests/contract/lifecycle_test.rs
-- [ ] T023 [P] [US1] Contract test for get_daemon_status in tests/contract/lifecycle_test.rs
-- [ ] T024 [P] [US1] Contract test for get_workspace_status in tests/contract/lifecycle_test.rs
-- [ ] T025 [P] [US1] Integration test for SSE connection lifecycle in tests/integration/connection_test.rs
-- [ ] T026 [P] [US1] Unit test for workspace path validation in src/services/connection.rs
+- [X] T022 [P] [US1] Contract test for set_workspace in tests/contract/lifecycle_test.rs
+- [X] T023 [P] [US1] Contract test for get_daemon_status in tests/contract/lifecycle_test.rs
+- [X] T024 [P] [US1] Contract test for get_workspace_status in tests/contract/lifecycle_test.rs
+- [X] T025 [P] [US1] Integration test for SSE connection lifecycle in tests/integration/connection_test.rs
+- [X] T026 [P] [US1] Unit test for workspace path validation in src/services/connection.rs
 
 ### Implementation for User Story 1
 
-- [ ] T027 Create src/server/mod.rs with module structure
-- [ ] T028 Create src/server/router.rs with axum Router setup and routes
-- [ ] T029 Create src/server/sse.rs with SSE connection handling and connection ID assignment
-- [ ] T030 Create src/server/mcp.rs with MCP JSON-RPC request/response handling
-- [ ] T031 Create src/db/workspace.rs with workspace path hashing and namespace isolation
-- [ ] T032 Create src/services/mod.rs with module structure
-- [ ] T033 Create src/services/connection.rs with ConnectionState enum and lifecycle management
-- [ ] T034 [US1] Implement set_workspace tool in src/tools/lifecycle.rs (path validation, hydration trigger)
-- [ ] T035 [US1] Implement get_daemon_status tool in src/tools/lifecycle.rs
-- [ ] T036 [US1] Implement get_workspace_status tool in src/tools/lifecycle.rs
-- [ ] T037 [US1] Create src/tools/mod.rs with MCP tool registry and dispatch
-- [ ] T038 [US1] Add SSE keepalive ping (15s interval) in src/server/sse.rs
-- [ ] T039 [US1] Add connection timeout handling (60s configurable) in src/server/sse.rs
-- [ ] T040 [US1] Wire up daemon main() in src/bin/t-mem.rs with graceful shutdown (SIGTERM/SIGINT)
+- [X] T027 Create src/server/mod.rs with module structure
+- [X] T028 Create src/server/router.rs with axum Router setup and routes
+- [X] T029 Create src/server/sse.rs with SSE connection handling and connection ID assignment
+- [X] T030 Create src/server/mcp.rs with MCP JSON-RPC request/response handling
+- [X] T031 Create src/db/workspace.rs with workspace path hashing and namespace isolation
+- [X] T032 Create src/services/mod.rs with module structure
+- [X] T033 Create src/services/connection.rs with ConnectionState enum and lifecycle management
+- [X] T034 [US1] Implement set_workspace tool in src/tools/lifecycle.rs (path validation, hydration trigger)
+- [X] T035 [US1] Implement get_daemon_status tool in src/tools/lifecycle.rs
+- [X] T036 [US1] Implement get_workspace_status tool in src/tools/lifecycle.rs
+- [X] T037 [US1] Create src/tools/mod.rs with MCP tool registry and dispatch
+- [X] T038 [US1] Add SSE keepalive ping (15s interval) in src/server/sse.rs
+- [X] T039 [US1] Add connection timeout handling (60s configurable) in src/server/sse.rs
+- [X] T040 [US1] Wire up daemon main() in src/bin/t-mem.rs with graceful shutdown (SIGTERM/SIGINT)
 
 **Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces
 
