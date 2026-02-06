@@ -9,6 +9,13 @@ Modified Principles:
 
 Modified Sections:
 - Database Requirements: "HNSW" → "MTREE" (D1 analysis fix, aligns with SurrealDB native index type)
+Version Change: 1.0.0 → 1.0.1 (PATCH)
+Bump Rationale: Terminology alignment with spec - no semantic changes
+
+Modified Principles:
+- VI. Git-Friendly Persistence: `.mem/` → `.tmem/` (consistency with spec)
+- VIII. Error Handling & Recovery: `.mem/` → `.tmem/` (consistency with spec)
+- Security Requirements > Data Security: `.mem/` → `.tmem/` (consistency with spec)
 
 Added Sections: None
 Removed Sections: None
