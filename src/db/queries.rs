@@ -785,7 +785,7 @@ mod tests {
 
     pub async fn task_by_work_item(&self, work_item_id: &str) -> Result<Option<Task>, TMemError> {
         let id_owned = work_item_id.to_string();
-        let task: Option<Task> = self
+        let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM task WHERE work_item_id = $id LIMIT 1")
             .bind(("id", id_owned))
@@ -793,18 +793,103 @@ mod tests {
             .map_err(map_db_err)?
             .take(0)
             .unwrap_or_default();
-        Ok(task)
+        Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
     pub async fn all_tasks(&self) -> Result<Vec<Task>, TMemError> {
-        let tasks: Vec<Task> = self
+        let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM task")
             .await
             .map_err(map_db_err)?
             .take(0)
             .unwrap_or_default();
-        Ok(tasks)
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {
+        let rows: Vec<ContextRow> = self
+            .db
+            .query("SELECT * FROM context")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+        Ok(rows.into_iter().map(ContextRow::into_context).collect())
+    }
+
+    pub async fn all_dependency_edges(&self) -> Result<Vec<DependencyEdge>, TMemError> {
+        let rows: Vec<DependsOnRow> = self
+            .db
+            .query("SELECT in, out, type FROM depends_on")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let edges = rows
+            .into_iter()
+            .map(|row| {
+                let from = row.r#in.id.to_raw();
+                let to = row.out.id.to_raw();
+                let kind = row
+                    .r#type
+                    .map(parse_dependency_type)
+                    .unwrap_or(DependencyType::HardBlocker);
+                DependencyEdge { from, to, kind }
+            })
+            .collect();
+
+        Ok(edges)
+    }
+
+    pub async fn all_implements_edges(&self) -> Result<Vec<ImplementsEdge>, TMemError> {
+        let rows: Vec<RelationRow> = self
+            .db
+            .query("SELECT in, out FROM implements")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let edges = rows
+            .into_iter()
+            .map(|row| ImplementsEdge {
+                task_id: row.r#in.id.to_raw(),
+                spec_id: row.out.id.to_raw(),
+            })
+            .collect();
+
+        Ok(edges)
+    }
+
+    pub async fn all_relates_to_edges(&self) -> Result<Vec<RelatesToEdge>, TMemError> {
+        let rows: Vec<RelationRow> = self
+            .db
+            .query("SELECT in, out FROM relates_to")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let edges = rows
+            .into_iter()
+            .map(|row| RelatesToEdge {
+                task_id: row.r#in.id.to_raw(),
+                context_id: row.out.id.to_raw(),
+            })
+            .collect();
+
+        Ok(edges)
+    }
+
+    /// Clear all data from the database (used for corruption recovery).
+    pub async fn clear_all_data(&self) -> Result<(), TMemError> {
+        self.db
+            .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to;")
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 
     pub async fn tasks_by_ids(&self, ids: &[String]) -> Result<Vec<Task>, TMemError> {
@@ -812,16 +897,19 @@ mod tests {
             return Ok(Vec::new());
         }
 
-        let ids_owned = ids.to_vec();
-        let tasks: Vec<Task> = self
+        let things: Vec<Thing> = ids
+            .iter()
+            .map(|id| Thing::from(("task", id.as_str())))
+            .collect();
+        let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM $ids")
-            .bind(("ids", ids_owned))
+            .bind(("ids", things))
             .await
             .map_err(map_db_err)?
             .take(0)
             .unwrap_or_default();
-        Ok(tasks)
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
     async fn detect_cycle(&self, start: &str, target: &str) -> Result<bool, TMemError> {
