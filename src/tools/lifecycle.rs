@@ -86,7 +86,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     Ok(WorkspaceBinding {
         workspace_id,
         path: canonical.display().to_string(),
-        task_count,
+        task_count: hydration.task_count,
         hydrated: true,
     })
 }

@@ -38,10 +38,13 @@ tokio-stream = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 sysinfo = "0.30"
+<<<<<<< HEAD
 
 [features]
 default = []
 embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+=======
+>>>>>>> d5e09de (Checking in work for phase 4 development.)
 
 [dev-dependencies]
 proptest = "1"
