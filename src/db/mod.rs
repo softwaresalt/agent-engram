@@ -1,30 +1,51 @@
 #![allow(dead_code)]
 
+use std::path::PathBuf;
+
+use dirs::data_dir;
+use surrealdb::Surreal;
+use surrealdb::engine::local::SurrealKv;
+
 use crate::errors::{SystemError, TMemError};
 
+pub mod queries;
+pub mod schema;
 pub mod workspace;
 
-/// Placeholder database wrapper. This will be wired to SurrealDB in subsequent phases.
-pub struct Database {
-    workspace_hash: String,
+pub type Db = Surreal<SurrealKv>;
+
+/// Connect to SurrealDB embedded store scoped to the workspace hash and ensure schema.
+pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
+    let base = data_dir().unwrap_or_else(|| PathBuf::from("./"));
+    let db_path = base.join("t-mem").join("db");
+
+    let db = Surreal::new::<SurrealKv>(db_path)
+        .await
+        .map_err(map_db_err)?;
+
+    db.use_ns("tmem")
+        .use_db(workspace_hash)
+        .await
+        .map_err(map_db_err)?;
+
+    ensure_schema(&db).await?;
+
+    Ok(db)
 }
 
-impl Database {
-    pub async fn connect(workspace_hash: impl Into<String>) -> Result<Self, TMemError> {
-        // TODO: integrate SurrealDB embedded backend (kv-surrealkv) with namespaces per workspace
-        Ok(Self {
-            workspace_hash: workspace_hash.into(),
-        })
-    }
-
-    pub fn namespace(&self) -> &str {
-        &self.workspace_hash
-    }
+async fn ensure_schema(db: &Db) -> Result<(), TMemError> {
+    db.query(schema::DEFINE_SPEC).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_TASK).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_CONTEXT).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_RELATIONSHIPS)
+        .await
+        .map_err(map_db_err)?;
+    Ok(())
 }
 
-/// Simple guard to signal database errors
-pub fn map_db_err(reason: impl Into<String>) -> TMemError {
+/// Map Surreal errors into TMemError
+pub fn map_db_err<E: ToString>(err: E) -> TMemError {
     TMemError::from(SystemError::DatabaseError {
-        reason: reason.into(),
+        reason: err.to_string(),
     })
 }

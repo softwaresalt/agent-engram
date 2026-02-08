@@ -119,25 +119,25 @@
 
 ### Tests for User Story 2
 
-- [ ] T041 [P] [US2] Contract test for update_task in tests/contract/write_test.rs
-- [ ] T042 [P] [US2] Contract test for add_blocker in tests/contract/write_test.rs
-- [ ] T043 [P] [US2] Contract test for register_decision in tests/contract/write_test.rs
-- [ ] T044 [P] [US2] Contract test for get_task_graph in tests/contract/read_test.rs
-- [ ] T045 [P] [US2] Contract test for check_status in tests/contract/read_test.rs
-- [ ] T046 [P] [US2] Unit test for cyclic dependency detection in src/db/queries.rs
-- [ ] T047 [P] [US2] Property test for Task serialization round-trip in tests/unit/proptest_models.rs
+- [X] T041 [P] [US2] Contract test for update_task in tests/contract/write_test.rs
+- [X] T042 [P] [US2] Contract test for add_blocker in tests/contract/write_test.rs
+- [X] T043 [P] [US2] Contract test for register_decision in tests/contract/write_test.rs
+- [X] T044 [P] [US2] Contract test for get_task_graph in tests/contract/read_test.rs
+- [X] T045 [P] [US2] Contract test for check_status in tests/contract/read_test.rs
+- [X] T046 [P] [US2] Unit test for cyclic dependency detection in src/db/queries.rs
+- [X] T047 [P] [US2] Property test for Task serialization round-trip in tests/unit/proptest_models.rs
 
 ### Implementation for User Story 2
 
-- [ ] T048 [US2] Implement task CRUD operations in src/db/queries.rs
-- [ ] T049 [US2] Implement graph edge operations (depends_on, implements, relates_to) in src/db/queries.rs
-- [ ] T050 [US2] Implement cyclic dependency detection before edge insert in src/db/queries.rs
-- [ ] T051 [US2] Implement update_task tool in src/tools/write.rs
-- [ ] T052 [US2] Implement add_blocker tool in src/tools/write.rs
-- [ ] T053 [US2] Implement register_decision tool in src/tools/write.rs
-- [ ] T054 [US2] Implement get_task_graph tool in src/tools/read.rs (recursive graph traversal)
-- [ ] T055 [US2] Implement check_status tool in src/tools/read.rs
-- [ ] T056 [US2] Add context note creation on task update in src/services/connection.rs
+- [X] T048 [US2] Implement task CRUD operations in src/db/queries.rs
+- [X] T049 [US2] Implement graph edge operations (depends_on, implements, relates_to) in src/db/queries.rs
+- [X] T050 [US2] Implement cyclic dependency detection before edge insert in src/db/queries.rs
+- [X] T051 [US2] Implement update_task tool in src/tools/write.rs
+- [X] T052 [US2] Implement add_blocker tool in src/tools/write.rs
+- [X] T053 [US2] Implement register_decision tool in src/tools/write.rs
+- [X] T054 [US2] Implement get_task_graph tool in src/tools/read.rs (recursive graph traversal)
+- [X] T055 [US2] Implement check_status tool in src/tools/read.rs
+- [X] T056 [US2] Add context note creation on task update in src/services/connection.rs
 
 **Checkpoint**: Task CRUD and graph operations functional
 

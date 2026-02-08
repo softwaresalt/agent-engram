@@ -41,15 +41,15 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
 
-    let (task_count, context_count) = hydrate_workspace(&canonical).await?;
+    let hydration = hydrate_workspace(&canonical).await?;
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
         path: canonical.display().to_string(),
-        task_count,
-        context_count,
-        last_flush: None,
-        stale_files: false,
+        task_count: hydration.task_count,
+        context_count: hydration.context_count,
+        last_flush: hydration.last_flush.clone(),
+        stale_files: hydration.stale_files,
         connection_count: state.active_connections(),
     };
 
@@ -58,7 +58,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     Ok(WorkspaceBinding {
         workspace_id,
         path: canonical.display().to_string(),
-        task_count,
+        task_count: hydration.task_count,
         hydrated: true,
     })
 }
