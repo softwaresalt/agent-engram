@@ -99,6 +99,9 @@ A daemon must be observable without intrusive debugging:
 * **Connection tracking** — log client connect/disconnect with session IDs
 * **Performance metrics** — startup time, query latency, memory usage exposed via optional metrics endpoint
 * **Health endpoint** — `/health` returns daemon status and active workspace count
+* **AI Agent Session Logging** — Always, automatically log tool calls with agent identifiers for debugging multi-agent interactions; start the `memory` agent automatically at 65% context window to record session history to .copilot-tracking/memory for checkpointing and analysis without exposing sensitive data in logs;
+* **Error context preservation** — all errors include context for easier debugging without exposing sensitive information
+
 
 ### VIII. Error Handling & Recovery
 

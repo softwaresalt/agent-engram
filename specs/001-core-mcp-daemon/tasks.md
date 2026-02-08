@@ -151,25 +151,25 @@
 
 ### Tests for User Story 3
 
-- [ ] T057 [P] [US3] Contract test for flush_state in tests/contract/write_test.rs
-- [ ] T058 [P] [US3] Integration test for hydration from .tmem/ files in tests/integration/hydration_test.rs
-- [ ] T059 [P] [US3] Integration test for dehydration preserving comments in tests/integration/hydration_test.rs
-- [ ] T060 [P] [US3] Property test for markdown round-trip in tests/unit/proptest_serialization.rs
-- [ ] T061 [P] [US3] Unit test for stale file detection in src/services/hydration.rs
+- [X] T057 [P] [US3] Contract test for flush_state in tests/contract/write_test.rs
+- [X] T058 [P] [US3] Integration test for hydration from .tmem/ files in tests/integration/hydration_test.rs
+- [X] T059 [P] [US3] Integration test for dehydration preserving comments in tests/integration/hydration_test.rs
+- [X] T060 [P] [US3] Property test for markdown round-trip in tests/unit/proptest_serialization.rs
+- [X] T061 [P] [US3] Unit test for stale file detection in src/services/hydration.rs
 
 ### Implementation for User Story 3
 
-- [ ] T062 [US3] Create src/services/hydration.rs with .tmem/ file parsing (pulldown-cmark)
-- [ ] T063 [US3] Implement tasks.md parser extracting YAML frontmatter and descriptions
-- [ ] T064 [US3] Implement graph.surql parser for RELATE statements
-- [ ] T065 [US3] Implement .version and .lastflush file handling
-- [ ] T066 [US3] Create src/services/dehydration.rs with DB → file serialization
-- [ ] T067 [US3] Implement diff-match-patch comment preservation using `similar` crate
-- [ ] T068 [US3] Implement atomic file writes (temp file + rename pattern)
-- [ ] T069 [US3] Implement flush_state tool in src/tools/write.rs
-- [ ] T070 [US3] Implement stale file detection comparing .lastflush to file mtime
-- [ ] T071 [US3] Implement corruption recovery (delete DB, re-hydrate from files)
-- [ ] T072 [US3] Wire hydration into set_workspace flow in src/tools/lifecycle.rs
+- [X] T062 [US3] Create src/services/hydration.rs with .tmem/ file parsing (pulldown-cmark)
+- [X] T063 [US3] Implement tasks.md parser extracting YAML frontmatter and descriptions
+- [X] T064 [US3] Implement graph.surql parser for RELATE statements
+- [X] T065 [US3] Implement .version and .lastflush file handling
+- [X] T066 [US3] Create src/services/dehydration.rs with DB → file serialization
+- [X] T067 [US3] Implement diff-match-patch comment preservation using `similar` crate
+- [X] T068 [US3] Implement atomic file writes (temp file + rename pattern)
+- [X] T069 [US3] Implement flush_state tool in src/tools/write.rs
+- [X] T070 [US3] Implement stale file detection comparing .lastflush to file mtime
+- [X] T071 [US3] Implement corruption recovery (delete DB, re-hydrate from files)
+- [X] T072 [US3] Wire hydration into set_workspace flow in src/tools/lifecycle.rs
 
 **Checkpoint**: Git-backed persistence with comment preservation functional
 

@@ -54,3 +54,70 @@ async fn contract_register_decision_requires_workspace() {
     let code = err.to_response().error.code;
     assert_eq!(code, WORKSPACE_NOT_SET);
 }
+
+// ─── T057: Contract test for flush_state ────────────────────────────────────
+
+#[test]
+async fn contract_flush_state_requires_workspace() {
+    let state = Arc::new(AppState::new());
+
+    let err = tools::dispatch(state, "flush_state", None)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_flush_state_response_shape() {
+    // Set up a real workspace with .git/
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new());
+    let path = workspace.path().to_string_lossy().to_string();
+
+    // Bind workspace
+    let bind_result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+    assert!(bind_result.get("workspace_id").is_some());
+
+    // Call flush_state
+    let result = tools::dispatch(state.clone(), "flush_state", None)
+        .await
+        .expect("flush_state should succeed");
+
+    // Verify contract response shape
+    let files = result.get("files_written").expect("files_written field");
+    assert!(files.is_array(), "files_written should be array");
+    let files_arr = files.as_array().unwrap();
+    assert!(
+        files_arr.iter().any(|f| f.as_str() == Some(".tmem/tasks.md")),
+        "should write tasks.md"
+    );
+    assert!(
+        files_arr.iter().any(|f| f.as_str() == Some(".tmem/.lastflush")),
+        "should write .lastflush"
+    );
+
+    let warnings = result.get("warnings").expect("warnings field");
+    assert!(warnings.is_array(), "warnings should be array");
+
+    let ts = result
+        .get("flush_timestamp")
+        .expect("flush_timestamp field");
+    assert!(ts.is_string(), "flush_timestamp should be string");
+
+    // Verify files exist on disk
+    let tmem_dir = workspace.path().join(".tmem");
+    assert!(tmem_dir.join("tasks.md").exists(), "tasks.md on disk");
+    assert!(tmem_dir.join("graph.surql").exists(), "graph.surql on disk");
+    assert!(tmem_dir.join(".version").exists(), ".version on disk");
+    assert!(tmem_dir.join(".lastflush").exists(), ".lastflush on disk");
+}

@@ -70,3 +70,11 @@ path = "tests/integration/connection_test.rs"
 [[test]]
 name = "unit_proptest"
 path = "tests/unit/proptest_models.rs"
+
+[[test]]
+name = "integration_hydration"
+path = "tests/integration/hydration_test.rs"
+
+[[test]]
+name = "unit_proptest_serialization"
+path = "tests/unit/proptest_serialization.rs"

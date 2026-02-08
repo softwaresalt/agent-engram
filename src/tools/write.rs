@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 
 use chrono::Utc;
@@ -13,6 +12,7 @@ use crate::models::context::Context;
 use crate::models::task::{Task, TaskStatus};
 use crate::server::state::SharedState;
 use crate::services::connection::create_status_change_note;
+use crate::services::dehydration;
 
 #[derive(Deserialize)]
 struct UpdateTaskParams {
@@ -203,47 +203,15 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     let workspace_id = workspace_id(&state).await?;
     let _ = params;
 
-    let tmem_dir = path.join(".tmem");
-    fs::create_dir_all(&tmem_dir).map_err(|_| {
-        TMemError::System(SystemError::FlushFailed {
-            path: tmem_dir.display().to_string(),
-        })
-    })?;
-
-    let flush_ts = Utc::now().to_rfc3339();
-    let lastflush_path = tmem_dir.join(".lastflush");
-    fs::write(&lastflush_path, &flush_ts).map_err(|_| {
-        TMemError::System(SystemError::FlushFailed {
-            path: lastflush_path.display().to_string(),
-        })
-    })?;
-
-    // Serialize tasks to tasks.md
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
-    let tasks: Vec<Task> = queries.all_tasks().await?;
 
-    let mut content = String::from("# Tasks\n\n");
-    for task in tasks {
-        content.push_str(&format!(
-            "## {}\n---\nstatus: {}\nupdated_at: {}\n---\n\n{}\n\n",
-            task.id,
-            format_status(task.status),
-            task.updated_at.to_rfc3339(),
-            task.description
-        ));
-    }
-    let tasks_path = tmem_dir.join("tasks.md");
-    fs::write(&tasks_path, content).map_err(|_| {
-        TMemError::System(SystemError::FlushFailed {
-            path: tasks_path.display().to_string(),
-        })
-    })?;
+    let result = dehydration::dehydrate_workspace(&queries, &path).await?;
 
     Ok(json!({
-        "files_written": [".tmem/.lastflush", ".tmem/tasks.md"],
-        "warnings": [],
-        "flush_timestamp": flush_ts,
+        "files_written": result.files_written,
+        "warnings": Value::Array(vec![]),
+        "flush_timestamp": result.flush_timestamp,
     }))
 }
 

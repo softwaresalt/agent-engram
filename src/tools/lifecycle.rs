@@ -1,10 +1,13 @@
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
+use crate::db::connect_db;
+use crate::db::queries::Queries;
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{TMemError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
-use crate::services::{connection::validate_workspace_path, hydration::hydrate_workspace};
+use crate::services::connection::validate_workspace_path;
+use crate::services::hydration::{hydrate_into_db, hydrate_workspace};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
@@ -43,10 +46,21 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
 
     let hydration = hydrate_workspace(&canonical).await?;
 
+    // Connect to DB and load .tmem/ data into SurrealDB (T072)
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+    let db_result = hydrate_into_db(&canonical, &queries).await?;
+
+    let task_count = if db_result.tasks_loaded > 0 {
+        db_result.tasks_loaded as u64
+    } else {
+        hydration.task_count
+    };
+
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
         path: canonical.display().to_string(),
-        task_count: hydration.task_count,
+        task_count,
         context_count: hydration.context_count,
         last_flush: hydration.last_flush.clone(),
         stale_files: hydration.stale_files,
@@ -58,7 +72,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     Ok(WorkspaceBinding {
         workspace_id,
         path: canonical.display().to_string(),
-        task_count: hydration.task_count,
+        task_count,
         hydrated: true,
     })
 }

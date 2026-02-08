@@ -20,11 +20,89 @@ pub struct DependencyEdge {
     pub kind: DependencyType,
 }
 
+/// Task-to-Spec implementation edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplementsEdge {
+    pub task_id: String,
+    pub spec_id: String,
+}
+
+/// Task-to-Context relation edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelatesToEdge {
+    pub task_id: String,
+    pub context_id: String,
+}
+
 #[derive(Deserialize)]
 struct DependsOnRow {
+    r#in: Thing,
     out: Thing,
     #[serde(default)]
     r#type: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RelationRow {
+    r#in: Thing,
+    out: Thing,
+}
+
+/// Internal row type for deserializing tasks from SurrealDB.
+///
+/// SurrealDB v2 returns `id` as a `Thing` (not `String`), so we
+/// deserialize into this struct then convert to the public `Task`.
+#[derive(Deserialize)]
+struct TaskRow {
+    id: Thing,
+    title: String,
+    status: TaskStatus,
+    #[serde(default)]
+    work_item_id: Option<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    context_summary: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl TaskRow {
+    fn into_task(self) -> Task {
+        Task {
+            id: self.id.id.to_raw(),
+            title: self.title,
+            status: self.status,
+            work_item_id: self.work_item_id,
+            description: self.description,
+            context_summary: self.context_summary,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+/// Internal row type for deserializing contexts from SurrealDB.
+#[derive(Deserialize)]
+struct ContextRow {
+    id: Thing,
+    content: String,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    source_client: String,
+    created_at: DateTime<Utc>,
+}
+
+impl ContextRow {
+    fn into_context(self) -> Context {
+        Context {
+            id: self.id.id.to_raw(),
+            content: self.content,
+            embedding: self.embedding,
+            source_client: self.source_client,
+            created_at: self.created_at,
+        }
+    }
 }
 
 /// Query helper wrapping SurrealDB handle.
@@ -39,19 +117,45 @@ impl Queries {
     }
 
     pub async fn upsert_task(&self, task: &Task) -> Result<(), TMemError> {
-        let task_owned = task.clone();
-        let _: Option<Task> = self
-            .db
-            .update(("task", task_owned.id.as_str()))
-            .content(task_owned)
+        let record = Thing::from(("task", task.id.as_str()));
+        let status_str = format_status(task.status).to_string();
+        let created = task.created_at.to_rfc3339();
+        let updated = task.updated_at.to_rfc3339();
+        self.db
+            .query(
+                "UPSERT $record SET \
+                    title = $title, \
+                    status = $status, \
+                    work_item_id = $wid, \
+                    description = $desc, \
+                    context_summary = $ctx_summary, \
+                    created_at = <datetime>$created, \
+                    updated_at = <datetime>$updated",
+            )
+            .bind(("record", record))
+            .bind(("title", task.title.clone()))
+            .bind(("status", status_str))
+            .bind(("wid", task.work_item_id.clone()))
+            .bind(("desc", task.description.clone()))
+            .bind(("ctx_summary", task.context_summary.clone()))
+            .bind(("created", created))
+            .bind(("updated", updated))
             .await
             .map_err(map_db_err)?;
         Ok(())
     }
 
     pub async fn get_task(&self, id: &str) -> Result<Option<Task>, TMemError> {
-        let task: Option<Task> = self.db.select(("task", id)).await.map_err(map_db_err)?;
-        Ok(task)
+        let record = Thing::from(("task", id));
+        let rows: Vec<TaskRow> = self
+            .db
+            .query("SELECT * FROM $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+        Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
     pub async fn set_task_status(
@@ -73,11 +177,21 @@ impl Queries {
     }
 
     pub async fn insert_context(&self, ctx: &Context) -> Result<(), TMemError> {
-        let ctx_owned = ctx.clone();
-        let _: Option<Context> = self
-            .db
-            .create(("context", ctx_owned.id.as_str()))
-            .content(ctx_owned)
+        let record = Thing::from(("context", ctx.id.as_str()));
+        let created = ctx.created_at.to_rfc3339();
+        self.db
+            .query(
+                "CREATE $record SET \
+                    content = $content, \
+                    embedding = $embedding, \
+                    source_client = $source, \
+                    created_at = <datetime>$created",
+            )
+            .bind(("record", record))
+            .bind(("content", ctx.content.clone()))
+            .bind(("embedding", ctx.embedding.clone()))
+            .bind(("source", ctx.source_client.clone()))
+            .bind(("created", created))
             .await
             .map_err(map_db_err)?;
         Ok(())
@@ -141,7 +255,7 @@ impl Queries {
         let record = Thing::from(("task", task_id));
         let rows: Vec<DependsOnRow> = self
             .db
-            .query("SELECT out, type FROM depends_on WHERE in = $record")
+            .query("SELECT in, out, type FROM depends_on WHERE in = $record")
             .bind(("record", record))
             .await
             .map_err(map_db_err)?
@@ -169,7 +283,7 @@ impl Queries {
 
     pub async fn task_by_work_item(&self, work_item_id: &str) -> Result<Option<Task>, TMemError> {
         let id_owned = work_item_id.to_string();
-        let task: Option<Task> = self
+        let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM task WHERE work_item_id = $id LIMIT 1")
             .bind(("id", id_owned))
@@ -177,18 +291,103 @@ impl Queries {
             .map_err(map_db_err)?
             .take(0)
             .unwrap_or_default();
-        Ok(task)
+        Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
     pub async fn all_tasks(&self) -> Result<Vec<Task>, TMemError> {
-        let tasks: Vec<Task> = self
+        let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM task")
             .await
             .map_err(map_db_err)?
             .take(0)
             .unwrap_or_default();
-        Ok(tasks)
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {
+        let rows: Vec<ContextRow> = self
+            .db
+            .query("SELECT * FROM context")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+        Ok(rows.into_iter().map(ContextRow::into_context).collect())
+    }
+
+    pub async fn all_dependency_edges(&self) -> Result<Vec<DependencyEdge>, TMemError> {
+        let rows: Vec<DependsOnRow> = self
+            .db
+            .query("SELECT in, out, type FROM depends_on")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let edges = rows
+            .into_iter()
+            .map(|row| {
+                let from = row.r#in.id.to_raw();
+                let to = row.out.id.to_raw();
+                let kind = row
+                    .r#type
+                    .map(parse_dependency_type)
+                    .unwrap_or(DependencyType::HardBlocker);
+                DependencyEdge { from, to, kind }
+            })
+            .collect();
+
+        Ok(edges)
+    }
+
+    pub async fn all_implements_edges(&self) -> Result<Vec<ImplementsEdge>, TMemError> {
+        let rows: Vec<RelationRow> = self
+            .db
+            .query("SELECT in, out FROM implements")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let edges = rows
+            .into_iter()
+            .map(|row| ImplementsEdge {
+                task_id: row.r#in.id.to_raw(),
+                spec_id: row.out.id.to_raw(),
+            })
+            .collect();
+
+        Ok(edges)
+    }
+
+    pub async fn all_relates_to_edges(&self) -> Result<Vec<RelatesToEdge>, TMemError> {
+        let rows: Vec<RelationRow> = self
+            .db
+            .query("SELECT in, out FROM relates_to")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let edges = rows
+            .into_iter()
+            .map(|row| RelatesToEdge {
+                task_id: row.r#in.id.to_raw(),
+                context_id: row.out.id.to_raw(),
+            })
+            .collect();
+
+        Ok(edges)
+    }
+
+    /// Clear all data from the database (used for corruption recovery).
+    pub async fn clear_all_data(&self) -> Result<(), TMemError> {
+        self.db
+            .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to;")
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 
     pub async fn tasks_by_ids(&self, ids: &[String]) -> Result<Vec<Task>, TMemError> {
@@ -196,16 +395,19 @@ impl Queries {
             return Ok(Vec::new());
         }
 
-        let ids_owned = ids.to_vec();
-        let tasks: Vec<Task> = self
+        let things: Vec<Thing> = ids
+            .iter()
+            .map(|id| Thing::from(("task", id.as_str())))
+            .collect();
+        let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM $ids")
-            .bind(("ids", ids_owned))
+            .bind(("ids", things))
             .await
             .map_err(map_db_err)?
             .take(0)
             .unwrap_or_default();
-        Ok(tasks)
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
     async fn detect_cycle(&self, start: &str, target: &str) -> Result<bool, TMemError> {
