@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use dirs::data_dir;
 use surrealdb::Surreal;
-use surrealdb::engine::local::SurrealKv;
+use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
 
 use crate::errors::{SystemError, TMemError};
 
@@ -12,7 +12,7 @@ pub mod queries;
 pub mod schema;
 pub mod workspace;
 
-pub type Db = Surreal<SurrealKv>;
+pub type Db = Surreal<LocalDb>;
 
 /// Connect to SurrealDB embedded store scoped to the workspace hash and ensure schema.
 pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {

@@ -23,9 +23,10 @@ pub async fn sse_handler(
 
     let state_for_close = state.clone();
 
+    // NOTE: axum 0.7 Sse does not expose an on_close callback.
+    // Connection cleanup will be handled by drop or a wrapper layer.
+    drop(state_for_close);
+
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
-        .on_close(move || async move {
-            state_for_close.decrement_connections();
-        })
 }

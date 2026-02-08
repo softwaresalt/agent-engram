@@ -1,0 +1,47 @@
+   Compiling ort-sys v2.0.0-rc.11
+   Compiling cssparser-macros v0.6.1
+   Compiling schannel v0.1.28
+   Compiling encoding_rs v0.8.35
+   Compiling thread_local v1.1.9
+   Compiling hashbrown v0.12.3
+   Compiling spin v0.9.8
+   Compiling anstyle v1.0.13
+error: When using `download-binaries`, a TLS feature must be configured. Enable exactly one of: `tls-rustls` (uses `ring` as provider), `tls-rustls-no-provider`, `tls-native`, or `tls-native-vendored`.
+ --> D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ort-sys-2.0.0-rc.11\build\download\mod.rs:2:1
+  |
+2 | / compile_error!(
+3 | |     "When using `download-binaries`, a TLS feature must be configured. Enable exactly one of: \
+4 | |     `tls-rustls` (uses `ring` as provider), `tls-rustls-no-provider`, `tls-native`, or `tls-native-vendored`."
+5 | | );
+  | |_^
+
+error[E0432]: unresolved import `ureq::tls`
+   --> D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ort-sys-2.0.0-rc.11\build\download\mod.rs:12:2
+    |
+ 12 |     tls::{RootCerts, TlsConfig, TlsProvider}
+    |     ^^^ could not find `tls` in `ureq`
+    |
+note: found an item that was configured out
+   --> D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ureq-3.2.0\src\lib.rs:574:9
+    |
+573 | #[cfg(feature = "_tls")]
+    |       ---------------- the item is gated behind the `_tls` feature
+574 | pub mod tls;
+    |         ^^^
+
+error[E0599]: no method named `tls_config` found for struct `ConfigBuilder<Scope>` in the current scope
+  --> D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ort-sys-2.0.0-rc.11\build\download\mod.rs:45:5
+   |
+41 | /         UreqConfig::builder()
+42 | |             .proxy(Proxy::try_from_env())
+43 | |             .max_redirects(1)
+44 | |             .https_only(true)
+45 | |             .tls_config(TlsConfig::builder().provider(tls_provider).root_certs(root_certs).build())
+   | |             -^^^^^^^^^^ method not found in `ConfigBuilder<AgentScope>`
+   | |_____________|
+   |
+
+Some errors have detailed explanations: E0432, E0599.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `ort-sys` (build script) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...

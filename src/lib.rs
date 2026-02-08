@@ -11,6 +11,7 @@ pub mod db;
 pub mod errors;
 pub mod models;
 pub mod server;
+pub mod services;
 pub mod tools;
 
 use std::sync::OnceLock;

@@ -1,6 +1,6 @@
 use anyhow::Result;
-use axum::Server;
 use std::{net::SocketAddr, sync::Arc};
+use tokio::net::TcpListener;
 
 use t_mem::{
     config::Config,
@@ -19,9 +19,9 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState::new());
     let app = build_router(state.clone());
 
+    let listener = TcpListener::bind(addr).await?;
     println!("t-mem daemon listening on {addr}");
-    Server::bind(&addr)
-        .serve(app.into_make_service())
+    axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 

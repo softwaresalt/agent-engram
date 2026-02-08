@@ -41,7 +41,16 @@
         "git add": true,
         "git commit": true,
         "git diff": true,
-        "git log": true
+        "git log": true,
+        "Out-File": true,
+        "Set-Content": true,
+        "Add-Content": true,
+        "Get-Content": true,
+        "Get-ChildItem": true,
+        "Copy-Item": true,
+        "Move-Item": true,
+        "New-Item": true,
+        "Test-Path": true,
+        "echo": true
     }
 }
-

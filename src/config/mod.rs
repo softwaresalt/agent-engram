@@ -30,7 +30,7 @@ pub struct Config {
     pub request_timeout_ms: u64,
 
     /// Data directory for embedded database and models
-    #[arg(long, env = "TMEM_DATA_DIR", default_value_t = default_data_dir())]
+    #[arg(long, env = "TMEM_DATA_DIR", default_value_os_t = default_data_dir())]
     pub data_dir: PathBuf,
 
     /// Log format: json or pretty

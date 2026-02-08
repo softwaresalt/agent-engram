@@ -2,7 +2,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::errors::codes::*;
+pub mod codes;
+use codes::*;
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {

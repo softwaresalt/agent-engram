@@ -1,4 +1,3 @@
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -105,7 +104,7 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
                 id.clone(),
                 json!({
                     "task_id": task.id,
-                    "status": format_status(task.status),
+                    "status": format_status(task.status).to_string(),
                     "updated_at": task.updated_at.to_rfc3339(),
                 }),
             );
@@ -121,29 +120,35 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     not_implemented("query_memory")
 }
 
-async fn build_node(queries: &Queries, task: Task, depth: u32) -> Result<TaskNode, TMemError> {
-    if depth == 0 {
-        return Ok(TaskNode {
-            id: task.id,
-            status: format_status(task.status),
-            children: Vec::new(),
-        });
-    }
-
-    let edges = queries.dependencies_of(&task.id).await?;
-    let mut children = Vec::new();
-
-    for edge in edges {
-        if let Some(child_task) = queries.get_task(&edge.to).await? {
-            let child = build_node(queries, child_task, depth - 1).await?;
-            children.push(child);
+fn build_node(
+    queries: &Queries,
+    task: Task,
+    depth: u32,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, TMemError>> + Send + '_>> {
+    Box::pin(async move {
+        if depth == 0 {
+            return Ok(TaskNode {
+                id: task.id,
+                status: format_status(task.status).to_string(),
+                children: Vec::new(),
+            });
         }
-    }
 
-    Ok(TaskNode {
-        id: task.id,
-        status: format_status(task.status),
-        children,
+        let edges = queries.dependencies_of(&task.id).await?;
+        let mut children = Vec::new();
+
+        for edge in edges {
+            if let Some(child_task) = queries.get_task(&edge.to).await? {
+                let child = build_node(queries, child_task, depth - 1).await?;
+                children.push(child);
+            }
+        }
+
+        Ok(TaskNode {
+            id: task.id,
+            status: format_status(task.status).to_string(),
+            children,
+        })
     })
 }
 

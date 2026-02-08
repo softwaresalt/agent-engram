@@ -85,7 +85,8 @@ fn last_flush_state(tmem_dir: &Path, tasks_path: &Path) -> (Option<String>, bool
 
 fn is_newer(modified: &SystemTime, flush: &str) -> bool {
     if let Ok(flush_time) = DateTime::parse_from_rfc3339(flush) {
-        if let Ok(modified_time) = DateTime::<Utc>::from(*modified) {
+        if let Ok(duration) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+            let modified_time = DateTime::<Utc>::from(SystemTime::UNIX_EPOCH + duration);
             return modified_time > flush_time.with_timezone(&Utc);
         }
     }

@@ -4606,6 +4606,7 @@ dependencies = [
  "similar",
  "surrealdb",
  "sysinfo 0.30.13",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",

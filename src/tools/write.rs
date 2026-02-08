@@ -242,7 +242,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
 
     Ok(json!({
         "files_written": [".tmem/.lastflush", ".tmem/tasks.md"],
-        "warnings": [] as [String; 0],
+        "warnings": [],
         "flush_timestamp": flush_ts,
     }))
 }
