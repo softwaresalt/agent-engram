@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use dirs::data_dir;
 use surrealdb::Surreal;
-use surrealdb::engine::local::SurrealKv;
+use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
 
 use crate::errors::{SystemError, TMemError};
 

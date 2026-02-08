@@ -1,0 +1,385 @@
+   Compiling windows-sys v0.61.2
+   Compiling aho-corasick v1.1.4
+   Compiling stacker v0.1.23
+   Compiling indexmap v1.9.3
+   Compiling geo v0.28.0
+   Compiling roaring v0.10.12
+   Compiling async-graphql-derive v7.2.1
+   Compiling revision v0.10.0
+   Compiling ref-cast v1.0.25
+   Compiling cssparser v0.35.0
+   Compiling async-graphql-parser v7.2.1
+   Compiling html5ever v0.35.0
+   Compiling regex-automata v0.4.14
+   Compiling simple_asn1 v0.6.3
+   Compiling mio v1.1.1
+   Compiling regex v1.12.3
+   Compiling tokio v1.49.0
+   Compiling lalrpop-util v0.20.2
+   Compiling lalrpop v0.20.2
+   Compiling tempfile v3.24.0
+   Compiling winapi-util v0.1.11
+   Compiling errno v0.3.14
+   Compiling polling v3.11.0
+   Compiling rustix v1.1.3
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling async-io v2.6.0
+   Compiling anstyle-query v1.1.5
+   Compiling futures v0.3.31
+   Compiling pbkdf2 v0.12.2
+   Compiling async-channel v2.5.0
+   Compiling windows v0.57.0
+   Compiling rust_decimal v1.40.0
+   Compiling rmp-serde v1.3.1
+   Compiling pem v3.0.6
+   Compiling http-body-util v0.1.3
+   Compiling salsa20 v0.10.2
+   Compiling blowfish v0.9.1
+   Compiling quick_cache v0.6.18
+   Compiling lru v0.12.5
+   Compiling blake2 v0.10.6
+   Compiling itertools v0.14.0
+   Compiling uuid v1.20.0
+   Compiling noisy_float v0.2.1
+   Compiling asynk-strim v0.1.5
+   Compiling nibble_vec v0.1.0
+   Compiling async-task v4.7.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling vart v0.9.3
+   Compiling constant_time_eq v0.4.2
+   Compiling data-encoding v2.10.0
+   Compiling endian-type v0.1.2
+   Compiling psl-types v2.0.11
+   Compiling httpdate v1.0.3
+   Compiling trice v0.4.0
+   Compiling static_assertions_next v1.1.2
+   Compiling double-ended-peekable v0.1.0
+   Compiling num_cpus v1.17.0
+   Compiling maplit v1.0.2
+   Compiling sync_wrapper v1.0.2
+   Compiling any_ascii v0.3.3
+   Compiling humantime v2.3.0
+   Compiling arrayref v0.3.9
+   Compiling colorchoice v1.0.4
+   Compiling atomic-waker v1.1.2
+   Compiling urlencoding v2.1.3
+   Compiling object_store v0.12.5
+   Compiling lexicmp v0.1.0
+   Compiling dmp v0.2.3
+   Compiling hyper v1.8.1
+   Compiling anstream v0.6.21
+   Compiling blake3 v1.8.3
+   Compiling ammonia v4.1.2
+   Compiling affinitypool v0.3.1
+   Compiling surrealkv v0.9.3
+   Compiling async-graphql v7.2.1
+   Compiling addr v0.15.6
+   Compiling tungstenite v0.23.0
+   Compiling radix_trie v0.2.1
+   Compiling async-executor v1.13.3
+   Compiling revision v0.11.0
+   Compiling ndarray-stats v0.5.1
+   Compiling argon2 v0.5.3
+   Compiling bcrypt v0.15.1
+   Compiling scrypt v0.11.0
+   Compiling tokio-rustls v0.26.4
+   Compiling jsonwebtoken v9.3.1
+   Compiling ext-sort v0.1.5
+   Compiling fst v0.4.7
+   Compiling snap v1.1.1
+   Compiling ciborium v0.2.2
+   Compiling fuzzy-matcher v0.3.7
+   Compiling cedar-policy-core v2.4.2
+   Compiling dashmap v5.5.3
+   Compiling quick_cache v0.5.2
+   Compiling ulid v1.2.1
+   Compiling linfa-linalg v0.1.0
+   Compiling rmpv v1.3.1
+   Compiling nanoid v0.4.0
+   Compiling storekey v0.5.0
+   Compiling md-5 v0.10.6
+   Compiling castaway v0.2.4
+   Compiling windows-core v0.52.0
+   Compiling rust-stemmers v1.2.0
+   Compiling serde-content v0.1.2
+   Compiling bincode v1.3.3
+   Compiling semver v1.0.27
+   Compiling base64 v0.21.7
+   Compiling hex v0.4.3
+   Compiling reblessive v0.4.3
+   Compiling clap_lex v0.7.7
+   Compiling option-ext v0.2.0
+   Compiling vart v0.8.1
+   Compiling deunicode v1.6.2
+   Compiling getopts v0.2.24
+   Compiling dirs-sys v0.4.1
+   Compiling clap_builder v4.5.57
+   Compiling windows v0.52.0
+   Compiling tokio-tungstenite v0.23.1
+   Compiling anyhow v1.0.101
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling axum-core v0.4.5
+   Compiling tokio-util v0.7.18
+   Compiling tokio-stream v0.1.18
+   Compiling matchers v0.2.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling sharded-slab v0.1.7
+   Compiling tracing-serde v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling serde_path_to_error v0.1.20
+   Compiling matchit v0.7.3
+   Compiling pulldown-cmark-escape v0.10.1
+   Compiling wait-timeout v0.2.1
+   Compiling bit-vec v0.8.0
+   Compiling path-clean v1.0.1
+   Compiling quick-error v1.2.3
+   Compiling bit-set v0.8.0
+   Compiling pulldown-cmark v0.10.3
+   Compiling rusty-fork v0.3.1
+   Compiling axum v0.7.9
+   Compiling tracing-subscriber v0.3.22
+   Compiling clap v4.5.57
+   Compiling mcp-sdk v0.0.3
+   Compiling dirs v5.0.1
+   Compiling tower-http v0.5.2
+   Compiling tower v0.4.13
+   Compiling rand_xorshift v0.4.0
+   Compiling similar v2.7.0
+   Compiling unarray v0.1.4
+   Compiling cedar-policy-validator v2.4.2
+   Compiling proptest v1.10.0
+   Compiling tokio-test v0.4.5
+   Compiling cedar-policy v2.4.2
+   Compiling sysinfo v0.33.1
+   Compiling surrealdb-core v2.6.0
+   Compiling sysinfo v0.30.13
+   Compiling surrealdb v2.6.0
+   Compiling t-mem v0.1.0 (D:\Source\GitHub\t-mem)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 49s
+     Running unittests src\lib.rs (target\debug\deps\t_mem-11918f1e624ebf21.exe)
+
+running 8 tests
+test services::connection::tests::invalid_path_is_rejected ... ok
+test services::connection::tests::lifecycle_transitions ... ok
+test errors::tests::maps_workspace_not_found ... ok
+test config::tests::defaults_are_sensible ... ok
+test db::queries::tests::self_dependency_rejected ... ok
+test db::queries::tests::direct_cycle_rejected ... FAILED
+test db::queries::tests::transitive_cycle_rejected ... FAILED
+test db::queries::tests::valid_dag_accepted ... FAILED
+
+failures:
+
+---- db::queries::tests::direct_cycle_rejected stdout ----
+
+thread 'db::queries::tests::direct_cycle_rejected' (7340) panicked at src\db\queries.rs:327:14:
+a->b ok: System(DatabaseError { reason: "Parse error: Unexpected token `::`, expected :\n --> [1:12]\n  |\n1 | RELATE type::thing('task', $dependent)->depends_on->type::thing('task', $bloc...\n  |            ^^ \n" })
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\std\src\panicking.rs:698
+   1: core::panicking::panic_fmt
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\panicking.rs:75
+   2: core::result::unwrap_failed
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\result.rs:1855
+   3: enum2$<core::result::Result<tuple$<>,enum2$<t_mem::errors::TMemError> > >::expect<tuple$<>,enum2$<t_mem::errors::TMemError> >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\result.rs:1178
+   4: t_mem::db::queries::tests::direct_cycle_rejected::async_block$0
+             at .\src\db\queries.rs:327
+   5: core::future::future::impl$1::poll<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\future\future.rs:133
+   6: core::future::future::impl$1::poll<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\future\future.rs:133
+   7: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:753
+   8: tokio::task::coop::with_budget
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\task\coop\mod.rs:167
+   9: tokio::task::coop::budget
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\task\coop\mod.rs:133
+  10: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:753
+  11: tokio::runtime::scheduler::current_thread::Context::enter<enum2$<core::task::poll::Poll<tuple$<> > >,tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::fu
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:442
+  12: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:752
+  13: tokio::runtime::scheduler::current_thread::impl$9::enter::closure$0<tokio::runtime::scheduler::current_thread::impl$9::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > 
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:840
+  14: tokio::runtime::context::scoped::Scoped<enum2$<tokio::runtime::scheduler::Context> >::set<enum2$<tokio::runtime::scheduler::Context>,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_env$0<tokio::runtime::scheduler::current_thread::impl$9::
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context\scoped.rs:40
+  15: tokio::runtime::context::set_scheduler::closure$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_en
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context.rs:176
+  16: std::thread::local::LocalKey<tokio::runtime::context::Context>::try_with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,e
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\std\src\thread\local.rs:315
+  17: std::thread::local::LocalKey<tokio::runtime::context::Context>::with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\std\src\thread\local.rs:279
+  18: tokio::runtime::context::set_scheduler<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_env$0<tokio::
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context.rs:176
+  19: tokio::runtime::scheduler::current_thread::CoreGuard::enter<tokio::runtime::scheduler::current_thread::impl$9::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >,
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:840
+  20: tokio::runtime::scheduler::current_thread::CoreGuard::block_on<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:740
+  21: tokio::runtime::scheduler::current_thread::impl$0::block_on::closure$0<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:200
+  22: tokio::runtime::context::runtime::enter_runtime<tokio::runtime::scheduler::current_thread::impl$0::block_on::closure_env$0<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >,tuple$<> >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context\runtime.rs:65
+  23: tokio::runtime::scheduler::current_thread::CurrentThread::block_on<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:188
+  24: tokio::runtime::runtime::Runtime::block_on_inner<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\runtime.rs:368
+  25: tokio::runtime::runtime::Runtime::block_on<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\runtime.rs:342
+  26: t_mem::db::queries::tests::direct_cycle_rejected
+             at .\src\db\queries.rs:338
+  27: t_mem::db::queries::tests::direct_cycle_rejected::closure$0
+             at .\src\db\queries.rs:318
+  28: core::ops::function::FnOnce::call_once<t_mem::db::queries::tests::direct_cycle_rejected::closure_env$0,tuple$<> >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\ops\function.rs:250
+  29: core::ops::function::FnOnce::call_once
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- db::queries::tests::transitive_cycle_rejected stdout ----
+
+thread 'db::queries::tests::transitive_cycle_rejected' (7036) panicked at src\db\queries.rs:352:14:
+a->b ok: System(DatabaseError { reason: "Parse error: Unexpected token `::`, expected :\n --> [1:12]\n  |\n1 | RELATE type::thing('task', $dependent)->depends_on->type::thing('task', $bloc...\n  |            ^^ \n" })
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\std\src\panicking.rs:698
+   1: core::panicking::panic_fmt
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\panicking.rs:75
+   2: core::result::unwrap_failed
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\result.rs:1855
+   3: enum2$<core::result::Result<tuple$<>,enum2$<t_mem::errors::TMemError> > >::expect<tuple$<>,enum2$<t_mem::errors::TMemError> >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\result.rs:1178
+   4: t_mem::db::queries::tests::transitive_cycle_rejected::async_block$0
+             at .\src\db\queries.rs:352
+   5: core::future::future::impl$1::poll<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\future\future.rs:133
+   6: core::future::future::impl$1::poll<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\future\future.rs:133
+   7: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:753
+   8: tokio::task::coop::with_budget
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\task\coop\mod.rs:167
+   9: tokio::task::coop::budget
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\task\coop\mod.rs:133
+  10: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:753
+  11: tokio::runtime::scheduler::current_thread::Context::enter<enum2$<core::task::poll::Poll<tuple$<> > >,tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::fu
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:442
+  12: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:752
+  13: tokio::runtime::scheduler::current_thread::impl$9::enter::closure$0<tokio::runtime::scheduler::current_thread::impl$9::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > 
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:840
+  14: tokio::runtime::context::scoped::Scoped<enum2$<tokio::runtime::scheduler::Context> >::set<enum2$<tokio::runtime::scheduler::Context>,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_env$0<tokio::runtime::scheduler::current_thread::impl$9::
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context\scoped.rs:40
+  15: tokio::runtime::context::set_scheduler::closure$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_en
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context.rs:176
+  16: std::thread::local::LocalKey<tokio::runtime::context::Context>::try_with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,e
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\std\src\thread\local.rs:315
+  17: std::thread::local::LocalKey<tokio::runtime::context::Context>::with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\std\src\thread\local.rs:279
+  18: tokio::runtime::context::set_scheduler<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_env$0<tokio::
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context.rs:176
+  19: tokio::runtime::scheduler::current_thread::CoreGuard::enter<tokio::runtime::scheduler::current_thread::impl$9::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >,
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:840
+  20: tokio::runtime::scheduler::current_thread::CoreGuard::block_on<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:740
+  21: tokio::runtime::scheduler::current_thread::impl$0::block_on::closure$0<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:200
+  22: tokio::runtime::context::runtime::enter_runtime<tokio::runtime::scheduler::current_thread::impl$0::block_on::closure_env$0<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >,tuple$<> >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context\runtime.rs:65
+  23: tokio::runtime::scheduler::current_thread::CurrentThread::block_on<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:188
+  24: tokio::runtime::runtime::Runtime::block_on_inner<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\runtime.rs:368
+  25: tokio::runtime::runtime::Runtime::block_on<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\runtime.rs:342
+  26: t_mem::db::queries::tests::transitive_cycle_rejected
+             at .\src\db\queries.rs:366
+  27: t_mem::db::queries::tests::transitive_cycle_rejected::closure$0
+             at .\src\db\queries.rs:342
+  28: core::ops::function::FnOnce::call_once<t_mem::db::queries::tests::transitive_cycle_rejected::closure_env$0,tuple$<> >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\ops\function.rs:250
+  29: core::ops::function::FnOnce::call_once
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- db::queries::tests::valid_dag_accepted stdout ----
+
+thread 'db::queries::tests::valid_dag_accepted' (9180) panicked at src\db\queries.rs:380:14:
+a->b ok: System(DatabaseError { reason: "Parse error: Unexpected token `::`, expected :\n --> [1:12]\n  |\n1 | RELATE type::thing('task', $dependent)->depends_on->type::thing('task', $bloc...\n  |            ^^ \n" })
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\std\src\panicking.rs:698
+   1: core::panicking::panic_fmt
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\panicking.rs:75
+   2: core::result::unwrap_failed
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\result.rs:1855
+   3: enum2$<core::result::Result<tuple$<>,enum2$<t_mem::errors::TMemError> > >::expect<tuple$<>,enum2$<t_mem::errors::TMemError> >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\result.rs:1178
+   4: t_mem::db::queries::tests::valid_dag_accepted::async_block$0
+             at .\src\db\queries.rs:380
+   5: core::future::future::impl$1::poll<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\future\future.rs:133
+   6: core::future::future::impl$1::poll<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\future\future.rs:133
+   7: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:753
+   8: tokio::task::coop::with_budget
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\task\coop\mod.rs:167
+   9: tokio::task::coop::budget
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\task\coop\mod.rs:133
+  10: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:753
+  11: tokio::runtime::scheduler::current_thread::Context::enter<enum2$<core::task::poll::Poll<tuple$<> > >,tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::fu
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:442
+  12: tokio::runtime::scheduler::current_thread::impl$9::block_on::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:752
+  13: tokio::runtime::scheduler::current_thread::impl$9::enter::closure$0<tokio::runtime::scheduler::current_thread::impl$9::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > 
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:840
+  14: tokio::runtime::context::scoped::Scoped<enum2$<tokio::runtime::scheduler::Context> >::set<enum2$<tokio::runtime::scheduler::Context>,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_env$0<tokio::runtime::scheduler::current_thread::impl$9::
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context\scoped.rs:40
+  15: tokio::runtime::context::set_scheduler::closure$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_en
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context.rs:176
+  16: std::thread::local::LocalKey<tokio::runtime::context::Context>::try_with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,e
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\std\src\thread\local.rs:315
+  17: std::thread::local::LocalKey<tokio::runtime::context::Context>::with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\std\src\thread\local.rs:279
+  18: tokio::runtime::context::set_scheduler<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$9::enter::closure_env$0<tokio::
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context.rs:176
+  19: tokio::runtime::scheduler::current_thread::CoreGuard::enter<tokio::runtime::scheduler::current_thread::impl$9::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >,
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:840
+  20: tokio::runtime::scheduler::current_thread::CoreGuard::block_on<core::pin::Pin<ref_mut$<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:740
+  21: tokio::runtime::scheduler::current_thread::impl$0::block_on::closure$0<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:200
+  22: tokio::runtime::context::runtime::enter_runtime<tokio::runtime::scheduler::current_thread::impl$0::block_on::closure_env$0<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >,tuple$<> >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\context\runtime.rs:65
+  23: tokio::runtime::scheduler::current_thread::CurrentThread::block_on<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\scheduler\current_thread\mod.rs:188
+  24: tokio::runtime::runtime::Runtime::block_on_inner<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\runtime.rs:368
+  25: tokio::runtime::runtime::Runtime::block_on<core::pin::Pin<ref_mut$<dyn$<core::future::future::Future<assoc$<Output,tuple$<> > > > > > >
+             at D:\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.49.0\src\runtime\runtime.rs:342
+  26: t_mem::db::queries::tests::valid_dag_accepted
+             at .\src\db\queries.rs:386
+  27: t_mem::db::queries::tests::valid_dag_accepted::closure$0
+             at .\src\db\queries.rs:370
+  28: core::ops::function::FnOnce::call_once<t_mem::db::queries::tests::valid_dag_accepted::closure_env$0,tuple$<> >
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3\library\core\src\ops\function.rs:250
+  29: core::ops::function::FnOnce::call_once
+             at /rustc/f8297e351a40c1439a467bbbb6879088047f50b3/library\core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    db::queries::tests::direct_cycle_rejected
+    db::queries::tests::transitive_cycle_rejected
+    db::queries::tests::valid_dag_accepted
+
+test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.87s
+
+error: test failed, to rerun pass `--lib`
