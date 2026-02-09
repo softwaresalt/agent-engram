@@ -1,7 +1,7 @@
 # Quickstart: T-Mem Development
 
 **Purpose**: Get developers up and running with T-Mem development
-**Prerequisites**: Rust 1.82+, Git
+**Prerequisites**: Rust 1.85+, Git
 
 ## Environment Setup
 
@@ -15,7 +15,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup update stable
 rustup default stable
 
-# Verify version (1.82+ required)
+# Verify version (1.85+ required)
 rustc --version
 ```
 

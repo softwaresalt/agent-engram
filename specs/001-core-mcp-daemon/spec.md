@@ -24,7 +24,7 @@ As an MCP client (CLI, IDE, or agent), I connect to the T-Mem daemon and bind to
 
 1. **Given** the daemon is running, **When** a client connects to the SSE endpoint, **Then** the daemon assigns a unique connection ID and the connection enters CONNECTED state
 2. **Given** a CONNECTED client, **When** `set_workspace("/path/to/git/repo")` is called, **Then** the daemon validates the path has a `.git/` directory and returns workspace metadata
-3. **Given** a client with ACTIVE workspace, **When** `get_workspace_status()` is called, **Then** the daemon returns task count, context count, and last flush timestamp
+3. **Given** a client with ACTIVE workspace, **When** `get_workspace_status()` is called, **Then** the daemon returns task count, context count, last flush timestamp, and stale-file detection status
 4. **Given** a client calls `set_workspace` with an invalid path, **When** the path does not exist, **Then** the daemon returns error code 1001 (WorkspaceNotFound)
 
 ---
@@ -57,7 +57,7 @@ As a developer, I flush workspace state to `.tmem/` files in my Git repository s
 **Acceptance Scenarios**:
 
 1. **Given** modified workspace state, **When** `flush_state()` is called, **Then** the daemon writes `.tmem/tasks.md`, `.tmem/graph.surql`, and updates `.tmem/.lastflush`
-2. **Given** a `.tmem/tasks.md` with user comments, **When** `flush_state()` is called after task updates, **Then** user comments are preserved using diff-match-patch
+2. **Given** a `.tmem/tasks.md` with user comments, **When** `flush_state()` is called after task updates, **Then** user comments are preserved using structured diff merge
 3. **Given** a new workspace with no `.tmem/` directory, **When** `set_workspace` is called, **Then** the daemon initializes an empty workspace structure
 4. **Given** corrupted SurrealDB database files, **When** `set_workspace` is called, **Then** the daemon recovers by re-hydrating from `.tmem/` files
 
@@ -76,7 +76,7 @@ As an AI agent, I query the workspace memory using natural language so that I re
 1. **Given** a workspace with specs and context, **When** `query_memory("user login")` is called, **Then** the daemon returns ranked snippets combining vector similarity and keyword matching
 2. **Given** the embedding model is not yet downloaded, **When** `query_memory` is called for the first time, **Then** the model is lazily downloaded to `~/.local/share/t-mem/models/`
 3. **Given** no network access and model in cache, **When** `query_memory` is called, **Then** the search completes using cached model (offline-capable)
-4. **Given** a query exceeding 500 tokens, **When** `query_memory` is called, **Then** error code 4001 (QueryTooLong) is returned
+4. **Given** a query exceeding 2000 characters, **When** `query_memory` is called, **Then** error code 4001 (QueryTooLong) is returned
 
 ---
 
@@ -133,7 +133,7 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 * **FR-009a**: System MUST enforce a configurable maximum number of concurrent active workspaces (default: 10); exceeding the limit returns an error prompting the client to release an existing workspace
 * **FR-010**: System MUST hydrate workspace state from `.tmem/` files on first access
 * **FR-011**: System MUST dehydrate workspace state to `.tmem/` files on `flush_state` call
-* **FR-012**: System MUST preserve user comments in `tasks.md` during dehydration using diff-match-patch
+* **FR-012**: System MUST preserve user comments in `tasks.md` during dehydration using structured diff merge (via `similar` crate)
 * **FR-012a**: System MUST detect external modifications to `.tmem/` files (via mtime or content hash) before flush or hydrate operations
 * **FR-012b**: System MUST default to warn-and-proceed when stale files are detected (emit error 2004 StaleWorkspace as warning, continue with in-memory state); behavior MUST be configurable to `rehydrate` or `fail`
 
@@ -157,6 +157,7 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 * **FR-022**: System MUST expose daemon status via `get_daemon_status()` tool (version, uptime, memory usage)
 * **FR-023**: System MUST log all operations with structured tracing and correlation IDs
 * **FR-024**: System MUST return structured error responses with numeric codes per error taxonomy
+* **FR-025**: System MUST implement connection rate limiting to prevent resource exhaustion (error 5003 RateLimited)
 
 ### Key Entities
 
@@ -173,7 +174,7 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 
 * **SC-001**: Daemon cold start completes in under 200ms to accepting connections
 * **SC-002**: Workspace hydration completes in under 500ms for projects with fewer than 1000 tasks
-* **SC-003**: `query_memory` hybrid search returns results in under 100ms
+* **SC-003**: `query_memory` hybrid search returns results in under 50ms
 * **SC-004**: `update_task` write operations complete in under 10ms
 * **SC-005**: `flush_state` completes in under 1 second for full workspace dehydration
 * **SC-006**: Daemon consumes less than 100MB RAM when idle with no active workspaces

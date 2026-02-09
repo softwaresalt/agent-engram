@@ -360,16 +360,12 @@
             "type": "string",
             "description": "ID of created decision context"
           },
-          "file_path": {
-            "type": "string",
-            "description": "Path where decision will be written on flush"
-          },
           "created_at": {
             "type": "string",
             "format": "date-time"
           }
         },
-        "required": ["decision_id", "file_path", "created_at"]
+        "required": ["decision_id", "created_at"]
       },
       "errors": [1003]
     },

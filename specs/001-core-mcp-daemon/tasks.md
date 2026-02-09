@@ -149,7 +149,12 @@
 - [X] T055 [US2] Implement check_status tool in src/tools/read.rs
 - [X] T056 [US2] Add context note creation on task update in src/services/connection.rs
 
-**Checkpoint**: Task CRUD and graph operations functional
+### Gap Analysis Updates (Session 2026-02-09)
+
+- [ ] T121 [US2] Implement task status transition validation per data-model.md state machine (reject invalid transitions like done→blocked) in src/tools/write.rs
+- [ ] T122 [P] [US2] Contract test for invalid task status transition (error 3002) in tests/contract/write_test.rs
+
+**Checkpoint**: Task CRUD, graph operations, and state transition validation functional
 
 ---
 
@@ -174,7 +179,7 @@
 - [X] T064 [US3] Implement graph.surql parser for RELATE statements
 - [X] T065 [US3] Implement .version and .lastflush file handling
 - [X] T066 [US3] Create src/services/dehydration.rs with DB → file serialization
-- [X] T067 [US3] Implement diff-match-patch comment preservation using `similar` crate
+- [X] T067 [US3] Implement structured diff merge comment preservation using `similar` crate
 - [X] T068 [US3] Implement atomic file writes (temp file + rename pattern)
 - [X] T069 [US3] Implement flush_state tool in src/tools/write.rs
 - [X] T070 [US3] Implement stale file detection comparing .lastflush to file mtime
@@ -188,6 +193,7 @@
 - [ ] T115 [P] [US3] Integration test for stale strategy `warn` mode (emit 2004 warning, proceed with in-memory state) in tests/integration/hydration_test.rs
 - [ ] T116 [P] [US3] Integration test for stale strategy `rehydrate` mode (reload from disk on external change) in tests/integration/hydration_test.rs
 - [ ] T117 [P] [US3] Integration test for stale strategy `fail` mode (reject operation on stale files) in tests/integration/hydration_test.rs
+- [ ] T123 [US3] Wire `stale_files` boolean from workspace metadata into `get_workspace_status` response in src/tools/read.rs
 
 **Checkpoint**: Git-backed persistence with comment preservation and stale-file detection functional
 
@@ -216,8 +222,12 @@
 - [X] T082 [US4] Implement keyword matching (BM25-style) for text content
 - [X] T083 [US4] Implement weighted score combination (0.7 * vector + 0.3 * keyword)
 - [X] T084 [US4] Implement query_memory tool in src/tools/read.rs
-- [X] T085 [US4] Add query token limit validation (500 tokens max, error 4001)
+- [X] T085 [US4] Add query character limit validation (2000 characters max, error 4001)
 - [X] T086 [US4] Wire embedding generation into hydration for missing embeddings
+
+### Gap Analysis Updates (Session 2026-02-09)
+
+- [ ] T125 [US4] Update query_memory character limit from 500 tokens to 2000 characters per updated spec (FR-018, SC-003) in src/tools/read.rs
 
 **Checkpoint**: Semantic search returns relevant ranked results
 
@@ -244,6 +254,8 @@
 - [ ] T094 [US5] Verify append-only context insertion (no overwrite) in src/db/queries.rs
 - [ ] T095 [US5] Add connection cleanup on disconnect in src/server/sse.rs
 - [ ] T096 [US5] Implement workspace state preservation across client disconnects
+- [ ] T118 [US5] Implement connection rate limiting returning error 5003 when threshold exceeded (FR-025) in src/server/sse.rs
+- [ ] T124 [P] [US5] Contract test for rate limiting (error 5003) in tests/contract/lifecycle_test.rs
 
 **Checkpoint**: Multi-client concurrent access stable
 
@@ -257,9 +269,11 @@
 
 - [ ] T097 Benchmark cold start time (target: < 200ms) and document results
 - [ ] T098 Benchmark hydration time with 1000 tasks (target: < 500ms)
-- [ ] T099 Benchmark query_memory latency (target: < 100ms)
+- [ ] T099 Benchmark query_memory latency (target: < 50ms)
 - [ ] T100 Benchmark update_task latency (target: < 10ms)
 - [ ] T101 Profile memory usage idle and under load (targets: < 100MB / < 500MB)
+- [ ] T119 Benchmark flush_state latency with full workspace (target: < 1s per SC-005)
+- [ ] T120 Create test corpus and evaluation script for query_memory relevance validation (target: 95% per SC-010)
 
 ### Documentation
 
@@ -304,6 +318,11 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 - T113 (Phase 5): Depends on T109 (StaleStrategy enum in config)
 - T114 (Phase 5): Depends on T109 (stale_strategy config) and T113 (mtime recording)
 - T115, T116, T117 (Phase 5): Depend on T114 (strategy implementation to test)
+- T121 (Phase 4): No cross-phase dependencies; refines existing update_task (T051)
+- T122 (Phase 4): Depends on T121 (transition validation implementation to test)
+- T123 (Phase 5): Depends on T113 (stale_files data from workspace metadata)
+- T124 (Phase 7): Depends on T118 (rate limiting implementation to test)
+- T125 (Phase 6): No cross-phase dependencies; corrects T085 limit value
 
 ## Parallel Execution Examples
 
@@ -319,15 +338,21 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 - T034, T035, T036 can run in parallel after T037 (tools)
 - T112 can start after T111 (workspace limit test after implementation)
 
+**Within Phase 4 (US2)**:
+- T121 → T122 (transition validation before test)
+
 **Within Phase 5 (US3)**:
 - T057, T058, T059, T060, T061 can run in parallel (all tests)
 - T115, T116, T117 can run in parallel (stale strategy tests, after T114)
 - T113 → T114 (mtime tracking before strategy application)
+- T123 can run in parallel with T115-T117 (after T113)
 
 **Across Phases (after Phase 2 complete)**:
 - US1 implementation blocks US2, US3, US4, US5
 - Within each US phase, tests can run in parallel before implementation
 - T109/T110 should complete before T111 (Phase 2 before Phase 3 clarification tasks)
+- T124 can run in parallel with T087-T090 (after T118)
+- T125 can run independently within Phase 6
 
 ## Implementation Strategy
 
@@ -336,6 +361,7 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 3. **Test Coverage**: TDD required; 80% minimum per constitution
 4. **Performance Last**: Optimize only after correctness validated (Phase 8)
 5. **Clarification Tasks**: T109-T117 integrate requirements from spec clarifications (FR-009a, FR-012a, FR-012b)
+6. **Gap Analysis Tasks**: T121-T125 fill coverage gaps found during cross-document consistency analysis
 
 **Suggested MVP Scope**: Phases 1-3 (Setup + Foundational + US1) deliver a daemon that accepts connections, binds workspaces, and enforces workspace concurrency limits.
 
@@ -346,9 +372,9 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 | 1 | Setup | 6 | 6 | 0 |
 | 2 | Foundational | 17 | 15 | 2 (T109, T110) |
 | 3 | US1: Connection | 21 | 19 | 2 (T111, T112) |
-| 4 | US2: Tasks | 16 | 16 | 0 |
-| 5 | US3: Persistence | 16 | 11 | 5 (T113-T117) |
-| 6 | US4: Search | 14 | 14 | 0 |
-| 7 | US5: Concurrency | 10 | 0 | 10 |
-| 8 | Polish | 12 | 0 | 12 |
-| **Total** | | **112** (was 108) | **81** | **31** |
+| 4 | US2: Tasks | 18 | 16 | 2 (T121, T122) |
+| 5 | US3: Persistence | 17 | 11 | 6 (T113-T117, T123) |
+| 6 | US4: Search | 15 | 14 | 1 (T125) |
+| 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
+| 8 | Polish | 14 | 0 | 14 (T097-T108, T119, T120) |
+| **Total** | | **120** (was 115) | **81** | **39** |
