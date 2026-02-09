@@ -148,6 +148,13 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
 
 ### Step 8: Stage and Commit
 
+1. Review all changes made during the phase to ensure they align with the completed tasks and constitution.
+2. Review the ADRs created in Step 6 for clarity and completeness.
+3. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
+4. Review the session memory file for completeness and accuracy.
+
+### Step 9: Stage and Commit
+
 Finalize all changes with a Git commit:
 
 1. Accept all current diff changes (no interactive review).

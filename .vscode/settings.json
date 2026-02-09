@@ -47,6 +47,7 @@
         "git push": true,
         "git checkout": true,
         "git branch": true,
+        "git --version": true,
         "Out-File": true,
         "Set-Content": true,
         "Add-Content": true,

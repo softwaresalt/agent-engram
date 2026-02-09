@@ -4,5 +4,18 @@
 			"path": "."
 		}
 	],
-	"settings": {}
+	"settings": {
+		"chat.agentFilesLocations": {
+			".github/agents": true,
+			"lib/hve-core/.github/agents": true
+		},
+		"chat.promptFilesLocations": {
+			".github/prompts": true,
+			"lib/hve-core/.github/prompts": true
+		},
+		"chat.instructionsFilesLocations": {
+			".github/instructions": true,
+			"lib/hve-core/.github/instructions": true
+		}
+	}
 }
