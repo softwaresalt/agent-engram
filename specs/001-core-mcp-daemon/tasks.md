@@ -72,8 +72,8 @@
 
 ### Clarification Updates (Session 2026-02-09)
 
-- [ ] T109 [P] Add `StaleStrategy` enum and `max_workspaces`, `stale_strategy`, `data_dir` fields to Config struct in src/config/mod.rs
-- [ ] T110 [P] Add error code 1005 `WorkspaceLimitReached` to src/errors/codes.rs and `LimitReached` variant to WorkspaceError in src/errors/mod.rs
+- [X] T109 [P] Add `StaleStrategy` enum and `max_workspaces`, `stale_strategy`, `data_dir` fields to Config struct in src/config/mod.rs
+- [X] T110 [P] Add error code 1005 `WorkspaceLimitReached` to src/errors/codes.rs and `LimitReached` variant to WorkspaceError in src/errors/mod.rs
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 

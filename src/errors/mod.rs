@@ -15,6 +15,8 @@ pub enum WorkspaceError {
     NotSet,
     #[error("Workspace '{path}' already active")]
     AlreadyActive { path: String },
+    #[error("Workspace limit reached (limit {limit})")]
+    LimitReached { limit: usize },
 }
 
 #[derive(Debug, Error)]
@@ -118,6 +120,12 @@ impl TMemError {
                     "WorkspaceAlreadyActive",
                     inner.to_string(),
                     Some(json!({ "path": path })),
+                ),
+                WorkspaceError::LimitReached { limit } => (
+                    WORKSPACE_LIMIT_REACHED,
+                    "WorkspaceLimitReached",
+                    inner.to_string(),
+                    Some(json!({ "limit": limit })),
                 ),
             },
             TMemError::Hydration(inner) => match inner {

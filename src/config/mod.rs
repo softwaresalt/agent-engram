@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum StaleStrategy {
+    Warn,
+    Rehydrate,
+    Fail,
+}
 
 /// Log output format for tracing subscriber
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,9 +38,17 @@ pub struct Config {
     #[arg(long, env = "TMEM_REQUEST_TIMEOUT_MS", default_value_t = 60_000)]
     pub request_timeout_ms: u64,
 
+    /// Maximum number of active workspaces
+    #[arg(long, env = "TMEM_MAX_WORKSPACES", default_value_t = 10)]
+    pub max_workspaces: usize,
+
     /// Data directory for embedded database and models
     #[arg(long, env = "TMEM_DATA_DIR", default_value_os_t = default_data_dir())]
     pub data_dir: PathBuf,
+
+    /// Behavior when workspace files are stale
+    #[arg(long, env = "TMEM_STALE_STRATEGY", value_enum, default_value_t = StaleStrategy::Warn)]
+    pub stale_strategy: StaleStrategy,
 
     /// Log format: json or pretty
     #[arg(long, env = "TMEM_LOG_FORMAT", default_value = "pretty")]
@@ -53,6 +70,9 @@ impl Config {
         }
         if self.request_timeout_ms == 0 {
             return Err("request_timeout_ms must be > 0".into());
+        }
+        if self.max_workspaces == 0 {
+            return Err("max_workspaces must be > 0".into());
         }
         if self.data_dir.as_os_str().is_empty() {
             return Err("data_dir must not be empty".into());
@@ -82,5 +102,7 @@ mod tests {
         let cfg = Config::parse_from(["t-mem"]);
         assert_eq!(cfg.port, 7437);
         assert!(cfg.request_timeout_ms > 0);
+        assert_eq!(cfg.max_workspaces, 10);
+        assert_eq!(cfg.stale_strategy, StaleStrategy::Warn);
     }
 }

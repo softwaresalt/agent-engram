@@ -3,6 +3,7 @@ pub const WORKSPACE_NOT_FOUND: u16 = 1001;
 pub const NOT_A_GIT_ROOT: u16 = 1002;
 pub const WORKSPACE_NOT_SET: u16 = 1003;
 pub const WORKSPACE_ALREADY_ACTIVE: u16 = 1004;
+pub const WORKSPACE_LIMIT_REACHED: u16 = 1005;
 
 /// Hydration error codes
 pub const HYDRATION_FAILED: u16 = 2001;
