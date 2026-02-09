@@ -16,6 +16,10 @@
 		"chat.instructionsFilesLocations": {
 			".github/instructions": true,
 			"lib/hve-core/.github/instructions": true
+		},
+		"chat.tools.terminal.autoApprove": {
+			".specify/scripts/bash/": true,
+			".specify/scripts/powershell/": true
 		}
 	}
 }

@@ -32,6 +32,7 @@ Errors related to workspace binding and path validation.
 | 1002 | `NotAGitRoot` | Path exists but lacks `.git/` directory | No | Use Git repo root |
 | 1003 | `WorkspaceNotSet` | Tool requires workspace but `set_workspace` not called | No | Call `set_workspace` first |
 | 1004 | `WorkspaceAlreadyActive` | `set_workspace` called with same path (warning) | N/A | Proceed normally |
+| 1005 | `WorkspaceLimitReached` | Maximum concurrent workspaces reached (default: 10) | No | Release an existing workspace or increase `--max-workspaces` |
 
 **Example: WorkspaceNotFound**
 ```json
@@ -217,6 +218,9 @@ pub enum WorkspaceError {
     
     #[error("Workspace '{path}' already active")]
     AlreadyActive { path: String },
+    
+    #[error("Maximum concurrent workspaces reached (limit: {limit})")]
+    LimitReached { limit: usize },
 }
 
 impl WorkspaceError {
@@ -226,6 +230,7 @@ impl WorkspaceError {
             Self::NotGitRoot { .. } => 1002,
             Self::NotSet => 1003,
             Self::AlreadyActive { .. } => 1004,
+            Self::LimitReached { .. } => 1005,
         }
     }
     
@@ -235,6 +240,7 @@ impl WorkspaceError {
             Self::NotGitRoot { .. } => "NotAGitRoot",
             Self::NotSet => "WorkspaceNotSet",
             Self::AlreadyActive { .. } => "WorkspaceAlreadyActive",
+            Self::LimitReached { .. } => "WorkspaceLimitReached",
         }
     }
 }

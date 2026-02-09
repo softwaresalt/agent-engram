@@ -32,7 +32,7 @@ Implements a single phase from a feature specification's task plan. The workflow
 Invoke the skill with both required parameters:
 
 ```text
-Build feature 001-core-mcp-daemon phase 6
+Build feature 001-<spec-name> phase <phase-number>
 ```
 
 The skill runs autonomously through all required steps, halting only on unrecoverable errors or constitution violations requiring human judgment.
@@ -153,7 +153,7 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
 3. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
 4. Review the session memory file for completeness and accuracy.
 
-### Step 9: Stage and Commit
+### Step 9: Stage, Commit, and Sync
 
 Finalize all changes with a Git commit:
 
@@ -164,7 +164,8 @@ Finalize all changes with a Git commit:
    * Body: list of completed task IDs and a brief summary of what was built
    * Footer: reference the spec path and any relevant ADR numbers
 4. Run `git commit` with the composed message.
-5. Report the commit hash and a summary of changes committed.
+5. Run `git push` to sync the commit to the remote repository.
+6. Report the commit hash and a summary of changes committed.
 
 ## Troubleshooting
 

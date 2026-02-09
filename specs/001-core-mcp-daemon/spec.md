@@ -100,10 +100,17 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 ### Edge Cases
 
 * What happens when workspace path contains symlinks? Canonicalize and validate the resolved path.
-* How does system handle concurrent external edits to `.tmem/` files? Stale warning emitted; configurable behavior (warn/rehydrate/fail).
+* How does system handle concurrent external edits to `.tmem/` files? Default: warn-and-proceed (emit StaleWorkspace warning 2004, continue with in-memory state). Configurable via daemon config to `rehydrate` (reload from disk) or `fail` (reject operation until explicit resolve).
 * What happens if SurrealDB database grows very large? Performance degrades gracefully; recommend periodic archival of old context.
 * How does system handle workspaces on network drives? Not officially supported; may have latency issues.
 * What happens during ungraceful daemon termination (SIGKILL)? State in SurrealDB preserved; `.tmem/` may be stale until next flush.
+
+## Clarifications
+
+### Session 2026-02-09
+
+- Q: What is the maximum number of concurrent workspaces per daemon? → A: Configurable upper bound with default of 10 (matches FR-002 client limit)
+- Q: What is the default conflict strategy for concurrent external edits to `.tmem/` files? → A: Default warn (emit stale-workspace warning, proceed with in-memory state); configurable to rehydrate or fail
 
 ## Requirements *(mandatory)*
 
@@ -123,9 +130,12 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 * **FR-007**: System MUST validate workspace paths as existing directories with `.git/` subdirectory
 * **FR-008**: System MUST reject paths containing `..` after canonicalization (path traversal prevention)
 * **FR-009**: System MUST map each workspace to an isolated SurrealDB database via deterministic path hash
+* **FR-009a**: System MUST enforce a configurable maximum number of concurrent active workspaces (default: 10); exceeding the limit returns an error prompting the client to release an existing workspace
 * **FR-010**: System MUST hydrate workspace state from `.tmem/` files on first access
 * **FR-011**: System MUST dehydrate workspace state to `.tmem/` files on `flush_state` call
 * **FR-012**: System MUST preserve user comments in `tasks.md` during dehydration using diff-match-patch
+* **FR-012a**: System MUST detect external modifications to `.tmem/` files (via mtime or content hash) before flush or hydrate operations
+* **FR-012b**: System MUST default to warn-and-proceed when stale files are detected (emit error 2004 StaleWorkspace as warning, continue with in-memory state); behavior MUST be configurable to `rehydrate` or `fail`
 
 **Task Operations:**
 

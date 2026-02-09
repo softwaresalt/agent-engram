@@ -88,7 +88,21 @@ RUST_LOG=t_mem=debug cargo run
 
 # Start on specific port
 PORT=7437 cargo run
+
+# Start with custom workspace limit and stale-file strategy
+cargo run -- --max-workspaces 5 --stale-strategy rehydrate
 ```
+
+### Configuration Options
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--port` | `T_MEM_PORT` | `7437` | Listening port on 127.0.0.1 |
+| `--max-workspaces` | `T_MEM_MAX_WORKSPACES` | `10` | Max concurrent active workspaces |
+| `--connection-timeout` | `T_MEM_CONNECTION_TIMEOUT` | `60` | Idle connection timeout (seconds) |
+| `--keepalive-interval` | `T_MEM_KEEPALIVE_INTERVAL` | `15` | SSE keepalive ping interval (seconds) |
+| `--stale-strategy` | `T_MEM_STALE_STRATEGY` | `warn` | Stale `.tmem/` file behavior: `warn`, `rehydrate`, `fail` |
+| `--data-dir` | `T_MEM_DATA_DIR` | `~/.local/share/t-mem/` | SurrealDB and model cache directory |
 
 ### Testing with curl
 

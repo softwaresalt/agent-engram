@@ -188,6 +188,53 @@ tracing_subscriber::fmt()
     .init();
 ```
 
+### 9. Workspace Concurrency Limits
+
+**Decision**: Configurable max concurrent workspaces, default 10
+
+**Rationale**:
+- Each workspace opens an isolated SurrealDB database (memory + file handles)
+- Unbounded workspaces risk OOM on developer laptops
+- Default of 10 matches FR-002 concurrent client limit (natural parity)
+- Configurable via CLI flag `--max-workspaces` or env `T_MEM_MAX_WORKSPACES`
+
+**Alternatives Considered**:
+
+| Option | Rejected Because |
+|--------|-----------------|
+| Unlimited (memory-bounded) | Unpredictable resource usage; hard to debug OOM |
+| Single workspace per daemon | Too restrictive for multi-repo workflows |
+| LRU eviction | Implicit eviction risks data loss; explicit release preferred |
+
+**Implementation**:
+- Track active workspaces in `AppState` via `HashMap<String, WorkspaceHandle>`
+- Check count before `set_workspace`; return new error code if at limit
+- Clients can release workspaces explicitly or via disconnect cleanup
+
+### 10. Stale File Detection Strategy
+
+**Decision**: Default warn-and-proceed; configurable to `rehydrate` or `fail`
+
+**Rationale**:
+- Local-first tool should never silently discard in-memory work
+- Warning (error 2004 StaleWorkspace) alerts the user without blocking
+- `rehydrate` mode useful for CI or scripted scenarios
+- `fail` mode useful for strict data integrity requirements
+
+**Alternatives Considered**:
+
+| Option | Rejected Because |
+|--------|-----------------|
+| Always rehydrate | Discards in-memory deltas silently; data loss risk |
+| Always fail | Too disruptive for normal development workflow |
+| File watching | Out of scope for v0; adds inotify/kqueue complexity |
+
+**Detection Mechanism**:
+- Record mtime of `.tmem/` files at hydration time
+- Before flush or re-hydrate, compare current mtime to recorded value
+- If mtime differs, apply configured strategy (warn/rehydrate/fail)
+- Expose `stale_files` boolean in `get_workspace_status` response
+
 ## Best Practices Applied
 
 ### Rust Async Patterns
@@ -236,6 +283,8 @@ All initial unknowns have been resolved during research:
 | How to preserve markdown comments? | `similar` crate with block-level merge |
 | Vector index type? | MTREE in SurrealDB — built-in |
 | How to hash workspace paths? | SHA256 of canonicalized path |
+| Max concurrent workspaces? | Configurable upper bound, default 10 (matches FR-002 client limit) |
+| Stale `.tmem/` file conflict strategy? | Default: warn-and-proceed (emit 2004 StaleWorkspace, continue with in-memory state); configurable to `rehydrate` or `fail` |
 
 ## Dependencies Summary
 

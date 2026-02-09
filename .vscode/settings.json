@@ -45,6 +45,8 @@
         "git fetch": true,
         "git pull": true,
         "git push": true,
+        "git push origin": true,
+        "git push --set-upstream origin": true,
         "git checkout": true,
         "git branch": true,
         "git --version": true,

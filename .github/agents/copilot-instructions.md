@@ -1,4 +1,4 @@
-# t-mem Development Guidelines
+﻿# t-mem Development Guidelines
 
 Last updated: 2026-02-07
 

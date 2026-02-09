@@ -38,7 +38,7 @@
         },
         "required": ["workspace_id", "path", "task_count", "hydrated"]
       },
-      "errors": [1001, 1002, 1004, 2001, 2002, 2003]
+      "errors": [1001, 1002, 1004, 1005, 2001, 2002, 2003]
     },
     "get_daemon_status": {
       "description": "Get daemon health and operational metrics. Does not require workspace binding.",
@@ -403,7 +403,7 @@
         },
         "required": ["files_written", "warnings", "flush_timestamp"]
       },
-      "errors": [1003, 5001, 5002]
+      "errors": [1003, 2004, 5001, 5002]
     }
   },
   "$defs": {

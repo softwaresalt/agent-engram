@@ -175,6 +175,23 @@ Each workspace has implicit metadata tracked outside the main schema:
 | `hash` | `string` | SHA256 of path, used as database name |
 | `schema_version` | `string` | Version of `.tmem/` schema (e.g., `1.0.0`) |
 | `last_flush` | `datetime` | Timestamp of last dehydration |
+| `file_mtimes` | `HashMap<String, SystemTime>` | Recorded mtime of each `.tmem/` file at hydration; used for stale-file detection |
+| `stale_files` | `bool` | Whether external modifications have been detected since last hydration |
+
+---
+
+## Daemon Configuration
+
+Runtime-configurable settings (CLI flags, env vars, or config file):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | `u16` | `7437` | Listening port on 127.0.0.1 |
+| `max_workspaces` | `usize` | `10` | Maximum concurrent active workspaces (FR-009a) |
+| `connection_timeout_secs` | `u64` | `60` | Idle connection timeout (FR-005) |
+| `keepalive_interval_secs` | `u64` | `15` | SSE keepalive ping interval (FR-004) |
+| `stale_strategy` | `StaleStrategy` | `Warn` | Behavior on stale `.tmem/` files: `Warn`, `Rehydrate`, `Fail` (FR-012b) |
+| `data_dir` | `PathBuf` | `~/.local/share/t-mem/` | Location for SurrealDB files and model cache |
 
 ---
 
@@ -340,5 +357,13 @@ pub struct Context {
 pub enum DependencyType {
     HardBlocker,
     SoftDependency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaleStrategy {
+    Warn,
+    Rehydrate,
+    Fail,
 }
 ```

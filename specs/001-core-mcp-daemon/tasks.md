@@ -70,6 +70,11 @@
 - [X] T020 Create tracing subscriber initialization in src/lib.rs with JSON/pretty format toggle
 - [X] T021 [P] Add correlation ID middleware structure in src/server/mod.rs placeholder
 
+### Clarification Updates (Session 2026-02-09)
+
+- [ ] T109 [P] Add `StaleStrategy` enum and `max_workspaces`, `stale_strategy`, `data_dir` fields to Config struct in src/config/mod.rs
+- [ ] T110 [P] Add error code 1005 `WorkspaceLimitReached` to src/errors/codes.rs and `LimitReached` variant to WorkspaceError in src/errors/mod.rs
+
 **Checkpoint**: Foundation ready - user story implementation can now begin
 
 ---
@@ -107,7 +112,12 @@
 - [X] T039 [US1] Add connection timeout handling (60s configurable) in src/server/sse.rs
 - [X] T040 [US1] Wire up daemon main() in src/bin/t-mem.rs with graceful shutdown (SIGTERM/SIGINT)
 
-**Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces
+### Clarification Updates (Session 2026-02-09)
+
+- [ ] T111 [US1] Implement workspace limit check in set_workspace tool (FR-009a) returning error 1005 when max_workspaces exceeded in src/tools/lifecycle.rs
+- [ ] T112 [P] [US1] Contract test for workspace limit exceeded (error 1005) in tests/contract/lifecycle_test.rs
+
+**Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces, enforces workspace limits
 
 ---
 
@@ -171,7 +181,15 @@
 - [X] T071 [US3] Implement corruption recovery (delete DB, re-hydrate from files)
 - [X] T072 [US3] Wire hydration into set_workspace flow in src/tools/lifecycle.rs
 
-**Checkpoint**: Git-backed persistence with comment preservation functional
+### Clarification Updates (Session 2026-02-09)
+
+- [ ] T113 [US3] Record file mtimes at hydration time in workspace metadata for stale detection (FR-012a) in src/services/hydration.rs
+- [ ] T114 [US3] Implement configurable stale strategy (warn/rehydrate/fail per FR-012b) in src/services/dehydration.rs and src/services/hydration.rs
+- [ ] T115 [P] [US3] Integration test for stale strategy `warn` mode (emit 2004 warning, proceed with in-memory state) in tests/integration/hydration_test.rs
+- [ ] T116 [P] [US3] Integration test for stale strategy `rehydrate` mode (reload from disk on external change) in tests/integration/hydration_test.rs
+- [ ] T117 [P] [US3] Integration test for stale strategy `fail` mode (reject operation on stale files) in tests/integration/hydration_test.rs
+
+**Checkpoint**: Git-backed persistence with comment preservation and stale-file detection functional
 
 ---
 
@@ -263,13 +281,13 @@
 ```
 Phase 1 (Setup)
     ↓
-Phase 2 (Foundational) ─────────────────────────────────────┐
+Phase 2 (Foundational + Clarification Updates) ─────────────┐
     ↓                                                        │
-Phase 3 (US1: Connection) ← MVP                              │
+Phase 3 (US1: Connection + Workspace Limits) ← MVP           │
     ↓                                                        │
 Phase 4 (US2: Tasks) ← Depends on US1                       │
     ↓                                                        │
-Phase 5 (US3: Persistence) ← Depends on US1, US2            │
+Phase 5 (US3: Persistence + Stale Detection) ← Depends US1,2│
     ↓                                                        │
 Phase 6 (US4: Search) ← Depends on US1, integrates US3      │
     ↓                                                        │
@@ -278,27 +296,59 @@ Phase 7 (US5: Concurrency) ← Depends on ALL previous        │
 Phase 8 (Polish) ← Final validation after all stories ──────┘
 ```
 
+### Clarification Task Dependencies
+
+- T109, T110 (Phase 2): No dependencies on existing incomplete tasks; extend Config and Error modules
+- T111 (Phase 3): Depends on T109 (max_workspaces config field) and T110 (error 1005)
+- T112 (Phase 3): Depends on T111 (implementation to test against)
+- T113 (Phase 5): Depends on T109 (StaleStrategy enum in config)
+- T114 (Phase 5): Depends on T109 (stale_strategy config) and T113 (mtime recording)
+- T115, T116, T117 (Phase 5): Depend on T114 (strategy implementation to test)
+
 ## Parallel Execution Examples
 
 **Within Phase 2 (Foundational)**:
 - T007, T008, T009 can run in parallel (error infrastructure)
 - T010, T011, T012, T013, T014 can run in parallel (models)
 - T015, T016, T017 can run sequentially (DB layer)
+- T109, T110 can run in parallel (clarification config/error updates)
 
 **Within Phase 3 (US1)**:
 - T022, T023, T024, T025, T026 can run in parallel (all tests)
 - T027 → T028 → T029 → T030 (server layer sequential)
 - T034, T035, T036 can run in parallel after T037 (tools)
+- T112 can start after T111 (workspace limit test after implementation)
+
+**Within Phase 5 (US3)**:
+- T057, T058, T059, T060, T061 can run in parallel (all tests)
+- T115, T116, T117 can run in parallel (stale strategy tests, after T114)
+- T113 → T114 (mtime tracking before strategy application)
 
 **Across Phases (after Phase 2 complete)**:
 - US1 implementation blocks US2, US3, US4, US5
 - Within each US phase, tests can run in parallel before implementation
+- T109/T110 should complete before T111 (Phase 2 before Phase 3 clarification tasks)
 
 ## Implementation Strategy
 
-1. **MVP First**: Complete Phase 1-3 for minimal working daemon
+1. **MVP First**: Complete Phase 1-3 for minimal working daemon (including workspace limits)
 2. **Incremental Delivery**: Each user story phase delivers testable functionality
 3. **Test Coverage**: TDD required; 80% minimum per constitution
 4. **Performance Last**: Optimize only after correctness validated (Phase 8)
+5. **Clarification Tasks**: T109-T117 integrate requirements from spec clarifications (FR-009a, FR-012a, FR-012b)
 
-**Suggested MVP Scope**: Phases 1-3 (Setup + Foundational + US1) deliver a daemon that accepts connections and binds workspaces.
+**Suggested MVP Scope**: Phases 1-3 (Setup + Foundational + US1) deliver a daemon that accepts connections, binds workspaces, and enforces workspace concurrency limits.
+
+### Task Summary
+
+| Phase | Scope | Total | Complete | Remaining |
+|-------|-------|-------|----------|-----------|
+| 1 | Setup | 6 | 6 | 0 |
+| 2 | Foundational | 17 | 15 | 2 (T109, T110) |
+| 3 | US1: Connection | 21 | 19 | 2 (T111, T112) |
+| 4 | US2: Tasks | 16 | 16 | 0 |
+| 5 | US3: Persistence | 16 | 11 | 5 (T113-T117) |
+| 6 | US4: Search | 14 | 14 | 0 |
+| 7 | US5: Concurrency | 10 | 0 | 10 |
+| 8 | Polish | 12 | 0 | 12 |
+| **Total** | | **112** (was 108) | **81** | **31** |
