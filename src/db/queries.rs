@@ -8,7 +8,7 @@ use crate::db::{Db, map_db_err};
 use crate::errors::{TMemError, TaskError};
 use crate::models::graph::DependencyType;
 use crate::models::task::TaskStatus;
-use crate::models::{Context, Task};
+use crate::models::{Context, Spec, Task};
 
 /// Relationship edge carrying normalized task IDs and dependency type.
 #[derive(Debug, Clone, PartialEq, Eq)]
