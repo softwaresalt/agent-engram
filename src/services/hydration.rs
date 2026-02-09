@@ -99,10 +99,7 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, TMemErro
 ///
 /// Parses `tasks.md` for task data and `graph.surql` for relationship
 /// edges. Upserts tasks (idempotent) and recreates edges.
-pub async fn hydrate_into_db(
-    path: &Path,
-    queries: &Queries,
-) -> Result<HydrationResult, TMemError> {
+pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<HydrationResult, TMemError> {
     let tmem_dir = path.join(".tmem");
     let mut tasks_loaded = 0;
     let mut edges_loaded = 0;
@@ -212,10 +209,7 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                 i += 1;
                 while i < lines.len() && lines[i].trim() != "---" {
                     if let Some((key, value)) = lines[i].split_once(':') {
-                        frontmatter.insert(
-                            key.trim().to_string(),
-                            value.trim().to_string(),
-                        );
+                        frontmatter.insert(key.trim().to_string(), value.trim().to_string());
                     }
                     i += 1;
                 }
@@ -321,9 +315,7 @@ fn parse_relate_line(line: &str) -> Option<ParsedRelation> {
     let edge_type = parts[1].trim().to_string();
     let to = parts[2..].join("->").trim().to_string();
 
-    let properties = set_part
-        .map(parse_set_clauses)
-        .unwrap_or_default();
+    let properties = set_part.map(parse_set_clauses).unwrap_or_default();
 
     Some(ParsedRelation {
         from,
@@ -340,10 +332,7 @@ fn parse_set_clauses(s: &str) -> Vec<(String, String)> {
         let pair = pair.trim();
         if let Some(eq_pos) = pair.find('=') {
             let key = pair[..eq_pos].trim().to_string();
-            let value = pair[eq_pos + 1..]
-                .trim()
-                .trim_matches('\'')
-                .to_string();
+            let value = pair[eq_pos + 1..].trim().trim_matches('\'').to_string();
             clauses.push((key, value));
         }
     }
@@ -532,7 +521,10 @@ RELATE task:abc->relates_to->context:note1;
         assert_eq!(rels[0].from, "task:abc");
         assert_eq!(rels[0].edge_type, "depends_on");
         assert_eq!(rels[0].to, "task:def");
-        assert_eq!(rels[0].properties, vec![("type".into(), "hard_blocker".into())]);
+        assert_eq!(
+            rels[0].properties,
+            vec![("type".into(), "hard_blocker".into())]
+        );
         assert_eq!(rels[2].edge_type, "implements");
         assert_eq!(rels[3].edge_type, "relates_to");
     }

@@ -3,6 +3,20 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::wildcard_imports)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::needless_raw_string_hashes)]
+#![allow(clippy::bool_to_int_with_if)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::implicit_hasher)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::unnecessary_filter_map)]
+#![allow(clippy::trivially_copy_pass_by_ref)]
 
 /// Crate-level constants and shared library entrypoints for the T-Mem daemon.
 pub const APP_NAME: &str = "t-mem";

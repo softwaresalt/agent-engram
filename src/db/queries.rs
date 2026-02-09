@@ -10,7 +10,7 @@ use crate::db::{Db, map_db_err};
 use crate::errors::{TMemError, TaskError};
 use crate::models::graph::DependencyType;
 use crate::models::task::TaskStatus;
-use crate::models::{Context, Task};
+use crate::models::{Context, Spec, Task};
 
 /// Relationship edge carrying normalized task IDs and dependency type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +101,33 @@ impl ContextRow {
             embedding: self.embedding,
             source_client: self.source_client,
             created_at: self.created_at,
+        }
+    }
+}
+
+/// Internal row type for deserializing specs from SurrealDB.
+#[derive(Deserialize)]
+struct SpecRow {
+    id: Thing,
+    title: String,
+    content: String,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    file_path: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl SpecRow {
+    fn into_spec(self) -> Spec {
+        Spec {
+            id: self.id.id.to_raw(),
+            title: self.title,
+            content: self.content,
+            embedding: self.embedding,
+            file_path: self.file_path,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -314,6 +341,45 @@ impl Queries {
             .take(0)
             .unwrap_or_default();
         Ok(rows.into_iter().map(ContextRow::into_context).collect())
+    }
+
+    /// Return all specs in the workspace.
+    pub async fn all_specs(&self) -> Result<Vec<Spec>, TMemError> {
+        let rows: Vec<SpecRow> = self
+            .db
+            .query("SELECT * FROM spec")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+        Ok(rows.into_iter().map(SpecRow::into_spec).collect())
+    }
+
+    /// Insert or update a spec record.
+    pub async fn upsert_spec(&self, spec: &Spec) -> Result<(), TMemError> {
+        let record = Thing::from(("spec", spec.id.as_str()));
+        let created = spec.created_at.to_rfc3339();
+        let updated = spec.updated_at.to_rfc3339();
+        self.db
+            .query(
+                "UPSERT $record SET \
+                    title = $title, \
+                    content = $content, \
+                    embedding = $embedding, \
+                    file_path = $file_path, \
+                    created_at = <datetime>$created, \
+                    updated_at = <datetime>$updated",
+            )
+            .bind(("record", record))
+            .bind(("title", spec.title.clone()))
+            .bind(("content", spec.content.clone()))
+            .bind(("embedding", spec.embedding.clone().unwrap_or_default()))
+            .bind(("file_path", spec.file_path.clone()))
+            .bind(("created", created))
+            .bind(("updated", updated))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 
     pub async fn all_dependency_edges(&self) -> Result<Vec<DependencyEdge>, TMemError> {

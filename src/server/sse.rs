@@ -27,6 +27,5 @@ pub async fn sse_handler(
     // Connection cleanup will be handled by drop or a wrapper layer.
     drop(state_for_close);
 
-    Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }

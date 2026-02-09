@@ -98,11 +98,15 @@ async fn contract_flush_state_response_shape() {
     assert!(files.is_array(), "files_written should be array");
     let files_arr = files.as_array().unwrap();
     assert!(
-        files_arr.iter().any(|f| f.as_str() == Some(".tmem/tasks.md")),
+        files_arr
+            .iter()
+            .any(|f| f.as_str() == Some(".tmem/tasks.md")),
         "should write tasks.md"
     );
     assert!(
-        files_arr.iter().any(|f| f.as_str() == Some(".tmem/.lastflush")),
+        files_arr
+            .iter()
+            .any(|f| f.as_str() == Some(".tmem/.lastflush")),
         "should write .lastflush"
     );
 

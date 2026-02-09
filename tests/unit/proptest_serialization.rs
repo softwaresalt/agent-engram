@@ -23,11 +23,11 @@ fn arb_status() -> impl Strategy<Value = TaskStatus> {
 
 fn arb_task() -> impl Strategy<Value = Task> {
     (
-        "[a-z][a-z0-9]{2,8}",        // id suffix (alphanumeric, no colons)
-        "[A-Za-z][A-Za-z ]{0,49}",   // title (starts with letter, avoids whitespace-only)
+        "[a-z][a-z0-9]{2,8}",      // id suffix (alphanumeric, no colons)
+        "[A-Za-z][A-Za-z ]{0,49}", // title (starts with letter, avoids whitespace-only)
         arb_status(),
         prop::option::of("[A-Z]{2}#[0-9]{1,5}"), // work_item_id
-        "[A-Za-z0-9 .]{0,100}",      // description (safe chars)
+        "[A-Za-z0-9 .]{0,100}",                  // description (safe chars)
     )
         .prop_map(|(id_suffix, title, status, work_item_id, description)| {
             let now = Utc::now();

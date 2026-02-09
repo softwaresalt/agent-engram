@@ -21,19 +21,21 @@ fn arb_task() -> impl Strategy<Value = Task> {
         ".{0,120}",
         prop::option::of(".{0,80}"),
     )
-        .prop_map(|(id, title, status, work_item_id, description, context_summary)| {
-            let now = Utc::now();
-            Task {
-                id,
-                title,
-                status,
-                work_item_id,
-                description,
-                context_summary,
-                created_at: now,
-                updated_at: now,
-            }
-        })
+        .prop_map(
+            |(id, title, status, work_item_id, description, context_summary)| {
+                let now = Utc::now();
+                Task {
+                    id,
+                    title,
+                    status,
+                    work_item_id,
+                    description,
+                    context_summary,
+                    created_at: now,
+                    updated_at: now,
+                }
+            },
+        )
 }
 
 proptest! {

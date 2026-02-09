@@ -183,23 +183,23 @@
 
 ### Tests for User Story 4
 
-- [ ] T073 [P] [US4] Contract test for query_memory in tests/contract/read_test.rs
-- [ ] T074 [P] [US4] Unit test for embedding generation in src/services/embedding.rs
-- [ ] T075 [P] [US4] Unit test for hybrid scoring (0.7 vector + 0.3 keyword) in src/services/search.rs
-- [ ] T076 [P] [US4] Integration test for lazy model download in tests/integration/embedding_test.rs
+- [X] T073 [P] [US4] Contract test for query_memory in tests/contract/read_test.rs
+- [X] T074 [P] [US4] Unit test for embedding generation in src/services/embedding.rs
+- [X] T075 [P] [US4] Unit test for hybrid scoring (0.7 vector + 0.3 keyword) in src/services/search.rs
+- [X] T076 [P] [US4] Integration test for lazy model download in tests/integration/embedding_test.rs
 
 ### Implementation for User Story 4
 
-- [ ] T077 [US4] Create src/services/embedding.rs with fastembed-rs integration
-- [ ] T078 [US4] Implement lazy model download to ~/.local/share/t-mem/models/
-- [ ] T079 [US4] Implement embedding generation for spec and context content
-- [ ] T080 [US4] Create src/services/search.rs with hybrid search logic
-- [ ] T081 [US4] Implement vector similarity search using SurrealDB MTREE index
-- [ ] T082 [US4] Implement keyword matching (BM25-style) for text content
-- [ ] T083 [US4] Implement weighted score combination (0.7 * vector + 0.3 * keyword)
-- [ ] T084 [US4] Implement query_memory tool in src/tools/read.rs
-- [ ] T085 [US4] Add query token limit validation (500 tokens max, error 4001)
-- [ ] T086 [US4] Wire embedding generation into hydration for missing embeddings
+- [X] T077 [US4] Create src/services/embedding.rs with fastembed-rs integration
+- [X] T078 [US4] Implement lazy model download to ~/.local/share/t-mem/models/
+- [X] T079 [US4] Implement embedding generation for spec and context content
+- [X] T080 [US4] Create src/services/search.rs with hybrid search logic
+- [X] T081 [US4] Implement vector similarity search using SurrealDB MTREE index
+- [X] T082 [US4] Implement keyword matching (BM25-style) for text content
+- [X] T083 [US4] Implement weighted score combination (0.7 * vector + 0.3 * keyword)
+- [X] T084 [US4] Implement query_memory tool in src/tools/read.rs
+- [X] T085 [US4] Add query token limit validation (500 tokens max, error 4001)
+- [X] T086 [US4] Wire embedding generation into hydration for missing embeddings
 
 **Checkpoint**: Semantic search returns relevant ranked results
 

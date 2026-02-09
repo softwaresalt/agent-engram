@@ -6,6 +6,8 @@ use crate::db::queries::Queries;
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
 use crate::models::task::{Task, TaskStatus};
 use crate::server::state::SharedState;
+use crate::services::embedding;
+use crate::services::search::{SearchCandidate, hybrid_search};
 
 #[derive(Deserialize)]
 struct TaskGraphParams {
@@ -43,12 +45,6 @@ async fn workspace_id(state: &SharedState) -> Result<String, TMemError> {
         return Ok(snapshot.workspace_id);
     }
     Err(TMemError::Workspace(WorkspaceError::NotSet))
-}
-
-fn not_implemented(method: &str) -> Result<Value, TMemError> {
-    Err(TMemError::System(SystemError::DatabaseError {
-        reason: format!("{method} not implemented"),
-    }))
 }
 
 pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
@@ -114,10 +110,78 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
     Ok(json!({ "statuses": statuses }))
 }
 
+#[derive(Deserialize)]
+struct QueryMemoryParams {
+    query: String,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    10
+}
+
 pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
     ensure_workspace(&state).await?;
-    let _ = params;
-    not_implemented("query_memory")
+
+    let parsed: QueryMemoryParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::DatabaseError {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // Validate query length before any DB or model work.
+    embedding::validate_query_length(&parsed.query)?;
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+
+    // Gather candidates from specs, tasks, and contexts.
+    let mut candidates: Vec<SearchCandidate> = Vec::new();
+
+    let specs = queries.all_specs().await?;
+    for spec in specs {
+        candidates.push(SearchCandidate {
+            id: format!("spec:{}", spec.id),
+            source_type: "spec".to_string(),
+            content: format!("{}\n{}", spec.title, spec.content),
+            embedding: spec.embedding,
+        });
+    }
+
+    let tasks = queries.all_tasks().await?;
+    for task in tasks {
+        let text = format!(
+            "{}\n{}{}",
+            task.title,
+            task.description,
+            task.context_summary
+                .as_deref()
+                .map_or_else(String::new, |s| format!("\n{s}"))
+        );
+        candidates.push(SearchCandidate {
+            id: format!("task:{}", task.id),
+            source_type: "task".to_string(),
+            content: text,
+            embedding: None,
+        });
+    }
+
+    let contexts = queries.all_contexts().await?;
+    for ctx in contexts {
+        candidates.push(SearchCandidate {
+            id: format!("context:{}", ctx.id),
+            source_type: "context".to_string(),
+            content: ctx.content,
+            embedding: ctx.embedding,
+        });
+    }
+
+    let results = hybrid_search(&parsed.query, &candidates, parsed.limit)?;
+
+    Ok(json!({ "results": results }))
 }
 
 fn build_node(

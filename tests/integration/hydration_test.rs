@@ -102,7 +102,9 @@ RELATE task:t2->depends_on->task:t1 SET type = 'hard_blocker';
     fs::write(tmem_dir.join(".version"), SCHEMA_VERSION).expect("write version");
 
     // Hydrate summary (lightweight)
-    let summary = hydrate_workspace(workspace.path()).await.expect("hydrate summary");
+    let summary = hydrate_workspace(workspace.path())
+        .await
+        .expect("hydrate summary");
     assert_eq!(summary.task_count, 2);
 
     // Hydrate into DB
@@ -198,7 +200,11 @@ Implement authentication.
         .expect("dehydrate");
     assert_eq!(result.tasks_written, 1);
     assert!(result.files_written.contains(&".tmem/tasks.md".to_string()));
-    assert!(result.files_written.contains(&".tmem/graph.surql".to_string()));
+    assert!(
+        result
+            .files_written
+            .contains(&".tmem/graph.surql".to_string())
+    );
 
     // Read back and verify
     let content = fs::read_to_string(tmem_dir.join("tasks.md")).expect("read tasks.md");

@@ -54,10 +54,7 @@ pub async fn dehydrate_workspace(
         .into_iter()
         .map(|b| (b.task_id, b.body))
         .collect();
-    let comments_preserved = old_bodies
-        .values()
-        .filter(|b| !b.trim().is_empty())
-        .count();
+    let comments_preserved = old_bodies.values().filter(|b| !b.trim().is_empty()).count();
 
     // Serialize tasks.md preserving user comments
     let tasks_content = serialize_tasks_md(&tasks, &old_bodies, &old_content);
@@ -132,14 +129,8 @@ pub fn serialize_tasks_md(
         if let Some(ref wid) = task.work_item_id {
             out.push_str(&format!("work_item_id: {wid}\n"));
         }
-        out.push_str(&format!(
-            "created_at: {}\n",
-            task.created_at.to_rfc3339()
-        ));
-        out.push_str(&format!(
-            "updated_at: {}\n",
-            task.updated_at.to_rfc3339()
-        ));
+        out.push_str(&format!("created_at: {}\n", task.created_at.to_rfc3339()));
+        out.push_str(&format!("updated_at: {}\n", task.updated_at.to_rfc3339()));
         out.push_str("---\n\n");
 
         // Merge description with preserved user comments.
