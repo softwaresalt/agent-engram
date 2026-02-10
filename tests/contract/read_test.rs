@@ -9,7 +9,7 @@ use t_mem::tools;
 
 #[test]
 async fn contract_get_task_graph_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let params = Some(json!({
         "root_task_id": "task:root",
         "depth": 3,
@@ -25,7 +25,7 @@ async fn contract_get_task_graph_requires_workspace() {
 
 #[test]
 async fn contract_check_status_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let params = Some(json!({
         "work_item_ids": ["AB#123", "AB#456"],
     }));
@@ -42,7 +42,7 @@ async fn contract_check_status_requires_workspace() {
 
 #[test]
 async fn contract_query_memory_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let params = Some(json!({
         "query": "user authentication",
     }));
@@ -58,7 +58,7 @@ async fn contract_query_memory_requires_workspace() {
 #[test]
 async fn contract_query_memory_rejects_long_query() {
     // Build a state with workspace set so we get past the workspace check.
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let snapshot = t_mem::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws".to_string(),
         path: "/tmp/test-repo".to_string(),
@@ -68,7 +68,7 @@ async fn contract_query_memory_rejects_long_query() {
         stale_files: false,
         connection_count: 1,
     };
-    state.set_workspace(snapshot).await;
+    state.set_workspace(snapshot).await.expect("set workspace");
 
     // Query exceeding 2000 chars ≈ 500+ tokens
     let long_query = "a ".repeat(1500);
@@ -88,7 +88,7 @@ async fn contract_query_memory_rejects_long_query() {
 async fn contract_query_memory_returns_results_array() {
     // With an active workspace (even empty), query_memory should return
     // a JSON object with a `results` array.
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let snapshot = t_mem::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws_results".to_string(),
         path: "/tmp/test-repo-results".to_string(),
@@ -98,7 +98,7 @@ async fn contract_query_memory_returns_results_array() {
         stale_files: false,
         connection_count: 1,
     };
-    state.set_workspace(snapshot).await;
+    state.set_workspace(snapshot).await.expect("set workspace");
 
     let params = Some(json!({
         "query": "user login",

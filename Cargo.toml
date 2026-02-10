@@ -16,14 +16,15 @@ authors = ["T-Mem Contributors"]
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["trace", "cors"] }
 mcp-sdk = "0.0.3"
 surrealdb = { version = "2", features = ["kv-surrealkv"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pulldown-cmark = "0.10"
-fastembed = { version = "3", optional = true }
+fastembed = { version = "3", optional = true, default-features = false }
+ort-sys = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native"] }
 thiserror = "1"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -40,7 +41,7 @@ sysinfo = "0.30"
 
 [features]
 default = []
-embeddings = ["fastembed"]
+embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
 
 [dev-dependencies]
 proptest = "1"

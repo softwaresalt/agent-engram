@@ -114,8 +114,8 @@
 
 ### Clarification Updates (Session 2026-02-09)
 
-- [ ] T111 [US1] Implement workspace limit check in set_workspace tool (FR-009a) returning error 1005 when max_workspaces exceeded in src/tools/lifecycle.rs
-- [ ] T112 [P] [US1] Contract test for workspace limit exceeded (error 1005) in tests/contract/lifecycle_test.rs
+- [X] T111 [US1] Implement workspace limit check in set_workspace tool (FR-009a) returning error 1005 when max_workspaces exceeded in src/tools/lifecycle.rs
+- [X] T112 [P] [US1] Contract test for workspace limit exceeded (error 1005) in tests/contract/lifecycle_test.rs
 
 **Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces, enforces workspace limits
 
@@ -370,11 +370,11 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 | Phase | Scope | Total | Complete | Remaining |
 |-------|-------|-------|----------|-----------|
 | 1 | Setup | 6 | 6 | 0 |
-| 2 | Foundational | 17 | 15 | 2 (T109, T110) |
-| 3 | US1: Connection | 21 | 19 | 2 (T111, T112) |
+| 2 | Foundational | 17 | 17 | 0 |
+| 3 | US1: Connection | 21 | 21 | 0 |
 | 4 | US2: Tasks | 18 | 16 | 2 (T121, T122) |
 | 5 | US3: Persistence | 17 | 11 | 6 (T113-T117, T123) |
 | 6 | US4: Search | 15 | 14 | 1 (T125) |
 | 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
 | 8 | Polish | 14 | 0 | 14 (T097-T108, T119, T120) |
-| **Total** | | **120** (was 115) | **81** | **39** |
+| **Total** | | **120** (was 115) | **85** | **35** |

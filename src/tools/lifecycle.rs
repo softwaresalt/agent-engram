@@ -44,6 +44,12 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
 
+    if !state.has_workspace_capacity().await {
+        return Err(TMemError::Workspace(WorkspaceError::LimitReached {
+            limit: state.max_workspaces(),
+        }));
+    }
+
     let hydration = hydrate_workspace(&canonical).await?;
 
     // Connect to DB and load .tmem/ data into SurrealDB (T072)
@@ -67,7 +73,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
         connection_count: state.active_connections(),
     };
 
-    state.set_workspace(snapshot).await;
+    state.set_workspace(snapshot).await?;
 
     Ok(WorkspaceBinding {
         workspace_id,

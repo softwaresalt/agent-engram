@@ -9,7 +9,7 @@ use t_mem::tools;
 
 #[test]
 async fn contract_update_task_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let params = Some(json!({
         "id": "task:abc123",
         "status": "in_progress",
@@ -25,7 +25,7 @@ async fn contract_update_task_requires_workspace() {
 
 #[test]
 async fn contract_add_blocker_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let params = Some(json!({
         "task_id": "task:abc123",
         "reason": "waiting on review",
@@ -41,7 +41,7 @@ async fn contract_add_blocker_requires_workspace() {
 
 #[test]
 async fn contract_register_decision_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let params = Some(json!({
         "topic": "database backend",
         "decision": "use surrealdb",
@@ -59,7 +59,7 @@ async fn contract_register_decision_requires_workspace() {
 
 #[test]
 async fn contract_flush_state_requires_workspace() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
 
     let err = tools::dispatch(state, "flush_state", None)
         .await
@@ -75,7 +75,7 @@ async fn contract_flush_state_response_shape() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
     // Bind workspace
