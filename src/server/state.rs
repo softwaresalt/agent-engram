@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use tokio::sync::RwLock;
 
+use crate::config::StaleStrategy;
 use crate::errors::WorkspaceError;
+use crate::services::hydration::FileFingerprint;
 
 #[derive(Clone, Debug)]
 pub struct WorkspaceSnapshot {
@@ -15,6 +18,7 @@ pub struct WorkspaceSnapshot {
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,
+    pub file_mtimes: HashMap<String, FileFingerprint>,
 }
 
 #[derive(Debug)]
@@ -23,15 +27,21 @@ pub struct AppState {
     active_connections: AtomicUsize,
     active_workspace: RwLock<Option<WorkspaceSnapshot>>,
     max_workspaces: usize,
+    stale_strategy: StaleStrategy,
 }
 
 impl AppState {
     pub fn new(max_workspaces: usize) -> Self {
+        Self::with_stale_strategy(max_workspaces, StaleStrategy::Warn)
+    }
+
+    pub fn with_stale_strategy(max_workspaces: usize, stale_strategy: StaleStrategy) -> Self {
         Self {
             start: Instant::now(),
             active_connections: AtomicUsize::new(0),
             active_workspace: RwLock::new(None),
             max_workspaces,
+            stale_strategy,
         }
     }
 
@@ -81,6 +91,23 @@ impl AppState {
 
     pub async fn has_workspace_capacity(&self) -> bool {
         self.active_workspaces().await < self.max_workspaces
+    }
+
+    pub fn stale_strategy(&self) -> StaleStrategy {
+        self.stale_strategy
+    }
+
+    pub async fn update_workspace<F>(&self, f: F) -> Result<(), WorkspaceError>
+    where
+        F: FnOnce(&mut WorkspaceSnapshot),
+    {
+        let mut workspace = self.active_workspace.write().await;
+        if let Some(snapshot) = workspace.as_mut() {
+            f(snapshot);
+            Ok(())
+        } else {
+            Err(WorkspaceError::NotSet)
+        }
     }
 }
 

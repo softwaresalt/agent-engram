@@ -16,7 +16,10 @@ async fn main() -> Result<()> {
     init_tracing(config.log_format());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    let state = Arc::new(AppState::new(config.max_workspaces));
+    let state = Arc::new(AppState::with_stale_strategy(
+        config.max_workspaces,
+        config.stale_strategy,
+    ));
     let app = build_router(state.clone());
 
     let listener = TcpListener::bind(addr).await?;

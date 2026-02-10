@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::config::StaleStrategy;
 use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
@@ -245,18 +246,59 @@ pub async fn register_decision(
 }
 
 pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
-    let path = workspace_path(&state).await?;
-    let workspace_id = workspace_id(&state).await?;
+    let snapshot = state
+        .snapshot_workspace()
+        .await
+        .ok_or(TMemError::Workspace(WorkspaceError::NotSet))?;
+
+    let path = PathBuf::from(&snapshot.path);
+    let workspace_id = snapshot.workspace_id.clone();
+    let tmem_dir = path.join(".tmem");
+    let stale_strategy = state.stale_strategy();
+    let mut warnings: Vec<String> = Vec::new();
+    let is_stale =
+        snapshot.stale_files || hydration::detect_stale_since(&snapshot.file_mtimes, &tmem_dir);
+
     let _ = params;
 
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
 
+    let should_rehydrate = is_stale || matches!(stale_strategy, StaleStrategy::Rehydrate);
+
+    if is_stale {
+        match stale_strategy {
+            StaleStrategy::Warn => {
+                warnings.push("2004 StaleWorkspace: .tmem files modified externally".to_string())
+            }
+            StaleStrategy::Rehydrate => {
+                hydration::hydrate_into_db(&path, &queries).await?;
+            }
+            StaleStrategy::Fail => {
+                return Err(TMemError::Hydration(
+                    crate::errors::HydrationError::StaleWorkspace,
+                ));
+            }
+        }
+    } else if should_rehydrate {
+        hydration::hydrate_into_db(&path, &queries).await?;
+    }
+
     let result = dehydration::dehydrate_workspace(&queries, &path).await?;
+    let new_mtimes = hydration::collect_file_mtimes(&tmem_dir);
+
+    let _ = state
+        .update_workspace(|ws| {
+            ws.last_flush = Some(result.flush_timestamp.clone());
+            ws.stale_files = false;
+            ws.file_mtimes = new_mtimes;
+            ws.task_count = result.tasks_written as u64;
+        })
+        .await;
 
     Ok(json!({
         "files_written": result.files_written,
-        "warnings": Value::Array(vec![]),
+        "warnings": warnings,
         "flush_timestamp": result.flush_timestamp,
     }))
 }

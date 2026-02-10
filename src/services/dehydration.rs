@@ -41,7 +41,17 @@ pub async fn dehydrate_workspace(
     let tmem_dir = workspace_path.join(".tmem");
     fs::create_dir_all(&tmem_dir).map_err(|_| flush_err(&tmem_dir))?;
 
-    let tasks = queries.all_tasks().await?;
+    let mut tasks = queries.all_tasks().await?;
+
+    // Safety net: if the DB is empty (e.g., after a rehydrate into a fresh store),
+    // fall back to parsing the on-disk tasks.md so we do not drop user edits.
+    if tasks.is_empty() {
+        let tasks_path = tmem_dir.join("tasks.md");
+        if let Ok(content) = fs::read_to_string(&tasks_path) {
+            let parsed = crate::services::hydration::parse_tasks_md(&content);
+            tasks = parsed.into_iter().map(|p| p.task).collect();
+        }
+    }
     let dep_edges = queries.all_dependency_edges().await?;
     let impl_edges = queries.all_implements_edges().await?;
     let rel_edges = queries.all_relates_to_edges().await?;

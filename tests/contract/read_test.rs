@@ -67,6 +67,7 @@ async fn contract_query_memory_rejects_long_query() {
         last_flush: None,
         stale_files: false,
         connection_count: 1,
+        file_mtimes: std::collections::HashMap::new(),
     };
     state.set_workspace(snapshot).await.expect("set workspace");
 
@@ -97,6 +98,7 @@ async fn contract_query_memory_returns_results_array() {
         last_flush: None,
         stale_files: false,
         connection_count: 1,
+        file_mtimes: std::collections::HashMap::new(),
     };
     state.set_workspace(snapshot).await.expect("set workspace");
 

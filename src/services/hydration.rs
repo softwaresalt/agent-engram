@@ -23,6 +23,13 @@ pub struct HydrationSummary {
     pub context_count: u64,
     pub last_flush: Option<String>,
     pub stale_files: bool,
+    pub file_mtimes: HashMap<String, FileFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileFingerprint {
+    pub modified: SystemTime,
+    pub len: u64,
 }
 
 /// Result of loading `.tmem/` files into the database.
@@ -72,7 +79,8 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, TMemErro
 
     let context_count = 0;
 
-    let (last_flush, stale_files) = last_flush_state(&tmem_dir, tasks_path.as_path());
+    let file_mtimes = collect_file_mtimes(&tmem_dir);
+    let (last_flush, stale_files) = last_flush_state(&tmem_dir, &file_mtimes);
 
     // Validate schema version if present
     let version_path = tmem_dir.join(".version");
@@ -92,6 +100,7 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, TMemErro
         context_count,
         last_flush,
         stale_files,
+        file_mtimes,
     })
 }
 
@@ -157,8 +166,8 @@ pub async fn recover_from_corruption(
 
 /// Detect whether `.tmem/` files have been modified since the last flush.
 pub fn detect_stale(tmem_dir: &Path) -> bool {
-    let tasks_path = tmem_dir.join("tasks.md");
-    let (_, stale) = last_flush_state(tmem_dir, &tasks_path);
+    let file_mtimes = collect_file_mtimes(tmem_dir);
+    let (_, stale) = last_flush_state(tmem_dir, &file_mtimes);
     stale
 }
 
@@ -178,6 +187,66 @@ pub fn read_lastflush(tmem_dir: &Path) -> Option<DateTime<Utc>> {
         .ok()
         .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Capture modification times for known `.tmem/` files to support stale detection.
+pub fn collect_file_mtimes(tmem_dir: &Path) -> HashMap<String, FileFingerprint> {
+    let mut mtimes = HashMap::new();
+
+    let candidates = [
+        ("tasks.md", tmem_dir.join("tasks.md")),
+        ("graph.surql", tmem_dir.join("graph.surql")),
+        (".version", tmem_dir.join(".version")),
+        (".lastflush", tmem_dir.join(".lastflush")),
+    ];
+
+    for (name, path) in candidates {
+        if let Ok(meta) = fs::metadata(&path) {
+            if let Ok(modified) = meta.modified() {
+                mtimes.insert(
+                    name.to_string(),
+                    FileFingerprint {
+                        modified,
+                        len: meta.len(),
+                    },
+                );
+            }
+        }
+    }
+
+    mtimes
+}
+
+/// Determine if any tracked `.tmem/` file has changed since the recorded mtimes.
+pub fn detect_stale_since(recorded: &HashMap<String, FileFingerprint>, tmem_dir: &Path) -> bool {
+    if recorded.is_empty() {
+        return false;
+    }
+
+    let current = collect_file_mtimes(tmem_dir);
+
+    // Changed or missing files compared to baseline
+    for (name, recorded_time) in recorded {
+        match current.get(name) {
+            Some(current_time) => {
+                if current_time.modified > recorded_time.modified
+                    || current_time.len != recorded_time.len
+                {
+                    return true;
+                }
+            }
+            None => return true, // file was removed
+        }
+    }
+
+    // New files not in baseline
+    for name in current.keys() {
+        if !recorded.contains_key(name) {
+            return true;
+        }
+    }
+
+    false
 }
 
 // ─── Parsing ────────────────────────────────────────────────────────────────
@@ -398,7 +467,10 @@ fn count_tasks(path: &Path) -> Result<u64, TMemError> {
     Ok(count as u64)
 }
 
-pub fn last_flush_state(tmem_dir: &Path, tasks_path: &Path) -> (Option<String>, bool) {
+pub fn last_flush_state(
+    tmem_dir: &Path,
+    file_mtimes: &HashMap<String, FileFingerprint>,
+) -> (Option<String>, bool) {
     let last_flush_path = tmem_dir.join(".lastflush");
 
     let last_flush_str = fs::read_to_string(&last_flush_path).ok();
@@ -408,12 +480,10 @@ pub fn last_flush_state(tmem_dir: &Path, tasks_path: &Path) -> (Option<String>, 
         .map(|dt| dt.with_timezone(&Utc).to_rfc3339());
 
     let mut stale_files = false;
-    if let (Some(flush), Ok(meta)) = (&last_flush, fs::metadata(tasks_path)) {
-        if let Ok(modified) = meta.modified() {
-            if is_newer(&modified, flush) {
-                stale_files = true;
-            }
-        }
+    if let Some(ref flush) = last_flush {
+        stale_files = file_mtimes
+            .values()
+            .any(|fingerprint| is_newer(&fingerprint.modified, flush));
     }
 
     (last_flush, stale_files)
@@ -561,7 +631,8 @@ RELATE task:abc->relates_to->context:note1;
         let dir = tempfile::tempdir().expect("tempdir");
         let tasks = dir.path().join("tasks.md");
         fs::write(&tasks, "# Tasks").expect("write");
-        let (flush, stale) = last_flush_state(dir.path(), &tasks);
+        let mtimes = collect_file_mtimes(dir.path());
+        let (flush, stale) = last_flush_state(dir.path(), &mtimes);
         assert!(flush.is_none());
         assert!(!stale, "no lastflush means not stale");
     }
@@ -574,7 +645,8 @@ RELATE task:abc->relates_to->context:note1;
         // Write lastflush with a future timestamp so tasks.md appears older
         let future = Utc::now() + chrono::Duration::hours(1);
         fs::write(dir.path().join(".lastflush"), future.to_rfc3339()).expect("write flush");
-        let (flush, stale) = last_flush_state(dir.path(), &tasks);
+        let mtimes = collect_file_mtimes(dir.path());
+        let (flush, stale) = last_flush_state(dir.path(), &mtimes);
         assert!(flush.is_some());
         assert!(!stale, "tasks.md older than lastflush is not stale");
     }

@@ -2,18 +2,23 @@
 //! preservation (T059) — User Story 3, Git-Backed Persistence.
 
 use std::fs;
+use std::sync::Arc;
 
 use chrono::Utc;
+use serde_json::json;
 use surrealdb::Surreal;
 use surrealdb::engine::local::SurrealKv;
 use tokio::test;
 
+use t_mem::config::StaleStrategy;
 use t_mem::db::queries::Queries;
 use t_mem::db::schema;
 use t_mem::models::graph::DependencyType;
 use t_mem::models::task::{Task, TaskStatus};
+use t_mem::server::state::AppState;
 use t_mem::services::dehydration::{self, SCHEMA_VERSION};
 use t_mem::services::hydration::{hydrate_into_db, hydrate_workspace};
+use t_mem::tools;
 
 /// Helper: create an embedded SurrealDB isolated to a temp directory.
 async fn test_db(dir: &std::path::Path) -> Queries {
@@ -276,4 +281,169 @@ async fn dehydrate_round_trip_preserves_data() {
     let restored_t1 = queries.get_task("t1").await.expect("get t1");
     assert!(restored_t1.is_some());
     assert_eq!(restored_t1.unwrap().status, TaskStatus::InProgress);
+}
+
+// ─── T115/T116/T117: Stale strategy integration tests ─────────────────────
+
+#[test]
+async fn flush_state_warns_on_stale_files_in_warn_mode() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("tasks.md"),
+        r#"# Tasks
+
+## task:t1
+
+---
+id: task:t1
+title: Initial
+status: todo
+created_at: 2026-02-05T10:00:00+00:00
+updated_at: 2026-02-05T10:00:00+00:00
+---
+
+Initial description.
+"#,
+    )
+    .expect("write tasks");
+
+    let state = Arc::new(AppState::with_stale_strategy(10, StaleStrategy::Warn));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // External modification after hydration
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n\n<!-- changed -->\n").expect("modify tasks");
+
+    let result = tools::dispatch(state.clone(), "flush_state", None)
+        .await
+        .expect("flush_state should warn, not fail");
+
+    let warnings = result
+        .get("warnings")
+        .and_then(|v| v.as_array())
+        .expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|w| w.contains("StaleWorkspace")),
+        "should include stale workspace warning",
+    );
+}
+
+#[test]
+async fn flush_state_rehydrates_before_writing_when_configured() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("tasks.md"),
+        r#"# Tasks
+
+## task:t1
+
+---
+id: task:t1
+title: Initial
+status: todo
+created_at: 2026-02-05T10:00:00+00:00
+updated_at: 2026-02-05T10:00:00+00:00
+---
+
+Initial description.
+"#,
+    )
+    .expect("write tasks");
+
+    let state = Arc::new(AppState::with_stale_strategy(10, StaleStrategy::Rehydrate));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // External modification after hydration: change title and body
+    fs::write(
+        tmem_dir.join("tasks.md"),
+        r#"# Tasks
+
+## task:t1
+
+---
+id: task:t1
+title: Modified Title
+status: todo
+created_at: 2026-02-05T10:00:00+00:00
+updated_at: 2026-02-05T10:00:00+00:00
+---
+
+Modified description from disk.
+"#,
+    )
+    .expect("modify tasks");
+
+    let result = tools::dispatch(state.clone(), "flush_state", None)
+        .await
+        .expect("flush_state should rehydrate and succeed");
+
+    let warnings = result
+        .get("warnings")
+        .and_then(|v| v.as_array())
+        .expect("warnings array");
+    assert!(warnings.is_empty(), "rehydrate mode should not warn");
+
+    let flushed = fs::read_to_string(tmem_dir.join("tasks.md")).expect("read tasks.md");
+    assert!(
+        flushed.contains("Modified Title"),
+        "external changes should be preserved after rehydrate + flush"
+    );
+    assert!(flushed.contains("Modified description from disk."));
+}
+
+#[test]
+async fn flush_state_fails_on_stale_files_in_fail_mode() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks");
+
+    let state = Arc::new(AppState::with_stale_strategy(10, StaleStrategy::Fail));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // External modification after hydration
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n<!-- changed -->\n").expect("modify tasks");
+
+    let err = tools::dispatch(state.clone(), "flush_state", None)
+        .await
+        .expect_err("stale files should trigger failure");
+
+    let payload = err.to_response();
+    assert_eq!(payload.error.code, t_mem::errors::codes::STALE_WORKSPACE);
 }

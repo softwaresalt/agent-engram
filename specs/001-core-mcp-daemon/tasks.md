@@ -188,12 +188,12 @@
 
 ### Clarification Updates (Session 2026-02-09)
 
-- [ ] T113 [US3] Record file mtimes at hydration time in workspace metadata for stale detection (FR-012a) in src/services/hydration.rs
-- [ ] T114 [US3] Implement configurable stale strategy (warn/rehydrate/fail per FR-012b) in src/services/dehydration.rs and src/services/hydration.rs
-- [ ] T115 [P] [US3] Integration test for stale strategy `warn` mode (emit 2004 warning, proceed with in-memory state) in tests/integration/hydration_test.rs
-- [ ] T116 [P] [US3] Integration test for stale strategy `rehydrate` mode (reload from disk on external change) in tests/integration/hydration_test.rs
-- [ ] T117 [P] [US3] Integration test for stale strategy `fail` mode (reject operation on stale files) in tests/integration/hydration_test.rs
-- [ ] T123 [US3] Wire `stale_files` boolean from workspace metadata into `get_workspace_status` response in src/tools/read.rs
+- [X] T113 [US3] Record file mtimes at hydration time in workspace metadata for stale detection (FR-012a) in src/services/hydration.rs
+- [X] T114 [US3] Implement configurable stale strategy (warn/rehydrate/fail per FR-012b) in src/services/dehydration.rs and src/services/hydration.rs
+- [X] T115 [P] [US3] Integration test for stale strategy `warn` mode (emit 2004 warning, proceed with in-memory state) in tests/integration/hydration_test.rs
+- [X] T116 [P] [US3] Integration test for stale strategy `rehydrate` mode (reload from disk on external change) in tests/integration/hydration_test.rs
+- [X] T117 [P] [US3] Integration test for stale strategy `fail` mode (reject operation on stale files) in tests/integration/hydration_test.rs
+- [X] T123 [US3] Wire `stale_files` boolean from workspace metadata into `get_workspace_status` response in src/tools/read.rs
 
 **Checkpoint**: Git-backed persistence with comment preservation and stale-file detection functional
 
