@@ -1,9 +1,10 @@
+use std::fs;
 use std::sync::Arc;
 
 use serde_json::json;
 use tokio::test;
 
-use t_mem::errors::codes::WORKSPACE_NOT_SET;
+use t_mem::errors::codes::{INVALID_STATUS, WORKSPACE_NOT_SET};
 use t_mem::server::state::AppState;
 use t_mem::tools;
 
@@ -21,6 +22,56 @@ async fn contract_update_task_requires_workspace() {
 
     let code = err.to_response().error.code;
     assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_update_task_rejects_invalid_transition() {
+    // Seed workspace with a completed task
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("tasks.md"),
+        r#"# Tasks
+
+## task:t1
+
+---
+id: task:t1
+title: Finished task
+status: done
+created_at: 2026-02-05T10:00:00+00:00
+updated_at: 2026-02-05T10:00:00+00:00
+---
+
+Task is already complete.
+"#,
+    )
+    .expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    let err = tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({ "id": "t1", "status": "blocked" })),
+    )
+    .await
+    .expect_err("expected invalid status transition");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, INVALID_STATUS);
 }
 
 #[test]

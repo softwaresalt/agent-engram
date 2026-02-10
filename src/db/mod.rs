@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::fs;
 use std::path::PathBuf;
 
 use dirs::data_dir;
@@ -17,7 +18,13 @@ pub type Db = Surreal<LocalDb>;
 /// Connect to SurrealDB embedded store scoped to the workspace hash and ensure schema.
 pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
     let base = data_dir().unwrap_or_else(|| PathBuf::from("./"));
-    let db_path = base.join("t-mem").join("db");
+    let db_path = base.join("t-mem").join("db").join(workspace_hash);
+
+    fs::create_dir_all(&db_path).map_err(|e| {
+        TMemError::from(SystemError::DatabaseError {
+            reason: format!("failed to create db directory: {e}"),
+        })
+    })?;
 
     let db = Surreal::new::<SurrealKv>(db_path)
         .await

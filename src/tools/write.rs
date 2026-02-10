@@ -13,6 +13,7 @@ use crate::models::task::{Task, TaskStatus};
 use crate::server::state::SharedState;
 use crate::services::connection::create_status_change_note;
 use crate::services::dehydration;
+use crate::services::hydration;
 
 #[derive(Deserialize)]
 struct UpdateTaskParams {
@@ -60,8 +61,36 @@ fn parse_status(raw: &str) -> Result<TaskStatus, TMemError> {
     }
 }
 
+fn validate_transition(from: TaskStatus, to: TaskStatus) -> Result<(), TMemError> {
+    if from == to {
+        return Ok(());
+    }
+
+    let allowed = match from {
+        TaskStatus::Todo => matches!(to, TaskStatus::InProgress | TaskStatus::Done),
+        TaskStatus::InProgress => matches!(
+            to,
+            TaskStatus::Done | TaskStatus::Blocked | TaskStatus::Todo
+        ),
+        TaskStatus::Blocked => matches!(
+            to,
+            TaskStatus::InProgress | TaskStatus::Todo | TaskStatus::Done
+        ),
+        TaskStatus::Done => matches!(to, TaskStatus::Todo),
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(TMemError::Task(TaskError::InvalidStatus {
+            status: format!("{}->{}", format_status(from), format_status(to)),
+        }))
+    }
+}
+
 pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
     let workspace_id = workspace_id(&state).await?;
+    let workspace_path = workspace_path(&state).await?;
     let parsed: UpdateTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
             TMemError::System(SystemError::DatabaseError {
@@ -75,13 +104,21 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
 
-    let existing = queries.get_task(&parsed.id).await?.ok_or_else(|| {
+    let mut existing = queries.get_task(&parsed.id).await?;
+    if existing.is_none() {
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        existing = queries.get_task(&parsed.id).await?;
+    }
+
+    let existing = existing.ok_or_else(|| {
         TMemError::Task(TaskError::NotFound {
             id: parsed.id.clone(),
         })
     })?;
 
     let previous_status = existing.status;
+
+    validate_transition(previous_status, new_status)?;
 
     let updated = Task {
         id: parsed.id.clone(),
@@ -118,6 +155,7 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
 pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
     let workspace_id = workspace_id(&state).await?;
+    let workspace_path = workspace_path(&state).await?;
     let parsed: AddBlockerParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
             TMemError::System(SystemError::DatabaseError {
@@ -131,7 +169,13 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
 
     let task_id = parsed.task_id.clone();
 
-    let task = queries.get_task(&task_id).await?.ok_or_else(|| {
+    let mut task = queries.get_task(&task_id).await?;
+    if task.is_none() {
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        task = queries.get_task(&task_id).await?;
+    }
+
+    let task = task.ok_or_else(|| {
         TMemError::Task(TaskError::NotFound {
             id: task_id.clone(),
         })
@@ -140,6 +184,8 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
     if task.status == TaskStatus::Blocked {
         return Err(TMemError::Task(TaskError::BlockerExists { id: task_id }));
     }
+
+    validate_transition(task.status, TaskStatus::Blocked)?;
 
     let ctx_id = format!("context:{}", Uuid::new_v4());
     let ctx = Context {
@@ -221,5 +267,16 @@ fn format_status(status: TaskStatus) -> &'static str {
         TaskStatus::InProgress => "in_progress",
         TaskStatus::Done => "done",
         TaskStatus::Blocked => "blocked",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_done_to_blocked_transition() {
+        let result = validate_transition(TaskStatus::Done, TaskStatus::Blocked);
+        assert!(result.is_err());
     }
 }

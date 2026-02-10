@@ -151,8 +151,8 @@
 
 ### Gap Analysis Updates (Session 2026-02-09)
 
-- [ ] T121 [US2] Implement task status transition validation per data-model.md state machine (reject invalid transitions like done→blocked) in src/tools/write.rs
-- [ ] T122 [P] [US2] Contract test for invalid task status transition (error 3002) in tests/contract/write_test.rs
+- [X] T121 [US2] Implement task status transition validation per data-model.md state machine (reject invalid transitions like done→blocked) in src/tools/write.rs
+- [X] T122 [P] [US2] Contract test for invalid task status transition (error 3002) in tests/contract/write_test.rs
 
 **Checkpoint**: Task CRUD, graph operations, and state transition validation functional
 
