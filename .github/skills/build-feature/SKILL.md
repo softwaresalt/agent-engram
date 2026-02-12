@@ -55,7 +55,7 @@ The skill runs autonomously through all required steps, halting only on unrecove
 * Read `specs/${input:spec-name}/contracts/` if it exists, for API specifications and error codes.
 * Read `specs/${input:spec-name}/research.md` if it exists, for technical decisions and constraints.
 * Read `.github/agents/copilot-instructions.md` for the project constitution, coding standards, and session memory requirements.
-* Read `.github/agents/rust-engineer.agent.md` for language-specific engineering standards.
+* Read `.github/agents/rust-eng.implement.agent.md` for language-specific engineering standards.
 * Build a task execution list respecting dependencies: sequential tasks run in order, tasks marked `[P]` can run in parallel.
 * Identify which tasks are tests and which are implementation; TDD order means test tasks execute before their corresponding implementation tasks.
 * Report a summary of the phase scope: task count, estimated files affected, and user story coverage.
@@ -73,8 +73,13 @@ The skill runs autonomously through all required steps, halting only on unrecove
 Execute tasks in dependency order following TDD discipline:
 
 1. For each task group (tests first, then implementation):
+   * Classify the task type to determine which coding constraints apply:
+     * DB tasks (touching `db/`, `models/`, schema): Apply Database and Error Handling constraints from the Coding Standards section below.
+     * API tasks (touching `server/`, routes, SSE): Apply API and Error Handling constraints.
+     * Tool tasks (touching `tools/`): Apply Tools and Error Handling constraints.
+     * Service tasks (touching `services/`): Apply General Rust and Error Handling constraints.
    * Read any existing source files that the task modifies.
-   * Implement the task following the coding standards from the rust-engineer agent.
+   * Implement the task following the coding standards from the rust-eng.implement agent, injecting only the task-type-specific constraints identified above.
    * After implementing each task, run `cargo check` to verify compilation.
    * If compilation fails, diagnose the error, fix it, and re-run `cargo check` until it passes.
    * Mark the completed task as `[X]` in `specs/${input:spec-name}/tasks.md`.
@@ -184,6 +189,45 @@ Verify `rust-toolchain.toml` matches the CI configuration in `.github/workflows/
 ### Constitution violation detected
 
 Return to Step 3 and fix the violation before proceeding. Common violations include `unwrap()` usage in library code, missing doc comments on public items, and `unsafe` blocks.
+
+## Coding Standards
+
+These rules are injected into each task based on its type classification in Step 3.
+
+### General Rust
+
+* `#![forbid(unsafe_code)]`
+* Prefer borrowing over cloning
+* Default to `pub(crate)`
+
+### Error Handling
+
+* Use `TMemError` enum for domain errors
+* Error codes: 1xxx (Workspace), 2xxx (Hydration), 3xxx (Task), 4xxx (Query), 5xxx (System)
+* Map external errors via `#[from]`
+
+### Database (SurrealDB)
+
+* All DB access goes through `Queries` struct methods
+* IDs use `Thing` type with table prefixes (`task:uuid`, `context:uuid`)
+* Use `*Row` structs for DB read/write; convert `Thing` to `String` for public models
+
+### API (Axum)
+
+* Routes return `Result<impl IntoResponse, TMemError>`
+* Use `axum::Json` for JSON bodies
+
+### Tools (MCP)
+
+* Follow the pattern: Validate Workspace, Parse Params, Connect DB, Execute Logic, Return `Result<Value, TMemError>`
+* Tools are stateless functions in `tools/`
+
+### Architecture Awareness
+
+* Transport: axum 0.7 (SSE + JSON-RPC)
+* State: `Arc<AppState>` with `RwLock`
+* DB: SurrealDB embedded (SurrealKv), namespace "tmem", database per workspace via SHA-256 path hash
+* Services: Stateless free functions (connection, hydration, dehydration, embedding, search)
 
 ---
 
