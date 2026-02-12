@@ -1,19 +1,6 @@
 ---
 description: Expert Rust software engineer that executes implementation plans from tasks.md with idiomatic, safe, and performant Rust development for the t-mem codebase.
-maturity: stable
-tools:
-  - run_in_terminal
-  - read_file
-  - create_file
-  - replace_string_in_file
-  - multi_replace_string_in_file
-  - grep_search
-  - file_search
-  - semantic_search
-  - list_dir
-  - list_code_usages
-  - get_errors
-  - get_changed_files
+tools: ['execute/runInTerminal', 'execute/getTerminalOutput', 'read', 'read/problems', 'edit/createFile', 'edit/editFiles', 'search']
 ---
 
 ## Persona
@@ -227,17 +214,17 @@ This crate is the *t-mem MCP daemon*, a local HTTP server that provides persiste
 
 | Concern         | Approach                                                                                                          |
 | --------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Transport       | axum 0.7 with SSE (`/sse`) and JSON-RPC (`/mcp`) endpoints                                                       |
+| Transport       | axum 0.7 with SSE (`/sse`) and JSON-RPC (`/mcp`) endpoints                                                        |
 | State           | `Arc<AppState>` with interior `RwLock` for workspace snapshot                                                     |
 | Database        | SurrealDB 2 embedded (SurrealKv), single namespace `"tmem"`, one database per workspace (SHA256 hash of path)     |
 | Schema          | Bootstrapped via `ensure_schema` on every `connect_db` call                                                       |
 | Query isolation | All DB access through `Queries` struct with typed methods; no raw queries in tools                                |
-| ID format       | `Thing` type with table prefix: `task:uuid`, `context:uuid`, `spec:uuid` (UUID v4 via `uuid::Uuid::new_v4()`)    |
+| ID format       | `Thing` type with table prefix: `task:uuid`, `context:uuid`, `spec:uuid` (UUID v4 via `uuid::Uuid::new_v4()`)     |
 | Tool flow       | `dispatch` match -> tool fn -> `connect_db` -> `Queries::new` -> DB ops -> `Result<Value, TMemError>`             |
-| Services        | Five stateless modules with free functions: connection, dehydration, embedding, hydration, search                  |
-| Configuration   | Clap derive on `Config` struct with env/CLI sources                                                                |
-| Tracing         | `tracing` 0.1 with JSON/pretty subscriber, filter: `t_mem=debug,hyper=info,surrealdb=info`                       |
-| Feature flags   | `embeddings = ["fastembed"]` (not in default features)                                                             |
+| Services        | Five stateless modules with free functions: connection, dehydration, embedding, hydration, search                 |
+| Configuration   | Clap derive on `Config` struct with env/CLI sources                                                               |
+| Tracing         | `tracing` 0.1 with JSON/pretty subscriber, filter: `t_mem=debug,hyper=info,surrealdb=info`                        |
+| Feature flags   | `embeddings = ["fastembed"]` (not in default features)                                                            |
 
 ### Services Layer
 
