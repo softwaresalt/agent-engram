@@ -53,6 +53,10 @@
             "approve": true,
             "matchCommandLine": true
         },
+        "/^pwsh -File \"\\.specify/scripts/powershell/check-prerequisites.ps1\" -Json$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
         "Out-Null": true,
         "Get-Item": true,
         "cargo test": true
