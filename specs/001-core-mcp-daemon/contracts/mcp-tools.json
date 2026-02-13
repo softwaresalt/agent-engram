@@ -5,7 +5,8 @@
   "version": "0.1.0",
   "tools": {
     "set_workspace": {
-      "description": "Bind the connection to a specific Git repository workspace. Must be called before any workspace-scoped operations.",
+      "idempotent": true,
+      "description": "Bind the connection to a specific Git repository workspace. Must be called before any workspace-scoped operations. Idempotent: re-binding to the same workspace is a no-op.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -41,6 +42,7 @@
       "errors": [1001, 1002, 1004, 1005, 2001, 2002, 2003]
     },
     "get_daemon_status": {
+      "idempotent": true,
       "description": "Get daemon health and operational metrics. Does not require workspace binding.",
       "inputSchema": {
         "type": "object",
@@ -83,6 +85,7 @@
       "errors": []
     },
     "get_workspace_status": {
+      "idempotent": true,
       "description": "Get status of currently bound workspace.",
       "inputSchema": {
         "type": "object",
@@ -122,6 +125,7 @@
       "errors": [1003]
     },
     "query_memory": {
+      "idempotent": true,
       "description": "Perform hybrid semantic + keyword search across specs and context.",
       "inputSchema": {
         "type": "object",
@@ -180,6 +184,7 @@
       "errors": [1003, 4001, 4002, 4003]
     },
     "get_task_graph": {
+      "idempotent": true,
       "description": "Get task dependency tree starting from a root task.",
       "inputSchema": {
         "type": "object",
@@ -210,6 +215,7 @@
       "errors": [1003, 3001]
     },
     "check_status": {
+      "idempotent": true,
       "description": "Get current status for work item IDs.",
       "inputSchema": {
         "type": "object",
@@ -253,27 +259,64 @@
       },
       "errors": [1003]
     },
-    "update_task": {
-      "description": "Update task status and append progress notes.",
+    "create_task": {
+      "idempotent": false,
+      "description": "Create a new task in the current workspace. New tasks default to 'todo' status. Non-idempotent: each call creates a new task.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "id": {
+          "title": {
             "type": "string",
-            "description": "Task ID (e.g., task:abc123)"
+            "description": "Brief description of the task",
+            "maxLength": 200
+          },
+          "description": {
+            "type": "string",
+            "description": "Detailed task description"
+          },
+          "parent_task_id": {
+            "type": "string",
+            "description": "Optional parent task ID to create a subtask (e.g., task:abc123)"
+          },
+          "work_item_id": {
+            "type": "string",
+            "description": "Optional external work item reference (e.g., AB#12345)"
+          }
+        },
+        "required": ["title"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Generated task ID (e.g., task:uuid)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Task title as stored"
           },
           "status": {
             "type": "string",
-            "enum": ["todo", "in_progress", "done", "blocked"],
-            "description": "New task status"
+            "enum": ["todo"],
+            "description": "Initial status (always 'todo')"
           },
-          "notes": {
+          "parent_task_id": {
             "type": "string",
-            "description": "Progress note to append to context"
+            "description": "Parent task ID if subtask was created"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
           }
         },
-        "required": ["id", "status"]
+        "required": ["task_id", "title", "status", "created_at"]
       },
+      "errors": [1003, 3001, 3003]
+    },
+    "update_task": {
+      "idempotent": true,
+      "description": "Update task status and append progress notes. Idempotent: updating to the same status is a no-op for status but appends a new context note if notes provided.",
       "outputSchema": {
         "type": "object",
         "properties": {
@@ -303,7 +346,8 @@
       "errors": [1003, 3001, 3002]
     },
     "add_blocker": {
-      "description": "Set task status to blocked and record reason.",
+      "idempotent": false,
+      "description": "Set task status to blocked and record reason. Non-idempotent: each call creates a new blocker context node.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -338,7 +382,8 @@
       "errors": [1003, 3001, 3004]
     },
     "register_decision": {
-      "description": "Record an architectural decision.",
+      "idempotent": false,
+      "description": "Record an architectural decision. Non-idempotent: each call creates a new decision context node.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -370,7 +415,8 @@
       "errors": [1003]
     },
     "flush_state": {
-      "description": "Dehydrate workspace state to .tmem/ files.",
+      "idempotent": true,
+      "description": "Dehydrate workspace state to .tmem/ files. Idempotent: flushing unchanged state produces the same files.",
       "inputSchema": {
         "type": "object",
         "properties": {}

@@ -19,7 +19,27 @@
 		},
 		"chat.tools.terminal.autoApprove": {
 			".specify/scripts/bash/": true,
-			".specify/scripts/powershell/": true
+			".specify/scripts/powershell/": true,
+			"/^pwsh -File \"\\.specify/scripts/powershell/check-prerequisites\\.ps1\" -Json -RequireTasks -IncludeTasks$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^pwsh -File \"\\.specify/scripts/powershell/check-prerequisites\\.ps1\" -Json -PathsOnly$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^pwsh -File \"\\.specify/scripts/powershell/setup-plan\\.ps1\" -Json$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^pwsh -File \"\\.specify/scripts/powershell/update-agent-context\\.ps1\" -AgentType copilot$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^pwsh -File \"\\.specify/scripts/powershell/check-prerequisites\\.ps1\" -Json$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
 		}
 	}
 }

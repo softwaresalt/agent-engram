@@ -1,21 +1,22 @@
 <!--
 Sync Impact Report
 ==================
-Version Change: 1.0.0 → 1.0.1 (PATCH)
-Bump Rationale: Terminology alignment with spec - no semantic changes
+Version Change: 1.0.1 → 1.0.2 (PATCH)
+Bump Rationale: Factual corrections - no semantic governance changes
 
 Modified Principles:
-- VI. Git-Friendly Persistence: `.mem/` → `.tmem/` (consistency with spec)
-- VIII. Error Handling & Recovery: `.mem/` → `.tmem/` (consistency with spec)
-- Security Requirements > Data Security: `.mem/` → `.tmem/` (consistency with spec)
+- VI. Git-Friendly Persistence: "diff-match-patch" → "structured diff merge (via `similar` crate)" (D3 analysis fix)
+
+Modified Sections:
+- Database Requirements: "HNSW" → "MTREE" (D1 analysis fix, aligns with SurrealDB native index type)
 
 Added Sections: None
 Removed Sections: None
 
 Templates Requiring Updates:
-- .specify/templates/plan-template.md ✅ No changes needed (no .mem references)
-- .specify/templates/spec-template.md ✅ No changes needed (no .mem references)
-- .specify/templates/tasks-template.md ✅ No changes needed (no .mem references)
+- .specify/templates/plan-template.md ✅ No changes needed
+- .specify/templates/spec-template.md ✅ No changes needed
+- .specify/templates/tasks-template.md ✅ No changes needed
 
 Follow-up TODOs: None
 -->
@@ -85,7 +86,7 @@ Multi-tenant architecture demands strict isolation between workspaces:
 All state must be serializable to human-readable, Git-mergeable files:
 
 * **Markdown as canonical format** for `tasks.md` and context files
-* **Preserve user content** — dehydration must use diff-match-patch to retain comments/formatting
+* **Preserve user content** — dehydration must use structured diff merge (via `similar` crate) to retain comments/formatting
 * **No binary files in `.tmem/`** — all serialized data must be text-based
 * **Atomic writes** — use write-to-temp + rename pattern to prevent corruption
 * **Conflict-friendly** — design file formats to minimize merge conflicts (sorted keys, stable ordering)
@@ -163,7 +164,7 @@ Complexity is the enemy of reliability:
 ### Database Requirements
 
 * **SurrealDB embedded mode** — `surrealkv` backend for single-user performance
-* **Vector index**: HNSW for semantic search with < 100ms query time
+* **Vector index**: MTREE (SurrealDB native) for semantic search with < 100ms query time
 * **Schema migrations**: forward-compatible; never break existing data
 
 ## Development Workflow
@@ -210,4 +211,4 @@ When principles conflict:
 3. **Simplicity > Flexibility** — specific solution beats generic framework
 4. **Explicit > Implicit** — verbose clarity beats clever concision
 
-**Version**: 1.0.1 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-05
+**Version**: 1.0.2 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-12

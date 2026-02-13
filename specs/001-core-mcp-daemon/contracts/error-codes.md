@@ -90,6 +90,7 @@ Errors during task operations.
 | 3002 | `InvalidStatus` | Status value not in allowed set | No | Use valid status |
 | 3003 | `CyclicDependency` | Adding dependency would create cycle | No | Remove conflicting edge |
 | 3004 | `BlockerExists` | Task already has active blocker | No | Clear existing blocker first |
+| 3005 | `TaskTitleEmpty` | Task title is empty or exceeds 200 chars | No | Provide valid title |
 
 **Example: TaskNotFound**
 ```json

@@ -35,14 +35,15 @@ As an orchestrator or agent, I create, update, and query tasks within my workspa
 
 **Why this priority**: Task management is the core value proposition. Once connected, clients need to read and write task state to coordinate work.
 
-**Independent Test**: Connect to workspace, call `update_task` to modify a task status, call `get_task_graph` to verify the change, then call `flush_state` and verify the `.tmem/tasks.md` file reflects the update.
+**Independent Test**: Connect to workspace, call `create_task` to add a new task, call `update_task` to modify its status, call `get_task_graph` to verify the change, then call `flush_state` and verify the `.tmem/tasks.md` file reflects the update.
 
 **Acceptance Scenarios**:
 
-1. **Given** an ACTIVE workspace with existing tasks, **When** `update_task(id, "in_progress", "Starting work")` is called, **Then** the task status changes and a context note is appended
-2. **Given** a task in progress, **When** `add_blocker(task_id, "Waiting for API response")` is called, **Then** the task status becomes "blocked" and a blocker context node is created
-3. **Given** an ACTIVE workspace, **When** `get_task_graph(root_id)` is called, **Then** a tree view of subtasks and dependencies is returned with current status
-4. **Given** an ACTIVE workspace, **When** `register_decision("auth", "Use OAuth2")` is called, **Then** an architectural decision record is stored in the graph
+1. **Given** an ACTIVE workspace, **When** `create_task(title, description, parent_id?)` is called, **Then** a new task is created with status `todo` and a unique ID is returned
+2. **Given** an ACTIVE workspace with existing tasks, **When** `update_task(id, "in_progress", "Starting work")` is called, **Then** the task status changes and a context note is appended
+3. **Given** a task in progress, **When** `add_blocker(task_id, "Waiting for API response")` is called, **Then** the task status becomes "blocked" and a blocker context node is created
+4. **Given** an ACTIVE workspace, **When** `get_task_graph(root_id)` is called, **Then** a tree view of subtasks and dependencies is returned with current status
+5. **Given** an ACTIVE workspace, **When** `register_decision("auth", "Use OAuth2")` is called, **Then** an architectural decision record is stored in the graph
 
 ---
 
@@ -101,7 +102,7 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 
 * What happens when workspace path contains symlinks? Canonicalize and validate the resolved path.
 * How does system handle concurrent external edits to `.tmem/` files? Default: warn-and-proceed (emit StaleWorkspace warning 2004, continue with in-memory state). Configurable via daemon config to `rehydrate` (reload from disk) or `fail` (reject operation until explicit resolve).
-* What happens if SurrealDB database grows very large? Performance degrades gracefully; recommend periodic archival of old context.
+* What happens if SurrealDB database grows very large (>10K tasks)? Operations may degrade up to 3× baseline latency; recommend periodic archival of old context.
 * How does system handle workspaces on network drives? Not officially supported; may have latency issues.
 * What happens during ungraceful daemon termination (SIGKILL)? State in SurrealDB preserved; `.tmem/` may be stale until next flush.
 
@@ -111,6 +112,14 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 
 - Q: What is the maximum number of concurrent workspaces per daemon? → A: Configurable upper bound with default of 10 (matches FR-002 client limit)
 - Q: What is the default conflict strategy for concurrent external edits to `.tmem/` files? → A: Default warn (emit stale-workspace warning, proceed with in-memory state); configurable to rehydrate or fail
+
+### Session 2026-02-12
+
+- Q: How are new tasks introduced into a workspace? → A: Dedicated `create_task` MCP tool (separate from `update_task`); tool budget expands beyond 10 to accommodate
+- Q: How should keyword scores be normalized before combining with vector similarity in hybrid search? → A: Min-max normalization (scale keyword scores to [0, 1] per query result set) before applying 0.7/0.3 weights
+- Q: Which memory metric should `get_daemon_status` report and SC-006 validate? → A: RSS (Resident Set Size) via `sysinfo` crate
+- Q: What test corpus and relevance definition should SC-010 use? → A: 10 queries with 3 expected-result IDs each; relevant = expected document appears in top-5 results (precision@5)
+- Q: What defines a "large" database and what degradation is acceptable? → A: Large = >10K tasks; acceptable = up to 3× baseline latency for all operations
 
 ## Requirements *(mandatory)*
 
@@ -140,6 +149,7 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 **Task Operations:**
 
 * **FR-013**: System MUST support task status values: `todo`, `in_progress`, `done`, `blocked`
+* **FR-013a**: System MUST provide a `create_task` MCP tool that accepts title, description, and optional parent task ID; new tasks default to `todo` status with generated UUID
 * **FR-014**: System MUST automatically update `updated_at` timestamp on task modifications
 * **FR-015**: System MUST append context notes on task updates (never overwrite existing context)
 * **FR-016**: System MUST detect cyclic dependencies when adding task relationships
@@ -148,16 +158,17 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 **Memory & Search:**
 
 * **FR-018**: System MUST generate embeddings using `all-MiniLM-L6-v2` model (384 dimensions)
-* **FR-019**: System MUST perform hybrid search combining vector similarity (0.7 weight) and keyword matching (0.3 weight)
+* **FR-019**: System MUST perform hybrid search combining vector similarity (0.7 weight) and keyword matching (0.3 weight); keyword scores MUST be min-max normalized to [0, 1] per result set before weighting
 * **FR-020**: System MUST lazily download embedding model on first query if not cached
 * **FR-021**: System MUST operate offline if model exists in local cache
 
 **Observability:**
 
-* **FR-022**: System MUST expose daemon status via `get_daemon_status()` tool (version, uptime, memory usage)
+* **FR-022**: System MUST expose daemon status via `get_daemon_status()` tool (version, uptime, RSS memory usage via `sysinfo` crate)
 * **FR-023**: System MUST log all operations with structured tracing and correlation IDs
 * **FR-024**: System MUST return structured error responses with numeric codes per error taxonomy
-* **FR-025**: System MUST implement connection rate limiting to prevent resource exhaustion (error 5003 RateLimited)
+* **FR-025**: System MUST implement connection rate limiting to prevent resource exhaustion (error 5003 RateLimited); threshold: maximum 20 new connections per 60-second sliding window per source IP
+* **FR-026**: System MUST expose an HTTP GET `/health` endpoint returning daemon status and active workspace count (per constitution VII)
 
 ### Key Entities
 
@@ -177,11 +188,11 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 * **SC-003**: `query_memory` hybrid search returns results in under 50ms
 * **SC-004**: `update_task` write operations complete in under 10ms
 * **SC-005**: `flush_state` completes in under 1 second for full workspace dehydration
-* **SC-006**: Daemon consumes less than 100MB RAM when idle with no active workspaces
+* **SC-006**: Daemon consumes less than 100MB RSS when idle with no active workspaces
 * **SC-007**: Daemon handles 10 simultaneous client connections without request failures
 * **SC-008**: Round-trip serialization (hydrate → modify → dehydrate → hydrate) preserves 100% of user comments in markdown files
 * **SC-009**: All MCP tool errors return structured responses with appropriate error codes (no internal errors exposed)
-* **SC-010**: 95% of `query_memory` results are relevant to the query (manual evaluation on test corpus)
+* **SC-010**: 95% of `query_memory` results are relevant to the query, evaluated against a test corpus of 10 queries with 3 expected-result IDs each; relevant = expected document appears in top-5 results (precision@5)
 
 ## Assumptions
 

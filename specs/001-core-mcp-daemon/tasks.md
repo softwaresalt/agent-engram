@@ -117,7 +117,11 @@
 - [X] T111 [US1] Implement workspace limit check in set_workspace tool (FR-009a) returning error 1005 when max_workspaces exceeded in src/tools/lifecycle.rs
 - [X] T112 [P] [US1] Contract test for workspace limit exceeded (error 1005) in tests/contract/lifecycle_test.rs
 
-**Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces, enforces workspace limits
+### Analyze Remediation (Session 2026-02-12)
+
+- [ ] T128 [US1] Implement HTTP GET /health endpoint in src/server/router.rs returning daemon status and active workspace count (FR-026, constitution VII; moved from Phase 8)
+
+**Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces, enforces workspace limits, exposes /health
 
 ---
 
@@ -136,6 +140,9 @@
 - [X] T045 [P] [US2] Contract test for check_status in tests/contract/read_test.rs
 - [X] T046 [P] [US2] Unit test for cyclic dependency detection in src/db/queries.rs
 - [X] T047 [P] [US2] Property test for Task serialization round-trip in tests/unit/proptest_models.rs
+- [ ] T129 [P] [US2] Contract test for create_task returning WorkspaceNotSet (1003) when workspace not bound in tests/contract/write_test.rs
+- [ ] T130 [P] [US2] Contract test for create_task with empty title returning TaskTitleEmpty (3005) in tests/contract/write_test.rs
+- [ ] T131 [P] [US2] Integration test for create_task with parent_task_id creating depends_on edge in tests/integration/hydration_test.rs
 
 ### Implementation for User Story 2
 
@@ -149,12 +156,21 @@
 - [X] T055 [US2] Implement check_status tool in src/tools/read.rs
 - [X] T056 [US2] Add context note creation on task update in src/services/connection.rs
 
+### Create Task Tool (FR-013a, Session 2026-02-12)
+
+- [ ] T132 [US2] Add TaskTitleEmpty (3005) error variant to TaskError enum and wire to error code mapping in src/errors/mod.rs
+- [ ] T133 [US2] Add error code constant `TASK_TITLE_EMPTY: u16 = 3005` in src/errors/codes.rs
+- [ ] T134 [US2] Add `create_task` query method to Queries struct: insert task with generated UUID, `todo` status, optional parent via depends_on edge in src/db/queries.rs
+- [ ] T135 [US2] Implement `create_task` tool: validate title (non-empty, max 200 chars), accept optional description/parent_task_id/work_item_id, call Queries, return created task in src/tools/write.rs
+- [ ] T136 [US2] Add `create_task` dispatch route to tools::dispatch() match arm in src/tools/mod.rs
+
 ### Gap Analysis Updates (Session 2026-02-09)
 
 - [X] T121 [US2] Implement task status transition validation per data-model.md state machine (reject invalid transitions like done→blocked) in src/tools/write.rs
 - [X] T122 [P] [US2] Contract test for invalid task status transition (error 3002) in tests/contract/write_test.rs
+- [ ] T127 [P] [US2] Contract test for work_item_id assignment and retrieval via update_task and get_task_graph in tests/contract/write_test.rs (FR-017 coverage)
 
-**Checkpoint**: Task CRUD, graph operations, and state transition validation functional
+**Checkpoint**: Full task CRUD (including create), graph operations, and state transition validation functional
 
 ---
 
@@ -195,7 +211,11 @@
 - [X] T117 [P] [US3] Integration test for stale strategy `fail` mode (reject operation on stale files) in tests/integration/hydration_test.rs
 - [X] T123 [US3] Wire `stale_files` boolean from workspace metadata into `get_workspace_status` response in src/tools/read.rs
 
-**Checkpoint**: Git-backed persistence with comment preservation and stale-file detection functional
+### Analyze Remediation (Session 2026-02-12)
+
+- [ ] T108 [US3] Add graceful shutdown flush of all active workspaces on SIGTERM/SIGINT in src/bin/t-mem.rs (FR-006 MUST requirement; moved from Phase 8)
+
+**Checkpoint**: Git-backed persistence with comment preservation, stale-file detection, and shutdown flush functional
 
 ---
 
@@ -227,7 +247,7 @@
 
 ### Gap Analysis Updates (Session 2026-02-09)
 
-- [ ] T125 [US4] Update query_memory character limit from 500 tokens to 2000 characters per updated spec (FR-018, SC-003) in src/tools/read.rs
+- [X] T125 [US4] ~~Update query_memory character limit from 500 tokens to 2000 characters per updated spec (FR-018, SC-003) in src/tools/read.rs~~ — Already implemented in T085 (`MAX_QUERY_CHARS = 2000`)
 
 **Checkpoint**: Semantic search returns relevant ranked results
 
@@ -280,13 +300,14 @@
 - [ ] T102 Create README.md with installation and usage instructions
 - [ ] T103 Add rustdoc comments to all public APIs in src/lib.rs
 - [ ] T104 Update specs/001-core-mcp-daemon/quickstart.md with final implementation details
+- [ ] T126 Run cargo doc --deny warnings and verify zero documentation warnings (constitution quality gate #4)
 
 ### Final Hardening
 
 - [ ] T105 Run cargo audit and resolve any vulnerabilities
 - [ ] T106 Run full test suite with --release optimizations
 - [ ] T107 Verify all error codes match contracts/error-codes.md
-- [ ] T108 Add graceful shutdown flush of all workspaces on SIGTERM
+- [ ] T137 Run `cargo tarpaulin` (or equivalent) and verify ≥80% line coverage for all `src/` modules (constitution III quality gate)
 
 ---
 
@@ -297,11 +318,11 @@ Phase 1 (Setup)
     ↓
 Phase 2 (Foundational + Clarification Updates) ─────────────┐
     ↓                                                        │
-Phase 3 (US1: Connection + Workspace Limits) ← MVP           │
+Phase 3 (US1: Connection + Workspace Limits + /health) ← MVP           │
     ↓                                                        │
 Phase 4 (US2: Tasks) ← Depends on US1                       │
     ↓                                                        │
-Phase 5 (US3: Persistence + Stale Detection) ← Depends US1,2│
+Phase 5 (US3: Persistence + Stale Detection + Shutdown Flush) ← Depends US1,2│
     ↓                                                        │
 Phase 6 (US4: Search) ← Depends on US1, integrates US3      │
     ↓                                                        │
@@ -322,7 +343,9 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 - T122 (Phase 4): Depends on T121 (transition validation implementation to test)
 - T123 (Phase 5): Depends on T113 (stale_files data from workspace metadata)
 - T124 (Phase 7): Depends on T118 (rate limiting implementation to test)
-- T125 (Phase 6): No cross-phase dependencies; corrects T085 limit value
+- T125 (Phase 6): Resolved — already implemented in T085; marked complete
+- T128 (Phase 3): Moved from Phase 8; depends on T028 (router setup) — constitution VII infrastructure
+- T108 (Phase 5): Moved from Phase 8; depends on T069 (flush_state tool) — FR-006 MUST requirement
 
 ## Parallel Execution Examples
 
@@ -362,6 +385,8 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 4. **Performance Last**: Optimize only after correctness validated (Phase 8)
 5. **Clarification Tasks**: T109-T117 integrate requirements from spec clarifications (FR-009a, FR-012a, FR-012b)
 6. **Gap Analysis Tasks**: T121-T125 fill coverage gaps found during cross-document consistency analysis
+7. **Analyze Remediation Tasks**: T126-T128, T137 fill gaps identified by `/speckit.analyze`
+8. **Moved Tasks**: T108 → Phase 5 (FR-006 MUST), T128 → Phase 3 (constitution VII), T125 → resolved as duplicate
 
 **Suggested MVP Scope**: Phases 1-3 (Setup + Foundational + US1) deliver a daemon that accepts connections, binds workspaces, and enforces workspace concurrency limits.
 
@@ -371,10 +396,10 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 |-------|-------|-------|----------|-----------|
 | 1 | Setup | 6 | 6 | 0 |
 | 2 | Foundational | 17 | 17 | 0 |
-| 3 | US1: Connection | 21 | 21 | 0 |
-| 4 | US2: Tasks | 18 | 16 | 2 (T121, T122) |
-| 5 | US3: Persistence | 17 | 11 | 6 (T113-T117, T123) |
-| 6 | US4: Search | 15 | 14 | 1 (T125) |
+| 3 | US1: Connection | 22 | 21 | 1 (T128) |
+| 4 | US2: Tasks | 27 | 18 | 9 (T127, T129-T136) |
+| 5 | US3: Persistence | 23 | 22 | 1 (T108) |
+| 6 | US4: Search | 15 | 15 | 0 |
 | 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
-| 8 | Polish | 14 | 0 | 14 (T097-T108, T119, T120) |
-| **Total** | | **120** (was 115) | **85** | **35** |
+| 8 | Polish | 14 | 0 | 14 (T097-T107, T119, T120, T126, T137) |
+| **Total** | | **137** | **99** | **38** |
