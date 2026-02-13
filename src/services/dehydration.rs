@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use similar::{ChangeTag, TextDiff};
@@ -16,6 +16,9 @@ use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge}
 use crate::errors::{SystemError, TMemError};
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus};
+
+use crate::db::connect_db;
+use crate::server::state::AppState;
 
 /// Schema version written to `.tmem/.version`.
 pub const SCHEMA_VERSION: &str = "1.0.0";
@@ -99,6 +102,27 @@ pub async fn dehydrate_workspace(
         comments_preserved,
         flush_timestamp: flush_ts,
     })
+}
+
+/// Flush all active workspaces to `.tmem/` files (FR-006).
+///
+/// Called during graceful shutdown (SIGTERM/SIGINT) to ensure in-memory
+/// state is persisted before the daemon exits. Returns `Ok(())` when
+/// no workspace is active.
+pub async fn flush_all_workspaces(state: &AppState) -> Result<(), TMemError> {
+    let Some(snapshot) = state.snapshot_workspace().await else {
+        return Ok(());
+    };
+
+    let workspace_path = PathBuf::from(&snapshot.path);
+    let db = connect_db(&snapshot.workspace_id).await?;
+    let queries = Queries::new(db);
+
+    tracing::info!(path = %snapshot.path, "shutdown: flushing workspace");
+    dehydrate_workspace(&queries, &workspace_path).await?;
+    tracing::info!(path = %snapshot.path, "shutdown: flush complete");
+
+    Ok(())
 }
 
 /// Serialize tasks to the canonical `tasks.md` format.

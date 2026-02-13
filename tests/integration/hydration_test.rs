@@ -536,3 +536,70 @@ This is the parent task.
     let dep_id = children.unwrap()[0].get("id").and_then(|v| v.as_str());
     assert_eq!(dep_id, Some("parent1"));
 }
+
+// ─── T108: Integration test for graceful shutdown flush (FR-006) ────────
+
+#[test]
+async fn shutdown_flush_dehydrates_active_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    // Bind workspace
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Create a task so there's something to flush
+    tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Shutdown test task" })),
+    )
+    .await
+    .expect("create_task should succeed");
+
+    // Call the shutdown flush function (FR-006)
+    dehydration::flush_all_workspaces(&state)
+        .await
+        .expect("flush_all_workspaces should succeed");
+
+    // Verify .tmem/ files were written
+    let tmem_dir = workspace.path().join(".tmem");
+    assert!(
+        tmem_dir.join("tasks.md").exists(),
+        "tasks.md should exist after shutdown flush"
+    );
+    assert!(
+        tmem_dir.join("graph.surql").exists(),
+        "graph.surql should exist"
+    );
+    assert!(tmem_dir.join(".version").exists(), ".version should exist");
+    assert!(
+        tmem_dir.join(".lastflush").exists(),
+        ".lastflush should exist"
+    );
+
+    // Verify the task content was written
+    let content = fs::read_to_string(tmem_dir.join("tasks.md")).expect("read tasks.md");
+    assert!(
+        content.contains("Shutdown test task"),
+        "tasks.md should contain the task title"
+    );
+}
+
+#[test]
+async fn shutdown_flush_noop_when_no_workspace() {
+    let state = Arc::new(AppState::new(10));
+
+    // Should succeed silently when no workspace is active
+    dehydration::flush_all_workspaces(&state)
+        .await
+        .expect("flush_all_workspaces with no workspace should not error");
+}

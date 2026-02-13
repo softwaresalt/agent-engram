@@ -6,6 +6,7 @@ use t_mem::{
     config::Config,
     init_tracing,
     server::{router::build_router, state::AppState},
+    services::dehydration,
 };
 
 #[tokio::main]
@@ -27,6 +28,11 @@ async fn main() -> Result<()> {
     axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // FR-006: flush all active workspaces on graceful shutdown
+    if let Err(e) = dehydration::flush_all_workspaces(&state).await {
+        eprintln!("warning: shutdown flush failed: {e}");
+    }
 
     Ok(())
 }

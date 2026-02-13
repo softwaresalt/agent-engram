@@ -213,7 +213,7 @@
 
 ### Analyze Remediation (Session 2026-02-12)
 
-- [ ] T108 [US3] Add graceful shutdown flush of all active workspaces on SIGTERM/SIGINT in src/bin/t-mem.rs (FR-006 MUST requirement; moved from Phase 8)
+- [X] T108 [US3] Add graceful shutdown flush of all active workspaces on SIGTERM/SIGINT in src/bin/t-mem.rs (FR-006 MUST requirement; moved from Phase 8)
 
 **Checkpoint**: Git-backed persistence with comment preservation, stale-file detection, and shutdown flush functional
 
@@ -398,8 +398,8 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 | 2 | Foundational | 17 | 17 | 0 |
 | 3 | US1: Connection | 22 | 22 | 0 |
 | 4 | US2: Tasks | 27 | 27 | 0 |
-| 5 | US3: Persistence | 23 | 22 | 1 (T108) |
+| 5 | US3: Persistence | 23 | 23 | 0 |
 | 6 | US4: Search | 15 | 15 | 0 |
 | 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
 | 8 | Polish | 14 | 0 | 14 (T097-T107, T119, T120, T126, T137) |
-| **Total** | | **137** | **109** | **28** |
+| **Total** | | **137** | **110** | **27** |
