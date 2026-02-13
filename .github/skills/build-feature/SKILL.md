@@ -54,8 +54,11 @@ The skill runs autonomously through all required steps, halting only on unrecove
 * Read `specs/${input:spec-name}/data-model.md` if it exists, for entity definitions and relationships.
 * Read `specs/${input:spec-name}/contracts/` if it exists, for API specifications and error codes.
 * Read `specs/${input:spec-name}/research.md` if it exists, for technical decisions and constraints.
+* Read `specs/${input:spec-name}/quickstart.md` if it exists, for integration scenarios.
 * Read `.github/agents/copilot-instructions.md` for the project constitution, coding standards, and session memory requirements.
-* Read `.github/agents/rust-eng.implement.agent.md` for language-specific engineering standards.
+* Read `.github/agents/rust-engineer.agent.md` for language-specific engineering standards.
+* Read `.github/agents/rust-mcp-expert.agent.md` for MCP protocol patterns, rmcp SDK usage, transport configuration, and tool/prompt/resource handler implementation.
+* Read `.github/instructions/rust-mcp-server.instructions.md` for MCP server development best practices including error handling with `ErrorData`, state management, and testing patterns.
 * Build a task execution list respecting dependencies: sequential tasks run in order, tasks marked `[P]` can run in parallel.
 * Identify which tasks are tests and which are implementation; TDD order means test tasks execute before their corresponding implementation tasks.
 * Report a summary of the phase scope: task count, estimated files affected, and user story coverage.
@@ -64,7 +67,20 @@ The skill runs autonomously through all required steps, halting only on unrecove
 
 * Read `specs/${input:spec-name}/plan.md` and locate the Constitution Check table.
 * Verify every principle listed in the table is satisfied for the work about to begin.
-* If `specs/${input:spec-name}/checklists/` exists, scan all checklist files and verify completion status.
+* If `specs/${input:spec-name}/checklists/` exists, scan all checklist files and for each checklist count:
+  * Total items: all lines matching `- [ ]` or `- [X]` or `- [x]`
+  * Completed items: lines matching `- [X]` or `- [x]`
+  * Incomplete items: lines matching `- [ ]`
+* Create a status table:
+
+```text
+| Checklist   | Total | Completed | Incomplete | Status |
+|-------------|-------|-----------|------------|--------|
+| ux.md       | 12    | 12        | 0          | PASS   |
+| test.md     | 8     | 5         | 3          | FAIL   |
+| security.md | 6     | 6         | 0          | PASS   |
+```
+
 * If any constitution principle is violated or any required checklist is incomplete, halt and report the violation with actionable remediation steps.
 * If all gates pass, proceed to Step 3.
 
@@ -75,23 +91,30 @@ Execute tasks in dependency order following TDD discipline:
 1. For each task group (tests first, then implementation):
    * Classify the task type to determine which coding constraints apply:
      * DB tasks (touching `db/`, `models/`, schema): Apply Database and Error Handling constraints from the Coding Standards section below.
-     * API tasks (touching `server/`, routes, SSE): Apply API and Error Handling constraints.
-     * Tool tasks (touching `tools/`): Apply Tools and Error Handling constraints.
+     * API tasks (touching `server/`, routes, SSE): Apply API and Error Handling constraints. Also apply MCP protocol patterns from the rust-mcp-expert agent and rust-mcp-server instructions.
+     * Tool tasks (touching `tools/`): Apply Tools and Error Handling constraints. Also apply MCP tool handler patterns from the rust-mcp-expert agent.
      * Service tasks (touching `services/`): Apply General Rust and Error Handling constraints.
    * Read any existing source files that the task modifies.
-   * Implement the task following the coding standards from the rust-eng.implement agent, injecting only the task-type-specific constraints identified above.
+   * For test tasks: write the test first, then run it and **confirm the test fails** before implementing the production code (red-green TDD).
+   * Implement the task following the coding standards from the rust-engineer agent, injecting only the task-type-specific constraints identified above.
    * After implementing each task, run `cargo check` to verify compilation.
    * If compilation fails, diagnose the error, fix it, and re-run `cargo check` until it passes.
-   * Mark the completed task as `[X]` in `specs/${input:spec-name}/tasks.md`.
+   * A task is complete only when `cargo check` passes **and** relevant tests pass. Mark the completed task as `[X]` in `specs/${input:spec-name}/tasks.md`.
 
-2. Follow these implementation rules from the speckit.implement agent:
+2. Follow these implementation rules:
    * Setup tasks first (project structure, dependencies, configuration).
    * Test tasks before their corresponding implementation tasks (TDD).
    * Respect `[P]` markers: parallel tasks touching different files can be implemented together.
    * Sequential tasks (no `[P]` marker) must complete in listed order.
    * Tasks affecting the same files must run sequentially regardless of markers.
 
-3. Track architectural decisions made during implementation for recording in Step 6.
+3. Error handling during build:
+   * Halt execution if any sequential task fails. Do not proceed to the next task until the failure is resolved.
+   * For parallel tasks `[P]`, continue with successful tasks and report failed ones.
+   * Provide clear error messages with context for debugging.
+   * If implementation cannot proceed, report the blocker and suggest next steps.
+
+4. Track architectural decisions made during implementation for recording in Step 6.
 
 ### Step 4: Test Phase (Iterative)
 

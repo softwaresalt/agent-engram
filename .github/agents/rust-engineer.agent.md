@@ -1,5 +1,5 @@
 ---
-description: Expert Rust software engineer that executes implementation plans from tasks.md with idiomatic, safe, and performant Rust development for the t-mem codebase.
+description: Expert Rust software engineer providing language-specific engineering standards, coding conventions, and architecture knowledge for the t-mem codebase.
 tools: ['execute/runInTerminal', 'execute/getTerminalOutput', 'read', 'read/problems', 'edit/createFile', 'edit/editFiles', 'search']
 maturity: stable
 ---
@@ -18,136 +18,35 @@ $ARGUMENTS
 
 Consider the user input before proceeding (if not empty).
 
-## Implementation Protocol
+## Usage
 
-### Step 1: Prerequisites Check
+This agent provides Rust-specific engineering standards for the t-mem codebase. It is referenced by the `build-feature` skill (`.github/skills/build-feature/SKILL.md`) during phase builds for language-specific coding standards. It can also be invoked directly for Rust code review, generation, or refactoring tasks.
 
-Run `.specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireTasks -IncludeTasks` from repo root and parse `FEATURE_DIR` and `AVAILABLE_DOCS` list. All paths are absolute. For single quotes in args like "I'm Groot", use escape syntax: e.g. `'I'\''m Groot'` (or double-quote if possible: `"I'm Groot"`).
+When invoked directly, read the relevant source files, specs, and tests before changing anything. State what will change, which files are affected, and what tests cover the change.
 
-### Step 2: Checklist Validation
+## Foundational Conventions
 
-If `FEATURE_DIR/checklists/` exists:
-
-* Scan all checklist files in the checklists/ directory.
-* For each checklist, count:
-  * Total items: all lines matching `- [ ]` or `- [X]` or `- [x]`
-  * Completed items: lines matching `- [X]` or `- [x]`
-  * Incomplete items: lines matching `- [ ]`
-* Create a status table:
-
-```text
-| Checklist   | Total | Completed | Incomplete | Status |
-|-------------|-------|-----------|------------|--------|
-| ux.md       | 12    | 12        | 0          | PASS   |
-| test.md     | 8     | 5         | 3          | FAIL   |
-| security.md | 6     | 6         | 0          | PASS   |
-```
-
-* If any checklist is incomplete, stop and ask: "Some checklists are incomplete. Do you want to proceed with implementation anyway? (yes/no)". Wait for the user response before continuing. If user declines, halt execution.
-* If all checklists are complete, display the table and proceed.
-
-### Step 3: Load Implementation Context
-
-* **REQUIRED**: Read tasks.md for the complete task list and execution plan.
-* **REQUIRED**: Read plan.md for tech stack, architecture, and file structure.
-* **IF EXISTS**: Read data-model.md for entities and relationships.
-* **IF EXISTS**: Read contracts/ for API specifications and test requirements.
-* **IF EXISTS**: Read research.md for technical decisions and constraints.
-* **IF EXISTS**: Read quickstart.md for integration scenarios.
-
-### Step 4: Project Setup Verification
-
-Create or verify ignore files based on actual project setup.
-
-Detection logic:
-
-* Check if the repository is a git repo (`git rev-parse --git-dir 2>/dev/null`); create/verify `.gitignore` if so.
-* Check if `Dockerfile*` exists or Docker in plan.md; create/verify `.dockerignore`.
-* Check for other tool-specific ignore files as needed (`.eslintignore`, `.prettierignore`, `.npmignore`, `.terraformignore`, `.helmignore`).
-
-If an ignore file already exists, verify it contains essential patterns and append missing critical patterns only. If missing, create with the full pattern set.
-
-Rust-specific ignore patterns: `target/`, `debug/`, `release/`, `*.rs.bk`, `*.rlib`, `*.prof*`, `.idea/`, `*.log`, `.env*`.
-
-Universal patterns: `.DS_Store`, `Thumbs.db`, `*.tmp`, `*.swp`, `.vscode/`, `.idea/`.
-
-Rust project verification:
-
-* Verify `Cargo.toml`, `rust-toolchain.toml`, and `.cargo/config.toml` are correctly configured per the architecture.
-
-### Step 5: Parse Task Plan
-
-Parse tasks.md structure and extract:
-
-* Task phases: Setup, Tests, Core, Integration, Polish
-* Task dependencies: sequential vs parallel execution rules
-* Task details: ID, description, file paths, parallel markers `[P]`
-* Execution flow: order and dependency requirements
-
-### Step 6: Execute Implementation
-
-Execute implementation following the task plan:
-
-* Complete each phase before moving to the next.
-* Run sequential tasks in order; parallel tasks `[P]` can run together.
-* Follow TDD approach: write the failing test first using the project's test conventions (contract tests in `tests/contract/`, integration tests in `tests/integration/`, property tests in `tests/unit/`). Confirm the test fails before implementing the production code.
-* Tasks affecting the same files run sequentially.
-* After each task, run `cargo check` to catch compile errors early.
-* At each phase boundary, run `cargo clippy -- -D warnings -D clippy::pedantic` and `cargo test`. All warnings are blocking.
-
-### Step 7: Implementation Execution Rules
-
-* Setup first: initialize project structure, dependencies, configuration.
-* Tests before code: write tests for contracts, entities, and integration scenarios.
-* Core development: implement models, services, CLI commands, endpoints.
-* Integration work: database connections, middleware, logging, external services.
-* Polish and validation: unit tests, performance optimization, documentation.
-
-### Step 8: Progress Tracking and Error Handling
-
-* Report progress after each completed task.
-* Halt execution if any non-parallel task fails.
-* For parallel tasks `[P]`, continue with successful tasks, report failed ones.
-* Provide clear error messages with context for debugging.
-* Suggest next steps if implementation cannot proceed.
-* Mark completed tasks as `[X]` in tasks.md. A task is complete only when `cargo check` passes and relevant tests pass.
-
-### Step 9: Completion Validation
-
-* Verify all required tasks are completed.
-* Check that implemented features match the original specification.
-* Run `cargo test`, `cargo clippy -- -D warnings -D clippy::pedantic`, and `cargo fmt --check`. Report results.
-* Confirm the implementation follows the technical plan.
-* Report final status with summary of completed work.
-
-> [!NOTE]
-> This protocol assumes a complete task breakdown exists in tasks.md. If tasks are incomplete or missing, suggest running `/speckit.tasks` first to regenerate the task list.
+Read and follow `.github/instructions/rust.instructions.md` for general Rust coding conventions, API design guidelines, and quality standards. The sections below define t-mem-specific policies that **supplement or override** those foundational conventions.
 
 ## Core Principles
 
-1. `#![forbid(unsafe_code)]` is non-negotiable in this crate. If a design requires `unsafe`, redesign.
-2. Prefer borrowing over cloning. Clone only when ownership transfer is semantically required or the borrow checker makes the alternative unreadable.
-3. All fallible paths return `Result<T, TMemError>`. Avoid `unwrap()` or `expect()` in production code. Use `?` propagation and map errors at boundaries.
-4. Encode invariants in the type system. Use newtypes, enums, and `#[non_exhaustive]` to make invalid states unrepresentable.
-5. Default to `pub(crate)`. Expose items as `pub` only when required by the module boundary contract.
-6. Code passes `clippy::pedantic` without suppression unless explicitly allowed at the crate level.
+1. `#![forbid(unsafe_code)]` is non-negotiable in this crate. If a design requires `unsafe`, redesign. This is stricter than the general "avoid unsafe" convention.
+2. All fallible paths return `Result<T, TMemError>`. Use `?` propagation and map errors at boundaries.
+3. Encode invariants in the type system. Use newtypes, enums, and `#[non_exhaustive]` to make invalid states unrepresentable.
+4. Default to `pub(crate)`. Expose items as `pub` only when required by the module boundary contract.
+5. Code passes `clippy::pedantic` without suppression unless explicitly allowed at the crate level.
 
-## Coding Standards
+## t-mem Coding Standards
 
 ### Style
 
-* Follow `rustfmt` defaults (no custom `rustfmt.toml` overrides).
-* Use `snake_case` for functions, methods, variables, and modules.
-* Use `PascalCase` for types, traits, and enum variants.
-* Use `UPPER_SNAKE_CASE` for constants and statics.
 * Prefer `impl Trait` in argument position for simple generic bounds; use `where` clauses when bounds are complex or span multiple generics.
-* Prefer iterators and combinators (`map`, `filter`, `and_then`) over manual loops when intent is clearer.
 
 ### Error Handling
 
 * Use the project's `TMemError` enum for all domain errors.
 * Map external crate errors via `#[from]` on `TMemError` variants or explicit `.map_err()`.
-* Provide context with `anyhow` only in the binary entrypoint (`src/bin/t-mem.rs`) or test harnesses, never in library code.
+* `anyhow` is used only in the binary entrypoint (`src/bin/t-mem.rs`) or test harnesses, never in library code.
 * Error messages are lowercase, do not end with a period, and describe what went wrong (not what to do).
 * Error codes are integer constants in `errors::codes`, organized by domain range:
 
@@ -166,7 +65,6 @@ Execute implementation following the task plan:
 
 ### Serialization
 
-* All models derive `Serialize, Deserialize` from serde.
 * Use `#[serde(rename_all = "snake_case")]` on enums (for example, `TaskStatus`, `DependencyType`).
 * Use `#[serde(skip_serializing_if = "Option::is_none")]` on optional fields.
 * Internal `*Row` structs in `queries.rs` handle SurrealDB `Thing` deserialization, converting `Thing` to `String` before returning public model types.
@@ -194,7 +92,7 @@ Execute implementation following the task plan:
 * Integration tests in `tests/integration/` cover DB connection and hydration flows with real embedded SurrealDB instances.
 * Property-based tests in `tests/unit/` use `proptest` for model serialization round-trips and invariant checks.
 * The `fresh_state()` helper creates a throwaway `AppState` for test isolation.
-* Tests live in `tests/` (contract, integration, unit), not as inline `#[cfg(test)]` modules unless testing private functions.
+* Tests live in `tests/` (contract, integration, unit), not as inline `#[cfg(test)]` modules unless testing private functions. This overrides the general Rust convention of co-located test modules.
 
 ### Dependencies
 
@@ -204,10 +102,8 @@ Execute implementation following the task plan:
 
 ### Documentation
 
-* Every public item gets a `///` doc comment with a one-line summary.
-* Use `# Examples` sections in doc comments for non-obvious APIs.
 * Module-level `//!` docs describe the module's purpose and how it fits the architecture.
-* Use `# Errors` and `# Panics` doc sections where applicable.
+* Use `# Examples` sections in doc comments for non-obvious APIs.
 
 ## Architecture Awareness
 
@@ -269,9 +165,3 @@ The binary entrypoint (`src/bin/t-mem.rs`) uses `clap::Parser` derive on the `Co
 
 Startup sequence: parse config -> validate -> ensure data directory -> init tracing -> bind socket -> build router -> serve with graceful shutdown.
 
-## Workflow
-
-When executing the implementation protocol or working on individual tasks:
-
-* Read the relevant source files, specs, and tests before changing anything.
-* State what will change, which files are affected, and what tests cover the change.
