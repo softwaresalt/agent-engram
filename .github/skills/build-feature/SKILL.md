@@ -195,6 +195,12 @@ Finalize all changes with a Git commit:
 5. Run `git push` to sync the commit to the remote repository.
 6. Report the commit hash and a summary of changes committed.
 
+### Step 10: Compact Conversation History
+
+Compact the current session to create space in the session's context window.
+
+1. Run `/compact` to compact the conversation history.
+
 ## Troubleshooting
 
 ### Build fails on fastembed/ort-sys
