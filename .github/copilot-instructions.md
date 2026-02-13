@@ -7,7 +7,7 @@ maturity: stable
 
 Last updated: 2026-02-07
 
-t-mem is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.tmem/` files in the workspace.
+t-mem is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.tmem/` files in the workspace. 
 
 ## Technology Stack
 
@@ -80,7 +80,44 @@ cargo clippy                  # Lint (pedantic, deny warnings via .cargo/config.
 cargo fmt --all -- --check    # Format check
 cargo lint                    # Alias: clippy with -D warnings -D clippy::pedantic
 cargo ci                      # Alias: test --all-targets --all-features
+
+# Run a single named test binary (from [[test]] in Cargo.toml):
+cargo test --test contract_lifecycle
+cargo test --test unit_proptest
+
+# Run a single test function by name substring:
+cargo test --test contract_lifecycle contract_set_workspace_returns_hydrated_flag
 ```
+
+## Hydration/Dehydration Lifecycle
+
+t-mem persists workspace state as human-readable, Git-committable files in `.tmem/` at the workspace root. The lifecycle has two phases:
+
+1. **Hydration** (`services/hydration.rs`): On `set_workspace`, the daemon reads `.tmem/tasks.md` and `.tmem/graph.surql`, parsing them into domain models, then loads them into the embedded SurrealDB. Stale file detection uses file modification times captured at hydration.
+
+2. **Dehydration** (`services/dehydration.rs`): On `flush_state` or graceful shutdown (FR-006), the daemon serializes DB state back to `.tmem/` files. User-added HTML comments in `tasks.md` are preserved across flushes via diff-based merging (`similar` crate, FR-012). Writes use atomic temp-file-then-rename to prevent corruption.
+
+`.tmem/` directory contents:
+
+| File | Purpose |
+|------|---------|
+| `tasks.md` | Markdown with YAML frontmatter per task (`## task:{id}`) |
+| `graph.surql` | SurrealQL `RELATE` statements for dependency/implements/relates_to edges |
+| `.version` | Schema version string (currently `1.0.0`) |
+| `.lastflush` | RFC 3339 timestamp of most recent flush |
+
+### Task Status Transitions
+
+Status changes are validated in `tools/write.rs::validate_transition`. Not all transitions are allowed:
+
+| From | Allowed To |
+|------|-----------|
+| `todo` | `in_progress`, `done` |
+| `in_progress` | `done`, `blocked`, `todo` |
+| `blocked` | `in_progress`, `todo`, `done` |
+| `done` | `todo` |
+
+Every `update_task` call MUST create a context note recording the transition (FR-015). This is enforced in `services/connection.rs::create_status_change_note`.
 
 ## Code Style and Conventions
 
@@ -111,6 +148,7 @@ cargo ci                      # Alias: test --all-targets --all-features
 * Namespace: `tmem`, database: SHA-256 hash of canonical workspace path
 * Schema bootstrapped on every connection via `ensure_schema`
 * All queries go through the `Queries` struct — never raw `db.query()` in tool handlers
+* SurrealDB v2 returns `id` as `Thing` (not `String`), so internal `TaskRow`/`ContextRow`/`SpecRow` structs deserialize raw DB rows then convert to public domain models via `into_task()`/`into_context()`/`into_spec()`
 
 ### MCP Tool Pattern
 
@@ -239,4 +277,34 @@ cargo fmt && cargo clippy && cargo test
 # Bad: pipe to something other than Out-File/Set-Content/Out-String
 cargo test | Select-String "FAILED" | Remove-Item foo.txt
 ```
+### Full List of Auto-Approve Commands with RegEx
+
+"chat.tools.terminal.autoApprove": {
+    ".specify/scripts/bash/": true,
+    ".specify/scripts/powershell/": true,
+    "/^cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
+    "/^cargo --(help|version|verbose|quiet|release|features)(\\s[^;|&`]*)?$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
+    "/^git (status|add|commit|diff|log|fetch|pull|push|checkout|branch|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
+    "/^(Out-File|Set-Content|Add-Content|Get-Content|Get-ChildItem|Copy-Item|Move-Item|New-Item|Test-Path)(\\s[^;|&`]*)?$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
+    "/^(echo|dir|mkdir|where\\.exe|vsWhere\\.exe|rustup|rustc|refreshenv)(\\s[^;|&`]*)?$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
+    "/^cmd /c \"cargo (test|check|clippy|fmt|build|doc|bench)(\\s[^;|&`]*)?\"(\\s*[;&|]+\\s*echo\\s.*)?$/": {
+        "approve": true,
+        "matchCommandLine": true
+    }
+}
 <!-- MANUAL ADDITIONS END -->
