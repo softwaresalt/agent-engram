@@ -119,7 +119,7 @@
 
 ### Analyze Remediation (Session 2026-02-12)
 
-- [ ] T128 [US1] Implement HTTP GET /health endpoint in src/server/router.rs returning daemon status and active workspace count (FR-026, constitution VII; moved from Phase 8)
+- [X] T128 [US1] Implement HTTP GET /health endpoint in src/server/router.rs returning daemon status and active workspace count (FR-026, constitution VII; moved from Phase 8)
 
 **Checkpoint**: Daemon starts, accepts SSE connections, binds workspaces, enforces workspace limits, exposes /health
 
@@ -396,10 +396,10 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 |-------|-------|-------|----------|-----------|
 | 1 | Setup | 6 | 6 | 0 |
 | 2 | Foundational | 17 | 17 | 0 |
-| 3 | US1: Connection | 22 | 21 | 1 (T128) |
+| 3 | US1: Connection | 22 | 22 | 0 |
 | 4 | US2: Tasks | 27 | 18 | 9 (T127, T129-T136) |
 | 5 | US3: Persistence | 23 | 22 | 1 (T108) |
 | 6 | US4: Search | 15 | 15 | 0 |
 | 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
 | 8 | Polish | 14 | 0 | 14 (T097-T107, T119, T120, T126, T137) |
-| **Total** | | **137** | **99** | **38** |
+| **Total** | | **137** | **100** | **37** |
