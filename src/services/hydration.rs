@@ -164,6 +164,43 @@ pub async fn recover_from_corruption(
     hydrate_into_db(path, queries).await
 }
 
+/// Attempt to generate embeddings for specs and contexts that lack them.
+///
+/// Called after hydration to backfill missing embedding vectors. Failures
+/// are logged but do not prevent the hydration from succeeding — the
+/// `embeddings` feature may be disabled or the model unavailable.
+pub async fn backfill_embeddings(queries: &Queries) {
+    // Backfill specs missing embeddings
+    if let Ok(specs) = queries.all_specs().await {
+        let needs_embed: Vec<_> = specs.iter().filter(|s| s.embedding.is_none()).collect();
+        if !needs_embed.is_empty() {
+            let texts: Vec<String> = needs_embed
+                .iter()
+                .map(|s| format!("{}\n{}", s.title, s.content))
+                .collect();
+            if let Ok(embeddings) = crate::services::embedding::embed_texts(&texts) {
+                for (spec, emb) in needs_embed.iter().zip(embeddings) {
+                    let mut updated = (*spec).clone();
+                    updated.embedding = Some(emb);
+                    let _ = queries.upsert_spec(&updated).await;
+                }
+            }
+        }
+    }
+
+    // Backfill contexts missing embeddings
+    if let Ok(contexts) = queries.all_contexts().await {
+        let needs_embed: Vec<_> = contexts.iter().filter(|c| c.embedding.is_none()).collect();
+        if !needs_embed.is_empty() {
+            let texts: Vec<String> = needs_embed.iter().map(|c| c.content.clone()).collect();
+            if let Ok(embeddings) = crate::services::embedding::embed_texts(&texts) {
+                for (ctx, emb) in needs_embed.iter().zip(embeddings) {
+                    let _ = queries.set_context_embedding(&ctx.id, emb).await;
+                }
+            }
+        }
+    }
+}
 /// Detect whether `.tmem/` files have been modified since the last flush.
 pub fn detect_stale(tmem_dir: &Path) -> bool {
     let file_mtimes = collect_file_mtimes(tmem_dir);

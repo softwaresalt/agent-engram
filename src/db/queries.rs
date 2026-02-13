@@ -480,6 +480,22 @@ impl Queries {
         Ok(edges)
     }
 
+    /// Update the embedding vector on a context record.
+    pub async fn set_context_embedding(
+        &self,
+        id: &str,
+        embedding: Vec<f32>,
+    ) -> Result<(), TMemError> {
+        let record = Thing::from(("context", id));
+        self.db
+            .query("UPDATE $record SET embedding = $embedding")
+            .bind(("record", record))
+            .bind(("embedding", embedding))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
     /// Clear all data from the database (used for corruption recovery).
     pub async fn clear_all_data(&self) -> Result<(), TMemError> {
         self.db

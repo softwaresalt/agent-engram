@@ -9,7 +9,9 @@ use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{TMemError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::connection::validate_workspace_path;
-use crate::services::hydration::{detect_stale_since, hydrate_into_db, hydrate_workspace};
+use crate::services::hydration::{
+    backfill_embeddings, detect_stale_since, hydrate_into_db, hydrate_workspace,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
@@ -58,6 +60,9 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
     let db_result = hydrate_into_db(&canonical, &queries).await?;
+
+    // Backfill embeddings for specs/contexts that lack them (T086)
+    backfill_embeddings(&queries).await;
 
     let task_count = if db_result.tasks_loaded > 0 {
         db_result.tasks_loaded as u64
