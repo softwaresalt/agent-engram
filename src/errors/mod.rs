@@ -41,6 +41,8 @@ pub enum TaskError {
     CyclicDependency,
     #[error("Blocker already exists for task '{id}'")]
     BlockerExists { id: String },
+    #[error("Task title is empty or exceeds 200 characters")]
+    TitleEmpty,
 }
 
 #[derive(Debug, Error)]
@@ -176,6 +178,9 @@ impl TMemError {
                     inner.to_string(),
                     Some(json!({ "task_id": id })),
                 ),
+                TaskError::TitleEmpty => {
+                    (TASK_TITLE_EMPTY, "TaskTitleEmpty", inner.to_string(), None)
+                }
             },
             TMemError::Query(inner) => match inner {
                 QueryError::QueryTooLong => {

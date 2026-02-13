@@ -140,9 +140,9 @@
 - [X] T045 [P] [US2] Contract test for check_status in tests/contract/read_test.rs
 - [X] T046 [P] [US2] Unit test for cyclic dependency detection in src/db/queries.rs
 - [X] T047 [P] [US2] Property test for Task serialization round-trip in tests/unit/proptest_models.rs
-- [ ] T129 [P] [US2] Contract test for create_task returning WorkspaceNotSet (1003) when workspace not bound in tests/contract/write_test.rs
-- [ ] T130 [P] [US2] Contract test for create_task with empty title returning TaskTitleEmpty (3005) in tests/contract/write_test.rs
-- [ ] T131 [P] [US2] Integration test for create_task with parent_task_id creating depends_on edge in tests/integration/hydration_test.rs
+- [X] T129 [P] [US2] Contract test for create_task returning WorkspaceNotSet (1003) when workspace not bound in tests/contract/write_test.rs
+- [X] T130 [P] [US2] Contract test for create_task with empty title returning TaskTitleEmpty (3005) in tests/contract/write_test.rs
+- [X] T131 [P] [US2] Integration test for create_task with parent_task_id creating depends_on edge in tests/integration/hydration_test.rs
 
 ### Implementation for User Story 2
 
@@ -158,17 +158,17 @@
 
 ### Create Task Tool (FR-013a, Session 2026-02-12)
 
-- [ ] T132 [US2] Add TaskTitleEmpty (3005) error variant to TaskError enum and wire to error code mapping in src/errors/mod.rs
-- [ ] T133 [US2] Add error code constant `TASK_TITLE_EMPTY: u16 = 3005` in src/errors/codes.rs
-- [ ] T134 [US2] Add `create_task` query method to Queries struct: insert task with generated UUID, `todo` status, optional parent via depends_on edge in src/db/queries.rs
-- [ ] T135 [US2] Implement `create_task` tool: validate title (non-empty, max 200 chars), accept optional description/parent_task_id/work_item_id, call Queries, return created task in src/tools/write.rs
-- [ ] T136 [US2] Add `create_task` dispatch route to tools::dispatch() match arm in src/tools/mod.rs
+- [X] T132 [US2] Add TaskTitleEmpty (3005) error variant to TaskError enum and wire to error code mapping in src/errors/mod.rs
+- [X] T133 [US2] Add error code constant `TASK_TITLE_EMPTY: u16 = 3005` in src/errors/codes.rs
+- [X] T134 [US2] Add `create_task` query method to Queries struct: insert task with generated UUID, `todo` status, optional parent via depends_on edge in src/db/queries.rs
+- [X] T135 [US2] Implement `create_task` tool: validate title (non-empty, max 200 chars), accept optional description/parent_task_id/work_item_id, call Queries, return created task in src/tools/write.rs
+- [X] T136 [US2] Add `create_task` dispatch route to tools::dispatch() match arm in src/tools/mod.rs
 
 ### Gap Analysis Updates (Session 2026-02-09)
 
 - [X] T121 [US2] Implement task status transition validation per data-model.md state machine (reject invalid transitions like done→blocked) in src/tools/write.rs
 - [X] T122 [P] [US2] Contract test for invalid task status transition (error 3002) in tests/contract/write_test.rs
-- [ ] T127 [P] [US2] Contract test for work_item_id assignment and retrieval via update_task and get_task_graph in tests/contract/write_test.rs (FR-017 coverage)
+- [X] T127 [P] [US2] Contract test for work_item_id assignment and retrieval via update_task and get_task_graph in tests/contract/write_test.rs (FR-017 coverage)
 
 **Checkpoint**: Full task CRUD (including create), graph operations, and state transition validation functional
 
@@ -397,9 +397,9 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 | 1 | Setup | 6 | 6 | 0 |
 | 2 | Foundational | 17 | 17 | 0 |
 | 3 | US1: Connection | 22 | 22 | 0 |
-| 4 | US2: Tasks | 27 | 18 | 9 (T127, T129-T136) |
+| 4 | US2: Tasks | 27 | 27 | 0 |
 | 5 | US3: Persistence | 23 | 22 | 1 (T108) |
 | 6 | US4: Search | 15 | 15 | 0 |
 | 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
 | 8 | Polish | 14 | 0 | 14 (T097-T107, T119, T120, T126, T137) |
-| **Total** | | **137** | **100** | **37** |
+| **Total** | | **137** | **109** | **28** |

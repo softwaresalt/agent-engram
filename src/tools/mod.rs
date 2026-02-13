@@ -46,6 +46,7 @@ pub async fn dispatch(
             let result = lifecycle::get_workspace_status(state.as_ref()).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
+        "create_task" => write::create_task(state, params).await,
         "update_task" => write::update_task(state, params).await,
         "add_blocker" => write::add_blocker(state, params).await,
         "register_decision" => write::register_decision(state, params).await,

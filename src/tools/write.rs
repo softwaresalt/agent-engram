@@ -36,6 +36,19 @@ struct RegisterDecisionParams {
     decision: String,
 }
 
+const MAX_TITLE_LEN: usize = 200;
+
+#[derive(Deserialize)]
+struct CreateTaskParams {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    parent_task_id: Option<String>,
+    #[serde(default)]
+    work_item_id: Option<String>,
+}
+
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, TMemError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
         return Ok(PathBuf::from(snapshot.path));
@@ -245,6 +258,46 @@ pub async fn register_decision(
     }))
 }
 
+/// Create a new task with `todo` status and optional parent dependency.
+pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let workspace_id = workspace_id(&state).await?;
+    let parsed: CreateTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::DatabaseError {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let title = parsed.title.trim();
+    if title.is_empty() || title.len() > MAX_TITLE_LEN {
+        return Err(TMemError::Task(TaskError::TitleEmpty));
+    }
+
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db);
+
+    let task = queries
+        .create_task(
+            title,
+            parsed.description.as_deref().unwrap_or(""),
+            parsed.work_item_id.as_deref(),
+            parsed.parent_task_id.as_deref(),
+        )
+        .await?;
+
+    let mut response = json!({
+        "task_id": task.id,
+        "title": task.title,
+        "status": "todo",
+        "created_at": task.created_at.to_rfc3339(),
+    });
+
+    if let Some(parent) = &parsed.parent_task_id {
+        response["parent_task_id"] = json!(parent);
+    }
+
+    Ok(response)
+}
 pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
     let snapshot = state
         .snapshot_workspace()
@@ -269,7 +322,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     if is_stale {
         match stale_strategy {
             StaleStrategy::Warn => {
-                warnings.push("2004 StaleWorkspace: .tmem files modified externally".to_string())
+                warnings.push("2004 StaleWorkspace: .tmem files modified externally".to_string());
             }
             StaleStrategy::Rehydrate => {
                 hydration::hydrate_into_db(&path, &queries).await?;

@@ -16,6 +16,7 @@ pub const TASK_NOT_FOUND: u16 = 3001;
 pub const INVALID_STATUS: u16 = 3002;
 pub const CYCLIC_DEPENDENCY: u16 = 3003;
 pub const BLOCKER_EXISTS: u16 = 3004;
+pub const TASK_TITLE_EMPTY: u16 = 3005;
 
 /// Query error codes
 pub const QUERY_TOO_LONG: u16 = 4001;

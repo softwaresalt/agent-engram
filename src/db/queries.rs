@@ -172,6 +172,39 @@ impl Queries {
         Ok(())
     }
 
+    /// Create a new task with generated UUID, `todo` status, and optional parent.
+    ///
+    /// When `parent_id` is `Some`, a `depends_on` hard-blocker edge is created
+    /// from the new task to the parent after cyclic-dependency validation.
+    pub async fn create_task(
+        &self,
+        title: &str,
+        description: &str,
+        work_item_id: Option<&str>,
+        parent_id: Option<&str>,
+    ) -> Result<Task, TMemError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let task = Task {
+            id: id.clone(),
+            title: title.to_string(),
+            status: TaskStatus::Todo,
+            work_item_id: work_item_id.map(String::from),
+            description: description.to_string(),
+            context_summary: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_task(&task).await?;
+
+        if let Some(parent) = parent_id {
+            self.create_dependency(&id, parent, DependencyType::HardBlocker)
+                .await?;
+        }
+
+        Ok(task)
+    }
+
     pub async fn get_task(&self, id: &str) -> Result<Option<Task>, TMemError> {
         let record = Thing::from(("task", id));
         let rows: Vec<TaskRow> = self

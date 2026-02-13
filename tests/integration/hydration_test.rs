@@ -447,3 +447,92 @@ async fn flush_state_fails_on_stale_files_in_fail_mode() {
     let payload = err.to_response();
     assert_eq!(payload.error.code, t_mem::errors::codes::STALE_WORKSPACE);
 }
+
+// ─── T131: Integration test for create_task with parent_task_id ─────────────
+
+#[test]
+async fn create_task_with_parent_creates_depends_on_edge() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Seed a parent task
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("tasks.md"),
+        r#"# Tasks
+
+## task:parent1
+
+---
+id: task:parent1
+title: Parent task
+status: in_progress
+created_at: 2026-02-05T10:00:00+00:00
+updated_at: 2026-02-05T10:00:00+00:00
+---
+
+This is the parent task.
+"#,
+    )
+    .expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create a child task with parent_task_id
+    let result = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({
+            "title": "Child task",
+            "description": "A subtask of parent1",
+            "parent_task_id": "parent1",
+        })),
+    )
+    .await
+    .expect("create_task should succeed");
+
+    // Verify response shape
+    let task_id = result
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .expect("task_id");
+    assert!(!task_id.is_empty(), "task_id should not be empty");
+    assert_eq!(result.get("status").and_then(|v| v.as_str()), Some("todo"));
+    assert_eq!(
+        result.get("title").and_then(|v| v.as_str()),
+        Some("Child task")
+    );
+    assert_eq!(
+        result.get("parent_task_id").and_then(|v| v.as_str()),
+        Some("parent1")
+    );
+    assert!(result.get("created_at").is_some());
+
+    // Verify the depends_on edge was created via get_task_graph
+    let graph = tools::dispatch(
+        state.clone(),
+        "get_task_graph",
+        Some(json!({ "root_task_id": task_id })),
+    )
+    .await
+    .expect("get_task_graph should succeed");
+
+    let root = graph.get("root").expect("root node");
+    let children = root.get("children").and_then(|d| d.as_array());
+    assert!(
+        children.is_some() && !children.unwrap().is_empty(),
+        "child task should have a dependency on parent in children array"
+    );
+    let dep_id = children.unwrap()[0].get("id").and_then(|v| v.as_str());
+    assert_eq!(dep_id, Some("parent1"));
+}
