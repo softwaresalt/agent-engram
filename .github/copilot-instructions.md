@@ -1,4 +1,9 @@
-﻿# t-mem Development Guidelines
+﻿---
+description: Shared t-mem development guidelines for custom agents.
+maturity: stable
+---
+
+# t-mem Development Guidelines
 
 Last updated: 2026-02-07
 
