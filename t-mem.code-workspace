@@ -28,7 +28,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^git (status|add|commit|diff|log|fetch|pull|push|checkout|branch|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "/^git (status|merge-base|add|commit|diff|log|fetch|pull|push|checkout|branch|llvm-cov|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -43,10 +43,7 @@
         "/^cmd /c \"cargo (test|check|clippy|fmt|build|doc|bench)(\\s[^;|&`]*)?\"(\\s*[;&|]+\\s*echo\\s.*)?$/": {
             "approve": true,
             "matchCommandLine": true
-        },
-        "cargo llvm-cov": true,
-        "Out-File": true,
-        "Set-Content": true
+        }
     }
-	}
+  }
 }

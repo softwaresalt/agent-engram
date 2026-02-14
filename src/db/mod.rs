@@ -1,17 +1,18 @@
 //! Database layer: embedded SurrealDB connection and schema management.
 //!
 //! Each workspace gets an isolated SurrealDB database identified by the
-//! SHA-256 hash of its canonicalized path. Schema is bootstrapped on every
-//! connection via [connect_db].
+//! SHA-256 hash of its canonicalized path. Schema is bootstrapped on the
+//! first connection; subsequent calls return the cached handle.
 
-#![allow(dead_code)]
-
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use dirs::data_dir;
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
+use tokio::sync::RwLock;
 
 use crate::errors::{SystemError, TMemError};
 
@@ -21,8 +22,24 @@ pub mod workspace;
 
 pub type Db = Surreal<LocalDb>;
 
-/// Connect to SurrealDB embedded store scoped to the workspace hash and ensure schema.
+/// Per-workspace connection cache.  Keyed by workspace hash, each entry
+/// holds a cloneable `Surreal<LocalDb>` handle.  `LazyLock` avoids polluting
+/// `AppState` and the `static` is safe because `Db` is `Send + Sync`.
+static DB_CACHE: LazyLock<RwLock<HashMap<String, Db>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Return a cached SurrealDB handle for the given workspace, opening a new
+/// connection only on the first call for each hash.
 pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
+    // Fast path: existing connection
+    {
+        let cache = DB_CACHE.read().await;
+        if let Some(db) = cache.get(workspace_hash) {
+            return Ok(db.clone());
+        }
+    }
+
+    // Slow path: open, schema-bootstrap, then cache
     let base = data_dir().unwrap_or_else(|| PathBuf::from("./"));
     let db_path = base.join("t-mem").join("db").join(workspace_hash);
 
@@ -42,6 +59,9 @@ pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
         .map_err(map_db_err)?;
 
     ensure_schema(&db).await?;
+
+    let mut cache = DB_CACHE.write().await;
+    cache.insert(workspace_hash.to_string(), db.clone());
 
     Ok(db)
 }

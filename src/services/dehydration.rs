@@ -15,7 +15,7 @@ use similar::{ChangeTag, TextDiff};
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
 use crate::errors::{SystemError, TMemError};
 use crate::models::graph::DependencyType;
-use crate::models::task::{Task, TaskStatus};
+use crate::models::task::Task;
 
 use crate::db::connect_db;
 use crate::server::state::AppState;
@@ -64,6 +64,10 @@ pub async fn dehydrate_workspace(
     if tasks.is_empty() {
         let tasks_path = tmem_dir.join("tasks.md");
         if let Ok(content) = fs::read_to_string(&tasks_path) {
+            tracing::warn!(
+                path = %tasks_path.display(),
+                "DB returned zero tasks; falling back to on-disk tasks.md"
+            );
             let parsed = crate::services::hydration::parse_tasks_md(&content);
             tasks = parsed.into_iter().map(|p| p.task).collect();
         }
@@ -172,7 +176,7 @@ pub fn serialize_tasks_md(
         out.push_str("---\n");
         out.push_str(&format!("id: {display_id}\n"));
         out.push_str(&format!("title: {}\n", task.title));
-        out.push_str(&format!("status: {}\n", format_status(task.status)));
+        out.push_str(&format!("status: {}\n", task.status.as_str()));
         if let Some(ref wid) = task.work_item_id {
             out.push_str(&format!("work_item_id: {wid}\n"));
         }
@@ -385,15 +389,6 @@ fn flush_err(path: &Path) -> TMemError {
     })
 }
 
-fn format_status(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Todo => "todo",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Done => "done",
-        TaskStatus::Blocked => "blocked",
-    }
-}
-
 fn format_dependency(kind: DependencyType) -> &'static str {
     match kind {
         DependencyType::HardBlocker => "hard_blocker",
@@ -406,6 +401,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+    use crate::models::task::TaskStatus;
 
     fn make_task(id: &str, desc: &str) -> Task {
         let now = Utc::now();

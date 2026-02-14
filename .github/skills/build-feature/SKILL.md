@@ -195,11 +195,12 @@ Finalize all changes with a Git commit:
 5. Run `git push` to sync the commit to the remote repository.
 6. Report the commit hash and a summary of changes committed.
 
-### Step 10: Compact Conversation History
+### Step 10: Compact Context
 
-Prompt the user to compact the session context window.
+Compact the current session to preserve state and reclaim context window space.
 
-1. Inform the user that the phase is complete and suggest running `/compact` to free context space for the next phase.
+1. Run the `compact-context` skill (located at `.github/skills/compact-context/SKILL.md`).
+2. Follow all steps defined in that skill: gather session state, write checkpoint, report, and compact.
 
 ## Troubleshooting
 

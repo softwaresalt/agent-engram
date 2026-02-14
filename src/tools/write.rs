@@ -97,7 +97,7 @@ fn validate_transition(from: TaskStatus, to: TaskStatus) -> Result<(), TMemError
         Ok(())
     } else {
         Err(TMemError::Task(TaskError::InvalidStatus {
-            status: format!("{}->{}", format_status(from), format_status(to)),
+            status: format!("{}->{}", from.as_str(), to.as_str()),
         }))
     }
 }
@@ -107,7 +107,7 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     let workspace_path = workspace_path(&state).await?;
     let parsed: UpdateTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -160,8 +160,8 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     Ok(json!({
         "task_id": parsed.id,
-        "previous_status": format_status(previous_status),
-        "new_status": format_status(new_status),
+        "previous_status": previous_status.as_str(),
+        "new_status": new_status.as_str(),
         "context_id": context_id,
         "updated_at": now.to_rfc3339(),
     }))
@@ -172,7 +172,7 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
     let workspace_path = workspace_path(&state).await?;
     let parsed: AddBlockerParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -212,13 +212,26 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
     queries.insert_context(&ctx).await?;
     queries.link_task_context(&task.id, &ctx_id).await?;
 
+    let previous_status = task.status;
     queries
         .set_task_status(&task.id, TaskStatus::Blocked, now)
         .await?;
 
+    // FR-015: audit trail for every status transition
+    let audit_ctx_id = create_status_change_note(
+        &queries,
+        &task.id,
+        previous_status,
+        TaskStatus::Blocked,
+        Some(&ctx.content),
+        now,
+    )
+    .await?;
+
     Ok(json!({
         "task_id": task.id,
         "blocker_context_id": ctx_id,
+        "audit_context_id": audit_ctx_id,
         "updated_at": now.to_rfc3339(),
     }))
 }
@@ -230,7 +243,7 @@ pub async fn register_decision(
     let workspace_id = workspace_id(&state).await?;
     let parsed: RegisterDecisionParams = serde_json::from_value(params.unwrap_or_default())
         .map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -263,7 +276,7 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
     let workspace_id = workspace_id(&state).await?;
     let parsed: CreateTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -319,24 +332,20 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
 
-    let should_rehydrate = is_stale || matches!(stale_strategy, StaleStrategy::Rehydrate);
-
-    if is_stale {
-        match stale_strategy {
-            StaleStrategy::Warn => {
-                warnings.push("2004 StaleWorkspace: .tmem files modified externally".to_string());
-            }
-            StaleStrategy::Rehydrate => {
-                hydration::hydrate_into_db(&path, &queries).await?;
-            }
-            StaleStrategy::Fail => {
-                return Err(TMemError::Hydration(
-                    crate::errors::HydrationError::StaleWorkspace,
-                ));
-            }
+    // Determine staleness action from strategy before touching the DB
+    match (is_stale, stale_strategy) {
+        (true, StaleStrategy::Fail) => {
+            return Err(TMemError::Hydration(
+                crate::errors::HydrationError::StaleWorkspace,
+            ));
         }
-    } else if should_rehydrate {
-        hydration::hydrate_into_db(&path, &queries).await?;
+        (true, StaleStrategy::Warn) => {
+            warnings.push("2004 StaleWorkspace: .tmem files modified externally".to_string());
+        }
+        (true, StaleStrategy::Rehydrate) => {
+            hydration::hydrate_into_db(&path, &queries).await?;
+        }
+        (false, _) => {}
     }
 
     let result = dehydration::dehydrate_workspace(&queries, &path).await?;
@@ -356,15 +365,6 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
         "warnings": warnings,
         "flush_timestamp": result.flush_timestamp,
     }))
-}
-
-fn format_status(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Todo => "todo",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Done => "done",
-        TaskStatus::Blocked => "blocked",
-    }
 }
 
 #[cfg(test)]

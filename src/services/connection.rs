@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -67,8 +65,8 @@ pub async fn create_status_change_note(
 ) -> Result<String, TMemError> {
     let mut content = format!(
         "Status changed from {} to {}",
-        format_status(previous),
-        format_status(new),
+        previous.as_str(),
+        new.as_str(),
     );
     if let Some(notes) = user_notes {
         content.push_str(&format!("\n\n{notes}"));
@@ -85,15 +83,6 @@ pub async fn create_status_change_note(
     queries.insert_context(&ctx).await?;
     queries.link_task_context(task_id, &ctx_id).await?;
     Ok(ctx_id)
-}
-
-fn format_status(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Todo => "todo",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Done => "done",
-        TaskStatus::Blocked => "blocked",
-    }
 }
 
 /// Information about a single active SSE connection (US5/T091).

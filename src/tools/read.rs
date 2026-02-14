@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
-use crate::models::task::{Task, TaskStatus};
+use crate::models::task::Task;
 use crate::server::state::SharedState;
 use crate::services::embedding;
 use crate::services::search::{SearchCandidate, hybrid_search};
@@ -52,7 +52,7 @@ pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result
 
     let parsed: TaskGraphParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -82,7 +82,7 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
 
     let parsed: CheckStatusParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -100,7 +100,7 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
                 id.clone(),
                 json!({
                     "task_id": task.id,
-                    "status": format_status(task.status).to_string(),
+                    "status": task.status.as_str().to_string(),
                     "updated_at": task.updated_at.to_rfc3339(),
                 }),
             );
@@ -126,7 +126,7 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
 
     let parsed: QueryMemoryParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::DatabaseError {
+            TMemError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -193,7 +193,7 @@ fn build_node(
         if depth == 0 {
             return Ok(TaskNode {
                 id: task.id,
-                status: format_status(task.status).to_string(),
+                status: task.status.as_str().to_string(),
                 children: Vec::new(),
             });
         }
@@ -210,17 +210,9 @@ fn build_node(
 
         Ok(TaskNode {
             id: task.id,
-            status: format_status(task.status).to_string(),
+            status: task.status.as_str().to_string(),
             children,
         })
     })
 }
 
-fn format_status(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Todo => "todo",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Done => "done",
-        TaskStatus::Blocked => "blocked",
-    }
-}

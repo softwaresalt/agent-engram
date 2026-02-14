@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
@@ -151,7 +149,7 @@ impl Queries {
     /// to `Utc::now()` before calling this method.
     pub async fn upsert_task(&self, task: &Task) -> Result<(), TMemError> {
         let record = Thing::from(("task", task.id.as_str()));
-        let status_str = format_status(task.status).to_string();
+        let status_str = task.status.as_str().to_string();
         let created = task.created_at.to_rfc3339();
         let updated = task.updated_at.to_rfc3339();
         self.db
@@ -231,7 +229,7 @@ impl Queries {
         updated_at: DateTime<Utc>,
     ) -> Result<(), TMemError> {
         let record = Thing::from(("task", id));
-        let status_str = format_status(status).to_string();
+        let status_str = status.as_str().to_string();
         self.db
             .query("UPDATE $record MERGE { status: $status, updated_at: $updated }")
             .bind(("record", record))
@@ -417,7 +415,7 @@ impl Queries {
             .bind(("record", record))
             .bind(("title", spec.title.clone()))
             .bind(("content", spec.content.clone()))
-            .bind(("embedding", spec.embedding.clone().unwrap_or_default()))
+            .bind(("embedding", spec.embedding.clone()))
             .bind(("file_path", spec.file_path.clone()))
             .bind(("created", created))
             .bind(("updated", updated))
@@ -557,15 +555,6 @@ impl Queries {
         }
 
         Ok(false)
-    }
-}
-
-fn format_status(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Todo => "todo",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Done => "done",
-        TaskStatus::Blocked => "blocked",
     }
 }
 

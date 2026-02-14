@@ -1,11 +1,9 @@
-#![allow(dead_code)]
-
 /// SurrealDB schema definitions (DEFINE TABLE statements)
 pub const DEFINE_SPEC: &str = r#"
 DEFINE TABLE spec SCHEMAFULL;
 DEFINE FIELD title ON TABLE spec TYPE string ASSERT $value != '';
 DEFINE FIELD content ON TABLE spec TYPE string;
-DEFINE FIELD embedding ON TABLE spec TYPE array<float>;
+DEFINE FIELD embedding ON TABLE spec TYPE option<array<float>>;
 DEFINE FIELD file_path ON TABLE spec TYPE string;
 DEFINE FIELD created_at ON TABLE spec TYPE datetime VALUE time::now();
 DEFINE FIELD updated_at ON TABLE spec TYPE datetime VALUE time::now();
@@ -30,7 +28,7 @@ DEFINE INDEX task_updated ON TABLE task COLUMNS updated_at;
 pub const DEFINE_CONTEXT: &str = r#"
 DEFINE TABLE context SCHEMAFULL;
 DEFINE FIELD content ON TABLE context TYPE string ASSERT $value != '';
-DEFINE FIELD embedding ON TABLE context TYPE array<float>;
+DEFINE FIELD embedding ON TABLE context TYPE option<array<float>>;
 DEFINE FIELD source_client ON TABLE context TYPE string;
 DEFINE FIELD created_at ON TABLE context TYPE datetime VALUE time::now();
 DEFINE INDEX context_source ON TABLE context COLUMNS source_client;

@@ -47,6 +47,7 @@ fn system_error_codes_match_contract() {
     assert_eq!(FLUSH_FAILED, 5002);
     assert_eq!(RATE_LIMITED, 5003);
     assert_eq!(SHUTTING_DOWN, 5004);
+    assert_eq!(INVALID_PARAMS, 5005);
 }
 
 /// Verify error-to-response mapping produces the correct code for each variant.
@@ -134,6 +135,11 @@ fn error_response_codes_are_consistent() {
         ),
         (SystemError::RateLimited.into(), 5003, "RateLimited"),
         (SystemError::ShuttingDown.into(), 5004, "ShuttingDown"),
+        (
+            SystemError::InvalidParams { reason: "x".into() }.into(),
+            5005,
+            "InvalidParams",
+        ),
     ];
 
     for (err, expected_code, expected_name) in cases {

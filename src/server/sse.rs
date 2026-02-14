@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::convert::Infallible;
 use std::time::Duration;
 

@@ -71,6 +71,8 @@ pub enum SystemError {
     RateLimited,
     #[error("Daemon is shutting down")]
     ShuttingDown,
+    #[error("Invalid request parameters: {reason}")]
+    InvalidParams { reason: String },
 }
 
 #[derive(Debug, Error)]
@@ -219,6 +221,12 @@ impl TMemError {
                 SystemError::ShuttingDown => {
                     (SHUTTING_DOWN, "ShuttingDown", inner.to_string(), None)
                 }
+                SystemError::InvalidParams { reason } => (
+                    INVALID_PARAMS,
+                    "InvalidParams",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
             },
         };
 

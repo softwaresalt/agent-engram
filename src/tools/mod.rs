@@ -3,8 +3,6 @@
 //! The `dispatch` function routes tool names to handler functions in
 //! the `lifecycle`, `read`, and `write` submodules.
 
-#![allow(dead_code)]
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -22,7 +20,7 @@ struct WorkspaceParams {
 }
 
 fn not_implemented(method: &str) -> TMemError {
-    TMemError::System(SystemError::DatabaseError {
+    TMemError::System(SystemError::InvalidParams {
         reason: format!("{method} not implemented"),
     })
 }
@@ -36,7 +34,7 @@ pub async fn dispatch(
         "set_workspace" => {
             let parsed: WorkspaceParams =
                 serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
-                    TMemError::System(SystemError::DatabaseError {
+                    TMemError::System(SystemError::InvalidParams {
                         reason: e.to_string(),
                     })
                 })?;

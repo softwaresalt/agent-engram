@@ -13,6 +13,18 @@ pub enum TaskStatus {
     Blocked,
 }
 
+impl TaskStatus {
+    /// Return the canonical snake_case string for this status.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::InProgress => "in_progress",
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 /// An actionable unit of work within a workspace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {

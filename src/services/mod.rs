@@ -5,8 +5,6 @@
 //! hydration/dehydration of `.tmem/` files, embedding generation, and
 //! hybrid search.
 
-#![allow(dead_code)]
-
 pub mod connection;
 pub mod dehydration;
 pub mod embedding;
