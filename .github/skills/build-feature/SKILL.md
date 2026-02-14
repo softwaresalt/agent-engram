@@ -161,7 +161,9 @@ For each significant decision made during the build phase:
 * Decisions worth recording include: dependency choices, API design trade-offs, data model changes, SurrealDB workarounds, error handling strategies, and performance trade-offs.
 * Skip this step if no significant architectural decisions were made during the phase.
 
-### Step 7: Record Session Memory
+### Step 7: Record Session Memory (Mandatory Gate)
+
+This step is a hard gate. The phase is not complete until the memory file exists on disk. Do not skip this step under any circumstances, including context pressure or time constraints.
 
 Persist the full session details to `.copilot-tracking/memory/` following the project's session memory requirements:
 
@@ -173,6 +175,7 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
   * Next Steps: what the next phase should address, any open questions, known issues
   * Context to Preserve: source file references, agent references, unresolved questions
 * Use the existing memory files in `.copilot-tracking/memory/` as format examples.
+* After writing the file, verify it exists by reading it back. If the file is missing or empty, halt and retry.
 
 ### Step 8: Stage and Commit
 
@@ -196,12 +199,26 @@ Finalize all changes with a Git commit:
 6. Report the commit hash and a summary of changes committed.
 
 
-### Step 10: Compact Context
+### Step 10: Compact Context (Mandatory Gate)
 
-Compact the current session to preserve state and reclaim context window space.
+This step is a hard gate. The phase is not complete until context compaction has run and a checkpoint file exists. Do not skip this step, even if context space appears sufficient. When running in full-spec loop mode, the orchestrator verifies checkpoint existence before advancing to the next phase.
 
 1. Run the `compact-context` skill (located at `.github/skills/compact-context/SKILL.md`).
 2. Follow all steps defined in that skill: gather session state, write checkpoint, report, and compact.
+3. Verify a checkpoint file was created in `.copilot-tracking/checkpoints/` during this execution. If missing, retry the compact-context skill.
+
+### Phase Completion Signal
+
+After Step 10 completes, the phase is fully done. Report the following completion signal for the orchestrator to consume:
+
+* **Phase**: `{phase-number}` — `{phase title}`
+* **Status**: COMPLETE
+* **Memory file**: `.copilot-tracking/memory/{YYYY-MM-DD}/{spec-name}-phase-{N}-memory.md`
+* **Checkpoint file**: `.copilot-tracking/checkpoints/{YYYY-MM-DD}-{HHmm}-checkpoint.md`
+* **Commit hash**: `{hash}`
+* **Tasks completed**: `{count}`
+
+The orchestrator uses this signal to verify all gates passed before looping to the next phase.
 
 ## Troubleshooting
 
