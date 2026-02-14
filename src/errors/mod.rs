@@ -1,3 +1,9 @@
+//! Typed error hierarchy for T-Mem domain operations.
+//!
+//! Errors are organized by domain: workspace (1xxx), hydration (2xxx),
+//! task (3xxx), query (4xxx), and system (5xxx). Each variant maps to a
+//! numeric error code defined in [codes].
+
 use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;

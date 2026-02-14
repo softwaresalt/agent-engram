@@ -1,6 +1,9 @@
+//! Task entity and status enum.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Task status values following the state machine defined in `data-model.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -10,6 +13,7 @@ pub enum TaskStatus {
     Blocked,
 }
 
+/// An actionable unit of work within a workspace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,

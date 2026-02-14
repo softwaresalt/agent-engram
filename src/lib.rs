@@ -1,3 +1,10 @@
+//! T-Mem: a local-first MCP daemon providing persistent task memory and
+//! semantic search for AI coding assistants.
+//!
+//! This crate exposes library modules used by the `t-mem` binary. The daemon
+//! binds to `127.0.0.1` via axum, accepts MCP JSON-RPC over SSE, and stores
+//! workspace state in an embedded SurrealDB instance backed by `.tmem/` files.
+
 #![forbid(unsafe_code)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]

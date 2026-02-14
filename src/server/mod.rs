@@ -1,3 +1,8 @@
+//! HTTP/SSE server layer built on axum 0.7.
+//!
+//! Provides the SSE endpoint (`/sse`), MCP JSON-RPC handler (`/mcp`),
+//! health check (`/health`), and shared application state.
+
 #![allow(dead_code)]
 
 pub mod mcp;

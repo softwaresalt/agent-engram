@@ -1,3 +1,8 @@
+//! MCP tool implementations dispatched via JSON-RPC.
+//!
+//! The `dispatch` function routes tool names to handler functions in
+//! the `lifecycle`, `read`, and `write` submodules.
+
 #![allow(dead_code)]
 
 use serde::Deserialize;

@@ -1,3 +1,8 @@
+//! Daemon configuration via CLI arguments and environment variables.
+//!
+//! Uses `clap` derive for parsing. All fields support both `--flag`-style
+//! CLI arguments and `TMEM_`-prefixed environment variables.
+
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};

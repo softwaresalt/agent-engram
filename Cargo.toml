@@ -87,3 +87,14 @@ path = "tests/unit/proptest_serialization.rs"
 [[test]]
 name = "integration_concurrency"
 path = "tests/integration/concurrency_test.rs"
+[[test]]
+name = "contract_error_codes"
+path = "tests/contract/error_codes_test.rs"
+
+[[test]]
+name = "integration_benchmark"
+path = "tests/integration/benchmark_test.rs"
+
+[[test]]
+name = "integration_relevance"
+path = "tests/integration/relevance_test.rs"

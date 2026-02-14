@@ -287,27 +287,27 @@
 
 ### Performance Validation
 
-- [ ] T097 Benchmark cold start time (target: < 200ms) and document results
-- [ ] T098 Benchmark hydration time with 1000 tasks (target: < 500ms)
-- [ ] T099 Benchmark query_memory latency (target: < 50ms)
-- [ ] T100 Benchmark update_task latency (target: < 10ms)
-- [ ] T101 Profile memory usage idle and under load (targets: < 100MB / < 500MB)
-- [ ] T119 Benchmark flush_state latency with full workspace (target: < 1s per SC-005)
-- [ ] T120 Create test corpus and evaluation script for query_memory relevance validation (target: 95% per SC-010)
+- [X] T097 Benchmark cold start time (target: < 200ms) and document results
+- [X] T098 Benchmark hydration time with 1000 tasks (target: < 500ms)
+- [X] T099 Benchmark query_memory latency (target: < 50ms)
+- [X] T100 Benchmark update_task latency (target: < 10ms)
+- [X] T101 Profile memory usage idle and under load (targets: < 100MB / < 500MB)
+- [X] T119 Benchmark flush_state latency with full workspace (target: < 1s per SC-005)
+- [X] T120 Create test corpus and evaluation script for query_memory relevance validation (target: 95% per SC-010)
 
 ### Documentation
 
-- [ ] T102 Create README.md with installation and usage instructions
-- [ ] T103 Add rustdoc comments to all public APIs in src/lib.rs
-- [ ] T104 Update specs/001-core-mcp-daemon/quickstart.md with final implementation details
-- [ ] T126 Run cargo doc --deny warnings and verify zero documentation warnings (constitution quality gate #4)
+- [X] T102 Create README.md with installation and usage instructions
+- [X] T103 Add rustdoc comments to all public APIs in src/lib.rs
+- [X] T104 Update specs/001-core-mcp-daemon/quickstart.md with final implementation details
+- [X] T126 Run cargo doc --deny warnings and verify zero documentation warnings (constitution quality gate #4)
 
 ### Final Hardening
 
-- [ ] T105 Run cargo audit and resolve any vulnerabilities
-- [ ] T106 Run full test suite with --release optimizations
-- [ ] T107 Verify all error codes match contracts/error-codes.md
-- [ ] T137 Run `cargo tarpaulin` (or equivalent) and verify ≥80% line coverage for all `src/` modules (constitution III quality gate)
+- [X] T105 Run cargo audit and resolve any vulnerabilities
+- [X] T106 Run full test suite with --release optimizations
+- [X] T107 Verify all error codes match contracts/error-codes.md
+- [X] T137 Run `cargo tarpaulin` (or equivalent) and verify ≥80% line coverage for all `src/` modules (constitution III quality gate)
 
 ---
 
@@ -401,5 +401,5 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 | 5 | US3: Persistence | 23 | 23 | 0 |
 | 6 | US4: Search | 15 | 15 | 0 |
 | 7 | US5: Concurrency | 12 | 12 | 0 |
-| 8 | Polish | 14 | 0 | 14 (T097-T107, T119, T120, T126, T137) |
-| **Total** | | **137** | **122** | **15** |
+| 8 | Polish | 14 | 14 | 0 |
+| **Total** | | **137** | **137** | **0** |

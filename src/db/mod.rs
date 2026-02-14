@@ -1,3 +1,9 @@
+//! Database layer: embedded SurrealDB connection and schema management.
+//!
+//! Each workspace gets an isolated SurrealDB database identified by the
+//! SHA-256 hash of its canonicalized path. Schema is bootstrapped on every
+//! connection via [connect_db].
+
 #![allow(dead_code)]
 
 use std::fs;

@@ -1,6 +1,9 @@
+//! Spec entity representing a high-level requirement.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// A specification record imported from project documentation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
     pub id: String,

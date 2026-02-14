@@ -1,3 +1,7 @@
+//! Numeric error code constants for structured MCP error responses.
+//!
+//! Ranges: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system.
+
 /// Workspace error codes
 pub const WORKSPACE_NOT_FOUND: u16 = 1001;
 pub const NOT_A_GIT_ROOT: u16 = 1002;
