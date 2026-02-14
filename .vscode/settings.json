@@ -44,6 +44,15 @@
         "/^cmd /c \"cargo (test|check|clippy|fmt|build|doc|bench)(\\s[^;|&`]*)?\"(\\s*[;&|]+\\s*echo\\s.*)?$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "/^pwsh -File \"lib/hve-core/scripts/powershell/check-prerequisites.ps1\" -Json -RequireTasks -IncludeTasks$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^pwsh -File \"\\.specify/scripts/powershell/check-prerequisites.ps1\" -Json -RequireTasks -IncludeTasks$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "Out-Null": true
     }
 }

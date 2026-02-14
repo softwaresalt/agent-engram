@@ -230,6 +230,7 @@ Every tool follows this pattern:
 3. **No exit-code echo suffixes.** Do not append `; echo "EXIT: $LASTEXITCODE"` or `&& echo "done"` to commands. The terminal tool already captures exit codes.
 4. **Check results between commands.** After each command, inspect the output and exit code before deciding whether to run the next command. This is safer and produces better diagnostics.
 5. **Always use `pwsh`, never `powershell`.** When invoking PowerShell explicitly (e.g., to run a `.ps1` script), use `pwsh` — the cross-platform PowerShell 7+ executable. Never use `powershell` or `powershell.exe`, which refers to the legacy Windows PowerShell 5.1 runtime.
+6. **Always use relative paths for output redirection.** When redirecting command output to a file, use workspace-relative paths (e.g., `target\results.txt`), never absolute paths (e.g., `d:\Source\...\target\results.txt`). Absolute paths break auto-approve regex matching.
 
 ### Allowed Exceptions
 
