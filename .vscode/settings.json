@@ -53,6 +53,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "Out-Null": true
+        "Out-Null": true,
+        "Get-Item": true
     }
 }

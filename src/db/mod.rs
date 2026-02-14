@@ -14,12 +14,6 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
 use tokio::sync::RwLock;
 
-use std::path::PathBuf;
-
-use dirs::data_dir;
-use surrealdb::Surreal;
-use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
-
 use crate::errors::{SystemError, TMemError};
 
 pub mod queries;

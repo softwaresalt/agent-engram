@@ -17,9 +17,9 @@
 
 **Purpose**: Add new dependency and prepare project structure for enhanced task management
 
-- [ ] T001 Add `toml = "0.8"` dependency to Cargo.toml for workspace config parsing (FR-064)
-- [ ] T002 [P] Create placeholder module files: src/models/label.rs, src/models/comment.rs, src/models/config.rs, src/services/compaction.rs, src/services/config.rs, src/services/output.rs
-- [ ] T003 [P] Create test file stubs: tests/integration/enhanced_features_test.rs, tests/integration/performance_test.rs
+- [X] T001 Add `toml = "0.8"` dependency to Cargo.toml for workspace config parsing (FR-064)
+- [X] T002 [P] Create placeholder module files: src/models/label.rs, src/models/comment.rs, src/models/config.rs, src/services/compaction.rs, src/services/config.rs, src/services/output.rs
+- [X] T003 [P] Create test file stubs: tests/integration/enhanced_features_test.rs, tests/integration/performance_test.rs
 
 ---
 

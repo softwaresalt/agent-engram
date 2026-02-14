@@ -11,11 +11,42 @@ use std::path::Path;
 
 use chrono::Utc;
 use similar::{ChangeTag, TextDiff};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
+use crate::db::{self};
 use crate::errors::{SystemError, TMemError};
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus};
+use crate::server::state::SharedState;
+
+/// Global flush lock for serializing concurrent dehydration operations (ADR-0002).
+static FLUSH_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Acquire the per-process flush lock for concurrent dehydration serialization.
+///
+/// Returns a guard that releases the lock when dropped.
+pub async fn acquire_flush_lock() -> MutexGuard<'static, ()> {
+    FLUSH_LOCK.lock().await
+}
+
+/// Flush all active workspaces to `.tmem/` files (FR-006 graceful shutdown).
+///
+/// Acquires the flush lock and dehydrates the active workspace, if any.
+pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), TMemError> {
+    let _guard = acquire_flush_lock().await;
+    let snapshot = match state.snapshot_workspace().await {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    let workspace_path = Path::new(&snapshot.path);
+    let db = db::connect_db(&snapshot.workspace_id).await?;
+    let queries = Queries::new(db);
+
+    dehydrate_workspace(&queries, workspace_path).await?;
+    Ok(())
+}
 
 /// Schema version written to `.tmem/.version`.
 pub const SCHEMA_VERSION: &str = "1.0.0";
