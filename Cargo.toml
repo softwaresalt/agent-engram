@@ -1,0 +1,100 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "t-mem"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "T-Mem Core MCP daemon"
+license = "MIT"
+publish = false
+
+authors = ["T-Mem Contributors"]
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+mcp-sdk = "0.0.3"
+surrealdb = { version = "2", features = ["kv-surrealkv"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pulldown-cmark = "0.10"
+fastembed = { version = "3", optional = true, default-features = false }
+ort-sys = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native"] }
+thiserror = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+similar = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "5"
+tokio-stream = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+sysinfo = "0.30"
+
+[features]
+default = []
+embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+tokio-test = "0.4"
+
+[[bin]]
+name = "t-mem"
+path = "src/bin/t-mem.rs"
+
+[[test]]
+name = "contract_lifecycle"
+path = "tests/contract/lifecycle_test.rs"
+
+[[test]]
+name = "contract_read"
+path = "tests/contract/read_test.rs"
+
+[[test]]
+name = "contract_write"
+path = "tests/contract/write_test.rs"
+
+[[test]]
+name = "integration_connection"
+path = "tests/integration/connection_test.rs"
+
+[[test]]
+name = "unit_proptest"
+path = "tests/unit/proptest_models.rs"
+
+[[test]]
+name = "integration_hydration"
+path = "tests/integration/hydration_test.rs"
+
+[[test]]
+name = "integration_embedding"
+path = "tests/integration/embedding_test.rs"
+
+[[test]]
+name = "unit_proptest_serialization"
+path = "tests/unit/proptest_serialization.rs"
+
+[[test]]
+name = "integration_concurrency"
+path = "tests/integration/concurrency_test.rs"
+[[test]]
+name = "contract_error_codes"
+path = "tests/contract/error_codes_test.rs"
+
+[[test]]
+name = "integration_benchmark"
+path = "tests/integration/benchmark_test.rs"
+
+[[test]]
+name = "integration_relevance"
+path = "tests/integration/relevance_test.rs"
