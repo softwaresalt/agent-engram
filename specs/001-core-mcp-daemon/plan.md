@@ -1,58 +1,23 @@
 # Implementation Plan: T-Mem Core MCP Daemon
 
-**Branch**: `001-core-mcp-daemon` | **Date**: 2026-02-05 | **Spec**: [spec.md](spec.md)
+**Branch**: `001-core-mcp-daemon` | **Date**: 2026-02-09 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/001-core-mcp-daemon/spec.md`
 
 ## Summary
 
-T-Mem is a high-performance, local-first MCP daemon server providing a "shared brain" for software development environments. This implementation delivers:
-
-- **SSE-based MCP server** accepting multiple concurrent client connections
-- **SurrealDB embedded database** for graph-relational task/spec/context storage with workspace isolation
-- **Git-backed persistence** via `.tmem/` directory with human-readable Markdown files
-- **Semantic search** using local embeddings (all-MiniLM-L6-v2) for context retrieval
-- **Rust implementation** following constitution principles for safety, concurrency, and observability
+Implement T-Mem v0: a high-performance, local-first MCP daemon in Rust that serves as the shared brain for software development environments. The daemon exposes 10 MCP tools over SSE transport, stores workspace state in embedded SurrealDB (surrealkv backend) with graph-relational modeling, and persists to Git-friendly `.tmem/` markdown files. The technical approach uses axum for HTTP/SSE, fastembed-rs for offline semantic search, and the `similar` crate for comment-preserving markdown merge.
 
 ## Technical Context
 
-**Language/Version**: Rust 2024 edition (1.82+)
-**Primary Dependencies**:
-- `axum` 0.7+ — HTTP server framework
-- `mcp-sdk-rs` — MCP protocol SSE transport
-- `surrealdb` 2.0+ — Embedded database (surrealkv backend)
-- `tokio` 1.x — Async runtime
-- `serde` / `serde_json` — Serialization
-- `pulldown-cmark` — Markdown parsing
-- `fastembed-rs` — Local embedding generation
-- `tracing` / `tracing-subscriber` — Structured logging
-- `thiserror` / `anyhow` — Error handling
-- `uuid` — Connection ID generation
-- `similar` — Diff-match-patch for comment preservation
-
-**Storage**:
-- Runtime: SurrealDB embedded at `~/.local/share/t-mem/db/{workspace_hash}/`
-- Models: `~/.local/share/t-mem/models/all-MiniLM-L6-v2/`
-- Per-repo: `.tmem/` directory in Git repository roots
-
-**Testing**: `cargo test` with:
-- `proptest` — Property-based testing for serialization round-trips
-- `tokio-test` — Async test utilities
-- `wiremock` or equivalent — MCP contract testing
-
-**Target Platform**: Cross-platform (Windows, macOS, Linux)
-**Project Type**: Single Rust workspace with library + binary crates
-**Performance Goals**:
-- Cold start: < 200ms
-- Hydration: < 500ms for 1000 tasks
-- Query: < 100ms for hybrid search
-- Write: < 10ms per operation
-
-**Constraints**:
-- Memory: < 100MB idle, < 500MB under load
-- Concurrent connections: minimum 10
-- Localhost-only binding (127.0.0.1)
-
-**Scale/Scope**: Single-user daemon, multi-workspace, multi-client
+**Language/Version**: Rust 2024 edition, stable toolchain (1.85+)
+**Primary Dependencies**: axum 0.7, tokio 1 (full), surrealdb 2 (kv-surrealkv), mcp-sdk 0.0.3, fastembed 3 (optional), pulldown-cmark 0.10, similar 2, clap 4, tracing 0.1
+**Storage**: SurrealDB embedded (surrealkv backend), `.tmem/` markdown/SurrealQL files
+**Testing**: cargo test, proptest 1 (property-based), tempfile 3, tokio-test 0.4
+**Target Platform**: Windows, macOS, Linux (local developer workstations)
+**Project Type**: Single Rust binary with library crate
+**Performance Goals**: <200ms cold start, <500ms hydration, <100ms query, <10ms write, <1s flush
+**Constraints**: <100MB idle RAM, localhost-only (127.0.0.1), offline-capable after model download, 10 concurrent clients, 10 concurrent workspaces (configurable)
+**Scale/Scope**: Single-user daemon, <1000 tasks per workspace typical, 10 MCP tools
 
 ## Constitution Check
 
@@ -79,74 +44,92 @@ T-Mem is a high-performance, local-first MCP daemon server providing a "shared b
 ```text
 specs/001-core-mcp-daemon/
 ├── plan.md              # This file
-├── research.md          # Phase 0: Technology research and decisions
-├── data-model.md        # Phase 1: Entity definitions and relationships
-├── quickstart.md        # Phase 1: Developer onboarding guide
-├── contracts/           # Phase 1: MCP tool definitions
-│   ├── mcp-tools.json   # OpenRPC-style tool schemas
-│   └── error-codes.md   # Error taxonomy reference
-├── checklists/          # Quality gates
-│   └── requirements.md  # Spec validation checklist
-└── tasks.md             # Phase 2: Implementation tasks (created by /speckit.tasks)
+├── research.md          # Phase 0: technology decisions
+├── data-model.md        # Phase 1: entity definitions and schemas
+├── quickstart.md        # Phase 1: developer onboarding guide
+├── contracts/
+│   ├── mcp-tools.json   # Phase 1: MCP tool API contracts
+│   └── error-codes.md   # Phase 1: structured error taxonomy
+├── checklists/
+│   └── requirements.md  # Requirements traceability
+└── tasks.md             # Phase 2 output (via /speckit.tasks)
 ```
 
 ### Source Code (repository root)
 
 ```text
 src/
-├── lib.rs               # Library crate root, re-exports
+├── lib.rs               # Library root, module declarations
 ├── bin/
-│   └── t-mem.rs         # Binary entrypoint (daemon main)
-├── server/              # HTTP/SSE server layer
-│   ├── mod.rs
-│   ├── router.rs        # axum routes
-│   ├── sse.rs           # SSE connection handling
-│   └── mcp.rs           # MCP protocol implementation
-├── db/                  # Database layer
-│   ├── mod.rs
-│   ├── schema.rs        # SurrealDB schema definitions
-│   ├── workspace.rs     # Workspace isolation logic
-│   └── queries.rs       # Query builders
-├── models/              # Domain entities
-│   ├── mod.rs
-│   ├── spec.rs
-│   ├── task.rs
-│   ├── context.rs
-│   └── graph.rs         # Relationship types
-├── services/            # Business logic
-│   ├── mod.rs
-│   ├── connection.rs    # Connection lifecycle
-│   ├── hydration.rs     # .tmem/ → DB sync
-│   ├── dehydration.rs   # DB → .tmem/ sync
-│   ├── search.rs        # Hybrid search implementation
-│   └── embedding.rs     # fastembed-rs integration
-├── tools/               # MCP tool implementations
-│   ├── mod.rs
-│   ├── lifecycle.rs     # set_workspace, get_*_status
-│   ├── read.rs          # query_memory, get_task_graph, check_status
-│   └── write.rs         # update_task, add_blocker, register_decision, flush_state
-├── errors/              # Error types
-│   ├── mod.rs
-│   └── codes.rs         # Error code constants
-└── config/              # Configuration management
-    └── mod.rs
+│   └── t-mem.rs         # Daemon binary entry point (clap CLI)
+├── config/
+│   └── mod.rs           # Configuration (port, timeouts, workspace limits)
+├── db/
+│   ├── mod.rs           # SurrealDB connection management
+│   ├── schema.rs        # Table/index definitions
+│   ├── queries.rs       # Parameterized SurrealQL queries
+│   └── workspace.rs     # Workspace-scoped DB operations
+├── errors/
+│   ├── mod.rs           # TMemError root enum
+│   └── codes.rs         # Numeric error code mapping
+├── models/
+│   ├── mod.rs           # Re-exports
+│   ├── spec.rs          # Spec entity
+│   ├── task.rs          # Task entity + TaskStatus enum
+│   ├── context.rs       # Context entity
+│   └── graph.rs         # Dependency/relationship edge types
+├── server/
+│   ├── mod.rs           # Server bootstrap
+│   ├── mcp.rs           # MCP JSON-RPC handler
+│   ├── router.rs        # axum Router setup
+│   ├── sse.rs           # SSE endpoint + keepalive
+│   └── state.rs         # AppState (connection registry, workspace map)
+├── services/
+│   ├── mod.rs           # Re-exports
+│   ├── connection.rs    # Connection lifecycle management
+│   ├── hydration.rs     # .tmem/ → SurrealDB (markdown parsing)
+│   ├── dehydration.rs   # SurrealDB → .tmem/ (markdown generation)
+│   ├── embedding.rs     # fastembed model loading + encoding
+│   └── search.rs        # Hybrid vector + keyword search
+└── tools/
+    ├── mod.rs            # Tool registration
+    ├── lifecycle.rs      # set_workspace, get_daemon_status, flush_state
+    ├── read.rs           # get_workspace_status, get_task_graph, check_status, query_memory
+    └── write.rs          # update_task, add_blocker, register_decision
 
 tests/
-├── contract/            # MCP tool contract tests
-│   ├── lifecycle_test.rs
-│   ├── read_test.rs
-│   └── write_test.rs
-├── integration/         # Full system integration tests
-│   ├── hydration_test.rs
-│   ├── concurrency_test.rs
-│   └── round_trip_test.rs
-└── unit/               # Unit tests (co-located in src/)
-
-Cargo.toml               # Workspace root
+├── contract/
+│   ├── lifecycle_test.rs     # set_workspace, get_daemon_status, flush_state contracts
+│   ├── read_test.rs          # Read tool contracts
+│   └── write_test.rs         # Write tool contracts
+├── integration/
+│   ├── connection_test.rs    # SSE connection lifecycle
+│   └── hydration_test.rs     # Hydration/dehydration round-trips
+└── unit/
+    ├── proptest_models.rs         # Model serialization round-trips
+    └── proptest_serialization.rs  # Markdown parsing property tests
 ```
 
-**Structure Decision**: Single Rust workspace with one library crate (`t-mem`) and one binary crate (`t-mem-cli`). Library contains all business logic; binary is thin wrapper around axum server. This enables unit testing of core logic without HTTP overhead and potential future CLI commands.
+**Structure Decision**: Single Rust crate with library + binary. This matches Option 1 (single project). The source layout mirrors the existing repository structure on the `001-core-mcp-daemon` branch.
 
 ## Complexity Tracking
 
-> No constitution violations requiring justification.
+No constitution violations detected. Table left empty.
+
+## Post-Design Constitution Re-evaluation
+
+*Re-checked after Phase 1 design completion (2026-02-09).*
+
+| # | Principle | Status | Notes |
+|---|-----------|--------|-------|
+| I | Rust Safety First | PASS | `StaleStrategy` enum is a simple value type; `LimitReached` error uses `thiserror` |
+| II | Async Concurrency Model | PASS | Workspace limit check is synchronous `HashMap::len()` under existing `RwLock`; stale detection uses `spawn_blocking` for `fs::metadata` |
+| III | Test-First Development | PASS | New error codes and config options testable via existing contract and integration test harnesses |
+| IV | MCP Protocol Compliance | PASS | Error code 1005 follows taxonomy; `flush_state` returns 2004 as warning in `warnings` array |
+| V | Workspace Isolation | PASS | Strengthened: workspace limit prevents unbounded resource consumption |
+| VI | Git-Friendly Persistence | PASS | Stale detection reads mtime only; no new binary files |
+| VII | Observability & Debugging | PASS | StaleWorkspace warning (2004) emits tracing span context |
+| VIII | Error Handling & Recovery | PASS | Strengthened: configurable stale strategy gives explicit recovery paths |
+| IX | Simplicity & YAGNI | PASS | 3-variant enum + 6 config fields; no new dependencies |
+
+**Post-Design Gate Result**: PASS (no violations introduced)

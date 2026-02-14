@@ -195,6 +195,7 @@ Finalize all changes with a Git commit:
 5. Run `git push` to sync the commit to the remote repository.
 6. Report the commit hash and a summary of changes committed.
 
+
 ### Step 10: Compact Context
 
 Compact the current session to preserve state and reclaim context window space.
