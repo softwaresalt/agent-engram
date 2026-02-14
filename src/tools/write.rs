@@ -299,6 +299,8 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
     Ok(response)
 }
 pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    // T092: Acquire per-workspace write lock for FIFO serialization of concurrent flushes
+    let _flush_guard = dehydration::acquire_flush_lock().await;
     let snapshot = state
         .snapshot_workspace()
         .await

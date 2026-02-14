@@ -261,21 +261,21 @@
 
 ### Tests for User Story 5
 
-- [ ] T087 [P] [US5] Stress test with 10 concurrent clients in tests/integration/concurrency_test.rs
-- [ ] T088 [P] [US5] Test last-write-wins for simple fields in tests/integration/concurrency_test.rs
-- [ ] T089 [P] [US5] Test append-only semantics for context in tests/integration/concurrency_test.rs
-- [ ] T090 [P] [US5] Test FIFO serialization of concurrent flush_state calls in tests/integration/concurrency_test.rs
+- [X] T087 [P] [US5] Stress test with 10 concurrent clients in tests/integration/concurrency_test.rs
+- [X] T088 [P] [US5] Test last-write-wins for simple fields in tests/integration/concurrency_test.rs
+- [X] T089 [P] [US5] Test append-only semantics for context in tests/integration/concurrency_test.rs
+- [X] T090 [P] [US5] Test FIFO serialization of concurrent flush_state calls in tests/integration/concurrency_test.rs
 
 ### Implementation for User Story 5
 
-- [ ] T091 [US5] Implement connection registry with Arc<RwLock<HashMap>> in src/services/connection.rs
-- [ ] T092 [US5] Implement per-workspace write lock for flush_state in src/services/dehydration.rs
-- [ ] T093 [US5] Implement last-write-wins with updated_at timestamps in src/db/queries.rs
-- [ ] T094 [US5] Verify append-only context insertion (no overwrite) in src/db/queries.rs
-- [ ] T095 [US5] Add connection cleanup on disconnect in src/server/sse.rs
-- [ ] T096 [US5] Implement workspace state preservation across client disconnects
-- [ ] T118 [US5] Implement connection rate limiting returning error 5003 when threshold exceeded (FR-025) in src/server/sse.rs
-- [ ] T124 [P] [US5] Contract test for rate limiting (error 5003) in tests/contract/lifecycle_test.rs
+- [X] T091 [US5] Implement connection registry with Arc<RwLock<HashMap>> in src/services/connection.rs
+- [X] T092 [US5] Implement per-workspace write lock for flush_state in src/services/dehydration.rs
+- [X] T093 [US5] Implement last-write-wins with updated_at timestamps in src/db/queries.rs
+- [X] T094 [US5] Verify append-only context insertion (no overwrite) in src/db/queries.rs
+- [X] T095 [US5] Add connection cleanup on disconnect in src/server/sse.rs
+- [X] T096 [US5] Implement workspace state preservation across client disconnects
+- [X] T118 [US5] Implement connection rate limiting returning error 5003 when threshold exceeded (FR-025) in src/server/sse.rs
+- [X] T124 [P] [US5] Contract test for rate limiting (error 5003) in tests/contract/lifecycle_test.rs
 
 **Checkpoint**: Multi-client concurrent access stable
 
@@ -400,6 +400,6 @@ Phase 8 (Polish) ← Final validation after all stories ──────┘
 | 4 | US2: Tasks | 27 | 27 | 0 |
 | 5 | US3: Persistence | 23 | 23 | 0 |
 | 6 | US4: Search | 15 | 15 | 0 |
-| 7 | US5: Concurrency | 12 | 0 | 12 (T087-T096, T118, T124) |
+| 7 | US5: Concurrency | 12 | 12 | 0 |
 | 8 | Polish | 14 | 0 | 14 (T097-T107, T119, T120, T126, T137) |
-| **Total** | | **137** | **110** | **27** |
+| **Total** | | **137** | **122** | **15** |

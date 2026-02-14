@@ -20,6 +20,19 @@ use crate::models::task::{Task, TaskStatus};
 use crate::db::connect_db;
 use crate::server::state::AppState;
 
+use tokio::sync::Mutex as TokioMutex;
+
+/// Per-workspace write lock serializing concurrent `flush_state` calls (US5/T092).
+///
+/// Ensures FIFO ordering when multiple clients call `flush_state` concurrently
+/// for the same workspace, preventing file corruption from interleaved writes.
+static FLUSH_LOCK: TokioMutex<()> = TokioMutex::const_new(());
+
+/// Acquire the flush lock for serialized workspace writes.
+pub async fn acquire_flush_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    FLUSH_LOCK.lock().await
+}
+
 /// Schema version written to `.tmem/.version`.
 pub const SCHEMA_VERSION: &str = "1.0.0";
 

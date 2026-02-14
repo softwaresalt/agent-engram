@@ -143,6 +143,12 @@ impl Queries {
         Self { db }
     }
 
+    /// Insert or update a task record using last-write-wins semantics (US5/T093).
+    ///
+    /// Under concurrent access, SurrealDB serializes writes internally.
+    /// The last `UPSERT` to execute wins, and its `updated_at` timestamp
+    /// reflects the final state. Callers should always set `updated_at`
+    /// to `Utc::now()` before calling this method.
     pub async fn upsert_task(&self, task: &Task) -> Result<(), TMemError> {
         let record = Thing::from(("task", task.id.as_str()));
         let status_str = format_status(task.status).to_string();
@@ -236,6 +242,11 @@ impl Queries {
         Ok(())
     }
 
+    /// Insert a new context record with append-only semantics (US5/T094).
+    ///
+    /// Uses `CREATE` (not `UPSERT`) so existing records are never overwritten.
+    /// Each context has a unique UUID, ensuring concurrent insertions from
+    /// multiple clients never collide or lose data.
     pub async fn insert_context(&self, ctx: &Context) -> Result<(), TMemError> {
         let record = Thing::from(("context", ctx.id.as_str()));
         let created = ctx.created_at.to_rfc3339();

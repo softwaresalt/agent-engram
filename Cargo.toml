@@ -83,3 +83,7 @@ path = "tests/integration/embedding_test.rs"
 [[test]]
 name = "unit_proptest_serialization"
 path = "tests/unit/proptest_serialization.rs"
+
+[[test]]
+name = "integration_concurrency"
+path = "tests/integration/concurrency_test.rs"

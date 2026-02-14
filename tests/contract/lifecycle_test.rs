@@ -138,3 +138,76 @@ async fn contract_set_workspace_enforces_limit() {
         .expect("limit detail present");
     assert_eq!(limit, 1);
 }
+
+// ─── T124: Contract test for rate limiting (FR-025, error 5003) ─────────────
+
+#[test]
+async fn contract_rate_limiting_rejects_excess_connections() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use t_mem::config::StaleStrategy;
+    use t_mem::errors::codes::RATE_LIMITED;
+    use t_mem::server::router::build_router;
+
+    // Rate limit of 2 connections per 60s window for testing
+    let state = Arc::new(AppState::with_options(10, StaleStrategy::Warn, 2, 60));
+    let app = build_router(state);
+
+    let make_request = || {
+        Request::builder()
+            .uri("/sse")
+            .body(Body::empty())
+            .expect("request builder")
+    };
+
+    // First two connections should succeed
+    let r1 = app
+        .clone()
+        .oneshot(make_request())
+        .await
+        .expect("r1 response");
+    assert_eq!(
+        r1.status(),
+        StatusCode::OK,
+        "first connection should succeed"
+    );
+
+    let r2 = app
+        .clone()
+        .oneshot(make_request())
+        .await
+        .expect("r2 response");
+    assert_eq!(
+        r2.status(),
+        StatusCode::OK,
+        "second connection should succeed"
+    );
+
+    // Third connection should be rate limited
+    let r3 = app
+        .clone()
+        .oneshot(make_request())
+        .await
+        .expect("r3 response");
+    assert_eq!(
+        r3.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "third connection should be rate limited"
+    );
+
+    // Verify error body contains error code 5003
+    let body = to_bytes(r3.into_body(), 16 * 1024)
+        .await
+        .expect("read body");
+    let payload: Value = serde_json::from_slice(&body).expect("valid json");
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(Value::as_u64),
+        Some(u64::from(RATE_LIMITED)),
+        "error code should be 5003 RateLimited"
+    );
+}

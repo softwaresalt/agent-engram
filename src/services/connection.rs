@@ -96,6 +96,67 @@ fn format_status(status: TaskStatus) -> &'static str {
     }
 }
 
+/// Information about a single active SSE connection (US5/T091).
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    /// Unique connection identifier (UUID v4).
+    pub id: String,
+    /// Workspace path this connection is bound to, if any.
+    pub workspace_path: Option<String>,
+    /// When this connection was established.
+    pub connected_at: DateTime<Utc>,
+}
+
+/// Registry tracking all active SSE connections (US5/T091).
+///
+/// Supports multi-client concurrent access by maintaining a thread-safe
+/// map of connection IDs to their metadata. Used for connection counting,
+/// cleanup on disconnect, and workspace binding tracking.
+#[derive(Debug, Clone)]
+pub struct ConnectionRegistry {
+    connections:
+        std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, ConnectionInfo>>>,
+}
+
+impl ConnectionRegistry {
+    /// Create an empty connection registry.
+    pub fn new() -> Self {
+        Self {
+            connections: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+        }
+    }
+
+    /// Register a new connection and return its info.
+    pub async fn register(&self, id: String) -> ConnectionInfo {
+        let info = ConnectionInfo {
+            id: id.clone(),
+            workspace_path: None,
+            connected_at: Utc::now(),
+        };
+        self.connections.write().await.insert(id, info.clone());
+        info
+    }
+
+    /// Remove a connection from the registry.
+    pub async fn unregister(&self, id: &str) {
+        self.connections.write().await.remove(id);
+    }
+
+    /// Return the number of active connections.
+    pub async fn count(&self) -> usize {
+        self.connections.read().await.len()
+    }
+
+    /// Bind a connection to a workspace path.
+    pub async fn bind_workspace(&self, connection_id: &str, workspace_path: &str) {
+        if let Some(info) = self.connections.write().await.get_mut(connection_id) {
+            info.workspace_path = Some(workspace_path.to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
