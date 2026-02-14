@@ -1,0 +1,636 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "T-Mem MCP Tools — Enhanced Task Management",
+  "description": "New and modified MCP tool definitions for enhanced task management features",
+  "version": "0.2.0",
+  "tools": {
+    "get_ready_work": {
+      "description": "Get prioritized list of actionable tasks — unblocked, undeferred, incomplete, sorted by pinned → priority → creation date.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of tasks to return",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 100
+          },
+          "label": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Filter by labels (AND logic — task must have ALL listed labels)"
+          },
+          "priority": {
+            "type": "string",
+            "description": "Maximum priority threshold (e.g., 'p2' returns p0, p1, p2)"
+          },
+          "issue_type": {
+            "type": "string",
+            "description": "Filter by issue type (e.g., 'bug')"
+          },
+          "assignee": {
+            "type": "string",
+            "description": "Filter by assignee identity"
+          },
+          "brief": {
+            "type": "boolean",
+            "description": "If true, return only essential fields (id, title, status, priority, assignee)",
+            "default": false
+          },
+          "fields": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Explicit list of field names to include in response"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/TaskSummary" }
+          },
+          "total_eligible": {
+            "type": "integer",
+            "description": "Total matching tasks before limit"
+          }
+        },
+        "required": ["tasks", "total_eligible"]
+      },
+      "errors": [1003, 3009, 3010, 6002]
+    },
+    "add_label": {
+      "description": "Add a label to a task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID (e.g., task:abc123)"
+          },
+          "label": {
+            "type": "string",
+            "description": "Label string to add"
+          }
+        },
+        "required": ["task_id", "label"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "label": { "type": "string" },
+          "label_count": {
+            "type": "integer",
+            "description": "Total labels on this task after addition"
+          }
+        },
+        "required": ["task_id", "label", "label_count"]
+      },
+      "errors": [1003, 3001, 3006, 3011]
+    },
+    "remove_label": {
+      "description": "Remove a label from a task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID"
+          },
+          "label": {
+            "type": "string",
+            "description": "Label string to remove"
+          }
+        },
+        "required": ["task_id", "label"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "label": { "type": "string" },
+          "label_count": {
+            "type": "integer",
+            "description": "Total labels on this task after removal"
+          }
+        },
+        "required": ["task_id", "label", "label_count"]
+      },
+      "errors": [1003, 3001, 3006]
+    },
+    "add_dependency": {
+      "description": "Create a typed dependency edge between two tasks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from_task_id": {
+            "type": "string",
+            "description": "Source task ID (the dependent task)"
+          },
+          "to_task_id": {
+            "type": "string",
+            "description": "Target task ID (the task depended upon)"
+          },
+          "dependency_type": {
+            "type": "string",
+            "enum": ["hard_blocker", "soft_dependency", "child_of", "blocked_by", "duplicate_of", "related_to", "predecessor", "successor"],
+            "description": "Type of dependency relationship"
+          }
+        },
+        "required": ["from_task_id", "to_task_id", "dependency_type"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from_task_id": { "type": "string" },
+          "to_task_id": { "type": "string" },
+          "dependency_type": { "type": "string" },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["from_task_id", "to_task_id", "dependency_type", "created_at"]
+      },
+      "errors": [1003, 3001, 3003]
+    },
+    "get_compaction_candidates": {
+      "description": "Get tasks eligible for compaction — done, older than threshold, not pinned.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum candidates to return",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": { "type": "string" },
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "compaction_level": { "type": "integer" },
+                "completed_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "age_days": { "type": "integer" }
+              },
+              "required": ["task_id", "title", "description", "compaction_level", "age_days"]
+            }
+          },
+          "total_eligible": { "type": "integer" }
+        },
+        "required": ["candidates", "total_eligible"]
+      },
+      "errors": [1003]
+    },
+    "apply_compaction": {
+      "description": "Apply agent-generated compaction summaries to tasks. Each call increments compaction_level.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "compactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string",
+                  "description": "Task to compact"
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "Agent-generated compressed summary"
+                }
+              },
+              "required": ["task_id", "summary"]
+            },
+            "description": "List of task/summary pairs to apply"
+          }
+        },
+        "required": ["compactions"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": { "type": "string" },
+                "success": { "type": "boolean" },
+                "new_compaction_level": { "type": "integer" },
+                "error": { "type": "string" }
+              },
+              "required": ["task_id", "success"]
+            }
+          },
+          "compacted_count": { "type": "integer" },
+          "failed_count": { "type": "integer" }
+        },
+        "required": ["results", "compacted_count", "failed_count"]
+      },
+      "errors": [1003, 3001, 3008]
+    },
+    "claim_task": {
+      "description": "Claim a task for a specific agent/user. Rejects if already claimed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to claim"
+          },
+          "claimant": {
+            "type": "string",
+            "description": "Identity of the claimant (e.g., 'agent-1')"
+          }
+        },
+        "required": ["task_id", "claimant"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "claimant": { "type": "string" },
+          "context_id": {
+            "type": "string",
+            "description": "ID of context note recording the claim"
+          },
+          "claimed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["task_id", "claimant", "context_id", "claimed_at"]
+      },
+      "errors": [1003, 3001, 3005, 3012]
+    },
+    "release_task": {
+      "description": "Release a claimed task. Any client may release any claim.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to release"
+          }
+        },
+        "required": ["task_id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "previous_claimant": {
+            "type": "string",
+            "description": "Who held the claim before release"
+          },
+          "context_id": {
+            "type": "string",
+            "description": "ID of context note recording the release"
+          },
+          "released_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["task_id", "previous_claimant", "context_id", "released_at"]
+      },
+      "errors": [1003, 3001, 3012]
+    },
+    "defer_task": {
+      "description": "Defer a task until a specified date. Task is excluded from ready-work until then.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to defer"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 datetime when the task becomes eligible again"
+          }
+        },
+        "required": ["task_id", "until"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "defer_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "context_id": { "type": "string" }
+        },
+        "required": ["task_id", "defer_until", "context_id"]
+      },
+      "errors": [1003, 3001]
+    },
+    "undefer_task": {
+      "description": "Remove deferral from a task, making it immediately eligible for ready-work.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to undefer"
+          }
+        },
+        "required": ["task_id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "previous_defer_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "context_id": { "type": "string" }
+        },
+        "required": ["task_id", "context_id"]
+      },
+      "errors": [1003, 3001]
+    },
+    "pin_task": {
+      "description": "Pin a task so it appears at the top of ready-work results.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to pin"
+          }
+        },
+        "required": ["task_id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "pinned": { "type": "boolean" },
+          "context_id": { "type": "string" }
+        },
+        "required": ["task_id", "pinned", "context_id"]
+      },
+      "errors": [1003, 3001]
+    },
+    "unpin_task": {
+      "description": "Unpin a task, returning it to normal priority ordering.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to unpin"
+          }
+        },
+        "required": ["task_id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "pinned": { "type": "boolean" },
+          "context_id": { "type": "string" }
+        },
+        "required": ["task_id", "pinned", "context_id"]
+      },
+      "errors": [1003, 3001]
+    },
+    "get_workspace_statistics": {
+      "description": "Get aggregate workspace metrics — counts by status, priority, type, label, plus compaction metrics.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "total_tasks": { "type": "integer" },
+          "by_status": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Count per status (e.g., {\"todo\": 5, \"in_progress\": 3})"
+          },
+          "by_priority": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Count per priority level"
+          },
+          "by_type": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Count per issue type"
+          },
+          "by_label": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Count per label"
+          },
+          "compaction": {
+            "type": "object",
+            "properties": {
+              "compacted_count": { "type": "integer" },
+              "eligible_count": { "type": "integer" },
+              "avg_compaction_level": { "type": "number" }
+            }
+          },
+          "deferred_count": { "type": "integer" },
+          "pinned_count": { "type": "integer" },
+          "claimed_count": { "type": "integer" }
+        },
+        "required": ["total_tasks", "by_status", "by_priority", "by_type", "by_label", "compaction", "deferred_count", "pinned_count", "claimed_count"]
+      },
+      "errors": [1003]
+    },
+    "batch_update_tasks": {
+      "description": "Update multiple tasks in a single call. Per-item atomicity — partial success is possible.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Task ID"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["todo", "in_progress", "done", "blocked"],
+                  "description": "New status"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Progress note"
+                },
+                "priority": {
+                  "type": "string",
+                  "description": "New priority"
+                },
+                "issue_type": {
+                  "type": "string",
+                  "description": "New issue type"
+                }
+              },
+              "required": ["id"]
+            },
+            "maxItems": 100,
+            "description": "List of task updates"
+          }
+        },
+        "required": ["updates"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "success": { "type": "boolean" },
+                "previous_status": { "type": "string" },
+                "new_status": { "type": "string" },
+                "error": {
+                  "type": "object",
+                  "properties": {
+                    "code": { "type": "integer" },
+                    "message": { "type": "string" }
+                  }
+                }
+              },
+              "required": ["id", "success"]
+            }
+          },
+          "succeeded": { "type": "integer" },
+          "failed": { "type": "integer" }
+        },
+        "required": ["results", "succeeded", "failed"]
+      },
+      "errors": [1003, 3007]
+    },
+    "add_comment": {
+      "description": "Add a discussion comment to a task, separate from context notes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID"
+          },
+          "content": {
+            "type": "string",
+            "description": "Comment text"
+          },
+          "author": {
+            "type": "string",
+            "description": "Author identity"
+          }
+        },
+        "required": ["task_id", "content", "author"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "comment_id": { "type": "string" },
+          "task_id": { "type": "string" },
+          "author": { "type": "string" },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["comment_id", "task_id", "author", "created_at"]
+      },
+      "errors": [1003, 3001]
+    }
+  },
+  "modified_tools": {
+    "update_task": {
+      "description": "Enhanced with priority, issue_type, and assignee update support (extends v0 schema).",
+      "inputSchema_additions": {
+        "priority": {
+          "type": "string",
+          "description": "New priority level"
+        },
+        "issue_type": {
+          "type": "string",
+          "description": "New issue type"
+        },
+        "assignee": {
+          "type": "string",
+          "description": "New assignee (use claim_task for contention-safe claiming)"
+        }
+      },
+      "new_errors": [3009, 3010]
+    },
+    "flush_state": {
+      "description": "Enhanced to write .tmem/comments.md and .tmem/config.toml in addition to tasks.md and graph.surql.",
+      "additional_files": [".tmem/comments.md", ".tmem/config.toml"]
+    },
+    "get_task_graph": {
+      "description": "Enhanced to include all 8 dependency types in graph output.",
+      "dependency_types": ["hard_blocker", "soft_dependency", "child_of", "blocked_by", "duplicate_of", "related_to", "predecessor", "successor"]
+    }
+  },
+  "$defs": {
+    "TaskSummary": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["todo", "in_progress", "done", "blocked"]
+        },
+        "priority": { "type": "string" },
+        "issue_type": { "type": "string" },
+        "assignee": { "type": "string" },
+        "pinned": { "type": "boolean" },
+        "defer_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "description": { "type": "string" },
+        "compaction_level": { "type": "integer" },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "status", "priority"]
+    }
+  }
+}

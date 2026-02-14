@@ -17,7 +17,7 @@
   - Scope: Tier 1 (core) + Tier 2 (differentiator) features included
 -->
 
-### User Story 1 - Priority-Based Ready Work Queue (Priority: P1)
+### User Story 1 - Priority-Based Ready-Work Queue (Priority: P1)
 
 As an AI agent or orchestrator, I query the workspace for the next actionable task so that I always work on the highest-priority unblocked item without manually scanning all tasks.
 
@@ -134,9 +134,9 @@ As an agent or developer, I defer a task to a future date or pin an important ta
 
 **Acceptance Scenarios**:
 
-1. **Given** a task, **When** `defer_task(task_id, until: "2026-03-01")` is called, **Then** the task's `defer_until` field is set and it is excluded from ready work until that date
-2. **Given** a deferred task whose `defer_until` date has passed, **When** `get_ready_work()` is called, **Then** the task reappears in the ready queue at its normal priority
-3. **Given** a task, **When** `pin_task(task_id)` is called, **Then** the task's `pinned` flag is set and it appears at the top of ready work results
+1. **Given** a task, **When** `defer_task(task_id, until: "2026-03-01")` is called, **Then** the task's `defer_until` field is set and it is excluded from ready-work results until that date
+2. **Given** a deferred task whose `defer_until` date has passed, **When** `get_ready_work()` is called, **Then** the task reappears in the ready-work queue at its normal priority
+3. **Given** a task, **When** `pin_task(task_id)` is called, **Then** the task's `pinned` flag is set and it appears at the top of ready-work results
 4. **Given** a pinned task, **When** `unpin_task(task_id)` is called, **Then** the task returns to its normal priority position
 
 ---
@@ -193,7 +193,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 
 ### Edge Cases
 
-- What happens when a task's defer_until date is in the past at hydration time? The task becomes immediately eligible for ready work; the stale deferral is treated as expired.
+- What happens when a task's defer_until date is in the past at hydration time? The task becomes immediately eligible for the ready-work queue; the stale deferral is treated as expired.
 - How does the system handle conflicting claims from two agents arriving simultaneously? Last-write-wins at the database level; the second claim attempt receives a "task already claimed" error with the winning claimant's identity.
 - What happens when an agent crashes without releasing its claim? Any other client can call `release_task` to free the claim. The audit trail records who released whose claim. No automatic expiry in v0.
 - What happens when a compacted task is un-compacted? Compaction is one-way. The original content is not recoverable from t-mem; it exists only in Git history (via `.tmem/tasks.md` commits).
@@ -223,6 +223,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 - The `.tmem/config.toml` format is chosen for human readability; it is Git-tracked alongside other `.tmem/` files.
 - Workflow automation (formula/molecule patterns, state machine transitions) is intentionally deferred to v1. The v0 schema is designed to accommodate workflow fields without implementing the engine.
 - Compaction preserves all graph relationships. Only task description/content is compressed; metadata (status, priority, timestamps, edges) is retained in full.
+- Nested TOML configuration keys (e.g., `compaction.threshold_days`, `batch.max_size`) map to `WorkspaceConfig` via inner structs (`CompactionConfig`, `BatchConfig`) that the `toml` crate deserializes naturally from `[compaction]` and `[batch]` TOML sections. This hybrid approach (per Research R2) keeps the public API flat via accessor methods while leveraging idiomatic serde deserialization.
 
 ## Requirements *(mandatory)*
 
@@ -257,7 +258,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 - **FR-039**: System MUST expose an `apply_compaction` tool that accepts a list of `{task_id, summary}` pairs and replaces task content with the provided summaries. Note: non-idempotent — each call increments `compaction_level` and replaces content
 - **FR-040**: System MUST increment a `compaction_level` counter on each compaction application
 - **FR-041**: System MUST preserve all graph relationships when compacting a task
-- **FR-042**: System MUST provide rule-based truncation as a fallback compaction strategy for non-agent callers (truncate to first 500 characters by default, configurable via `compaction.truncation_length`, with metadata preservation)
+- **FR-042**: System MUST provide rule-based truncation as a fallback compaction strategy for non-agent callers (truncate to first 500 characters at word boundary by default, configurable via `compaction.truncation_length`, and prepend a `[Compacted]` prefix to the truncated text to indicate compaction)
 
 **Task Claiming:**
 
@@ -270,7 +271,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 
 - **FR-047**: System MUST support an `issue_type` field on tasks with default values: "task", "bug", "spike", "decision", "milestone"
 - **FR-048**: System MUST support custom issue types defined in workspace configuration
-- **FR-049**: System MUST support filtering by issue type on read operations
+- **FR-049**: System MUST support filtering by issue type on `get_ready_work` results
 
 **Defer/Snooze & Pinning:**
 
@@ -331,7 +332,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 - **SC-011**: `get_ready_work` returns prioritized results within 50ms for workspaces with fewer than 1000 tasks
 - **SC-012**: `batch_update_tasks` of 100 items completes within 500ms
 - **SC-013**: `get_compaction_candidates` returns results within 100ms for workspaces with fewer than 5000 tasks
-- **SC-014**: `apply_compaction` reduces average task content size by at least 70% (measured by character count)
+- **SC-014**: Rule-based truncation fallback (FR-042) produces summaries at least 70% smaller by character count; agent-provided summaries are external and not measured by this criterion
 - **SC-015**: `get_workspace_statistics` returns aggregate results within 100ms for workspaces with fewer than 5000 tasks
 - **SC-016**: Workspace hydration with `.tmem/config.toml` adds less than 50ms to the existing hydration time
 - **SC-017**: All new MCP tools return structured error responses consistent with the existing error taxonomy
