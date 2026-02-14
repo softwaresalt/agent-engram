@@ -7,7 +7,7 @@
         "build-orchestrator": true
     },
     "chat.agentFilesLocations": {
-      "lib/hve-core/.github/agents": true,
+      //"lib/hve-core/.github/agents": true,
       ".github/agents": true
     },
     "chat.promptFilesLocations": {
