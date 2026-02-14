@@ -297,7 +297,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["trace", "cors"] }
 
 # MCP Protocol
-mcp-sdk = "0.1"  # or mcp-sdk-rs depending on crate name
+mcp-sdk = "0.0.3"  # or mcp-sdk-rs depending on crate name
 
 # Database
 surrealdb = { version = "2", features = ["kv-surrealkv"] }

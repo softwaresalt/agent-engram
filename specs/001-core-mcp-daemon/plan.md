@@ -15,7 +15,7 @@ Implement T-Mem v0: a high-performance, local-first MCP daemon in Rust that serv
 **Testing**: cargo test, proptest 1 (property-based), tempfile 3, tokio-test 0.4
 **Target Platform**: Windows, macOS, Linux (local developer workstations)
 **Project Type**: Single Rust binary with library crate
-**Performance Goals**: <200ms cold start, <500ms hydration, <100ms query, <10ms write, <1s flush
+**Performance Goals**: <200ms cold start, <500ms hydration, <50ms query, <10ms write, <1s flush
 **Constraints**: <100MB idle RAM, localhost-only (127.0.0.1), offline-capable after model download, 10 concurrent clients, 10 concurrent workspaces (configurable)
 **Scale/Scope**: Single-user daemon, <1000 tasks per workspace typical, 10 MCP tools
 
@@ -104,6 +104,8 @@ tests/
 │   └── write_test.rs         # Write tool contracts
 ├── integration/
 │   ├── connection_test.rs    # SSE connection lifecycle
+│   ├── concurrency_test.rs   # Multi-client concurrent access
+│   ├── embedding_test.rs     # Lazy model download and encoding
 │   └── hydration_test.rs     # Hydration/dehydration round-trips
 └── unit/
     ├── proptest_models.rs         # Model serialization round-trips
