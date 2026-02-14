@@ -4,7 +4,19 @@
         "speckit.specify": true,
         "speckit.plan": true,
         "speckit.tasks": true,
-        "rust-eng.implement": true
+        "build-orchestrator": true
+    },
+    "chat.agentFilesLocations": {
+      "lib/hve-core/.github/agents": true,
+      ".github/agents": true
+    },
+    "chat.promptFilesLocations": {
+        "lib/hve-core/.github/prompts": true,
+        ".github/prompts": true
+    },
+    "chat.instructionsFilesLocations": {
+        "lib/hve-core/.github/instructions": true,
+        ".github/instructions": true
     },
     "chat.tools.terminal.autoApprove": {
         ".specify/scripts/bash/": true,

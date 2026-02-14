@@ -197,9 +197,9 @@ Finalize all changes with a Git commit:
 
 ### Step 10: Compact Conversation History
 
-Compact the current session to create space in the session's context window.
+Prompt the user to compact the session context window.
 
-1. Run `/compact` to compact the conversation history.
+1. Inform the user that the phase is complete and suggest running `/compact` to free context space for the next phase.
 
 ## Troubleshooting
 
