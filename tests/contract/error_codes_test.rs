@@ -52,6 +52,7 @@ fn system_error_codes_match_contract() {
 
 /// Verify error-to-response mapping produces the correct code for each variant.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn error_response_codes_are_consistent() {
     let cases: Vec<(TMemError, u16, &str)> = vec![
         (

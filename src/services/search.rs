@@ -158,14 +158,16 @@ mod tests {
     fn mismatched_dims_return_zero() {
         let a = vec![1.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim.abs() < f32::EPSILON, "expected 0.0, got {sim}");
     }
 
     #[test]
     fn zero_vector_returns_zero() {
         let a = vec![0.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim.abs() < f32::EPSILON, "expected 0.0, got {sim}");
     }
 
     // ── keyword_score ────────────────────────────────────────────

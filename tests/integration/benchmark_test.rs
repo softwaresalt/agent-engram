@@ -3,6 +3,7 @@
 //! These tests measure latency and resource usage against the targets defined in
 //! the feature specification. Results are printed to stdout for recording.
 
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,7 +31,7 @@ fn make_task(id: &str) -> Task {
 
 /// T097: Benchmark cold start time (target: < 200ms).
 ///
-/// Measures time to create AppState and build the axum router,
+/// Measures time to create `AppState` and build the axum router,
 /// which represents the daemon's cold start path excluding network bind.
 #[test]
 fn t097_cold_start_under_200ms() {
@@ -39,7 +40,7 @@ fn t097_cold_start_under_200ms() {
     let _router = t_mem::server::router::build_router(state);
     let elapsed = start.elapsed();
 
-    println!("T097 cold start: {:?} (target: <200ms)", elapsed);
+    println!("T097 cold start: {elapsed:?} (target: <200ms)");
     assert!(
         elapsed.as_millis() < 200,
         "cold start took {}ms, target <200ms",
@@ -62,9 +63,10 @@ async fn t098_hydration_1000_tasks_under_500ms() {
     let mut content = String::from("# Tasks\n\n");
     for i in 0..1000 {
         let now = chrono::Utc::now().to_rfc3339();
-        content.push_str(&format!(
+        write!(
+            content,
             "## task:bench{i}\n\n---\nid: task:bench{i}\ntitle: Task {i}\nstatus: todo\ncreated_at: {now}\nupdated_at: {now}\n---\n\nDescription for task {i}.\n\n"
-        ));
+        ).unwrap();
     }
     std::fs::write(tmem_dir.join("tasks.md"), &content).expect("write tasks.md");
 
@@ -102,9 +104,9 @@ async fn t098_hydration_1000_tasks_under_500ms() {
     );
 }
 
-/// T100: Benchmark update_task latency (target: < 10ms).
+/// T100: Benchmark `update_task` latency (target: < 10ms).
 ///
-/// Measures time for a single task upsert operation against embedded SurrealDB.
+/// Measures time for a single task upsert operation against embedded `SurrealDB`.
 #[tokio::test]
 async fn t100_update_task_under_10ms() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -129,7 +131,7 @@ async fn t100_update_task_under_10ms() {
     queries.upsert_task(&task).await.expect("upsert");
     let elapsed = start.elapsed();
 
-    println!("T100 update_task: {:?} (target: <10ms)", elapsed);
+    println!("T100 update_task: {elapsed:?} (target: <10ms)");
     assert!(
         elapsed.as_millis() < 10,
         "update_task took {}ms, target <10ms",
@@ -152,16 +154,16 @@ fn t101_idle_memory_under_100mb() {
 
     if let Some(process) = sys.process(pid) {
         let rss_mb = process.memory() / (1024 * 1024);
-        println!("T101 idle RSS: {}MB (target: <100MB)", rss_mb);
+        println!("T101 idle RSS: {rss_mb}MB (target: <100MB)");
         // This is the test process RSS, which includes the test harness.
         // The daemon itself should be well under 100MB.
-        assert!(rss_mb < 500, "RSS {}MB exceeds 500MB safety limit", rss_mb);
+        assert!(rss_mb < 500, "RSS {rss_mb}MB exceeds 500MB safety limit");
     } else {
         println!("T101: could not read process memory (skipped)");
     }
 }
 
-/// T099: Benchmark query_memory latency (target: < 50ms).
+/// T099: Benchmark `query_memory` latency (target: < 50ms).
 ///
 /// Measures keyword-only search time (no embeddings) across a moderate corpus.
 #[test]
@@ -196,7 +198,7 @@ fn t099_query_memory_under_50ms() {
     );
 }
 
-/// T119: Benchmark flush_state latency with full workspace (target: < 1s).
+/// T119: Benchmark `flush_state` latency with full workspace (target: < 1s).
 ///
 /// Populates a workspace with 100 tasks and measures dehydration time.
 #[tokio::test]
@@ -245,7 +247,6 @@ async fn t119_flush_state_under_1s() {
     );
     assert!(
         elapsed.as_secs() < 1,
-        "flush_state took {:?}, target <1s",
-        elapsed
+        "flush_state took {elapsed:?}, target <1s",
     );
 }

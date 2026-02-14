@@ -1,4 +1,4 @@
-//! Test corpus and evaluation script for query_memory relevance validation (T120).
+//! Test corpus and evaluation script for `query_memory` relevance validation (T120).
 //!
 //! Evaluates precision@5 against a fixed corpus of 10 queries with 3 expected
 //! result IDs each. Target: 95% of expected documents appear in top-5 results.
@@ -156,7 +156,7 @@ fn evaluation_queries() -> Vec<(&'static str, Vec<&'static str>)> {
     ]
 }
 
-/// T120: Evaluate query_memory relevance (target: 95% precision@5).
+/// T120: Evaluate `query_memory` relevance (target: 95% precision@5).
 ///
 /// For each of 10 queries, checks how many of the 3 expected documents
 /// appear in the top-5 results. Reports overall precision and asserts
@@ -192,7 +192,8 @@ fn t120_query_memory_relevance_validation() {
         );
     }
 
-    let precision = total_found as f64 / total_expected as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let precision = f64::from(total_found) / total_expected as f64;
     println!(
         "T120 overall precision@5: {:.1}% ({}/{}, target: >=95%)",
         precision * 100.0,

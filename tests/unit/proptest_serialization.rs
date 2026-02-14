@@ -93,7 +93,7 @@ proptest! {
             created_at: now,
             updated_at: now,
         };
-        let serialized = serialize_tasks_md(&[task.clone()], &HashMap::new(), "");
+        let serialized = serialize_tasks_md(std::slice::from_ref(&task), &HashMap::new(), "");
         let parsed = parse_tasks_md(&serialized);
         prop_assert_eq!(parsed[0].task.status, status);
     }

@@ -34,7 +34,7 @@ async fn contract_update_task_rejects_invalid_transition() {
     fs::create_dir_all(&tmem_dir).expect("create .tmem");
     fs::write(
         tmem_dir.join("tasks.md"),
-        r#"# Tasks
+        r"# Tasks
 
 ## task:t1
 
@@ -47,7 +47,7 @@ updated_at: 2026-02-05T10:00:00+00:00
 ---
 
 Task is already complete.
-"#,
+",
     )
     .expect("write tasks.md");
 
@@ -188,7 +188,7 @@ async fn contract_work_item_id_roundtrip_via_update_and_graph() {
     fs::create_dir_all(&tmem_dir).expect("create .tmem");
     fs::write(
         tmem_dir.join("tasks.md"),
-        r#"# Tasks
+        r"# Tasks
 
 ## task:wi1
 
@@ -202,7 +202,7 @@ updated_at: 2026-02-05T10:00:00+00:00
 ---
 
 Task linked to external work item.
-"#,
+",
     )
     .expect("write tasks.md");
 
