@@ -13,6 +13,7 @@ use crate::models::context::Context;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::server::state::SharedState;
+use crate::services::compaction::truncate_at_word_boundary;
 use crate::services::connection::create_status_change_note;
 use crate::services::dehydration;
 use crate::services::hydration;
@@ -565,10 +566,17 @@ pub async fn apply_compaction(
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
 
+    // Read truncation_length from workspace config (default 500)
+    let trunc_len = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.compaction.truncation_length as usize);
+
     let mut results = Vec::new();
     for item in &parsed.compactions {
         let task_id = item.task_id.strip_prefix("task:").unwrap_or(&item.task_id);
-        let updated = queries.apply_compaction(task_id, &item.summary).await?;
+        let summary = truncate_at_word_boundary(&item.summary, trunc_len);
+        let updated = queries.apply_compaction(task_id, &summary).await?;
         results.push(json!({
             "task_id": updated.id,
             "new_compaction_level": updated.compaction_level,

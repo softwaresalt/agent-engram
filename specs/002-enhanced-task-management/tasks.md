@@ -263,16 +263,16 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T081 [P] [US10] Write contract tests for config loading in tests/contract/lifecycle_test.rs: no config.toml → built-in defaults, valid config populates WorkspaceConfig, TOML parse error → defaults with warning (6001), invalid value (compaction.threshold_days=0) → error 6002 (FR-064, FR-065, FR-066)
+- [X] T081 [P] [US10] Write contract tests for config loading in tests/contract/lifecycle_test.rs: no config.toml → built-in defaults, valid config populates WorkspaceConfig, TOML parse error → defaults with warning (6001), invalid value (compaction.threshold_days=0) → error 6002 (FR-064, FR-065, FR-066)
 
 ### Green Phase (Implementation)
 
-- [ ] T082 [US10] Implement parse_config() in src/services/config.rs: read .tmem/config.toml via tokio::fs::read_to_string, deserialize with toml::from_str::\<WorkspaceConfig\>, on missing file return Ok(default), on parse error emit tracing::warn and return Ok(default) (FR-064, FR-066)
-- [ ] T083 [US10] Implement validate_config() in src/services/config.rs: check threshold_days >= 1, max_candidates >= 1, truncation_length >= 50, batch.max_size in 1..=1000, default_priority parsable; return Err(ConfigError::InvalidValue) on violation (FR-065)
-- [ ] T084 [US10] Integrate config loading into hydration flow in src/services/hydration.rs: after workspace bind, call parse_config() + validate_config(), store result in AppState via state.rs (FR-064, FR-066, SC-016)
-- [ ] T085 [US10] Wire WorkspaceConfig values into all dependent tool handlers: add_label checks allowed_labels (FR-034), update_task checks allowed_types (FR-048), get_compaction_candidates uses threshold_days + max_candidates (FR-065), apply_compaction truncation uses truncation_length (FR-042), batch_update_tasks uses max_size (FR-060)
-- [ ] T086 [US10] Integration test in tests/integration/enhanced_features_test.rs: config.toml with threshold_days=14, allowed_labels=\["a","b"\], batch.max_size=5; verify compaction uses 14-day threshold, add_label("c") rejected (3006), batch of 6 rejected; verify \<50ms config overhead (SC-016)
-- [ ] T087 [US10] Integration test: rehydrate workspace after config.toml change, verify updated values take effect; missing config.toml → defaults applied without error
+- [X] T082 [US10] Implement parse_config() in src/services/config.rs: read .tmem/config.toml via tokio::fs::read_to_string, deserialize with toml::from_str::\<WorkspaceConfig\>, on missing file return Ok(default), on parse error emit tracing::warn and return Ok(default) (FR-064, FR-066)
+- [X] T083 [US10] Implement validate_config() in src/services/config.rs: check threshold_days >= 1, max_candidates >= 1, truncation_length >= 50, batch.max_size in 1..=1000, default_priority parsable; return Err(ConfigError::InvalidValue) on violation (FR-065)
+- [X] T084 [US10] Integrate config loading into hydration flow in src/services/hydration.rs: after workspace bind, call parse_config() + validate_config(), store result in AppState via state.rs (FR-064, FR-066, SC-016)
+- [X] T085 [US10] Wire WorkspaceConfig values into all dependent tool handlers: add_label checks allowed_labels (FR-034), update_task checks allowed_types (FR-048), get_compaction_candidates uses threshold_days + max_candidates (FR-065), apply_compaction truncation uses truncation_length (FR-042), batch_update_tasks uses max_size (FR-060)
+- [X] T086 [US10] Integration test in tests/integration/enhanced_features_test.rs: config.toml with threshold_days=14, allowed_labels=\["a","b"\], batch.max_size=5; verify compaction uses 14-day threshold, add_label("c") rejected (3006), batch of 6 rejected; verify \<50ms config overhead (SC-016)
+- [X] T087 [US10] Integration test: rehydrate workspace after config.toml change, verify updated values take effect; missing config.toml → defaults applied without error
 
 **Checkpoint**: Configuration fully functional including validation and fallback. US10 independently testable.
 

@@ -13,6 +13,7 @@ use serde_json::json;
 
 use t_mem::db::connect_db;
 use t_mem::db::queries::Queries;
+use t_mem::errors::codes::LABEL_VALIDATION;
 use t_mem::models::graph::DependencyType;
 use t_mem::models::task::{Task, TaskStatus};
 use t_mem::server::state::{AppState, WorkspaceSnapshot};
@@ -1958,4 +1959,300 @@ async fn t080_batch_duplicate_ids_last_update_wins() {
         "each batch item should produce a context note, got {}",
         status_notes.len()
     );
+}
+
+// ── T086: Config enforcement integration test ──────────────────
+
+#[tokio::test]
+async fn t086_config_enforces_labels_batch_and_compaction() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write config with restricted labels, batch max_size=5, threshold_days=14
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    std::fs::write(
+        tmem_dir.join("config.toml"),
+        r#"
+allowed_labels = ["a", "b"]
+
+[compaction]
+threshold_days = 14
+max_candidates = 10
+truncation_length = 100
+
+[batch]
+max_size = 5
+"#,
+    )
+    .expect("write config.toml");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace with config");
+
+    // 1) Create a task for label/batch/compaction tests
+    let task_res = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "cfg test task" })),
+    )
+    .await
+    .expect("create task");
+    let test_task_id = task_res
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .expect("task_id")
+        .to_string();
+
+    // 2) add_label("a") should succeed (allowed)
+    tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": test_task_id, "label": "a" })),
+    )
+    .await
+    .expect("add_label 'a' should succeed");
+
+    // 3) add_label("c") should be rejected (not in allowed_labels)
+    let label_err = tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": test_task_id, "label": "c" })),
+    )
+    .await;
+    assert!(label_err.is_err(), "add_label 'c' should be rejected");
+    let err_code = label_err.unwrap_err().to_response().error.code;
+    assert_eq!(
+        err_code, LABEL_VALIDATION,
+        "should be LABEL_VALIDATION (3006)"
+    );
+
+    // 4) batch_update with 6 items should be rejected (max_size=5)
+    let updates: Vec<_> = (0..6)
+        .map(|i| json!({ "id": format!("nonexistent_{i}"), "status": "in_progress" }))
+        .collect();
+    let batch_err = tools::dispatch(
+        state.clone(),
+        "batch_update_tasks",
+        Some(json!({ "updates": updates })),
+    )
+    .await;
+    assert!(
+        batch_err.is_err(),
+        "batch of 6 should be rejected when max_size=5"
+    );
+
+    // 5) batch_update with 5 items should be accepted (within limit)
+    // Create 5 tasks so the batch has valid targets
+    let mut task_ids = Vec::new();
+    for i in 0..5 {
+        let res = tools::dispatch(
+            state.clone(),
+            "create_task",
+            Some(json!({ "title": format!("batch cfg {i}") })),
+        )
+        .await
+        .expect("create batch task");
+        task_ids.push(
+            res.get("task_id")
+                .and_then(|v| v.as_str())
+                .expect("task_id")
+                .to_string(),
+        );
+    }
+    let small_updates: Vec<_> = task_ids
+        .iter()
+        .map(|id| json!({ "id": id, "status": "in_progress" }))
+        .collect();
+    let batch_ok = tools::dispatch(
+        state.clone(),
+        "batch_update_tasks",
+        Some(json!({ "updates": small_updates })),
+    )
+    .await;
+    assert!(batch_ok.is_ok(), "batch of 5 should be accepted");
+
+    // 6) Verify compaction uses threshold_days=14 —
+    //    a task done 10 days ago should NOT appear as candidate
+    let ws_id = state
+        .snapshot_workspace()
+        .await
+        .expect("snapshot")
+        .workspace_id;
+    let db = connect_db(&ws_id).await.expect("db");
+
+    // Mark first task as done and set done_at to 10 days ago
+    tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({ "id": test_task_id, "status": "in_progress" })),
+    )
+    .await
+    .expect("transition to in_progress");
+    tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({ "id": test_task_id, "status": "done" })),
+    )
+    .await
+    .expect("transition to done");
+
+    // Manually backdate done_at to 10 days ago
+    let ten_days_ago = (Utc::now() - Duration::days(10)).to_rfc3339();
+    db.query(format!(
+        "UPDATE task:`{test_task_id}` SET done_at = <datetime>'{ten_days_ago}'"
+    ))
+    .await
+    .expect("backdate done_at");
+
+    // get_compaction_candidates should return 0 (10 < 14 days threshold)
+    let candidates = tools::dispatch(state.clone(), "get_compaction_candidates", Some(json!({})))
+        .await
+        .expect("get_compaction_candidates");
+    let cands = candidates
+        .get("candidates")
+        .and_then(|v| v.as_array())
+        .expect("candidates array");
+    assert!(
+        cands.is_empty(),
+        "10-day-old done task should not be candidate with 14-day threshold"
+    );
+
+    // 7) Verify truncation_length=100 enforced in apply_compaction
+    let long_summary = "x".repeat(200);
+    let _compact_result = tools::dispatch(
+        state.clone(),
+        "apply_compaction",
+        Some(json!({
+            "compactions": [{ "task_id": test_task_id.clone(), "summary": long_summary }]
+        })),
+    )
+    .await
+    .expect("apply_compaction");
+
+    // Verify the stored summary was truncated
+    let queries = Queries::new(db);
+    let task = queries
+        .get_task(&test_task_id)
+        .await
+        .expect("get task")
+        .expect("task exists");
+    assert!(
+        task.description.len() <= 110,
+        "summary should be truncated to around 100 chars (with prefix/suffix overhead), got {}",
+        task.description.len()
+    );
+    // The truncated output should be significantly shorter than the 200-char input
+    assert!(
+        task.description.len() < 200,
+        "truncation should have reduced the 200-char input"
+    );
+    // A truncated string contains the [Compacted] prefix
+    assert!(
+        task.description.contains("[Compacted]"),
+        "truncated text should contain [Compacted] prefix"
+    );
+}
+
+// ── T087: Config rehydration integration test ──────────────────
+
+#[tokio::test]
+async fn t087_rehydrate_after_config_change_and_missing_config() {
+    // Part 1: Set workspace with config, verify values, then change config
+    // and re-bind, verify updated values.
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+
+    // Initial config: batch.max_size=10
+    std::fs::write(
+        tmem_dir.join("config.toml"),
+        r#"
+[batch]
+max_size = 10
+"#,
+    )
+    .expect("write initial config");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("initial set_workspace");
+
+    let cfg1 = state
+        .workspace_config()
+        .await
+        .expect("config after first bind");
+    assert_eq!(
+        cfg1.batch.max_size, 10,
+        "initial batch max_size should be 10"
+    );
+
+    // Update config on disk: batch.max_size=20
+    std::fs::write(
+        tmem_dir.join("config.toml"),
+        r#"
+[batch]
+max_size = 20
+"#,
+    )
+    .expect("write updated config");
+
+    // Re-bind to pick up changes
+    let state2 = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state2.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("re-bind set_workspace");
+
+    let cfg2 = state2
+        .workspace_config()
+        .await
+        .expect("config after re-bind");
+    assert_eq!(
+        cfg2.batch.max_size, 20,
+        "updated batch max_size should be 20"
+    );
+
+    // Part 2: Remove config.toml, re-bind, defaults should apply
+    std::fs::remove_file(tmem_dir.join("config.toml")).expect("remove config.toml");
+
+    let state3 = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state3.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace without config.toml");
+
+    let cfg3 = state3
+        .workspace_config()
+        .await
+        .expect("config with defaults");
+    assert_eq!(cfg3.batch.max_size, 100, "defaults: batch max_size=100");
+    assert_eq!(
+        cfg3.compaction.threshold_days, 7,
+        "defaults: threshold_days=7"
+    );
+    assert_eq!(cfg3.default_priority, "p2", "defaults: priority=p2");
 }
