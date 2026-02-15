@@ -1113,3 +1113,186 @@ async fn t053_claim_release_conflict_audit_trail_and_assignee_filter() {
         t_mem::errors::codes::TASK_NOT_CLAIMABLE
     );
 }
+
+// ── T058: Issue types integration test ──────────────────────────
+
+#[tokio::test]
+async fn t058_issue_types_filter_custom_type_and_context_note() {
+    // Set up workspace with allowed_types config
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    std::fs::write(
+        tmem_dir.join("config.toml"),
+        r#"allowed_types = ["task", "bug", "spike", "decision", "milestone"]
+"#,
+    )
+    .expect("write config.toml");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create tasks with different issue_types
+    let task_result = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Normal task" })),
+    )
+    .await
+    .expect("create default task");
+    let task_id = task_result["task_id"].as_str().unwrap().to_string();
+    assert_eq!(task_result["issue_type"].as_str().unwrap(), "task");
+
+    let bug_result = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Fix crash", "issue_type": "bug" })),
+    )
+    .await
+    .expect("create bug");
+    let bug_id = bug_result["task_id"].as_str().unwrap().to_string();
+    assert_eq!(bug_result["issue_type"].as_str().unwrap(), "bug");
+
+    let spike_result = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Research options", "issue_type": "spike" })),
+    )
+    .await
+    .expect("create spike");
+    let spike_id = spike_result["task_id"].as_str().unwrap().to_string();
+    assert_eq!(spike_result["issue_type"].as_str().unwrap(), "spike");
+
+    // ── Filter by issue_type on get_ready_work ──────────────────
+    let bugs_only = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "issue_type": "bug" })),
+    )
+    .await
+    .expect("get_ready_work bug filter");
+
+    let bug_tasks = bugs_only["tasks"].as_array().unwrap();
+    assert_eq!(bug_tasks.len(), 1, "only one bug task expected");
+    assert_eq!(bug_tasks[0]["id"].as_str().unwrap(), bug_id);
+
+    // No filter returns all 3
+    let all_tasks = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work all");
+    assert_eq!(all_tasks["tasks"].as_array().unwrap().len(), 3);
+
+    // ── Invalid type rejected on create ─────────────────────────
+    let err = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Epic task", "issue_type": "epic" })),
+    )
+    .await
+    .expect_err("epic not in allowed_types");
+    assert_eq!(
+        err.to_response().error.code,
+        t_mem::errors::codes::INVALID_ISSUE_TYPE
+    );
+
+    // ── Type change via update_task creates context note ────────
+    let update_result = tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({
+            "id": task_id,
+            "status": "todo",
+            "issue_type": "decision",
+        })),
+    )
+    .await
+    .expect("update issue_type to decision");
+    assert!(update_result["context_id"].is_string());
+
+    // Verify task now has issue_type "decision" via get_ready_work filter
+    let decisions = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "issue_type": "decision" })),
+    )
+    .await
+    .expect("filter decisions");
+    let decision_tasks = decisions["tasks"].as_array().unwrap();
+    assert_eq!(decision_tasks.len(), 1);
+    assert_eq!(decision_tasks[0]["id"].as_str().unwrap(), task_id);
+    assert_eq!(
+        decision_tasks[0]["issue_type"].as_str().unwrap(),
+        "decision"
+    );
+
+    // Verify invalid type change rejected on update
+    let err = tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({
+            "id": spike_id,
+            "status": "todo",
+            "issue_type": "feature",
+        })),
+    )
+    .await
+    .expect_err("feature not in allowed_types");
+    assert_eq!(
+        err.to_response().error.code,
+        t_mem::errors::codes::INVALID_ISSUE_TYPE
+    );
+
+    // ── Flush and rehydrate preserves issue_type ────────────────
+    tools::dispatch(state.clone(), "flush_state", None)
+        .await
+        .expect("flush_state");
+
+    // Read tasks.md and verify issue_type appears in frontmatter
+    let tasks_md = std::fs::read_to_string(tmem_dir.join("tasks.md")).expect("read tasks.md");
+    assert!(
+        tasks_md.contains("issue_type: bug"),
+        "bug type in frontmatter"
+    );
+    assert!(
+        tasks_md.contains("issue_type: decision"),
+        "decision type in frontmatter"
+    );
+    assert!(
+        tasks_md.contains("issue_type: spike"),
+        "spike type in frontmatter"
+    );
+
+    // Create a new state, set workspace, and verify rehydrated types
+    let state2 = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state2.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace 2");
+
+    let rehydrated = tools::dispatch(
+        state2.clone(),
+        "get_ready_work",
+        Some(json!({ "issue_type": "bug" })),
+    )
+    .await
+    .expect("rehydrated bug filter");
+    let rehydrated_bugs = rehydrated["tasks"].as_array().unwrap();
+    assert_eq!(
+        rehydrated_bugs.len(),
+        1,
+        "bug type preserved after rehydration"
+    );
+}

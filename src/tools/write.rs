@@ -25,6 +25,8 @@ struct UpdateTaskParams {
     notes: Option<String>,
     #[serde(default)]
     priority: Option<String>,
+    #[serde(default)]
+    issue_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +52,8 @@ struct CreateTaskParams {
     parent_task_id: Option<String>,
     #[serde(default)]
     work_item_id: Option<String>,
+    #[serde(default)]
+    issue_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -150,6 +154,20 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     validate_transition(previous_status, new_status)?;
 
+    // Validate issue_type against allowed_types if configured (FR-048)
+    let issue_type = if let Some(ref new_type) = parsed.issue_type {
+        if let Some(config) = state.workspace_config().await {
+            if !config.allowed_types.is_empty() && !config.allowed_types.contains(new_type) {
+                return Err(TMemError::Task(TaskError::InvalidIssueType {
+                    issue_type: new_type.clone(),
+                }));
+            }
+        }
+        new_type.clone()
+    } else {
+        existing.issue_type.clone()
+    };
+
     // Apply priority change if requested
     let (priority, priority_order) = if let Some(ref new_priority) = parsed.priority {
         let order = compute_priority_order(new_priority);
@@ -167,7 +185,7 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
         context_summary: existing.context_summary,
         priority,
         priority_order,
-        issue_type: existing.issue_type,
+        issue_type,
         assignee: existing.assignee,
         defer_until: existing.defer_until,
         pinned: existing.pinned,
@@ -320,6 +338,17 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
         return Err(TMemError::Task(TaskError::TitleEmpty));
     }
 
+    // Validate issue_type against allowed_types if configured (FR-048)
+    if let Some(ref issue_type) = parsed.issue_type {
+        if let Some(config) = state.workspace_config().await {
+            if !config.allowed_types.is_empty() && !config.allowed_types.contains(issue_type) {
+                return Err(TMemError::Task(TaskError::InvalidIssueType {
+                    issue_type: issue_type.clone(),
+                }));
+            }
+        }
+    }
+
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db);
 
@@ -329,6 +358,7 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
             parsed.description.as_deref().unwrap_or(""),
             parsed.work_item_id.as_deref(),
             parsed.parent_task_id.as_deref(),
+            parsed.issue_type.as_deref(),
         )
         .await?;
 
@@ -336,6 +366,7 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
         "task_id": task.id,
         "title": task.title,
         "status": "todo",
+        "issue_type": task.issue_type,
         "created_at": task.created_at.to_rfc3339(),
     });
 

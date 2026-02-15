@@ -5,8 +5,8 @@ use serde_json::json;
 use tokio::test;
 
 use t_mem::errors::codes::{
-    COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION,
-    TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE, WORKSPACE_NOT_SET,
+    COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_ISSUE_TYPE, INVALID_STATUS,
+    LABEL_VALIDATION, TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE, WORKSPACE_NOT_SET,
 };
 use t_mem::server::state::AppState;
 use t_mem::tools;
@@ -964,4 +964,182 @@ async fn contract_release_records_previous_claimant() {
     );
     assert!(release_result["context_id"].is_string());
     assert!(release_result["released_at"].is_string());
+}
+
+// ── T054: issue_type contract tests ─────────────────────────────
+
+#[test]
+async fn contract_update_task_issue_type_change_creates_context_note() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create a task (defaults to issue_type "task")
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Type change test" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Update issue_type to "bug"
+    let result = tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({
+            "id": task_id,
+            "status": "todo",
+            "issue_type": "bug",
+        })),
+    )
+    .await
+    .expect("update_task with issue_type");
+
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert!(result["context_id"].is_string());
+    assert!(result["updated_at"].is_string());
+}
+
+#[test]
+async fn contract_update_task_invalid_issue_type_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write a .tmem/config.toml with allowed_types
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("config.toml"),
+        r#"allowed_types = ["task", "bug", "spike"]
+"#,
+    )
+    .expect("write config.toml");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Invalid type test" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Try changing to a type not in allowed_types
+    let err = tools::dispatch(
+        state.clone(),
+        "update_task",
+        Some(json!({
+            "id": task_id,
+            "status": "todo",
+            "issue_type": "epic",
+        })),
+    )
+    .await
+    .expect_err("expected invalid issue type error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, INVALID_ISSUE_TYPE);
+}
+
+#[test]
+async fn contract_create_task_with_issue_type() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create a task with explicit issue_type "bug"
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Bug report", "issue_type": "bug" })),
+    )
+    .await
+    .expect("create_task with issue_type");
+
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+    assert_eq!(created["issue_type"].as_str().unwrap(), "bug");
+
+    // Verify via get_ready_work filter
+    let ready = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "issue_type": "bug" })),
+    )
+    .await
+    .expect("get_ready_work");
+
+    let tasks = ready["tasks"].as_array().unwrap();
+    assert!(tasks.iter().any(|t| t["id"].as_str().unwrap() == task_id));
+}
+
+#[test]
+async fn contract_create_task_invalid_issue_type_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write a .tmem/config.toml with allowed_types
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("config.toml"),
+        r#"allowed_types = ["task", "bug", "spike"]
+"#,
+    )
+    .expect("write config.toml");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Try creating with a type not in allowed_types
+    let err = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Epic task", "issue_type": "epic" })),
+    )
+    .await
+    .expect_err("expected invalid issue type error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, INVALID_ISSUE_TYPE);
 }

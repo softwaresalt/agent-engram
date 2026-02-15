@@ -172,14 +172,14 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T054 [P] [US6] Write contract tests for update_task with issue_type param in tests/contract/write_test.rs: valid type change creates context note, invalid type returns error 3010 when allowed_types configured (FR-047, FR-048)
+- [x] T054 [P] [US6] Write contract tests for update_task with issue_type param in tests/contract/write_test.rs: valid type change creates context note, invalid type returns error 3010 when allowed_types configured (FR-047, FR-048)
 
 ### Green Phase (Implementation)
 
-- [ ] T055 [US6] Extend update_task handler in src/tools/write.rs to accept issue_type param: validate against WorkspaceConfig.allowed_types if set (error 3010), update field, create context note recording type change (FR-047, FR-048)
-- [ ] T056 [US6] Extend hydration to parse issue_type from YAML frontmatter (default "task" when missing) in src/services/hydration.rs (FR-047)
-- [ ] T057 [US6] Extend dehydration to write issue_type to YAML frontmatter in src/services/dehydration.rs (FR-047)
-- [ ] T058 [US6] Integration test in tests/integration/enhanced_features_test.rs: create tasks as "task", "bug", "spike"; filter get_ready_work(issue_type: "bug") returns only bugs; custom type from config accepted; type change creates context note
+- [x] T055 [US6] Extend update_task handler in src/tools/write.rs to accept issue_type param: validate against WorkspaceConfig.allowed_types if set (error 3010), update field, create context note recording type change (FR-047, FR-048)
+- [x] T056 [US6] Extend hydration to parse issue_type from YAML frontmatter (default "task" when missing) in src/services/hydration.rs (FR-047)
+- [x] T057 [US6] Extend dehydration to write issue_type to YAML frontmatter in src/services/dehydration.rs (FR-047)
+- [x] T058 [US6] Integration test in tests/integration/enhanced_features_test.rs: create tasks as "task", "bug", "spike"; filter get_ready_work(issue_type: "bug") returns only bugs; custom type from config accepted; type change creates context note
 
 **Checkpoint**: Issue types functional with filtering and config validation. US6 independently testable.
 

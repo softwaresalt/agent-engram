@@ -278,6 +278,7 @@ impl Queries {
         description: &str,
         work_item_id: Option<&str>,
         parent_id: Option<&str>,
+        issue_type: Option<&str>,
     ) -> Result<Task, TMemError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -290,7 +291,7 @@ impl Queries {
             context_summary: None,
             priority: "p2".to_owned(),
             priority_order: 2,
-            issue_type: "task".to_owned(),
+            issue_type: issue_type.unwrap_or("task").to_owned(),
             assignee: None,
             defer_until: None,
             pinned: false,
