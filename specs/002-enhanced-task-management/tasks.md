@@ -217,15 +217,15 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T067 [P] [US8] Write contract tests for get_workspace_statistics in tests/contract/read_test.rs and brief/fields params on get_ready_work: workspace-not-set (1003), statistics returns by_status/by_priority/by_type/by_label, brief mode strips descriptions (FR-055, FR-056, FR-057)
+- [x] T067 [P] [US8] Write contract tests for get_workspace_statistics in tests/contract/read_test.rs and brief/fields params on get_ready_work: workspace-not-set (1003), statistics returns by_status/by_priority/by_type/by_label, brief mode strips descriptions (FR-055, FR-056, FR-057)
 
 ### Green Phase (Implementation)
 
-- [ ] T068 [US8] Implement filter_fields(value, brief, fields) utility in src/services/output.rs: when brief=true keep only \[id, title, status, priority, assignee\]; when fields provided keep only listed fields (FR-055, FR-056)
-- [ ] T069 [US8] Apply output filter to get_ready_work, get_task_graph, and check_status response paths in src/tools/read.rs (FR-055, FR-056)
-- [ ] T070 [US8] Implement workspace statistics query in src/db/queries.rs: GROUP BY status, GROUP BY priority, GROUP BY issue_type; label counts via label table; compacted_count, eligible_count, avg_compaction_level; deferred_count, pinned_count, claimed_count (FR-057)
-- [ ] T071 [US8] Implement get_workspace_statistics tool handler in src/tools/read.rs: call statistics query, return structured response (FR-057)
-- [ ] T072 [US8] Integration test in tests/integration/enhanced_features_test.rs: workspace with 20 tasks (mixed status, priority, type, labels, some deferred/pinned/claimed), call statistics and verify all group counts correct; call get_ready_work(brief: true) and verify only essential fields returned (SC-015)
+- [x] T068 [US8] Implement filter_fields(value, brief, fields) utility in src/services/output.rs: when brief=true keep only \[id, title, status, priority, assignee\]; when fields provided keep only listed fields (FR-055, FR-056)
+- [x] T069 [US8] Apply output filter to get_ready_work, get_task_graph, and check_status response paths in src/tools/read.rs (FR-055, FR-056)
+- [x] T070 [US8] Implement workspace statistics query in src/db/queries.rs: GROUP BY status, GROUP BY priority, GROUP BY issue_type; label counts via label table; compacted_count, eligible_count, avg_compaction_level; deferred_count, pinned_count, claimed_count (FR-057)
+- [x] T071 [US8] Implement get_workspace_statistics tool handler in src/tools/read.rs: call statistics query, return structured response (FR-057)
+- [x] T072 [US8] Integration test in tests/integration/enhanced_features_test.rs: workspace with 20 tasks (mixed status, priority, type, labels, some deferred/pinned/claimed), call statistics and verify all group counts correct; call get_ready_work(brief: true) and verify only essential fields returned (SC-015)
 
 **Checkpoint**: Output controls and statistics functional. US8 independently testable.
 

@@ -1542,3 +1542,198 @@ This task was deferred to a date that has already passed.
         "correct task returned"
     );
 }
+
+// ── T072: Statistics and output controls integration test ───────
+
+#[tokio::test]
+async fn t072_statistics_and_brief_mode_20_tasks() {
+    // Setup workspace with DB
+    let state = Arc::new(AppState::new(10));
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    std::fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create 20 tasks with mixed issue_type
+    // Types: 8 bug, 6 feature, 4 chore, 2 task (default)
+    let types = [
+        "bug", "feature", "chore", "bug", "feature", "bug", "chore", "feature", "bug", "bug",
+        "feature", "chore", "bug", "feature", "chore", "bug", "bug", "feature", "task", "task",
+    ];
+    let mut task_ids: Vec<String> = Vec::new();
+    for (i, issue_type) in types.iter().enumerate() {
+        let created = tools::dispatch(
+            state.clone(),
+            "create_task",
+            Some(json!({
+                "title": format!("stats-int-task-{i}"),
+                "description": format!("Description for task {i} with some details"),
+                "issue_type": issue_type,
+            })),
+        )
+        .await
+        .expect("create_task");
+        task_ids.push(created["task_id"].as_str().unwrap().to_string());
+    }
+
+    // Move 5 tasks to in_progress
+    for id in &task_ids[0..5] {
+        tools::dispatch(
+            state.clone(),
+            "update_task",
+            Some(json!({ "id": id, "status": "in_progress" })),
+        )
+        .await
+        .expect("update_task to in_progress");
+    }
+
+    // Move 3 tasks to done
+    for id in &task_ids[5..8] {
+        tools::dispatch(
+            state.clone(),
+            "update_task",
+            Some(json!({ "id": id, "status": "in_progress" })),
+        )
+        .await
+        .expect("update_task to in_progress");
+        tools::dispatch(
+            state.clone(),
+            "update_task",
+            Some(json!({ "id": id, "status": "done" })),
+        )
+        .await
+        .expect("update_task to done");
+    }
+
+    // Add labels to some tasks
+    for id in &task_ids[0..4] {
+        tools::dispatch(
+            state.clone(),
+            "add_label",
+            Some(json!({ "task_id": id, "label": "sprint-1" })),
+        )
+        .await
+        .expect("add_label sprint-1");
+    }
+    for id in &task_ids[4..7] {
+        tools::dispatch(
+            state.clone(),
+            "add_label",
+            Some(json!({ "task_id": id, "label": "critical" })),
+        )
+        .await
+        .expect("add_label critical");
+    }
+
+    // Defer 2 tasks
+    let future = (Utc::now() + Duration::days(7)).to_rfc3339();
+    for id in &task_ids[8..10] {
+        tools::dispatch(
+            state.clone(),
+            "defer_task",
+            Some(json!({ "task_id": id, "until": future })),
+        )
+        .await
+        .expect("defer_task");
+    }
+
+    // Pin 1 task
+    tools::dispatch(
+        state.clone(),
+        "pin_task",
+        Some(json!({ "task_id": &task_ids[10] })),
+    )
+    .await
+    .expect("pin_task");
+
+    // Claim 2 tasks
+    for id in &task_ids[11..13] {
+        tools::dispatch(
+            state.clone(),
+            "claim_task",
+            Some(json!({ "task_id": id, "claimant": "alice" })),
+        )
+        .await
+        .expect("claim_task");
+    }
+
+    // ─── Verify statistics ──────────────────────────────────────
+    let ws_stats = tools::dispatch(state.clone(), "get_workspace_statistics", Some(json!({})))
+        .await
+        .expect("get_workspace_statistics");
+
+    assert_eq!(ws_stats["total_tasks"].as_u64().unwrap(), 20);
+
+    // Status: 12 todo, 5 in_progress, 3 done
+    let by_status = &ws_stats["by_status"];
+    assert_eq!(by_status["todo"].as_u64().unwrap(), 12);
+    assert_eq!(by_status["in_progress"].as_u64().unwrap(), 5);
+    assert_eq!(by_status["done"].as_u64().unwrap(), 3);
+
+    // Type: 8 bug, 6 feature, 4 chore, 2 task
+    let by_type = &ws_stats["by_type"];
+    assert_eq!(by_type["bug"].as_u64().unwrap(), 8);
+    assert_eq!(by_type["feature"].as_u64().unwrap(), 6);
+    assert_eq!(by_type["chore"].as_u64().unwrap(), 4);
+    assert_eq!(by_type["task"].as_u64().unwrap(), 2);
+
+    // Labels: sprint-1 -> 4, critical -> 3
+    let by_label = &ws_stats["by_label"];
+    assert_eq!(by_label["sprint-1"].as_u64().unwrap(), 4);
+    assert_eq!(by_label["critical"].as_u64().unwrap(), 3);
+
+    // Deferred, pinned, claimed counts
+    assert_eq!(ws_stats["deferred_count"].as_u64().unwrap(), 2);
+    assert_eq!(ws_stats["pinned_count"].as_u64().unwrap(), 1);
+    assert_eq!(ws_stats["claimed_count"].as_u64().unwrap(), 2);
+
+    // ─── Verify brief mode strips descriptions ─────────────────
+    let ready = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "brief": true })),
+    )
+    .await
+    .expect("get_ready_work with brief");
+
+    let tasks = ready["tasks"].as_array().unwrap();
+    assert!(!tasks.is_empty(), "should have eligible tasks");
+    for task in tasks {
+        // Essential fields present
+        assert!(task["id"].is_string());
+        assert!(task["title"].is_string());
+        assert!(task["status"].is_string());
+        assert!(task["priority"].is_string());
+        // Description stripped in brief mode
+        assert!(
+            task.get("description").is_none() || task["description"].is_null(),
+            "brief mode should not include description, got: {:?}",
+            task.get("description")
+        );
+    }
+
+    // ─── Verify non-brief includes description ──────────────────
+    let ready_full = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "brief": false })),
+    )
+    .await
+    .expect("get_ready_work without brief");
+
+    let full_tasks = ready_full["tasks"].as_array().unwrap();
+    assert!(!full_tasks.is_empty());
+    let has_desc = full_tasks
+        .iter()
+        .any(|t| t.get("description").is_some() && !t["description"].is_null());
+    assert!(has_desc, "non-brief mode should include descriptions");
+}

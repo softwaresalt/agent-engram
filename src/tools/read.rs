@@ -8,6 +8,7 @@ use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
 use crate::server::state::SharedState;
 use crate::services::embedding;
+use crate::services::output::{self, filter_value};
 use crate::services::search::{SearchCandidate, hybrid_search};
 
 #[derive(Deserialize)]
@@ -15,11 +16,23 @@ struct TaskGraphParams {
     root_task_id: String,
     #[serde(default = "default_depth")]
     depth: u32,
+    /// Accepted for API consistency; graph nodes are already compact.
+    #[serde(default)]
+    #[allow(dead_code)]
+    brief: bool,
+    /// Accepted for API consistency; graph nodes are already compact.
+    #[serde(default)]
+    #[allow(dead_code)]
+    fields: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct CheckStatusParams {
     work_item_ids: Vec<String>,
+    #[serde(default)]
+    brief: bool,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +91,9 @@ pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result
             })
         })?;
 
+    // TaskGraphParams accepts brief/fields for API consistency, but graph
+    // nodes are already compact (id + status + children), so we only forward
+    // the structural depth parameter.
     let root_node = build_node(&queries, root, parsed.depth).await?;
 
     Ok(json!({
@@ -104,14 +120,13 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
         let task = queries.task_by_work_item(&id).await?;
 
         if let Some(task) = task {
-            statuses.insert(
-                id.clone(),
-                json!({
-                    "task_id": task.id,
-                    "status": task.status.as_str().to_string(),
-                    "updated_at": task.updated_at.to_rfc3339(),
-                }),
-            );
+            let task_value = json!({
+                "task_id": task.id,
+                "status": task.status.as_str().to_string(),
+                "updated_at": task.updated_at.to_rfc3339(),
+            });
+            let filtered = filter_value(task_value, parsed.brief, parsed.fields.as_deref());
+            statuses.insert(id.clone(), filtered);
         }
     }
 
@@ -170,12 +185,40 @@ pub async fn get_ready_work(state: SharedState, params: Option<Value>) -> Result
     let task_values: Vec<Value> = result
         .tasks
         .into_iter()
-        .map(|t| serialize_task(&t, parsed.brief, parsed.fields.as_deref()))
+        .map(|t| output::serialize_task(&t, parsed.brief, parsed.fields.as_deref()))
         .collect();
 
     Ok(json!({
         "tasks": task_values,
         "total_eligible": result.total_eligible,
+    }))
+}
+
+// ── Workspace statistics ─────────────────────────────────────────────────
+
+/// Return aggregate counts by status, priority, type, and label.
+pub async fn get_workspace_statistics(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, TMemError> {
+    ensure_workspace(&state).await?;
+
+    let ws_id = workspace_id(&state).await?;
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db.clone());
+
+    let statistics = queries.get_workspace_statistics().await?;
+
+    Ok(json!({
+        "total_tasks": statistics.total_tasks,
+        "by_status": statistics.by_status,
+        "by_priority": statistics.by_priority,
+        "by_type": statistics.by_type,
+        "by_label": statistics.by_label,
+        "deferred_count": statistics.deferred_count,
+        "pinned_count": statistics.pinned_count,
+        "claimed_count": statistics.claimed_count,
+        "compacted_count": statistics.compacted_count,
     }))
 }
 
@@ -234,48 +277,6 @@ pub async fn get_compaction_candidates(
         .collect();
 
     Ok(json!({ "candidates": candidate_values }))
-}
-
-/// Serialize a task to JSON, optionally applying brief mode or field filtering.
-fn serialize_task(task: &Task, brief: bool, fields: Option<&[String]>) -> Value {
-    if brief {
-        return json!({
-            "id": task.id,
-            "title": task.title,
-            "status": task.status.as_str(),
-            "priority": task.priority,
-            "assignee": task.assignee,
-        });
-    }
-
-    let full = json!({
-        "id": task.id,
-        "title": task.title,
-        "status": task.status.as_str(),
-        "priority": task.priority,
-        "priority_order": task.priority_order,
-        "issue_type": task.issue_type,
-        "assignee": task.assignee,
-        "description": task.description,
-        "context_summary": task.context_summary,
-        "pinned": task.pinned,
-        "defer_until": task.defer_until.map(|d| d.to_rfc3339()),
-        "compaction_level": task.compaction_level,
-        "created_at": task.created_at.to_rfc3339(),
-        "updated_at": task.updated_at.to_rfc3339(),
-    });
-
-    if let Some(fields) = fields {
-        let obj = full.as_object().unwrap();
-        let filtered: serde_json::Map<String, Value> = obj
-            .iter()
-            .filter(|(k, _)| fields.iter().any(|f| f == *k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        Value::Object(filtered)
-    } else {
-        full
-    }
 }
 
 #[derive(Deserialize)]

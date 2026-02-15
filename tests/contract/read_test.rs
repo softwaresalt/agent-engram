@@ -411,3 +411,111 @@ async fn contract_get_compaction_candidates_excludes_pinned() {
         .any(|c| c["task_id"].as_str() == Some("pinned-done-1"));
     assert!(!has_pinned, "pinned tasks must be excluded from candidates");
 }
+
+// ── Statistics & output-controls contract tests (T067) ─────────────────────
+
+#[test]
+async fn contract_get_workspace_statistics_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "get_workspace_statistics", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_get_workspace_statistics_returns_counts() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    std::fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create tasks with varying issue_type (set at creation time)
+    for (i, issue_type) in ["bug", "feature", "bug", "chore"].iter().enumerate() {
+        tools::dispatch(
+            state.clone(),
+            "create_task",
+            Some(json!({
+                "title": format!("stats task {i}"),
+                "issue_type": issue_type,
+            })),
+        )
+        .await
+        .expect("create_task should succeed");
+    }
+
+    let result = tools::dispatch(state, "get_workspace_statistics", Some(json!({})))
+        .await
+        .expect("should return statistics");
+
+    assert_eq!(result["total_tasks"].as_u64().unwrap(), 4);
+    assert!(result["by_status"].is_object());
+    assert!(result["by_priority"].is_object());
+    assert!(result["by_type"].is_object());
+    assert!(result["by_label"].is_object());
+
+    // All 4 tasks created in todo status with default priority p2
+    assert_eq!(result["by_status"]["todo"].as_u64().unwrap(), 4);
+    assert_eq!(result["by_priority"]["p2"].as_u64().unwrap(), 4);
+
+    // Type breakdown
+    assert_eq!(result["by_type"]["bug"].as_u64().unwrap(), 2);
+    assert_eq!(result["by_type"]["feature"].as_u64().unwrap(), 1);
+    assert_eq!(result["by_type"]["chore"].as_u64().unwrap(), 1);
+}
+
+#[test]
+async fn contract_get_ready_work_brief_strips_fields() {
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("brief_mode"))
+        .await
+        .expect("set workspace");
+
+    tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({
+            "title": "brief test",
+            "description": "a long description that should be stripped",
+            "priority": "high",
+        })),
+    )
+    .await
+    .expect("create_task should succeed");
+
+    // With brief=true, only essential fields should appear
+    let result = tools::dispatch(state, "get_ready_work", Some(json!({ "brief": true })))
+        .await
+        .expect("should succeed");
+
+    let tasks = result["tasks"].as_array().unwrap();
+    assert!(!tasks.is_empty());
+
+    let task = &tasks[0];
+    // Brief fields must be present
+    assert!(task["id"].is_string());
+    assert!(task["title"].is_string());
+    assert!(task["status"].is_string());
+    assert!(task["priority"].is_string());
+
+    // Description should NOT be present in brief mode
+    assert!(
+        task.get("description").is_none() || task["description"].is_null(),
+        "brief mode should strip description"
+    );
+}

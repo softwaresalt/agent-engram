@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -206,6 +206,20 @@ pub struct ReadyWorkResult {
     pub tasks: Vec<Task>,
     /// Total number of eligible tasks before applying limit.
     pub total_eligible: u32,
+}
+
+/// Aggregate workspace statistics.
+#[derive(Debug)]
+pub struct WorkspaceStatistics {
+    pub total_tasks: u64,
+    pub by_status: HashMap<String, u64>,
+    pub by_priority: HashMap<String, u64>,
+    pub by_type: HashMap<String, u64>,
+    pub by_label: HashMap<String, u64>,
+    pub deferred_count: u64,
+    pub pinned_count: u64,
+    pub claimed_count: u64,
+    pub compacted_count: u64,
 }
 
 impl Queries {
@@ -1046,6 +1060,144 @@ impl Queries {
         }
 
         Ok(false)
+    }
+
+    /// Compute aggregate workspace statistics.
+    ///
+    /// Returns grouped counts by status, priority, issue type, plus
+    /// deferred, pinned, claimed, and compaction metrics.
+    pub async fn get_workspace_statistics(&self) -> Result<WorkspaceStatistics, TMemError> {
+        // SurrealDB v2 GROUP BY requires SELECT fields to match GROUP BY columns
+        // exactly — aliasing with AS breaks grouping. Use per-field structs.
+
+        #[derive(Deserialize)]
+        struct StatusGroup {
+            #[serde(default)]
+            status: Option<String>,
+            count: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct PriorityGroup {
+            #[serde(default)]
+            priority: Option<String>,
+            count: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct TypeGroup {
+            #[serde(default)]
+            issue_type: Option<String>,
+            count: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct LabelGroupRow {
+            name: String,
+            count: u64,
+        }
+
+        let by_status: Vec<StatusGroup> = self
+            .db
+            .query("SELECT status, count() AS count FROM task GROUP BY status")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let by_priority: Vec<PriorityGroup> = self
+            .db
+            .query("SELECT priority, count() AS count FROM task GROUP BY priority")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let by_type: Vec<TypeGroup> = self
+            .db
+            .query("SELECT issue_type, count() AS count FROM task GROUP BY issue_type")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        // Label counts via label table
+        let by_label: Vec<LabelGroupRow> = self
+            .db
+            .query("SELECT name, count() AS count FROM label GROUP BY name")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        // Scalar counts
+        let deferred_rows: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM task \
+                 WHERE defer_until != NONE AND defer_until > time::now() GROUP ALL",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let pinned_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task WHERE pinned = true GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let claimed_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task WHERE assignee != NONE GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let compacted_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task WHERE compaction_level > 0 GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let total_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let status_map: HashMap<String, u64> = by_status
+            .into_iter()
+            .filter_map(|r| r.status.map(|s| (s, r.count)))
+            .collect();
+        let priority_map: HashMap<String, u64> = by_priority
+            .into_iter()
+            .filter_map(|r| r.priority.map(|p| (p, r.count)))
+            .collect();
+        let type_map: HashMap<String, u64> = by_type
+            .into_iter()
+            .filter_map(|r| r.issue_type.map(|t| (t, r.count)))
+            .collect();
+
+        Ok(WorkspaceStatistics {
+            total_tasks: total_rows.first().map_or(0, |r| r.count),
+            by_status: status_map,
+            by_priority: priority_map,
+            by_type: type_map,
+            by_label: by_label.into_iter().map(|r| (r.name, r.count)).collect(),
+            deferred_count: deferred_rows.first().map_or(0, |r| r.count),
+            pinned_count: pinned_rows.first().map_or(0, |r| r.count),
+            claimed_count: claimed_rows.first().map_or(0, |r| r.count),
+            compacted_count: compacted_rows.first().map_or(0, |r| r.count),
+        })
     }
 }
 

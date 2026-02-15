@@ -69,10 +69,9 @@ pub async fn dispatch(
         "undefer_task" => write::undefer_task(state, params).await,
         "pin_task" => write::pin_task(state, params).await,
         "unpin_task" => write::unpin_task(state, params).await,
+        "get_workspace_statistics" => read::get_workspace_statistics(state, params).await,
         // Enhanced task management tool stubs (002-enhanced-task-management)
-        "get_workspace_statistics" | "batch_update_tasks" | "add_comment" => {
-            Err(workspace_not_set())
-        }
+        "batch_update_tasks" | "add_comment" => Err(workspace_not_set()),
         _ => Err(not_implemented(method)),
     }
 }
