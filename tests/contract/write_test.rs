@@ -5,7 +5,8 @@ use serde_json::json;
 use tokio::test;
 
 use t_mem::errors::codes::{
-    CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION, WORKSPACE_NOT_SET,
+    COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION,
+    WORKSPACE_NOT_SET,
 };
 use t_mem::server::state::AppState;
 use t_mem::tools;
@@ -711,4 +712,50 @@ async fn contract_add_dependency_cycle_rejected() {
     .expect_err("expected cyclic dependency error");
 
     assert_eq!(err.to_response().error.code, CYCLIC_DEPENDENCY);
+}
+
+// ── Compaction contract tests (T041) ───────────────────────────────────────
+
+#[test]
+async fn contract_apply_compaction_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "compactions": [{ "task_id": "task:abc", "summary": "compacted" }]
+    }));
+
+    let err = tools::dispatch(state, "apply_compaction", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_apply_compaction_nonexistent_task() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let err = tools::dispatch(
+        state,
+        "apply_compaction",
+        Some(json!({
+            "compactions": [{ "task_id": "nonexistent-task", "summary": "compacted" }]
+        })),
+    )
+    .await
+    .expect_err("expected compaction failed error");
+
+    assert_eq!(err.to_response().error.code, COMPACTION_FAILED);
 }

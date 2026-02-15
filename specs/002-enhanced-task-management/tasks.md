@@ -127,17 +127,17 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T041 [P] [US4] Write contract tests for get_compaction_candidates in tests/contract/read_test.rs and apply_compaction in tests/contract/write_test.rs: workspace-not-set (1003), valid candidates returned, empty list when none eligible, compaction of nonexistent task (3008), pinned task excluded (FR-038, FR-039)
+- [X] T041 [P] [US4] Write contract tests for get_compaction_candidates in tests/contract/read_test.rs and apply_compaction in tests/contract/write_test.rs: workspace-not-set (1003), valid candidates returned, empty list when none eligible, compaction of nonexistent task (3008), pinned task excluded (FR-038, FR-039)
 
 ### Green Phase (Implementation)
 
-- [ ] T042 [US4] Implement compaction candidate query in src/db/queries.rs: WHERE status = 'done' AND updated_at \< (now - threshold_days) AND pinned = false, ORDER BY updated_at ASC, LIMIT $limit (FR-038)
-- [ ] T043 [US4] Implement get_compaction_candidates tool handler in src/tools/read.rs: read threshold_days and max_candidates from WorkspaceConfig, call query, return candidates with task_id, title, description, compaction_level, age_days (FR-038)
-- [ ] T044 [US4] Implement apply_compaction tool handler in src/tools/write.rs: for each {task_id, summary}, replace description with summary, increment compaction_level, set compacted_at to now(); return per-item results with new_compaction_level (FR-039, FR-040, FR-041)
-- [ ] T045 [US4] Implement rule-based truncation service in src/services/compaction.rs: truncate_at_word_boundary(text, max_len) that truncates to configurable length (default 500) at word boundary, preserves metadata prefix "\[Compacted\]" (FR-042)
-- [ ] T046 [US4] Unit tests for truncation service in src/services/compaction.rs: typical 2000-char description → \<500 chars (>70% reduction, SC-014), word boundary preservation, short text unchanged, empty input
-- [ ] T047 [US4] Integration test in tests/integration/enhanced_features_test.rs: create 50 done tasks with old timestamps, call get_compaction_candidates, apply_compaction with summaries, verify compaction_level=1, verify graph edges preserved (SC-020)
-- [ ] T048 [US4] Verify pinned done task excluded from candidates; verify second apply_compaction increments to compaction_level=2 in integration test
+- [X] T042 [US4] Implement compaction candidate query in src/db/queries.rs: WHERE status = 'done' AND updated_at \< (now - threshold_days) AND pinned = false, ORDER BY updated_at ASC, LIMIT $limit (FR-038)
+- [X] T043 [US4] Implement get_compaction_candidates tool handler in src/tools/read.rs: read threshold_days and max_candidates from WorkspaceConfig, call query, return candidates with task_id, title, description, compaction_level, age_days (FR-038)
+- [X] T044 [US4] Implement apply_compaction tool handler in src/tools/write.rs: for each {task_id, summary}, replace description with summary, increment compaction_level, set compacted_at to now(); return per-item results with new_compaction_level (FR-039, FR-040, FR-041)
+- [X] T045 [US4] Implement rule-based truncation service in src/services/compaction.rs: truncate_at_word_boundary(text, max_len) that truncates to configurable length (default 500) at word boundary, preserves metadata prefix "\[Compacted\]" (FR-042)
+- [X] T046 [US4] Unit tests for truncation service in src/services/compaction.rs: typical 2000-char description → \<500 chars (>70% reduction, SC-014), word boundary preservation, short text unchanged, empty input
+- [X] T047 [US4] Integration test in tests/integration/enhanced_features_test.rs: create 50 done tasks with old timestamps, call get_compaction_candidates, apply_compaction with summaries, verify compaction_level=1, verify graph edges preserved (SC-020)
+- [X] T048 [US4] Verify pinned done task excluded from candidates; verify second apply_compaction increments to compaction_level=2 in integration test
 
 **Checkpoint**: Agent-driven compaction fully functional with rule-based fallback. US4 independently testable.
 

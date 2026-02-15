@@ -504,6 +504,50 @@ pub async fn add_dependency(state: SharedState, params: Option<Value>) -> Result
     }))
 }
 
+// ── Compaction ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CompactionItem {
+    task_id: String,
+    summary: String,
+}
+
+#[derive(Deserialize)]
+struct ApplyCompactionParams {
+    compactions: Vec<CompactionItem>,
+}
+
+/// Apply agent-generated summaries to completed tasks, replacing their
+/// description, incrementing `compaction_level`, and setting `compacted_at`.
+pub async fn apply_compaction(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: ApplyCompactionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let mut results = Vec::new();
+    for item in &parsed.compactions {
+        let task_id = item.task_id.strip_prefix("task:").unwrap_or(&item.task_id);
+        let updated = queries.apply_compaction(task_id, &item.summary).await?;
+        results.push(json!({
+            "task_id": updated.id,
+            "new_compaction_level": updated.compaction_level,
+            "compacted_at": updated.compacted_at.map(|d| d.to_rfc3339()),
+        }));
+    }
+
+    Ok(json!({ "results": results }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

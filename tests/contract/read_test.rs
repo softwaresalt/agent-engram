@@ -4,6 +4,7 @@ use serde_json::json;
 use tokio::test;
 
 use t_mem::errors::codes::{QUERY_TOO_LONG, WORKSPACE_NOT_SET};
+use t_mem::models::task::{Task, TaskStatus};
 use t_mem::server::state::{AppState, WorkspaceSnapshot};
 use t_mem::tools;
 
@@ -232,4 +233,181 @@ async fn contract_get_ready_work_limit_caps_results() {
         result["total_eligible"].as_u64().unwrap() >= 3,
         "total_eligible should reflect all eligible tasks"
     );
+}
+
+// ── Compaction contract tests (T041) ───────────────────────────────────────
+
+#[test]
+async fn contract_get_compaction_candidates_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "get_compaction_candidates", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_get_compaction_candidates_empty_when_none_eligible() {
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("compact_empty"))
+        .await
+        .expect("set workspace");
+
+    // Create a task that is still todo — not eligible for compaction
+    tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "active task", "description": "still working" })),
+    )
+    .await
+    .expect("create_task");
+
+    let result = tools::dispatch(state, "get_compaction_candidates", Some(json!({})))
+        .await
+        .expect("should return empty list");
+
+    let candidates = result["candidates"].as_array().unwrap();
+    assert!(candidates.is_empty(), "no done tasks = no candidates");
+}
+
+#[test]
+async fn contract_get_compaction_candidates_returns_eligible_tasks() {
+    use chrono::{Duration, Utc};
+    use surrealdb::RecordId as Thing;
+    use t_mem::db::{connect_db, queries::Queries};
+
+    let state = Arc::new(AppState::new(10));
+    let ws_id = "compact_candidates";
+    state
+        .set_workspace(test_snapshot(ws_id))
+        .await
+        .expect("set workspace");
+
+    // Create a done task via dispatch, then force-set old updated_at via raw query
+    let db = connect_db(ws_id).await.expect("connect_db");
+    let queries = Queries::new(db.clone());
+    let old_task = Task {
+        id: "old-done-1".to_string(),
+        title: "Old done task".to_string(),
+        status: TaskStatus::Done,
+        work_item_id: None,
+        description: "This task was completed 10 days ago".to_string(),
+        context_summary: None,
+        priority: "p2".to_owned(),
+        priority_order: 2,
+        issue_type: "task".to_owned(),
+        assignee: None,
+        defer_until: None,
+        pinned: false,
+        compaction_level: 0,
+        compacted_at: None,
+        workflow_state: None,
+        workflow_id: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    queries
+        .upsert_task(&old_task)
+        .await
+        .expect("upsert old task");
+
+    // Force-set updated_at to 10 days ago (schema VALUE time::now() overrides normal SET)
+    let old_date = (Utc::now() - Duration::days(10)).to_rfc3339();
+    let record = Thing::from(("task", "old-done-1"));
+    db.query("UPDATE $record SET updated_at = <datetime>$old_date")
+        .bind(("record", record))
+        .bind(("old_date", old_date))
+        .await
+        .expect("force-set old updated_at");
+
+    let result = tools::dispatch(
+        state,
+        "get_compaction_candidates",
+        Some(json!({ "threshold_days": 7 })),
+    )
+    .await
+    .expect("should return candidates");
+
+    let candidates = result["candidates"].as_array().unwrap();
+    assert!(
+        !candidates.is_empty(),
+        "should find at least 1 old done task"
+    );
+    // Verify response shape
+    let first = &candidates[0];
+    assert!(first["task_id"].is_string());
+    assert!(first["title"].is_string());
+    assert!(first["description"].is_string());
+    assert!(first["compaction_level"].is_number());
+    assert!(first["age_days"].is_number());
+}
+
+#[test]
+async fn contract_get_compaction_candidates_excludes_pinned() {
+    use chrono::{Duration, Utc};
+    use surrealdb::RecordId as Thing;
+    use t_mem::db::{connect_db, queries::Queries};
+
+    let state = Arc::new(AppState::new(10));
+    let ws_id = "compact_pinned";
+    state
+        .set_workspace(test_snapshot(ws_id))
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(ws_id).await.expect("connect_db");
+    let queries = Queries::new(db.clone());
+
+    // Create a pinned done task — should be excluded
+    let pinned_task = Task {
+        id: "pinned-done-1".to_string(),
+        title: "Pinned done task".to_string(),
+        status: TaskStatus::Done,
+        work_item_id: None,
+        description: "Pinned and done".to_string(),
+        context_summary: None,
+        priority: "p2".to_owned(),
+        priority_order: 2,
+        issue_type: "task".to_owned(),
+        assignee: None,
+        defer_until: None,
+        pinned: true,
+        compaction_level: 0,
+        compacted_at: None,
+        workflow_state: None,
+        workflow_id: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    queries
+        .upsert_task(&pinned_task)
+        .await
+        .expect("upsert pinned task");
+
+    // Force-set updated_at to 10 days ago
+    let old_date = (Utc::now() - Duration::days(10)).to_rfc3339();
+    let record = Thing::from(("task", "pinned-done-1"));
+    db.query("UPDATE $record SET updated_at = <datetime>$old_date")
+        .bind(("record", record))
+        .bind(("old_date", old_date))
+        .await
+        .expect("force-set old updated_at");
+
+    let result = tools::dispatch(
+        state,
+        "get_compaction_candidates",
+        Some(json!({ "threshold_days": 7 })),
+    )
+    .await
+    .expect("should return candidates");
+
+    let candidates = result["candidates"].as_array().unwrap();
+    let has_pinned = candidates
+        .iter()
+        .any(|c| c["task_id"].as_str() == Some("pinned-done-1"));
+    assert!(!has_pinned, "pinned tasks must be excluded from candidates");
 }

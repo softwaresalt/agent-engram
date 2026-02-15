@@ -179,6 +179,12 @@ pub fn serialize_tasks_md(
         if task.pinned {
             out.push_str("pinned: true\n");
         }
+        if task.compaction_level > 0 {
+            out.push_str(&format!("compaction_level: {}\n", task.compaction_level));
+        }
+        if let Some(ref ca) = task.compacted_at {
+            out.push_str(&format!("compacted_at: {}\n", ca.to_rfc3339()));
+        }
         if let Some(labels) = task_labels.get(&task.id) {
             if !labels.is_empty() {
                 out.push_str(&format!("labels: {}\n", labels.join(", ")));

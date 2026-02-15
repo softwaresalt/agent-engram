@@ -718,6 +718,68 @@ impl Queries {
         Ok(true)
     }
 
+    // ── Compaction queries ───────────────────────────────────────────────────
+
+    /// Return done, non-pinned tasks older than `threshold_days`, ordered by
+    /// `updated_at` ascending, limited to `max_candidates`.
+    pub async fn get_compaction_candidates(
+        &self,
+        threshold_days: u32,
+        max_candidates: u32,
+    ) -> Result<Vec<Task>, TMemError> {
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "SELECT * FROM task \
+                 WHERE status = 'done' \
+                   AND pinned = false \
+                   AND updated_at < time::now() - type::duration($threshold) \
+                 ORDER BY updated_at ASC \
+                 LIMIT $max_limit",
+            )
+            .bind(("threshold", format!("{threshold_days}d")))
+            .bind(("max_limit", max_candidates))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    /// Apply compaction to a single task: replace description, increment
+    /// `compaction_level`, and set `compacted_at` to now.
+    pub async fn apply_compaction(&self, task_id: &str, summary: &str) -> Result<Task, TMemError> {
+        let record = Thing::from(("task", task_id));
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "UPDATE $record SET \
+                    description = $summary, \
+                    compaction_level = compaction_level + 1, \
+                    compacted_at = <datetime>$now, \
+                    updated_at = <datetime>$now \
+                 RETURN AFTER",
+            )
+            .bind(("record", record))
+            .bind(("summary", summary.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        rows.into_iter()
+            .next()
+            .map(TaskRow::into_task)
+            .ok_or_else(|| {
+                TMemError::Task(TaskError::CompactionFailed {
+                    id: task_id.to_string(),
+                    reason: "task not found".to_string(),
+                })
+            })
+    }
+
     pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {
         let rows: Vec<ContextRow> = self
             .db

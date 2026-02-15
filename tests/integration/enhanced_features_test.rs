@@ -567,3 +567,407 @@ async fn t040_parent_children_duplicate_blocked_by_in_ready_work() {
         "should rehydrate at least 5 edges (3 child_of + 1 duplicate_of + 1 blocked_by)"
     );
 }
+
+// ── T047: Compaction candidates, apply, and graph preservation ──
+
+#[tokio::test]
+async fn t047_compaction_50_done_tasks_apply_and_graph_preserved() {
+    use surrealdb::RecordId as Thing;
+
+    let state = Arc::new(AppState::new(10));
+    let ws_id = format!("compact_{}", uuid::Uuid::new_v4());
+
+    let tmpdir = tempfile::tempdir().expect("create tempdir");
+    let ws_path = tmpdir.path().to_string_lossy().to_string();
+
+    state
+        .set_workspace(WorkspaceSnapshot {
+            workspace_id: ws_id.clone(),
+            path: ws_path,
+            task_count: 0,
+            context_count: 0,
+            last_flush: None,
+            stale_files: false,
+            connection_count: 1,
+            file_mtimes: std::collections::HashMap::new(),
+        })
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(&ws_id).await.expect("connect db");
+    let queries = Queries::new(db.clone());
+
+    // Create 50 done tasks
+    let old_date = (Utc::now() - Duration::days(14)).to_rfc3339();
+    for i in 1..=50 {
+        let task = Task {
+            id: format!("cpt{i}"),
+            title: format!("Compactable task {i}"),
+            status: TaskStatus::Done,
+            work_item_id: None,
+            description: format!(
+                "This is the original verbose description for task {i} that should be compacted."
+            ),
+            context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        queries.upsert_task(&task).await.expect("upsert task");
+
+        // Force-set updated_at to 14 days ago
+        let record = Thing::from(("task", task.id.as_str()));
+        db.query("UPDATE $record SET updated_at = <datetime>$old_date")
+            .bind(("record", record))
+            .bind(("old_date", old_date.clone()))
+            .await
+            .expect("force old updated_at");
+    }
+
+    // Add dependency edges between a few tasks to verify graph preservation
+    // cpt1 → cpt2 (hard_blocker), cpt3 → cpt4 (child_of), cpt5 → cpt6 (related_to)
+    for (from, to, dep_type) in [
+        ("cpt1", "cpt2", "hard_blocker"),
+        ("cpt3", "cpt4", "child_of"),
+        ("cpt5", "cpt6", "related_to"),
+    ] {
+        tools::dispatch(
+            state.clone(),
+            "add_dependency",
+            Some(json!({
+                "from_task_id": from,
+                "to_task_id": to,
+                "dependency_type": dep_type,
+            })),
+        )
+        .await
+        .expect("add dependency");
+    }
+
+    // Call get_compaction_candidates with threshold=7 (all 50 are 14 days old)
+    let result = tools::dispatch(
+        state.clone(),
+        "get_compaction_candidates",
+        Some(json!({ "threshold_days": 7, "max_candidates": 50 })),
+    )
+    .await
+    .expect("get_compaction_candidates");
+
+    let candidates = result["candidates"].as_array().unwrap();
+    assert_eq!(
+        candidates.len(),
+        50,
+        "all 50 done tasks should be candidates"
+    );
+
+    // Verify candidate shape
+    let first = &candidates[0];
+    assert!(first["task_id"].is_string());
+    assert!(first["age_days"].as_i64().unwrap() >= 14);
+    assert_eq!(first["compaction_level"].as_u64().unwrap(), 0);
+
+    // Apply compaction to 10 tasks with summaries
+    let compactions: Vec<serde_json::Value> = (1..=10)
+        .map(|i| {
+            json!({
+                "task_id": format!("cpt{i}"),
+                "summary": format!("Compacted summary for task {i}"),
+            })
+        })
+        .collect();
+
+    let apply_result = tools::dispatch(
+        state.clone(),
+        "apply_compaction",
+        Some(json!({ "compactions": compactions })),
+    )
+    .await
+    .expect("apply_compaction");
+
+    let results = apply_result["results"].as_array().unwrap();
+    assert_eq!(results.len(), 10, "should have 10 compaction results");
+
+    // All compacted tasks should have compaction_level=1 and compacted_at set
+    for r in results {
+        assert_eq!(
+            r["new_compaction_level"].as_u64().unwrap(),
+            1,
+            "compaction_level should be 1 after first compaction"
+        );
+        assert!(
+            r["compacted_at"].is_string(),
+            "compacted_at should be set after compaction"
+        );
+    }
+
+    // Verify graph edges are preserved after compaction
+    let graph = tools::dispatch(
+        state.clone(),
+        "get_task_graph",
+        Some(json!({ "root_task_id": "cpt1", "depth": 1 })),
+    )
+    .await
+    .expect("get_task_graph after compaction");
+
+    let root = &graph["root"];
+    assert_eq!(root["id"].as_str().unwrap(), "cpt1");
+    let children = root["children"].as_array().unwrap();
+    assert!(
+        !children.is_empty(),
+        "cpt1 should still have edges after compaction"
+    );
+    assert_eq!(
+        children[0]["dependency_type"].as_str().unwrap(),
+        "hard_blocker",
+        "edge type should be preserved"
+    );
+
+    // Verify non-compacted tasks still have original descriptions
+    let remaining = tools::dispatch(
+        state.clone(),
+        "get_compaction_candidates",
+        Some(json!({ "threshold_days": 7, "max_candidates": 50 })),
+    )
+    .await
+    .expect("get remaining candidates");
+
+    let remaining_candidates = remaining["candidates"].as_array().unwrap();
+    // 10 were compacted (updated_at refreshed to now), 40 still old
+    assert_eq!(
+        remaining_candidates.len(),
+        40,
+        "40 tasks should remain as candidates after compacting 10"
+    );
+
+    // Flush and verify compacted tasks survive dehydration/rehydration
+    dehydrate_workspace(&queries, tmpdir.path())
+        .await
+        .expect("dehydrate after compaction");
+
+    let tasks_md =
+        std::fs::read_to_string(tmpdir.path().join(".tmem/tasks.md")).expect("read tasks.md");
+    assert!(
+        tasks_md.contains("Compacted summary for task 1"),
+        "tasks.md should have compacted summary"
+    );
+
+    let fresh_ws_id = format!("compact_fresh_{}", uuid::Uuid::new_v4());
+    let fresh_db = connect_db(&fresh_ws_id).await.expect("connect fresh db");
+    let fresh_queries = Queries::new(fresh_db);
+
+    let hydration = hydrate_into_db(tmpdir.path(), &fresh_queries)
+        .await
+        .expect("rehydrate");
+
+    assert_eq!(hydration.tasks_loaded, 50, "should rehydrate all 50 tasks");
+    assert!(
+        hydration.edges_loaded >= 3,
+        "should rehydrate at least 3 edges"
+    );
+
+    // Verify compacted task has the summary after rehydration
+    let rehydrated = fresh_queries
+        .get_task("cpt1")
+        .await
+        .expect("get rehydrated cpt1")
+        .expect("cpt1 should exist");
+    assert_eq!(
+        rehydrated.description, "Compacted summary for task 1",
+        "description should be compacted summary after rehydration"
+    );
+    assert_eq!(
+        rehydrated.compaction_level, 1,
+        "compaction_level should survive rehydration"
+    );
+}
+
+// ── T048: Pinned exclusion and compaction_level increment ───────
+
+#[tokio::test]
+async fn t048_pinned_excluded_and_compaction_level_increments() {
+    use surrealdb::RecordId as Thing;
+
+    let state = Arc::new(AppState::new(10));
+    let ws_id = format!("compact_pin_{}", uuid::Uuid::new_v4());
+
+    state
+        .set_workspace(test_snapshot(&ws_id))
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(&ws_id).await.expect("connect db");
+    let queries = Queries::new(db.clone());
+
+    let old_date = (Utc::now() - Duration::days(14)).to_rfc3339();
+
+    // Create a pinned done task — should be excluded from candidates
+    let pinned = Task {
+        id: "pinned1".to_string(),
+        title: "Pinned done task".to_string(),
+        status: TaskStatus::Done,
+        work_item_id: None,
+        description: "This should NOT be compacted".to_string(),
+        context_summary: None,
+        priority: "p2".to_owned(),
+        priority_order: 2,
+        issue_type: "task".to_owned(),
+        assignee: None,
+        defer_until: None,
+        pinned: true,
+        compaction_level: 0,
+        compacted_at: None,
+        workflow_state: None,
+        workflow_id: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    queries
+        .upsert_task(&pinned)
+        .await
+        .expect("upsert pinned task");
+
+    // Force old updated_at on pinned task
+    let record = Thing::from(("task", "pinned1"));
+    db.query("UPDATE $record SET updated_at = <datetime>$old_date")
+        .bind(("record", record))
+        .bind(("old_date", old_date.clone()))
+        .await
+        .expect("force old updated_at on pinned");
+
+    // Create an unpinned done task
+    let unpinned = Task {
+        id: "unpinned1".to_string(),
+        title: "Unpinned done task".to_string(),
+        status: TaskStatus::Done,
+        work_item_id: None,
+        description: "Original description that will be compacted twice".to_string(),
+        context_summary: None,
+        priority: "p2".to_owned(),
+        priority_order: 2,
+        issue_type: "task".to_owned(),
+        assignee: None,
+        defer_until: None,
+        pinned: false,
+        compaction_level: 0,
+        compacted_at: None,
+        workflow_state: None,
+        workflow_id: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    queries
+        .upsert_task(&unpinned)
+        .await
+        .expect("upsert unpinned task");
+
+    // Force old updated_at on unpinned task
+    let record = Thing::from(("task", "unpinned1"));
+    db.query("UPDATE $record SET updated_at = <datetime>$old_date")
+        .bind(("record", record))
+        .bind(("old_date", old_date.clone()))
+        .await
+        .expect("force old updated_at on unpinned");
+
+    // Get candidates — only unpinned1 should appear
+    let result = tools::dispatch(
+        state.clone(),
+        "get_compaction_candidates",
+        Some(json!({ "threshold_days": 7 })),
+    )
+    .await
+    .expect("get candidates");
+
+    let candidates = result["candidates"].as_array().unwrap();
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|c| c["task_id"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        !ids.contains(&"pinned1"),
+        "pinned task must be excluded from candidates"
+    );
+    assert!(
+        ids.contains(&"unpinned1"),
+        "unpinned done task should be a candidate"
+    );
+
+    // First compaction: compaction_level 0 → 1
+    let apply1 = tools::dispatch(
+        state.clone(),
+        "apply_compaction",
+        Some(json!({
+            "compactions": [{
+                "task_id": "unpinned1",
+                "summary": "First compaction summary"
+            }]
+        })),
+    )
+    .await
+    .expect("first apply_compaction");
+
+    let r1 = &apply1["results"].as_array().unwrap()[0];
+    assert_eq!(
+        r1["new_compaction_level"].as_u64().unwrap(),
+        1,
+        "first compaction should set level to 1"
+    );
+
+    // Force old updated_at again so it becomes a candidate again
+    let record = Thing::from(("task", "unpinned1"));
+    db.query("UPDATE $record SET updated_at = <datetime>$old_date")
+        .bind(("record", record))
+        .bind(("old_date", old_date.clone()))
+        .await
+        .expect("force old updated_at again");
+
+    // Second compaction: compaction_level 1 → 2
+    let apply2 = tools::dispatch(
+        state.clone(),
+        "apply_compaction",
+        Some(json!({
+            "compactions": [{
+                "task_id": "unpinned1",
+                "summary": "Second compaction — even shorter"
+            }]
+        })),
+    )
+    .await
+    .expect("second apply_compaction");
+
+    let r2 = &apply2["results"].as_array().unwrap()[0];
+    assert_eq!(
+        r2["new_compaction_level"].as_u64().unwrap(),
+        2,
+        "second compaction should increment to level 2"
+    );
+
+    // Verify final DB state
+    let final_task = queries
+        .get_task("unpinned1")
+        .await
+        .expect("get task")
+        .expect("task should exist");
+    assert_eq!(final_task.compaction_level, 2);
+    assert_eq!(final_task.description, "Second compaction — even shorter");
+    assert!(final_task.compacted_at.is_some());
+
+    // Verify pinned task is untouched
+    let pinned_check = queries
+        .get_task("pinned1")
+        .await
+        .expect("get task")
+        .expect("pinned task should exist");
+    assert_eq!(pinned_check.description, "This should NOT be compacted");
+    assert_eq!(pinned_check.compaction_level, 0);
+    assert!(pinned_check.compacted_at.is_none());
+}

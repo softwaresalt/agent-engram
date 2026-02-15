@@ -368,6 +368,14 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                 .unwrap_or_else(|| "task".to_string());
             let assignee = frontmatter.get("assignee").cloned();
             let pinned = frontmatter.get("pinned").is_some_and(|s| s == "true");
+            let compaction_level = frontmatter
+                .get("compaction_level")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let compacted_at = frontmatter
+                .get("compacted_at")
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
             let labels: Vec<String> = frontmatter
                 .get("labels")
                 .map(|s| {
@@ -402,8 +410,8 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                     assignee,
                     defer_until: None,
                     pinned,
-                    compaction_level: 0,
-                    compacted_at: None,
+                    compaction_level,
+                    compacted_at,
                     workflow_state: None,
                     workflow_id: None,
                     created_at,

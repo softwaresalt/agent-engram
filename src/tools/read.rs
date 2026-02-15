@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use crate::db::connect_db;
 use crate::db::queries::{Queries, ReadyWorkParams};
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
+use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
 use crate::server::state::SharedState;
 use crate::services::embedding;
@@ -176,6 +177,63 @@ pub async fn get_ready_work(state: SharedState, params: Option<Value>) -> Result
         "tasks": task_values,
         "total_eligible": result.total_eligible,
     }))
+}
+
+// ── Compaction candidates ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetCompactionCandidatesParams {
+    #[serde(default)]
+    threshold_days: Option<u32>,
+    #[serde(default)]
+    max_candidates: Option<u32>,
+}
+
+/// Return done, non-pinned tasks older than `threshold_days`.
+pub async fn get_compaction_candidates(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, TMemError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: GetCompactionCandidatesParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // Read compaction config from workspace or use defaults
+    let config = state
+        .workspace_config()
+        .await
+        .map_or_else(CompactionConfig::default, |c| c.compaction);
+
+    let threshold = parsed.threshold_days.unwrap_or(config.threshold_days);
+    let max = parsed.max_candidates.unwrap_or(config.max_candidates);
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+
+    let candidates = queries.get_compaction_candidates(threshold, max).await?;
+
+    let now = chrono::Utc::now();
+    let candidate_values: Vec<Value> = candidates
+        .into_iter()
+        .map(|t| {
+            let age_days = (now - t.updated_at).num_days();
+            json!({
+                "task_id": t.id,
+                "title": t.title,
+                "description": t.description,
+                "compaction_level": t.compaction_level,
+                "age_days": age_days,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "candidates": candidate_values }))
 }
 
 /// Serialize a task to JSON, optionally applying brief mode or field filtering.
