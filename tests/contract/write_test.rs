@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use t_mem::errors::codes::{INVALID_STATUS, WORKSPACE_NOT_SET};
+use t_mem::errors::codes::{DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION, WORKSPACE_NOT_SET};
 use t_mem::server::state::AppState;
 use t_mem::tools;
 
@@ -330,4 +330,184 @@ async fn contract_create_task_rejects_oversized_title() {
 
     let code = err.to_response().error.code;
     assert_eq!(code, t_mem::errors::codes::TASK_TITLE_EMPTY);
+}
+
+// ─── T026: Contract tests for add_label and remove_label ────────────────────
+
+#[test]
+async fn contract_add_label_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc123",
+        "label": "frontend",
+    }));
+
+    let err = tools::dispatch(state, "add_label", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_remove_label_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc123",
+        "label": "frontend",
+    }));
+
+    let err = tools::dispatch(state, "remove_label", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_add_label_returns_label_count() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create a task first
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Label test task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Add a label
+    let result = tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": task_id, "label": "frontend" })),
+    )
+    .await
+    .expect("add_label should succeed");
+
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert_eq!(result["label"].as_str().unwrap(), "frontend");
+    assert_eq!(result["label_count"].as_u64().unwrap(), 1);
+
+    // Add a second label
+    let result2 = tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": task_id, "label": "bug" })),
+    )
+    .await
+    .expect("add_label second should succeed");
+
+    assert_eq!(result2["label_count"].as_u64().unwrap(), 2);
+}
+
+#[test]
+async fn contract_add_label_duplicate_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Dup label task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Add label first time
+    tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": task_id, "label": "frontend" })),
+    )
+    .await
+    .expect("first add_label");
+
+    // Add same label again → duplicate error
+    let err = tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": task_id, "label": "frontend" })),
+    )
+    .await
+    .expect_err("expected duplicate label error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, DUPLICATE_LABEL);
+}
+
+#[test]
+async fn contract_add_label_not_in_allowed_list_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write a .tmem/config.toml with allowed_labels
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(
+        tmem_dir.join("config.toml"),
+        r#"allowed_labels = ["frontend", "backend", "bug"]
+"#,
+    )
+    .expect("write config.toml");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Restricted label task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Try adding a label not in allowed_labels
+    let err = tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": task_id, "label": "invalid-label" })),
+    )
+    .await
+    .expect_err("expected label validation error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, LABEL_VALIDATION);
 }

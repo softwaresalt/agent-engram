@@ -15,6 +15,8 @@ use t_mem::db::queries::Queries;
 use t_mem::models::graph::DependencyType;
 use t_mem::models::task::{Task, TaskStatus};
 use t_mem::server::state::{AppState, WorkspaceSnapshot};
+use t_mem::services::dehydration::dehydrate_workspace;
+use t_mem::services::hydration::hydrate_into_db;
 use t_mem::tools;
 
 fn test_snapshot(id: &str) -> WorkspaceSnapshot {
@@ -176,5 +178,175 @@ async fn t025_ready_work_20_tasks_with_blocking_defer_and_pin() {
         result_limited["total_eligible"].as_u64().unwrap(),
         12,
         "total_eligible unchanged by limit"
+    );
+}
+
+// ── T033: Labels integration test ───────────────────────────────
+
+#[tokio::test]
+async fn t033_labels_add_remove_filter_and_flush_rehydrate() {
+    let state = Arc::new(AppState::new(10));
+    let ws_id = format!("labels_{}", uuid::Uuid::new_v4());
+
+    // Use a temp directory for flush/rehydrate round-trip
+    let tmpdir = tempfile::tempdir().expect("create tempdir");
+    let ws_path = tmpdir.path().to_string_lossy().to_string();
+
+    state
+        .set_workspace(WorkspaceSnapshot {
+            workspace_id: ws_id.clone(),
+            path: ws_path.clone(),
+            task_count: 0,
+            context_count: 0,
+            last_flush: None,
+            stale_files: false,
+            connection_count: 1,
+            file_mtimes: std::collections::HashMap::new(),
+        })
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(&ws_id).await.expect("connect db");
+    let queries = Queries::new(db);
+
+    // Create 5 tasks
+    for i in 1..=5 {
+        let task = make_task(&format!("lbl{i}"), "p2", 2);
+        queries.upsert_task(&task).await.expect("upsert task");
+    }
+
+    // Assign labels via dispatch:
+    // lbl1: frontend, bug
+    // lbl2: frontend, backend
+    // lbl3: bug, backend
+    // lbl4: frontend, bug, backend
+    // lbl5: (no labels)
+    let label_assignments = [
+        ("lbl1", vec!["frontend", "bug"]),
+        ("lbl2", vec!["frontend", "backend"]),
+        ("lbl3", vec!["bug", "backend"]),
+        ("lbl4", vec!["frontend", "bug", "backend"]),
+    ];
+
+    for (task_id, labels) in &label_assignments {
+        for label in labels {
+            let result = tools::dispatch(
+                state.clone(),
+                "add_label",
+                Some(json!({ "task_id": *task_id, "label": *label })),
+            )
+            .await
+            .expect("add_label should succeed");
+            assert!(result["label_count"].as_u64().unwrap() > 0);
+        }
+    }
+
+    // Verify label counts
+    assert_eq!(queries.count_labels_for_task("lbl1").await.unwrap(), 2);
+    assert_eq!(queries.count_labels_for_task("lbl4").await.unwrap(), 3);
+    assert_eq!(queries.count_labels_for_task("lbl5").await.unwrap(), 0);
+
+    // Remove one label and verify
+    let remove_result = tools::dispatch(
+        state.clone(),
+        "remove_label",
+        Some(json!({ "task_id": "lbl4", "label": "backend" })),
+    )
+    .await
+    .expect("remove_label should succeed");
+    assert_eq!(remove_result["label_count"].as_u64().unwrap(), 2);
+
+    // Re-add the label for the filter test
+    tools::dispatch(
+        state.clone(),
+        "add_label",
+        Some(json!({ "task_id": "lbl4", "label": "backend" })),
+    )
+    .await
+    .expect("re-add label");
+
+    // Filter by ["frontend", "bug"] AND logic — should return lbl1, lbl4
+    let filter_result = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "label": ["frontend", "bug"] })),
+    )
+    .await
+    .expect("get_ready_work with label filter");
+
+    let filtered_tasks = filter_result["tasks"].as_array().unwrap();
+    let filtered_ids: Vec<&str> = filtered_tasks
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(
+        filtered_ids.len(),
+        2,
+        "AND filter on [frontend, bug] should return 2 tasks, got: {filtered_ids:?}"
+    );
+    assert!(filtered_ids.contains(&"lbl1"), "lbl1 has both labels");
+    assert!(filtered_ids.contains(&"lbl4"), "lbl4 has both labels");
+
+    // ── Flush (dehydrate) to .tmem/ files ──
+    dehydrate_workspace(&queries, tmpdir.path())
+        .await
+        .expect("dehydrate should succeed");
+
+    // Verify tasks.md was written with labels
+    let tasks_md =
+        std::fs::read_to_string(tmpdir.path().join(".tmem/tasks.md")).expect("read tasks.md");
+    assert!(
+        tasks_md.contains("labels:"),
+        "tasks.md should contain labels frontmatter"
+    );
+    // lbl4 has frontend, bug, backend — verify comma-separated format
+    assert!(
+        tasks_md.contains("backend") && tasks_md.contains("frontend"),
+        "tasks.md should contain label values"
+    );
+
+    // ── Rehydrate into a fresh DB namespace ──
+    let fresh_ws_id = format!("labels_fresh_{}", uuid::Uuid::new_v4());
+    let fresh_db = connect_db(&fresh_ws_id).await.expect("connect fresh db");
+    let fresh_queries = Queries::new(fresh_db);
+
+    let hydration_result = hydrate_into_db(tmpdir.path(), &fresh_queries)
+        .await
+        .expect("rehydrate should succeed");
+
+    assert_eq!(hydration_result.tasks_loaded, 5, "should rehydrate 5 tasks");
+
+    // Verify labels survived the round-trip
+    let lbl1_labels = fresh_queries
+        .get_labels_for_task("lbl1")
+        .await
+        .expect("get labels lbl1");
+    assert_eq!(
+        lbl1_labels.len(),
+        2,
+        "lbl1 should have 2 labels after rehydration"
+    );
+    assert!(lbl1_labels.contains(&"bug".to_string()));
+    assert!(lbl1_labels.contains(&"frontend".to_string()));
+
+    let lbl4_labels = fresh_queries
+        .get_labels_for_task("lbl4")
+        .await
+        .expect("get labels lbl4");
+    assert_eq!(
+        lbl4_labels.len(),
+        3,
+        "lbl4 should have 3 labels after rehydration"
+    );
+
+    let lbl5_labels = fresh_queries
+        .get_labels_for_task("lbl5")
+        .await
+        .expect("get labels lbl5");
+    assert_eq!(
+        lbl5_labels.len(),
+        0,
+        "lbl5 should have 0 labels after rehydration"
     );
 }

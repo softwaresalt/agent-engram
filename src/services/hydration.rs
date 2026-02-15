@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use crate::db::queries::Queries;
 use crate::errors::{HydrationError, TMemError};
 use crate::models::graph::DependencyType;
-use crate::models::task::{Task, TaskStatus};
+use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::services::dehydration::SCHEMA_VERSION;
 
 #[derive(Debug, Clone, Default)]
@@ -43,6 +43,8 @@ pub struct HydrationResult {
 #[derive(Debug, Clone)]
 pub struct ParsedTask {
     pub task: Task,
+    /// Labels parsed from the `labels:` frontmatter field.
+    pub labels: Vec<String>,
 }
 
 /// A RELATE statement parsed from `graph.surql`.
@@ -124,6 +126,10 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
         let parsed_tasks = parse_tasks_md(&content);
         for pt in &parsed_tasks {
             queries.upsert_task(&pt.task).await?;
+            for label in &pt.labels {
+                // Ignore duplicate errors during rehydration (idempotent)
+                let _ = queries.insert_label(&pt.task.id, label).await;
+            }
             tasks_loaded += 1;
         }
     }
@@ -348,6 +354,29 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                 .and_then(|s| parse_status(s))
                 .unwrap_or(TaskStatus::Todo);
             let work_item_id = frontmatter.get("work_item_id").cloned();
+            let priority = frontmatter
+                .get("priority")
+                .cloned()
+                .unwrap_or_else(|| "p2".to_string());
+            let priority_order = frontmatter
+                .get("priority_order")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| compute_priority_order(&priority));
+            let issue_type = frontmatter
+                .get("issue_type")
+                .cloned()
+                .unwrap_or_else(|| "task".to_string());
+            let assignee = frontmatter.get("assignee").cloned();
+            let pinned = frontmatter.get("pinned").is_some_and(|s| s == "true");
+            let labels: Vec<String> = frontmatter
+                .get("labels")
+                .map(|s| {
+                    s.split(',')
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
             let created_at = frontmatter
                 .get("created_at")
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
@@ -367,12 +396,12 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                     work_item_id,
                     description,
                     context_summary: None,
-                    priority: "p2".to_owned(),
-                    priority_order: 2,
-                    issue_type: "task".to_owned(),
-                    assignee: None,
+                    priority,
+                    priority_order,
+                    issue_type,
+                    assignee,
                     defer_until: None,
-                    pinned: false,
+                    pinned,
                     compaction_level: 0,
                     compacted_at: None,
                     workflow_state: None,
@@ -380,6 +409,7 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                     created_at,
                     updated_at,
                 },
+                labels,
             });
         } else {
             i += 1;

@@ -10,7 +10,7 @@ use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
 use crate::models::context::Context;
-use crate::models::task::{Task, TaskStatus};
+use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::server::state::SharedState;
 use crate::services::connection::create_status_change_note;
 use crate::services::dehydration;
@@ -22,6 +22,8 @@ struct UpdateTaskParams {
     status: String,
     #[serde(default)]
     notes: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +49,12 @@ struct CreateTaskParams {
     parent_task_id: Option<String>,
     #[serde(default)]
     work_item_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LabelParams {
+    task_id: String,
+    label: String,
 }
 
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, TMemError> {
@@ -134,6 +142,14 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     validate_transition(previous_status, new_status)?;
 
+    // Apply priority change if requested
+    let (priority, priority_order) = if let Some(ref new_priority) = parsed.priority {
+        let order = compute_priority_order(new_priority);
+        (new_priority.clone(), order)
+    } else {
+        (existing.priority.clone(), existing.priority_order)
+    };
+
     let updated = Task {
         id: parsed.id.clone(),
         title: existing.title,
@@ -141,8 +157,8 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
         work_item_id: existing.work_item_id,
         description: existing.description,
         context_summary: existing.context_summary,
-        priority: existing.priority,
-        priority_order: existing.priority_order,
+        priority,
+        priority_order,
         issue_type: existing.issue_type,
         assignee: existing.assignee,
         defer_until: existing.defer_until,
@@ -374,6 +390,75 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
         "files_written": result.files_written,
         "warnings": warnings,
         "flush_timestamp": result.flush_timestamp,
+    }))
+}
+
+// ── Label operations ────────────────────────────────────────────────────
+
+pub async fn add_label(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: LabelParams =
+        serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    // Validate against allowed_labels if configured
+    if let Some(config) = state.workspace_config().await {
+        if !config.allowed_labels.is_empty() && !config.allowed_labels.contains(&parsed.label) {
+            return Err(TMemError::Task(TaskError::LabelValidation {
+                reason: format!(
+                    "label '{}' not in allowed_labels: {:?}",
+                    parsed.label, config.allowed_labels
+                ),
+            }));
+        }
+    }
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    // Strip table prefix if present (e.g., "task:abc" → "abc")
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    queries.insert_label(task_id, &parsed.label).await?;
+    let label_count = queries.count_labels_for_task(task_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "label": parsed.label,
+        "label_count": label_count,
+    }))
+}
+
+pub async fn remove_label(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: LabelParams =
+        serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    queries.delete_label(task_id, &parsed.label).await?;
+    let label_count = queries.count_labels_for_task(task_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "label": parsed.label,
+        "label_count": label_count,
     }))
 }
 

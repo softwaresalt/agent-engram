@@ -602,6 +602,94 @@ impl Queries {
         Ok(ids)
     }
 
+    // ── Label CRUD ──────────────────────────────────────────────────────
+
+    /// Insert a label for a task. Returns error if the label already exists
+    /// (UNIQUE constraint on `label_task_name` index).
+    pub async fn insert_label(&self, task_id: &str, name: &str) -> Result<(), TMemError> {
+        // Check for duplicate first (UNIQUE index enforcement)
+        let existing: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM label \
+                 WHERE task_id = $task_id AND name = $name GROUP ALL",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        if existing.first().map_or(0, |r| r.count) > 0 {
+            return Err(TMemError::Task(TaskError::DuplicateLabel {
+                task_id: task_id.to_string(),
+                label: name.to_string(),
+            }));
+        }
+
+        self.db
+            .query(
+                "INSERT INTO label { \
+                    task_id: $task_id, \
+                    name: $name, \
+                    created_at: time::now() \
+                 }",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(())
+    }
+
+    /// Delete a label from a task.
+    pub async fn delete_label(&self, task_id: &str, name: &str) -> Result<(), TMemError> {
+        self.db
+            .query("DELETE FROM label WHERE task_id = $task_id AND name = $name")
+            .bind(("task_id", task_id.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Get all labels for a task.
+    pub async fn get_labels_for_task(&self, task_id: &str) -> Result<Vec<String>, TMemError> {
+        #[derive(Deserialize)]
+        struct LabelRow {
+            name: String,
+        }
+        let rows: Vec<LabelRow> = self
+            .db
+            .query("SELECT name FROM label WHERE task_id = $task_id ORDER BY name ASC")
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        Ok(rows.into_iter().map(|r| r.name).collect())
+    }
+
+    /// Count labels for a task.
+    pub async fn count_labels_for_task(&self, task_id: &str) -> Result<u32, TMemError> {
+        let rows: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM label \
+                 WHERE task_id = $task_id GROUP ALL",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        Ok(u32::try_from(rows.first().map_or(0, |r| r.count)).unwrap_or(u32::MAX))
+    }
+
     /// Check if a task has ALL specified labels.
     async fn task_has_all_labels(
         &self,

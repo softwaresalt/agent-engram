@@ -62,7 +62,7 @@ proptest! {
     #[test]
     fn round_trip_single_task(task in arb_task()) {
         let tasks = vec![task.clone()];
-        let serialized = serialize_tasks_md(&tasks, &HashMap::new(), "");
+        let serialized = serialize_tasks_md(&tasks, &HashMap::new(), "", &HashMap::new());
         let parsed = parse_tasks_md(&serialized);
 
         prop_assert_eq!(parsed.len(), 1, "should parse exactly 1 task");
@@ -79,7 +79,7 @@ proptest! {
     fn round_trip_multiple_tasks(
         tasks in prop::collection::vec(arb_task(), 1..5)
     ) {
-        let serialized = serialize_tasks_md(&tasks, &HashMap::new(), "");
+        let serialized = serialize_tasks_md(&tasks, &HashMap::new(), "", &HashMap::new());
         let parsed = parse_tasks_md(&serialized);
 
         prop_assert_eq!(
@@ -117,7 +117,7 @@ proptest! {
             created_at: now,
             updated_at: now,
         };
-        let serialized = serialize_tasks_md(std::slice::from_ref(&task), &HashMap::new(), "");
+        let serialized = serialize_tasks_md(std::slice::from_ref(&task), &HashMap::new(), "", &HashMap::new());
         let parsed = parse_tasks_md(&serialized);
         prop_assert_eq!(parsed[0].task.status, status);
     }

@@ -80,17 +80,17 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T026 [P] [US2] Write contract tests for add_label and remove_label in tests/contract/write_test.rs: workspace-not-set (1003), valid add returns label_count, duplicate label returns error 3011, label not in allowed_labels returns error 3006 (FR-032, FR-034)
+- [X] T026 [P] [US2] Write contract tests for add_label and remove_label in tests/contract/write_test.rs: workspace-not-set (1003), valid add returns label_count, duplicate label returns error 3011, label not in allowed_labels returns error 3006 (FR-032, FR-034)
 
 ### Green Phase (Implementation)
 
-- [ ] T027 [US2] Implement label CRUD queries in src/db/queries.rs: insert_label with UNIQUE check (error 3011 on conflict), delete_label, get_labels_for_task, filter_tasks_by_labels using GROUP BY + HAVING count() for AND logic (FR-031, FR-032, FR-033)
-- [ ] T028 [US2] Implement add_label tool handler in src/tools/write.rs: parse task_id and label, validate against WorkspaceConfig.allowed_labels if set (error 3006), call insert_label, return task_id + label + label_count (FR-032, FR-034)
-- [ ] T029 [US2] Implement remove_label tool handler in src/tools/write.rs: parse task_id and label, call delete_label, return task_id + label + remaining label_count (FR-032)
-- [ ] T030 [US2] Extend update_task handler in src/tools/write.rs to accept priority param: compute priority_order via compute_priority_order(), validate if needed, create context note recording priority change (FR-026)
-- [ ] T031 [US2] Extend hydration to parse labels array from task YAML frontmatter and populate label table via insert_label in src/services/hydration.rs (FR-031b)
-- [ ] T032 [US2] Extend dehydration to query labels per task and write labels array into YAML frontmatter in src/services/dehydration.rs (FR-031b)
-- [ ] T033 [US2] Integration test in tests/integration/enhanced_features_test.rs: create 5 tasks with varying labels, add_label, remove_label; filter by \["frontend", "bug"\] AND logic verifies intersection; flush → rehydrate → verify labels preserved (SC-019)
+- [X] T027 [US2] Implement label CRUD queries in src/db/queries.rs: insert_label with UNIQUE check (error 3011 on conflict), delete_label, get_labels_for_task, filter_tasks_by_labels using GROUP BY + HAVING count() for AND logic (FR-031, FR-032, FR-033)
+- [X] T028 [US2] Implement add_label tool handler in src/tools/write.rs: parse task_id and label, validate against WorkspaceConfig.allowed_labels if set (error 3006), call insert_label, return task_id + label + label_count (FR-032, FR-034)
+- [X] T029 [US2] Implement remove_label tool handler in src/tools/write.rs: parse task_id and label, call delete_label, return task_id + label + remaining label_count (FR-032)
+- [X] T030 [US2] Extend update_task handler in src/tools/write.rs to accept priority param: compute priority_order via compute_priority_order(), validate if needed, create context note recording priority change (FR-026)
+- [X] T031 [US2] Extend hydration to parse labels array from task YAML frontmatter and populate label table via insert_label in src/services/hydration.rs (FR-031b)
+- [X] T032 [US2] Extend dehydration to query labels per task and write labels array into YAML frontmatter in src/services/dehydration.rs (FR-031b)
+- [X] T033 [US2] Integration test in tests/integration/enhanced_features_test.rs: create 5 tasks with varying labels, add_label, remove_label; filter by \["frontend", "bug"\] AND logic verifies intersection; flush → rehydrate → verify labels preserved (SC-019)
 
 **Checkpoint**: Priorities and labels fully functional including AND-filtering and round-trip serialization. US2 independently testable.
 

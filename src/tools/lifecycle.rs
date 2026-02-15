@@ -8,6 +8,7 @@ use crate::db::queries::Queries;
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{TMemError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
+use crate::services::config::load_workspace_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::hydration::{
     backfill_embeddings, detect_stale_since, hydrate_into_db, hydrate_workspace,
@@ -82,6 +83,10 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     };
 
     state.set_workspace(snapshot).await?;
+
+    // Load workspace config from .tmem/config.toml (if present)
+    let ws_config = load_workspace_config(&canonical).unwrap_or(None);
+    state.set_workspace_config(ws_config).await;
 
     Ok(WorkspaceBinding {
         workspace_id,

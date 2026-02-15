@@ -86,8 +86,17 @@ pub async fn dehydrate_workspace(
         .collect();
     let comments_preserved = old_bodies.values().filter(|b| !b.trim().is_empty()).count();
 
+    // Collect labels for each task
+    let mut task_labels: HashMap<String, Vec<String>> = HashMap::new();
+    for task in &tasks {
+        let labels = queries.get_labels_for_task(&task.id).await?;
+        if !labels.is_empty() {
+            task_labels.insert(task.id.clone(), labels);
+        }
+    }
+
     // Serialize tasks.md preserving user comments
-    let tasks_content = serialize_tasks_md(&tasks, &old_bodies, &old_content);
+    let tasks_content = serialize_tasks_md(&tasks, &old_bodies, &old_content, &task_labels);
     atomic_write(&tasks_path, &tasks_content)?;
 
     // Serialize graph.surql
@@ -128,6 +137,7 @@ pub fn serialize_tasks_md(
     tasks: &[Task],
     old_bodies: &HashMap<String, String>,
     old_content: &str,
+    task_labels: &HashMap<String, Vec<String>>,
 ) -> String {
     let mut out = String::new();
 
@@ -161,6 +171,19 @@ pub fn serialize_tasks_md(
         }
         out.push_str(&format!("created_at: {}\n", task.created_at.to_rfc3339()));
         out.push_str(&format!("updated_at: {}\n", task.updated_at.to_rfc3339()));
+        out.push_str(&format!("priority: {}\n", task.priority));
+        out.push_str(&format!("issue_type: {}\n", task.issue_type));
+        if let Some(ref a) = task.assignee {
+            out.push_str(&format!("assignee: {a}\n"));
+        }
+        if task.pinned {
+            out.push_str("pinned: true\n");
+        }
+        if let Some(labels) = task_labels.get(&task.id) {
+            if !labels.is_empty() {
+                out.push_str(&format!("labels: {}\n", labels.join(", ")));
+            }
+        }
         out.push_str("---\n\n");
 
         // Merge description with preserved user comments.
@@ -422,14 +445,14 @@ mod tests {
 
     #[test]
     fn serialize_tasks_md_empty() {
-        let out = serialize_tasks_md(&[], &HashMap::new(), "");
+        let out = serialize_tasks_md(&[], &HashMap::new(), "", &HashMap::new());
         assert!(out.starts_with("# Tasks\n"));
     }
 
     #[test]
     fn serialize_tasks_md_round_trip_fields() {
         let tasks = vec![make_task("task:abc", "Do something")];
-        let out = serialize_tasks_md(&tasks, &HashMap::new(), "");
+        let out = serialize_tasks_md(&tasks, &HashMap::new(), "", &HashMap::new());
         assert!(out.contains("## task:abc"));
         assert!(out.contains("id: task:abc"));
         assert!(out.contains("title: Task task:abc"));
@@ -547,7 +570,7 @@ Other description.
             "My description\n\n<!-- Important user note -->".to_string(),
         );
         let old_content = "# Tasks\n\n<!-- Header comment -->\n\n## task:abc\n";
-        let out = serialize_tasks_md(&tasks, &old_bodies, old_content);
+        let out = serialize_tasks_md(&tasks, &old_bodies, old_content, &HashMap::new());
         assert!(out.contains("<!-- Header comment -->"));
         assert!(out.contains("<!-- Important user note -->"));
         assert!(out.contains("My description"));
