@@ -30,30 +30,32 @@ fn arb_task() -> impl Strategy<Value = Task> {
         "[A-Za-z0-9 .]{0,100}",                  // description (safe chars)
         prop::sample::select(vec!["p0", "p1", "p2", "p3", "p4"]),
     )
-        .prop_map(|(id_suffix, title, status, work_item_id, description, priority)| {
-            let now = Utc::now();
-            let priority_order = compute_priority_order(priority);
-            Task {
-                id: id_suffix,
-                title,
-                status,
-                work_item_id,
-                description,
-                context_summary: None,
-                priority: priority.to_owned(),
-                priority_order,
-                issue_type: "task".to_owned(),
-                assignee: None,
-                defer_until: None,
-                pinned: false,
-                compaction_level: 0,
-                compacted_at: None,
-                workflow_state: None,
-                workflow_id: None,
-                created_at: now,
-                updated_at: now,
-            }
-        })
+        .prop_map(
+            |(id_suffix, title, status, work_item_id, description, priority)| {
+                let now = Utc::now();
+                let priority_order = compute_priority_order(priority);
+                Task {
+                    id: id_suffix,
+                    title,
+                    status,
+                    work_item_id,
+                    description,
+                    context_summary: None,
+                    priority: priority.to_owned(),
+                    priority_order,
+                    issue_type: "task".to_owned(),
+                    assignee: None,
+                    defer_until: None,
+                    pinned: false,
+                    compaction_level: 0,
+                    compacted_at: None,
+                    workflow_state: None,
+                    workflow_id: None,
+                    created_at: now,
+                    updated_at: now,
+                }
+            },
+        )
 }
 
 proptest! {

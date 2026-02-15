@@ -92,7 +92,11 @@ fn default_issue_type() -> String {
 /// Parses the trailing digit(s) from the priority (e.g., `"p0"` → `0`,
 /// `"p10"` → `10`). Returns `u32::MAX` if no numeric suffix is found.
 pub fn compute_priority_order(priority: &str) -> u32 {
-    let digits: String = priority.chars().rev().take_while(char::is_ascii_digit).collect();
+    let digits: String = priority
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect();
     if digits.is_empty() {
         return u32::MAX;
     }

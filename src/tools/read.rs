@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::connect_db;
-use crate::db::queries::Queries;
+use crate::db::queries::{Queries, ReadyWorkParams};
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
 use crate::models::task::Task;
 use crate::server::state::SharedState;
@@ -108,6 +108,109 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
     }
 
     Ok(json!({ "statuses": statuses }))
+}
+
+// ── get_ready_work ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetReadyWorkParams {
+    #[serde(default = "default_ready_limit")]
+    limit: u32,
+    #[serde(default)]
+    label: Option<Vec<String>>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    issue_type: Option<String>,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    brief: bool,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
+}
+
+fn default_ready_limit() -> u32 {
+    10
+}
+
+/// Get prioritized list of actionable tasks.
+pub async fn get_ready_work(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: GetReadyWorkParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+
+    let query_params = ReadyWorkParams {
+        limit: parsed.limit,
+        labels: parsed.label.unwrap_or_default(),
+        priority: parsed.priority,
+        issue_type: parsed.issue_type,
+        assignee: parsed.assignee,
+    };
+
+    let result = queries.get_ready_work(&query_params).await?;
+
+    let task_values: Vec<Value> = result
+        .tasks
+        .into_iter()
+        .map(|t| serialize_task(&t, parsed.brief, parsed.fields.as_deref()))
+        .collect();
+
+    Ok(json!({
+        "tasks": task_values,
+        "total_eligible": result.total_eligible,
+    }))
+}
+
+/// Serialize a task to JSON, optionally applying brief mode or field filtering.
+fn serialize_task(task: &Task, brief: bool, fields: Option<&[String]>) -> Value {
+    if brief {
+        return json!({
+            "id": task.id,
+            "title": task.title,
+            "status": task.status.as_str(),
+            "priority": task.priority,
+            "assignee": task.assignee,
+        });
+    }
+
+    let full = json!({
+        "id": task.id,
+        "title": task.title,
+        "status": task.status.as_str(),
+        "priority": task.priority,
+        "priority_order": task.priority_order,
+        "issue_type": task.issue_type,
+        "assignee": task.assignee,
+        "description": task.description,
+        "context_summary": task.context_summary,
+        "pinned": task.pinned,
+        "defer_until": task.defer_until.map(|d| d.to_rfc3339()),
+        "compaction_level": task.compaction_level,
+        "created_at": task.created_at.to_rfc3339(),
+        "updated_at": task.updated_at.to_rfc3339(),
+    });
+
+    if let Some(fields) = fields {
+        let obj = full.as_object().unwrap();
+        let filtered: serde_json::Map<String, Value> = obj
+            .iter()
+            .filter(|(k, _)| fields.iter().any(|f| f == *k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Value::Object(filtered)
+    } else {
+        full
+    }
 }
 
 #[derive(Deserialize)]

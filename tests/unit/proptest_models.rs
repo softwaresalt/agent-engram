@@ -44,7 +44,19 @@ fn arb_task() -> impl Strategy<Value = Task> {
         0..5u32,
     )
         .prop_map(
-            |(id, title, status, work_item_id, description, context_summary, priority, issue_type, assignee, pinned, compaction_level)| {
+            |(
+                id,
+                title,
+                status,
+                work_item_id,
+                description,
+                context_summary,
+                priority,
+                issue_type,
+                assignee,
+                pinned,
+                compaction_level,
+            )| {
                 let now = Utc::now();
                 let priority_order = t_mem::models::task::compute_priority_order(priority);
                 Task {
@@ -72,17 +84,12 @@ fn arb_task() -> impl Strategy<Value = Task> {
 }
 
 fn arb_label() -> impl Strategy<Value = Label> {
-    (
-        "label:[a-z0-9]{6}",
-        "task:[a-z0-9]{6}",
-        "[a-z]{1,20}",
-    )
-        .prop_map(|(id, task_id, name)| Label {
-            id,
-            task_id,
-            name,
-            created_at: Utc::now(),
-        })
+    ("label:[a-z0-9]{6}", "task:[a-z0-9]{6}", "[a-z]{1,20}").prop_map(|(id, task_id, name)| Label {
+        id,
+        task_id,
+        name,
+        created_at: Utc::now(),
+    })
 }
 
 fn arb_comment() -> impl Strategy<Value = Comment> {
@@ -109,17 +116,19 @@ fn arb_workspace_config() -> impl Strategy<Value = WorkspaceConfig> {
         50..1000u32,
         1..500u32,
     )
-        .prop_map(|(priority, threshold, max_cand, trunc, batch)| WorkspaceConfig {
-            default_priority: priority.to_owned(),
-            compaction: CompactionConfig {
-                threshold_days: threshold,
-                max_candidates: max_cand,
-                truncation_length: trunc,
+        .prop_map(
+            |(priority, threshold, max_cand, trunc, batch)| WorkspaceConfig {
+                default_priority: priority.to_owned(),
+                compaction: CompactionConfig {
+                    threshold_days: threshold,
+                    max_candidates: max_cand,
+                    truncation_length: trunc,
+                },
+                batch: BatchConfig { max_size: batch },
+                allowed_labels: vec![],
+                allowed_types: vec![],
             },
-            batch: BatchConfig { max_size: batch },
-            allowed_labels: vec![],
-            allowed_types: vec![],
-        })
+        )
 }
 
 proptest! {

@@ -7,8 +7,8 @@ use surrealdb::sql::Thing;
 use crate::db::{Db, map_db_err};
 use crate::errors::{TMemError, TaskError};
 use crate::models::graph::DependencyType;
-use crate::models::task::TaskStatus;
-use crate::models::{Context, Spec, Task};
+use crate::models::task::{Task, TaskStatus, compute_priority_order};
+use crate::models::{Context, Spec};
 
 /// Relationship edge carrying normalized task IDs and dependency type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +133,12 @@ struct ContextRow {
     created_at: DateTime<Utc>,
 }
 
+/// Row type for COUNT() aggregate queries.
+#[derive(Deserialize)]
+struct CountRow {
+    count: u64,
+}
+
 impl ContextRow {
     fn into_context(self) -> Context {
         Context {
@@ -178,6 +184,30 @@ pub struct Queries {
     db: Db,
 }
 
+/// Parameters for the ready-work query.
+#[derive(Debug, Default)]
+pub struct ReadyWorkParams {
+    /// Maximum tasks to return (default: 10).
+    pub limit: u32,
+    /// Filter: task must have ALL listed labels (AND logic).
+    pub labels: Vec<String>,
+    /// Maximum priority threshold (e.g., "p2" returns p0, p1, p2).
+    pub priority: Option<String>,
+    /// Filter by issue type (e.g., "bug").
+    pub issue_type: Option<String>,
+    /// Filter by assignee identity.
+    pub assignee: Option<String>,
+}
+
+/// Result from the ready-work query.
+#[derive(Debug)]
+pub struct ReadyWorkResult {
+    /// Tasks matching the criteria, ordered and limited.
+    pub tasks: Vec<Task>,
+    /// Total number of eligible tasks before applying limit.
+    pub total_eligible: u32,
+}
+
 impl Queries {
     pub fn new(db: Db) -> Self {
         Self { db }
@@ -206,10 +236,10 @@ impl Queries {
                     priority_order = $priority_order, \
                     issue_type = $issue_type, \
                     assignee = $assignee, \
-                    defer_until = $defer_until, \
+                    defer_until = IF $defer_until != NONE THEN <datetime>$defer_until END, \
                     pinned = $pinned, \
                     compaction_level = $compaction_level, \
-                    compacted_at = $compacted_at, \
+                    compacted_at = IF $compacted_at != NONE THEN <datetime>$compacted_at END, \
                     workflow_state = $workflow_state, \
                     workflow_id = $workflow_id, \
                     created_at = <datetime>$created, \
@@ -444,6 +474,160 @@ impl Queries {
             .take(0)
             .unwrap_or_default();
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    /// Return prioritized actionable tasks: unblocked, undeferred,
+    /// not done, sorted by pinned → priority → creation date.
+    ///
+    /// Blocking logic: tasks with incoming `hard_blocker` or `blocked_by`
+    /// edges where the blocker's status != done are excluded. Tasks with
+    /// `duplicate_of` outgoing edges are also excluded.
+    pub async fn get_ready_work(
+        &self,
+        params: &ReadyWorkParams,
+    ) -> Result<ReadyWorkResult, TMemError> {
+        // Step 1: Get all non-done, non-blocked tasks.
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "SELECT * FROM task WHERE status NOT IN ['done', 'blocked'] \
+                 ORDER BY pinned DESC, priority_order ASC, created_at ASC",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let mut candidates: Vec<Task> = rows.into_iter().map(TaskRow::into_task).collect();
+
+        // Step 2: Filter out deferred tasks (defer_until in the future).
+        let now = Utc::now();
+        candidates.retain(|t| t.defer_until.is_none_or(|defer| defer <= now));
+
+        // Step 3: Find tasks blocked by unresolved hard_blocker/blocked_by deps.
+        let blocked_ids = self.find_blocked_task_ids().await?;
+        candidates.retain(|t| !blocked_ids.contains(&t.id));
+
+        // Step 4: Find tasks that are duplicates (have outgoing duplicate_of edge).
+        let duplicate_ids = self.find_duplicate_task_ids().await?;
+        candidates.retain(|t| !duplicate_ids.contains(&t.id));
+
+        // Step 5: Apply optional filters.
+        // Priority threshold filter.
+        if let Some(ref threshold) = params.priority {
+            let max_order = compute_priority_order(threshold);
+            candidates.retain(|t| t.priority_order <= max_order);
+        }
+
+        // Issue type filter.
+        if let Some(ref issue_type) = params.issue_type {
+            candidates.retain(|t| t.issue_type == *issue_type);
+        }
+
+        // Assignee filter.
+        if let Some(ref assignee) = params.assignee {
+            candidates.retain(|t| t.assignee.as_deref() == Some(assignee.as_str()));
+        }
+
+        // Label filter (AND logic — task must have ALL listed labels).
+        if !params.labels.is_empty() {
+            let mut label_matched = Vec::new();
+            for task in &candidates {
+                if self.task_has_all_labels(&task.id, &params.labels).await? {
+                    label_matched.push(task.id.clone());
+                }
+            }
+            candidates.retain(|t| label_matched.contains(&t.id));
+        }
+
+        let total_eligible = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
+
+        // Step 6: Apply limit.
+        let limit = if params.limit == 0 { 10 } else { params.limit };
+        candidates.truncate(limit as usize);
+
+        Ok(ReadyWorkResult {
+            tasks: candidates,
+            total_eligible,
+        })
+    }
+
+    /// Find task IDs that are blocked by unresolved hard_blocker or blocked_by edges.
+    async fn find_blocked_task_ids(&self) -> Result<HashSet<String>, TMemError> {
+        // Get all hard_blocker and blocked_by edges.
+        // `type` is a reserved keyword in SurrealQL, requires backtick escaping.
+        let rows: Vec<DependsOnRow> = self
+            .db
+            .query(
+                "SELECT in, out, type FROM depends_on \
+                 WHERE `type` IN ['hard_blocker', 'blocked_by']",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let mut blocked = HashSet::new();
+
+        for row in rows {
+            let blocker_id = row.out.id.to_raw();
+            let dependent_id = row.r#in.id.to_raw();
+
+            // Check if the blocker task is NOT done.
+            if let Some(blocker) = self.get_task(&blocker_id).await? {
+                if blocker.status != TaskStatus::Done {
+                    blocked.insert(dependent_id);
+                }
+            }
+        }
+
+        Ok(blocked)
+    }
+
+    /// Find task IDs that have an outgoing duplicate_of edge.
+    async fn find_duplicate_task_ids(&self) -> Result<HashSet<String>, TMemError> {
+        let rows: Vec<DependsOnRow> = self
+            .db
+            .query(
+                "SELECT in, out, type FROM depends_on \
+                 WHERE `type` = 'duplicate_of'",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        let ids = rows.into_iter().map(|row| row.r#in.id.to_raw()).collect();
+
+        Ok(ids)
+    }
+
+    /// Check if a task has ALL specified labels.
+    async fn task_has_all_labels(
+        &self,
+        task_id: &str,
+        labels: &[String],
+    ) -> Result<bool, TMemError> {
+        for label in labels {
+            let count: Vec<CountRow> = self
+                .db
+                .query(
+                    "SELECT count() AS count FROM label \
+                     WHERE task_id = $task_id AND name = $name GROUP ALL",
+                )
+                .bind(("task_id", task_id.to_string()))
+                .bind(("name", label.clone()))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .unwrap_or_default();
+
+            let found = count.first().map_or(0, |r| r.count);
+            if found == 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {

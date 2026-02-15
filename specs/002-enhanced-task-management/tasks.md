@@ -56,17 +56,17 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T018 [US1] Write contract tests for get_ready_work in tests/contract/read_test.rs: workspace-not-set error (1003), basic call returns tasks, limit parameter caps results, empty workspace returns empty list (FR-027, FR-028)
+- [X] T018 [US1] Write contract tests for get_ready_work in tests/contract/read_test.rs: workspace-not-set error (1003), basic call returns tasks, limit parameter caps results, empty workspace returns empty list (FR-027, FR-028)
 
 ### Green Phase (Implementation)
 
-- [ ] T019 [US1] Implement ready-work SurrealQL query in src/db/queries.rs: WHERE status NOT IN [done, blocked], defer_until IS NULL OR \<= now(), NOT IN blocking subquery (hard_blocker, blocked_by where out.status != done), NOT IN duplicate_of subquery; ORDER BY pinned DESC, priority_order ASC, created_at ASC; LIMIT $limit (FR-027, FR-028, FR-030, FR-037, FR-054)
-- [ ] T020 [US1] Implement get_ready_work tool handler in src/tools/read.rs: parse params (limit, label, priority, issue_type, assignee, brief, fields), call query, serialize to TaskSummary array, return total_eligible count (FR-027, FR-028)
-- [ ] T021 [P] [US1] Add label filter dimension to ready-work query via parameterized WHERE clause in src/db/queries.rs: AND-filter using label table join (FR-029, FR-033)
-- [ ] T022 [P] [US1] Add priority threshold filter to ready-work query in src/db/queries.rs: WHERE priority_order \<= compute_priority_order($threshold) (FR-029)
-- [ ] T023 [P] [US1] Add issue_type filter to ready-work query in src/db/queries.rs: WHERE issue_type = $type (FR-029)
-- [ ] T024 [P] [US1] Add assignee filter to ready-work query in src/db/queries.rs: WHERE assignee = $assignee (FR-029)
-- [ ] T025 [US1] Integration test in tests/integration/enhanced_features_test.rs: 20 tasks at p0–p4, block 5 with hard_blocker, defer 3 to future, pin 1 low-priority; verify get_ready_work returns 12 tasks, pinned first, sorted by priority then created_at; verify limit=5 caps results (SC-011)
+- [X] T019 [US1] Implement ready-work SurrealQL query in src/db/queries.rs: WHERE status NOT IN [done, blocked], defer_until IS NULL OR \<= now(), NOT IN blocking subquery (hard_blocker, blocked_by where out.status != done), NOT IN duplicate_of subquery; ORDER BY pinned DESC, priority_order ASC, created_at ASC; LIMIT $limit (FR-027, FR-028, FR-030, FR-037, FR-054)
+- [X] T020 [US1] Implement get_ready_work tool handler in src/tools/read.rs: parse params (limit, label, priority, issue_type, assignee, brief, fields), call query, serialize to TaskSummary array, return total_eligible count (FR-027, FR-028)
+- [X] T021 [P] [US1] Add label filter dimension to ready-work query via parameterized WHERE clause in src/db/queries.rs: AND-filter using label table join (FR-029, FR-033)
+- [X] T022 [P] [US1] Add priority threshold filter to ready-work query in src/db/queries.rs: WHERE priority_order \<= compute_priority_order($threshold) (FR-029)
+- [X] T023 [P] [US1] Add issue_type filter to ready-work query in src/db/queries.rs: WHERE issue_type = $type (FR-029)
+- [X] T024 [P] [US1] Add assignee filter to ready-work query in src/db/queries.rs: WHERE assignee = $assignee (FR-029)
+- [X] T025 [US1] Integration test in tests/integration/enhanced_features_test.rs: 20 tasks at p0–p4, block 5 with hard_blocker, defer 3 to future, pin 1 low-priority; verify get_ready_work returns 12 tasks, pinned first, sorted by priority then created_at; verify limit=5 caps results (SC-011)
 
 **Checkpoint**: `get_ready_work` fully functional with all 4 filter dimensions. US1 independently testable.
 

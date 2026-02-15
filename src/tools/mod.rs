@@ -57,9 +57,9 @@ pub async fn dispatch(
         "get_task_graph" => read::get_task_graph(state, params).await,
         "check_status" => read::check_status(state, params).await,
         "query_memory" => read::query_memory(state, params).await,
+        "get_ready_work" => read::get_ready_work(state, params).await,
         // Enhanced task management tool stubs (002-enhanced-task-management)
-        "get_ready_work"
-        | "add_label"
+        "add_label"
         | "remove_label"
         | "add_dependency"
         | "get_compaction_candidates"

@@ -134,7 +134,11 @@ fn error_response_codes_are_consistent() {
         ),
         (TaskError::TitleEmpty.into(), 3013, "TaskTitleEmpty"),
         (
-            TaskError::AlreadyClaimed { id: "x".into(), assignee: "a".into() }.into(),
+            TaskError::AlreadyClaimed {
+                id: "x".into(),
+                assignee: "a".into(),
+            }
+            .into(),
             3005,
             "TaskAlreadyClaimed",
         ),
@@ -144,32 +148,54 @@ fn error_response_codes_are_consistent() {
             "LabelValidation",
         ),
         (
-            TaskError::BatchPartialFailure { succeeded: 1, failed: 1 }.into(),
+            TaskError::BatchPartialFailure {
+                succeeded: 1,
+                failed: 1,
+            }
+            .into(),
             3007,
             "BatchPartialFailure",
         ),
         (
-            TaskError::CompactionFailed { id: "x".into(), reason: "x".into() }.into(),
+            TaskError::CompactionFailed {
+                id: "x".into(),
+                reason: "x".into(),
+            }
+            .into(),
             3008,
             "CompactionFailed",
         ),
         (
-            TaskError::InvalidPriority { priority: "x".into() }.into(),
+            TaskError::InvalidPriority {
+                priority: "x".into(),
+            }
+            .into(),
             3009,
             "InvalidPriority",
         ),
         (
-            TaskError::InvalidIssueType { issue_type: "x".into() }.into(),
+            TaskError::InvalidIssueType {
+                issue_type: "x".into(),
+            }
+            .into(),
             3010,
             "InvalidIssueType",
         ),
         (
-            TaskError::DuplicateLabel { task_id: "x".into(), label: "x".into() }.into(),
+            TaskError::DuplicateLabel {
+                task_id: "x".into(),
+                label: "x".into(),
+            }
+            .into(),
             3011,
             "DuplicateLabel",
         ),
         (
-            TaskError::NotClaimable { id: "x".into(), status: "done".into() }.into(),
+            TaskError::NotClaimable {
+                id: "x".into(),
+                status: "done".into(),
+            }
+            .into(),
             3012,
             "TaskNotClaimable",
         ),
@@ -203,7 +229,11 @@ fn error_response_codes_are_consistent() {
             "ConfigParseError",
         ),
         (
-            ConfigError::InvalidValue { key: "k".into(), reason: "x".into() }.into(),
+            ConfigError::InvalidValue {
+                key: "k".into(),
+                reason: "x".into(),
+            }
+            .into(),
             6002,
             "ConfigInvalidValue",
         ),
