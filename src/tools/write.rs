@@ -548,6 +548,101 @@ pub async fn apply_compaction(
     Ok(json!({ "results": results }))
 }
 
+// ── Claim/Release ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ClaimTaskParams {
+    task_id: String,
+    claimant: String,
+}
+
+/// Claim a task for a specific agent/user. Rejects if already claimed.
+pub async fn claim_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: ClaimTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let updated = queries.claim_task(task_id, &parsed.claimant).await?;
+
+    // Create context note recording the claim
+    let now = chrono::Utc::now();
+    let ctx_id = format!("context:{}", uuid::Uuid::new_v4());
+    let ctx = crate::models::context::Context {
+        id: ctx_id.clone(),
+        content: format!("Claimed by {}", parsed.claimant),
+        embedding: None,
+        source_client: "daemon".into(),
+        created_at: now,
+    };
+    queries.insert_context(&ctx).await?;
+    queries.link_task_context(task_id, &ctx_id).await?;
+
+    Ok(json!({
+        "task_id": updated.id,
+        "claimant": parsed.claimant,
+        "context_id": ctx_id,
+        "claimed_at": now.to_rfc3339(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct ReleaseTaskParams {
+    task_id: String,
+}
+
+/// Release a claimed task. Any client may release any claim.
+pub async fn release_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: ReleaseTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let previous_claimant = queries.release_task(task_id).await?;
+
+    // Create context note recording the release
+    let now = chrono::Utc::now();
+    let ctx_id = format!("context:{}", uuid::Uuid::new_v4());
+    let ctx = crate::models::context::Context {
+        id: ctx_id.clone(),
+        content: format!("Released, previously claimed by {previous_claimant}"),
+        embedding: None,
+        source_client: "daemon".into(),
+        created_at: now,
+    };
+    queries.insert_context(&ctx).await?;
+    queries.link_task_context(task_id, &ctx_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "previous_claimant": previous_claimant,
+        "context_id": ctx_id,
+        "released_at": now.to_rfc3339(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

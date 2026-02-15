@@ -151,14 +151,14 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T049 [P] [US5] Write contract tests for claim_task and release_task in tests/contract/write_test.rs: workspace-not-set (1003), valid claim sets assignee, already-claimed returns error 3005 with current claimant, release unclaimed returns error 3012, release records previous claimant in context note (FR-044, FR-045, FR-046)
+- [x] T049 [P] [US5] Write contract tests for claim_task and release_task in tests/contract/write_test.rs: workspace-not-set (1003), valid claim sets assignee, already-claimed returns error 3005 with current claimant, release unclaimed returns error 3012, release records previous claimant in context note (FR-044, FR-045, FR-046)
 
 ### Green Phase (Implementation)
 
-- [ ] T050 [US5] Implement claim/release queries in src/db/queries.rs: claim_task with atomic assignee IS NULL check (return current claimant on conflict), release_task clears assignee and returns previous claimant (FR-044, FR-045)
-- [ ] T051 [US5] Implement claim_task tool handler in src/tools/write.rs: parse task_id + claimant, call claim query, create context note "Claimed by {claimant}", return task_id + claimant + context_id + claimed_at (FR-044, FR-046)
-- [ ] T052 [US5] Implement release_task tool handler in src/tools/write.rs: parse task_id, call release query, create context note "Released by {releaser}, previously claimed by {previous}", return task_id + previous_claimant + context_id (FR-044, FR-046)
-- [ ] T053 [US5] Integration test in tests/integration/enhanced_features_test.rs: Client A claims task, Client B claim rejected (3005), Client B releases Client A's claim, verify context notes record both events with identities, verify get_ready_work(assignee: "agent-1") returns only agent-1's tasks
+- [x] T050 [US5] Implement claim/release queries in src/db/queries.rs: claim_task with atomic assignee IS NULL check (return current claimant on conflict), release_task clears assignee and returns previous claimant (FR-044, FR-045)
+- [x] T051 [US5] Implement claim_task tool handler in src/tools/write.rs: parse task_id + claimant, call claim query, create context note "Claimed by {claimant}", return task_id + claimant + context_id + claimed_at (FR-044, FR-046)
+- [x] T052 [US5] Implement release_task tool handler in src/tools/write.rs: parse task_id, call release query, create context note "Released by {releaser}, previously claimed by {previous}", return task_id + previous_claimant + context_id (FR-044, FR-046)
+- [x] T053 [US5] Integration test in tests/integration/enhanced_features_test.rs: Client A claims task, Client B claim rejected (3005), Client B releases Client A's claim, verify context notes record both events with identities, verify get_ready_work(assignee: "agent-1") returns only agent-1's tasks
 
 **Checkpoint**: Task claiming functional with audit trail and ready-work integration. US5 independently testable.
 

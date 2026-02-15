@@ -780,6 +780,90 @@ impl Queries {
             })
     }
 
+    /// Atomically claim a task for a claimant.
+    ///
+    /// Returns `Ok(task)` if the claim succeeds (assignee was `None`).
+    /// Returns `AlreadyClaimed` if someone else holds the claim.
+    /// Returns `TaskNotFound` if the task does not exist.
+    pub async fn claim_task(&self, task_id: &str, claimant: &str) -> Result<Task, TMemError> {
+        // First check the task exists and its current state
+        let task = self.get_task(task_id).await?.ok_or_else(|| {
+            TMemError::Task(TaskError::NotFound {
+                id: task_id.to_string(),
+            })
+        })?;
+
+        if let Some(ref current) = task.assignee {
+            return Err(TMemError::Task(TaskError::AlreadyClaimed {
+                id: task_id.to_string(),
+                assignee: current.clone(),
+            }));
+        }
+
+        let record = Thing::from(("task", task_id));
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "UPDATE $record SET \
+                    assignee = $claimant, \
+                    updated_at = <datetime>$now \
+                 RETURN AFTER",
+            )
+            .bind(("record", record))
+            .bind(("claimant", claimant.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        rows.into_iter()
+            .next()
+            .map(TaskRow::into_task)
+            .ok_or_else(|| {
+                TMemError::Task(TaskError::NotFound {
+                    id: task_id.to_string(),
+                })
+            })
+    }
+
+    /// Release a claimed task, clearing the assignee.
+    ///
+    /// Returns `Ok(previous_claimant)` on success.
+    /// Returns `NotClaimable` if the task has no current assignee.
+    /// Returns `TaskNotFound` if the task does not exist.
+    pub async fn release_task(&self, task_id: &str) -> Result<String, TMemError> {
+        let task = self.get_task(task_id).await?.ok_or_else(|| {
+            TMemError::Task(TaskError::NotFound {
+                id: task_id.to_string(),
+            })
+        })?;
+
+        let previous = task.assignee.ok_or_else(|| {
+            TMemError::Task(TaskError::NotClaimable {
+                id: task_id.to_string(),
+                status: "not claimed".to_string(),
+            })
+        })?;
+
+        let record = Thing::from(("task", task_id));
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .query(
+                "UPDATE $record SET \
+                    assignee = NONE, \
+                    updated_at = <datetime>$now \
+                 RETURN AFTER",
+            )
+            .bind(("record", record))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(previous)
+    }
+
     pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {
         let rows: Vec<ContextRow> = self
             .db

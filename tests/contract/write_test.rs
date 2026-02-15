@@ -6,7 +6,7 @@ use tokio::test;
 
 use t_mem::errors::codes::{
     COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION,
-    WORKSPACE_NOT_SET,
+    TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE, WORKSPACE_NOT_SET,
 };
 use t_mem::server::state::AppState;
 use t_mem::tools;
@@ -758,4 +758,210 @@ async fn contract_apply_compaction_nonexistent_task() {
     .expect_err("expected compaction failed error");
 
     assert_eq!(err.to_response().error.code, COMPACTION_FAILED);
+}
+
+// ── Claim/Release contract tests (T049) ────────────────────────────────────
+
+#[test]
+async fn contract_claim_task_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc",
+        "claimant": "agent-1"
+    }));
+
+    let err = tools::dispatch(state, "claim_task", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_release_task_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({ "task_id": "task:abc" }));
+
+    let err = tools::dispatch(state, "release_task", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_claim_task_sets_assignee() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create a task first
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Claimable task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Claim the task
+    let result = tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": task_id, "claimant": "agent-1" })),
+    )
+    .await
+    .expect("claim_task should succeed");
+
+    assert_eq!(result["claimant"].as_str().unwrap(), "agent-1");
+    assert!(result["context_id"].is_string());
+    assert!(result["claimed_at"].is_string());
+}
+
+#[test]
+async fn contract_claim_already_claimed_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Claim conflict task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // First claim succeeds
+    tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": task_id, "claimant": "agent-1" })),
+    )
+    .await
+    .expect("first claim should succeed");
+
+    // Second claim by different agent should fail with TASK_ALREADY_CLAIMED
+    let err = tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": task_id, "claimant": "agent-2" })),
+    )
+    .await
+    .expect_err("second claim should fail");
+
+    assert_eq!(err.to_response().error.code, TASK_ALREADY_CLAIMED);
+}
+
+#[test]
+async fn contract_release_unclaimed_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Unclaimed task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Release unclaimed task should fail with TASK_NOT_CLAIMABLE
+    let err = tools::dispatch(
+        state.clone(),
+        "release_task",
+        Some(json!({ "task_id": task_id })),
+    )
+    .await
+    .expect_err("release unclaimed should fail");
+
+    assert_eq!(err.to_response().error.code, TASK_NOT_CLAIMABLE);
+}
+
+#[test]
+async fn contract_release_records_previous_claimant() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Release test task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Claim then release
+    tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": task_id, "claimant": "agent-1" })),
+    )
+    .await
+    .expect("claim");
+
+    let release_result = tools::dispatch(
+        state.clone(),
+        "release_task",
+        Some(json!({ "task_id": task_id })),
+    )
+    .await
+    .expect("release should succeed");
+
+    assert_eq!(
+        release_result["previous_claimant"].as_str().unwrap(),
+        "agent-1"
+    );
+    assert!(release_result["context_id"].is_string());
+    assert!(release_result["released_at"].is_string());
 }

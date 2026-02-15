@@ -63,10 +63,10 @@ pub async fn dispatch(
         "add_dependency" => write::add_dependency(state, params).await,
         "get_compaction_candidates" => read::get_compaction_candidates(state, params).await,
         "apply_compaction" => write::apply_compaction(state, params).await,
+        "claim_task" => write::claim_task(state, params).await,
+        "release_task" => write::release_task(state, params).await,
         // Enhanced task management tool stubs (002-enhanced-task-management)
-        "claim_task"
-        | "release_task"
-        | "defer_task"
+        "defer_task"
         | "undefer_task"
         | "pin_task"
         | "unpin_task"

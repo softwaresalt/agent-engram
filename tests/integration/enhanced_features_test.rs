@@ -971,3 +971,145 @@ async fn t048_pinned_excluded_and_compaction_level_increments() {
     assert_eq!(pinned_check.compaction_level, 0);
     assert!(pinned_check.compacted_at.is_none());
 }
+
+// ── T053: Task claiming and assignment integration test ─────────
+
+#[tokio::test]
+async fn t053_claim_release_conflict_audit_trail_and_assignee_filter() {
+    let state = Arc::new(AppState::new(10));
+    let ws_id = format!("claim_{}", uuid::Uuid::new_v4());
+
+    state
+        .set_workspace(test_snapshot(&ws_id))
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(&ws_id).await.expect("connect db");
+    let queries = Queries::new(db);
+
+    // Create 3 tasks
+    for i in 1..=3 {
+        let task = make_task(&format!("cl{i}"), "p2", 2);
+        queries.upsert_task(&task).await.expect("upsert task");
+    }
+
+    // Client A claims cl1
+    let claim_a = tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": "cl1", "claimant": "agent-1" })),
+    )
+    .await
+    .expect("agent-1 claim should succeed");
+
+    assert_eq!(claim_a["claimant"].as_str().unwrap(), "agent-1");
+    assert!(claim_a["context_id"].is_string());
+    assert!(claim_a["claimed_at"].is_string());
+
+    // Client B tries to claim cl1 — should be rejected with TASK_ALREADY_CLAIMED
+    let err = tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": "cl1", "claimant": "agent-2" })),
+    )
+    .await
+    .expect_err("agent-2 claim should be rejected");
+
+    assert_eq!(
+        err.to_response().error.code,
+        t_mem::errors::codes::TASK_ALREADY_CLAIMED
+    );
+
+    // Agent-2 claims cl2 (different task, should succeed)
+    let claim_b = tools::dispatch(
+        state.clone(),
+        "claim_task",
+        Some(json!({ "task_id": "cl2", "claimant": "agent-2" })),
+    )
+    .await
+    .expect("agent-2 claim of cl2 should succeed");
+    assert_eq!(claim_b["claimant"].as_str().unwrap(), "agent-2");
+
+    // Verify get_ready_work with assignee filter
+    let ready_agent1 = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "assignee": "agent-1" })),
+    )
+    .await
+    .expect("get_ready_work with assignee filter");
+
+    let agent1_tasks = ready_agent1["tasks"].as_array().unwrap();
+    assert_eq!(
+        agent1_tasks.len(),
+        1,
+        "agent-1 should have exactly 1 claimed task"
+    );
+    assert_eq!(agent1_tasks[0]["id"].as_str().unwrap(), "cl1");
+
+    // Client B releases cl1 (third-party release is allowed)
+    let release = tools::dispatch(
+        state.clone(),
+        "release_task",
+        Some(json!({ "task_id": "cl1" })),
+    )
+    .await
+    .expect("third-party release should succeed");
+
+    assert_eq!(
+        release["previous_claimant"].as_str().unwrap(),
+        "agent-1",
+        "release should report previous claimant"
+    );
+    assert!(release["context_id"].is_string());
+    assert!(release["released_at"].is_string());
+
+    // After release, cl1 should no longer appear in agent-1's filtered results
+    let ready_after = tools::dispatch(
+        state.clone(),
+        "get_ready_work",
+        Some(json!({ "assignee": "agent-1" })),
+    )
+    .await
+    .expect("get_ready_work after release");
+
+    let after_tasks = ready_after["tasks"].as_array().unwrap();
+    assert!(
+        after_tasks.is_empty(),
+        "agent-1 should have no claimed tasks after release"
+    );
+
+    // Verify context notes were created (audit trail)
+    // The claim and release should each have created a context note
+    // linked to cl1. The DB should have at least 2 context records.
+    let all_contexts = queries.all_contexts().await.expect("all contexts");
+    let cl1_notes: Vec<_> = all_contexts
+        .iter()
+        .filter(|c| c.content.contains("agent-1"))
+        .collect();
+
+    assert!(
+        cl1_notes.len() >= 2,
+        "should have at least 2 context notes mentioning agent-1 (claim + release)"
+    );
+
+    // Verify one note has "Claimed by" and one has "Released"
+    let has_claim = cl1_notes.iter().any(|c| c.content.contains("Claimed by"));
+    let has_release = cl1_notes.iter().any(|c| c.content.contains("Released"));
+    assert!(has_claim, "should have a claim context note");
+    assert!(has_release, "should have a release context note");
+
+    // cl3 is unclaimed — release should fail
+    let unclaimed_err = tools::dispatch(
+        state.clone(),
+        "release_task",
+        Some(json!({ "task_id": "cl3" })),
+    )
+    .await
+    .expect_err("release of unclaimed task should fail");
+
+    assert_eq!(
+        unclaimed_err.to_response().error.code,
+        t_mem::errors::codes::TASK_NOT_CLAIMABLE
+    );
+}
