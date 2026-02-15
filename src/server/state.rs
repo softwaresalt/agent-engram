@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::config::StaleStrategy;
 use crate::errors::WorkspaceError;
+use crate::models::config::WorkspaceConfig;
 use crate::services::connection::ConnectionRegistry;
 use crate::services::hydration::FileFingerprint;
 
@@ -66,6 +67,7 @@ pub struct AppState {
     start: Instant,
     active_connections: AtomicUsize,
     active_workspace: RwLock<Option<WorkspaceSnapshot>>,
+    workspace_config: RwLock<Option<WorkspaceConfig>>,
     max_workspaces: usize,
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
@@ -92,6 +94,7 @@ impl AppState {
             start: Instant::now(),
             active_connections: AtomicUsize::new(0),
             active_workspace: RwLock::new(None),
+            workspace_config: RwLock::new(None),
             max_workspaces,
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
@@ -184,6 +187,16 @@ impl AppState {
     /// Access the connection registry.
     pub fn connection_registry(&self) -> &ConnectionRegistry {
         &self.connection_registry
+    }
+
+    /// Get the current workspace config.
+    pub async fn workspace_config(&self) -> Option<WorkspaceConfig> {
+        self.workspace_config.read().await.clone()
+    }
+
+    /// Set the workspace config.
+    pub async fn set_workspace_config(&self, config: Option<WorkspaceConfig>) {
+        *self.workspace_config.write().await = config;
     }
 }
 

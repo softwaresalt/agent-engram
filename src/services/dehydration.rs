@@ -35,9 +35,8 @@ pub async fn acquire_flush_lock() -> MutexGuard<'static, ()> {
 /// Acquires the flush lock and dehydrates the active workspace, if any.
 pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), TMemError> {
     let _guard = acquire_flush_lock().await;
-    let snapshot = match state.snapshot_workspace().await {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(snapshot) = state.snapshot_workspace().await else {
+        return Ok(());
     };
 
     let workspace_path = Path::new(&snapshot.path);
@@ -382,6 +381,12 @@ fn format_dependency(kind: DependencyType) -> &'static str {
     match kind {
         DependencyType::HardBlocker => "hard_blocker",
         DependencyType::SoftDependency => "soft_dependency",
+        DependencyType::ChildOf => "child_of",
+        DependencyType::BlockedBy => "blocked_by",
+        DependencyType::DuplicateOf => "duplicate_of",
+        DependencyType::RelatedTo => "related_to",
+        DependencyType::Predecessor => "predecessor",
+        DependencyType::Successor => "successor",
     }
 }
 
@@ -400,6 +405,16 @@ mod tests {
             work_item_id: None,
             description: desc.to_string(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         }

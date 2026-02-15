@@ -61,8 +61,40 @@ struct TaskRow {
     description: String,
     #[serde(default)]
     context_summary: Option<String>,
+    #[serde(default = "default_priority")]
+    priority: String,
+    #[serde(default = "default_priority_order")]
+    priority_order: u32,
+    #[serde(default = "default_issue_type")]
+    issue_type: String,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    defer_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pinned: bool,
+    #[serde(default)]
+    compaction_level: u32,
+    #[serde(default)]
+    compacted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    workflow_state: Option<String>,
+    #[serde(default)]
+    workflow_id: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+fn default_priority() -> String {
+    "p2".to_owned()
+}
+
+const fn default_priority_order() -> u32 {
+    2
+}
+
+fn default_issue_type() -> String {
+    "task".to_owned()
 }
 
 impl TaskRow {
@@ -74,6 +106,16 @@ impl TaskRow {
             work_item_id: self.work_item_id,
             description: self.description,
             context_summary: self.context_summary,
+            priority: self.priority,
+            priority_order: self.priority_order,
+            issue_type: self.issue_type,
+            assignee: self.assignee,
+            defer_until: self.defer_until,
+            pinned: self.pinned,
+            compaction_level: self.compaction_level,
+            compacted_at: self.compacted_at,
+            workflow_state: self.workflow_state,
+            workflow_id: self.workflow_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -160,6 +202,16 @@ impl Queries {
                     work_item_id = $wid, \
                     description = $desc, \
                     context_summary = $ctx_summary, \
+                    priority = $priority, \
+                    priority_order = $priority_order, \
+                    issue_type = $issue_type, \
+                    assignee = $assignee, \
+                    defer_until = $defer_until, \
+                    pinned = $pinned, \
+                    compaction_level = $compaction_level, \
+                    compacted_at = $compacted_at, \
+                    workflow_state = $workflow_state, \
+                    workflow_id = $workflow_id, \
                     created_at = <datetime>$created, \
                     updated_at = <datetime>$updated",
             )
@@ -169,6 +221,16 @@ impl Queries {
             .bind(("wid", task.work_item_id.clone()))
             .bind(("desc", task.description.clone()))
             .bind(("ctx_summary", task.context_summary.clone()))
+            .bind(("priority", task.priority.clone()))
+            .bind(("priority_order", task.priority_order))
+            .bind(("issue_type", task.issue_type.clone()))
+            .bind(("assignee", task.assignee.clone()))
+            .bind(("defer_until", task.defer_until.map(|d| d.to_rfc3339())))
+            .bind(("pinned", task.pinned))
+            .bind(("compaction_level", task.compaction_level))
+            .bind(("compacted_at", task.compacted_at.map(|d| d.to_rfc3339())))
+            .bind(("workflow_state", task.workflow_state.clone()))
+            .bind(("workflow_id", task.workflow_id.clone()))
             .bind(("created", created))
             .bind(("updated", updated))
             .await
@@ -196,6 +258,16 @@ impl Queries {
             work_item_id: work_item_id.map(String::from),
             description: description.to_string(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -562,12 +634,24 @@ fn format_dependency(kind: DependencyType) -> &'static str {
     match kind {
         DependencyType::HardBlocker => "hard_blocker",
         DependencyType::SoftDependency => "soft_dependency",
+        DependencyType::ChildOf => "child_of",
+        DependencyType::BlockedBy => "blocked_by",
+        DependencyType::DuplicateOf => "duplicate_of",
+        DependencyType::RelatedTo => "related_to",
+        DependencyType::Predecessor => "predecessor",
+        DependencyType::Successor => "successor",
     }
 }
 
 fn parse_dependency_type(raw: String) -> DependencyType {
     match raw.as_str() {
         "soft_dependency" => DependencyType::SoftDependency,
+        "child_of" => DependencyType::ChildOf,
+        "blocked_by" => DependencyType::BlockedBy,
+        "duplicate_of" => DependencyType::DuplicateOf,
+        "related_to" => DependencyType::RelatedTo,
+        "predecessor" => DependencyType::Predecessor,
+        "successor" => DependencyType::Successor,
         _ => DependencyType::HardBlocker,
     }
 }
@@ -604,6 +688,16 @@ mod tests {
             work_item_id: None,
             description: String::new(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         }

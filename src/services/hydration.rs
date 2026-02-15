@@ -367,6 +367,16 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                     work_item_id,
                     description,
                     context_summary: None,
+                    priority: "p2".to_owned(),
+                    priority_order: 2,
+                    issue_type: "task".to_owned(),
+                    assignee: None,
+                    defer_until: None,
+                    pinned: false,
+                    compaction_level: 0,
+                    compacted_at: None,
+                    workflow_state: None,
+                    workflow_id: None,
                     created_at,
                     updated_at,
                 },
@@ -457,6 +467,12 @@ async fn apply_relation(queries: &Queries, rel: &ParsedRelation) -> Result<(), T
                 .find(|(k, _)| k == "type")
                 .map(|(_, v)| match v.as_str() {
                     "soft_dependency" => DependencyType::SoftDependency,
+                    "child_of" => DependencyType::ChildOf,
+                    "blocked_by" => DependencyType::BlockedBy,
+                    "duplicate_of" => DependencyType::DuplicateOf,
+                    "related_to" => DependencyType::RelatedTo,
+                    "predecessor" => DependencyType::Predecessor,
+                    "successor" => DependencyType::Successor,
                     _ => DependencyType::HardBlocker,
                 })
                 .unwrap_or(DependencyType::HardBlocker);

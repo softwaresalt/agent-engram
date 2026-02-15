@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use proptest::prelude::*;
 
-use t_mem::models::task::{Task, TaskStatus};
+use t_mem::models::task::{Task, TaskStatus, compute_priority_order};
 use t_mem::services::dehydration::serialize_tasks_md;
 use t_mem::services::hydration::parse_tasks_md;
 
@@ -28,9 +28,11 @@ fn arb_task() -> impl Strategy<Value = Task> {
         arb_status(),
         prop::option::of("[A-Z]{2}#[0-9]{1,5}"), // work_item_id
         "[A-Za-z0-9 .]{0,100}",                  // description (safe chars)
+        prop::sample::select(vec!["p0", "p1", "p2", "p3", "p4"]),
     )
-        .prop_map(|(id_suffix, title, status, work_item_id, description)| {
+        .prop_map(|(id_suffix, title, status, work_item_id, description, priority)| {
             let now = Utc::now();
+            let priority_order = compute_priority_order(priority);
             Task {
                 id: id_suffix,
                 title,
@@ -38,6 +40,16 @@ fn arb_task() -> impl Strategy<Value = Task> {
                 work_item_id,
                 description,
                 context_summary: None,
+                priority: priority.to_owned(),
+                priority_order,
+                issue_type: "task".to_owned(),
+                assignee: None,
+                defer_until: None,
+                pinned: false,
+                compaction_level: 0,
+                compacted_at: None,
+                workflow_state: None,
+                workflow_id: None,
                 created_at: now,
                 updated_at: now,
             }
@@ -90,6 +102,16 @@ proptest! {
             work_item_id: None,
             description: "Description".to_string(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         };

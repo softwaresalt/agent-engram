@@ -57,6 +57,26 @@ pub async fn dispatch(
         "get_task_graph" => read::get_task_graph(state, params).await,
         "check_status" => read::check_status(state, params).await,
         "query_memory" => read::query_memory(state, params).await,
+        // Enhanced task management tool stubs (002-enhanced-task-management)
+        "get_ready_work"
+        | "add_label"
+        | "remove_label"
+        | "add_dependency"
+        | "get_compaction_candidates"
+        | "apply_compaction"
+        | "claim_task"
+        | "release_task"
+        | "defer_task"
+        | "undefer_task"
+        | "pin_task"
+        | "unpin_task"
+        | "get_workspace_statistics"
+        | "batch_update_tasks"
+        | "add_comment" => Err(workspace_not_set()),
         _ => Err(not_implemented(method)),
     }
+}
+
+fn workspace_not_set() -> TMemError {
+    TMemError::Workspace(crate::errors::WorkspaceError::NotSet)
 }

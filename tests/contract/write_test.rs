@@ -275,7 +275,7 @@ async fn contract_create_task_requires_workspace() {
     assert_eq!(code, WORKSPACE_NOT_SET);
 }
 
-// ─── T130: Contract test for create_task empty title TaskTitleEmpty (3005) ───
+// ─── T130: Contract test for create_task empty title TaskTitleEmpty (3013) ───
 
 #[test]
 async fn contract_create_task_rejects_empty_title() {

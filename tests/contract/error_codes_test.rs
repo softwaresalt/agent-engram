@@ -29,7 +29,15 @@ fn task_error_codes_match_contract() {
     assert_eq!(INVALID_STATUS, 3002);
     assert_eq!(CYCLIC_DEPENDENCY, 3003);
     assert_eq!(BLOCKER_EXISTS, 3004);
-    assert_eq!(TASK_TITLE_EMPTY, 3005);
+    assert_eq!(TASK_ALREADY_CLAIMED, 3005);
+    assert_eq!(LABEL_VALIDATION, 3006);
+    assert_eq!(BATCH_PARTIAL_FAILURE, 3007);
+    assert_eq!(COMPACTION_FAILED, 3008);
+    assert_eq!(INVALID_PRIORITY, 3009);
+    assert_eq!(INVALID_ISSUE_TYPE, 3010);
+    assert_eq!(DUPLICATE_LABEL, 3011);
+    assert_eq!(TASK_NOT_CLAIMABLE, 3012);
+    assert_eq!(TASK_TITLE_EMPTY, 3013);
 }
 
 /// Verify all query error codes match the contract.
@@ -48,6 +56,14 @@ fn system_error_codes_match_contract() {
     assert_eq!(RATE_LIMITED, 5003);
     assert_eq!(SHUTTING_DOWN, 5004);
     assert_eq!(INVALID_PARAMS, 5005);
+}
+
+/// Verify all config error codes match the contract.
+#[test]
+fn config_error_codes_match_contract() {
+    assert_eq!(CONFIG_PARSE_ERROR, 6001);
+    assert_eq!(CONFIG_INVALID_VALUE, 6002);
+    assert_eq!(UNKNOWN_CONFIG_KEY, 6003);
 }
 
 /// Verify error-to-response mapping produces the correct code for each variant.
@@ -116,7 +132,47 @@ fn error_response_codes_are_consistent() {
             3004,
             "BlockerExists",
         ),
-        (TaskError::TitleEmpty.into(), 3005, "TaskTitleEmpty"),
+        (TaskError::TitleEmpty.into(), 3013, "TaskTitleEmpty"),
+        (
+            TaskError::AlreadyClaimed { id: "x".into(), assignee: "a".into() }.into(),
+            3005,
+            "TaskAlreadyClaimed",
+        ),
+        (
+            TaskError::LabelValidation { reason: "x".into() }.into(),
+            3006,
+            "LabelValidation",
+        ),
+        (
+            TaskError::BatchPartialFailure { succeeded: 1, failed: 1 }.into(),
+            3007,
+            "BatchPartialFailure",
+        ),
+        (
+            TaskError::CompactionFailed { id: "x".into(), reason: "x".into() }.into(),
+            3008,
+            "CompactionFailed",
+        ),
+        (
+            TaskError::InvalidPriority { priority: "x".into() }.into(),
+            3009,
+            "InvalidPriority",
+        ),
+        (
+            TaskError::InvalidIssueType { issue_type: "x".into() }.into(),
+            3010,
+            "InvalidIssueType",
+        ),
+        (
+            TaskError::DuplicateLabel { task_id: "x".into(), label: "x".into() }.into(),
+            3011,
+            "DuplicateLabel",
+        ),
+        (
+            TaskError::NotClaimable { id: "x".into(), status: "done".into() }.into(),
+            3012,
+            "TaskNotClaimable",
+        ),
         (QueryError::QueryTooLong.into(), 4001, "QueryTooLong"),
         (QueryError::ModelNotLoaded.into(), 4002, "ModelNotLoaded"),
         (
@@ -140,6 +196,21 @@ fn error_response_codes_are_consistent() {
             SystemError::InvalidParams { reason: "x".into() }.into(),
             5005,
             "InvalidParams",
+        ),
+        (
+            ConfigError::ParseError { reason: "x".into() }.into(),
+            6001,
+            "ConfigParseError",
+        ),
+        (
+            ConfigError::InvalidValue { key: "k".into(), reason: "x".into() }.into(),
+            6002,
+            "ConfigInvalidValue",
+        ),
+        (
+            ConfigError::UnknownKey { key: "k".into() }.into(),
+            6003,
+            "UnknownConfigKey",
         ),
     ];
 

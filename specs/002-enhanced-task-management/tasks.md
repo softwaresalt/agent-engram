@@ -29,20 +29,20 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 [P] Extend Task struct with 9 new fields (priority, priority_order, issue_type, assignee, defer_until, pinned, compaction_level, compacted_at) and 2 reserved fields (workflow_state, workflow_id) in src/models/task.rs (FR-026, FR-043, FR-047, FR-050, FR-052, FR-040, FR-067)
-- [ ] T005 [P] Create Label struct in src/models/label.rs: id, task_id, name, created_at with serde derives and validation (FR-031)
-- [ ] T006 [P] Create Comment struct in src/models/comment.rs: id, task_id, content, author, created_at with serde derives (FR-061)
-- [ ] T007 [P] Create WorkspaceConfig, CompactionConfig, BatchConfig structs with Default impls and serde defaults in src/models/config.rs (FR-064, FR-065)
-- [ ] T008 [P] Extend DependencyType enum from 2 to 8 variants (add child_of, blocked_by, duplicate_of, related_to, predecessor, successor) in src/models/graph.rs (FR-035)
-- [ ] T009 [P] Implement compute_priority_order() utility function with unit tests in src/models/task.rs: parse numeric suffix from priority string, return u32 (FR-026)
-- [ ] T010 Update src/models/mod.rs to declare and re-export Label, Comment, WorkspaceConfig, CompactionConfig, BatchConfig
-- [ ] T011 [P] Add error code constants 3005–3012 (TASK_ALREADY_CLAIMED through TASK_NOT_CLAIMABLE) and 6001–6003 (CONFIG_PARSE_ERROR through UNKNOWN_CONFIG_KEY) in src/errors/codes.rs (FR-069, FR-070)
-- [ ] T012 [P] Add TaskError variants (AlreadyClaimed, LabelValidation, BatchPartialFailure, CompactionFailed, InvalidPriority, InvalidIssueType, DuplicateLabel, NotClaimable) and ConfigError enum (ParseError, InvalidValue, UnknownKey) to src/errors/mod.rs (FR-071)
-- [ ] T013 Extend SurrealDB schema in src/db/schema.rs: DEFINE FIELD for all new task fields with defaults, DEFINE TABLE label SCHEMAFULL and comment SCHEMAFULL, DEFINE INDEX for task_priority, task_assignee, task_defer_until, task_issue_type, task_pinned, task_compaction, label_task_name (UNIQUE), label_name, comment_task; implement `.tmem/.version` bump from 1.0.0 to 2.0.0 on schema bootstrap
-- [ ] T014 [P] Add property tests for extended Task, Label, Comment, WorkspaceConfig, and 8-variant DependencyType serde JSON round-trips in tests/unit/proptest_models.rs (FR-068)
-- [ ] T015 [P] Add YAML frontmatter serialization round-trip property tests for enhanced Task (with labels array, all new fields) in tests/unit/proptest_serialization.rs (SC-019)
-- [ ] T016 Extend AppState to store Option\<WorkspaceConfig\> alongside workspace snapshot in src/server/state.rs
-- [ ] T017 Register 15 new tool names in dispatch() match skeleton in src/tools/mod.rs: get_ready_work, add_label, remove_label, add_dependency, get_compaction_candidates, apply_compaction, claim_task, release_task, defer_task, undefer_task, pin_task, unpin_task, get_workspace_statistics, batch_update_tasks, add_comment — all stubs returning WorkspaceNotSet
+- [X] T004 [P] Extend Task struct with 9 new fields (priority, priority_order, issue_type, assignee, defer_until, pinned, compaction_level, compacted_at) and 2 reserved fields (workflow_state, workflow_id) in src/models/task.rs (FR-026, FR-043, FR-047, FR-050, FR-052, FR-040, FR-067)
+- [X] T005 [P] Create Label struct in src/models/label.rs: id, task_id, name, created_at with serde derives and validation (FR-031)
+- [X] T006 [P] Create Comment struct in src/models/comment.rs: id, task_id, content, author, created_at with serde derives (FR-061)
+- [X] T007 [P] Create WorkspaceConfig, CompactionConfig, BatchConfig structs with Default impls and serde defaults in src/models/config.rs (FR-064, FR-065)
+- [X] T008 [P] Extend DependencyType enum from 2 to 8 variants (add child_of, blocked_by, duplicate_of, related_to, predecessor, successor) in src/models/graph.rs (FR-035)
+- [X] T009 [P] Implement compute_priority_order() utility function with unit tests in src/models/task.rs: parse numeric suffix from priority string, return u32 (FR-026)
+- [X] T010 Update src/models/mod.rs to declare and re-export Label, Comment, WorkspaceConfig, CompactionConfig, BatchConfig
+- [X] T011 [P] Add error code constants 3005–3012 (TASK_ALREADY_CLAIMED through TASK_NOT_CLAIMABLE) and 6001–6003 (CONFIG_PARSE_ERROR through UNKNOWN_CONFIG_KEY) in src/errors/codes.rs (FR-069, FR-070)
+- [X] T012 [P] Add TaskError variants (AlreadyClaimed, LabelValidation, BatchPartialFailure, CompactionFailed, InvalidPriority, InvalidIssueType, DuplicateLabel, NotClaimable) and ConfigError enum (ParseError, InvalidValue, UnknownKey) to src/errors/mod.rs (FR-071)
+- [X] T013 Extend SurrealDB schema in src/db/schema.rs: DEFINE FIELD for all new task fields with defaults, DEFINE TABLE label SCHEMAFULL and comment SCHEMAFULL, DEFINE INDEX for task_priority, task_assignee, task_defer_until, task_issue_type, task_pinned, task_compaction, label_task_name (UNIQUE), label_name, comment_task; implement `.tmem/.version` bump from 1.0.0 to 2.0.0 on schema bootstrap
+- [X] T014 [P] Add property tests for extended Task, Label, Comment, WorkspaceConfig, and 8-variant DependencyType serde JSON round-trips in tests/unit/proptest_models.rs (FR-068)
+- [X] T015 [P] Add YAML frontmatter serialization round-trip property tests for enhanced Task (with labels array, all new fields) in tests/unit/proptest_serialization.rs (SC-019)
+- [X] T016 Extend AppState to store Option\<WorkspaceConfig\> alongside workspace snapshot in src/server/state.rs
+- [X] T017 Register 15 new tool names in dispatch() match skeleton in src/tools/mod.rs: get_ready_work, add_label, remove_label, add_dependency, get_compaction_candidates, apply_compaction, claim_task, release_task, defer_task, undefer_task, pin_task, unpin_task, get_workspace_statistics, batch_update_tasks, add_comment — all stubs returning WorkspaceNotSet
 
 **Checkpoint**: Foundation ready — all models, errors, schema, and dispatch stubs in place. User story implementation can begin.
 

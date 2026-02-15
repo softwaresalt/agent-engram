@@ -17,4 +17,4 @@ pub use context::Context;
 pub use graph::DependencyType;
 pub use label::Label;
 pub use spec::Spec;
-pub use task::{Task, TaskStatus};
+pub use task::{Task, TaskStatus, compute_priority_order};
