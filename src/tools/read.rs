@@ -26,7 +26,14 @@ struct TaskNode {
     id: String,
     status: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    children: Vec<TaskNode>,
+    children: Vec<EdgeNode>,
+}
+
+#[derive(Serialize)]
+struct EdgeNode {
+    dependency_type: String,
+    #[serde(flatten)]
+    node: TaskNode,
 }
 
 fn default_depth() -> u32 {
@@ -307,7 +314,13 @@ fn build_node(
         for edge in edges {
             if let Some(child_task) = queries.get_task(&edge.to).await? {
                 let child = build_node(queries, child_task, depth - 1).await?;
-                children.push(child);
+                children.push(EdgeNode {
+                    dependency_type: serde_json::to_value(edge.kind)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    node: child,
+                });
             }
         }
 

@@ -60,9 +60,9 @@ pub async fn dispatch(
         "get_ready_work" => read::get_ready_work(state, params).await,
         "add_label" => write::add_label(state, params).await,
         "remove_label" => write::remove_label(state, params).await,
+        "add_dependency" => write::add_dependency(state, params).await,
         // Enhanced task management tool stubs (002-enhanced-task-management)
-        "add_dependency"
-        | "get_compaction_candidates"
+        "get_compaction_candidates"
         | "apply_compaction"
         | "claim_task"
         | "release_task"

@@ -104,16 +104,16 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T034 [P] [US3] Write contract tests for add_dependency in tests/contract/write_test.rs: workspace-not-set (1003), valid add of each type, self-reference rejection, cycle rejection (3003) (FR-035b, FR-036)
+- [X] T034 [P] [US3] Write contract tests for add_dependency in tests/contract/write_test.rs: workspace-not-set (1003), valid add of each type, self-reference rejection, cycle rejection (3003) (FR-035b, FR-036)
 
 ### Green Phase (Implementation)
 
-- [ ] T035 [US3] Implement add_dependency query in src/db/queries.rs: validate dependency_type against 8-variant enum, reject self-reference (in == out), cycle detection via recursive graph traversal across all edge types, insert RELATE edge (FR-035b, FR-036)
-- [ ] T036 [US3] Implement add_dependency tool handler in src/tools/write.rs: parse from_task_id, to_task_id, dependency_type; call query; return edge details with created_at (FR-035b)
-- [ ] T037 [US3] Extend get_task_graph in src/tools/read.rs to include all 8 dependency types in graph output with type annotations (FR-035)
-- [ ] T038 [US3] Extend dehydration to serialize all 8 edge types in .tmem/graph.surql in src/services/dehydration.rs (FR-035)
-- [ ] T039 [US3] Extend hydration to parse all 8 edge types from .tmem/graph.surql RELATE statements in src/services/hydration.rs (FR-035)
-- [ ] T040 [US3] Integration test in tests/integration/enhanced_features_test.rs: parent task with 3 children (child_of), mark duplicate (duplicate_of → excluded from ready-work), add blocked_by (blocked in ready-work), mark all children done → parent surfaced in ready-work as completable (US3 scenario 5) (FR-037)
+- [X] T035 [US3] Implement add_dependency query in src/db/queries.rs: validate dependency_type against 8-variant enum, reject self-reference (in == out), cycle detection via recursive graph traversal across all edge types, insert RELATE edge (FR-035b, FR-036)
+- [X] T036 [US3] Implement add_dependency tool handler in src/tools/write.rs: parse from_task_id, to_task_id, dependency_type; call query; return edge details with created_at (FR-035b)
+- [X] T037 [US3] Extend get_task_graph in src/tools/read.rs to include all 8 dependency types in graph output with type annotations (FR-035)
+- [X] T038 [US3] Extend dehydration to serialize all 8 edge types in .tmem/graph.surql in src/services/dehydration.rs (FR-035)
+- [X] T039 [US3] Extend hydration to parse all 8 edge types from .tmem/graph.surql RELATE statements in src/services/hydration.rs (FR-035)
+- [X] T040 [US3] Integration test in tests/integration/enhanced_features_test.rs: parent task with 3 children (child_of), mark duplicate (duplicate_of → excluded from ready-work), add blocked_by (blocked in ready-work), mark all children done → parent surfaced in ready-work as completable (US3 scenario 5) (FR-037)
 
 **Checkpoint**: All 8 dependency types functional with cycle detection and ready-work interaction. US3 independently testable.
 

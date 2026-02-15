@@ -10,6 +10,7 @@ use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
 use crate::models::context::Context;
+use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::server::state::SharedState;
 use crate::services::connection::create_status_change_note;
@@ -55,6 +56,13 @@ struct CreateTaskParams {
 struct LabelParams {
     task_id: String,
     label: String,
+}
+
+#[derive(Deserialize)]
+struct AddDependencyParams {
+    from_task_id: String,
+    to_task_id: String,
+    dependency_type: DependencyType,
 }
 
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, TMemError> {
@@ -459,6 +467,40 @@ pub async fn remove_label(state: SharedState, params: Option<Value>) -> Result<V
         "task_id": task_id,
         "label": parsed.label,
         "label_count": label_count,
+    }))
+}
+
+// ── Dependency operations ───────────────────────────────────────────────
+
+pub async fn add_dependency(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: AddDependencyParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let from_id = parsed
+        .from_task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.from_task_id);
+    let to_id = parsed
+        .to_task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.to_task_id);
+
+    queries
+        .create_dependency(from_id, to_id, parsed.dependency_type)
+        .await?;
+
+    Ok(json!({
+        "from_task_id": from_id,
+        "to_task_id": to_id,
+        "dependency_type": parsed.dependency_type,
     }))
 }
 

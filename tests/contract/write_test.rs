@@ -4,7 +4,9 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use t_mem::errors::codes::{DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION, WORKSPACE_NOT_SET};
+use t_mem::errors::codes::{
+    CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_STATUS, LABEL_VALIDATION, WORKSPACE_NOT_SET,
+};
 use t_mem::server::state::AppState;
 use t_mem::tools;
 
@@ -510,4 +512,203 @@ async fn contract_add_label_not_in_allowed_list_returns_error() {
 
     let code = err.to_response().error.code;
     assert_eq!(code, LABEL_VALIDATION);
+}
+
+// ── T034: add_dependency contract tests ─────────────────────────
+
+#[test]
+async fn contract_add_dependency_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let err = tools::dispatch(
+        state,
+        "add_dependency",
+        Some(json!({
+            "from_task_id": "a",
+            "to_task_id": "b",
+            "dependency_type": "hard_blocker",
+        })),
+    )
+    .await
+    .expect_err("expected workspace_not_set");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_add_dependency_valid_types() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create two tasks
+    let t1 = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Task A" })),
+    )
+    .await
+    .expect("create task A");
+    let t2 = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Task B" })),
+    )
+    .await
+    .expect("create task B");
+    let id_a = t1["task_id"].as_str().unwrap().to_string();
+    let id_b = t2["task_id"].as_str().unwrap().to_string();
+
+    // Test all 8 dependency types
+    let types = [
+        "hard_blocker",
+        "soft_dependency",
+        "child_of",
+        "blocked_by",
+        "duplicate_of",
+        "related_to",
+        "predecessor",
+        "successor",
+    ];
+
+    for dep_type in types {
+        let result = tools::dispatch(
+            state.clone(),
+            "add_dependency",
+            Some(json!({
+                "from_task_id": id_a,
+                "to_task_id": id_b,
+                "dependency_type": dep_type,
+            })),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("add_dependency {dep_type} should succeed"));
+
+        assert_eq!(
+            result["dependency_type"].as_str().unwrap(),
+            dep_type,
+            "returned type should match for {dep_type}"
+        );
+    }
+}
+
+#[test]
+async fn contract_add_dependency_self_reference_rejected() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Self-ref task" })),
+    )
+    .await
+    .expect("create task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    let err = tools::dispatch(
+        state.clone(),
+        "add_dependency",
+        Some(json!({
+            "from_task_id": task_id,
+            "to_task_id": task_id,
+            "dependency_type": "hard_blocker",
+        })),
+    )
+    .await
+    .expect_err("expected cyclic dependency error on self-reference");
+
+    assert_eq!(err.to_response().error.code, CYCLIC_DEPENDENCY);
+}
+
+#[test]
+async fn contract_add_dependency_cycle_rejected() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create A, B, C
+    let a = tools::dispatch(state.clone(), "create_task", Some(json!({ "title": "A" })))
+        .await
+        .expect("create A");
+    let b = tools::dispatch(state.clone(), "create_task", Some(json!({ "title": "B" })))
+        .await
+        .expect("create B");
+    let c = tools::dispatch(state.clone(), "create_task", Some(json!({ "title": "C" })))
+        .await
+        .expect("create C");
+
+    let id_a = a["task_id"].as_str().unwrap().to_string();
+    let id_b = b["task_id"].as_str().unwrap().to_string();
+    let id_c = c["task_id"].as_str().unwrap().to_string();
+
+    // A → B → C
+    tools::dispatch(
+        state.clone(),
+        "add_dependency",
+        Some(json!({
+            "from_task_id": id_a,
+            "to_task_id": id_b,
+            "dependency_type": "hard_blocker",
+        })),
+    )
+    .await
+    .expect("A→B should succeed");
+
+    tools::dispatch(
+        state.clone(),
+        "add_dependency",
+        Some(json!({
+            "from_task_id": id_b,
+            "to_task_id": id_c,
+            "dependency_type": "hard_blocker",
+        })),
+    )
+    .await
+    .expect("B→C should succeed");
+
+    // C → A should be rejected (cycle: A → B → C → A)
+    let err = tools::dispatch(
+        state.clone(),
+        "add_dependency",
+        Some(json!({
+            "from_task_id": id_c,
+            "to_task_id": id_a,
+            "dependency_type": "hard_blocker",
+        })),
+    )
+    .await
+    .expect_err("expected cyclic dependency error");
+
+    assert_eq!(err.to_response().error.code, CYCLIC_DEPENDENCY);
 }
