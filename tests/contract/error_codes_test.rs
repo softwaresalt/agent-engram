@@ -259,3 +259,92 @@ fn error_response_codes_are_consistent() {
         );
     }
 }
+
+/// T094: Verify the serialized JSON shape of ErrorResponse conforms to
+/// the v0 error taxonomy — `{ error: { code, name, message, details? } }`.
+#[test]
+fn t094_error_response_json_shape() {
+    let test_cases: Vec<(TMemError, bool)> = vec![
+        // Errors WITH details
+        (
+            WorkspaceError::NotFound {
+                path: "/tmp".into(),
+            }
+            .into(),
+            true,
+        ),
+        (
+            TaskError::AlreadyClaimed {
+                id: "t1".into(),
+                assignee: "a".into(),
+            }
+            .into(),
+            true,
+        ),
+        (
+            TaskError::InvalidPriority {
+                priority: "p9".into(),
+            }
+            .into(),
+            true,
+        ),
+        (
+            ConfigError::InvalidValue {
+                key: "k".into(),
+                reason: "r".into(),
+            }
+            .into(),
+            true,
+        ),
+        // Errors WITHOUT details
+        (WorkspaceError::NotSet.into(), false),
+        (TaskError::CyclicDependency.into(), false),
+        (TaskError::TitleEmpty.into(), false),
+        (SystemError::RateLimited.into(), false),
+    ];
+
+    for (err, has_details) in test_cases {
+        let response = err.to_response();
+        let json = serde_json::to_value(&response).expect("serialize ErrorResponse");
+
+        // Verify top-level structure
+        let error_obj = json.get("error").expect("should have 'error' key");
+        assert!(error_obj.is_object(), "error should be an object");
+
+        // Verify required fields exist with correct types
+        assert!(
+            error_obj.get("code").and_then(|v| v.as_u64()).is_some(),
+            "error.code should be a number: {json}"
+        );
+        assert!(
+            error_obj.get("name").and_then(|v| v.as_str()).is_some(),
+            "error.name should be a string: {json}"
+        );
+        assert!(
+            error_obj.get("message").and_then(|v| v.as_str()).is_some(),
+            "error.message should be a string: {json}"
+        );
+
+        // Verify message is non-empty
+        let msg = error_obj
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(!msg.is_empty(), "error.message should not be empty: {json}");
+
+        // Verify details presence/absence
+        if has_details {
+            assert!(
+                error_obj.get("details").is_some(),
+                "expected details for error: {json}"
+            );
+        } else {
+            // details may be absent (skip_serializing_if) or null
+            let details = error_obj.get("details");
+            assert!(
+                details.is_none() || details.unwrap().is_null(),
+                "expected no details for error: {json}"
+            );
+        }
+    }
+}

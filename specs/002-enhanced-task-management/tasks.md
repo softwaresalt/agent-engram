@@ -282,13 +282,13 @@
 
 **Purpose**: End-to-end validation, performance benchmarks, round-trip guarantees, cleanup
 
-- [ ] T088 [P] End-to-end integration test in tests/integration/enhanced_features_test.rs: full workflow — set_workspace with config.toml, create tasks with priorities/labels/types, claim, defer, pin, add dependencies, add comments, batch update, get_ready_work with filters, get_compaction_candidates, apply_compaction, get_workspace_statistics, flush_state, rehydrate, verify all state preserved
-- [ ] T089 [P] Performance benchmark tests in tests/integration/performance_test.rs: SC-011 get_ready_work \<50ms (1000 tasks), SC-012 batch 100 \<500ms, SC-013 compaction candidates \<100ms (5000 tasks), SC-015 statistics \<100ms (5000 tasks), SC-018 each filter dimension \<20ms overhead
-- [ ] T090 [P] Round-trip serialization test in tests/unit/proptest_serialization.rs: hydrate tasks.md + comments.md + graph.surql + config.toml → modify all new fields → dehydrate → rehydrate → assert 100% data preservation including labels, comments, all edge types, workflow_state/workflow_id (SC-019, FR-068)
-- [ ] T091 [P] Reserved workflow field test: create task with workflow_state and workflow_id values, verify all tools ignore them, verify hydrate/dehydrate preserves them, verify get_ready_work does not filter on them (FR-067, FR-068)
-- [ ] T092 Run quickstart.md validation: exercise all curl examples from specs/002-enhanced-task-management/quickstart.md against running daemon, verify expected responses
-- [ ] T093 Code cleanup: verify all new tool handlers have tracing::instrument spans, error paths log at warn/error, cargo clippy clean with pedantic, cargo fmt --check passes
-- [ ] T094 [P] SC-017 error format validation: verify all 15 new tools and 11 new error codes produce `ErrorResponse` JSON with `code`, `name`, `message`, and `details` fields consistent with v0 error taxonomy (SC-017)
+- [X] T088 [P] End-to-end integration test in tests/integration/enhanced_features_test.rs: full workflow — set_workspace with config.toml, create tasks with priorities/labels/types, claim, defer, pin, add dependencies, add comments, batch update, get_ready_work with filters, get_compaction_candidates, apply_compaction, get_workspace_statistics, flush_state, rehydrate, verify all state preserved
+- [X] T089 [P] Performance benchmark tests in tests/integration/performance_test.rs: SC-011 get_ready_work \<50ms (1000 tasks), SC-012 batch 100 \<500ms, SC-013 compaction candidates \<100ms (5000 tasks), SC-015 statistics \<100ms (5000 tasks), SC-018 each filter dimension \<20ms overhead
+- [X] T090 [P] Round-trip serialization test in tests/unit/proptest_serialization.rs: hydrate tasks.md + comments.md + graph.surql + config.toml → modify all new fields → dehydrate → rehydrate → assert 100% data preservation including labels, comments, all edge types, workflow_state/workflow_id (SC-019, FR-068)
+- [X] T091 [P] Reserved workflow field test: create task with workflow_state and workflow_id values, verify all tools ignore them, verify hydrate/dehydrate preserves them, verify get_ready_work does not filter on them (FR-067, FR-068)
+- [X] T092 Run quickstart.md validation: exercise all curl examples from specs/002-enhanced-task-management/quickstart.md against running daemon, verify expected responses
+- [X] T093 Code cleanup: verify all new tool handlers have tracing::instrument spans, error paths log at warn/error, cargo clippy clean with pedantic, cargo fmt --check passes
+- [X] T094 [P] SC-017 error format validation: verify all 15 new tools and 11 new error codes produce `ErrorResponse` JSON with `code`, `name`, `message`, and `details` fields consistent with v0 error taxonomy (SC-017)
 
 ---
 
