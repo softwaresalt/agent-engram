@@ -10,7 +10,6 @@ use std::io::Write;
 use std::path::Path;
 
 use chrono::Utc;
-use similar::{ChangeTag, TextDiff};
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
@@ -112,6 +111,9 @@ pub async fn dehydrate_workspace(
     if !all_comments.is_empty() {
         let comments_content = serialize_comments_md(&all_comments);
         atomic_write(&comments_path, &comments_content)?;
+    } else if comments_path.exists() {
+        // Remove stale comments.md when all comments have been deleted
+        let _ = std::fs::remove_file(&comments_path);
     }
 
     // Write version
@@ -233,8 +235,9 @@ pub fn serialize_tasks_md(
 
 /// Merge new description with preserved user content from old body.
 ///
-/// Uses `similar::TextDiff` to identify lines in the old body that
-/// are not part of the new description (= user-added content per FR-012).
+/// Only HTML comment blocks (`<!-- ... -->`) in the old body are treated
+/// as user-added content that must be preserved across flushes (FR-012).
+/// All other lines are controlled by the daemon and may be replaced.
 pub fn merge_body_with_comments(new_description: &str, old_body: &str) -> String {
     let new_desc_trimmed = new_description.trim();
     let old_body_trimmed = old_body.trim();
@@ -247,22 +250,39 @@ pub fn merge_body_with_comments(new_description: &str, old_body: &str) -> String
         return new_desc_trimmed.to_string();
     }
 
-    // Find user-added lines: present in old body but not in new description
-    let diff = TextDiff::from_lines(new_desc_trimmed, old_body_trimmed);
-    let mut user_lines: Vec<String> = Vec::new();
+    // Extract HTML comment blocks from the old body
+    let mut user_blocks: Vec<String> = Vec::new();
+    let mut in_comment = false;
+    let mut block = String::new();
 
-    for change in diff.iter_all_changes() {
-        if change.tag() == ChangeTag::Insert {
-            let line = change.value().to_string();
-            user_lines.push(line);
+    for line in old_body_trimmed.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<!--") {
+            in_comment = true;
+            block.clear();
+            block.push_str(line);
+            block.push('\n');
+            if trimmed.ends_with("-->") {
+                in_comment = false;
+                user_blocks.push(block.clone());
+                block.clear();
+            }
+        } else if in_comment {
+            block.push_str(line);
+            block.push('\n');
+            if trimmed.ends_with("-->") {
+                in_comment = false;
+                user_blocks.push(block.clone());
+                block.clear();
+            }
         }
     }
 
     let mut result = new_desc_trimmed.to_string();
-    if !user_lines.is_empty() {
+    if !user_blocks.is_empty() {
         result.push_str("\n\n");
-        for line in user_lines {
-            result.push_str(&line);
+        for blk in user_blocks {
+            result.push_str(&blk);
         }
     }
 

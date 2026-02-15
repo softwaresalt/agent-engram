@@ -326,10 +326,7 @@ fn t094_error_response_json_shape() {
         );
 
         // Verify message is non-empty
-        let msg = error_obj
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap();
+        let msg = error_obj.get("message").and_then(|v| v.as_str()).unwrap();
         assert!(!msg.is_empty(), "error.message should not be empty: {json}");
 
         // Verify details presence/absence

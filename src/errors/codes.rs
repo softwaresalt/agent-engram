@@ -29,6 +29,7 @@ pub const INVALID_ISSUE_TYPE: u16 = 3010;
 pub const DUPLICATE_LABEL: u16 = 3011;
 pub const TASK_NOT_CLAIMABLE: u16 = 3012;
 pub const TASK_TITLE_EMPTY: u16 = 3013;
+pub const TASK_TITLE_TOO_LONG: u16 = 3014;
 
 /// Query error codes
 pub const QUERY_TOO_LONG: u16 = 4001;

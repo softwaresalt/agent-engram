@@ -33,7 +33,10 @@ pub fn parse_config(workspace_root: &Path) -> Result<WorkspaceConfig, TMemError>
         return Ok(WorkspaceConfig::default());
     };
     match toml::from_str::<WorkspaceConfig>(&content) {
-        Ok(cfg) => Ok(cfg),
+        Ok(cfg) => {
+            validate_config(&cfg)?;
+            Ok(cfg)
+        }
         Err(e) => {
             warn!(
                 path = %config_path.display(),

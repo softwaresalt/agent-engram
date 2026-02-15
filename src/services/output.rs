@@ -77,6 +77,7 @@ fn full_task_json(task: &Task) -> Value {
         "id": task.id,
         "title": task.title,
         "status": task.status.as_str(),
+        "work_item_id": task.work_item_id,
         "priority": task.priority,
         "priority_order": task.priority_order,
         "issue_type": task.issue_type,
@@ -86,6 +87,9 @@ fn full_task_json(task: &Task) -> Value {
         "pinned": task.pinned,
         "defer_until": task.defer_until.map(|d| d.to_rfc3339()),
         "compaction_level": task.compaction_level,
+        "compacted_at": task.compacted_at.map(|d| d.to_rfc3339()),
+        "workflow_state": task.workflow_state,
+        "workflow_id": task.workflow_id,
         "created_at": task.created_at.to_rfc3339(),
         "updated_at": task.updated_at.to_rfc3339(),
     })

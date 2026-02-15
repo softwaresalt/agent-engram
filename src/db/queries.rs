@@ -357,7 +357,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
@@ -468,21 +468,21 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
-            .filter_map(|row| {
+            .map(|row| {
                 let target = row.out.id.to_raw();
                 let kind = row
                     .r#type
                     .map(parse_dependency_type)
                     .unwrap_or(DependencyType::HardBlocker);
-                Some(DependencyEdge {
+                DependencyEdge {
                     from: task_id.to_string(),
                     to: target,
                     kind,
-                })
+                }
             })
             .collect();
 
@@ -498,7 +498,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
@@ -509,7 +509,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
@@ -533,7 +533,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let mut candidates: Vec<Task> = rows.into_iter().map(TaskRow::into_task).collect();
 
@@ -602,19 +602,24 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
+
+        // Collect unique blocker IDs for a single batch fetch
+        let blocker_ids: Vec<String> = rows.iter().map(|r| r.out.id.to_raw()).collect();
+        let blocker_tasks = self.tasks_by_ids(&blocker_ids).await?;
+        let undone_blockers: HashSet<String> = blocker_tasks
+            .into_iter()
+            .filter(|t| t.status != TaskStatus::Done)
+            .map(|t| t.id)
+            .collect();
 
         let mut blocked = HashSet::new();
-
         for row in rows {
             let blocker_id = row.out.id.to_raw();
             let dependent_id = row.r#in.id.to_raw();
 
-            // Check if the blocker task is NOT done.
-            if let Some(blocker) = self.get_task(&blocker_id).await? {
-                if blocker.status != TaskStatus::Done {
-                    blocked.insert(dependent_id);
-                }
+            if undone_blockers.contains(&blocker_id) {
+                blocked.insert(dependent_id);
             }
         }
 
@@ -632,7 +637,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let ids = rows.into_iter().map(|row| row.r#in.id.to_raw()).collect();
 
@@ -656,7 +661,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         if existing.first().map_or(0, |r| r.count) > 0 {
             return Err(TMemError::Task(TaskError::DuplicateLabel {
@@ -705,7 +710,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         Ok(rows.into_iter().map(|r| r.name).collect())
     }
@@ -722,37 +727,35 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         Ok(u32::try_from(rows.first().map_or(0, |r| r.count)).unwrap_or(u32::MAX))
     }
 
-    /// Check if a task has ALL specified labels.
+    /// Check if a task has ALL specified labels using a single query.
     async fn task_has_all_labels(
         &self,
         task_id: &str,
         labels: &[String],
     ) -> Result<bool, TMemError> {
-        for label in labels {
-            let count: Vec<CountRow> = self
-                .db
-                .query(
-                    "SELECT count() AS count FROM label \
-                     WHERE task_id = $task_id AND name = $name GROUP ALL",
-                )
-                .bind(("task_id", task_id.to_string()))
-                .bind(("name", label.clone()))
-                .await
-                .map_err(map_db_err)?
-                .take(0)
-                .unwrap_or_default();
-
-            let found = count.first().map_or(0, |r| r.count);
-            if found == 0 {
-                return Ok(false);
-            }
+        if labels.is_empty() {
+            return Ok(true);
         }
-        Ok(true)
+        let count: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM label \
+                 WHERE task_id = $task_id AND name IN $names GROUP ALL",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .bind(("names", labels.to_vec()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let found = count.first().map_or(0_u64, |r| r.count);
+        Ok(usize::try_from(found).unwrap_or(usize::MAX) >= labels.len())
     }
 
     // ── Comment queries ─────────────────────────────────────────────────────
@@ -807,7 +810,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         Ok(rows.into_iter().map(CommentRow::into_comment).collect())
     }
@@ -820,7 +823,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         Ok(rows.into_iter().map(CommentRow::into_comment).collect())
     }
@@ -849,7 +852,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
@@ -874,7 +877,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         rows.into_iter()
             .next()
@@ -889,50 +892,47 @@ impl Queries {
 
     /// Atomically claim a task for a claimant.
     ///
-    /// Returns `Ok(task)` if the claim succeeds (assignee was `None`).
+    /// Uses a conditional `UPDATE ... WHERE assignee = NONE` to prevent
+    /// TOCTOU races. Returns `Ok(task)` if the claim succeeds.
     /// Returns `AlreadyClaimed` if someone else holds the claim.
     /// Returns `TaskNotFound` if the task does not exist.
     pub async fn claim_task(&self, task_id: &str, claimant: &str) -> Result<Task, TMemError> {
-        // First check the task exists and its current state
-        let task = self.get_task(task_id).await?.ok_or_else(|| {
-            TMemError::Task(TaskError::NotFound {
-                id: task_id.to_string(),
-            })
-        })?;
-
-        if let Some(ref current) = task.assignee {
-            return Err(TMemError::Task(TaskError::AlreadyClaimed {
-                id: task_id.to_string(),
-                assignee: current.clone(),
-            }));
-        }
-
         let record = Thing::from(("task", task_id));
         let now = Utc::now().to_rfc3339();
+
+        // Atomic conditional update: only succeeds when assignee is NONE
         let rows: Vec<TaskRow> = self
             .db
             .query(
                 "UPDATE $record SET \
                     assignee = $claimant, \
                     updated_at = <datetime>$now \
+                 WHERE assignee = NONE \
                  RETURN AFTER",
             )
-            .bind(("record", record))
+            .bind(("record", record.clone()))
             .bind(("claimant", claimant.to_string()))
             .bind(("now", now))
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
-        rows.into_iter()
-            .next()
-            .map(TaskRow::into_task)
-            .ok_or_else(|| {
-                TMemError::Task(TaskError::NotFound {
-                    id: task_id.to_string(),
-                })
+        if let Some(task) = rows.into_iter().next().map(TaskRow::into_task) {
+            return Ok(task);
+        }
+
+        // UPDATE returned no rows: either task doesn't exist or already claimed
+        let task = self.get_task(task_id).await?.ok_or_else(|| {
+            TMemError::Task(TaskError::NotFound {
+                id: task_id.to_string(),
             })
+        })?;
+
+        Err(TMemError::Task(TaskError::AlreadyClaimed {
+            id: task_id.to_string(),
+            assignee: task.assignee.unwrap_or_default(),
+        }))
     }
 
     /// Release a claimed task, clearing the assignee.
@@ -978,7 +978,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(ContextRow::into_context).collect())
     }
 
@@ -990,7 +990,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(SpecRow::into_spec).collect())
     }
 
@@ -1028,7 +1028,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
@@ -1053,7 +1053,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
@@ -1073,7 +1073,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
@@ -1105,7 +1105,7 @@ impl Queries {
     /// Clear all data from the database (used for corruption recovery).
     pub async fn clear_all_data(&self) -> Result<(), TMemError> {
         self.db
-            .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to;")
+            .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to; DELETE label; DELETE comment;")
             .await
             .map_err(map_db_err)?;
         Ok(())
@@ -1127,7 +1127,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
@@ -1195,7 +1195,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let by_priority: Vec<PriorityGroup> = self
             .db
@@ -1203,7 +1203,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let by_type: Vec<TypeGroup> = self
             .db
@@ -1211,7 +1211,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         // Label counts via label table
         let by_label: Vec<LabelGroupRow> = self
@@ -1220,7 +1220,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         // Scalar counts
         let deferred_rows: Vec<CountRow> = self
@@ -1232,7 +1232,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let pinned_rows: Vec<CountRow> = self
             .db
@@ -1240,7 +1240,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let claimed_rows: Vec<CountRow> = self
             .db
@@ -1248,7 +1248,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let compacted_rows: Vec<CountRow> = self
             .db
@@ -1256,7 +1256,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let total_rows: Vec<CountRow> = self
             .db
@@ -1264,7 +1264,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let status_map: HashMap<String, u64> = by_status
             .into_iter()

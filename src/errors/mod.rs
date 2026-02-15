@@ -67,8 +67,10 @@ pub enum TaskError {
     DuplicateLabel { task_id: String, label: String },
     #[error("Task '{id}' is not claimable in status '{status}'")]
     NotClaimable { id: String, status: String },
-    #[error("Task title is empty or exceeds 200 characters")]
+    #[error("Task title is empty")]
     TitleEmpty,
+    #[error("Task title exceeds maximum length of 200 characters")]
+    TitleTooLong,
 }
 
 #[derive(Debug, Error)]
@@ -273,6 +275,12 @@ impl TMemError {
                 TaskError::TitleEmpty => {
                     (TASK_TITLE_EMPTY, "TaskTitleEmpty", inner.to_string(), None)
                 }
+                TaskError::TitleTooLong => (
+                    TASK_TITLE_TOO_LONG,
+                    "TaskTitleTooLong",
+                    inner.to_string(),
+                    None,
+                ),
             },
             TMemError::Query(inner) => match inner {
                 QueryError::QueryTooLong => {

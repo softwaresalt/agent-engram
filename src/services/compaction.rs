@@ -14,20 +14,29 @@ pub fn truncate_at_word_boundary(text: &str, max_len: usize) -> String {
     }
 
     let prefix = "[Compacted] ";
-    let budget = max_len.saturating_sub(prefix.len());
+    let suffix = "...";
+    let overhead = prefix.len() + suffix.len();
+    let budget = max_len.saturating_sub(overhead);
 
-    if text.len() <= budget {
+    if text.len() <= max_len.saturating_sub(prefix.len()) {
         return text.to_string();
     }
 
-    // Find the last space within the budget
-    let truncated = &text[..budget];
-    let break_point = truncated.rfind(' ').unwrap_or(budget);
+    // Find the last char boundary at or before `budget` (UTF-8 safe)
+    let safe_end = text
+        .char_indices()
+        .take_while(|(i, _)| *i <= budget)
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let safe_end = safe_end.min(budget);
 
-    let mut result = String::with_capacity(prefix.len() + break_point + 3);
+    // Prefer a word boundary (last space) within the safe range
+    let break_point = text[..safe_end].rfind(' ').unwrap_or(safe_end);
+
+    let mut result = String::with_capacity(prefix.len() + break_point + suffix.len());
     result.push_str(prefix);
     result.push_str(&text[..break_point]);
-    result.push_str("...");
+    result.push_str(suffix);
     result
 }
 

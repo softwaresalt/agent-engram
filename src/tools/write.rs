@@ -123,6 +123,26 @@ fn validate_transition(from: TaskStatus, to: TaskStatus) -> Result<(), TMemError
     }
 }
 
+/// Look up a task by ID, hydrating from `.tmem/` files if not found in DB.
+///
+/// This eliminates the repeated get→hydrate→get→error pattern used
+/// by many write handlers.
+async fn get_task_or_hydrate(
+    queries: &Queries,
+    task_id: &str,
+    workspace_path: &std::path::Path,
+) -> Result<Task, TMemError> {
+    if let Some(task) = queries.get_task(task_id).await? {
+        return Ok(task);
+    }
+    hydration::hydrate_into_db(workspace_path, queries).await?;
+    queries.get_task(task_id).await?.ok_or_else(|| {
+        TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        })
+    })
+}
+
 pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
     let workspace_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
@@ -139,17 +159,7 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
 
-    let mut existing = queries.get_task(&parsed.id).await?;
-    if existing.is_none() {
-        hydration::hydrate_into_db(&workspace_path, &queries).await?;
-        existing = queries.get_task(&parsed.id).await?;
-    }
-
-    let existing = existing.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
-            id: parsed.id.clone(),
-        })
-    })?;
+    let existing = get_task_or_hydrate(&queries, &parsed.id, &workspace_path).await?;
 
     let previous_status = existing.status;
 
@@ -236,17 +246,7 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
 
     let task_id = parsed.task_id.clone();
 
-    let mut task = queries.get_task(&task_id).await?;
-    if task.is_none() {
-        hydration::hydrate_into_db(&workspace_path, &queries).await?;
-        task = queries.get_task(&task_id).await?;
-    }
-
-    let task = task.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
-            id: task_id.clone(),
-        })
-    })?;
+    let task = get_task_or_hydrate(&queries, &task_id, &workspace_path).await?;
 
     if task.status == TaskStatus::Blocked {
         return Err(TMemError::Task(TaskError::BlockerExists { id: task_id }));
@@ -335,8 +335,11 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
         })?;
 
     let title = parsed.title.trim();
-    if title.is_empty() || title.len() > MAX_TITLE_LEN {
+    if title.is_empty() {
         return Err(TMemError::Task(TaskError::TitleEmpty));
+    }
+    if title.len() > MAX_TITLE_LEN {
+        return Err(TMemError::Task(TaskError::TitleTooLong));
     }
 
     // Validate issue_type against allowed_types if configured (FR-048)
@@ -717,16 +720,7 @@ pub async fn defer_task(state: SharedState, params: Option<Value>) -> Result<Val
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
 
-    let mut existing = queries.get_task(task_id).await?;
-    if existing.is_none() {
-        hydration::hydrate_into_db(&workspace_path, &queries).await?;
-        existing = queries.get_task(task_id).await?;
-    }
-    let mut task = existing.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
-            id: task_id.to_string(),
-        })
-    })?;
+    let mut task = get_task_or_hydrate(&queries, task_id, &workspace_path).await?;
 
     let now = Utc::now();
     task.defer_until = Some(defer_until);
@@ -776,16 +770,7 @@ pub async fn undefer_task(state: SharedState, params: Option<Value>) -> Result<V
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
 
-    let mut existing = queries.get_task(task_id).await?;
-    if existing.is_none() {
-        hydration::hydrate_into_db(&workspace_path, &queries).await?;
-        existing = queries.get_task(task_id).await?;
-    }
-    let mut task = existing.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
-            id: task_id.to_string(),
-        })
-    })?;
+    let mut task = get_task_or_hydrate(&queries, task_id, &workspace_path).await?;
 
     let previous_defer = task.defer_until.map(|d| d.to_rfc3339());
     let now = Utc::now();
@@ -841,16 +826,7 @@ pub async fn pin_task(state: SharedState, params: Option<Value>) -> Result<Value
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
 
-    let mut existing = queries.get_task(task_id).await?;
-    if existing.is_none() {
-        hydration::hydrate_into_db(&workspace_path, &queries).await?;
-        existing = queries.get_task(task_id).await?;
-    }
-    let mut task = existing.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
-            id: task_id.to_string(),
-        })
-    })?;
+    let mut task = get_task_or_hydrate(&queries, task_id, &workspace_path).await?;
 
     let now = Utc::now();
     task.pinned = true;
@@ -895,16 +871,7 @@ pub async fn unpin_task(state: SharedState, params: Option<Value>) -> Result<Val
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
 
-    let mut existing = queries.get_task(task_id).await?;
-    if existing.is_none() {
-        hydration::hydrate_into_db(&workspace_path, &queries).await?;
-        existing = queries.get_task(task_id).await?;
-    }
-    let mut task = existing.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
-            id: task_id.to_string(),
-        })
-    })?;
+    let mut task = get_task_or_hydrate(&queries, task_id, &workspace_path).await?;
 
     let now = Utc::now();
     task.pinned = false;
@@ -985,6 +952,10 @@ pub async fn batch_update_tasks(
 
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
+
+    // Hydrate once for the entire batch so individual lookups succeed
+    let workspace_path = workspace_path(&state).await?;
+    hydration::hydrate_into_db(&workspace_path, &queries).await?;
 
     let mut results = Vec::new();
     let mut succeeded: u64 = 0;
@@ -1145,8 +1116,13 @@ pub async fn add_comment(state: SharedState, params: Option<Value>) -> Result<Va
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
 
-    // Validate that the task exists
-    let task = queries.get_task(task_id).await?;
+    // Validate that the task exists (hydrate if missing from DB)
+    let mut task = queries.get_task(task_id).await?;
+    if task.is_none() {
+        let workspace_path = workspace_path(&state).await?;
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        task = queries.get_task(task_id).await?;
+    }
     if task.is_none() {
         return Err(TMemError::Task(TaskError::NotFound {
             id: task_id.to_string(),

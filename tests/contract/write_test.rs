@@ -330,10 +330,10 @@ async fn contract_create_task_rejects_oversized_title() {
         Some(json!({ "title": long_title })),
     )
     .await
-    .expect_err("expected TaskTitleEmpty error for oversized title");
+    .expect_err("expected TaskTitleTooLong error for oversized title");
 
     let code = err.to_response().error.code;
-    assert_eq!(code, t_mem::errors::codes::TASK_TITLE_EMPTY);
+    assert_eq!(code, t_mem::errors::codes::TASK_TITLE_TOO_LONG);
 }
 
 // ─── T026: Contract tests for add_label and remove_label ────────────────────

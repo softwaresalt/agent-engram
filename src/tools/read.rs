@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -94,7 +97,8 @@ pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result
     // TaskGraphParams accepts brief/fields for API consistency, but graph
     // nodes are already compact (id + status + children), so we only forward
     // the structural depth parameter.
-    let root_node = build_node(&queries, root, parsed.depth).await?;
+    let visited = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
+    let root_node = build_node(&queries, root, parsed.depth, &visited).await?;
 
     Ok(json!({
         "root": root_node,
@@ -353,11 +357,12 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     Ok(json!({ "results": results }))
 }
 
-fn build_node(
-    queries: &Queries,
+fn build_node<'a>(
+    queries: &'a Queries,
     task: Task,
     depth: u32,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, TMemError>> + Send + '_>> {
+    visited: &'a Arc<tokio::sync::Mutex<HashSet<String>>>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, TMemError>> + Send + 'a>> {
     Box::pin(async move {
         if depth == 0 {
             return Ok(TaskNode {
@@ -371,8 +376,15 @@ fn build_node(
         let mut children = Vec::new();
 
         for edge in edges {
+            // Skip already-visited nodes to avoid exponential traversal on diamonds
+            {
+                let mut v = visited.lock().await;
+                if !v.insert(edge.to.clone()) {
+                    continue;
+                }
+            }
             if let Some(child_task) = queries.get_task(&edge.to).await? {
-                let child = build_node(queries, child_task, depth - 1).await?;
+                let child = build_node(queries, child_task, depth - 1, visited).await?;
                 children.push(EdgeNode {
                     dependency_type: serde_json::to_value(edge.kind)
                         .ok()
