@@ -65,14 +65,14 @@ pub async fn dispatch(
         "apply_compaction" => write::apply_compaction(state, params).await,
         "claim_task" => write::claim_task(state, params).await,
         "release_task" => write::release_task(state, params).await,
+        "defer_task" => write::defer_task(state, params).await,
+        "undefer_task" => write::undefer_task(state, params).await,
+        "pin_task" => write::pin_task(state, params).await,
+        "unpin_task" => write::unpin_task(state, params).await,
         // Enhanced task management tool stubs (002-enhanced-task-management)
-        "defer_task"
-        | "undefer_task"
-        | "pin_task"
-        | "unpin_task"
-        | "get_workspace_statistics"
-        | "batch_update_tasks"
-        | "add_comment" => Err(workspace_not_set()),
+        "get_workspace_statistics" | "batch_update_tasks" | "add_comment" => {
+            Err(workspace_not_set())
+        }
         _ => Err(not_implemented(method)),
     }
 }

@@ -368,6 +368,10 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                 .unwrap_or_else(|| "task".to_string());
             let assignee = frontmatter.get("assignee").cloned();
             let pinned = frontmatter.get("pinned").is_some_and(|s| s == "true");
+            let defer_until = frontmatter
+                .get("defer_until")
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
             let compaction_level = frontmatter
                 .get("compaction_level")
                 .and_then(|s| s.parse().ok())
@@ -408,7 +412,7 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                     priority_order,
                     issue_type,
                     assignee,
-                    defer_until: None,
+                    defer_until,
                     pinned,
                     compaction_level,
                     compacted_at,

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 //! Integration tests for enhanced task management features.
 //!
 //! Tests the full lifecycle of priority-based ready-work queue,
@@ -1294,5 +1295,250 @@ async fn t058_issue_types_filter_custom_type_and_context_note() {
         rehydrated_bugs.len(),
         1,
         "bug type preserved after rehydration"
+    );
+}
+
+// ── T065: Defer/Pin integration test ────────────────────────────
+
+#[tokio::test]
+async fn t065_defer_pin_ready_work_interaction() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    std::fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_str().unwrap().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create 3 tasks with different priorities
+    let t1 = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "High priority task" })),
+    )
+    .await
+    .expect("create t1");
+    let t1_id = t1["task_id"].as_str().unwrap().to_string();
+
+    let t2 = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Medium priority task" })),
+    )
+    .await
+    .expect("create t2");
+    let t2_id = t2["task_id"].as_str().unwrap().to_string();
+
+    let t3 = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Low priority task" })),
+    )
+    .await
+    .expect("create t3");
+    let t3_id = t3["task_id"].as_str().unwrap().to_string();
+
+    // All 3 should appear initially
+    let ready = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work initial");
+    assert_eq!(
+        ready["tasks"].as_array().unwrap().len(),
+        3,
+        "all 3 tasks visible"
+    );
+
+    // Defer t1 to the far future: should be excluded
+    let future_date = "2099-12-31T23:59:59Z";
+    tools::dispatch(
+        state.clone(),
+        "defer_task",
+        Some(json!({ "task_id": t1_id, "until": future_date })),
+    )
+    .await
+    .expect("defer_task t1");
+
+    let ready_after_defer = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work after defer");
+    let tasks_after_defer = ready_after_defer["tasks"].as_array().unwrap();
+    assert_eq!(tasks_after_defer.len(), 2, "deferred task excluded");
+    let ids: Vec<&str> = tasks_after_defer
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !ids.iter().any(|id| id.ends_with(&t1_id)),
+        "t1 should not appear while deferred"
+    );
+
+    // Undefer t1: should reappear
+    tools::dispatch(
+        state.clone(),
+        "undefer_task",
+        Some(json!({ "task_id": t1_id })),
+    )
+    .await
+    .expect("undefer_task t1");
+
+    let ready_after_undefer = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work after undefer");
+    assert_eq!(
+        ready_after_undefer["tasks"].as_array().unwrap().len(),
+        3,
+        "undeferred task reappears"
+    );
+
+    // Pin t3 (lowest priority): should appear first
+    tools::dispatch(state.clone(), "pin_task", Some(json!({ "task_id": t3_id })))
+        .await
+        .expect("pin_task t3");
+
+    let ready_pinned = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work pinned");
+    let pinned_tasks = ready_pinned["tasks"].as_array().unwrap();
+    assert_eq!(pinned_tasks.len(), 3);
+    // Pinned task should be first regardless of priority
+    let first_id = pinned_tasks[0]["id"].as_str().unwrap();
+    assert!(
+        first_id.ends_with(&t3_id),
+        "pinned task should be first, got {first_id}"
+    );
+
+    // Unpin t3: should return to normal position
+    tools::dispatch(
+        state.clone(),
+        "unpin_task",
+        Some(json!({ "task_id": t3_id })),
+    )
+    .await
+    .expect("unpin_task t3");
+
+    let ready_unpinned = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work unpinned");
+    let unpinned_tasks = ready_unpinned["tasks"].as_array().unwrap();
+    // After unpinning, t3 should no longer be forced first
+    // (all have same default priority, so order may vary, but pinned=false)
+    assert_eq!(unpinned_tasks.len(), 3, "all still present after unpin");
+
+    // Verify flush/rehydrate preserves defer_until and pinned
+    tools::dispatch(
+        state.clone(),
+        "defer_task",
+        Some(json!({ "task_id": t2_id, "until": "2099-01-01T00:00:00Z" })),
+    )
+    .await
+    .expect("defer t2 for persistence test");
+
+    tools::dispatch(state.clone(), "pin_task", Some(json!({ "task_id": t3_id })))
+        .await
+        .expect("pin t3 for persistence test");
+
+    tools::dispatch(state.clone(), "flush_state", Some(json!({})))
+        .await
+        .expect("flush_state");
+
+    // Verify frontmatter content
+    let tasks_md =
+        std::fs::read_to_string(tmem_dir.join("tasks.md")).expect("read flushed tasks.md");
+    assert!(
+        tasks_md.contains("defer_until:"),
+        "defer_until in frontmatter"
+    );
+    assert!(tasks_md.contains("pinned: true"), "pinned in frontmatter");
+
+    // Rehydrate into fresh state
+    let state2 = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state2.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace 2");
+
+    let rehydrated = tools::dispatch(state2.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("rehydrated get_ready_work");
+    let rehydrated_tasks = rehydrated["tasks"].as_array().unwrap();
+
+    // t2 deferred to 2099 → excluded; t1 and t3 visible; t3 pinned → first
+    assert_eq!(
+        rehydrated_tasks.len(),
+        2,
+        "deferred t2 excluded after rehydration"
+    );
+    let first_rehydrated = rehydrated_tasks[0]["id"].as_str().unwrap();
+    assert!(
+        first_rehydrated.ends_with(&t3_id),
+        "pinned t3 first after rehydration"
+    );
+}
+
+// ── T066: Edge case — defer_until in the past ───────────────────
+
+#[tokio::test]
+async fn t066_past_defer_until_immediately_eligible() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+
+    // Seed a task with defer_until in the past via markdown
+    std::fs::write(
+        tmem_dir.join("tasks.md"),
+        r"# Tasks
+
+## task:past_defer
+
+---
+id: task:past_defer
+title: Past deferred task
+status: todo
+priority: p2
+issue_type: task
+pinned: false
+defer_until: 2020-01-01T00:00:00+00:00
+created_at: 2026-02-05T10:00:00+00:00
+updated_at: 2026-02-05T10:00:00+00:00
+---
+
+This task was deferred to a date that has already passed.
+",
+    )
+    .expect("write tasks.md with past defer_until");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_str().unwrap().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // The task with past defer_until should be immediately eligible
+    let ready = tools::dispatch(state.clone(), "get_ready_work", Some(json!({})))
+        .await
+        .expect("get_ready_work");
+    let tasks = ready["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1, "past-deferred task immediately eligible");
+    assert!(
+        tasks[0]["id"].as_str().unwrap().contains("past_defer"),
+        "correct task returned"
     );
 }

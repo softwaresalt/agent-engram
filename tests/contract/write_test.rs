@@ -1143,3 +1143,237 @@ async fn contract_create_task_invalid_issue_type_returns_error() {
     let code = err.to_response().error.code;
     assert_eq!(code, INVALID_ISSUE_TYPE);
 }
+
+// ── T059: Defer/Pin contract tests ──────────────────────────────
+
+#[test]
+async fn contract_defer_task_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc",
+        "until": "2099-01-01T00:00:00Z"
+    }));
+
+    let err = tools::dispatch(state, "defer_task", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_undefer_task_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({ "task_id": "task:abc" }));
+
+    let err = tools::dispatch(state, "undefer_task", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_pin_task_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({ "task_id": "task:abc" }));
+
+    let err = tools::dispatch(state, "pin_task", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_unpin_task_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({ "task_id": "task:abc" }));
+
+    let err = tools::dispatch(state, "unpin_task", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_defer_task_sets_defer_until_and_creates_note() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Deferrable task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    let defer_date = "2099-06-15T12:00:00Z";
+    let result = tools::dispatch(
+        state.clone(),
+        "defer_task",
+        Some(json!({ "task_id": task_id, "until": defer_date })),
+    )
+    .await
+    .expect("defer_task should succeed");
+
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert_eq!(result["defer_until"].as_str().unwrap(), defer_date);
+    assert!(result["context_id"].is_string());
+    assert!(result["updated_at"].is_string());
+}
+
+#[test]
+async fn contract_undefer_task_clears_and_returns_previous() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Undeferrable task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    let defer_date = "2099-06-15T12:00:00Z";
+    tools::dispatch(
+        state.clone(),
+        "defer_task",
+        Some(json!({ "task_id": task_id, "until": defer_date })),
+    )
+    .await
+    .expect("defer_task");
+
+    let result = tools::dispatch(
+        state.clone(),
+        "undefer_task",
+        Some(json!({ "task_id": task_id })),
+    )
+    .await
+    .expect("undefer_task should succeed");
+
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert!(
+        result["previous_defer_until"].is_string(),
+        "should return previous defer_until date"
+    );
+    assert!(result["context_id"].is_string());
+}
+
+#[test]
+async fn contract_pin_task_sets_pinned_and_creates_note() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Pinnable task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    let result = tools::dispatch(
+        state.clone(),
+        "pin_task",
+        Some(json!({ "task_id": task_id })),
+    )
+    .await
+    .expect("pin_task should succeed");
+
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert!(result["pinned"].as_bool().unwrap());
+    assert!(result["context_id"].is_string());
+    assert!(result["updated_at"].is_string());
+}
+
+#[test]
+async fn contract_unpin_task_clears_pinned() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Unpinnable task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Pin first
+    tools::dispatch(
+        state.clone(),
+        "pin_task",
+        Some(json!({ "task_id": task_id })),
+    )
+    .await
+    .expect("pin_task");
+
+    // Unpin
+    let result = tools::dispatch(
+        state.clone(),
+        "unpin_task",
+        Some(json!({ "task_id": task_id })),
+    )
+    .await
+    .expect("unpin_task should succeed");
+
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert!(!result["pinned"].as_bool().unwrap());
+    assert!(result["context_id"].is_string());
+}

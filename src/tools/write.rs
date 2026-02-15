@@ -674,6 +674,254 @@ pub async fn release_task(state: SharedState, params: Option<Value>) -> Result<V
     }))
 }
 
+// ── Defer/Pin operations ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DeferTaskParams {
+    task_id: String,
+    until: String,
+}
+
+/// Defer a task until a given ISO 8601 datetime.
+pub async fn defer_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let workspace_path = workspace_path(&state).await?;
+    let parsed: DeferTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let defer_until = chrono::DateTime::parse_from_rfc3339(&parsed.until)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid ISO 8601 datetime: {e}"),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let mut existing = queries.get_task(task_id).await?;
+    if existing.is_none() {
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        existing = queries.get_task(task_id).await?;
+    }
+    let mut task = existing.ok_or_else(|| {
+        TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        })
+    })?;
+
+    let now = Utc::now();
+    task.defer_until = Some(defer_until);
+    task.updated_at = now;
+    queries.upsert_task(&task).await?;
+
+    let ctx_id = format!("context:{}", Uuid::new_v4());
+    let ctx = Context {
+        id: ctx_id.clone(),
+        content: format!("Deferred until {}", parsed.until),
+        embedding: None,
+        source_client: "daemon".into(),
+        created_at: now,
+    };
+    queries.insert_context(&ctx).await?;
+    queries.link_task_context(task_id, &ctx_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "defer_until": parsed.until,
+        "context_id": ctx_id,
+        "updated_at": now.to_rfc3339(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct UnDeferTaskParams {
+    task_id: String,
+}
+
+/// Clear the defer_until date on a task, making it immediately eligible for ready-work.
+pub async fn undefer_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let workspace_path = workspace_path(&state).await?;
+    let parsed: UnDeferTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let mut existing = queries.get_task(task_id).await?;
+    if existing.is_none() {
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        existing = queries.get_task(task_id).await?;
+    }
+    let mut task = existing.ok_or_else(|| {
+        TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        })
+    })?;
+
+    let previous_defer = task.defer_until.map(|d| d.to_rfc3339());
+    let now = Utc::now();
+    task.defer_until = None;
+    task.updated_at = now;
+    queries.upsert_task(&task).await?;
+
+    let ctx_id = format!("context:{}", Uuid::new_v4());
+    let content = if let Some(ref prev) = previous_defer {
+        format!("Undeferred (was deferred until {prev})")
+    } else {
+        "Undeferred (was not deferred)".to_string()
+    };
+    let ctx = Context {
+        id: ctx_id.clone(),
+        content,
+        embedding: None,
+        source_client: "daemon".into(),
+        created_at: now,
+    };
+    queries.insert_context(&ctx).await?;
+    queries.link_task_context(task_id, &ctx_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "previous_defer_until": previous_defer,
+        "context_id": ctx_id,
+        "updated_at": now.to_rfc3339(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PinTaskParams {
+    task_id: String,
+}
+
+/// Pin a task so it appears first in ready-work results.
+pub async fn pin_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let workspace_path = workspace_path(&state).await?;
+    let parsed: PinTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let mut existing = queries.get_task(task_id).await?;
+    if existing.is_none() {
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        existing = queries.get_task(task_id).await?;
+    }
+    let mut task = existing.ok_or_else(|| {
+        TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        })
+    })?;
+
+    let now = Utc::now();
+    task.pinned = true;
+    task.updated_at = now;
+    queries.upsert_task(&task).await?;
+
+    let ctx_id = format!("context:{}", Uuid::new_v4());
+    let ctx = Context {
+        id: ctx_id.clone(),
+        content: "Pinned".to_string(),
+        embedding: None,
+        source_client: "daemon".into(),
+        created_at: now,
+    };
+    queries.insert_context(&ctx).await?;
+    queries.link_task_context(task_id, &ctx_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "pinned": true,
+        "context_id": ctx_id,
+        "updated_at": now.to_rfc3339(),
+    }))
+}
+
+/// Unpin a task, restoring normal priority ordering.
+pub async fn unpin_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let workspace_path = workspace_path(&state).await?;
+    let parsed: PinTaskParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let mut existing = queries.get_task(task_id).await?;
+    if existing.is_none() {
+        hydration::hydrate_into_db(&workspace_path, &queries).await?;
+        existing = queries.get_task(task_id).await?;
+    }
+    let mut task = existing.ok_or_else(|| {
+        TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        })
+    })?;
+
+    let now = Utc::now();
+    task.pinned = false;
+    task.updated_at = now;
+    queries.upsert_task(&task).await?;
+
+    let ctx_id = format!("context:{}", Uuid::new_v4());
+    let ctx = Context {
+        id: ctx_id.clone(),
+        content: "Unpinned".to_string(),
+        embedding: None,
+        source_client: "daemon".into(),
+        created_at: now,
+    };
+    queries.insert_context(&ctx).await?;
+    queries.link_task_context(task_id, &ctx_id).await?;
+
+    Ok(json!({
+        "task_id": task_id,
+        "pinned": false,
+        "context_id": ctx_id,
+        "updated_at": now.to_rfc3339(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

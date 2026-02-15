@@ -179,6 +179,9 @@ pub fn serialize_tasks_md(
         if task.pinned {
             out.push_str("pinned: true\n");
         }
+        if let Some(ref du) = task.defer_until {
+            out.push_str(&format!("defer_until: {}\n", du.to_rfc3339()));
+        }
         if task.compaction_level > 0 {
             out.push_str(&format!("compaction_level: {}\n", task.compaction_level));
         }
