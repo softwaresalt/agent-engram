@@ -1737,3 +1737,225 @@ async fn t072_statistics_and_brief_mode_20_tasks() {
         .any(|t| t.get("description").is_some() && !t["description"].is_null());
     assert!(has_desc, "non-brief mode should include descriptions");
 }
+
+// ── T079: Batch operations and comments integration ─────────────
+
+#[tokio::test]
+async fn t079_batch_update_comments_and_flush_rehydrate() {
+    let state = Arc::new(AppState::new(10));
+    let ws_id = format!("batch_comments_{}", uuid::Uuid::new_v4());
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws_path = tmp.path().to_str().unwrap().to_string();
+    state
+        .set_workspace(WorkspaceSnapshot {
+            workspace_id: ws_id.clone(),
+            path: ws_path.clone(),
+            task_count: 0,
+            context_count: 0,
+            last_flush: None,
+            stale_files: false,
+            connection_count: 1,
+            file_mtimes: std::collections::HashMap::new(),
+        })
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(&ws_id).await.expect("connect db");
+    let queries = Queries::new(db);
+
+    // Create 10 tasks
+    let mut task_ids: Vec<String> = Vec::new();
+    for i in 0..10 {
+        let task = make_task(&format!("batch_t{i}"), "p2", 2);
+        queries.upsert_task(&task).await.expect("upsert task");
+        task_ids.push(task.id.clone());
+    }
+
+    // ── Batch update: 9 valid + 1 invalid ID ────────────────────
+    let mut updates = Vec::new();
+    for tid in &task_ids {
+        updates.push(json!({ "id": tid, "status": "in_progress" }));
+    }
+    // Add an invalid task ID as the 11th entry
+    updates.push(json!({ "id": "nonexistent_task_999", "status": "in_progress" }));
+
+    let batch_result = tools::dispatch(
+        state.clone(),
+        "batch_update_tasks",
+        Some(json!({ "updates": updates })),
+    )
+    .await;
+
+    // Should be a partial failure (10 succeeded, 1 failed)
+    assert!(batch_result.is_err(), "batch with 1 invalid should fail");
+    let err_response = batch_result.unwrap_err().to_response();
+    assert_eq!(
+        err_response.error.code, 3007,
+        "should be BATCH_PARTIAL_FAILURE"
+    );
+
+    // Parse the details to verify per-item results
+    let details = err_response.error.details.unwrap();
+    let succeeded = details["succeeded"].as_u64().unwrap();
+    let failed = details["failed"].as_u64().unwrap();
+    assert_eq!(succeeded, 10, "10 valid tasks should succeed");
+    assert_eq!(failed, 1, "1 invalid task should fail");
+
+    let results = details["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        11,
+        "should have per-item result for every update"
+    );
+
+    // Verify that the 10 valid tasks are now in_progress
+    for tid in &task_ids {
+        let task = queries
+            .get_task(tid)
+            .await
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(
+            task.status,
+            TaskStatus::InProgress,
+            "task {tid} should be in_progress"
+        );
+    }
+
+    // ── Add 3 comments to the first task ────────────────────────
+    let target_task = &task_ids[0];
+    for i in 1..=3 {
+        let result = tools::dispatch(
+            state.clone(),
+            "add_comment",
+            Some(json!({
+                "task_id": target_task,
+                "content": format!("Comment number {i}"),
+                "author": format!("agent-{i}")
+            })),
+        )
+        .await
+        .expect("add_comment should succeed");
+
+        assert!(result["comment_id"].is_string(), "should return comment_id");
+        assert_eq!(result["task_id"].as_str().unwrap(), target_task);
+        assert_eq!(result["author"].as_str().unwrap(), format!("agent-{i}"));
+    }
+
+    // Verify comments are in chronological order
+    let comments = queries
+        .get_comments_for_task(target_task)
+        .await
+        .expect("get comments");
+    assert_eq!(comments.len(), 3, "should have 3 comments");
+    assert!(
+        comments[0].created_at <= comments[1].created_at
+            && comments[1].created_at <= comments[2].created_at,
+        "comments should be in chronological order"
+    );
+    assert_eq!(comments[0].content, "Comment number 1");
+    assert_eq!(comments[1].content, "Comment number 2");
+    assert_eq!(comments[2].content, "Comment number 3");
+
+    // ── Flush → rehydrate → verify comments preserved ───────────
+    dehydrate_workspace(&queries, tmp.path())
+        .await
+        .expect("dehydrate");
+
+    // Verify comments.md was written
+    let comments_path = tmp.path().join(".tmem").join("comments.md");
+    assert!(
+        comments_path.exists(),
+        "comments.md should exist after flush"
+    );
+
+    let comments_content = std::fs::read_to_string(&comments_path).expect("read comments.md");
+    assert!(comments_content.contains("Comment number 1"));
+    assert!(comments_content.contains("Comment number 2"));
+    assert!(comments_content.contains("Comment number 3"));
+
+    // Rehydrate into a fresh DB
+    let ws_id2 = format!("batch_comments_rehydrated_{}", uuid::Uuid::new_v4());
+    let db2 = connect_db(&ws_id2).await.expect("connect db2");
+    let queries2 = Queries::new(db2);
+    hydrate_into_db(tmp.path(), &queries2)
+        .await
+        .expect("rehydrate");
+
+    // Verify comments survived the round-trip
+    let rehydrated_comments = queries2
+        .get_comments_for_task(target_task)
+        .await
+        .expect("get comments after rehydrate");
+    assert_eq!(
+        rehydrated_comments.len(),
+        3,
+        "should have 3 comments after rehydrate"
+    );
+    assert_eq!(rehydrated_comments[0].content, "Comment number 1");
+    assert_eq!(rehydrated_comments[1].content, "Comment number 2");
+    assert_eq!(rehydrated_comments[2].content, "Comment number 3");
+}
+
+// ── T080: Batch with duplicate task IDs ─────────────────────────
+
+#[tokio::test]
+async fn t080_batch_duplicate_ids_last_update_wins() {
+    let state = Arc::new(AppState::new(10));
+    let ws_id = format!("batch_dup_{}", uuid::Uuid::new_v4());
+    state
+        .set_workspace(test_snapshot(&ws_id))
+        .await
+        .expect("set workspace");
+
+    let db = connect_db(&ws_id).await.expect("connect db");
+    let queries = Queries::new(db);
+
+    // Create a single task
+    let task = make_task("dup_target", "p2", 2);
+    queries.upsert_task(&task).await.expect("upsert task");
+
+    // Batch with the same task ID twice:
+    // First: todo → in_progress with a note
+    // Second: in_progress → done with a different note
+    let updates = vec![
+        json!({ "id": "dup_target", "status": "in_progress", "notes": "Starting work" }),
+        json!({ "id": "dup_target", "status": "done", "notes": "Finished immediately" }),
+    ];
+
+    let result = tools::dispatch(
+        state.clone(),
+        "batch_update_tasks",
+        Some(json!({ "updates": updates })),
+    )
+    .await
+    .expect("batch with dups should succeed");
+
+    assert_eq!(result["succeeded"].as_u64().unwrap(), 2);
+    assert_eq!(result["failed"].as_u64().unwrap(), 0);
+
+    // Verify last update wins: task should be in "done" state
+    let final_task = queries
+        .get_task("dup_target")
+        .await
+        .expect("get task")
+        .expect("task exists");
+    assert_eq!(
+        final_task.status,
+        TaskStatus::Done,
+        "last update (done) should win"
+    );
+
+    // Verify each generated its own context note (2 total)
+    // Context notes are linked via relates_to edges; query all and filter.
+    let all_ctx = queries.all_contexts().await.expect("all contexts");
+    let status_notes: Vec<_> = all_ctx
+        .iter()
+        .filter(|c| c.content.contains("Status changed"))
+        .collect();
+    assert!(
+        status_notes.len() >= 2,
+        "each batch item should produce a context note, got {}",
+        status_notes.len()
+    );
+}

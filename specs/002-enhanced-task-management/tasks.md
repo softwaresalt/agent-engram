@@ -239,17 +239,17 @@
 
 ### Red Phase (Tests First — Expect Failure)
 
-- [ ] T073 [P] [US9] Write contract tests for batch_update_tasks and add_comment in tests/contract/write_test.rs: workspace-not-set (1003), valid batch returns per-item results, batch with one invalid ID returns partial failure (3007), valid comment returns comment_id (FR-058, FR-059, FR-062)
+- [X] T073 [P] [US9] Write contract tests for batch_update_tasks and add_comment in tests/contract/write_test.rs: workspace-not-set (1003), valid batch returns per-item results, batch with one invalid ID returns partial failure (3007), valid comment returns comment_id (FR-058, FR-059, FR-062)
 
 ### Green Phase (Implementation)
 
-- [ ] T074 [US9] Implement batch_update_tasks tool handler in src/tools/write.rs: validate batch.max_size from config (FR-060), iterate updates calling existing update_task logic per item, collect per-item success/failure results, return succeeded + failed counts (FR-058, FR-059)
-- [ ] T075 [US9] Implement comment queries in src/db/queries.rs: insert_comment(task_id, content, author), get_comments_for_task(task_id) ordered by created_at ASC (FR-061, FR-062, FR-063)
-- [ ] T076 [US9] Implement add_comment tool handler in src/tools/write.rs: parse task_id + content + author, validate task exists, call insert_comment, return comment_id + task_id + author + created_at (FR-062)
-- [ ] T077 [US9] Implement comments.md hydration in src/services/hydration.rs: parse ## task:\* section headers, ### timestamp — author comment headers, body content until next header; populate comment table (FR-063b)
-- [ ] T078 [US9] Implement comments.md dehydration in src/services/dehydration.rs: query comments per task grouped chronologically, write .tmem/comments.md with ## task:\* and ### timestamp — author format (FR-063b)
-- [ ] T079 [US9] Integration test in tests/integration/enhanced_features_test.rs: batch_update_tasks on 10 tasks (one invalid → partial failure), verify per-item results; add 3 comments to one task, verify chronological order; flush → rehydrate → verify comments preserved (SC-019)
-- [ ] T080 [US9] Edge case test: batch with duplicate task IDs → last update wins, each generates its own context note
+- [X] T074 [US9] Implement batch_update_tasks tool handler in src/tools/write.rs: validate batch.max_size from config (FR-060), iterate updates calling existing update_task logic per item, collect per-item success/failure results, return succeeded + failed counts (FR-058, FR-059)
+- [X] T075 [US9] Implement comment queries in src/db/queries.rs: insert_comment(task_id, content, author), get_comments_for_task(task_id) ordered by created_at ASC (FR-061, FR-062, FR-063)
+- [X] T076 [US9] Implement add_comment tool handler in src/tools/write.rs: parse task_id + content + author, validate task exists, call insert_comment, return comment_id + task_id + author + created_at (FR-062)
+- [X] T077 [US9] Implement comments.md hydration in src/services/hydration.rs: parse ## task:\* section headers, ### timestamp — author comment headers, body content until next header; populate comment table (FR-063b)
+- [X] T078 [US9] Implement comments.md dehydration in src/services/dehydration.rs: query comments per task grouped chronologically, write .tmem/comments.md with ## task:\* and ### timestamp — author format (FR-063b)
+- [X] T079 [US9] Integration test in tests/integration/enhanced_features_test.rs: batch_update_tasks on 10 tasks (one invalid → partial failure), verify per-item results; add 3 comments to one task, verify chronological order; flush → rehydrate → verify comments preserved (SC-019)
+- [X] T080 [US9] Edge case test: batch with duplicate task IDs → last update wins, each generates its own context note
 
 **Checkpoint**: Batch operations and comments functional including `.tmem/comments.md` serialization. US9 independently testable.
 

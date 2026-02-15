@@ -5,8 +5,9 @@ use serde_json::json;
 use tokio::test;
 
 use t_mem::errors::codes::{
-    COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL, INVALID_ISSUE_TYPE, INVALID_STATUS,
-    LABEL_VALIDATION, TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE, WORKSPACE_NOT_SET,
+    BATCH_PARTIAL_FAILURE, COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL,
+    INVALID_ISSUE_TYPE, INVALID_STATUS, LABEL_VALIDATION, TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE,
+    TASK_NOT_FOUND, WORKSPACE_NOT_SET,
 };
 use t_mem::server::state::AppState;
 use t_mem::tools;
@@ -1376,4 +1377,209 @@ async fn contract_unpin_task_clears_pinned() {
     assert_eq!(result["task_id"].as_str().unwrap(), task_id);
     assert!(!result["pinned"].as_bool().unwrap());
     assert!(result["context_id"].is_string());
+}
+
+// ── Batch update contract tests (T073) ──────────────────────────────────
+
+#[test]
+async fn contract_batch_update_tasks_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "updates": [{ "id": "task:x", "status": "in_progress" }]
+    }));
+
+    let err = tools::dispatch(state, "batch_update_tasks", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_batch_update_tasks_returns_per_item_results() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create 3 tasks
+    let mut task_ids = Vec::new();
+    for i in 0..3 {
+        let created = tools::dispatch(
+            state.clone(),
+            "create_task",
+            Some(json!({ "title": format!("Batch task {i}") })),
+        )
+        .await
+        .expect("create_task");
+        task_ids.push(created["task_id"].as_str().unwrap().to_string());
+    }
+
+    // Batch update: 3 valid tasks to in_progress
+    let result = tools::dispatch(
+        state.clone(),
+        "batch_update_tasks",
+        Some(json!({
+            "updates": [
+                { "id": task_ids[0], "status": "in_progress" },
+                { "id": task_ids[1], "status": "in_progress" },
+                { "id": task_ids[2], "status": "in_progress" },
+            ]
+        })),
+    )
+    .await
+    .expect("batch_update_tasks should succeed");
+
+    assert_eq!(result["succeeded"].as_u64().unwrap(), 3);
+    assert_eq!(result["failed"].as_u64().unwrap(), 0);
+
+    let results = result["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    for item in results {
+        assert!(item["success"].as_bool().unwrap());
+        assert_eq!(item["previous_status"].as_str().unwrap(), "todo");
+        assert_eq!(item["new_status"].as_str().unwrap(), "in_progress");
+    }
+}
+
+#[test]
+async fn contract_batch_update_with_invalid_id_returns_partial_failure() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create 1 valid task
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Valid batch task" })),
+    )
+    .await
+    .expect("create_task");
+    let valid_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Batch with one valid + one invalid
+    let err = tools::dispatch(
+        state.clone(),
+        "batch_update_tasks",
+        Some(json!({
+            "updates": [
+                { "id": valid_id, "status": "in_progress" },
+                { "id": "task:nonexistent", "status": "in_progress" },
+            ]
+        })),
+    )
+    .await
+    .expect_err("batch with invalid ID should return partial failure error");
+
+    assert_eq!(err.to_response().error.code, BATCH_PARTIAL_FAILURE);
+}
+
+// ── Comment contract tests (T073) ───────────────────────────────────────
+
+#[test]
+async fn contract_add_comment_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:x",
+        "content": "A comment",
+        "author": "agent-1"
+    }));
+
+    let err = tools::dispatch(state, "add_comment", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_add_comment_returns_comment_id() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    // Create a task
+    let created = tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "Commentable task" })),
+    )
+    .await
+    .expect("create_task");
+    let task_id = created["task_id"].as_str().unwrap().to_string();
+
+    // Add a comment
+    let result = tools::dispatch(
+        state.clone(),
+        "add_comment",
+        Some(json!({
+            "task_id": task_id,
+            "content": "This is a discussion comment",
+            "author": "agent-1"
+        })),
+    )
+    .await
+    .expect("add_comment should succeed");
+
+    assert!(result["comment_id"].is_string());
+    assert_eq!(result["task_id"].as_str().unwrap(), task_id);
+    assert_eq!(result["author"].as_str().unwrap(), "agent-1");
+    assert!(result["created_at"].is_string());
+}
+
+#[test]
+async fn contract_add_comment_nonexistent_task_fails() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace");
+
+    let err = tools::dispatch(
+        state.clone(),
+        "add_comment",
+        Some(json!({
+            "task_id": "task:nonexistent",
+            "content": "Ghost comment",
+            "author": "agent-1"
+        })),
+    )
+    .await
+    .expect_err("add_comment on nonexistent task should fail");
+
+    assert_eq!(err.to_response().error.code, TASK_NOT_FOUND);
 }

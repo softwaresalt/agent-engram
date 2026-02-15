@@ -922,6 +922,243 @@ pub async fn unpin_task(state: SharedState, params: Option<Value>) -> Result<Val
     }))
 }
 
+// ── Batch operations ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BatchUpdateItem {
+    id: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    issue_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BatchUpdateParams {
+    updates: Vec<BatchUpdateItem>,
+}
+
+/// Update multiple tasks in a single call with per-item results (FR-058, FR-059).
+///
+/// Validates batch size against config max (FR-060, default 100). Each update
+/// is attempted independently — one failure does not prevent others from
+/// succeeding. Returns `BatchPartialFailure` error when any item fails.
+pub async fn batch_update_tasks(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: BatchUpdateParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // FR-060: enforce batch max_size from config (default: 100)
+    let max_size = if let Some(cfg) = state.workspace_config().await {
+        cfg.batch.max_size
+    } else {
+        100
+    };
+    if parsed.updates.len() > max_size as usize {
+        return Err(TMemError::System(SystemError::InvalidParams {
+            reason: format!(
+                "batch size {} exceeds maximum {}",
+                parsed.updates.len(),
+                max_size
+            ),
+        }));
+    }
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let mut results = Vec::new();
+    let mut succeeded: u64 = 0;
+    let mut failed: u64 = 0;
+
+    for item in &parsed.updates {
+        match apply_single_update(&state, &queries, item).await {
+            Ok(result_item) => {
+                succeeded += 1;
+                results.push(result_item);
+            }
+            Err(err) => {
+                failed += 1;
+                let resp = err.to_response();
+                results.push(json!({
+                    "id": item.id,
+                    "success": false,
+                    "error": {
+                        "code": resp.error.code,
+                        "message": resp.error.message,
+                    }
+                }));
+            }
+        }
+    }
+
+    // FR-059: return partial failure error when any item fails
+    if failed > 0 {
+        return Err(TMemError::Task(TaskError::BatchPartialFailure {
+            succeeded,
+            failed,
+            results: serde_json::to_value(&results).unwrap_or_default(),
+        }));
+    }
+
+    Ok(json!({
+        "results": results,
+        "succeeded": succeeded,
+        "failed": failed,
+    }))
+}
+
+/// Apply a single item update within a batch call.
+async fn apply_single_update(
+    state: &SharedState,
+    queries: &Queries,
+    item: &BatchUpdateItem,
+) -> Result<Value, TMemError> {
+    let task_id = item.id.strip_prefix("task:").unwrap_or(&item.id);
+
+    let existing = queries.get_task(task_id).await?.ok_or_else(|| {
+        TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        })
+    })?;
+
+    let previous_status = existing.status;
+
+    // Determine new status — default to existing if not provided
+    let new_status = if let Some(ref status_str) = item.status {
+        parse_status(status_str)?
+    } else {
+        existing.status
+    };
+
+    if item.status.is_some() {
+        validate_transition(previous_status, new_status)?;
+    }
+
+    // Validate issue_type if provided (FR-048)
+    let issue_type = if let Some(ref new_type) = item.issue_type {
+        if let Some(config) = state.workspace_config().await {
+            if !config.allowed_types.is_empty() && !config.allowed_types.contains(new_type) {
+                return Err(TMemError::Task(TaskError::InvalidIssueType {
+                    issue_type: new_type.clone(),
+                }));
+            }
+        }
+        new_type.clone()
+    } else {
+        existing.issue_type.clone()
+    };
+
+    let (priority, priority_order) = if let Some(ref new_priority) = item.priority {
+        let order = compute_priority_order(new_priority);
+        (new_priority.clone(), order)
+    } else {
+        (existing.priority.clone(), existing.priority_order)
+    };
+
+    let now = Utc::now();
+    let updated = Task {
+        id: task_id.to_string(),
+        title: existing.title,
+        status: new_status,
+        work_item_id: existing.work_item_id,
+        description: existing.description,
+        context_summary: existing.context_summary,
+        priority,
+        priority_order,
+        issue_type,
+        assignee: existing.assignee,
+        defer_until: existing.defer_until,
+        pinned: existing.pinned,
+        compaction_level: existing.compaction_level,
+        compacted_at: existing.compacted_at,
+        workflow_state: existing.workflow_state,
+        workflow_id: existing.workflow_id,
+        created_at: existing.created_at,
+        updated_at: now,
+    };
+
+    queries.upsert_task(&updated).await?;
+
+    // FR-015: every update creates a context note
+    let _context_id = create_status_change_note(
+        queries,
+        task_id,
+        previous_status,
+        new_status,
+        item.notes.as_deref(),
+        now,
+    )
+    .await?;
+
+    Ok(json!({
+        "id": task_id,
+        "success": true,
+        "previous_status": previous_status.as_str(),
+        "new_status": new_status.as_str(),
+    }))
+}
+
+// ── Comment operations ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AddCommentParams {
+    task_id: String,
+    content: String,
+    author: String,
+}
+
+/// Add a discussion comment to a task, separate from context notes (FR-061, FR-062).
+pub async fn add_comment(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: AddCommentParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    // Validate that the task exists
+    let task = queries.get_task(task_id).await?;
+    if task.is_none() {
+        return Err(TMemError::Task(TaskError::NotFound {
+            id: task_id.to_string(),
+        }));
+    }
+
+    let comment_id = queries
+        .insert_comment(task_id, &parsed.content, &parsed.author)
+        .await?;
+
+    let now = Utc::now();
+
+    Ok(json!({
+        "comment_id": comment_id,
+        "task_id": task_id,
+        "author": parsed.author,
+        "created_at": now.to_rfc3339(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

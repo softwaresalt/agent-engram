@@ -52,7 +52,11 @@ pub enum TaskError {
     #[error("Label validation failed: {reason}")]
     LabelValidation { reason: String },
     #[error("Batch operation partially failed: {succeeded} succeeded, {failed} failed")]
-    BatchPartialFailure { succeeded: u32, failed: u32 },
+    BatchPartialFailure {
+        succeeded: u64,
+        failed: u64,
+        results: serde_json::Value,
+    },
     #[error("Compaction failed for task '{id}': {reason}")]
     CompactionFailed { id: String, reason: String },
     #[error("Invalid priority '{priority}'")]
@@ -226,11 +230,15 @@ impl TMemError {
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
                 ),
-                TaskError::BatchPartialFailure { succeeded, failed } => (
+                TaskError::BatchPartialFailure {
+                    succeeded,
+                    failed,
+                    results,
+                } => (
                     BATCH_PARTIAL_FAILURE,
                     "BatchPartialFailure",
                     inner.to_string(),
-                    Some(json!({ "succeeded": succeeded, "failed": failed })),
+                    Some(json!({ "succeeded": succeeded, "failed": failed, "results": results })),
                 ),
                 TaskError::CompactionFailed { id, reason } => (
                     COMPACTION_FAILED,

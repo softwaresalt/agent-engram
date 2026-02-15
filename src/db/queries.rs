@@ -178,6 +178,28 @@ impl SpecRow {
     }
 }
 
+/// Internal row type for deserializing comments from SurrealDB.
+#[derive(Deserialize)]
+struct CommentRow {
+    id: Thing,
+    task_id: String,
+    content: String,
+    author: String,
+    created_at: DateTime<Utc>,
+}
+
+impl CommentRow {
+    fn into_comment(self) -> crate::models::Comment {
+        crate::models::Comment {
+            id: format!("comment:{}", self.id.id.to_raw()),
+            task_id: self.task_id,
+            content: self.content,
+            author: self.author,
+            created_at: self.created_at,
+        }
+    }
+}
+
 /// Query helper wrapping SurrealDB handle.
 #[derive(Clone)]
 pub struct Queries {
@@ -731,6 +753,76 @@ impl Queries {
             }
         }
         Ok(true)
+    }
+
+    // ── Comment queries ─────────────────────────────────────────────────────
+
+    /// Insert a comment for a task. Returns the generated `comment:uuid` ID.
+    pub async fn insert_comment(
+        &self,
+        task_id: &str,
+        content: &str,
+        author: &str,
+    ) -> Result<String, TMemError> {
+        let comment_id = format!("comment:{}", uuid::Uuid::new_v4());
+
+        self.db
+            .query(
+                "INSERT INTO comment { \
+                     id: type::thing('comment', $cid), \
+                     task_id: $task_id, \
+                     content: $content, \
+                     author: $author \
+                 }",
+            )
+            .bind((
+                "cid",
+                comment_id
+                    .strip_prefix("comment:")
+                    .unwrap_or(&comment_id)
+                    .to_string(),
+            ))
+            .bind(("task_id", task_id.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("author", author.to_string()))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(comment_id)
+    }
+
+    /// Retrieve all comments for a task, ordered by `created_at` ascending.
+    pub async fn get_comments_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<crate::models::Comment>, TMemError> {
+        let rows: Vec<CommentRow> = self
+            .db
+            .query(
+                "SELECT * FROM comment \
+                 WHERE task_id = $task_id \
+                 ORDER BY created_at ASC",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        Ok(rows.into_iter().map(CommentRow::into_comment).collect())
+    }
+
+    /// Retrieve ALL comments in the workspace, ordered by task_id then created_at.
+    pub async fn all_comments(&self) -> Result<Vec<crate::models::Comment>, TMemError> {
+        let rows: Vec<CommentRow> = self
+            .db
+            .query("SELECT * FROM comment ORDER BY task_id ASC, created_at ASC")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .unwrap_or_default();
+
+        Ok(rows.into_iter().map(CommentRow::into_comment).collect())
     }
 
     // ── Compaction queries ───────────────────────────────────────────────────

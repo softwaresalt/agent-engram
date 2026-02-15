@@ -25,7 +25,7 @@ Implements a single phase from a feature specification's task plan. The workflow
 * A feature spec directory exists at `specs/${input:spec-name}/` containing `plan.md`, `spec.md`, and `tasks.md`
 * The target phase exists in `tasks.md` with defined tasks
 * The project compiles before starting (`cargo check` passes)
-* The `.github/agents/copilot-instructions.md` constitution and coding standards are accessible
+* The `.github/copilot-instructions.md` constitution and coding standards are accessible
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ The skill runs autonomously through all required steps, halting only on unrecove
 * Read `specs/${input:spec-name}/contracts/` if it exists, for API specifications and error codes.
 * Read `specs/${input:spec-name}/research.md` if it exists, for technical decisions and constraints.
 * Read `specs/${input:spec-name}/quickstart.md` if it exists, for integration scenarios.
-* Read `.github/agents/copilot-instructions.md` for the project constitution, coding standards, and session memory requirements.
+* Read `.github/copilot-instructions.md` for the project constitution, coding standards, and session memory requirements.
 * Read `.github/agents/rust-engineer.agent.md` for language-specific engineering standards.
 * Read `.github/agents/rust-mcp-expert.agent.md` for MCP protocol patterns, rmcp SDK usage, transport configuration, and tool/prompt/resource handler implementation.
 * Read `.github/instructions/rust-mcp-server.instructions.md` for MCP server development best practices including error handling with `ErrorData`, state management, and testing patterns.
@@ -228,7 +228,7 @@ The `fastembed` crate is gated behind the `embeddings` feature flag. Default bui
 
 ### SurrealDB v2 SDK behavioral differences
 
-Refer to the session memory at `.copilot-tracking/memory/2026-02-07/` for documented workarounds including `Thing` deserialization, `<datetime>` casts, and raw SurrealQL over SDK methods.
+Refer to the session memory at `.copilot-tracking/memory/` for documented workarounds including `Thing` deserialization, `<datetime>` casts, and raw SurrealQL over SDK methods.
 
 ### Tests pass locally but fail in CI
 
@@ -247,6 +247,7 @@ These rules are injected into each task based on its type classification in Step
 * `#![forbid(unsafe_code)]`
 * Prefer borrowing over cloning
 * Default to `pub(crate)`
+* All public items require `///` doc comments
 
 ### Error Handling
 

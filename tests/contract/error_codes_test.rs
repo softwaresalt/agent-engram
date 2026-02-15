@@ -151,6 +151,7 @@ fn error_response_codes_are_consistent() {
             TaskError::BatchPartialFailure {
                 succeeded: 1,
                 failed: 1,
+                results: serde_json::json!([]),
             }
             .into(),
             3007,

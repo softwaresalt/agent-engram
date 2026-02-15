@@ -70,12 +70,8 @@ pub async fn dispatch(
         "pin_task" => write::pin_task(state, params).await,
         "unpin_task" => write::unpin_task(state, params).await,
         "get_workspace_statistics" => read::get_workspace_statistics(state, params).await,
-        // Enhanced task management tool stubs (002-enhanced-task-management)
-        "batch_update_tasks" | "add_comment" => Err(workspace_not_set()),
+        "batch_update_tasks" => write::batch_update_tasks(state, params).await,
+        "add_comment" => write::add_comment(state, params).await,
         _ => Err(not_implemented(method)),
     }
-}
-
-fn workspace_not_set() -> TMemError {
-    TMemError::Workspace(crate::errors::WorkspaceError::NotSet)
 }

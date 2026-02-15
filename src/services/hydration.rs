@@ -149,6 +149,28 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
         }
     }
 
+    // Parse and load comments from comments.md (FR-063b)
+    let comments_path = tmem_dir.join("comments.md");
+    if comments_path.exists() {
+        let content = fs::read_to_string(&comments_path).map_err(|e| {
+            TMemError::Hydration(HydrationError::Failed {
+                reason: format!("failed to read comments.md: {e}"),
+            })
+        })?;
+        let comments = parse_comments_md(&content);
+        for comment in &comments {
+            // Strip task: prefix to match internal bare ID convention
+            let bare_task_id = comment
+                .task_id
+                .strip_prefix("task:")
+                .unwrap_or(&comment.task_id);
+            // Idempotent: ignore duplicate insert errors during rehydration
+            let _ = queries
+                .insert_comment(bare_task_id, &comment.content, &comment.author)
+                .await;
+        }
+    }
+
     Ok(HydrationResult {
         tasks_loaded,
         edges_loaded,
@@ -495,6 +517,97 @@ fn parse_set_clauses(s: &str) -> Vec<(String, String)> {
         }
     }
     clauses
+}
+
+/// A comment parsed from `comments.md`.
+#[derive(Debug, Clone)]
+pub struct ParsedComment {
+    pub task_id: String,
+    pub author: String,
+    pub content: String,
+}
+
+/// Parse `.tmem/comments.md` into a list of comments.
+///
+/// Expected format:
+/// ```text
+/// ## task:abc123
+///
+/// ### 2026-02-14T12:00:00+00:00 — agent-1
+///
+/// Comment body text here.
+///
+/// ### 2026-02-14T13:00:00+00:00 — agent-2
+///
+/// Another comment.
+///
+/// ## task:def456
+/// ...
+/// ```
+pub fn parse_comments_md(content: &str) -> Vec<ParsedComment> {
+    let mut comments = Vec::new();
+    let mut current_task: Option<String> = None;
+    let mut current_author: Option<String> = None;
+    let mut current_body = String::new();
+
+    for line in content.lines() {
+        if let Some(task_heading) = line.strip_prefix("## ") {
+            // Flush any pending comment
+            if let (Some(tid), Some(auth)) = (&current_task, &current_author) {
+                let body = current_body.trim().to_string();
+                if !body.is_empty() {
+                    comments.push(ParsedComment {
+                        task_id: tid.clone(),
+                        author: auth.clone(),
+                        content: body,
+                    });
+                }
+            }
+            current_task = Some(task_heading.trim().to_string());
+            current_author = None;
+            current_body.clear();
+        } else if let Some(comment_heading) = line.strip_prefix("### ") {
+            // Flush previous comment in same task section
+            if let (Some(tid), Some(auth)) = (&current_task, &current_author) {
+                let body = current_body.trim().to_string();
+                if !body.is_empty() {
+                    comments.push(ParsedComment {
+                        task_id: tid.clone(),
+                        author: auth.clone(),
+                        content: body,
+                    });
+                }
+            }
+            // Parse "timestamp — author" or "timestamp -- author"
+            let heading = comment_heading.trim();
+            let author = heading
+                .split(" — ")
+                .nth(1)
+                .or_else(|| heading.split(" -- ").nth(1))
+                .unwrap_or("unknown")
+                .trim()
+                .to_string();
+            current_author = Some(author);
+            current_body.clear();
+        } else if current_author.is_some() {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+
+    // Flush final comment
+    if let (Some(tid), Some(auth)) = (&current_task, &current_author) {
+        let body = current_body.trim().to_string();
+        if !body.is_empty() {
+            comments.push(ParsedComment {
+                task_id: tid.clone(),
+                author: auth.clone(),
+                content: body,
+            });
+        }
+    }
+
+    comments
 }
 
 /// Apply a parsed RELATE statement to the database.

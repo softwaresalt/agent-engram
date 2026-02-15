@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
 use crate::db::{self};
 use crate::errors::{SystemError, TMemError};
+use crate::models::comment::Comment;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus};
 use crate::server::state::SharedState;
@@ -105,6 +106,14 @@ pub async fn dehydrate_workspace(
     let graph_content = serialize_graph_surql(&dep_edges, &impl_edges, &rel_edges);
     atomic_write(&graph_path, &graph_content)?;
 
+    // Serialize comments.md (FR-063b)
+    let all_comments = queries.all_comments().await?;
+    let comments_path = tmem_dir.join("comments.md");
+    if !all_comments.is_empty() {
+        let comments_content = serialize_comments_md(&all_comments);
+        atomic_write(&comments_path, &comments_content)?;
+    }
+
     // Write version
     let version_path = tmem_dir.join(".version");
     atomic_write(&version_path, SCHEMA_VERSION)?;
@@ -114,12 +123,16 @@ pub async fn dehydrate_workspace(
     let lastflush_path = tmem_dir.join(".lastflush");
     atomic_write(&lastflush_path, &flush_ts)?;
 
-    let files_written = vec![
+    let mut files_written = vec![
         ".tmem/tasks.md".to_string(),
         ".tmem/graph.surql".to_string(),
         ".tmem/.version".to_string(),
         ".tmem/.lastflush".to_string(),
     ];
+
+    if !all_comments.is_empty() {
+        files_written.push(".tmem/comments.md".to_string());
+    }
 
     Ok(DehydrationResult {
         files_written,
@@ -302,6 +315,44 @@ pub fn serialize_graph_surql(
             ));
         }
         out.push('\n');
+    }
+
+    out
+}
+
+/// Serialize comments to the canonical `comments.md` format.
+///
+/// Groups comments by task ID and writes each comment with a timestamp—author
+/// heading, matching the format expected by `parse_comments_md` in hydration.
+pub fn serialize_comments_md(comments: &[Comment]) -> String {
+    use std::collections::BTreeMap;
+
+    // Group comments by task_id, preserving insertion order within each group
+    let mut groups: BTreeMap<&str, Vec<&Comment>> = BTreeMap::new();
+    for comment in comments {
+        groups.entry(&comment.task_id).or_default().push(comment);
+    }
+
+    let mut out = String::new();
+    out.push_str("# Comments\n\n");
+
+    for (task_id, task_comments) in &groups {
+        // Ensure task: prefix in heading
+        if task_id.starts_with("task:") {
+            out.push_str(&format!("## {task_id}\n\n"));
+        } else {
+            out.push_str(&format!("## task:{task_id}\n\n"));
+        }
+
+        for comment in task_comments {
+            let ts = comment.created_at.to_rfc3339();
+            out.push_str(&format!("### {ts} — {}\n\n", comment.author));
+            out.push_str(&comment.content);
+            if !comment.content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
     }
 
     out
@@ -583,5 +634,64 @@ Other description.
         assert!(out.contains("<!-- Header comment -->"));
         assert!(out.contains("<!-- Important user note -->"));
         assert!(out.contains("My description"));
+    }
+
+    #[test]
+    fn serialize_comments_md_empty() {
+        let out = serialize_comments_md(&[]);
+        assert!(out.starts_with("# Comments\n"));
+        assert!(!out.contains("## task:"));
+    }
+
+    #[test]
+    fn serialize_comments_md_groups_by_task() {
+        let now = Utc::now();
+        let comments = vec![
+            Comment {
+                id: "comment:c1".to_string(),
+                task_id: "task:abc".to_string(),
+                content: "First comment".to_string(),
+                author: "agent-1".to_string(),
+                created_at: now,
+            },
+            Comment {
+                id: "comment:c2".to_string(),
+                task_id: "task:abc".to_string(),
+                content: "Second comment".to_string(),
+                author: "agent-2".to_string(),
+                created_at: now,
+            },
+            Comment {
+                id: "comment:c3".to_string(),
+                task_id: "task:def".to_string(),
+                content: "Other task comment".to_string(),
+                author: "user-1".to_string(),
+                created_at: now,
+            },
+        ];
+        let out = serialize_comments_md(&comments);
+        assert!(out.contains("## task:abc"));
+        assert!(out.contains("## task:def"));
+        assert!(out.contains("First comment"));
+        assert!(out.contains("Second comment"));
+        assert!(out.contains("Other task comment"));
+        // Verify heading format includes author
+        assert!(out.contains("— agent-1"));
+        assert!(out.contains("— agent-2"));
+        assert!(out.contains("— user-1"));
+    }
+
+    #[test]
+    fn serialize_comments_md_bare_task_id_gets_prefix() {
+        let now = Utc::now();
+        let comments = vec![Comment {
+            id: "comment:c1".to_string(),
+            task_id: "bare_id".to_string(),
+            content: "Body text".to_string(),
+            author: "tester".to_string(),
+            created_at: now,
+        }];
+        let out = serialize_comments_md(&comments);
+        assert!(out.contains("## task:bare_id"));
     }
 }
