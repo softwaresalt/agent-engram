@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Monocoque T-Mem MCP Tools — Unified Code Knowledge Graph",
+  "title": "Monocoque Agent Engram MCP Tools — Unified Code Knowledge Graph",
   "description": "New MCP tool definitions for code graph indexing, traversal, cross-region linking, and unified search",
   "version": "0.3.0",
   "tools": {
@@ -202,7 +202,7 @@
           "no_results": "root is null, fallback_used is true, matches is empty array, neighbors is empty array"
         }
       },
-      "errors": [1003, 7005]
+      "errors": [1003]
     },
     "link_task_to_code": {
       "description": "Create concerns edges between a task and all code nodes matching the given symbol name.",
@@ -431,11 +431,19 @@
           "no_task_links": {
             "type": "boolean",
             "description": "True if no tasks reference this symbol or its neighbors"
+          },
+          "effective_depth": {
+            "type": "integer",
+            "description": "Actual depth used after config clamping"
+          },
+          "effective_max_nodes": {
+            "type": "integer",
+            "description": "Actual max_nodes used after config clamping"
           }
         },
         "required": ["affected_tasks", "no_task_links"]
       },
-      "errors": [1003, 7004, 7005]
+      "errors": [1003, 7004]
     },
     "list_symbols": {
       "description": "Return a paginated list of indexed code symbols (functions, classes, interfaces). Enables agents to discover valid symbol names before invoking map_code, link_task_to_code, or impact_analysis.",
@@ -498,18 +506,18 @@
         },
         "required": ["symbols", "total_count", "has_more"]
       },
-      "errors": [1003, 7004]
+      "errors": [1003, 7003, 7004]
     }
   },
   "modified_tools": {
     "flush_state": {
-      "description": "Extended to also serialize code graph metadata to .tmem/code-graph/nodes.jsonl and .tmem/code-graph/edges.jsonl. Returns error 7003 if indexing is in progress.",
-      "changes": ["Writes .tmem/code-graph/nodes.jsonl (code node metadata, embeddings, hashes — no source bodies)", "Writes .tmem/code-graph/edges.jsonl (all code and cross-region edges)", "Returns error 7003 (IndexInProgress) if index_workspace or sync_workspace is running"],
+      "description": "Extended to also serialize code graph metadata to .engram/code-graph/nodes.jsonl and .engram/code-graph/edges.jsonl. Returns error 7003 if indexing is in progress.",
+      "changes": ["Writes .engram/code-graph/nodes.jsonl (code node metadata, embeddings, hashes — no source bodies)", "Writes .engram/code-graph/edges.jsonl (all code and cross-region edges)", "Returns error 7003 (IndexInProgress) if index_workspace or sync_workspace is running"],
       "backward_compatible": true
     },
     "set_workspace": {
-      "description": "Extended to hydrate code graph from .tmem/code-graph/ metadata + source file parsing",
-      "changes": ["Reads .tmem/code-graph/nodes.jsonl and edges.jsonl", "Parses source files for code node bodies", "Compares body_hash for diff-rehydration (reuses persisted embeddings for unchanged symbols)"],
+      "description": "Extended to hydrate code graph from .engram/code-graph/ metadata + source file parsing",
+      "changes": ["Reads .engram/code-graph/nodes.jsonl and edges.jsonl", "Parses source files for code node bodies", "Compares body_hash for diff-rehydration (reuses persisted embeddings for unchanged symbols)"],
       "backward_compatible": true
     },
     "get_workspace_status": {

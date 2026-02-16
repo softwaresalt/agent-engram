@@ -128,11 +128,13 @@ IndexInProgress
 
 The requested symbol name does not exist in the code graph.
 
-**When**: `link_task_to_code`, `unlink_task_from_code`, `impact_analysis`, or `list_symbols` is called with a symbol name that has no matching nodes.
+**When**: `link_task_to_code`, `unlink_task_from_code`, `impact_analysis`, or `list_symbols` is called with a symbol name that has no matching nodes. Also returned by `list_symbols` (without a `symbol_name` filter) when the code graph is empty — in this case the response omits the `symbol_name` detail field and uses the message "Code graph is empty — run index_workspace first".
 
 **Not returned by**: `map_code` — it falls back to vector search (FR-130) and returns `fallback_used: true` instead of erroring.
 
-**Behavior**: Fatal for the tools listed above — the request is rejected with the unmatched symbol name in details.
+**Behavior**: Fatal for the tools listed above — the request is rejected with the unmatched symbol name in details (or an empty-graph message for `list_symbols`).
+
+**Case 1 — Named symbol not found** (`details.symbol_name` present):
 
 ```json
 {
@@ -148,6 +150,23 @@ The requested symbol name does not exist in the code graph.
 }
 ```
 
+**Case 2 — Empty graph** (`details.symbol_name` absent):
+
+```json
+{
+  "error": {
+    "code": 7004,
+    "name": "SymbolNotFound",
+    "message": "Code graph is empty — run index_workspace first",
+    "details": {
+      "suggestion": "Run index_workspace to populate the code graph"
+    }
+  }
+}
+```
+
+**Agent discrimination**: Check for the presence of `details.symbol_name`. If present, the symbol name was not matched (verify spelling or re-index). If absent, no symbols exist yet (call `index_workspace`).
+
 **Rust Type**:
 
 ```rust
@@ -157,35 +176,15 @@ SymbolNotFound { name: String }
 
 ---
 
-### 7005 — TRAVERSAL_DEPTH_EXCEEDED
+### Agent Error Triage for `list_symbols`
 
-The requested traversal depth exceeds the configured maximum.
+`list_symbols` may return three distinct error codes. Agents MUST use the error code to determine the correct recovery action:
 
-**When**: `map_code` or `impact_analysis` is called with a `depth` parameter greater than `max_traversal_depth` (default 5).
-
-**Behavior**: Fatal — the request is rejected with the configured limit in details.
-
-```json
-{
-  "error": {
-    "code": 7005,
-    "name": "TraversalDepthExceeded",
-    "message": "Traversal depth 10 exceeds maximum of 5",
-    "details": {
-      "requested": 10,
-      "maximum": 5,
-      "suggestion": "Reduce depth or increase code_graph.max_traversal_depth in .tmem/config.toml"
-    }
-  }
-}
-```
-
-**Rust Type**:
-
-```rust
-#[error("Traversal depth {requested} exceeds maximum of {maximum}")]
-TraversalDepthExceeded { requested: u32, maximum: u32 }
-```
+| Code | Name | Condition | Transient? | Agent Action |
+|------|------|-----------|------------|--------------|
+| 1003 | `WorkspaceNotSet` | No workspace bound | No | Call `set_workspace` first |
+| 7003 | `IndexInProgress` | Indexing is running | Yes — clears when indexing completes | Wait and retry (check `details.started_at` for elapsed time) |
+| 7004 | `SymbolNotFound` | Graph is empty (no `symbol_name` filter) or symbol name unmatched | No | If `details.symbol_name` absent → call `index_workspace`. If present → verify spelling or re-index |
 
 ---
 
@@ -281,9 +280,6 @@ pub enum CodeGraphError {
     #[error("Symbol '{name}' not found in code graph")]
     SymbolNotFound { name: String },
 
-    #[error("Traversal depth {requested} exceeds maximum of {maximum}")]
-    TraversalDepthExceeded { requested: u32, maximum: u32 },
-
     #[error("File '{file_path}' exceeds maximum size ({size_bytes} > {max_bytes} bytes)")]
     FileTooLarge {
         file_path: String,
@@ -304,7 +300,6 @@ pub const PARSE_ERROR: u16 = 7001;
 pub const UNSUPPORTED_LANGUAGE: u16 = 7002;
 pub const INDEX_IN_PROGRESS: u16 = 7003;
 pub const SYMBOL_NOT_FOUND: u16 = 7004;
-pub const TRAVERSAL_DEPTH_EXCEEDED: u16 = 7005;
 pub const FILE_TOO_LARGE: u16 = 7006;
 pub const SYNC_CONFLICT: u16 = 7007;
 ```

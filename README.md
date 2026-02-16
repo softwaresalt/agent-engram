@@ -1,15 +1,15 @@
-# T-Mem — Task Memory MCP Server
+# Monocoque Agent Engram MCP Server
 
-A high-performance, local-first Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. T-Mem runs as a localhost HTTP server, accepting MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.tmem/` files in the workspace.
+A high-performance, local-first Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. Engram runs as a localhost HTTP server, accepting MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace.
 
 ## Features
 
 - **Workspace Isolation** — Each Git repository gets its own isolated database via SHA-256 path hashing
 - **Task Graph** — Create, update, and query tasks with dependency tracking and cycle detection
-- **Git-Backed Persistence** — Flush workspace state to human-readable `.tmem/` markdown files that travel with your codebase
+- **Git-Backed Persistence** — Flush workspace state to human-readable `.engram/` markdown files that travel with your codebase
 - **Semantic Search** — Hybrid vector + keyword search (optional `fastembed` feature) for natural language queries
 - **Multi-Client** — 10+ concurrent SSE connections with connection registry, rate limiting, and last-write-wins semantics
-- **Comment Preservation** — User comments in `.tmem/tasks.md` are preserved across flushes via structured diff merge
+- **Comment Preservation** — User comments in `.engram/tasks.md` are preserved across flushes via structured diff merge
 - **Offline-Capable** — Embedding model cached locally; operates fully offline after first download
 
 ## Prerequisites
@@ -21,15 +21,15 @@ A high-performance, local-first Model Context Protocol (MCP) daemon that provide
 
 `ash
 # Clone and build
-git clone https://github.com/softwaresalt/t-mem.git
-cd t-mem
+git clone https://github.com/softwaresalt/monocoque-agent-engram.git
+cd monocoque-agent-engram
 cargo build --release
 
 # Optional: enable semantic search (downloads ~90 MB embedding model on first use)
 cargo build --release --features embeddings
 `
 
-The binary is at `target/release/t-mem`.
+The binary is at `target/release/monocoque-agent-engram`.
 
 ## Quick Start
 
@@ -67,7 +67,7 @@ curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"update_task","arguments":{"id":"<task-id>","status":"in_progress","notes":"Starting implementation"}},"id":4}'
 
-# Flush state to .tmem/ files
+# Flush state to .engram/ files
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"flush_state","arguments":{}},"id":5}'
@@ -77,16 +77,16 @@ curl -X POST http://127.0.0.1:7437/mcp \
 
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--port` | `TMEM_PORT` | `7437` | Listening port on `127.0.0.1` |
-| `--max-workspaces` | `TMEM_MAX_WORKSPACES` | `10` | Maximum concurrent active workspaces |
-| `--request-timeout-ms` | `TMEM_REQUEST_TIMEOUT_MS` | `60000` | Request timeout in milliseconds |
-| `--stale-strategy` | `TMEM_STALE_STRATEGY` | `warn` | Behavior on stale `.tmem/` files: `warn`, `rehydrate`, `fail` |
-| `--data-dir` | `TMEM_DATA_DIR` | `~/.local/share/t-mem/` | SurrealDB and model cache directory |
-| `--log-format` | `TMEM_LOG_FORMAT` | `pretty` | Tracing output format: `json` or `pretty` |
+| `--port` | `ENGRAM_PORT` | `7437` | Listening port on `127.0.0.1` |
+| `--max-workspaces` | `ENGRAM_MAX_WORKSPACES` | `10` | Maximum concurrent active workspaces |
+| `--request-timeout-ms` | `ENGRAM_REQUEST_TIMEOUT_MS` | `60000` | Request timeout in milliseconds |
+| `--stale-strategy` | `ENGRAM_STALE_STRATEGY` | `warn` | Behavior on stale `.engram/` files: `warn`, `rehydrate`, `fail` |
+| `--data-dir` | `ENGRAM_DATA_DIR` | `~/.local/share/engram/` | SurrealDB and model cache directory |
+| `--log-format` | `ENGRAM_LOG_FORMAT` | `pretty` | Tracing output format: `json` or `pretty` |
 
 `ash
 # Example with custom configuration
-TMEM_PORT=8080 TMEM_MAX_WORKSPACES=5 cargo run --release
+ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 `
 
 ## MCP Tools
@@ -114,7 +114,7 @@ TMEM_PORT=8080 TMEM_MAX_WORKSPACES=5 cargo run --release
 
 | Tool | Description |
 |------|-------------|
-| `flush_state` | Serialize workspace state to `.tmem/` files |
+| `flush_state` | Serialize workspace state to `.engram/` files |
 | `query_memory` | Hybrid semantic + keyword search across workspace content |
 
 ## HTTP Endpoints
@@ -142,10 +142,10 @@ See [contracts/error-codes.md](specs/001-core-mcp-daemon/contracts/error-codes.m
 `
 src/
 ├── lib.rs               # Crate root: forbid(unsafe_code), warn(clippy::pedantic)
-├── bin/t-mem.rs          # Binary: config, router, graceful shutdown
+├── bin/engram.rs        # Binary: config, router, graceful shutdown
 ├── config/              # CLI/env configuration via clap
 ├── db/                  # SurrealDB embedded (SurrealKv) with schema bootstrap
-├── errors/              # TMemError enum with typed error codes (1xxx–5xxx)
+├── errors/              # EngramError enum with typed error codes (1xxx–5xxx)
 ├── models/              # Domain entities: Task, Spec, Context, DependencyType
 ├── server/              # axum HTTP/SSE layer with rate limiting
 ├── services/            # Stateless business logic (connection, hydration, search)

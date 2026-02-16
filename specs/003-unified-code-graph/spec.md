@@ -132,18 +132,18 @@ As an orchestrator planning a refactor, I query the system to discover which act
 
 ### User Story 7 - Code Graph Persistence (Priority: P7)
 
-As a developer, I expect the code graph metadata (embeddings, hashes, edges, cross-region links) to be serialized to `.tmem/` files alongside task data so that the graph state travels with the repository, can be committed and shared, and does not require a full re-embedding after cloning.
+As a developer, I expect the code graph metadata (embeddings, hashes, edges, cross-region links) to be serialized to `.engram/` files alongside task data so that the graph state travels with the repository, can be committed and shared, and does not require a full re-embedding after cloning.
 
 **Why this priority**: Persistence completes the lifecycle. Source code is the canonical store for code bodies, but embeddings and graph edges are expensive to regenerate. Persisting metadata enables fast hydration by re-parsing source files (cheap) and skipping re-embedding for symbols whose `body_hash` has not changed (expensive).
 
-**Independent Test**: Index a workspace, call `flush_state`, verify `.tmem/code-graph/` files contain node metadata (hashes, embeddings, embed types) and edges but NOT full source bodies. Delete the SurrealDB database, call `set_workspace`, and verify the code graph is hydrated by parsing source files and restoring persisted embeddings for unchanged symbols without re-embedding.
+**Independent Test**: Index a workspace, call `flush_state`, verify `.engram/code-graph/` files contain node metadata (hashes, embeddings, embed types) and edges but NOT full source bodies. Delete the SurrealDB database, call `set_workspace`, and verify the code graph is hydrated by parsing source files and restoring persisted embeddings for unchanged symbols without re-embedding.
 
 **Acceptance Scenarios**:
 
-1. **Given** an indexed code graph, **When** `flush_state()` is called, **Then** code graph metadata (embeddings, body hashes, embed types, edges, `concerns` links) is serialized to `.tmem/code-graph/` files, excluding source bodies
+1. **Given** an indexed code graph, **When** `flush_state()` is called, **Then** code graph metadata (embeddings, body hashes, embed types, edges, `concerns` links) is serialized to `.engram/code-graph/` files, excluding source bodies
 2. **Given** a workspace with persisted code graph metadata, **When** `set_workspace` hydrates the workspace, **Then** source files are parsed to populate node bodies, `body_hash` values are compared against persisted hashes, and only symbols with changed hashes are re-embedded
 3. **Given** a persisted code graph where all source files are unchanged, **When** hydration runs, **Then** zero re-embedding occurs and the graph is fully operational within seconds
-4. **Given** a `.tmem/code-graph/` directory with corrupted metadata files, **When** hydration fails, **Then** the system falls back to a full re-index from source (parse + embed all), logs the recovery, and continues
+4. **Given** a `.engram/code-graph/` directory with corrupted metadata files, **When** hydration fails, **Then** the system falls back to a full re-index from source (parse + embed all), logs the recovery, and continues
 
 ---
 
@@ -152,13 +152,13 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 * What happens when a file exceeds a configurable size limit (default: 1 MB)? The file is skipped during indexing with a warning to avoid excessive memory use.
 * How does the system handle circular import chains? Circular imports are valid in many languages. The graph stores them as-is; only task dependency cycles are rejected.
 * What happens when the same symbol name exists in multiple files? Each node is scoped by file path. `map_code` returns all matches grouped by file, with disambiguation metadata.
-* How does indexing handle generated code (e.g., build artifacts in `target/`, `node_modules/`)? The indexer respects `.gitignore` and a configurable exclusion list in `.tmem/config.toml`.
+* How does indexing handle generated code (e.g., build artifacts in `target/`, `node_modules/`)? The indexer respects `.gitignore` and a configurable exclusion list in `.engram/config.toml`.
 * What happens when the parser encounters a syntax error in a source file? The file is partially indexed up to the error point, a warning is emitted, and indexing continues with remaining files.
 * How does the system handle very large codebases (100,000+ files)? Indexing is parallelized across CPU cores. A configurable concurrency limit prevents resource exhaustion. Progress is reported via SSE events.
 * What happens when a `concerns` edge targets a renamed symbol after sync? The sync process removes old nodes and creates new ones. Orphaned `concerns` edges are cleaned up and affected tasks receive context notes.
 * What happens when an AST node is exactly at the 512-token boundary? Nodes at or below 512 tokens are classified as Tier 1 (`explicit_code`). Only nodes strictly exceeding the limit use Tier 2 (`summary_pointer`).
 * What happens when a Tier 2 node has no docstring and a minimal signature? The system embeds whatever signature text is available. If the resulting embedding is too sparse for useful similarity, the node still participates in graph traversal (its structural edges remain navigable) even if vector search recall is degraded.
-* What happens when a source file is deleted but its metadata persists in `.tmem/code-graph/`? During hydration, any persisted metadata referencing files that no longer exist on disk is discarded, and associated `concerns` edges generate cleanup context notes on affected tasks.
+* What happens when a source file is deleted but its metadata persists in `.engram/code-graph/`? During hydration, any persisted metadata referencing files that no longer exist on disk is discarded, and associated `concerns` edges generate cleanup context notes on affected tasks.
 * What happens when a function moves to a different file but keeps the same name and body? File-level hash detects both files as changed. The old file's nodes are removed. The new file's nodes are created with the same `body_hash`, so the existing embedding is reused (no re-embedding). `concerns` edges are automatically re-linked to the new node via hash-resilient identity matching (FR-124), and affected tasks receive a context note recording the path change.
 * What happens when `sync_workspace` is called without a prior `index_workspace`? The system treats it as a first-time full index — all files are parsed, all symbols are embedded, and the result is identical to calling `index_workspace`. No error is returned.
 * What happens when a `code_file` node is the target of a `concerns` edge? `code_file` nodes do not have a `body` field. When included in retrieval responses, the system reads the entire file content from disk and returns it as the code context. File content is bounded by `max_file_size_bytes` (FR-117).
@@ -174,7 +174,7 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 * What happens when a file is added to `code_graph.exclude_patterns` after `concerns` edges were created to its symbols? On the next `sync_workspace`, the file's nodes are removed (it is now excluded), `concerns` edges to those nodes are orphaned, and affected tasks receive context notes per FR-112.
 * What happens when `link_task_to_code` is called twice with the same task and symbol? The operation is idempotent. If a `concerns` edge already exists between the task and the matching code node(s), no duplicate edges are created. The response reports `links_created: 0`.
 * What happens when a source file is replaced by a directory with the same name (or vice versa) between syncs? If the path is now a directory, it is skipped (not a file). The old `code_file` node and its children are removed as a deletion. If a directory is replaced by a file, it is treated as a new file addition.
-* How large can `.tmem/code-graph/nodes.jsonl` grow at scale? At 10,000 nodes with 384-dimensional embeddings serialized as JSON floats, the file is approximately 30–50 MB. This is acceptable for Git storage and JSONL streaming reads. No additional streaming or chunking requirements apply in v0.
+* How large can `.engram/code-graph/nodes.jsonl` grow at scale? At 10,000 nodes with 384-dimensional embeddings serialized as JSON floats, the file is approximately 30–50 MB. This is acceptable for Git storage and JSONL streaming reads. No additional streaming or chunking requirements apply in v0.
 * What happens when a source file is modified between AST parsing and hash computation within a single sync cycle? The system computes `body_hash` from the parsed content (the snapshot read into memory), not from a second disk read. A subsequent `sync_workspace` detects any further changes via file-level `content_hash` mismatch.
 
 ## Clarifications
@@ -182,7 +182,7 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 ### Session 2026-02-11
 
 - Q: How should the system handle existing embeddings generated by the v0 `all-MiniLM-L6-v2` model when migrating to `bge-small-en-v1.5`? → A: Clean replacement — no coexistence or lazy migration. Nobody uses v0 before this refactor, so all embeddings are regenerated with the new model on hydration. No `model_version` field is needed.
-- Q: Should code node source bodies be stored inline in the DB and flushed to `.tmem/` files, or derived from source? → A: Source-canonical with hash-gated re-embedding. Source code is the canonical persistence for code graph bodies. The graph stores `body_hash` per symbol for diff-rehydration. `.tmem/code-graph/` persists only metadata (embeddings, hashes, edges, `concerns` links), not source bodies. On hydration: parse source → populate bodies → compare `body_hash` → re-embed only changed symbols.
+- Q: Should code node source bodies be stored inline in the DB and flushed to `.engram/` files, or derived from source? → A: Source-canonical with hash-gated re-embedding. Source code is the canonical persistence for code graph bodies. The graph stores `body_hash` per symbol for diff-rehydration. `.engram/code-graph/` persists only metadata (embeddings, hashes, edges, `concerns` links), not source bodies. On hydration: parse source → populate bodies → compare `body_hash` → re-embed only changed symbols.
 - Q: How much of each neighbor node should `map_code` include in its response? → A: Full source body for every node in the traversal result. If a node’s body is not loaded in the graph at query time, the system MUST read the source file from disk using the node’s file path and line range to fetch the full body before returning it to the caller.
 - Q: Should `concerns` edges break when a function is moved to a different file during refactoring? → A: Hash-resilient identity. On sync, if a symbol with the same name and `body_hash` appears at a new file path, existing `concerns` edges are automatically re-linked to the new node. The task receives a context note recording the path change, not a broken-link warning.
 - Q: How should `get_active_context` behave when multiple tasks are `in_progress` simultaneously? → A: All tasks, bounded code. Return all `in_progress` tasks with metadata, but expand full code neighborhoods (with source bodies) only for the highest-priority task. Remaining tasks include linked code symbol names only. The agent can drill deeper on specific tasks with `map_code`.
@@ -214,7 +214,7 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 **Code Graph Schema (Region A):**
 
 * **FR-101**: System MUST define a `code_file` node type with attributes: path (string, unique per workspace), language (string), size_bytes (integer), content_hash (string), last_indexed_at (datetime)
-* **FR-102**: System MUST define a `function` node type with attributes: name (string), file_path (string), line_start (integer), line_end (integer), signature (string), docstring (optional string), body (string, populated at runtime from source, not persisted to `.tmem/`), body_hash (string, content hash of the source body for diff-rehydration), token_count (integer), embed_type (string: `explicit_code` or `summary_pointer`), embedding (array of floats), summary (string)
+* **FR-102**: System MUST define a `function` node type with attributes: name (string), file_path (string), line_start (integer), line_end (integer), signature (string), docstring (optional string), body (string, populated at runtime from source, not persisted to `.engram/`), body_hash (string, content hash of the source body for diff-rehydration), token_count (integer), embed_type (string: `explicit_code` or `summary_pointer`), embedding (array of floats), summary (string)
 * **FR-103**: System MUST define a `class` node type with attributes: name (string), file_path (string), line_start (integer), line_end (integer), docstring (optional string), body (string, runtime-only), body_hash (string), token_count (integer), embed_type (string: `explicit_code` or `summary_pointer`), embedding (array of floats), summary (string)
 * **FR-104**: System MUST define an `interface` node type with attributes: name (string), file_path (string), line_start (integer), line_end (integer), docstring (optional string), body (string, runtime-only), body_hash (string), token_count (integer), embed_type (string: `explicit_code` or `summary_pointer`), embedding (array of floats), summary (string)
 * **FR-105**: System MUST define a `calls` edge type connecting function-to-function, representing direct invocation relationships
@@ -234,7 +234,7 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 * **FR-113**: System MUST expose an `index_workspace()` tool that parses all supported source files and populates the code graph
 * **FR-114**: System MUST support Rust as an indexed language at launch, with an extensible parser architecture for adding languages
 * **FR-115**: System MUST use AST-level parsing (not regex) to extract code structure, leveraging `tree-sitter` grammars for language support
-* **FR-116**: System MUST respect `.gitignore` patterns and a configurable exclusion list in `.tmem/config.toml` (key: `code_graph.exclude_patterns`)
+* **FR-116**: System MUST respect `.gitignore` patterns and a configurable exclusion list in `.engram/config.toml` (key: `code_graph.exclude_patterns`)
 * **FR-117**: System MUST skip files exceeding a configurable size limit (default: 1 MB, key: `code_graph.max_file_size_bytes`)
 * **FR-118**: System MUST generate embeddings using the `bge-small-en-v1.5` model (384 dimensions, 512-token input limit) via `fastembed`, superseding the v0 `all-MiniLM-L6-v2` model for all embedding operations (code graph and task/context regions alike). On first hydration after the model switch, all existing task/context embeddings from prior specs MUST be re-generated with the new model. No coexistence or lazy migration is supported.
 * **FR-119**: System MUST parallelize file parsing across available CPU cores with a configurable concurrency limit (key: `code_graph.parse_concurrency`, default: 0, where 0 means auto-detect the number of logical CPUs at runtime)
@@ -273,27 +273,29 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 
 **Persistence (Source-Canonical Model):**
 
-* **FR-132**: System MUST serialize code graph metadata to `.tmem/code-graph/nodes.jsonl` (embeddings, body hashes, embed types, token counts, signatures, summaries, line ranges) and `.tmem/code-graph/edges.jsonl` (all edge types including `concerns` links) during `flush_state`. Source bodies MUST NOT be included in persisted files — source code is the canonical store.
-* **FR-133**: On workspace activation, the system MUST hydrate the code graph by: (1) parsing source files via AST to populate node bodies at runtime, (2) loading persisted metadata from `.tmem/code-graph/`, (3) comparing each symbol's current `body_hash` against the persisted hash, and (4) re-embedding only symbols whose hash has changed
+* **FR-132**: System MUST serialize code graph metadata to `.engram/code-graph/nodes.jsonl` (embeddings, body hashes, embed types, token counts, signatures, summaries, line ranges) and `.engram/code-graph/edges.jsonl` (all edge types including `concerns` links) during `flush_state`. Source bodies MUST NOT be included in persisted files — source code is the canonical store.
+* **FR-133**: On workspace activation, the system MUST hydrate the code graph by: (1) parsing source files via AST to populate node bodies at runtime, (2) loading persisted metadata from `.engram/code-graph/`, (3) comparing each symbol's current `body_hash` against the persisted hash, and (4) re-embedding only symbols whose hash has changed
 * **FR-134**: System MUST detect stale code graph metadata by comparing persisted `body_hash` values against hashes computed from current source content during hydration. File-level staleness is detected first via `code_file.content_hash`, then symbol-level via `body_hash`.
 * **FR-135**: System MUST support full re-index (parse + embed all symbols) as a recovery path when code graph metadata files are corrupted, missing, or when no persisted hashes exist (first-time index)
 
 **Configuration:**
 
-* **FR-136**: System MUST read code graph configuration from `.tmem/config.toml` under the `[code_graph]` section
+* **FR-136**: System MUST read code graph configuration from `.engram/config.toml` under the `[code_graph]` section
 * **FR-137**: System MUST support the following configuration keys: `exclude_patterns` (array of glob strings), `max_file_size_bytes` (integer, default 1048576), `parse_concurrency` (integer, default 0 meaning auto-detect CPU count), `max_traversal_depth` (integer, default 5), `max_traversal_nodes` (integer, default 50), `supported_languages` (array of strings, default `["rust"]`), `embedding.token_limit` (integer, default 512)
 * **FR-138**: System MUST fall back to built-in defaults when code graph configuration keys are absent
 * **FR-149**: When a tool parameter (`depth` or `max_nodes`) exceeds the corresponding configuration limit (`max_traversal_depth` or `max_traversal_nodes`), the system MUST silently clamp the parameter to the config limit without returning an error. The response MUST include the effective value used.
 
 **Error Taxonomy Extension:**
 
-* **FR-139**: System MUST define new error codes in the 7xxx range for code graph operations: parse error (7001), unsupported language (7002), index in progress (7003), symbol not found (7004), traversal depth exceeded (7005), file too large (7006), sync conflict (7007)
+* **FR-139**: System MUST define new error codes in the 7xxx range for code graph operations: parse error (7001), unsupported language (7002), index in progress (7003), symbol not found (7004), file too large (7006), sync conflict (7007). Code 7005 is retired (previously `TraversalDepthExceeded`, removed per FR-149 silent-clamping design) and MUST NOT be reused.
 * **FR-140**: All new error codes MUST follow the existing `ErrorResponse` format with code, name, message, and details fields
 
 **Agent Consumability:**
 
 * **FR-150**: System MUST expose a `list_symbols(file_path?, node_type?, name_prefix?, limit?)` tool that returns a paginated list of indexed code symbols (functions, classes, interfaces) with their name, type, and file path. This enables agents to discover valid symbol names before invoking `map_code`, `link_task_to_code`, or `impact_analysis`.
-* **FR-151**: All code graph tools (`index_workspace`, `sync_workspace`, `map_code`, `link_task_to_code`, `unlink_task_from_code`, `get_active_context`, `unified_search`, `impact_analysis`, `list_symbols`) require `set_workspace` to have been called first. Calling any code graph tool without a bound workspace MUST return error 1003 (`WORKSPACE_NOT_SET`). Additionally, `map_code`, `link_task_to_code`, `impact_analysis`, and `list_symbols` require the code graph to be populated (via `index_workspace` or hydration); calling them on an empty graph MUST return error 7004 with a suggestion to run `index_workspace`.
+* **FR-151**: All code graph tools (`index_workspace`, `sync_workspace`, `map_code`, `link_task_to_code`, `unlink_task_from_code`, `get_active_context`, `unified_search`, `impact_analysis`, `list_symbols`) require `set_workspace` to have been called first. Calling any code graph tool without a bound workspace MUST return error 1003 (`WORKSPACE_NOT_SET`). Additionally, `map_code`, `link_task_to_code`, `impact_analysis`, and `list_symbols` require the code graph to be populated (via `index_workspace` or hydration); calling them on an empty graph MUST return error 7004 with a suggestion to run `index_workspace`. Error 7004 has two distinct cases that agents MUST distinguish via the `details` object:
+  * **Symbol not found** (named lookup): `details.symbol_name` is present, containing the unmatched name. Agent action: verify spelling or re-index.
+  * **Empty graph** (no symbols indexed): `details.symbol_name` is absent and the message reads "Code graph is empty — run index_workspace first". Agent action: call `index_workspace`.
 * **FR-152**: `link_task_to_code` MUST be idempotent — calling it with the same `(task_id, symbol_name)` pair when a `concerns` edge already exists MUST NOT create duplicate edges. The response MUST report `links_created: 0` for already-linked pairs.
 * **FR-153**: `flush_state` MUST return error 7003 (`IndexInProgress`) if an indexing operation is currently running. The agent must wait for indexing to complete before flushing.
 
@@ -301,7 +303,7 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 
 * **FR-154**: If the embedding model (`bge-small-en-v1.5`) fails to load at daemon startup (missing files, insufficient memory, corrupted model), the daemon MUST fail to start with a descriptive error message. There is no degraded mode — embeddings are required for all operations.
 * **FR-155**: `index_workspace` MUST use per-file atomic commits to the database. If the process is terminated mid-index, the graph contains a valid (partial) set of fully-indexed files. The agent can re-run `index_workspace` to complete the remaining files.
-* **FR-156**: `.tmem/code-graph/` JSONL files are accessed by a single daemon instance per workspace (enforced by existing 001 workspace isolation). No file-level locking is required. Concurrent daemon instances for the same workspace are NOT supported.
+* **FR-156**: `.engram/code-graph/` JSONL files are accessed by a single daemon instance per workspace (enforced by existing 001 workspace isolation). No file-level locking is required. Concurrent daemon instances for the same workspace are NOT supported.
 * **FR-157**: `unified_search` MUST return error 4001 for empty queries (after whitespace trimming). If embedding generation fails for a non-empty query (model inference error), the system MUST return error 5001 (`SystemError`) with the underlying cause in `details`.
 
 ### Key Entities
@@ -334,8 +336,8 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 * **SC-112**: Batched embedding of 100 code nodes completes within 2 seconds (p95) on the reference machine
 * **SC-113**: Tier 2 summary embeddings for large functions (over 512 tokens) produce semantic search recall within 10% of full-body embedding recall on a benchmark set of 50 natural-language queries generated from the project's own codebase during implementation validation
 * **SC-114**: Code graph in-memory footprint (SurrealDB tables and indexes, excluding embedding model RAM) remains under 50 MB for a 10,000-node graph
-* **SC-115**: Hydration of a persisted 10,000-node code graph from `.tmem/code-graph/` JSONL files completes within 10 seconds (p95, excluding re-embedding of changed symbols)
-* **SC-116**: `.tmem/code-graph/` files occupy no more than 60 MB on disk for a 10,000-node graph
+* **SC-115**: Hydration of a persisted 10,000-node code graph from `.engram/code-graph/` JSONL files completes within 10 seconds (p95, excluding re-embedding of changed symbols)
+* **SC-116**: `.engram/code-graph/` files occupy no more than 60 MB on disk for a 10,000-node graph
 
 ## Assumptions
 
@@ -345,10 +347,62 @@ As a developer, I expect the code graph metadata (embeddings, hashes, edges, cro
 * The 512-token hard limit of `bge-small-en-v1.5` is addressed by the hierarchical AST chunking strategy: small code nodes are embedded directly while large nodes use signature/docstring summaries as embedding proxies, with full source stored for retrieval.
 * Rust is the minimum viable language for initial release. Language extensibility via `tree-sitter` grammars enables incremental additions post-launch.
 * Cross-region `concerns` edges are created explicitly by agents or orchestrators. Automatic link inference (e.g., matching task descriptions to code symbols) is deferred to a future version.
-* Code graph persistence uses a source-canonical model: source code files are the canonical store for code bodies, while `.tmem/code-graph/` persists only derived metadata (embeddings, body hashes, edges, `concerns` links) in JSONL format for streaming reads/writes. Bodies are populated at runtime by parsing source files. This avoids duplicating source content in both files and the database.
+* Code graph persistence uses a source-canonical model: source code files are the canonical store for code bodies, while `.engram/code-graph/` persists only derived metadata (embeddings, body hashes, edges, `concerns` links) in JSONL format for streaming reads/writes. Bodies are populated at runtime by parsing source files. This avoids duplicating source content in both files and the database.
 * The two-level hash strategy (file-level `content_hash` + per-symbol `body_hash`) enables efficient diff-rehydration: file hashes identify which files changed, and symbol hashes identify which functions within a changed file actually need re-embedding, avoiding unnecessary embedding calls.
 * `tree-sitter` Rust bindings are pure safe Rust wrappers. No native FFI conflicts with SurrealDB's embedded engine are expected, as both use distinct C/Rust interfaces.
 * The `priority` field on the Task model from 002 (enhanced task management) is a cross-spec dependency. `get_active_context` (FR-127) and `TaskSummary` in mcp-tools.json depend on tasks having a `priority` attribute for deterministic primary-task selection.
+
+## Prerequisites
+
+### PRQ-001: Codebase Rename from T-MEM to Engram
+
+**Status**: Required before 003 implementation begins  
+**Scope**: Full rename and rebrand of the service  
+
+The server is being renamed from "T-MEM" (also appearing as `t-mem`, `tmem`, `T-Mem`, `t_mem`, `TMEM`) to **Monocoque Agent Engram**.
+
+| Surface | Old value | New value |
+| -------- | --------- | --------- |
+| Display name | T-Mem | Monocoque Agent Engram |
+| Code name | t-mem / t_mem | engram |
+| Crate name (Cargo.toml `name`) | t-mem | engram |
+| Rust import path | `use t_mem::` | `use engram::` |
+| Binary name | t-mem | engram |
+| Binary source file | `src/bin/t-mem.rs` | `src/bin/engram.rs` |
+| Env var prefix | `TMEM_` | `ENGRAM_` |
+| Workspace directory | `.tmem/` | `.engram/` |
+| Data directory segment | `~/.local/share/t-mem/` | `~/.local/share/engram/` |
+| Model cache path | `t-mem/models/` | `engram/models/` |
+| DB path segment | `t-mem/db/` | `engram/db/` |
+| Tracing filter | `t_mem=debug` | `engram=debug` |
+| Lib constant `APP_NAME` | `"t-mem"` | `"engram"` |
+| CLI command name | `t-mem` | `engram` |
+| CLI about text | "T-Mem MCP daemon" | "Monocoque Agent Engram MCP daemon" |
+| Authors | "T-Mem Contributors" | "Engram Contributors" |
+| Graph header | "Generated by T-Mem" | "Generated by Engram" |
+| Config file path | `.tmem/config.toml` | `.engram/config.toml` |
+
+**What must change:**
+
+1. **Cargo.toml**: Package `name`, `description`, `authors`, `[[bin]]` name and path.
+2. **Source files (`src/`)**: All `t-mem`, `t_mem`, `T-Mem`, `.tmem` references in code, constants, path literals, doc comments, and inline comments.
+3. **Test files (`tests/`)**: All `use t_mem::` imports, `tmem_dir` variable names, `.tmem` path literals, `"T-Mem"` and `"TMEM_"` string literals, and function names containing `tmem`.
+4. **Configuration (`src/config/mod.rs`)**: All `TMEM_` env annotations → `ENGRAM_`, clap command name and about text, default data directory path.
+5. **Persistence (`src/services/hydration.rs`, `dehydration.rs`, `config.rs`)**: All `.tmem` path references → `.engram`.
+6. **Embedding (`src/services/embedding.rs`)**: Model cache path `t-mem/models/` → `engram/models/`.
+7. **Database (`src/db/mod.rs`)**: DB storage path `t-mem/db/` → `engram/db/`.
+8. **Specs and documentation**: All spec files (001, 002, 003), README, and doc comments updated to reflect the new name.
+
+**Verification gates (all must pass before 003 work begins):**
+
+* `cargo check` succeeds with zero errors
+* `cargo test --all-targets` passes all tests
+* `cargo clippy -- -D warnings` produces zero warnings
+* Case-insensitive search for `t.mem`, `tmem`, `T.MEM`, or `TMEM` across `src/`, `tests/`, and `Cargo.toml` returns zero matches
+
+**Why this is a prerequisite for 003**: Feature 003 introduces new modules, configuration keys (`.engram/config.toml` code graph section), and persistence paths (`.engram/code-graph/`) that must use the canonical name from the start. Implementing 003 against the old name and then renaming afterward would double the churn and risk introducing inconsistencies.
+
+**Note on existing workspaces**: No automatic migration of on-disk `.tmem/` directories is provided. Users rename them manually to `.engram/` or re-initialize. The `copilot-instructions.md` already references the new naming (`ENGRAM_` prefix, `.engram/` directory).
 
 ## Known Issues
 

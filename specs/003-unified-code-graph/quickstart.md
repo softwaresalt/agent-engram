@@ -2,11 +2,11 @@
 
 **Feature**: 003 — Unified Code Knowledge Graph
 **Version**: v0.3.0 (planned)
-**Audience**: Developers building or integrating with t-mem code graph
+**Audience**: Developers building or integrating with Engram code graph
 
 ## Prerequisites
 
-- t-mem daemon running with workspace bound (`set_workspace`)
+- Engram daemon running with workspace bound (`set_workspace`)
 - Rust source files in workspace (other languages planned for future)
 - fastembed model available (auto-downloads on first use)
 
@@ -96,7 +96,7 @@ Explore the graph starting from any symbol:
     "name": "dispatch",
     "kind": "function",
     "file_path": "src/tools/mod.rs",
-    "body": "pub fn dispatch(...) -> Result<Value, TMemError> { ... }"
+    "body": "pub fn dispatch(...) -> Result<Value, EngramError> { ... }"
   },
   "edges": [
     {
@@ -129,7 +129,7 @@ Create explicit task–code relationships:
   "method": "link_task_to_code",
   "params": {
     "task_id": "task:abc123",
-    "symbol_names": ["dispatch", "TMemError"],
+    "symbol_names": ["dispatch", "EngramError"],
     "relationship": "implements"
   }
 }
@@ -144,7 +144,7 @@ To remove a link:
   "method": "unlink_task_from_code",
   "params": {
     "task_id": "task:abc123",
-    "symbol_names": ["TMemError"]
+    "symbol_names": ["EngramError"]
   }
 }
 ```
@@ -214,7 +214,7 @@ Search across code, tasks, and context with a single query:
       "name": "connect_db",
       "file_path": "src/db/mod.rs",
       "score": 0.87,
-      "snippet": "pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError>"
+      "snippet": "pub async fn connect_db(workspace_hash: &str) -> Result<Db, EngramError>"
     },
     {
       "type": "task",
@@ -236,7 +236,7 @@ Understand the blast radius of a change:
 {
   "method": "impact_analysis",
   "params": {
-    "symbol_names": ["TMemError", "connect_db"],
+    "symbol_names": ["EngramError", "connect_db"],
     "depth": 3,
     "include_tasks": true
   }
@@ -253,7 +253,7 @@ Understand the blast radius of a change:
       "name": "dispatch",
       "kind": "function",
       "file_path": "src/tools/mod.rs",
-      "impact_path": ["TMemError", "dispatch"],
+      "impact_path": ["EngramError", "dispatch"],
       "distance": 1
     }
   ],
@@ -276,7 +276,7 @@ Understand the blast radius of a change:
 
 ## Configuration
 
-Code graph settings live in `.tmem/config.toml`:
+Code graph settings live in `.engram/config.toml`:
 
 ```toml
 [code_graph]
@@ -295,10 +295,10 @@ Non-fatal errors (parse failures, unsupported languages, oversized files) are co
 
 ## Persistence
 
-The code graph survives daemon restarts via `.tmem/code-graph/`:
+The code graph survives daemon restarts via `.engram/code-graph/`:
 
 ```text
-.tmem/
+.engram/
   code-graph/
     nodes.jsonl    # Node metadata (no bodies — derived from source)
     edges.jsonl    # All edge relationships

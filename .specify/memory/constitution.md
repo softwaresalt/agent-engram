@@ -13,9 +13,9 @@ Version Change: 1.0.0 → 1.0.1 (PATCH)
 Bump Rationale: Terminology alignment with spec - no semantic changes
 
 Modified Principles:
-- VI. Git-Friendly Persistence: `.mem/` → `.tmem/` (consistency with spec)
-- VIII. Error Handling & Recovery: `.mem/` → `.tmem/` (consistency with spec)
-- Security Requirements > Data Security: `.mem/` → `.tmem/` (consistency with spec)
+- VI. Git-Friendly Persistence: `.mem/` → `.engram/` (consistency with spec)
+- VIII. Error Handling & Recovery: `.mem/` → `.engram/` (consistency with spec)
+- Security Requirements > Data Security: `.mem/` → `.engram/` (consistency with spec)
 
 Added Sections: None
 Removed Sections: None
@@ -28,9 +28,9 @@ Templates Requiring Updates:
 Follow-up TODOs: None
 -->
 
-# T-Mem Constitution
+# Engram Constitution
 
-T-Mem is a high-performance, local-first MCP daemon server serving as the "shared brain" for software development environments. This constitution governs all development, ensuring safety, security, and reliable concurrent operation for multiple autonomous agents.
+Engram is a high-performance, local-first MCP daemon server serving as the "shared brain" for software development environments. This constitution governs all development, ensuring safety, security, and reliable concurrent operation for multiple autonomous agents.
 
 ## Core Principles
 
@@ -46,7 +46,7 @@ All code must leverage Rust's safety guarantees to the fullest extent:
 
 ### II. Async Concurrency Model
 
-T-Mem serves multiple simultaneous clients. Concurrency must be predictable and deadlock-free:
+Engram serves multiple simultaneous clients. Concurrency must be predictable and deadlock-free:
 
 * **Tokio runtime only** — no mixing async runtimes; single-threaded runtime for deterministic testing
 * **No blocking operations on async threads** — use `spawn_blocking` for any synchronous I/O
@@ -68,7 +68,7 @@ TDD is mandatory. No implementation proceeds without failing tests:
 
 ### IV. MCP Protocol Compliance
 
-T-Mem is a consumer-agnostic MCP server. Protocol adherence is non-negotiable:
+Engram is a consumer-agnostic MCP server. Protocol adherence is non-negotiable:
 
 * **SSE transport only** — no WebSocket or stdio fallbacks in the daemon
 * **Tool definitions are contracts** — changing tool signatures requires MAJOR version bump
@@ -94,7 +94,7 @@ All state must be serializable to human-readable, Git-mergeable files:
 
 * **Markdown as canonical format** for `tasks.md` and context files
 * **Preserve user content** — dehydration must use structured diff merge (via `similar` crate) to retain comments/formatting
-* **No binary files in `.tmem/`** — all serialized data must be text-based
+* **No binary files in `.engram/`** — all serialized data must be text-based
 * **Atomic writes** — use write-to-temp + rename pattern to prevent corruption
 * **Conflict-friendly** — design file formats to minimize merge conflicts (sorted keys, stable ordering)
 
@@ -118,7 +118,7 @@ Graceful degradation over catastrophic failure:
 * **Typed errors** — define domain-specific error types with `thiserror`
 * **Error context preservation** — use `anyhow` in binaries, typed errors in libraries
 * **Never panic on client input** — malformed requests return errors, not crashes
-* **Database recovery** — corrupted workspace databases trigger re-hydration from `.tmem/` files
+* **Database recovery** — corrupted workspace databases trigger re-hydration from `.engram/` files
 * **Connection resilience** — client disconnection must not affect other clients or daemon stability
 
 ### IX. Simplicity & YAGNI
@@ -142,7 +142,7 @@ Complexity is the enemy of reliability:
 
 ### Data Security
 
-* **No secrets in state** — `.tmem/` files may be committed to Git; never store credentials
+* **No secrets in state** — `.engram/` files may be committed to Git; never store credentials
 * **Path sanitization** — validate all file paths against directory traversal attacks
 * **Input validation** — all MCP tool inputs validated before processing
 * **Output sanitization** — never expose internal file paths or system information in responses
@@ -201,7 +201,7 @@ All PRs must pass:
 
 ## Governance
 
-This constitution supersedes all other development practices for T-Mem:
+This constitution supersedes all other development practices for Engram:
 
 * **All contributions must demonstrate compliance** with these principles
 * **Amendments require**: documented rationale, review period, migration plan for existing code

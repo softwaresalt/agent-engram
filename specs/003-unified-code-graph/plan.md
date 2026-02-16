@@ -7,13 +7,46 @@
 
 ## Summary
 
-Build an AST-based code structure graph (Region A: Spatial Memory) that sits alongside the existing task graph (Region B: Temporal Memory) in SurrealDB. The system parses Rust source files via `tree-sitter`, extracts function/class/interface nodes with structural edges (`calls`, `imports`, `inherits_from`, `defines`), generates per-symbol embeddings using `bge-small-en-v1.5` with tiered chunking (direct for small nodes, summary-pointer for large), and enables graph-backed retrieval via `map_code`, `unified_search`, and `impact_analysis`. Cross-region `concerns` edges link tasks to code symbols, unifying temporal and spatial memory in a single query surface. Incremental sync keeps the graph current via two-level hashing (file + symbol), and source-canonical persistence stores only metadata in `.tmem/code-graph/` while deriving bodies from source at runtime.
+Build an AST-based code structure graph (Region A: Spatial Memory) that sits alongside the existing task graph (Region B: Temporal Memory) in SurrealDB. The system parses Rust source files via `tree-sitter`, extracts function/class/interface nodes with structural edges (`calls`, `imports`, `inherits_from`, `defines`), generates per-symbol embeddings using `bge-small-en-v1.5` with tiered chunking (direct for small nodes, summary-pointer for large), and enables graph-backed retrieval via `map_code`, `unified_search`, and `impact_analysis`. Cross-region `concerns` edges link tasks to code symbols, unifying temporal and spatial memory in a single query surface. Incremental sync keeps the graph current via two-level hashing (file + symbol), and source-canonical persistence stores only metadata in `.engram/code-graph/` while deriving bodies from source at runtime.
+
+## Prerequisites
+
+*GATE: All prerequisites must be completed before Phase 0 begins.*
+
+### PRQ-001: Codebase Rename from T-MEM to Engram
+
+**Status**: Required  
+**Defined in**: [spec.md § Prerequisites](spec.md#prerequisites)  
+
+The entire codebase must be renamed from "T-MEM" / `t-mem` / `t_mem` / `tmem` / `.tmem` to "Monocoque Agent Engram" / `engram` / `.engram` before any 003 implementation begins. This is a mechanical find-and-replace with no behavioral changes.
+
+**Key surfaces** (complete mapping in spec.md):
+
+| Category | Old | New |
+| -------- | --- | --- |
+| Crate / binary | `t-mem` | `engram` |
+| Rust imports | `use t_mem::` | `use engram::` |
+| Env var prefix | `TMEM_` | `ENGRAM_` |
+| Workspace dir | `.tmem/` | `.engram/` |
+| Data dir | `~/.local/share/t-mem/` | `~/.local/share/engram/` |
+| Binary source | `src/bin/t-mem.rs` | `src/bin/engram.rs` |
+
+**Verification gates**:
+
+1. `cargo check` — zero errors
+2. `cargo test --all-targets` — all tests pass
+3. `cargo clippy -- -D warnings` — zero warnings
+4. `grep -ri "t.mem\|tmem" src/ tests/ Cargo.toml` — zero matches
+
+**Why prerequisite**: Feature 003 introduces new modules, config keys (`.engram/config.toml` code graph section), and persistence paths (`.engram/code-graph/`) that must use the canonical name from the start. Renaming afterward doubles the churn.
+
+**Effort estimate**: ~2 hours (mechanical replacement across ~15 source files, ~8 test files, Cargo.toml, specs, docs).
 
 ## Technical Context
 
 **Language/Version**: Rust 2024 edition, stable toolchain (1.85+)
 **Primary Dependencies**: axum 0.7, tokio 1 (full), surrealdb 2 (kv-surrealkv), mcp-sdk 0.0.3, fastembed 3 (optional, model switch to `bge-small-en-v1.5`), tree-sitter 0.24+ (new — AST parsing), tree-sitter-rust (new — Rust grammar), sha2 0.10 (existing — content hashing), chrono 0.4, toml (from 002 — config parsing), serde 1, serde_json 1, tracing 0.1
-**Storage**: SurrealDB embedded (surrealkv), `.tmem/code-graph/` JSONL files (metadata only), source files on disk (canonical for code bodies)
+**Storage**: SurrealDB embedded (surrealkv), `.engram/code-graph/` JSONL files (metadata only), source files on disk (canonical for code bodies)
 **Testing**: cargo test, proptest 1 (property-based), tempfile 3, tokio-test 0.4
 **Target Platform**: Windows, macOS, Linux (local developer workstations)
 **Project Type**: Single Rust binary with library crate (extends v0/v1 crate structure)
@@ -27,14 +60,14 @@ Build an AST-based code structure graph (Region A: Spatial Memory) that sits alo
 
 | # | Constitution Principle | Status | Evidence |
 |---|------------------------|--------|----------|
-| I | Rust Safety First | PASS | `#![forbid(unsafe_code)]` maintained; `tree-sitter` Rust bindings are safe wrappers; all new handlers return `Result<Value, TMemError>`; new error types (7xxx) use `thiserror`; no `unwrap()`/`expect()` in handler code |
+| I | Rust Safety First | PASS | `#![forbid(unsafe_code)]` maintained; `tree-sitter` Rust bindings are safe wrappers; all new handlers return `Result<Value, EngramError>`; new error types (7xxx) use `thiserror`; no `unwrap()`/`expect()` in handler code |
 | II | Async Concurrency Model | PASS | Tokio-only; file parsing parallelized via `tokio::task::spawn_blocking` (tree-sitter is sync); shared embedding model behind `OnceLock` (existing pattern); no new locking beyond existing `RwLock<AppState>`; SSE progress events use existing broadcast infrastructure |
 | III | Test-First Development | PASS | TDD enforced: each user story phase starts with contract tests before implementation; property tests for all new models (code_file, function, class, interface, edge types); integration tests for index/sync/retrieve round-trips |
 | IV | MCP Protocol Compliance | PASS | SSE transport only; ~8 new tool schemas follow existing JSON contract pattern in dispatch(); error responses use established `ErrorResponse` format with 7xxx codes; `set_workspace` prerequisite enforced for all code graph tools |
-| V | Workspace Isolation | PASS | All code graph queries execute within workspace-scoped DB namespace; `.tmem/code-graph/` files are per-workspace; no cross-workspace code graph queries (explicitly out of scope) |
-| VI | Git-Friendly Persistence | PASS | Code graph metadata serialized to JSONL (text-based, line-oriented for Git-friendly diffs); source bodies NOT duplicated in `.tmem/`; atomic writes via temp+rename pattern; `.gitignore`-aware indexing |
+| V | Workspace Isolation | PASS | All code graph queries execute within workspace-scoped DB namespace; `.engram/code-graph/` files are per-workspace; no cross-workspace code graph queries (explicitly out of scope) |
+| VI | Git-Friendly Persistence | PASS | Code graph metadata serialized to JSONL (text-based, line-oriented for Git-friendly diffs); source bodies NOT duplicated in `.engram/`; atomic writes via temp+rename pattern; `.gitignore`-aware indexing |
 | VII | Observability & Debugging | PASS | Existing tracing infrastructure; indexing progress reported via SSE events (FR-120); sync summaries recorded as context notes (FR-125); error context preserved in 7xxx error details |
-| VIII | Error Handling & Recovery | PASS | 7 new error codes (7001–7007) following existing taxonomy; corrupted metadata triggers full re-index recovery (FR-135); partial parse failures skip files with warnings (FR-115 edge case) |
+| VIII | Error Handling & Recovery | PASS | 6 error codes (7001–7004, 7006–7007) following existing taxonomy; corrupted metadata triggers full re-index recovery (FR-135); partial parse failures skip files with warnings (FR-115 edge case) |
 | IX | Simplicity & YAGNI | PASS | Rust-only language support at launch (extensible via tree-sitter grammars later); explicit tool calls for index/sync (no file watching); `concerns` edges created explicitly (no auto-inference); single embedding model for all regions |
 
 **Gate Result**: PASS (all 9 principles satisfied)
@@ -51,7 +84,7 @@ specs/003-unified-code-graph/
 ├── quickstart.md        # Phase 1: developer onboarding for code graph tools
 ├── contracts/
 │   ├── mcp-tools.json   # Phase 1: new MCP tool API contracts
-│   └── error-codes.md   # Phase 1: extended error taxonomy (7001–7007)
+│   └── error-codes.md   # Phase 1: extended error taxonomy (7001–7004, 7006–7007)
 ├── checklists/
 │   └── requirements.md  # Requirements traceability
 └── tasks.md             # Phase 2 output (via /speckit.tasks)
@@ -63,7 +96,7 @@ specs/003-unified-code-graph/
 src/
 ├── lib.rs               # Library root (unchanged)
 ├── bin/
-│   └── t-mem.rs         # Binary entry point (unchanged)
+│   └── engram.rs        # Binary entry point (renamed from t-mem.rs per PRQ-001)
 ├── config/
 │   └── mod.rs           # CLI config (unchanged)
 ├── db/
@@ -72,8 +105,8 @@ src/
 │   ├── queries.rs       # EXTENDED: code graph CRUD, traversal queries, cross-region joins, vector search
 │   └── workspace.rs     # Workspace scoping (unchanged)
 ├── errors/
-│   ├── mod.rs           # EXTENDED: CodeGraphError enum with 7 variants
-│   └── codes.rs         # EXTENDED: 7001–7007 constants
+│   ├── mod.rs           # EXTENDED: CodeGraphError enum with 6 variants
+│   └── codes.rs         # EXTENDED: 7001–7004, 7006–7007 constants
 ├── models/
 │   ├── mod.rs           # EXTENDED: re-export code graph models
 │   ├── task.rs          # Unchanged
@@ -94,8 +127,8 @@ src/
 ├── services/
 │   ├── mod.rs           # EXTENDED: declare parsing, code_graph submodules
 │   ├── connection.rs    # Unchanged
-│   ├── hydration.rs     # EXTENDED: hydrate code graph from .tmem/code-graph/ + source files
-│   ├── dehydration.rs   # EXTENDED: serialize code graph metadata to .tmem/code-graph/
+│   ├── hydration.rs     # EXTENDED: hydrate code graph from .engram/code-graph/ + source files
+│   ├── dehydration.rs   # EXTENDED: serialize code graph metadata to .engram/code-graph/
 │   ├── embedding.rs     # MODIFIED: switch from all-MiniLM-L6-v2 to bge-small-en-v1.5; add token counting; shared model instance
 │   ├── search.rs        # EXTENDED: unified hybrid search across code + task regions
 │   ├── parsing.rs       # NEW: tree-sitter based AST parsing, node extraction, edge discovery
@@ -130,14 +163,14 @@ tests/
 
 | # | Principle | Status | Post-Design Evidence |
 |---|-----------|--------|----------------------|
-| I | Rust Safety First | PASS | `CodeGraphError` enum uses `thiserror` derive; 7 variants all return structured `Result`; tree-sitter bindings are safe Rust; no `unwrap()`/`expect()` in tool handler signatures (data-model.md, error-codes.md) |
+| I | Rust Safety First | PASS | `CodeGraphError` enum uses `thiserror` derive; 6 variants all return structured `Result`; tree-sitter bindings are safe Rust; no `unwrap()`/`expect()` in tool handler signatures (data-model.md, error-codes.md) |
 | II | Async Concurrency Model | PASS | `spawn_blocking` for tree-sitter parsing confirmed in research.md (R1); `OnceLock` for shared embedding model reused (R2); `AtomicBool` for indexing-in-progress flag (data-model.md state section); no new mutex/rwlock beyond existing pattern |
 | III | Test-First Development | PASS | Test file structure defined: `parsing_test.rs`, `code_graph_test.rs`, `cross_region_test.rs` (plan.md project structure); contract tests for all 8 new tools; property tests for 4 new model types |
 | IV | MCP Protocol Compliance | PASS | All 8 new tools follow JSON-RPC 2.0 with full `inputSchema`/`outputSchema` in mcp-tools.json; 3 modified tools preserve backward compatibility; error responses use `ErrorBody` format with 7xxx codes |
-| V | Workspace Isolation | PASS | All code graph tables scoped to workspace namespace via `connect_db(workspace_hash)` (data-model.md schema section); `.tmem/code-graph/` files are per-workspace; no cross-workspace queries |
-| VI | Git-Friendly Persistence | PASS | JSONL format for nodes.jsonl and edges.jsonl (data-model.md persistence section); source bodies NOT stored in `.tmem/` — re-derived at hydration (source-canonical model); atomic temp+rename writes |
-| VII | Observability & Debugging | PASS | `index_workspace` and `sync_workspace` return structured summaries with `files_indexed`, `duration_ms`, `errors` array (mcp-tools.json); all 7 error codes include `details` with `suggestion` field |
-| VIII | Error Handling & Recovery | PASS | Non-fatal errors (7001, 7002, 7006, 7007) collected in response arrays — indexing continues; fatal errors (7003, 7005) reject immediately; corrupted metadata triggers full re-index (quickstart.md) |
+| V | Workspace Isolation | PASS | All code graph tables scoped to workspace namespace via `connect_db(workspace_hash)` (data-model.md schema section); `.engram/code-graph/` files are per-workspace; no cross-workspace queries |
+| VI | Git-Friendly Persistence | PASS | JSONL format for nodes.jsonl and edges.jsonl (data-model.md persistence section); source bodies NOT stored in `.engram/` — re-derived at hydration (source-canonical model); atomic temp+rename writes |
+| VII | Observability & Debugging | PASS | `index_workspace` and `sync_workspace` return structured summaries with `files_indexed`, `duration_ms`, `errors` array (mcp-tools.json); all 6 error codes include `details` with `suggestion` field |
+| VIII | Error Handling & Recovery | PASS | Non-fatal errors (7001, 7002, 7006, 7007) collected in response arrays — indexing continues; fatal errors (7003) reject immediately; corrupted metadata triggers full re-index (quickstart.md) |
 | IX | Simplicity & YAGNI | PASS | Rust-only at launch (single grammar); no file watching; no auto-inference of `concerns` edges; no streaming responses; single embedding model; character-based token estimation instead of real tokenizer |
 
 **Post-Design Gate Result**: PASS (all 9 principles satisfied, no regressions from pre-design check)

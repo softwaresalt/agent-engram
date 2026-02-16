@@ -75,9 +75,9 @@ let options = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::BGESmal
 
 ### R3: JSONL Persistence Format
 
-**Decision**: Use newline-delimited JSON (JSONL) for `.tmem/code-graph/nodes.jsonl` and `.tmem/code-graph/edges.jsonl`.
+**Decision**: Use newline-delimited JSON (JSONL) for `.engram/code-graph/nodes.jsonl` and `.engram/code-graph/edges.jsonl`.
 
-**Rationale**: JSONL is line-oriented, enabling Git-friendly diffs (one record per line, additions/deletions cleanly visible). It supports streaming reads/writes without loading the entire file into memory. Each line is a self-contained JSON object, making partial corruption recoverable (skip bad lines, log warning). This aligns with Constitution VI (Git-friendly, no binary files in `.tmem/`).
+**Rationale**: JSONL is line-oriented, enabling Git-friendly diffs (one record per line, additions/deletions cleanly visible). It supports streaming reads/writes without loading the entire file into memory. Each line is a self-contained JSON object, making partial corruption recoverable (skip bad lines, log warning). This aligns with Constitution VI (Git-friendly, no binary files in `.engram/`).
 
 **Schema — nodes.jsonl**:
 

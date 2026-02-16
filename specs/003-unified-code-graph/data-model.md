@@ -8,7 +8,7 @@
 
 This specification introduces Region A (Spatial Memory) — a code knowledge graph that sits alongside the existing Region B (Temporal Memory — tasks/contexts) in SurrealDB. Four new node tables (`code_file`, `function`, `class`, `interface`) capture code structure. Five new edge tables (`calls`, `imports`, `inherits_from`, `defines`, `concerns`) capture relationships within the code graph and across regions. The `concerns` edge is the "golden edge" unifying spatial and temporal memory.
 
-All new tables follow source-canonical semantics: source bodies are populated at runtime from source files, not persisted to `.tmem/`. Embeddings, hashes, and structural metadata are persisted to `.tmem/code-graph/` in JSONL format for efficient hydration.
+All new tables follow source-canonical semantics: source bodies are populated at runtime from source files, not persisted to `.engram/`. Embeddings, hashes, and structural metadata are persisted to `.engram/code-graph/` in JSONL format for efficient hydration.
 
 ## New Entities
 
@@ -339,10 +339,10 @@ DEFINE FIELD created_at ON TABLE concerns TYPE datetime VALUE time::now();
 
 ## Configuration Schema
 
-Extends `.tmem/config.toml` with a `[code_graph]` section (FR-136, FR-137).
+Extends `.engram/config.toml` with a `[code_graph]` section (FR-136, FR-137).
 
 ```toml
-# .tmem/config.toml — code_graph section
+# .engram/config.toml — code_graph section
 
 [code_graph]
 exclude_patterns = ["target/**", "node_modules/**", ".git/**"]
@@ -394,7 +394,7 @@ pub struct EmbeddingConfig {
 
 ## Persistence Format
 
-### .tmem/code-graph/nodes.jsonl
+### .engram/code-graph/nodes.jsonl
 
 One JSON object per line, sorted by `id`. Source bodies excluded.
 
@@ -404,7 +404,7 @@ One JSON object per line, sorted by `id`. Source bodies excluded.
 {"id":"class:uuid2","type":"class","name":"PaymentGateway","file_path":"src/billing.rs","line_start":1,"line_end":40,"docstring":null,"body_hash":"g7h8i9...","token_count":256,"embed_type":"explicit_code","embedding":[0.03,0.04,...],"summary":"struct PaymentGateway { ... }"}
 ```
 
-### .tmem/code-graph/edges.jsonl
+### .engram/code-graph/edges.jsonl
 
 One JSON object per line, sorted by `(type, from, to)`.
 
@@ -430,7 +430,7 @@ Parse source files (tree-sitter)
     │     (persisted JSONL line ranges are NOT authoritative)
     │
     ▼
-Load .tmem/code-graph/nodes.jsonl
+Load .engram/code-graph/nodes.jsonl
     │  → restore embeddings, body_hashes, embed_types
     │
     ▼
@@ -441,7 +441,7 @@ Compare body_hash (current source vs. persisted)
     └─ Mismatch → re-embed symbol with new body
     │
     ▼
-Load .tmem/code-graph/edges.jsonl
+Load .engram/code-graph/edges.jsonl
     │  → restore all edge types including concerns
     │
     ▼
@@ -464,5 +464,5 @@ Query all calls, imports, inherits_from, defines, concerns edges
     │  → serialize to edges.jsonl
     │
     ▼
-Write to .tmem/code-graph/ (atomic temp+rename)
+Write to .engram/code-graph/ (atomic temp+rename)
 ```
