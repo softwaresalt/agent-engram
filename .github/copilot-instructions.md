@@ -216,6 +216,7 @@ Every tool follows this pattern:
 * **Incremental saves**: For long sessions, save memory checkpoints more frequently (after completing each phase or major task group) rather than waiting for the 65% threshold.
 * **Content to capture**: Every memory entry must include task IDs completed, files modified, decisions and their rationale, failed approaches, discovered issues, and concrete next steps.
 * **File convention**: Save to `.copilot-tracking/memory/{YYYY-MM-DD}/{descriptive-slug}-memory.md`.
+* **Phase-boundary enforcement**: When the build-orchestrator runs in full-spec loop mode, memory recording and context compaction are mandatory gates between phases. The orchestrator verifies that the memory file and checkpoint file exist before advancing to the next phase. No phase transition occurs without both artifacts on disk.
 
 <!-- MANUAL ADDITIONS START -->
 

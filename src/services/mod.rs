@@ -5,8 +5,11 @@
 //! hydration/dehydration of `.tmem/` files, embedding generation, and
 //! hybrid search.
 
+pub mod compaction;
+pub mod config;
 pub mod connection;
 pub mod dehydration;
 pub mod embedding;
 pub mod hydration;
+pub mod output;
 pub mod search;

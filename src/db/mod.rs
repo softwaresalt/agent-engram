@@ -14,12 +14,6 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
 use tokio::sync::RwLock;
 
-use std::path::PathBuf;
-
-use dirs::data_dir;
-use surrealdb::Surreal;
-use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
-
 use crate::errors::{SystemError, TMemError};
 
 pub mod queries;
@@ -76,6 +70,8 @@ async fn ensure_schema(db: &Db) -> Result<(), TMemError> {
     db.query(schema::DEFINE_SPEC).await.map_err(map_db_err)?;
     db.query(schema::DEFINE_TASK).await.map_err(map_db_err)?;
     db.query(schema::DEFINE_CONTEXT).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_LABEL).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_COMMENT).await.map_err(map_db_err)?;
     db.query(schema::DEFINE_RELATIONSHIPS)
         .await
         .map_err(map_db_err)?;

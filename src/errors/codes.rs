@@ -1,6 +1,6 @@
 //! Numeric error code constants for structured MCP error responses.
 //!
-//! Ranges: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system.
+//! Ranges: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system, 6xxx config.
 
 /// Workspace error codes
 pub const WORKSPACE_NOT_FOUND: u16 = 1001;
@@ -20,7 +20,16 @@ pub const TASK_NOT_FOUND: u16 = 3001;
 pub const INVALID_STATUS: u16 = 3002;
 pub const CYCLIC_DEPENDENCY: u16 = 3003;
 pub const BLOCKER_EXISTS: u16 = 3004;
-pub const TASK_TITLE_EMPTY: u16 = 3005;
+pub const TASK_ALREADY_CLAIMED: u16 = 3005;
+pub const LABEL_VALIDATION: u16 = 3006;
+pub const BATCH_PARTIAL_FAILURE: u16 = 3007;
+pub const COMPACTION_FAILED: u16 = 3008;
+pub const INVALID_PRIORITY: u16 = 3009;
+pub const INVALID_ISSUE_TYPE: u16 = 3010;
+pub const DUPLICATE_LABEL: u16 = 3011;
+pub const TASK_NOT_CLAIMABLE: u16 = 3012;
+pub const TASK_TITLE_EMPTY: u16 = 3013;
+pub const TASK_TITLE_TOO_LONG: u16 = 3014;
 
 /// Query error codes
 pub const QUERY_TOO_LONG: u16 = 4001;
@@ -33,3 +42,8 @@ pub const FLUSH_FAILED: u16 = 5002;
 pub const RATE_LIMITED: u16 = 5003;
 pub const SHUTTING_DOWN: u16 = 5004;
 pub const INVALID_PARAMS: u16 = 5005;
+
+/// Config error codes
+pub const CONFIG_PARSE_ERROR: u16 = 6001;
+pub const CONFIG_INVALID_VALUE: u16 = 6002;
+pub const UNKNOWN_CONFIG_KEY: u16 = 6003;

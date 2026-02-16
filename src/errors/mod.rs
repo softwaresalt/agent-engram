@@ -47,8 +47,40 @@ pub enum TaskError {
     CyclicDependency,
     #[error("Blocker already exists for task '{id}'")]
     BlockerExists { id: String },
-    #[error("Task title is empty or exceeds 200 characters")]
+    #[error("Task '{id}' is already claimed by '{assignee}'")]
+    AlreadyClaimed { id: String, assignee: String },
+    #[error("Label validation failed: {reason}")]
+    LabelValidation { reason: String },
+    #[error("Batch operation partially failed: {succeeded} succeeded, {failed} failed")]
+    BatchPartialFailure {
+        succeeded: u64,
+        failed: u64,
+        results: serde_json::Value,
+    },
+    #[error("Compaction failed for task '{id}': {reason}")]
+    CompactionFailed { id: String, reason: String },
+    #[error("Invalid priority '{priority}'")]
+    InvalidPriority { priority: String },
+    #[error("Invalid issue type '{issue_type}'")]
+    InvalidIssueType { issue_type: String },
+    #[error("Duplicate label '{label}' on task '{task_id}'")]
+    DuplicateLabel { task_id: String, label: String },
+    #[error("Task '{id}' is not claimable in status '{status}'")]
+    NotClaimable { id: String, status: String },
+    #[error("Task title is empty")]
     TitleEmpty,
+    #[error("Task title exceeds maximum length of 200 characters")]
+    TitleTooLong,
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("Failed to parse config: {reason}")]
+    ParseError { reason: String },
+    #[error("Invalid config value for '{key}': {reason}")]
+    InvalidValue { key: String, reason: String },
+    #[error("Unknown config key '{key}'")]
+    UnknownKey { key: String },
 }
 
 #[derive(Debug, Error)]
@@ -87,6 +119,8 @@ pub enum TMemError {
     Query(#[from] QueryError),
     #[error(transparent)]
     System(#[from] SystemError),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
 }
 
 #[derive(Debug, Serialize)]
@@ -186,9 +220,67 @@ impl TMemError {
                     inner.to_string(),
                     Some(json!({ "task_id": id })),
                 ),
+                TaskError::AlreadyClaimed { id, assignee } => (
+                    TASK_ALREADY_CLAIMED,
+                    "TaskAlreadyClaimed",
+                    inner.to_string(),
+                    Some(json!({ "task_id": id, "assignee": assignee })),
+                ),
+                TaskError::LabelValidation { reason } => (
+                    LABEL_VALIDATION,
+                    "LabelValidation",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                TaskError::BatchPartialFailure {
+                    succeeded,
+                    failed,
+                    results,
+                } => (
+                    BATCH_PARTIAL_FAILURE,
+                    "BatchPartialFailure",
+                    inner.to_string(),
+                    Some(json!({ "succeeded": succeeded, "failed": failed, "results": results })),
+                ),
+                TaskError::CompactionFailed { id, reason } => (
+                    COMPACTION_FAILED,
+                    "CompactionFailed",
+                    inner.to_string(),
+                    Some(json!({ "task_id": id, "reason": reason })),
+                ),
+                TaskError::InvalidPriority { priority } => (
+                    INVALID_PRIORITY,
+                    "InvalidPriority",
+                    inner.to_string(),
+                    Some(json!({ "priority": priority })),
+                ),
+                TaskError::InvalidIssueType { issue_type } => (
+                    INVALID_ISSUE_TYPE,
+                    "InvalidIssueType",
+                    inner.to_string(),
+                    Some(json!({ "issue_type": issue_type })),
+                ),
+                TaskError::DuplicateLabel { task_id, label } => (
+                    DUPLICATE_LABEL,
+                    "DuplicateLabel",
+                    inner.to_string(),
+                    Some(json!({ "task_id": task_id, "label": label })),
+                ),
+                TaskError::NotClaimable { id, status } => (
+                    TASK_NOT_CLAIMABLE,
+                    "TaskNotClaimable",
+                    inner.to_string(),
+                    Some(json!({ "task_id": id, "status": status })),
+                ),
                 TaskError::TitleEmpty => {
                     (TASK_TITLE_EMPTY, "TaskTitleEmpty", inner.to_string(), None)
                 }
+                TaskError::TitleTooLong => (
+                    TASK_TITLE_TOO_LONG,
+                    "TaskTitleTooLong",
+                    inner.to_string(),
+                    None,
+                ),
             },
             TMemError::Query(inner) => match inner {
                 QueryError::QueryTooLong => {
@@ -226,6 +318,26 @@ impl TMemError {
                     "InvalidParams",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
+                ),
+            },
+            TMemError::Config(inner) => match inner {
+                ConfigError::ParseError { reason } => (
+                    CONFIG_PARSE_ERROR,
+                    "ConfigParseError",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                ConfigError::InvalidValue { key, reason } => (
+                    CONFIG_INVALID_VALUE,
+                    "ConfigInvalidValue",
+                    inner.to_string(),
+                    Some(json!({ "key": key, "reason": reason })),
+                ),
+                ConfigError::UnknownKey { key } => (
+                    UNKNOWN_CONFIG_KEY,
+                    "UnknownConfigKey",
+                    inner.to_string(),
+                    Some(json!({ "key": key })),
                 ),
             },
         };

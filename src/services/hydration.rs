@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use crate::db::queries::Queries;
 use crate::errors::{HydrationError, TMemError};
 use crate::models::graph::DependencyType;
-use crate::models::task::{Task, TaskStatus};
+use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::services::dehydration::SCHEMA_VERSION;
 
 #[derive(Debug, Clone, Default)]
@@ -43,6 +43,8 @@ pub struct HydrationResult {
 #[derive(Debug, Clone)]
 pub struct ParsedTask {
     pub task: Task,
+    /// Labels parsed from the `labels:` frontmatter field.
+    pub labels: Vec<String>,
 }
 
 /// A RELATE statement parsed from `graph.surql`.
@@ -124,6 +126,10 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
         let parsed_tasks = parse_tasks_md(&content);
         for pt in &parsed_tasks {
             queries.upsert_task(&pt.task).await?;
+            for label in &pt.labels {
+                // Ignore duplicate errors during rehydration (idempotent)
+                let _ = queries.insert_label(&pt.task.id, label).await;
+            }
             tasks_loaded += 1;
         }
     }
@@ -140,6 +146,28 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
         for rel in &relations {
             apply_relation(queries, rel).await?;
             edges_loaded += 1;
+        }
+    }
+
+    // Parse and load comments from comments.md (FR-063b)
+    let comments_path = tmem_dir.join("comments.md");
+    if comments_path.exists() {
+        let content = fs::read_to_string(&comments_path).map_err(|e| {
+            TMemError::Hydration(HydrationError::Failed {
+                reason: format!("failed to read comments.md: {e}"),
+            })
+        })?;
+        let comments = parse_comments_md(&content);
+        for comment in &comments {
+            // Strip task: prefix to match internal bare ID convention
+            let bare_task_id = comment
+                .task_id
+                .strip_prefix("task:")
+                .unwrap_or(&comment.task_id);
+            // Idempotent: ignore duplicate insert errors during rehydration
+            let _ = queries
+                .insert_comment(bare_task_id, &comment.content, &comment.author)
+                .await;
         }
     }
 
@@ -348,6 +376,41 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                 .and_then(|s| parse_status(s))
                 .unwrap_or(TaskStatus::Todo);
             let work_item_id = frontmatter.get("work_item_id").cloned();
+            let priority = frontmatter
+                .get("priority")
+                .cloned()
+                .unwrap_or_else(|| "p2".to_string());
+            let priority_order = frontmatter
+                .get("priority_order")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| compute_priority_order(&priority));
+            let issue_type = frontmatter
+                .get("issue_type")
+                .cloned()
+                .unwrap_or_else(|| "task".to_string());
+            let assignee = frontmatter.get("assignee").cloned();
+            let pinned = frontmatter.get("pinned").is_some_and(|s| s == "true");
+            let defer_until = frontmatter
+                .get("defer_until")
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            let compaction_level = frontmatter
+                .get("compaction_level")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let compacted_at = frontmatter
+                .get("compacted_at")
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            let labels: Vec<String> = frontmatter
+                .get("labels")
+                .map(|s| {
+                    s.split(',')
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
             let created_at = frontmatter
                 .get("created_at")
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
@@ -367,9 +430,20 @@ pub fn parse_tasks_md(content: &str) -> Vec<ParsedTask> {
                     work_item_id,
                     description,
                     context_summary: None,
+                    priority,
+                    priority_order,
+                    issue_type,
+                    assignee,
+                    defer_until,
+                    pinned,
+                    compaction_level,
+                    compacted_at,
+                    workflow_state: None,
+                    workflow_id: None,
                     created_at,
                     updated_at,
                 },
+                labels,
             });
         } else {
             i += 1;
@@ -445,6 +519,97 @@ fn parse_set_clauses(s: &str) -> Vec<(String, String)> {
     clauses
 }
 
+/// A comment parsed from `comments.md`.
+#[derive(Debug, Clone)]
+pub struct ParsedComment {
+    pub task_id: String,
+    pub author: String,
+    pub content: String,
+}
+
+/// Parse `.tmem/comments.md` into a list of comments.
+///
+/// Expected format:
+/// ```text
+/// ## task:abc123
+///
+/// ### 2026-02-14T12:00:00+00:00 — agent-1
+///
+/// Comment body text here.
+///
+/// ### 2026-02-14T13:00:00+00:00 — agent-2
+///
+/// Another comment.
+///
+/// ## task:def456
+/// ...
+/// ```
+pub fn parse_comments_md(content: &str) -> Vec<ParsedComment> {
+    let mut comments = Vec::new();
+    let mut current_task: Option<String> = None;
+    let mut current_author: Option<String> = None;
+    let mut current_body = String::new();
+
+    for line in content.lines() {
+        if let Some(task_heading) = line.strip_prefix("## ") {
+            // Flush any pending comment
+            if let (Some(tid), Some(auth)) = (&current_task, &current_author) {
+                let body = current_body.trim().to_string();
+                if !body.is_empty() {
+                    comments.push(ParsedComment {
+                        task_id: tid.clone(),
+                        author: auth.clone(),
+                        content: body,
+                    });
+                }
+            }
+            current_task = Some(task_heading.trim().to_string());
+            current_author = None;
+            current_body.clear();
+        } else if let Some(comment_heading) = line.strip_prefix("### ") {
+            // Flush previous comment in same task section
+            if let (Some(tid), Some(auth)) = (&current_task, &current_author) {
+                let body = current_body.trim().to_string();
+                if !body.is_empty() {
+                    comments.push(ParsedComment {
+                        task_id: tid.clone(),
+                        author: auth.clone(),
+                        content: body,
+                    });
+                }
+            }
+            // Parse "timestamp — author" or "timestamp -- author"
+            let heading = comment_heading.trim();
+            let author = heading
+                .split(" — ")
+                .nth(1)
+                .or_else(|| heading.split(" -- ").nth(1))
+                .unwrap_or("unknown")
+                .trim()
+                .to_string();
+            current_author = Some(author);
+            current_body.clear();
+        } else if current_author.is_some() {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+
+    // Flush final comment
+    if let (Some(tid), Some(auth)) = (&current_task, &current_author) {
+        let body = current_body.trim().to_string();
+        if !body.is_empty() {
+            comments.push(ParsedComment {
+                task_id: tid.clone(),
+                author: auth.clone(),
+                content: body,
+            });
+        }
+    }
+
+    comments
+}
+
 /// Apply a parsed RELATE statement to the database.
 async fn apply_relation(queries: &Queries, rel: &ParsedRelation) -> Result<(), TMemError> {
     match rel.edge_type.as_str() {
@@ -457,6 +622,12 @@ async fn apply_relation(queries: &Queries, rel: &ParsedRelation) -> Result<(), T
                 .find(|(k, _)| k == "type")
                 .map(|(_, v)| match v.as_str() {
                     "soft_dependency" => DependencyType::SoftDependency,
+                    "child_of" => DependencyType::ChildOf,
+                    "blocked_by" => DependencyType::BlockedBy,
+                    "duplicate_of" => DependencyType::DuplicateOf,
+                    "related_to" => DependencyType::RelatedTo,
+                    "predecessor" => DependencyType::Predecessor,
+                    "successor" => DependencyType::Successor,
                     _ => DependencyType::HardBlocker,
                 })
                 .unwrap_or(DependencyType::HardBlocker);

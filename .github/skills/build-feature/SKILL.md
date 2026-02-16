@@ -25,7 +25,7 @@ Implements a single phase from a feature specification's task plan. The workflow
 * A feature spec directory exists at `specs/${input:spec-name}/` containing `plan.md`, `spec.md`, and `tasks.md`
 * The target phase exists in `tasks.md` with defined tasks
 * The project compiles before starting (`cargo check` passes)
-* The `.github/agents/copilot-instructions.md` constitution and coding standards are accessible
+* The `.github/copilot-instructions.md` constitution and coding standards are accessible
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ The skill runs autonomously through all required steps, halting only on unrecove
 * Read `specs/${input:spec-name}/contracts/` if it exists, for API specifications and error codes.
 * Read `specs/${input:spec-name}/research.md` if it exists, for technical decisions and constraints.
 * Read `specs/${input:spec-name}/quickstart.md` if it exists, for integration scenarios.
-* Read `.github/agents/copilot-instructions.md` for the project constitution, coding standards, and session memory requirements.
+* Read `.github/copilot-instructions.md` for the project constitution, coding standards, and session memory requirements.
 * Read `.github/agents/rust-engineer.agent.md` for language-specific engineering standards.
 * Read `.github/agents/rust-mcp-expert.agent.md` for MCP protocol patterns, rmcp SDK usage, transport configuration, and tool/prompt/resource handler implementation.
 * Read `.github/instructions/rust-mcp-server.instructions.md` for MCP server development best practices including error handling with `ErrorData`, state management, and testing patterns.
@@ -116,9 +116,11 @@ Execute tasks in dependency order following TDD discipline:
 
 4. Track architectural decisions made during implementation for recording in Step 6.
 
-### Step 4: Test Phase (Iterative)
+### Step 4: Test Phase (Mandatory Gate)
 
-Run the full test suite and iterate until all tests pass:
+This step is a hard gate. The phase is not complete until all tests pass **and** both `cargo clippy` and `cargo fmt` exit cleanly. Do not skip lint or format checks under any circumstances, including context pressure or time constraints.
+
+Run the full test suite and iterate until all checks pass:
 
 1. Run `cargo test` to execute all test suites.
 2. If any test fails:
@@ -126,13 +128,14 @@ Run the full test suite and iterate until all tests pass:
    * Fix the implementation (not the test, unless the test itself has a bug).
    * Re-run `cargo test` to verify the fix.
    * Repeat until all tests pass.
-3. Run `cargo clippy -- -D warnings -D clippy::pedantic` to verify lint compliance.
+3. Run `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` to verify lint compliance.
 4. If clippy reports warnings or errors, fix them and re-run until clean.
 5. Run `cargo fmt --all -- --check` to verify formatting.
-6. If formatting violations exist, run `cargo fmt --all` and verify.
-7. Report final test results: suite counts, pass rates, and any notable findings.
+6. If formatting violations exist, run `cargo fmt --all` to auto-fix, then re-run `cargo fmt --all -- --check` to confirm the check passes.
+7. If fixes in steps 3–6 introduced new test failures, return to step 1 and repeat the full cycle.
+8. Report final results: test suite counts, pass rates, clippy exit code, fmt exit code, and any notable findings.
 
-Return to Step 3 if test failures reveal missing implementation work. Continue iterating between Step 3 and Step 4 until both build and test pass cleanly.
+All three checks (`cargo test`, `cargo clippy`, `cargo fmt --check`) must exit 0 before proceeding to Step 5. Return to Step 3 if test failures reveal missing implementation work. Continue iterating between Step 3 and Step 4 until build, test, lint, and format all pass cleanly.
 
 ### Step 5: Constitution Validation
 
@@ -143,6 +146,7 @@ Re-check the constitution after implementation is complete:
 * Verify all new public items have `///` doc comments.
 * Verify error handling uses `TMemError` with proper error codes.
 * Verify any new async code follows tokio patterns (no mutex guards held across await points).
+* If any remediation changes were made during this step, re-run the Step 4 gate checks (`cargo test`, `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`, `cargo fmt --all -- --check`) to confirm the fixes did not introduce new lint or format violations. All three must exit 0 before proceeding.
 * Verify test coverage aligns with the 80% target from the constitution.
 * If any violation is found, return to Step 3 to remediate before proceeding.
 
@@ -161,7 +165,9 @@ For each significant decision made during the build phase:
 * Decisions worth recording include: dependency choices, API design trade-offs, data model changes, SurrealDB workarounds, error handling strategies, and performance trade-offs.
 * Skip this step if no significant architectural decisions were made during the phase.
 
-### Step 7: Record Session Memory
+### Step 7: Record Session Memory (Mandatory Gate)
+
+This step is a hard gate. The phase is not complete until the memory file exists on disk. Do not skip this step under any circumstances, including context pressure or time constraints.
 
 Persist the full session details to `.copilot-tracking/memory/` following the project's session memory requirements:
 
@@ -173,13 +179,18 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
   * Next Steps: what the next phase should address, any open questions, known issues
   * Context to Preserve: source file references, agent references, unresolved questions
 * Use the existing memory files in `.copilot-tracking/memory/` as format examples.
+* After writing the file, verify it exists by reading it back. If the file is missing or empty, halt and retry.
 
-### Step 8: Stage and Commit
+### Step 8: Pre-Commit Verification and Stage
 
-1. Review all changes made during the phase to ensure they align with the completed tasks and constitution.
-2. Review the ADRs created in Step 6 for clarity and completeness.
-3. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
-4. Review the session memory file for completeness and accuracy.
+1. Run `cargo fmt --all -- --check` to confirm formatting is clean. If it fails, run `cargo fmt --all` to auto-fix, then re-run the check.
+2. Run `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` to confirm lint compliance. If it fails, fix violations and re-run until clean.
+3. Run `cargo test` to confirm all tests still pass. If any test fails, fix and re-run.
+4. If any fixes were applied in steps 1–3, repeat all three checks from step 1 to ensure no cascading violations. All three commands must exit 0 before proceeding.
+5. Review all changes made during the phase to ensure they align with the completed tasks and constitution.
+6. Review the ADRs created in Step 6 for clarity and completeness.
+7. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
+8. Review the session memory file for completeness and accuracy.
 
 ### Step 9: Stage, Commit, and Sync
 
@@ -196,12 +207,26 @@ Finalize all changes with a Git commit:
 6. Report the commit hash and a summary of changes committed.
 
 
-### Step 10: Compact Context
+### Step 10: Compact Context (Mandatory Gate)
 
-Compact the current session to preserve state and reclaim context window space.
+This step is a hard gate. The phase is not complete until context compaction has run and a checkpoint file exists. Do not skip this step, even if context space appears sufficient. When running in full-spec loop mode, the orchestrator verifies checkpoint existence before advancing to the next phase.
 
 1. Run the `compact-context` skill (located at `.github/skills/compact-context/SKILL.md`).
 2. Follow all steps defined in that skill: gather session state, write checkpoint, report, and compact.
+3. Verify a checkpoint file was created in `.copilot-tracking/checkpoints/` during this execution. If missing, retry the compact-context skill.
+
+### Phase Completion Signal
+
+After Step 10 completes, the phase is fully done. Report the following completion signal for the orchestrator to consume:
+
+* **Phase**: `{phase-number}` — `{phase title}`
+* **Status**: COMPLETE
+* **Memory file**: `.copilot-tracking/memory/{YYYY-MM-DD}/{spec-name}-phase-{N}-memory.md`
+* **Checkpoint file**: `.copilot-tracking/checkpoints/{YYYY-MM-DD}-{HHmm}-checkpoint.md`
+* **Commit hash**: `{hash}`
+* **Tasks completed**: `{count}`
+
+The orchestrator uses this signal to verify all gates passed before looping to the next phase.
 
 ## Troubleshooting
 
@@ -211,7 +236,7 @@ The `fastembed` crate is gated behind the `embeddings` feature flag. Default bui
 
 ### SurrealDB v2 SDK behavioral differences
 
-Refer to the session memory at `.copilot-tracking/memory/2026-02-07/` for documented workarounds including `Thing` deserialization, `<datetime>` casts, and raw SurrealQL over SDK methods.
+Refer to the session memory at `.copilot-tracking/memory/` for documented workarounds including `Thing` deserialization, `<datetime>` casts, and raw SurrealQL over SDK methods.
 
 ### Tests pass locally but fail in CI
 
@@ -230,6 +255,7 @@ These rules are injected into each task based on its type classification in Step
 * `#![forbid(unsafe_code)]`
 * Prefer borrowing over cloning
 * Default to `pub(crate)`
+* All public items require `///` doc comments
 
 ### Error Handling
 
