@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tokio::test;
 
-use t_mem::errors::codes::WORKSPACE_LIMIT_REACHED;
+use t_mem::errors::codes::{CONFIG_INVALID_VALUE, WORKSPACE_LIMIT_REACHED};
 use t_mem::server::state::AppState;
 use t_mem::tools;
 
@@ -209,5 +209,159 @@ async fn contract_rate_limiting_rejects_excess_connections() {
             .and_then(Value::as_u64),
         Some(u64::from(RATE_LIMITED)),
         "error code should be 5003 RateLimited"
+    );
+}
+
+// ── T081: Config loading contract tests ─────────────────────────
+
+#[test]
+async fn contract_no_config_toml_uses_defaults() {
+    // When no .tmem/config.toml exists, set_workspace should succeed
+    // and the config should use built-in defaults.
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    let result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed without config.toml");
+
+    assert_eq!(result.get("hydrated").and_then(Value::as_bool), Some(true));
+
+    // Verify defaults are applied: batch max_size=100 by default
+    let config = state.workspace_config().await;
+    assert!(config.is_some(), "should have config (defaults)");
+    let cfg = config.unwrap();
+    assert_eq!(cfg.batch.max_size, 100);
+    assert_eq!(cfg.compaction.threshold_days, 7);
+    assert_eq!(cfg.compaction.max_candidates, 50);
+    assert_eq!(cfg.compaction.truncation_length, 500);
+    assert_eq!(cfg.default_priority, "p2");
+    assert!(cfg.allowed_labels.is_empty());
+    assert!(cfg.allowed_types.is_empty());
+}
+
+#[test]
+async fn contract_valid_config_populates_workspace_config() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write a valid config.toml
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
+    fs::write(
+        tmem_dir.join("config.toml"),
+        r#"
+default_priority = "p1"
+allowed_labels = ["urgent", "bug"]
+allowed_types = ["task", "bug"]
+
+[compaction]
+threshold_days = 14
+max_candidates = 25
+truncation_length = 200
+
+[batch]
+max_size = 50
+"#,
+    )
+    .expect("write config.toml");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed with valid config");
+
+    let config = state.workspace_config().await.expect("config should exist");
+    assert_eq!(config.default_priority, "p1");
+    assert_eq!(config.allowed_labels, vec!["urgent", "bug"]);
+    assert_eq!(config.allowed_types, vec!["task", "bug"]);
+    assert_eq!(config.compaction.threshold_days, 14);
+    assert_eq!(config.compaction.max_candidates, 25);
+    assert_eq!(config.compaction.truncation_length, 200);
+    assert_eq!(config.batch.max_size, 50);
+}
+
+#[test]
+async fn contract_toml_parse_error_uses_defaults_with_warning() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write invalid TOML
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
+    fs::write(tmem_dir.join("config.toml"), "{{invalid toml").expect("write bad config");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    // Should still succeed — falls back to defaults
+    let result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed even with bad config.toml");
+
+    assert_eq!(result.get("hydrated").and_then(Value::as_bool), Some(true));
+
+    // Defaults should be applied
+    let config = state
+        .workspace_config()
+        .await
+        .expect("config should fallback to defaults");
+    assert_eq!(config.batch.max_size, 100);
+    assert_eq!(config.compaction.threshold_days, 7);
+}
+
+#[test]
+async fn contract_invalid_config_value_returns_error() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    // Write config.toml with invalid value: threshold_days=0
+    let tmem_dir = workspace.path().join(".tmem");
+    fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
+    fs::write(
+        tmem_dir.join("config.toml"),
+        r"
+[compaction]
+threshold_days = 0
+",
+    )
+    .expect("write config with invalid threshold");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    // set_workspace should fail with CONFIG_INVALID_VALUE
+    let result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "set_workspace should fail on invalid config"
+    );
+    let err_response = result.unwrap_err().to_response();
+    assert_eq!(
+        err_response.error.code, CONFIG_INVALID_VALUE,
+        "should return CONFIG_INVALID_VALUE (6002)"
     );
 }

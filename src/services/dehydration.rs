@@ -7,30 +7,44 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::Utc;
-use similar::{ChangeTag, TextDiff};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
+use crate::db::{self};
 use crate::errors::{SystemError, TMemError};
+use crate::models::comment::Comment;
 use crate::models::graph::DependencyType;
-use crate::models::task::Task;
+use crate::models::task::{Task, TaskStatus};
+use crate::server::state::SharedState;
 
-use crate::db::connect_db;
-use crate::server::state::AppState;
+/// Global flush lock for serializing concurrent dehydration operations (ADR-0002).
+static FLUSH_LOCK: Mutex<()> = Mutex::const_new(());
 
-use tokio::sync::Mutex as TokioMutex;
-
-/// Per-workspace write lock serializing concurrent `flush_state` calls (US5/T092).
+/// Acquire the per-process flush lock for concurrent dehydration serialization.
 ///
-/// Ensures FIFO ordering when multiple clients call `flush_state` concurrently
-/// for the same workspace, preventing file corruption from interleaved writes.
-static FLUSH_LOCK: TokioMutex<()> = TokioMutex::const_new(());
-
-/// Acquire the flush lock for serialized workspace writes.
-pub async fn acquire_flush_lock() -> tokio::sync::MutexGuard<'static, ()> {
+/// Returns a guard that releases the lock when dropped.
+pub async fn acquire_flush_lock() -> MutexGuard<'static, ()> {
     FLUSH_LOCK.lock().await
+}
+
+/// Flush all active workspaces to `.tmem/` files (FR-006 graceful shutdown).
+///
+/// Acquires the flush lock and dehydrates the active workspace, if any.
+pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), TMemError> {
+    let _guard = acquire_flush_lock().await;
+    let Some(snapshot) = state.snapshot_workspace().await else {
+        return Ok(());
+    };
+
+    let workspace_path = Path::new(&snapshot.path);
+    let db = db::connect_db(&snapshot.workspace_id).await?;
+    let queries = Queries::new(db);
+
+    dehydrate_workspace(&queries, workspace_path).await?;
+    Ok(())
 }
 
 /// Schema version written to `.tmem/.version`.
@@ -57,21 +71,7 @@ pub async fn dehydrate_workspace(
     let tmem_dir = workspace_path.join(".tmem");
     fs::create_dir_all(&tmem_dir).map_err(|_| flush_err(&tmem_dir))?;
 
-    let mut tasks = queries.all_tasks().await?;
-
-    // Safety net: if the DB is empty (e.g., after a rehydrate into a fresh store),
-    // fall back to parsing the on-disk tasks.md so we do not drop user edits.
-    if tasks.is_empty() {
-        let tasks_path = tmem_dir.join("tasks.md");
-        if let Ok(content) = fs::read_to_string(&tasks_path) {
-            tracing::warn!(
-                path = %tasks_path.display(),
-                "DB returned zero tasks; falling back to on-disk tasks.md"
-            );
-            let parsed = crate::services::hydration::parse_tasks_md(&content);
-            tasks = parsed.into_iter().map(|p| p.task).collect();
-        }
-    }
+    let tasks = queries.all_tasks().await?;
     let dep_edges = queries.all_dependency_edges().await?;
     let impl_edges = queries.all_implements_edges().await?;
     let rel_edges = queries.all_relates_to_edges().await?;
@@ -86,8 +86,17 @@ pub async fn dehydrate_workspace(
         .collect();
     let comments_preserved = old_bodies.values().filter(|b| !b.trim().is_empty()).count();
 
+    // Collect labels for each task
+    let mut task_labels: HashMap<String, Vec<String>> = HashMap::new();
+    for task in &tasks {
+        let labels = queries.get_labels_for_task(&task.id).await?;
+        if !labels.is_empty() {
+            task_labels.insert(task.id.clone(), labels);
+        }
+    }
+
     // Serialize tasks.md preserving user comments
-    let tasks_content = serialize_tasks_md(&tasks, &old_bodies, &old_content);
+    let tasks_content = serialize_tasks_md(&tasks, &old_bodies, &old_content, &task_labels);
     atomic_write(&tasks_path, &tasks_content)?;
 
     // Serialize graph.surql
@@ -95,6 +104,17 @@ pub async fn dehydrate_workspace(
     let total_edges = dep_edges.len() + impl_edges.len() + rel_edges.len();
     let graph_content = serialize_graph_surql(&dep_edges, &impl_edges, &rel_edges);
     atomic_write(&graph_path, &graph_content)?;
+
+    // Serialize comments.md (FR-063b)
+    let all_comments = queries.all_comments().await?;
+    let comments_path = tmem_dir.join("comments.md");
+    if !all_comments.is_empty() {
+        let comments_content = serialize_comments_md(&all_comments);
+        atomic_write(&comments_path, &comments_content)?;
+    } else if comments_path.exists() {
+        // Remove stale comments.md when all comments have been deleted
+        let _ = std::fs::remove_file(&comments_path);
+    }
 
     // Write version
     let version_path = tmem_dir.join(".version");
@@ -105,12 +125,16 @@ pub async fn dehydrate_workspace(
     let lastflush_path = tmem_dir.join(".lastflush");
     atomic_write(&lastflush_path, &flush_ts)?;
 
-    let files_written = vec![
+    let mut files_written = vec![
         ".tmem/tasks.md".to_string(),
         ".tmem/graph.surql".to_string(),
         ".tmem/.version".to_string(),
         ".tmem/.lastflush".to_string(),
     ];
+
+    if !all_comments.is_empty() {
+        files_written.push(".tmem/comments.md".to_string());
+    }
 
     Ok(DehydrationResult {
         files_written,
@@ -121,27 +145,6 @@ pub async fn dehydrate_workspace(
     })
 }
 
-/// Flush all active workspaces to `.tmem/` files (FR-006).
-///
-/// Called during graceful shutdown (SIGTERM/SIGINT) to ensure in-memory
-/// state is persisted before the daemon exits. Returns `Ok(())` when
-/// no workspace is active.
-pub async fn flush_all_workspaces(state: &AppState) -> Result<(), TMemError> {
-    let Some(snapshot) = state.snapshot_workspace().await else {
-        return Ok(());
-    };
-
-    let workspace_path = PathBuf::from(&snapshot.path);
-    let db = connect_db(&snapshot.workspace_id).await?;
-    let queries = Queries::new(db);
-
-    tracing::info!(path = %snapshot.path, "shutdown: flushing workspace");
-    dehydrate_workspace(&queries, &workspace_path).await?;
-    tracing::info!(path = %snapshot.path, "shutdown: flush complete");
-
-    Ok(())
-}
-
 /// Serialize tasks to the canonical `tasks.md` format.
 ///
 /// Preserves file-level header and per-task user comments from the old file.
@@ -149,6 +152,7 @@ pub fn serialize_tasks_md(
     tasks: &[Task],
     old_bodies: &HashMap<String, String>,
     old_content: &str,
+    task_labels: &HashMap<String, Vec<String>>,
 ) -> String {
     let mut out = String::new();
 
@@ -176,12 +180,34 @@ pub fn serialize_tasks_md(
         out.push_str("---\n");
         out.push_str(&format!("id: {display_id}\n"));
         out.push_str(&format!("title: {}\n", task.title));
-        out.push_str(&format!("status: {}\n", task.status.as_str()));
+        out.push_str(&format!("status: {}\n", format_status(task.status)));
         if let Some(ref wid) = task.work_item_id {
             out.push_str(&format!("work_item_id: {wid}\n"));
         }
         out.push_str(&format!("created_at: {}\n", task.created_at.to_rfc3339()));
         out.push_str(&format!("updated_at: {}\n", task.updated_at.to_rfc3339()));
+        out.push_str(&format!("priority: {}\n", task.priority));
+        out.push_str(&format!("issue_type: {}\n", task.issue_type));
+        if let Some(ref a) = task.assignee {
+            out.push_str(&format!("assignee: {a}\n"));
+        }
+        if task.pinned {
+            out.push_str("pinned: true\n");
+        }
+        if let Some(ref du) = task.defer_until {
+            out.push_str(&format!("defer_until: {}\n", du.to_rfc3339()));
+        }
+        if task.compaction_level > 0 {
+            out.push_str(&format!("compaction_level: {}\n", task.compaction_level));
+        }
+        if let Some(ref ca) = task.compacted_at {
+            out.push_str(&format!("compacted_at: {}\n", ca.to_rfc3339()));
+        }
+        if let Some(labels) = task_labels.get(&task.id) {
+            if !labels.is_empty() {
+                out.push_str(&format!("labels: {}\n", labels.join(", ")));
+            }
+        }
         out.push_str("---\n\n");
 
         // Merge description with preserved user comments.
@@ -209,8 +235,9 @@ pub fn serialize_tasks_md(
 
 /// Merge new description with preserved user content from old body.
 ///
-/// Uses `similar::TextDiff` to identify lines in the old body that
-/// are not part of the new description (= user-added content per FR-012).
+/// Only HTML comment blocks (`<!-- ... -->`) in the old body are treated
+/// as user-added content that must be preserved across flushes (FR-012).
+/// All other lines are controlled by the daemon and may be replaced.
 pub fn merge_body_with_comments(new_description: &str, old_body: &str) -> String {
     let new_desc_trimmed = new_description.trim();
     let old_body_trimmed = old_body.trim();
@@ -223,22 +250,39 @@ pub fn merge_body_with_comments(new_description: &str, old_body: &str) -> String
         return new_desc_trimmed.to_string();
     }
 
-    // Find user-added lines: present in old body but not in new description
-    let diff = TextDiff::from_lines(new_desc_trimmed, old_body_trimmed);
-    let mut user_lines: Vec<String> = Vec::new();
+    // Extract HTML comment blocks from the old body
+    let mut user_blocks: Vec<String> = Vec::new();
+    let mut in_comment = false;
+    let mut block = String::new();
 
-    for change in diff.iter_all_changes() {
-        if change.tag() == ChangeTag::Insert {
-            let line = change.value().to_string();
-            user_lines.push(line);
+    for line in old_body_trimmed.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<!--") {
+            in_comment = true;
+            block.clear();
+            block.push_str(line);
+            block.push('\n');
+            if trimmed.ends_with("-->") {
+                in_comment = false;
+                user_blocks.push(block.clone());
+                block.clear();
+            }
+        } else if in_comment {
+            block.push_str(line);
+            block.push('\n');
+            if trimmed.ends_with("-->") {
+                in_comment = false;
+                user_blocks.push(block.clone());
+                block.clear();
+            }
         }
     }
 
     let mut result = new_desc_trimmed.to_string();
-    if !user_lines.is_empty() {
+    if !user_blocks.is_empty() {
         result.push_str("\n\n");
-        for line in user_lines {
-            result.push_str(&line);
+        for blk in user_blocks {
+            result.push_str(&blk);
         }
     }
 
@@ -291,6 +335,44 @@ pub fn serialize_graph_surql(
             ));
         }
         out.push('\n');
+    }
+
+    out
+}
+
+/// Serialize comments to the canonical `comments.md` format.
+///
+/// Groups comments by task ID and writes each comment with a timestamp—author
+/// heading, matching the format expected by `parse_comments_md` in hydration.
+pub fn serialize_comments_md(comments: &[Comment]) -> String {
+    use std::collections::BTreeMap;
+
+    // Group comments by task_id, preserving insertion order within each group
+    let mut groups: BTreeMap<&str, Vec<&Comment>> = BTreeMap::new();
+    for comment in comments {
+        groups.entry(&comment.task_id).or_default().push(comment);
+    }
+
+    let mut out = String::new();
+    out.push_str("# Comments\n\n");
+
+    for (task_id, task_comments) in &groups {
+        // Ensure task: prefix in heading
+        if task_id.starts_with("task:") {
+            out.push_str(&format!("## {task_id}\n\n"));
+        } else {
+            out.push_str(&format!("## task:{task_id}\n\n"));
+        }
+
+        for comment in task_comments {
+            let ts = comment.created_at.to_rfc3339();
+            out.push_str(&format!("### {ts} — {}\n\n", comment.author));
+            out.push_str(&comment.content);
+            if !comment.content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
     }
 
     out
@@ -389,10 +471,25 @@ fn flush_err(path: &Path) -> TMemError {
     })
 }
 
+fn format_status(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Todo => "todo",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::Done => "done",
+        TaskStatus::Blocked => "blocked",
+    }
+}
+
 fn format_dependency(kind: DependencyType) -> &'static str {
     match kind {
         DependencyType::HardBlocker => "hard_blocker",
         DependencyType::SoftDependency => "soft_dependency",
+        DependencyType::ChildOf => "child_of",
+        DependencyType::BlockedBy => "blocked_by",
+        DependencyType::DuplicateOf => "duplicate_of",
+        DependencyType::RelatedTo => "related_to",
+        DependencyType::Predecessor => "predecessor",
+        DependencyType::Successor => "successor",
     }
 }
 
@@ -401,7 +498,6 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::models::task::TaskStatus;
 
     fn make_task(id: &str, desc: &str) -> Task {
         let now = Utc::now();
@@ -412,6 +508,16 @@ mod tests {
             work_item_id: None,
             description: desc.to_string(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -419,14 +525,14 @@ mod tests {
 
     #[test]
     fn serialize_tasks_md_empty() {
-        let out = serialize_tasks_md(&[], &HashMap::new(), "");
+        let out = serialize_tasks_md(&[], &HashMap::new(), "", &HashMap::new());
         assert!(out.starts_with("# Tasks\n"));
     }
 
     #[test]
     fn serialize_tasks_md_round_trip_fields() {
         let tasks = vec![make_task("task:abc", "Do something")];
-        let out = serialize_tasks_md(&tasks, &HashMap::new(), "");
+        let out = serialize_tasks_md(&tasks, &HashMap::new(), "", &HashMap::new());
         assert!(out.contains("## task:abc"));
         assert!(out.contains("id: task:abc"));
         assert!(out.contains("title: Task task:abc"));
@@ -544,9 +650,68 @@ Other description.
             "My description\n\n<!-- Important user note -->".to_string(),
         );
         let old_content = "# Tasks\n\n<!-- Header comment -->\n\n## task:abc\n";
-        let out = serialize_tasks_md(&tasks, &old_bodies, old_content);
+        let out = serialize_tasks_md(&tasks, &old_bodies, old_content, &HashMap::new());
         assert!(out.contains("<!-- Header comment -->"));
         assert!(out.contains("<!-- Important user note -->"));
         assert!(out.contains("My description"));
+    }
+
+    #[test]
+    fn serialize_comments_md_empty() {
+        let out = serialize_comments_md(&[]);
+        assert!(out.starts_with("# Comments\n"));
+        assert!(!out.contains("## task:"));
+    }
+
+    #[test]
+    fn serialize_comments_md_groups_by_task() {
+        let now = Utc::now();
+        let comments = vec![
+            Comment {
+                id: "comment:c1".to_string(),
+                task_id: "task:abc".to_string(),
+                content: "First comment".to_string(),
+                author: "agent-1".to_string(),
+                created_at: now,
+            },
+            Comment {
+                id: "comment:c2".to_string(),
+                task_id: "task:abc".to_string(),
+                content: "Second comment".to_string(),
+                author: "agent-2".to_string(),
+                created_at: now,
+            },
+            Comment {
+                id: "comment:c3".to_string(),
+                task_id: "task:def".to_string(),
+                content: "Other task comment".to_string(),
+                author: "user-1".to_string(),
+                created_at: now,
+            },
+        ];
+        let out = serialize_comments_md(&comments);
+        assert!(out.contains("## task:abc"));
+        assert!(out.contains("## task:def"));
+        assert!(out.contains("First comment"));
+        assert!(out.contains("Second comment"));
+        assert!(out.contains("Other task comment"));
+        // Verify heading format includes author
+        assert!(out.contains("— agent-1"));
+        assert!(out.contains("— agent-2"));
+        assert!(out.contains("— user-1"));
+    }
+
+    #[test]
+    fn serialize_comments_md_bare_task_id_gets_prefix() {
+        let now = Utc::now();
+        let comments = vec![Comment {
+            id: "comment:c1".to_string(),
+            task_id: "bare_id".to_string(),
+            content: "Body text".to_string(),
+            author: "tester".to_string(),
+            created_at: now,
+        }];
+        let out = serialize_comments_md(&comments);
+        assert!(out.contains("## task:bare_id"));
     }
 }

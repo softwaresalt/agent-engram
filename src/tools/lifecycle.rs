@@ -8,6 +8,7 @@ use crate::db::queries::Queries;
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{TMemError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
+use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::hydration::{
     backfill_embeddings, detect_stale_since, hydrate_into_db, hydrate_workspace,
@@ -70,6 +71,11 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
         hydration.task_count
     };
 
+    // Load and validate workspace config BEFORE committing the snapshot.
+    // If config validation fails, we must not leave the workspace partially bound.
+    let ws_config = parse_config(&canonical)?;
+    // validate_config is now called inside parse_config (RI-11)
+
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
         path: canonical.display().to_string(),
@@ -82,6 +88,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     };
 
     state.set_workspace(snapshot).await?;
+    state.set_workspace_config(Some(ws_config)).await;
 
     Ok(WorkspaceBinding {
         workspace_id,
@@ -94,7 +101,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, TMemError> {
     let mut sys = System::new();
     sys.refresh_memory();
-    let memory_bytes = sys.used_memory() * 1024; // KiB -> bytes
+    let memory_bytes = sys.used_memory(); // sysinfo 0.30+ returns bytes
 
     Ok(DaemonStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),

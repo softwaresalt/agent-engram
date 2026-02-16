@@ -216,6 +216,7 @@ Every tool follows this pattern:
 * **Incremental saves**: For long sessions, save memory checkpoints more frequently (after completing each phase or major task group) rather than waiting for the 65% threshold.
 * **Content to capture**: Every memory entry must include task IDs completed, files modified, decisions and their rationale, failed approaches, discovered issues, and concrete next steps.
 * **File convention**: Save to `.copilot-tracking/memory/{YYYY-MM-DD}/{descriptive-slug}-memory.md`.
+* **Phase-boundary enforcement**: When the build-orchestrator runs in full-spec loop mode, memory recording and context compaction are mandatory gates between phases. The orchestrator verifies that the memory file and checkpoint file exist before advancing to the next phase. No phase transition occurs without both artifacts on disk.
 
 <!-- MANUAL ADDITIONS START -->
 
@@ -230,6 +231,7 @@ Every tool follows this pattern:
 3. **No exit-code echo suffixes.** Do not append `; echo "EXIT: $LASTEXITCODE"` or `&& echo "done"` to commands. The terminal tool already captures exit codes.
 4. **Check results between commands.** After each command, inspect the output and exit code before deciding whether to run the next command. This is safer and produces better diagnostics.
 5. **Always use `pwsh`, never `powershell`.** When invoking PowerShell explicitly (e.g., to run a `.ps1` script), use `pwsh` — the cross-platform PowerShell 7+ executable. Never use `powershell` or `powershell.exe`, which refers to the legacy Windows PowerShell 5.1 runtime.
+6. **Always use relative paths for output redirection.** When redirecting command output to a file, use workspace-relative paths (e.g., `target\results.txt`), never absolute paths (e.g., `d:\Source\...\target\results.txt`). Absolute paths break auto-approve regex matching.
 
 ### Allowed Exceptions
 
@@ -286,11 +288,19 @@ cargo test | Select-String "FAILED" | Remove-Item foo.txt
         "approve": true,
         "matchCommandLine": true
     },
+    "/^& cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
     "/^cargo --(help|version|verbose|quiet|release|features)(\\s[^;|&`]*)?$/": {
         "approve": true,
         "matchCommandLine": true
     },
     "/^git (status|add|commit|diff|log|fetch|pull|push|checkout|branch|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "approve": true,
+        "matchCommandLine": true
+    },
+    "/^& git (status|add|commit|diff|log|fetch|pull|push|checkout|branch|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
         "approve": true,
         "matchCommandLine": true
     },
@@ -305,6 +315,18 @@ cargo test | Select-String "FAILED" | Remove-Item foo.txt
     "/^cmd /c \"cargo (test|check|clippy|fmt|build|doc|bench)(\\s[^;|&`]*)?\"(\\s*[;&|]+\\s*echo\\s.*)?$/": {
         "approve": true,
         "matchCommandLine": true
-    }
+    },
+    "New-Item": true,
+    "Out-Null": true,
+    "cargo build": true,
+    "cargo check": true,
+    "cargo doc": true,
+    "cargo test": true,
+    "git commit": true,
+    "ForEach-Object": true,
+    "cargo clippy": true,
+    "cargo fmt": true,
+    "git add": true,
+    "git push": true
 }
 <!-- MANUAL ADDITIONS END -->

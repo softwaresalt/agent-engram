@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -7,8 +7,8 @@ use surrealdb::sql::Thing;
 use crate::db::{Db, map_db_err};
 use crate::errors::{TMemError, TaskError};
 use crate::models::graph::DependencyType;
-use crate::models::task::TaskStatus;
-use crate::models::{Context, Spec, Task};
+use crate::models::task::{Task, TaskStatus, compute_priority_order};
+use crate::models::{Context, Spec};
 
 /// Relationship edge carrying normalized task IDs and dependency type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,8 +61,40 @@ struct TaskRow {
     description: String,
     #[serde(default)]
     context_summary: Option<String>,
+    #[serde(default = "default_priority")]
+    priority: String,
+    #[serde(default = "default_priority_order")]
+    priority_order: u32,
+    #[serde(default = "default_issue_type")]
+    issue_type: String,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    defer_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pinned: bool,
+    #[serde(default)]
+    compaction_level: u32,
+    #[serde(default)]
+    compacted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    workflow_state: Option<String>,
+    #[serde(default)]
+    workflow_id: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+fn default_priority() -> String {
+    "p2".to_owned()
+}
+
+const fn default_priority_order() -> u32 {
+    2
+}
+
+fn default_issue_type() -> String {
+    "task".to_owned()
 }
 
 impl TaskRow {
@@ -74,6 +106,16 @@ impl TaskRow {
             work_item_id: self.work_item_id,
             description: self.description,
             context_summary: self.context_summary,
+            priority: self.priority,
+            priority_order: self.priority_order,
+            issue_type: self.issue_type,
+            assignee: self.assignee,
+            defer_until: self.defer_until,
+            pinned: self.pinned,
+            compaction_level: self.compaction_level,
+            compacted_at: self.compacted_at,
+            workflow_state: self.workflow_state,
+            workflow_id: self.workflow_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -89,6 +131,12 @@ struct ContextRow {
     embedding: Option<Vec<f32>>,
     source_client: String,
     created_at: DateTime<Utc>,
+}
+
+/// Row type for COUNT() aggregate queries.
+#[derive(Deserialize)]
+struct CountRow {
+    count: u64,
 }
 
 impl ContextRow {
@@ -130,10 +178,70 @@ impl SpecRow {
     }
 }
 
+/// Internal row type for deserializing comments from SurrealDB.
+#[derive(Deserialize)]
+struct CommentRow {
+    id: Thing,
+    task_id: String,
+    content: String,
+    author: String,
+    created_at: DateTime<Utc>,
+}
+
+impl CommentRow {
+    fn into_comment(self) -> crate::models::Comment {
+        crate::models::Comment {
+            id: format!("comment:{}", self.id.id.to_raw()),
+            task_id: self.task_id,
+            content: self.content,
+            author: self.author,
+            created_at: self.created_at,
+        }
+    }
+}
+
 /// Query helper wrapping SurrealDB handle.
 #[derive(Clone)]
 pub struct Queries {
     db: Db,
+}
+
+/// Parameters for the ready-work query.
+#[derive(Debug, Default)]
+pub struct ReadyWorkParams {
+    /// Maximum tasks to return (default: 10).
+    pub limit: u32,
+    /// Filter: task must have ALL listed labels (AND logic).
+    pub labels: Vec<String>,
+    /// Maximum priority threshold (e.g., "p2" returns p0, p1, p2).
+    pub priority: Option<String>,
+    /// Filter by issue type (e.g., "bug").
+    pub issue_type: Option<String>,
+    /// Filter by assignee identity.
+    pub assignee: Option<String>,
+}
+
+/// Result from the ready-work query.
+#[derive(Debug)]
+pub struct ReadyWorkResult {
+    /// Tasks matching the criteria, ordered and limited.
+    pub tasks: Vec<Task>,
+    /// Total number of eligible tasks before applying limit.
+    pub total_eligible: u32,
+}
+
+/// Aggregate workspace statistics.
+#[derive(Debug)]
+pub struct WorkspaceStatistics {
+    pub total_tasks: u64,
+    pub by_status: HashMap<String, u64>,
+    pub by_priority: HashMap<String, u64>,
+    pub by_type: HashMap<String, u64>,
+    pub by_label: HashMap<String, u64>,
+    pub deferred_count: u64,
+    pub pinned_count: u64,
+    pub claimed_count: u64,
+    pub compacted_count: u64,
 }
 
 impl Queries {
@@ -160,6 +268,16 @@ impl Queries {
                     work_item_id = $wid, \
                     description = $desc, \
                     context_summary = $ctx_summary, \
+                    priority = $priority, \
+                    priority_order = $priority_order, \
+                    issue_type = $issue_type, \
+                    assignee = $assignee, \
+                    defer_until = IF $defer_until != NONE THEN <datetime>$defer_until END, \
+                    pinned = $pinned, \
+                    compaction_level = $compaction_level, \
+                    compacted_at = IF $compacted_at != NONE THEN <datetime>$compacted_at END, \
+                    workflow_state = $workflow_state, \
+                    workflow_id = $workflow_id, \
                     created_at = <datetime>$created, \
                     updated_at = <datetime>$updated",
             )
@@ -169,6 +287,16 @@ impl Queries {
             .bind(("wid", task.work_item_id.clone()))
             .bind(("desc", task.description.clone()))
             .bind(("ctx_summary", task.context_summary.clone()))
+            .bind(("priority", task.priority.clone()))
+            .bind(("priority_order", task.priority_order))
+            .bind(("issue_type", task.issue_type.clone()))
+            .bind(("assignee", task.assignee.clone()))
+            .bind(("defer_until", task.defer_until.map(|d| d.to_rfc3339())))
+            .bind(("pinned", task.pinned))
+            .bind(("compaction_level", task.compaction_level))
+            .bind(("compacted_at", task.compacted_at.map(|d| d.to_rfc3339())))
+            .bind(("workflow_state", task.workflow_state.clone()))
+            .bind(("workflow_id", task.workflow_id.clone()))
             .bind(("created", created))
             .bind(("updated", updated))
             .await
@@ -186,6 +314,7 @@ impl Queries {
         description: &str,
         work_item_id: Option<&str>,
         parent_id: Option<&str>,
+        issue_type: Option<&str>,
     ) -> Result<Task, TMemError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -196,6 +325,16 @@ impl Queries {
             work_item_id: work_item_id.map(String::from),
             description: description.to_string(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: issue_type.unwrap_or("task").to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -218,7 +357,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
@@ -329,21 +468,21 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
-            .filter_map(|row| {
+            .map(|row| {
                 let target = row.out.id.to_raw();
                 let kind = row
                     .r#type
                     .map(parse_dependency_type)
                     .unwrap_or(DependencyType::HardBlocker);
-                Some(DependencyEdge {
+                DependencyEdge {
                     from: task_id.to_string(),
                     to: target,
                     kind,
-                })
+                }
             })
             .collect();
 
@@ -359,7 +498,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
@@ -370,8 +509,466 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    /// Return prioritized actionable tasks: unblocked, undeferred,
+    /// not done, sorted by pinned → priority → creation date.
+    ///
+    /// Blocking logic: tasks with incoming `hard_blocker` or `blocked_by`
+    /// edges where the blocker's status != done are excluded. Tasks with
+    /// `duplicate_of` outgoing edges are also excluded.
+    pub async fn get_ready_work(
+        &self,
+        params: &ReadyWorkParams,
+    ) -> Result<ReadyWorkResult, TMemError> {
+        // Step 1: Get all non-done, non-blocked tasks.
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "SELECT * FROM task WHERE status NOT IN ['done', 'blocked'] \
+                 ORDER BY pinned DESC, priority_order ASC, created_at ASC",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let mut candidates: Vec<Task> = rows.into_iter().map(TaskRow::into_task).collect();
+
+        // Step 2: Filter out deferred tasks (defer_until in the future).
+        let now = Utc::now();
+        candidates.retain(|t| t.defer_until.is_none_or(|defer| defer <= now));
+
+        // Step 3: Find tasks blocked by unresolved hard_blocker/blocked_by deps.
+        let blocked_ids = self.find_blocked_task_ids().await?;
+        candidates.retain(|t| !blocked_ids.contains(&t.id));
+
+        // Step 4: Find tasks that are duplicates (have outgoing duplicate_of edge).
+        let duplicate_ids = self.find_duplicate_task_ids().await?;
+        candidates.retain(|t| !duplicate_ids.contains(&t.id));
+
+        // Step 5: Apply optional filters.
+        // Priority threshold filter.
+        if let Some(ref threshold) = params.priority {
+            let max_order = compute_priority_order(threshold);
+            candidates.retain(|t| t.priority_order <= max_order);
+        }
+
+        // Issue type filter.
+        if let Some(ref issue_type) = params.issue_type {
+            candidates.retain(|t| t.issue_type == *issue_type);
+        }
+
+        // Assignee filter.
+        if let Some(ref assignee) = params.assignee {
+            candidates.retain(|t| t.assignee.as_deref() == Some(assignee.as_str()));
+        }
+
+        // Label filter (AND logic — task must have ALL listed labels).
+        if !params.labels.is_empty() {
+            let mut label_matched = Vec::new();
+            for task in &candidates {
+                if self.task_has_all_labels(&task.id, &params.labels).await? {
+                    label_matched.push(task.id.clone());
+                }
+            }
+            candidates.retain(|t| label_matched.contains(&t.id));
+        }
+
+        let total_eligible = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
+
+        // Step 6: Apply limit.
+        let limit = if params.limit == 0 { 10 } else { params.limit };
+        candidates.truncate(limit as usize);
+
+        Ok(ReadyWorkResult {
+            tasks: candidates,
+            total_eligible,
+        })
+    }
+
+    /// Find task IDs that are blocked by unresolved hard_blocker or blocked_by edges.
+    async fn find_blocked_task_ids(&self) -> Result<HashSet<String>, TMemError> {
+        // Get all hard_blocker and blocked_by edges.
+        // `type` is a reserved keyword in SurrealQL, requires backtick escaping.
+        let rows: Vec<DependsOnRow> = self
+            .db
+            .query(
+                "SELECT in, out, type FROM depends_on \
+                 WHERE `type` IN ['hard_blocker', 'blocked_by']",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        // Collect unique blocker IDs for a single batch fetch
+        let blocker_ids: Vec<String> = rows.iter().map(|r| r.out.id.to_raw()).collect();
+        let blocker_tasks = self.tasks_by_ids(&blocker_ids).await?;
+        let undone_blockers: HashSet<String> = blocker_tasks
+            .into_iter()
+            .filter(|t| t.status != TaskStatus::Done)
+            .map(|t| t.id)
+            .collect();
+
+        let mut blocked = HashSet::new();
+        for row in rows {
+            let blocker_id = row.out.id.to_raw();
+            let dependent_id = row.r#in.id.to_raw();
+
+            if undone_blockers.contains(&blocker_id) {
+                blocked.insert(dependent_id);
+            }
+        }
+
+        Ok(blocked)
+    }
+
+    /// Find task IDs that have an outgoing duplicate_of edge.
+    async fn find_duplicate_task_ids(&self) -> Result<HashSet<String>, TMemError> {
+        let rows: Vec<DependsOnRow> = self
+            .db
+            .query(
+                "SELECT in, out, type FROM depends_on \
+                 WHERE `type` = 'duplicate_of'",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let ids = rows.into_iter().map(|row| row.r#in.id.to_raw()).collect();
+
+        Ok(ids)
+    }
+
+    // ── Label CRUD ──────────────────────────────────────────────────────
+
+    /// Insert a label for a task. Returns error if the label already exists
+    /// (UNIQUE constraint on `label_task_name` index).
+    pub async fn insert_label(&self, task_id: &str, name: &str) -> Result<(), TMemError> {
+        // Check for duplicate first (UNIQUE index enforcement)
+        let existing: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM label \
+                 WHERE task_id = $task_id AND name = $name GROUP ALL",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        if existing.first().map_or(0, |r| r.count) > 0 {
+            return Err(TMemError::Task(TaskError::DuplicateLabel {
+                task_id: task_id.to_string(),
+                label: name.to_string(),
+            }));
+        }
+
+        self.db
+            .query(
+                "INSERT INTO label { \
+                    task_id: $task_id, \
+                    name: $name, \
+                    created_at: time::now() \
+                 }",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(())
+    }
+
+    /// Delete a label from a task.
+    pub async fn delete_label(&self, task_id: &str, name: &str) -> Result<(), TMemError> {
+        self.db
+            .query("DELETE FROM label WHERE task_id = $task_id AND name = $name")
+            .bind(("task_id", task_id.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Get all labels for a task.
+    pub async fn get_labels_for_task(&self, task_id: &str) -> Result<Vec<String>, TMemError> {
+        #[derive(Deserialize)]
+        struct LabelRow {
+            name: String,
+        }
+        let rows: Vec<LabelRow> = self
+            .db
+            .query("SELECT name FROM label WHERE task_id = $task_id ORDER BY name ASC")
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        Ok(rows.into_iter().map(|r| r.name).collect())
+    }
+
+    /// Count labels for a task.
+    pub async fn count_labels_for_task(&self, task_id: &str) -> Result<u32, TMemError> {
+        let rows: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM label \
+                 WHERE task_id = $task_id GROUP ALL",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        Ok(u32::try_from(rows.first().map_or(0, |r| r.count)).unwrap_or(u32::MAX))
+    }
+
+    /// Check if a task has ALL specified labels using a single query.
+    async fn task_has_all_labels(
+        &self,
+        task_id: &str,
+        labels: &[String],
+    ) -> Result<bool, TMemError> {
+        if labels.is_empty() {
+            return Ok(true);
+        }
+        let count: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM label \
+                 WHERE task_id = $task_id AND name IN $names GROUP ALL",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .bind(("names", labels.to_vec()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let found = count.first().map_or(0_u64, |r| r.count);
+        Ok(usize::try_from(found).unwrap_or(usize::MAX) >= labels.len())
+    }
+
+    // ── Comment queries ─────────────────────────────────────────────────────
+
+    /// Insert a comment for a task. Returns the generated `comment:uuid` ID.
+    pub async fn insert_comment(
+        &self,
+        task_id: &str,
+        content: &str,
+        author: &str,
+    ) -> Result<String, TMemError> {
+        let comment_id = format!("comment:{}", uuid::Uuid::new_v4());
+
+        self.db
+            .query(
+                "INSERT INTO comment { \
+                     id: type::thing('comment', $cid), \
+                     task_id: $task_id, \
+                     content: $content, \
+                     author: $author \
+                 }",
+            )
+            .bind((
+                "cid",
+                comment_id
+                    .strip_prefix("comment:")
+                    .unwrap_or(&comment_id)
+                    .to_string(),
+            ))
+            .bind(("task_id", task_id.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("author", author.to_string()))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(comment_id)
+    }
+
+    /// Retrieve all comments for a task, ordered by `created_at` ascending.
+    pub async fn get_comments_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<crate::models::Comment>, TMemError> {
+        let rows: Vec<CommentRow> = self
+            .db
+            .query(
+                "SELECT * FROM comment \
+                 WHERE task_id = $task_id \
+                 ORDER BY created_at ASC",
+            )
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        Ok(rows.into_iter().map(CommentRow::into_comment).collect())
+    }
+
+    /// Retrieve ALL comments in the workspace, ordered by task_id then created_at.
+    pub async fn all_comments(&self) -> Result<Vec<crate::models::Comment>, TMemError> {
+        let rows: Vec<CommentRow> = self
+            .db
+            .query("SELECT * FROM comment ORDER BY task_id ASC, created_at ASC")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        Ok(rows.into_iter().map(CommentRow::into_comment).collect())
+    }
+
+    // ── Compaction queries ───────────────────────────────────────────────────
+
+    /// Return done, non-pinned tasks older than `threshold_days`, ordered by
+    /// `updated_at` ascending, limited to `max_candidates`.
+    pub async fn get_compaction_candidates(
+        &self,
+        threshold_days: u32,
+        max_candidates: u32,
+    ) -> Result<Vec<Task>, TMemError> {
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "SELECT * FROM task \
+                 WHERE status = 'done' \
+                   AND pinned = false \
+                   AND updated_at < time::now() - type::duration($threshold) \
+                 ORDER BY updated_at ASC \
+                 LIMIT $max_limit",
+            )
+            .bind(("threshold", format!("{threshold_days}d")))
+            .bind(("max_limit", max_candidates))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    /// Apply compaction to a single task: replace description, increment
+    /// `compaction_level`, and set `compacted_at` to now.
+    pub async fn apply_compaction(&self, task_id: &str, summary: &str) -> Result<Task, TMemError> {
+        let record = Thing::from(("task", task_id));
+        let now = Utc::now().to_rfc3339();
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "UPDATE $record SET \
+                    description = $summary, \
+                    compaction_level = compaction_level + 1, \
+                    compacted_at = <datetime>$now, \
+                    updated_at = <datetime>$now \
+                 RETURN AFTER",
+            )
+            .bind(("record", record))
+            .bind(("summary", summary.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        rows.into_iter()
+            .next()
+            .map(TaskRow::into_task)
+            .ok_or_else(|| {
+                TMemError::Task(TaskError::CompactionFailed {
+                    id: task_id.to_string(),
+                    reason: "task not found".to_string(),
+                })
+            })
+    }
+
+    /// Atomically claim a task for a claimant.
+    ///
+    /// Uses a conditional `UPDATE ... WHERE assignee = NONE` to prevent
+    /// TOCTOU races. Returns `Ok(task)` if the claim succeeds.
+    /// Returns `AlreadyClaimed` if someone else holds the claim.
+    /// Returns `TaskNotFound` if the task does not exist.
+    pub async fn claim_task(&self, task_id: &str, claimant: &str) -> Result<Task, TMemError> {
+        let record = Thing::from(("task", task_id));
+        let now = Utc::now().to_rfc3339();
+
+        // Atomic conditional update: only succeeds when assignee is NONE
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "UPDATE $record SET \
+                    assignee = $claimant, \
+                    updated_at = <datetime>$now \
+                 WHERE assignee = NONE \
+                 RETURN AFTER",
+            )
+            .bind(("record", record.clone()))
+            .bind(("claimant", claimant.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        if let Some(task) = rows.into_iter().next().map(TaskRow::into_task) {
+            return Ok(task);
+        }
+
+        // UPDATE returned no rows: either task doesn't exist or already claimed
+        let task = self.get_task(task_id).await?.ok_or_else(|| {
+            TMemError::Task(TaskError::NotFound {
+                id: task_id.to_string(),
+            })
+        })?;
+
+        Err(TMemError::Task(TaskError::AlreadyClaimed {
+            id: task_id.to_string(),
+            assignee: task.assignee.unwrap_or_default(),
+        }))
+    }
+
+    /// Release a claimed task, clearing the assignee.
+    ///
+    /// Returns `Ok(previous_claimant)` on success.
+    /// Returns `NotClaimable` if the task has no current assignee.
+    /// Returns `TaskNotFound` if the task does not exist.
+    pub async fn release_task(&self, task_id: &str) -> Result<String, TMemError> {
+        let task = self.get_task(task_id).await?.ok_or_else(|| {
+            TMemError::Task(TaskError::NotFound {
+                id: task_id.to_string(),
+            })
+        })?;
+
+        let previous = task.assignee.ok_or_else(|| {
+            TMemError::Task(TaskError::NotClaimable {
+                id: task_id.to_string(),
+                status: "not claimed".to_string(),
+            })
+        })?;
+
+        let record = Thing::from(("task", task_id));
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .query(
+                "UPDATE $record SET \
+                    assignee = NONE, \
+                    updated_at = <datetime>$now \
+                 RETURN AFTER",
+            )
+            .bind(("record", record))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(previous)
     }
 
     pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {
@@ -381,7 +978,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(ContextRow::into_context).collect())
     }
 
@@ -393,7 +990,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(SpecRow::into_spec).collect())
     }
 
@@ -431,7 +1028,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
@@ -456,7 +1053,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
@@ -476,7 +1073,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
 
         let edges = rows
             .into_iter()
@@ -508,7 +1105,7 @@ impl Queries {
     /// Clear all data from the database (used for corruption recovery).
     pub async fn clear_all_data(&self) -> Result<(), TMemError> {
         self.db
-            .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to;")
+            .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to; DELETE label; DELETE comment;")
             .await
             .map_err(map_db_err)?;
         Ok(())
@@ -530,7 +1127,7 @@ impl Queries {
             .await
             .map_err(map_db_err)?
             .take(0)
-            .unwrap_or_default();
+            .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
@@ -556,18 +1153,168 @@ impl Queries {
 
         Ok(false)
     }
+
+    /// Compute aggregate workspace statistics.
+    ///
+    /// Returns grouped counts by status, priority, issue type, plus
+    /// deferred, pinned, claimed, and compaction metrics.
+    pub async fn get_workspace_statistics(&self) -> Result<WorkspaceStatistics, TMemError> {
+        // SurrealDB v2 GROUP BY requires SELECT fields to match GROUP BY columns
+        // exactly — aliasing with AS breaks grouping. Use per-field structs.
+
+        #[derive(Deserialize)]
+        struct StatusGroup {
+            #[serde(default)]
+            status: Option<String>,
+            count: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct PriorityGroup {
+            #[serde(default)]
+            priority: Option<String>,
+            count: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct TypeGroup {
+            #[serde(default)]
+            issue_type: Option<String>,
+            count: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct LabelGroupRow {
+            name: String,
+            count: u64,
+        }
+
+        let by_status: Vec<StatusGroup> = self
+            .db
+            .query("SELECT status, count() AS count FROM task GROUP BY status")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let by_priority: Vec<PriorityGroup> = self
+            .db
+            .query("SELECT priority, count() AS count FROM task GROUP BY priority")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let by_type: Vec<TypeGroup> = self
+            .db
+            .query("SELECT issue_type, count() AS count FROM task GROUP BY issue_type")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        // Label counts via label table
+        let by_label: Vec<LabelGroupRow> = self
+            .db
+            .query("SELECT name, count() AS count FROM label GROUP BY name")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        // Scalar counts
+        let deferred_rows: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM task \
+                 WHERE defer_until != NONE AND defer_until > time::now() GROUP ALL",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let pinned_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task WHERE pinned = true GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let claimed_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task WHERE assignee != NONE GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let compacted_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task WHERE compaction_level > 0 GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let total_rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM task GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+
+        let status_map: HashMap<String, u64> = by_status
+            .into_iter()
+            .filter_map(|r| r.status.map(|s| (s, r.count)))
+            .collect();
+        let priority_map: HashMap<String, u64> = by_priority
+            .into_iter()
+            .filter_map(|r| r.priority.map(|p| (p, r.count)))
+            .collect();
+        let type_map: HashMap<String, u64> = by_type
+            .into_iter()
+            .filter_map(|r| r.issue_type.map(|t| (t, r.count)))
+            .collect();
+
+        Ok(WorkspaceStatistics {
+            total_tasks: total_rows.first().map_or(0, |r| r.count),
+            by_status: status_map,
+            by_priority: priority_map,
+            by_type: type_map,
+            by_label: by_label.into_iter().map(|r| (r.name, r.count)).collect(),
+            deferred_count: deferred_rows.first().map_or(0, |r| r.count),
+            pinned_count: pinned_rows.first().map_or(0, |r| r.count),
+            claimed_count: claimed_rows.first().map_or(0, |r| r.count),
+            compacted_count: compacted_rows.first().map_or(0, |r| r.count),
+        })
+    }
 }
 
 fn format_dependency(kind: DependencyType) -> &'static str {
     match kind {
         DependencyType::HardBlocker => "hard_blocker",
         DependencyType::SoftDependency => "soft_dependency",
+        DependencyType::ChildOf => "child_of",
+        DependencyType::BlockedBy => "blocked_by",
+        DependencyType::DuplicateOf => "duplicate_of",
+        DependencyType::RelatedTo => "related_to",
+        DependencyType::Predecessor => "predecessor",
+        DependencyType::Successor => "successor",
     }
 }
 
 fn parse_dependency_type(raw: String) -> DependencyType {
     match raw.as_str() {
         "soft_dependency" => DependencyType::SoftDependency,
+        "child_of" => DependencyType::ChildOf,
+        "blocked_by" => DependencyType::BlockedBy,
+        "duplicate_of" => DependencyType::DuplicateOf,
+        "related_to" => DependencyType::RelatedTo,
+        "predecessor" => DependencyType::Predecessor,
+        "successor" => DependencyType::Successor,
         _ => DependencyType::HardBlocker,
     }
 }
@@ -604,6 +1351,16 @@ mod tests {
             work_item_id: None,
             description: String::new(),
             context_summary: None,
+            priority: "p2".to_owned(),
+            priority_order: 2,
+            issue_type: "task".to_owned(),
+            assignee: None,
+            defer_until: None,
+            pinned: false,
+            compaction_level: 0,
+            compacted_at: None,
+            workflow_state: None,
+            workflow_id: None,
             created_at: now,
             updated_at: now,
         }

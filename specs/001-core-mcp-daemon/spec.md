@@ -77,7 +77,7 @@ As an AI agent, I query the workspace memory using natural language so that I re
 1. **Given** a workspace with specs and context, **When** `query_memory("user login")` is called, **Then** the daemon returns ranked snippets combining vector similarity and keyword matching
 2. **Given** the embedding model is not yet downloaded, **When** `query_memory` is called for the first time, **Then** the model is lazily downloaded to `~/.local/share/t-mem/models/`
 3. **Given** no network access and model in cache, **When** `query_memory` is called, **Then** the search completes using cached model (offline-capable)
-4. **Given** a query exceeding 2000 characters, **When** `query_memory` is called, **Then** error code 4001 (QueryTooLong) is returned
+4. **Given** a query exceeding 500 tokens, **When** `query_memory` is called, **Then** error code 4001 (QueryTooLong) is returned
 
 ---
 

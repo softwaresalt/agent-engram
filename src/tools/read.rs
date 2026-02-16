@@ -1,12 +1,17 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::connect_db;
-use crate::db::queries::Queries;
+use crate::db::queries::{Queries, ReadyWorkParams};
 use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
+use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
 use crate::server::state::SharedState;
 use crate::services::embedding;
+use crate::services::output::{self, filter_value};
 use crate::services::search::{SearchCandidate, hybrid_search};
 
 #[derive(Deserialize)]
@@ -14,11 +19,23 @@ struct TaskGraphParams {
     root_task_id: String,
     #[serde(default = "default_depth")]
     depth: u32,
+    /// Accepted for API consistency; graph nodes are already compact.
+    #[serde(default)]
+    #[allow(dead_code)]
+    brief: bool,
+    /// Accepted for API consistency; graph nodes are already compact.
+    #[serde(default)]
+    #[allow(dead_code)]
+    fields: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct CheckStatusParams {
     work_item_ids: Vec<String>,
+    #[serde(default)]
+    brief: bool,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -26,7 +43,14 @@ struct TaskNode {
     id: String,
     status: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    children: Vec<TaskNode>,
+    children: Vec<EdgeNode>,
+}
+
+#[derive(Serialize)]
+struct EdgeNode {
+    dependency_type: String,
+    #[serde(flatten)]
+    node: TaskNode,
 }
 
 fn default_depth() -> u32 {
@@ -70,7 +94,11 @@ pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result
             })
         })?;
 
-    let root_node = build_node(&queries, root, parsed.depth).await?;
+    // TaskGraphParams accepts brief/fields for API consistency, but graph
+    // nodes are already compact (id + status + children), so we only forward
+    // the structural depth parameter.
+    let visited = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
+    let root_node = build_node(&queries, root, parsed.depth, &visited).await?;
 
     Ok(json!({
         "root": root_node,
@@ -96,18 +124,163 @@ pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<V
         let task = queries.task_by_work_item(&id).await?;
 
         if let Some(task) = task {
-            statuses.insert(
-                id.clone(),
-                json!({
-                    "task_id": task.id,
-                    "status": task.status.as_str().to_string(),
-                    "updated_at": task.updated_at.to_rfc3339(),
-                }),
-            );
+            let task_value = json!({
+                "task_id": task.id,
+                "status": task.status.as_str().to_string(),
+                "updated_at": task.updated_at.to_rfc3339(),
+            });
+            let filtered = filter_value(task_value, parsed.brief, parsed.fields.as_deref());
+            statuses.insert(id.clone(), filtered);
         }
     }
 
     Ok(json!({ "statuses": statuses }))
+}
+
+// ── get_ready_work ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetReadyWorkParams {
+    #[serde(default = "default_ready_limit")]
+    limit: u32,
+    #[serde(default)]
+    label: Option<Vec<String>>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    issue_type: Option<String>,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    brief: bool,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
+}
+
+fn default_ready_limit() -> u32 {
+    10
+}
+
+/// Get prioritized list of actionable tasks.
+pub async fn get_ready_work(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: GetReadyWorkParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+
+    let query_params = ReadyWorkParams {
+        limit: parsed.limit,
+        labels: parsed.label.unwrap_or_default(),
+        priority: parsed.priority,
+        issue_type: parsed.issue_type,
+        assignee: parsed.assignee,
+    };
+
+    let result = queries.get_ready_work(&query_params).await?;
+
+    let task_values: Vec<Value> = result
+        .tasks
+        .into_iter()
+        .map(|t| output::serialize_task(&t, parsed.brief, parsed.fields.as_deref()))
+        .collect();
+
+    Ok(json!({
+        "tasks": task_values,
+        "total_eligible": result.total_eligible,
+    }))
+}
+
+// ── Workspace statistics ─────────────────────────────────────────────────
+
+/// Return aggregate counts by status, priority, type, and label.
+pub async fn get_workspace_statistics(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, TMemError> {
+    ensure_workspace(&state).await?;
+
+    let ws_id = workspace_id(&state).await?;
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db.clone());
+
+    let statistics = queries.get_workspace_statistics().await?;
+
+    Ok(json!({
+        "total_tasks": statistics.total_tasks,
+        "by_status": statistics.by_status,
+        "by_priority": statistics.by_priority,
+        "by_type": statistics.by_type,
+        "by_label": statistics.by_label,
+        "deferred_count": statistics.deferred_count,
+        "pinned_count": statistics.pinned_count,
+        "claimed_count": statistics.claimed_count,
+        "compacted_count": statistics.compacted_count,
+    }))
+}
+
+// ── Compaction candidates ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetCompactionCandidatesParams {
+    #[serde(default)]
+    threshold_days: Option<u32>,
+    #[serde(default)]
+    max_candidates: Option<u32>,
+}
+
+/// Return done, non-pinned tasks older than `threshold_days`.
+pub async fn get_compaction_candidates(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, TMemError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: GetCompactionCandidatesParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            TMemError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // Read compaction config from workspace or use defaults
+    let config = state
+        .workspace_config()
+        .await
+        .map_or_else(CompactionConfig::default, |c| c.compaction);
+
+    let threshold = parsed.threshold_days.unwrap_or(config.threshold_days);
+    let max = parsed.max_candidates.unwrap_or(config.max_candidates);
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+
+    let candidates = queries.get_compaction_candidates(threshold, max).await?;
+
+    let now = chrono::Utc::now();
+    let candidate_values: Vec<Value> = candidates
+        .into_iter()
+        .map(|t| {
+            let age_days = (now - t.updated_at).num_days();
+            json!({
+                "task_id": t.id,
+                "title": t.title,
+                "description": t.description,
+                "compaction_level": t.compaction_level,
+                "age_days": age_days,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "candidates": candidate_values }))
 }
 
 #[derive(Deserialize)]
@@ -184,11 +357,12 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     Ok(json!({ "results": results }))
 }
 
-fn build_node(
-    queries: &Queries,
+fn build_node<'a>(
+    queries: &'a Queries,
     task: Task,
     depth: u32,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, TMemError>> + Send + '_>> {
+    visited: &'a Arc<tokio::sync::Mutex<HashSet<String>>>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, TMemError>> + Send + 'a>> {
     Box::pin(async move {
         if depth == 0 {
             return Ok(TaskNode {
@@ -202,9 +376,22 @@ fn build_node(
         let mut children = Vec::new();
 
         for edge in edges {
+            // Skip already-visited nodes to avoid exponential traversal on diamonds
+            {
+                let mut v = visited.lock().await;
+                if !v.insert(edge.to.clone()) {
+                    continue;
+                }
+            }
             if let Some(child_task) = queries.get_task(&edge.to).await? {
-                let child = build_node(queries, child_task, depth - 1).await?;
-                children.push(child);
+                let child = build_node(queries, child_task, depth - 1, visited).await?;
+                children.push(EdgeNode {
+                    dependency_type: serde_json::to_value(edge.kind)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    node: child,
+                });
             }
         }
 
