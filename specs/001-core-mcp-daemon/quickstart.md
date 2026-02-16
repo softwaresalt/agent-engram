@@ -1,6 +1,6 @@
-# Quickstart: T-Mem Development
+# Quickstart: engram Development
 
-**Purpose**: Get developers up and running with T-Mem development
+**Purpose**: Get developers up and running with engram development
 **Prerequisites**: Rust 1.85+, Git
 
 ## Environment Setup
@@ -39,8 +39,8 @@ cargo install cargo-tarpaulin
 
 ```bash
 # Clone repository
-git clone https://github.com/softwaresalt/t-mem.git
-cd t-mem
+git clone https://github.com/softwaresalt/engram.git
+cd engram
 
 # Build all targets
 cargo build
@@ -60,11 +60,11 @@ cargo fmt --check
 ## Project Structure
 
 ```
-t-mem/
+engram/
 ├── Cargo.toml           # Workspace manifest
 ├── src/
 │   ├── lib.rs           # Library root
-│   ├── bin/t-mem.rs     # Daemon binary entry
+│   ├── bin/engram.rs     # Daemon binary entry
 │   ├── server/          # HTTP/SSE layer
 │   ├── db/              # SurrealDB layer
 │   ├── models/          # Domain entities
@@ -84,7 +84,7 @@ t-mem/
 
 ```bash
 # Start with debug logging
-RUST_LOG=t_mem=debug cargo run
+RUST_LOG=engram=debug cargo run
 
 # Start on specific port
 PORT=7437 cargo run
@@ -97,12 +97,12 @@ cargo run -- --max-workspaces 5 --stale-strategy rehydrate
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
-| `--port` | `TMEM_PORT` | `7437` | Listening port on 127.0.0.1 |
-| `--max-workspaces` | `TMEM_MAX_WORKSPACES` | `10` | Max concurrent active workspaces |
-| `--request-timeout-ms` | `TMEM_REQUEST_TIMEOUT_MS` | `60000` | Request timeout in milliseconds |
-| `--log-format` | `TMEM_LOG_FORMAT` | `pretty` | Tracing output: `json` or `pretty` |
-| `--stale-strategy` | `TMEM_STALE_STRATEGY` | `warn` | Stale `.tmem/` file behavior: `warn`, `rehydrate`, `fail` |
-| `--data-dir` | `TMEM_DATA_DIR` | `~/.local/share/t-mem/` | SurrealDB and model cache directory |
+| `--port` | `ENGRAM_PORT` | `7437` | Listening port on 127.0.0.1 |
+| `--max-workspaces` | `ENGRAM_MAX_WORKSPACES` | `10` | Max concurrent active workspaces |
+| `--request-timeout-ms` | `ENGRAM_REQUEST_TIMEOUT_MS` | `60000` | Request timeout in milliseconds |
+| `--log-format` | `ENGRAM_LOG_FORMAT` | `pretty` | Tracing output: `json` or `pretty` |
+| `--stale-strategy` | `ENGRAM_STALE_STRATEGY` | `warn` | Stale `.engram/` file behavior: `warn`, `rehydrate`, `fail` |
+| `--data-dir` | `ENGRAM_DATA_DIR` | `~/.local/share/engram/` | SurrealDB and model cache directory |
 
 ### Testing with curl
 
@@ -175,7 +175,7 @@ cargo test test_set_workspace
 pub async fn set_workspace(
     state: &AppState,
     path: String,
-) -> Result<WorkspaceResult, TMemError> {
+) -> Result<WorkspaceResult, EngramError> {
     let canonical = std::fs::canonicalize(&path)
         .map_err(|_| WorkspaceError::NotFound { path: path.clone() })?;
     
@@ -242,7 +242,7 @@ Full daemon tests in `tests/`:
 #[tokio::test]
 async fn test_hydration_dehydration_round_trip() {
     let repo = TempGitRepo::new();
-    repo.write_tmem_tasks(sample_tasks());
+    repo.write_ENGRAM_tasks(sample_tasks());
     
     let daemon = TestDaemon::spawn().await;
     daemon.set_workspace(repo.path()).await.unwrap();
@@ -254,7 +254,7 @@ async fn test_hydration_dehydration_round_trip() {
     daemon.flush_state().await.unwrap();
     
     // Verify file content
-    let content = repo.read_tmem_tasks();
+    let content = repo.read_ENGRAM_tasks();
     assert!(content.contains("status: in_progress"));
 }
 ```
@@ -301,7 +301,7 @@ proptest! {
 ```bash
 # Connect to embedded SurrealDB
 # (requires surreal CLI)
-surreal sql --conn file://~/.local/share/t-mem/db/{workspace_hash}
+surreal sql --conn file://~/.local/share/engram/db/{workspace_hash}
 
 # Query tasks
 SELECT * FROM task;
@@ -343,7 +343,7 @@ cargo build --release
 
 # Profile with flamegraph
 cargo install flamegraph
-cargo flamegraph --bin t-mem
+cargo flamegraph --bin engram
 ```
 
 ---

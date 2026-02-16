@@ -88,5 +88,5 @@ DEFINE TABLE IF NOT EXISTS implements SCHEMALESS TYPE RELATION;
 DEFINE TABLE IF NOT EXISTS relates_to SCHEMALESS TYPE RELATION;
 "#;
 
-/// Schema version constant for `.tmem/.version` file.
+/// Schema version constant for `.engram/.version` file.
 pub const SCHEMA_VERSION: &str = "2.0.0";

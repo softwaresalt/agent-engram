@@ -3,8 +3,8 @@
 //! Verifies lazy model behavior, graceful degradation when the `embeddings`
 //! feature is disabled, and keyword-only hybrid search integration.
 
-use t_mem::services::embedding::{self, EMBEDDING_DIM, MAX_QUERY_CHARS};
-use t_mem::services::search::{self, SearchCandidate, hybrid_search};
+use engram::services::embedding::{self, EMBEDDING_DIM, MAX_QUERY_CHARS};
+use engram::services::search::{self, SearchCandidate, hybrid_search};
 
 // ── Model cache directory ────────────────────────────────────────
 
@@ -13,8 +13,8 @@ fn model_cache_dir_is_under_data_dir() {
     let dir = embedding::model_cache_dir();
     let path_str = dir.to_string_lossy();
     assert!(
-        path_str.contains("t-mem") && path_str.contains("models"),
-        "expected path containing t-mem/models, got {path_str}"
+        path_str.contains("engram") && path_str.contains("models"),
+        "expected path containing engram/models, got {path_str}"
     );
 }
 
@@ -34,7 +34,7 @@ fn embed_text_returns_model_not_loaded_without_feature() {
     let code = err.to_response().error.code;
     assert_eq!(
         code,
-        t_mem::errors::codes::MODEL_NOT_LOADED,
+        engram::errors::codes::MODEL_NOT_LOADED,
         "expected MODEL_NOT_LOADED error code"
     );
 }
@@ -44,7 +44,7 @@ fn embed_text_returns_model_not_loaded_without_feature() {
 fn embed_texts_returns_model_not_loaded_without_feature() {
     let err = embedding::embed_texts(&["hello".to_string()]).unwrap_err();
     let code = err.to_response().error.code;
-    assert_eq!(code, t_mem::errors::codes::MODEL_NOT_LOADED);
+    assert_eq!(code, engram::errors::codes::MODEL_NOT_LOADED);
 }
 
 // ── Query validation ─────────────────────────────────────────────
@@ -59,7 +59,7 @@ fn validate_query_length_rejects_over_limit() {
     let long = "a".repeat(MAX_QUERY_CHARS + 1);
     let err = embedding::validate_query_length(&long).unwrap_err();
     let code = err.to_response().error.code;
-    assert_eq!(code, t_mem::errors::codes::QUERY_TOO_LONG);
+    assert_eq!(code, engram::errors::codes::QUERY_TOO_LONG);
 }
 
 // ── Hybrid search keyword-only fallback ──────────────────────────

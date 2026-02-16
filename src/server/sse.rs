@@ -13,7 +13,7 @@ use axum::{
 use tokio_stream::{StreamExt, wrappers::IntervalStream};
 use uuid::Uuid;
 
-use crate::errors::{SystemError, TMemError};
+use crate::errors::{EngramError, SystemError};
 use crate::server::state::SharedState;
 
 /// Guard that unregisters a connection on drop (US5/T095).
@@ -44,7 +44,7 @@ impl Drop for ConnectionGuard {
 pub async fn sse_handler(State(state): State<SharedState>) -> Response {
     // FR-025: Rate limit check before accepting connection
     if !state.check_rate_limit().await {
-        let err = TMemError::System(SystemError::RateLimited);
+        let err = EngramError::System(SystemError::RateLimited);
         return (StatusCode::TOO_MANY_REQUESTS, Json(err.to_response())).into_response();
     }
 

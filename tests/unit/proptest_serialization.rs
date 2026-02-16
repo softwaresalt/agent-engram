@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use chrono::Utc;
 use proptest::prelude::*;
 
-use t_mem::models::task::{Task, TaskStatus, compute_priority_order};
-use t_mem::services::dehydration::serialize_tasks_md;
-use t_mem::services::hydration::parse_tasks_md;
+use engram::models::task::{Task, TaskStatus, compute_priority_order};
+use engram::services::dehydration::serialize_tasks_md;
+use engram::services::hydration::parse_tasks_md;
 
 fn arb_status() -> impl Strategy<Value = TaskStatus> {
     prop_oneof![

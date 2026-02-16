@@ -2,7 +2,7 @@ use axum::{Json, extract::State, response::IntoResponse};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{errors::TMemError, server::state::SharedState, tools};
+use crate::{errors::EngramError, server::state::SharedState, tools};
 
 #[derive(Deserialize)]
 struct RpcRequest {
@@ -24,7 +24,7 @@ pub async fn mcp_handler(
     let req: RpcRequest = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
-            let err = TMemError::System(crate::errors::SystemError::InvalidParams {
+            let err = EngramError::System(crate::errors::SystemError::InvalidParams {
                 reason: format!("Invalid request: {e}"),
             })
             .to_response();

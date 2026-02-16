@@ -1,11 +1,11 @@
 use chrono::Utc;
 use proptest::prelude::*;
 
-use t_mem::models::comment::Comment;
-use t_mem::models::config::{BatchConfig, CompactionConfig, WorkspaceConfig};
-use t_mem::models::graph::DependencyType;
-use t_mem::models::label::Label;
-use t_mem::models::task::{Task, TaskStatus};
+use engram::models::comment::Comment;
+use engram::models::config::{BatchConfig, CompactionConfig, WorkspaceConfig};
+use engram::models::graph::DependencyType;
+use engram::models::label::Label;
+use engram::models::task::{Task, TaskStatus};
 
 fn arb_status() -> impl Strategy<Value = TaskStatus> {
     prop_oneof![
@@ -58,7 +58,7 @@ fn arb_task() -> impl Strategy<Value = Task> {
                 compaction_level,
             )| {
                 let now = Utc::now();
-                let priority_order = t_mem::models::task::compute_priority_order(priority);
+                let priority_order = engram::models::task::compute_priority_order(priority);
                 Task {
                     id,
                     title,

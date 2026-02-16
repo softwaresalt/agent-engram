@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::errors::TMemError;
+use crate::errors::EngramError;
 use crate::services::embedding;
 
 /// Weight for vector similarity in final score.
@@ -100,7 +100,7 @@ pub fn hybrid_search(
     query: &str,
     candidates: &[SearchCandidate],
     limit: usize,
-) -> Result<Vec<SearchResult>, TMemError> {
+) -> Result<Vec<SearchResult>, EngramError> {
     embedding::validate_query_length(query)?;
 
     let query_embedding: Option<Vec<f32>> = embedding::embed_text(query).ok();

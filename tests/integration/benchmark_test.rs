@@ -7,9 +7,9 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
-use t_mem::db::queries::Queries;
-use t_mem::models::task::{Task, TaskStatus};
-use t_mem::server::state::AppState;
+use engram::db::queries::Queries;
+use engram::models::task::{Task, TaskStatus};
+use engram::server::state::AppState;
 
 fn fresh_state() -> Arc<AppState> {
     Arc::new(AppState::new(10))
@@ -47,7 +47,7 @@ fn make_task(id: &str) -> Task {
 fn t097_cold_start_under_200ms() {
     let start = Instant::now();
     let state = fresh_state();
-    let _router = t_mem::server::router::build_router(state);
+    let _router = engram::server::router::build_router(state);
     let elapsed = start.elapsed();
 
     println!("T097 cold start: {elapsed:?} (target: <200ms)");
@@ -60,14 +60,14 @@ fn t097_cold_start_under_200ms() {
 
 /// T098: Benchmark hydration time with 1000 tasks (target: < 500ms).
 ///
-/// Creates a `.tmem/tasks.md` file with 1000 task entries, then measures
+/// Creates a `.engram/tasks.md` file with 1000 task entries, then measures
 /// the time to parse them via `hydrate_into_db`.
 #[tokio::test]
 async fn t098_hydration_1000_tasks_under_500ms() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
-    let tmem_dir = workspace.join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create tmem dir");
+    let engram_dir = workspace.join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create engram dir");
 
     // Generate 1000-task tasks.md
     let mut content = String::from("# Tasks\n\n");
@@ -78,7 +78,7 @@ async fn t098_hydration_1000_tasks_under_500ms() {
             "## task:bench{i}\n\n---\nid: task:bench{i}\ntitle: Task {i}\nstatus: todo\ncreated_at: {now}\nupdated_at: {now}\n---\n\nDescription for task {i}.\n\n"
         ).unwrap();
     }
-    std::fs::write(tmem_dir.join("tasks.md"), &content).expect("write tasks.md");
+    std::fs::write(engram_dir.join("tasks.md"), &content).expect("write tasks.md");
 
     // Create embedded DB for hydration
     let db_dir = dir.path().join("db");
@@ -87,17 +87,17 @@ async fn t098_hydration_1000_tasks_under_500ms() {
         surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(db_dir.to_str().unwrap())
             .await
             .expect("db");
-    db.use_ns("tmem").use_db("bench").await.expect("ns");
-    db.query(t_mem::db::schema::DEFINE_TASK)
+    db.use_ns("engram").use_db("bench").await.expect("ns");
+    db.query(engram::db::schema::DEFINE_TASK)
         .await
         .expect("schema");
-    db.query(t_mem::db::schema::DEFINE_RELATIONSHIPS)
+    db.query(engram::db::schema::DEFINE_RELATIONSHIPS)
         .await
         .expect("schema rel");
     let queries = Queries::new(db);
 
     let start = Instant::now();
-    let result = t_mem::services::hydration::hydrate_into_db(workspace, &queries)
+    let result = engram::services::hydration::hydrate_into_db(workspace, &queries)
         .await
         .expect("hydrate");
     let elapsed = start.elapsed();
@@ -125,8 +125,11 @@ async fn t100_update_task_under_10ms() {
     )
     .await
     .expect("db");
-    db.use_ns("tmem").use_db("bench_update").await.expect("ns");
-    db.query(t_mem::db::schema::DEFINE_TASK)
+    db.use_ns("engram")
+        .use_db("bench_update")
+        .await
+        .expect("ns");
+    db.query(engram::db::schema::DEFINE_TASK)
         .await
         .expect("schema");
     let queries = Queries::new(db);
@@ -178,7 +181,7 @@ fn t101_idle_memory_under_100mb() {
 /// Measures keyword-only search time (no embeddings) across a moderate corpus.
 #[test]
 fn t099_query_memory_under_50ms() {
-    use t_mem::services::search::{SearchCandidate, hybrid_search};
+    use engram::services::search::{SearchCandidate, hybrid_search};
 
     // Build a corpus of 100 candidates
     let candidates: Vec<SearchCandidate> = (0..100)
@@ -217,21 +220,21 @@ async fn t119_flush_state_under_1s() {
     let db_dir = dir.path().join("db");
     std::fs::create_dir_all(&db_dir).expect("create db dir");
     let workspace = dir.path();
-    let tmem_dir = workspace.join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create tmem dir");
+    let engram_dir = workspace.join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create engram dir");
 
     let db =
         surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(db_dir.to_str().unwrap())
             .await
             .expect("db");
-    db.use_ns("tmem").use_db("bench_flush").await.expect("ns");
-    db.query(t_mem::db::schema::DEFINE_TASK)
+    db.use_ns("engram").use_db("bench_flush").await.expect("ns");
+    db.query(engram::db::schema::DEFINE_TASK)
         .await
         .expect("schema");
-    db.query(t_mem::db::schema::DEFINE_RELATIONSHIPS)
+    db.query(engram::db::schema::DEFINE_RELATIONSHIPS)
         .await
         .expect("schema rel");
-    db.query(t_mem::db::schema::DEFINE_CONTEXT)
+    db.query(engram::db::schema::DEFINE_CONTEXT)
         .await
         .expect("schema ctx");
     let queries = Queries::new(db);
@@ -245,7 +248,7 @@ async fn t119_flush_state_under_1s() {
     }
 
     let start = Instant::now();
-    let result = t_mem::services::dehydration::dehydrate_workspace(&queries, workspace)
+    let result = engram::services::dehydration::dehydrate_workspace(&queries, workspace)
         .await
         .expect("dehydrate");
     let elapsed = start.elapsed();

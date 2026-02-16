@@ -1,4 +1,4 @@
-# Tasks: T-Mem Core MCP Daemon
+# Tasks: engram Core MCP Daemon
 
 **Input**: Design documents from `/specs/001-core-mcp-daemon/`
 **Prerequisites**: plan.md ✅, spec.md ✅, research.md ✅, data-model.md ✅, contracts/ ✅
@@ -16,7 +16,7 @@
 ## Path Conventions
 
 - **Single Rust workspace**: `src/`, `tests/` at repository root
-- Binary: `src/bin/t-mem.rs`
+- Binary: `src/bin/engram.rs`
 - Library modules: `src/{module}/mod.rs`
 
 ---
@@ -27,7 +27,7 @@
 
 - [X] T001 Create Cargo.toml workspace manifest with dependencies per research.md
 - [X] T002 [P] Create src/lib.rs with crate-level attributes (`#![forbid(unsafe_code)]`, `#![warn(clippy::pedantic)]`)
-- [X] T003 [P] Create src/bin/t-mem.rs binary entrypoint skeleton
+- [X] T003 [P] Create src/bin/engram.rs binary entrypoint skeleton
 - [X] T004 [P] Configure .cargo/config.toml for clippy and rustfmt settings
 - [X] T005 [P] Create rust-toolchain.toml specifying Rust 2024 edition (1.82+)
 - [X] T006 [P] Create .github/workflows/ci.yml for cargo fmt, clippy, test, audit
@@ -42,7 +42,7 @@
 
 ### Error Infrastructure
 
-- [X] T007 Create src/errors/mod.rs with TMemError enum wrapping all error types
+- [X] T007 Create src/errors/mod.rs with EngramError enum wrapping all error types
 - [X] T008 [P] Create src/errors/codes.rs with error code constants (1xxx-5xxx per error taxonomy)
 - [X] T009 [P] Implement MCP-compatible JSON error response serialization in src/errors/mod.rs
 
@@ -110,7 +110,7 @@
 - [X] T037 [US1] Create src/tools/mod.rs with MCP tool registry and dispatch
 - [X] T038 [US1] Add SSE keepalive ping (15s interval) in src/server/sse.rs
 - [X] T039 [US1] Add connection timeout handling (60s configurable) in src/server/sse.rs
-- [X] T040 [US1] Wire up daemon main() in src/bin/t-mem.rs with graceful shutdown (SIGTERM/SIGINT)
+- [X] T040 [US1] Wire up daemon main() in src/bin/engram.rs with graceful shutdown (SIGTERM/SIGINT)
 
 ### Clarification Updates (Session 2026-02-09)
 
@@ -176,21 +176,21 @@
 
 ## Phase 5: User Story 3 - Git-Backed Persistence (Priority: P3)
 
-**Goal**: Workspace state serializes to .tmem/ files preserving user comments
+**Goal**: Workspace state serializes to .engram/ files preserving user comments
 
 **Independent Test**: Modify state, flush_state, verify tasks.md human-readable with comments preserved, hydrate verifies round-trip
 
 ### Tests for User Story 3
 
 - [X] T057 [P] [US3] Contract test for flush_state in tests/contract/write_test.rs
-- [X] T058 [P] [US3] Integration test for hydration from .tmem/ files in tests/integration/hydration_test.rs
+- [X] T058 [P] [US3] Integration test for hydration from .engram/ files in tests/integration/hydration_test.rs
 - [X] T059 [P] [US3] Integration test for dehydration preserving comments in tests/integration/hydration_test.rs
 - [X] T060 [P] [US3] Property test for markdown round-trip in tests/unit/proptest_serialization.rs
 - [X] T061 [P] [US3] Unit test for stale file detection in src/services/hydration.rs
 
 ### Implementation for User Story 3
 
-- [X] T062 [US3] Create src/services/hydration.rs with .tmem/ file parsing (pulldown-cmark)
+- [X] T062 [US3] Create src/services/hydration.rs with .engram/ file parsing (pulldown-cmark)
 - [X] T063 [US3] Implement tasks.md parser extracting YAML frontmatter and descriptions
 - [X] T064 [US3] Implement graph.surql parser for RELATE statements
 - [X] T065 [US3] Implement .version and .lastflush file handling
@@ -213,7 +213,7 @@
 
 ### Analyze Remediation (Session 2026-02-12)
 
-- [X] T108 [US3] Add graceful shutdown flush of all active workspaces on SIGTERM/SIGINT in src/bin/t-mem.rs (FR-006 MUST requirement; moved from Phase 8)
+- [X] T108 [US3] Add graceful shutdown flush of all active workspaces on SIGTERM/SIGINT in src/bin/engram.rs (FR-006 MUST requirement; moved from Phase 8)
 
 **Checkpoint**: Git-backed persistence with comment preservation, stale-file detection, and shutdown flush functional
 
@@ -235,7 +235,7 @@
 ### Implementation for User Story 4
 
 - [X] T077 [US4] Create src/services/embedding.rs with fastembed-rs integration
-- [X] T078 [US4] Implement lazy model download to ~/.local/share/t-mem/models/
+- [X] T078 [US4] Implement lazy model download to ~/.local/share/engram/models/
 - [X] T079 [US4] Implement embedding generation for spec and context content
 - [X] T080 [US4] Create src/services/search.rs with hybrid search logic
 - [X] T081 [US4] Implement vector similarity search using SurrealDB MTREE index

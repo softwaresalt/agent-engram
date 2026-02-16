@@ -1,4 +1,4 @@
-//! Typed error hierarchy for T-Mem domain operations.
+//! Typed error hierarchy for Engram domain operations.
 //!
 //! Errors are organized by domain: workspace (1xxx), hydration (2xxx),
 //! task (3xxx), query (4xxx), and system (5xxx). Each variant maps to a
@@ -108,7 +108,7 @@ pub enum SystemError {
 }
 
 #[derive(Debug, Error)]
-pub enum TMemError {
+pub enum EngramError {
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
     #[error(transparent)]
@@ -137,10 +137,10 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-impl TMemError {
+impl EngramError {
     pub fn to_response(&self) -> ErrorResponse {
         let (code, name, message, details) = match self {
-            TMemError::Workspace(inner) => match inner {
+            EngramError::Workspace(inner) => match inner {
                 WorkspaceError::NotFound { path } => (
                     WORKSPACE_NOT_FOUND,
                     "WorkspaceNotFound",
@@ -172,7 +172,7 @@ impl TMemError {
                     Some(json!({ "limit": limit })),
                 ),
             },
-            TMemError::Hydration(inner) => match inner {
+            EngramError::Hydration(inner) => match inner {
                 HydrationError::Failed { reason } => (
                     HYDRATION_FAILED,
                     "HydrationFailed",
@@ -195,7 +195,7 @@ impl TMemError {
                     (STALE_WORKSPACE, "StaleWorkspace", inner.to_string(), None)
                 }
             },
-            TMemError::Task(inner) => match inner {
+            EngramError::Task(inner) => match inner {
                 TaskError::NotFound { id } => (
                     TASK_NOT_FOUND,
                     "TaskNotFound",
@@ -282,7 +282,7 @@ impl TMemError {
                     None,
                 ),
             },
-            TMemError::Query(inner) => match inner {
+            EngramError::Query(inner) => match inner {
                 QueryError::QueryTooLong => {
                     (QUERY_TOO_LONG, "QueryTooLong", inner.to_string(), None)
                 }
@@ -296,7 +296,7 @@ impl TMemError {
                     Some(json!({ "reason": reason })),
                 ),
             },
-            TMemError::System(inner) => match inner {
+            EngramError::System(inner) => match inner {
                 SystemError::DatabaseError { reason } => (
                     DATABASE_ERROR,
                     "DatabaseError",
@@ -320,7 +320,7 @@ impl TMemError {
                     Some(json!({ "reason": reason })),
                 ),
             },
-            TMemError::Config(inner) => match inner {
+            EngramError::Config(inner) => match inner {
                 ConfigError::ParseError { reason } => (
                     CONFIG_PARSE_ERROR,
                     "ConfigParseError",
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn maps_workspace_not_found() {
-        let err = TMemError::from(WorkspaceError::NotFound {
+        let err = EngramError::from(WorkspaceError::NotFound {
             path: "./missing".into(),
         });
         let payload = err.to_response();

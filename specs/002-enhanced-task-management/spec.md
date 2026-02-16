@@ -8,7 +8,7 @@
 ## User Scenarios & Testing *(mandatory)*
 
 <!--
-  User stories derived from gap analysis between t-mem v0 and the beads task memory system.
+  User stories derived from gap analysis between engram v0 and the beads task memory system.
   Each story represents an independently deliverable slice of enhanced task management.
   Architectural decisions resolved prior to specification:
   - Compaction: Agent-driven analyze/apply pattern (no API key, no embedded LLM)
@@ -21,7 +21,7 @@
 
 As an AI agent or orchestrator, I query the workspace for the next actionable task so that I always work on the highest-priority unblocked item without manually scanning all tasks.
 
-**Why this priority**: This is the single highest-value feature gap. Without a ready-work queue, agents must fetch all tasks and manually filter for actionable items. A smart query that returns prioritized, unblocked, undeferred tasks transforms t-mem from passive storage into an active work coordinator.
+**Why this priority**: This is the single highest-value feature gap. Without a ready-work queue, agents must fetch all tasks and manually filter for actionable items. A smart query that returns prioritized, unblocked, undeferred tasks transforms engram from passive storage into an active work coordinator.
 
 **Independent Test**: Create a workspace with 20 tasks across multiple priority levels, block 5 of them, defer 3 to a future date, and call `get_ready_work`. Verify only unblocked, undeferred tasks are returned, sorted by priority then creation date.
 
@@ -75,7 +75,7 @@ As an orchestrator tracking complex projects, I model richer relationships betwe
 
 As an AI agent with limited context windows, I compact old completed tasks into concise summaries so that the workspace memory stays within token limits while preserving key decisions and outcomes.
 
-**Why this priority**: As workspaces accumulate hundreds of completed tasks, the context payload grows beyond what agents can effectively use. Compaction is a two-phase MCP flow: the agent calls `get_compaction_candidates` to receive stale tasks, uses its own LLM capabilities to generate summaries, then calls `apply_compaction` to store the compressed versions. This avoids requiring t-mem to embed its own LLM or manage API keys.
+**Why this priority**: As workspaces accumulate hundreds of completed tasks, the context payload grows beyond what agents can effectively use. Compaction is a two-phase MCP flow: the agent calls `get_compaction_candidates` to receive stale tasks, uses its own LLM capabilities to generate summaries, then calls `apply_compaction` to store the compressed versions. This avoids requiring engram to embed its own LLM or manage API keys.
 
 **Independent Test**: Create a workspace with 50 completed tasks older than 7 days. Call `get_compaction_candidates` and verify a list of eligible tasks with their full content is returned. Generate summaries externally, call `apply_compaction` with the summaries, and verify the originals are replaced with compact versions. Verify compacted tasks maintain their graph relationships.
 
@@ -181,22 +181,22 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 
 **Why this priority**: Configuration is the foundation that allows priorities, types, and compaction to be extensible rather than hardcoded. It is listed last because the system should work with sensible defaults; configuration enhances rather than enables.
 
-**Independent Test**: Create a `.tmem/config.toml` file with custom priority levels and compaction thresholds. Verify the daemon reads the config on workspace hydration and applies the custom values.
+**Independent Test**: Create a `.engram/config.toml` file with custom priority levels and compaction thresholds. Verify the daemon reads the config on workspace hydration and applies the custom values.
 
 **Acceptance Scenarios**:
 
-1. **Given** no `.tmem/config.toml` file exists, **When** the workspace is hydrated, **Then** the system uses built-in defaults (priorities p0–p4, default type "task", compaction threshold 7 days)
-2. **Given** a `.tmem/config.toml` with custom priority names, **When** a task is created with a custom priority, **Then** the system accepts and stores the custom priority value
-3. **Given** a `.tmem/config.toml` with `compaction.threshold_days = 14`, **When** `get_compaction_candidates()` is called, **Then** only tasks older than 14 days are eligible
-4. **Given** a `.tmem/config.toml` with an `allowed_labels` list, **When** `add_label` is called with a label not in the allowed list, **Then** the system rejects the label with a validation error
-5. **Given** a running daemon, **When** `.tmem/config.toml` is modified and the workspace is rehydrated, **Then** the updated configuration takes effect
+1. **Given** no `.engram/config.toml` file exists, **When** the workspace is hydrated, **Then** the system uses built-in defaults (priorities p0–p4, default type "task", compaction threshold 7 days)
+2. **Given** a `.engram/config.toml` with custom priority names, **When** a task is created with a custom priority, **Then** the system accepts and stores the custom priority value
+3. **Given** a `.engram/config.toml` with `compaction.threshold_days = 14`, **When** `get_compaction_candidates()` is called, **Then** only tasks older than 14 days are eligible
+4. **Given** a `.engram/config.toml` with an `allowed_labels` list, **When** `add_label` is called with a label not in the allowed list, **Then** the system rejects the label with a validation error
+5. **Given** a running daemon, **When** `.engram/config.toml` is modified and the workspace is rehydrated, **Then** the updated configuration takes effect
 
 ### Edge Cases
 
 - What happens when a task's defer_until date is in the past at hydration time? The task becomes immediately eligible for the ready-work queue; the stale deferral is treated as expired.
 - How does the system handle conflicting claims from two agents arriving simultaneously? Last-write-wins at the database level; the second claim attempt receives a "task already claimed" error with the winning claimant's identity.
 - What happens when an agent crashes without releasing its claim? Any other client can call `release_task` to free the claim. The audit trail records who released whose claim. No automatic expiry in v0.
-- What happens when a compacted task is un-compacted? Compaction is one-way. The original content is not recoverable from t-mem; it exists only in Git history (via `.tmem/tasks.md` commits).
+- What happens when a compacted task is un-compacted? Compaction is one-way. The original content is not recoverable from engram; it exists only in Git history (via `.engram/tasks.md` commits).
 - How does the system handle labels that are later removed from the allowed list? Existing tasks retain the now-disallowed label, but new assignments are rejected. A workspace audit tool may be added in a future version to detect orphaned labels.
 - What happens when batch_update_tasks contains duplicate task IDs? The last update for each duplicate ID wins. Each duplicate generates its own context note.
 - How does priority interact with pinning? Pinned tasks always appear first in ready-work results, regardless of priority. Among pinned tasks, priority ordering applies.
@@ -214,13 +214,13 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 
 ## Assumptions
 
-- The calling agent or client has LLM capabilities for generating compaction summaries. T-mem does not embed or call any external LLM.
+- The calling agent or client has LLM capabilities for generating compaction summaries. engram does not embed or call any external LLM.
 - Task status remains the existing 4 values (`todo`, `in_progress`, `done`, `blocked`) from v0. Defer, claim, pin, and compaction operate as orthogonal metadata fields that do not change task status. "Ready" is a computed query result (unblocked + undeferred + incomplete), not a stored status value.
-- Priority levels follow a p0 (critical) to p4 (backlog) default scale using lowercase snake_case consistent with all other t-mem field values. Sorting uses ordinal extraction of the numeric suffix (e.g., p0 < p1 < p10). Custom levels can be defined via workspace configuration.
+- Priority levels follow a p0 (critical) to p4 (backlog) default scale using lowercase snake_case consistent with all other engram field values. Sorting uses ordinal extraction of the numeric suffix (e.g., p0 < p1 < p10). Custom levels can be defined via workspace configuration.
 - The default issue types ("task", "bug", "spike", "decision", "milestone") cover common software development workflows. Additional types are added via workspace configuration.
 - Labels are free-form strings with optional validation via workspace configuration. No hierarchical or namespace support in v0.
 - Batch operations are limited to 100 items per call to prevent unbounded resource consumption.
-- The `.tmem/config.toml` format is chosen for human readability; it is Git-tracked alongside other `.tmem/` files.
+- The `.engram/config.toml` format is chosen for human readability; it is Git-tracked alongside other `.engram/` files.
 - Workflow automation (formula/molecule patterns, state machine transitions) is intentionally deferred to v1. The v0 schema is designed to accommodate workflow fields without implementing the engine.
 - Compaction preserves all graph relationships. Only task description/content is compressed; metadata (status, priority, timestamps, edges) is retained in full.
 - Nested TOML configuration keys (e.g., `compaction.threshold_days`, `batch.max_size`) map to `WorkspaceConfig` via inner structs (`CompactionConfig`, `BatchConfig`) that the `toml` crate deserializes naturally from `[compaction]` and `[batch]` TOML sections. This hybrid approach (per Research R2) keeps the public API flat via accessor methods while leveraging idiomatic serde deserialization.
@@ -240,7 +240,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 **Labels:**
 
 - **FR-031**: System MUST support associating zero or more labels (free-form strings) with each task
-- **FR-031b**: Labels MUST be serialized as a `labels` array in task YAML frontmatter in `.tmem/tasks.md` (e.g., `labels: ["frontend", "bug"]`) and preserved across hydration/dehydration cycles
+- **FR-031b**: Labels MUST be serialized as a `labels` array in task YAML frontmatter in `.engram/tasks.md` (e.g., `labels: ["frontend", "bug"]`) and preserved across hydration/dehydration cycles
 - **FR-032**: System MUST support `add_label` and `remove_label` operations on tasks. Note: `add_label` is non-idempotent — adding a duplicate label returns error 3011
 - **FR-033**: System MUST support AND-based multi-label filtering on read operations
 - **FR-034**: System MUST optionally validate labels against an `allowed_labels` list in workspace configuration
@@ -298,11 +298,11 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 - **FR-061**: System MUST support a `comments` collection on tasks, separate from context notes
 - **FR-062**: System MUST expose an `add_comment` tool that stores comment content, author, and timestamp
 - **FR-063**: System MUST return comments in chronological order when retrieving task details
-- **FR-063b**: Comments MUST be serialized to a `.tmem/comments.md` file with per-task sections containing comment author, timestamp, and content, and preserved across hydration/dehydration cycles
+- **FR-063b**: Comments MUST be serialized to a `.engram/comments.md` file with per-task sections containing comment author, timestamp, and content, and preserved across hydration/dehydration cycles
 
 **Project Configuration:**
 
-- **FR-064**: System MUST read workspace configuration from `.tmem/config.toml` on hydration
+- **FR-064**: System MUST read workspace configuration from `.engram/config.toml` on hydration
 - **FR-065**: System MUST support the following configuration keys: `default_priority`, `allowed_labels`, `allowed_types`, `compaction.threshold_days`, `compaction.max_candidates`, `compaction.truncation_length`, `batch.max_size`
 - **FR-066**: System MUST fall back to built-in defaults when no configuration file exists or when the file has parse errors (with a warning)
 
@@ -322,7 +322,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 - **Task** (enhanced): Unit of work with added attributes: priority (string, default "p2"), issue_type (string, default "task"), assignee (optional string), defer_until (optional datetime), pinned (boolean, default false), compaction_level (integer, default 0), compacted_at (optional datetime), workflow_state (optional string, reserved), workflow_id (optional string, reserved). Status remains the v0 set (`todo`, `in_progress`, `done`, `blocked`); defer/claim/pin/compaction are orthogonal fields.
 - **Label**: Association between a task and a string tag. Attributes: task reference, label name, created_at. A task may have zero or more labels.
 - **Comment**: Discussion entry on a task. Attributes: task reference, content, author, created_at. Separate from append-only context notes which track system events.
-- **WorkspaceConfig**: Project-level configuration. Attributes: default_priority, allowed_labels, allowed_types, compaction settings, batch limits. Persisted in `.tmem/config.toml`.
+- **WorkspaceConfig**: Project-level configuration. Attributes: default_priority, allowed_labels, allowed_types, compaction settings, batch limits. Persisted in `.engram/config.toml`.
 - **depends_on** (enhanced): Graph edge with expanded type set: `hard_blocker`, `soft_dependency`, `child_of`, `blocked_by`, `duplicate_of`, `related_to`, `predecessor`, `successor`.
 
 ## Success Criteria *(mandatory)*
@@ -334,7 +334,7 @@ As a workspace administrator, I configure workspace-level defaults (default prio
 - **SC-013**: `get_compaction_candidates` returns results within 100ms for workspaces with fewer than 5000 tasks
 - **SC-014**: Rule-based truncation fallback (FR-042) produces summaries at least 70% smaller by character count; agent-provided summaries are external and not measured by this criterion
 - **SC-015**: `get_workspace_statistics` returns aggregate results within 100ms for workspaces with fewer than 5000 tasks
-- **SC-016**: Workspace hydration with `.tmem/config.toml` adds less than 50ms to the existing hydration time
+- **SC-016**: Workspace hydration with `.engram/config.toml` adds less than 50ms to the existing hydration time
 - **SC-017**: All new MCP tools return structured error responses consistent with the existing error taxonomy
 - **SC-018**: Ready-work queue filtering (by label, priority, type, assignee) adds less than 20ms overhead per filter dimension
 - **SC-019**: Round-trip serialization of tasks with new fields (priority, labels, comments, assignee, defer_until, pinned) preserves 100% of data through hydrate/dehydrate cycles

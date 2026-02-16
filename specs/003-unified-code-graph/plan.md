@@ -13,23 +13,23 @@ Build an AST-based code structure graph (Region A: Spatial Memory) that sits alo
 
 *GATE: All prerequisites must be completed before Phase 0 begins.*
 
-### PRQ-001: Codebase Rename from T-MEM to Engram
+### PRQ-001: Codebase Rename from engram to Engram
 
 **Status**: Required  
 **Defined in**: [spec.md § Prerequisites](spec.md#prerequisites)  
 
-The entire codebase must be renamed from "T-MEM" / `t-mem` / `t_mem` / `tmem` / `.tmem` to "Monocoque Agent Engram" / `engram` / `.engram` before any 003 implementation begins. This is a mechanical find-and-replace with no behavioral changes.
+The entire codebase must be renamed from "engram" / `engram` / `engram` / `engram` / `.engram` to "Monocoque Agent Engram" / `engram` / `.engram` before any 003 implementation begins. This is a mechanical find-and-replace with no behavioral changes.
 
 **Key surfaces** (complete mapping in spec.md):
 
 | Category | Old | New |
 | -------- | --- | --- |
-| Crate / binary | `t-mem` | `engram` |
-| Rust imports | `use t_mem::` | `use engram::` |
-| Env var prefix | `TMEM_` | `ENGRAM_` |
-| Workspace dir | `.tmem/` | `.engram/` |
-| Data dir | `~/.local/share/t-mem/` | `~/.local/share/engram/` |
-| Binary source | `src/bin/t-mem.rs` | `src/bin/engram.rs` |
+| Crate / binary | `engram` | `engram` |
+| Rust imports | `use engram::` | `use engram::` |
+| Env var prefix | `ENGRAM_` | `ENGRAM_` |
+| Workspace dir | `.engram/` | `.engram/` |
+| Data dir | `~/.local/share/engram/` | `~/.local/share/engram/` |
+| Binary source | `src/bin/engram.rs` | `src/bin/engram.rs` |
 
 **Verification gates**:
 
@@ -96,7 +96,7 @@ specs/003-unified-code-graph/
 src/
 ├── lib.rs               # Library root (unchanged)
 ├── bin/
-│   └── engram.rs        # Binary entry point (renamed from t-mem.rs per PRQ-001)
+│   └── engram.rs        # Binary entry point (renamed from engram.rs per PRQ-001)
 ├── config/
 │   └── mod.rs           # CLI config (unchanged)
 ├── db/

@@ -1,4 +1,4 @@
-# Implementation Plan: T-Mem Core MCP Daemon
+# Implementation Plan: engram Core MCP Daemon
 
 **Branch**: `001-core-mcp-daemon` | **Date**: 2026-02-12 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/001-core-mcp-daemon/spec.md`
@@ -7,7 +7,7 @@
 
 ## Summary
 
-Implement the T-Mem v0 core MCP daemon: a high-performance local-first state engine that serves as a shared brain for software development environments. The daemon uses axum 0.7 for HTTP/SSE transport, SurrealDB 2 (embedded `surrealkv`) for graph-relational storage with workspace isolation via SHA-256 path hashing, and `fastembed` for offline-capable semantic search. Git-backed persistence via `.tmem/` markdown files enables state to travel with the codebase. See [research.md](research.md) for detailed technology decisions.
+Implement the engram v0 core MCP daemon: a high-performance local-first state engine that serves as a shared brain for software development environments. The daemon uses axum 0.7 for HTTP/SSE transport, SurrealDB 2 (embedded `surrealkv`) for graph-relational storage with workspace isolation via SHA-256 path hashing, and `fastembed` for offline-capable semantic search. Git-backed persistence via `.engram/` markdown files enables state to travel with the codebase. See [research.md](research.md) for detailed technology decisions.
 
 ## Technical Context
 
@@ -32,9 +32,9 @@ Implement the T-Mem v0 core MCP daemon: a high-performance local-first state eng
 | III | Test-First Development | **PASS** | Contract, integration, unit, and property test targets defined in `Cargo.toml`; TDD workflow in quickstart |
 | IV | MCP Protocol Compliance | **PASS** | SSE transport; JSON-RPC via `mcp-sdk`; structured error responses; tool contracts in `mcp-tools.json` |
 | V | Workspace Isolation | **PASS** | Canonicalized paths; `..` rejection; SHA-256 DB namespace isolation; localhost binding only |
-| VI | Git-Friendly Persistence | **PASS** | Markdown format; `similar` crate for comment preservation; atomic writes; no binary files in `.tmem/` |
+| VI | Git-Friendly Persistence | **PASS** | Markdown format; `similar` crate for comment preservation; atomic writes; no binary files in `.engram/` |
 | VII | Observability & Debugging | **PASS** | `tracing` with structured spans; `/health` endpoint; `sysinfo` for RSS metrics; correlation IDs |
-| VIII | Error Handling & Recovery | **PASS** | `thiserror` in lib, `anyhow` in bin; typed `TMemError` enum; re-hydration on DB corruption |
+| VIII | Error Handling & Recovery | **PASS** | `thiserror` in lib, `anyhow` in bin; typed `EngramError` enum; re-hydration on DB corruption |
 | IX | Simplicity & YAGNI | **PASS** | Single crate; `fastembed` behind optional feature flag; configurable max workspaces |
 
 **Gate result**: All principles satisfied. No violations requiring justification.
@@ -62,7 +62,7 @@ specs/001-core-mcp-daemon/
 ```text
 src/
 ├── lib.rs               # Crate root: forbid(unsafe_code), warn(clippy::pedantic)
-├── bin/t-mem.rs          # Binary entrypoint: Config, Router, graceful shutdown
+├── bin/engram.rs          # Binary entrypoint: Config, Router, graceful shutdown
 ├── config/mod.rs         # Config struct (port, timeout, data_dir, log_format) via clap
 ├── db/
 │   ├── mod.rs            # connect_db(workspace_hash) -> Db, schema bootstrap
@@ -70,7 +70,7 @@ src/
 │   ├── queries.rs        # Queries struct: task CRUD, graph edges, cyclic detection
 │   └── workspace.rs      # SHA-256 workspace path hashing, canonicalization
 ├── errors/
-│   ├── mod.rs            # TMemError enum with domain sub-errors
+│   ├── mod.rs            # EngramError enum with domain sub-errors
 │   └── codes.rs          # u16 error code constants (1xxx–5xxx)
 ├── models/
 │   ├── mod.rs            # Re-exports
@@ -87,8 +87,8 @@ src/
 ├── services/
 │   ├── mod.rs            # Module re-exports
 │   ├── connection.rs     # ConnectionLifecycle, workspace validation
-│   ├── hydration.rs      # Hydrate workspace from .tmem/ files
-│   ├── dehydration.rs    # Dehydrate workspace state to .tmem/ files
+│   ├── hydration.rs      # Hydrate workspace from .engram/ files
+│   ├── dehydration.rs    # Dehydrate workspace state to .engram/ files
 │   ├── embedding.rs      # Lazy model loading, vector generation
 │   └── search.rs         # Hybrid search (vector + keyword)
 └── tools/

@@ -15,22 +15,22 @@
 
 ## Phase 0: Prerequisites (PRQ-001 — Codebase Rename)
 
-**Purpose**: Rename all codebase references from T-MEM / `t-mem` / `t_mem` / `tmem` / `.tmem` / `TMEM` to Monocoque Agent Engram / `engram` / `.engram` / `ENGRAM`. No behavioral changes — mechanical find-and-replace only.
+**Purpose**: Rename all codebase references from engram / `engram` / `engram` / `engram` / `.engram` / `engram` to Monocoque Agent Engram / `engram` / `.engram` / `ENGRAM`. No behavioral changes — mechanical find-and-replace only.
 
 **GATE**: All verification gates (T011) must pass before Phase 1 begins.
 
-- [ ] T001 Rename binary source file from src/bin/t-mem.rs to src/bin/engram.rs and update internal content references (doc comments, module-level attributes)
-- [ ] T002 Update Cargo.toml — package name to `engram`, description to "Monocoque Agent Engram MCP daemon", authors to "Engram Contributors", `[[bin]]` name to `engram` and path to `src/bin/engram.rs`
+- [X] T001 Rename binary source file from src/bin/engram.rs to src/bin/engram.rs and update internal content references (doc comments, module-level attributes)
+- [X] T002 Update Cargo.toml — package name to `engram`, description to "Monocoque Agent Engram MCP daemon", authors to "Engram Contributors", `[[bin]]` name to `engram` and path to `src/bin/engram.rs`
   > **Atomicity**: T001 and T002 MUST be applied in the same commit — renaming the binary without updating `Cargo.toml` (or vice versa) leaves the build broken.
-- [ ] T003 [P] Update src/config/mod.rs — all `TMEM_` env annotations to `ENGRAM_`, clap command name to `engram`, about text to "Monocoque Agent Engram MCP daemon", default data directory path from `t-mem` to `engram`
-- [ ] T004 [P] Update src/lib.rs — `APP_NAME` constant from `"t-mem"` to `"engram"`, crate-level doc comments, tracing filter from `t_mem=debug` to `engram=debug`
-- [ ] T005 [P] Update src/errors/mod.rs — rename `TMemError` enum to `EngramError`, update all doc comments and inline references
-- [ ] T006 [P] Update src/db/ — DB storage path segment from `t-mem/db/` to `engram/db/` in mod.rs, any `t_mem` or `.tmem` references in workspace.rs and queries.rs
-- [ ] T007 [P] Update src/services/ — embedding model cache path from `t-mem/models/` to `engram/models/` in embedding.rs, all `.tmem` path references to `.engram` in hydration.rs, dehydration.rs, and config.rs
-- [ ] T008 [P] Update remaining src/ files — all `t_mem`, `t-mem`, `T-Mem`, `T-MEM`, `.tmem` references in server/mod.rs, server/state.rs, server/mcp.rs, server/sse.rs, tools/mod.rs, tools/lifecycle.rs, tools/read.rs, tools/write.rs, and models/*.rs
-- [ ] T009 Update all tests/ files — all `use t_mem::` imports to `use engram::`, `.tmem` path literals to `.engram`, `TMEM_` string literals to `ENGRAM_`, `tmem` variable and function names to `engram` equivalents, and `"T-Mem"` display strings to `"Engram"` across contract/, integration/, and unit/ directories
-- [ ] T010 [P] Update specs and documentation — all spec files (specs/001-core-mcp-daemon/, specs/002-enhanced-task-management/), design docs (data-model.md, quickstart.md, contracts/mcp-tools.json, contracts/error-codes.md), README.md, and copilot-instructions.md with new naming
-- [ ] T011 Run verification gates — `cargo check` (zero errors), `cargo test --all-targets` (all pass), `cargo clippy -- -D warnings` (zero warnings), case-insensitive grep for `t.mem|tmem|T.MEM|TMEM` across src/, tests/, and Cargo.toml returns zero matches
+- [X] T003 [P] Update src/config/mod.rs — all `ENGRAM_` env annotations to `ENGRAM_`, clap command name to `engram`, about text to "Monocoque Agent Engram MCP daemon", default data directory path from `engram` to `engram`
+- [X] T004 [P] Update src/lib.rs — `APP_NAME` constant from `"engram"` to `"engram"`, crate-level doc comments, tracing filter from `engram=debug` to `engram=debug`
+- [X] T005 [P] Update src/errors/mod.rs — rename `EngramError` enum to `EngramError`, update all doc comments and inline references
+- [X] T006 [P] Update src/db/ — DB storage path segment from `engram/db/` to `engram/db/` in mod.rs, any `engram` or `.engram` references in workspace.rs and queries.rs
+- [X] T007 [P] Update src/services/ — embedding model cache path from `engram/models/` to `engram/models/` in embedding.rs, all `.engram` path references to `.engram` in hydration.rs, dehydration.rs, and config.rs
+- [X] T008 [P] Update remaining src/ files — all `engram`, `engram`, `engram`, `engram`, `.engram` references in server/mod.rs, server/state.rs, server/mcp.rs, server/sse.rs, tools/mod.rs, tools/lifecycle.rs, tools/read.rs, tools/write.rs, and models/*.rs
+- [X] T009 Update all tests/ files — all `use engram::` imports to `use engram::`, `.engram` path literals to `.engram`, `ENGRAM_` string literals to `ENGRAM_`, `engram` variable and function names to `engram` equivalents, and `"engram"` display strings to `"Engram"` across contract/, integration/, and unit/ directories
+- [X] T010 [P] Update specs and documentation — all spec files (specs/001-core-mcp-daemon/, specs/002-enhanced-task-management/), design docs (data-model.md, quickstart.md, contracts/mcp-tools.json, contracts/error-codes.md), README.md, and copilot-instructions.md with new naming
+- [X] T011 Run verification gates — `cargo check` (zero errors), `cargo test --all-targets` (all pass), `cargo clippy -- -D warnings` (zero warnings), case-insensitive grep for `t.mem|tmem|T.MEM|TMEM` across src/, tests/, and Cargo.toml returns zero matches
 
 **Checkpoint**: Codebase fully renamed to "engram." All subsequent phases use the canonical name from the start.
 

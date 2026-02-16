@@ -1,7 +1,7 @@
 //! Daemon configuration via CLI arguments and environment variables.
 //!
 //! Uses `clap` derive for parsing. All fields support both `--flag`-style
-//! CLI arguments and `TMEM_`-prefixed environment variables.
+//! CLI arguments and `ENGRAM_`-prefixed environment variables.
 
 use std::path::{Path, PathBuf};
 
@@ -33,30 +33,30 @@ impl LogFormat {
 }
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "t-mem", about = "T-Mem MCP daemon", version)]
+#[command(name = "engram", about = "Monocoque Agent Engram MCP daemon", version)]
 pub struct Config {
     /// Port for the HTTP/SSE server
-    #[arg(long, env = "TMEM_PORT", default_value_t = 7437)]
+    #[arg(long, env = "ENGRAM_PORT", default_value_t = 7437)]
     pub port: u16,
 
     /// Request timeout in milliseconds
-    #[arg(long, env = "TMEM_REQUEST_TIMEOUT_MS", default_value_t = 60_000)]
+    #[arg(long, env = "ENGRAM_REQUEST_TIMEOUT_MS", default_value_t = 60_000)]
     pub request_timeout_ms: u64,
 
     /// Maximum number of active workspaces
-    #[arg(long, env = "TMEM_MAX_WORKSPACES", default_value_t = 10)]
+    #[arg(long, env = "ENGRAM_MAX_WORKSPACES", default_value_t = 10)]
     pub max_workspaces: usize,
 
     /// Data directory for embedded database and models
-    #[arg(long, env = "TMEM_DATA_DIR", default_value_os_t = default_data_dir())]
+    #[arg(long, env = "ENGRAM_DATA_DIR", default_value_os_t = default_data_dir())]
     pub data_dir: PathBuf,
 
     /// Behavior when workspace files are stale
-    #[arg(long, env = "TMEM_STALE_STRATEGY", value_enum, default_value_t = StaleStrategy::Warn)]
+    #[arg(long, env = "ENGRAM_STALE_STRATEGY", value_enum, default_value_t = StaleStrategy::Warn)]
     pub stale_strategy: StaleStrategy,
 
     /// Log format: json or pretty
-    #[arg(long, env = "TMEM_LOG_FORMAT", default_value = "pretty")]
+    #[arg(long, env = "ENGRAM_LOG_FORMAT", default_value = "pretty")]
     pub log_format: String,
 }
 
@@ -95,7 +95,7 @@ fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|| Path::new(".").to_path_buf())
         .join(".local")
         .join("share")
-        .join("t-mem")
+        .join("engram")
 }
 
 #[cfg(test)]
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn defaults_are_sensible() {
-        let cfg = Config::parse_from(["t-mem"]);
+        let cfg = Config::parse_from(["engram"]);
         assert_eq!(cfg.port, 7437);
         assert!(cfg.request_timeout_ms > 0);
         assert_eq!(cfg.max_workspaces, 10);

@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::config::StaleStrategy;
 use crate::db::connect_db;
 use crate::db::queries::Queries;
-use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
+use crate::errors::{EngramError, SystemError, TaskError, WorkspaceError};
 use crate::models::context::Context;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
@@ -70,33 +70,33 @@ struct AddDependencyParams {
     dependency_type: DependencyType,
 }
 
-async fn workspace_path(state: &SharedState) -> Result<PathBuf, TMemError> {
+async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
         return Ok(PathBuf::from(snapshot.path));
     }
-    Err(TMemError::Workspace(WorkspaceError::NotSet))
+    Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
-async fn workspace_id(state: &SharedState) -> Result<String, TMemError> {
+async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
         return Ok(snapshot.workspace_id);
     }
-    Err(TMemError::Workspace(WorkspaceError::NotSet))
+    Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
-fn parse_status(raw: &str) -> Result<TaskStatus, TMemError> {
+fn parse_status(raw: &str) -> Result<TaskStatus, EngramError> {
     match raw {
         "todo" => Ok(TaskStatus::Todo),
         "in_progress" => Ok(TaskStatus::InProgress),
         "done" => Ok(TaskStatus::Done),
         "blocked" => Ok(TaskStatus::Blocked),
-        _ => Err(TMemError::Task(TaskError::InvalidStatus {
+        _ => Err(EngramError::Task(TaskError::InvalidStatus {
             status: raw.to_string(),
         })),
     }
 }
 
-fn validate_transition(from: TaskStatus, to: TaskStatus) -> Result<(), TMemError> {
+fn validate_transition(from: TaskStatus, to: TaskStatus) -> Result<(), EngramError> {
     if from == to {
         return Ok(());
     }
@@ -117,13 +117,13 @@ fn validate_transition(from: TaskStatus, to: TaskStatus) -> Result<(), TMemError
     if allowed {
         Ok(())
     } else {
-        Err(TMemError::Task(TaskError::InvalidStatus {
+        Err(EngramError::Task(TaskError::InvalidStatus {
             status: format!("{}->{}", from.as_str(), to.as_str()),
         }))
     }
 }
 
-/// Look up a task by ID, hydrating from `.tmem/` files if not found in DB.
+/// Look up a task by ID, hydrating from `.engram/` files if not found in DB.
 ///
 /// This eliminates the repeated get→hydrate→get→error pattern used
 /// by many write handlers.
@@ -131,24 +131,24 @@ async fn get_task_or_hydrate(
     queries: &Queries,
     task_id: &str,
     workspace_path: &std::path::Path,
-) -> Result<Task, TMemError> {
+) -> Result<Task, EngramError> {
     if let Some(task) = queries.get_task(task_id).await? {
         return Ok(task);
     }
     hydration::hydrate_into_db(workspace_path, queries).await?;
     queries.get_task(task_id).await?.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
+        EngramError::Task(TaskError::NotFound {
             id: task_id.to_string(),
         })
     })
 }
 
-pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let workspace_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
     let parsed: UpdateTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -169,7 +169,7 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     let issue_type = if let Some(ref new_type) = parsed.issue_type {
         if let Some(config) = state.workspace_config().await {
             if !config.allowed_types.is_empty() && !config.allowed_types.contains(new_type) {
-                return Err(TMemError::Task(TaskError::InvalidIssueType {
+                return Err(EngramError::Task(TaskError::InvalidIssueType {
                     issue_type: new_type.clone(),
                 }));
             }
@@ -230,12 +230,12 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     }))
 }
 
-pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let workspace_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
     let parsed: AddBlockerParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -249,7 +249,7 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
     let task = get_task_or_hydrate(&queries, &task_id, &workspace_path).await?;
 
     if task.status == TaskStatus::Blocked {
-        return Err(TMemError::Task(TaskError::BlockerExists { id: task_id }));
+        return Err(EngramError::Task(TaskError::BlockerExists { id: task_id }));
     }
 
     validate_transition(task.status, TaskStatus::Blocked)?;
@@ -292,11 +292,11 @@ pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Va
 pub async fn register_decision(
     state: SharedState,
     params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     let workspace_id = workspace_id(&state).await?;
     let parsed: RegisterDecisionParams = serde_json::from_value(params.unwrap_or_default())
         .map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -318,35 +318,35 @@ pub async fn register_decision(
 
     Ok(json!({
         "decision_id": ctx_id,
-        "file_path": ".tmem/decisions.md",
+        "file_path": ".engram/decisions.md",
         "created_at": now.to_rfc3339(),
         "topic": parsed.topic,
     }))
 }
 
 /// Create a new task with `todo` status and optional parent dependency.
-pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let workspace_id = workspace_id(&state).await?;
     let parsed: CreateTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
 
     let title = parsed.title.trim();
     if title.is_empty() {
-        return Err(TMemError::Task(TaskError::TitleEmpty));
+        return Err(EngramError::Task(TaskError::TitleEmpty));
     }
     if title.len() > MAX_TITLE_LEN {
-        return Err(TMemError::Task(TaskError::TitleTooLong));
+        return Err(EngramError::Task(TaskError::TitleTooLong));
     }
 
     // Validate issue_type against allowed_types if configured (FR-048)
     if let Some(ref issue_type) = parsed.issue_type {
         if let Some(config) = state.workspace_config().await {
             if !config.allowed_types.is_empty() && !config.allowed_types.contains(issue_type) {
-                return Err(TMemError::Task(TaskError::InvalidIssueType {
+                return Err(EngramError::Task(TaskError::InvalidIssueType {
                     issue_type: issue_type.clone(),
                 }));
             }
@@ -380,21 +380,21 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     Ok(response)
 }
-pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     // T092: Acquire per-workspace write lock for FIFO serialization of concurrent flushes
     let _flush_guard = dehydration::acquire_flush_lock().await;
     let snapshot = state
         .snapshot_workspace()
         .await
-        .ok_or(TMemError::Workspace(WorkspaceError::NotSet))?;
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
 
     let path = PathBuf::from(&snapshot.path);
     let workspace_id = snapshot.workspace_id.clone();
-    let tmem_dir = path.join(".tmem");
+    let engram_dir = path.join(".engram");
     let stale_strategy = state.stale_strategy();
     let mut warnings: Vec<String> = Vec::new();
     let is_stale =
-        snapshot.stale_files || hydration::detect_stale_since(&snapshot.file_mtimes, &tmem_dir);
+        snapshot.stale_files || hydration::detect_stale_since(&snapshot.file_mtimes, &engram_dir);
 
     let _ = params;
 
@@ -404,12 +404,12 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     // Determine staleness action from strategy before touching the DB
     match (is_stale, stale_strategy) {
         (true, StaleStrategy::Fail) => {
-            return Err(TMemError::Hydration(
+            return Err(EngramError::Hydration(
                 crate::errors::HydrationError::StaleWorkspace,
             ));
         }
         (true, StaleStrategy::Warn) => {
-            warnings.push("2004 StaleWorkspace: .tmem files modified externally".to_string());
+            warnings.push("2004 StaleWorkspace: .engram files modified externally".to_string());
         }
         (true, StaleStrategy::Rehydrate) => {
             hydration::hydrate_into_db(&path, &queries).await?;
@@ -418,7 +418,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     }
 
     let result = dehydration::dehydrate_workspace(&queries, &path).await?;
-    let new_mtimes = hydration::collect_file_mtimes(&tmem_dir);
+    let new_mtimes = hydration::collect_file_mtimes(&engram_dir);
 
     let _ = state
         .update_workspace(|ws| {
@@ -438,11 +438,11 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
 
 // ── Label operations ────────────────────────────────────────────────────
 
-pub async fn add_label(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn add_label(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: LabelParams =
         serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: e.to_string(),
             })
         })?;
@@ -450,7 +450,7 @@ pub async fn add_label(state: SharedState, params: Option<Value>) -> Result<Valu
     // Validate against allowed_labels if configured
     if let Some(config) = state.workspace_config().await {
         if !config.allowed_labels.is_empty() && !config.allowed_labels.contains(&parsed.label) {
-            return Err(TMemError::Task(TaskError::LabelValidation {
+            return Err(EngramError::Task(TaskError::LabelValidation {
                 reason: format!(
                     "label '{}' not in allowed_labels: {:?}",
                     parsed.label, config.allowed_labels
@@ -478,11 +478,11 @@ pub async fn add_label(state: SharedState, params: Option<Value>) -> Result<Valu
     }))
 }
 
-pub async fn remove_label(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn remove_label(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: LabelParams =
         serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: e.to_string(),
             })
         })?;
@@ -507,11 +507,14 @@ pub async fn remove_label(state: SharedState, params: Option<Value>) -> Result<V
 
 // ── Dependency operations ───────────────────────────────────────────────
 
-pub async fn add_dependency(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn add_dependency(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: AddDependencyParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -557,11 +560,11 @@ struct ApplyCompactionParams {
 pub async fn apply_compaction(
     state: SharedState,
     params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: ApplyCompactionParams = serde_json::from_value(params.unwrap_or_default())
         .map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -599,11 +602,11 @@ struct ClaimTaskParams {
 }
 
 /// Claim a task for a specific agent/user. Rejects if already claimed.
-pub async fn claim_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn claim_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: ClaimTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -645,11 +648,11 @@ struct ReleaseTaskParams {
 }
 
 /// Release a claimed task. Any client may release any claim.
-pub async fn release_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn release_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: ReleaseTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -694,12 +697,12 @@ struct DeferTaskParams {
 }
 
 /// Defer a task until a given ISO 8601 datetime.
-pub async fn defer_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn defer_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
     let parsed: DeferTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -712,7 +715,7 @@ pub async fn defer_task(state: SharedState, params: Option<Value>) -> Result<Val
     let defer_until = chrono::DateTime::parse_from_rfc3339(&parsed.until)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid ISO 8601 datetime: {e}"),
             })
         })?;
@@ -752,12 +755,12 @@ struct UnDeferTaskParams {
 }
 
 /// Clear the defer_until date on a task, making it immediately eligible for ready-work.
-pub async fn undefer_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn undefer_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
     let parsed: UnDeferTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -808,12 +811,12 @@ struct PinTaskParams {
 }
 
 /// Pin a task so it appears first in ready-work results.
-pub async fn pin_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn pin_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
     let parsed: PinTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -853,12 +856,12 @@ pub async fn pin_task(state: SharedState, params: Option<Value>) -> Result<Value
 }
 
 /// Unpin a task, restoring normal priority ordering.
-pub async fn unpin_task(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn unpin_task(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let workspace_path = workspace_path(&state).await?;
     let parsed: PinTaskParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -925,11 +928,11 @@ struct BatchUpdateParams {
 pub async fn batch_update_tasks(
     state: SharedState,
     params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: BatchUpdateParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -941,7 +944,7 @@ pub async fn batch_update_tasks(
         100
     };
     if parsed.updates.len() > max_size as usize {
-        return Err(TMemError::System(SystemError::InvalidParams {
+        return Err(EngramError::System(SystemError::InvalidParams {
             reason: format!(
                 "batch size {} exceeds maximum {}",
                 parsed.updates.len(),
@@ -984,7 +987,7 @@ pub async fn batch_update_tasks(
 
     // FR-059: return partial failure error when any item fails
     if failed > 0 {
-        return Err(TMemError::Task(TaskError::BatchPartialFailure {
+        return Err(EngramError::Task(TaskError::BatchPartialFailure {
             succeeded,
             failed,
             results: serde_json::to_value(&results).unwrap_or_default(),
@@ -1003,11 +1006,11 @@ async fn apply_single_update(
     state: &SharedState,
     queries: &Queries,
     item: &BatchUpdateItem,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     let task_id = item.id.strip_prefix("task:").unwrap_or(&item.id);
 
     let existing = queries.get_task(task_id).await?.ok_or_else(|| {
-        TMemError::Task(TaskError::NotFound {
+        EngramError::Task(TaskError::NotFound {
             id: task_id.to_string(),
         })
     })?;
@@ -1029,7 +1032,7 @@ async fn apply_single_update(
     let issue_type = if let Some(ref new_type) = item.issue_type {
         if let Some(config) = state.workspace_config().await {
             if !config.allowed_types.is_empty() && !config.allowed_types.contains(new_type) {
-                return Err(TMemError::Task(TaskError::InvalidIssueType {
+                return Err(EngramError::Task(TaskError::InvalidIssueType {
                     issue_type: new_type.clone(),
                 }));
             }
@@ -1099,11 +1102,11 @@ struct AddCommentParams {
 }
 
 /// Add a discussion comment to a task, separate from context notes (FR-061, FR-062).
-pub async fn add_comment(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn add_comment(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let ws_id = workspace_id(&state).await?;
     let parsed: AddCommentParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -1124,7 +1127,7 @@ pub async fn add_comment(state: SharedState, params: Option<Value>) -> Result<Va
         task = queries.get_task(task_id).await?;
     }
     if task.is_none() {
-        return Err(TMemError::Task(TaskError::NotFound {
+        return Err(EngramError::Task(TaskError::NotFound {
             id: task_id.to_string(),
         }));
     }

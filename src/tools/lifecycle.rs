@@ -6,7 +6,7 @@ use sysinfo::System;
 use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
-use crate::errors::{TMemError, WorkspaceError};
+use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -43,21 +43,24 @@ pub struct WorkspaceStatus {
     pub connection_count: usize,
 }
 
-pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBinding, TMemError> {
+pub async fn set_workspace(
+    state: &AppState,
+    path: String,
+) -> Result<WorkspaceBinding, EngramError> {
     validate_workspace_path(&path)?;
 
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
 
     if !state.has_workspace_capacity().await {
-        return Err(TMemError::Workspace(WorkspaceError::LimitReached {
+        return Err(EngramError::Workspace(WorkspaceError::LimitReached {
             limit: state.max_workspaces(),
         }));
     }
 
     let hydration = hydrate_workspace(&canonical).await?;
 
-    // Connect to DB and load .tmem/ data into SurrealDB (T072)
+    // Connect to DB and load .engram/ data into SurrealDB (T072)
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
     let db_result = hydrate_into_db(&canonical, &queries).await?;
@@ -98,7 +101,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     })
 }
 
-pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, TMemError> {
+pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
     let mut sys = System::new();
     sys.refresh_memory();
     let memory_bytes = sys.used_memory(); // sysinfo 0.30+ returns bytes
@@ -114,11 +117,11 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, TMemErr
     })
 }
 
-pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, TMemError> {
+pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
-        let tmem_dir = Path::new(&snapshot.path).join(".tmem");
+        let engram_dir = Path::new(&snapshot.path).join(".engram");
         let stale_now =
-            snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &tmem_dir);
+            snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &engram_dir);
 
         if stale_now != snapshot.stale_files {
             let _ = state
@@ -136,5 +139,5 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, T
         });
     }
 
-    Err(TMemError::Workspace(WorkspaceError::NotSet))
+    Err(EngramError::Workspace(WorkspaceError::NotSet))
 }

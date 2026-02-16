@@ -10,8 +10,8 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use t_mem::server::state::AppState;
-use t_mem::tools;
+use engram::server::state::AppState;
+use engram::tools;
 
 // ─── T087: Stress test with 10 concurrent clients ──────────────────────────
 
@@ -237,9 +237,9 @@ async fn concurrent_flush_state_serialized() {
     assert!(r2.is_ok(), "second flush should succeed: {r2:?}");
 
     // Verify file state is consistent
-    let tmem_dir = workspace.path().join(".tmem");
-    assert!(tmem_dir.join("tasks.md").exists(), "tasks.md exists");
-    let content = fs::read_to_string(tmem_dir.join("tasks.md")).expect("read tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    assert!(engram_dir.join("tasks.md").exists(), "tasks.md exists");
+    let content = fs::read_to_string(engram_dir.join("tasks.md")).expect("read tasks.md");
     assert!(
         content.contains("Flush test task"),
         "task content preserved after concurrent flushes"

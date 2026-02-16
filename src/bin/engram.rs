@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
-use t_mem::{
+use engram::{
     config::Config,
     init_tracing,
     server::{router::build_router, state::AppState},
@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     let app = build_router(state.clone());
 
     let listener = TcpListener::bind(addr).await?;
-    println!("t-mem daemon listening on {addr}");
+    println!("engram daemon listening on {addr}");
     axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -57,5 +57,5 @@ async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
 
-    println!("Shutting down t-mem daemon");
+    println!("Shutting down engram daemon");
 }

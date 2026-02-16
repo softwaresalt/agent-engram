@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::db::queries::Queries;
 use crate::db::workspace::canonicalize_workspace;
-use crate::errors::{TMemError, WorkspaceError};
+use crate::errors::{EngramError, WorkspaceError};
 use crate::models::context::Context;
 use crate::models::task::TaskStatus;
 
@@ -62,7 +62,7 @@ pub async fn create_status_change_note(
     new: TaskStatus,
     user_notes: Option<&str>,
     timestamp: DateTime<Utc>,
-) -> Result<String, TMemError> {
+) -> Result<String, EngramError> {
     let mut content = format!(
         "Status changed from {} to {}",
         previous.as_str(),

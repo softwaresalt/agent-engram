@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::errors::{SystemError, TMemError};
+use crate::errors::{EngramError, SystemError};
 use crate::server::state::SharedState;
 
 pub mod lifecycle;
@@ -19,8 +19,8 @@ struct WorkspaceParams {
     path: String,
 }
 
-fn not_implemented(method: &str) -> TMemError {
-    TMemError::System(SystemError::InvalidParams {
+fn not_implemented(method: &str) -> EngramError {
+    EngramError::System(SystemError::InvalidParams {
         reason: format!("{method} not implemented"),
     })
 }
@@ -29,12 +29,12 @@ pub async fn dispatch(
     state: SharedState,
     method: &str,
     params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     match method {
         "set_workspace" => {
             let parsed: WorkspaceParams =
                 serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
-                    TMemError::System(SystemError::InvalidParams {
+                    EngramError::System(SystemError::InvalidParams {
                         reason: e.to_string(),
                     })
                 })?;

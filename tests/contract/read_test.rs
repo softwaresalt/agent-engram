@@ -3,10 +3,10 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use t_mem::errors::codes::{QUERY_TOO_LONG, WORKSPACE_NOT_SET};
-use t_mem::models::task::{Task, TaskStatus};
-use t_mem::server::state::{AppState, WorkspaceSnapshot};
-use t_mem::tools;
+use engram::errors::codes::{QUERY_TOO_LONG, WORKSPACE_NOT_SET};
+use engram::models::task::{Task, TaskStatus};
+use engram::server::state::{AppState, WorkspaceSnapshot};
+use engram::tools;
 
 fn test_snapshot(id: &str) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
@@ -73,7 +73,7 @@ async fn contract_query_memory_requires_workspace() {
 async fn contract_query_memory_rejects_long_query() {
     // Build a state with workspace set so we get past the workspace check.
     let state = Arc::new(AppState::new(10));
-    let snapshot = t_mem::server::state::WorkspaceSnapshot {
+    let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws".to_string(),
         path: "/tmp/test-repo".to_string(),
         task_count: 0,
@@ -104,7 +104,7 @@ async fn contract_query_memory_returns_results_array() {
     // With an active workspace (even empty), query_memory should return
     // a JSON object with a `results` array.
     let state = Arc::new(AppState::new(10));
-    let snapshot = t_mem::server::state::WorkspaceSnapshot {
+    let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws_results".to_string(),
         path: "/tmp/test-repo-results".to_string(),
         task_count: 0,
@@ -277,8 +277,8 @@ async fn contract_get_compaction_candidates_empty_when_none_eligible() {
 #[test]
 async fn contract_get_compaction_candidates_returns_eligible_tasks() {
     use chrono::{Duration, Utc};
+    use engram::db::{connect_db, queries::Queries};
     use surrealdb::RecordId as Thing;
-    use t_mem::db::{connect_db, queries::Queries};
 
     let state = Arc::new(AppState::new(10));
     let ws_id = "compact_candidates";
@@ -349,8 +349,8 @@ async fn contract_get_compaction_candidates_returns_eligible_tasks() {
 #[test]
 async fn contract_get_compaction_candidates_excludes_pinned() {
     use chrono::{Duration, Utc};
+    use engram::db::{connect_db, queries::Queries};
     use surrealdb::RecordId as Thing;
-    use t_mem::db::{connect_db, queries::Queries};
 
     let state = Arc::new(AppState::new(10));
     let ws_id = "compact_pinned";
@@ -431,9 +431,9 @@ async fn contract_get_workspace_statistics_requires_workspace() {
 async fn contract_get_workspace_statistics_returns_counts() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    std::fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
+    std::fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(

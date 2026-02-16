@@ -175,7 +175,7 @@ cargo fmt
 cargo doc --no-deps --open
 
 # Run with debug logging
-RUST_LOG=t_mem=debug cargo run
+RUST_LOG=engram=debug cargo run
 `
 
 ### Test Organization

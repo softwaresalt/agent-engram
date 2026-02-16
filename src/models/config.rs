@@ -1,11 +1,11 @@
 //! Workspace configuration models.
 //!
 //! Defines [`WorkspaceConfig`], [`CompactionConfig`], and [`BatchConfig`]
-//! for user-customizable workspace behavior read from `.tmem/config.toml`.
+//! for user-customizable workspace behavior read from `.engram/config.toml`.
 
 use serde::{Deserialize, Serialize};
 
-/// Top-level workspace configuration read from `.tmem/config.toml`.
+/// Top-level workspace configuration read from `.engram/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     /// Compaction settings.

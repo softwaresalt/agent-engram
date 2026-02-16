@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "T-Mem MCP Tools",
-  "description": "Model Context Protocol tool definitions for T-Mem daemon",
+  "title": "engram MCP Tools",
+  "description": "Model Context Protocol tool definitions for engram daemon",
   "version": "0.1.0",
   "tools": {
     "set_workspace": {
@@ -113,7 +113,7 @@
           },
           "stale_files": {
             "type": "boolean",
-            "description": "Whether .tmem/ files have external modifications"
+            "description": "Whether .engram/ files have external modifications"
           },
           "connection_count": {
             "type": "integer",
@@ -416,7 +416,7 @@
     },
     "flush_state": {
       "idempotent": true,
-      "description": "Dehydrate workspace state to .tmem/ files. Idempotent: flushing unchanged state produces the same files.",
+      "description": "Dehydrate workspace state to .engram/ files. Idempotent: flushing unchanged state produces the same files.",
       "inputSchema": {
         "type": "object",
         "properties": {}

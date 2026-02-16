@@ -1,4 +1,4 @@
-//! Hydration: load workspace state from `.tmem/` files into SurrealDB.
+//! Hydration: load workspace state from `.engram/` files into SurrealDB.
 //!
 //! Parses human-readable Markdown (`tasks.md`) and SurrealQL (`graph.surql`)
 //! files, populating the database for runtime queries. Supports stale file
@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 
 use crate::db::queries::Queries;
-use crate::errors::{HydrationError, TMemError};
+use crate::errors::{EngramError, HydrationError};
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::services::dehydration::SCHEMA_VERSION;
@@ -32,7 +32,7 @@ pub struct FileFingerprint {
     pub len: u64,
 }
 
-/// Result of loading `.tmem/` files into the database.
+/// Result of loading `.engram/` files into the database.
 #[derive(Debug, Clone, Default)]
 pub struct HydrationResult {
     pub tasks_loaded: usize,
@@ -56,23 +56,23 @@ pub struct ParsedRelation {
     pub properties: Vec<(String, String)>,
 }
 
-/// Load workspace state summary from `.tmem/` files (lightweight).
+/// Load workspace state summary from `.engram/` files (lightweight).
 ///
-/// Creates the `.tmem/` directory if missing. Does NOT load data into the
+/// Creates the `.engram/` directory if missing. Does NOT load data into the
 /// database; use [`hydrate_into_db`] for that.
-pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, TMemError> {
-    let tmem_dir = path.join(".tmem");
+pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramError> {
+    let engram_dir = path.join(".engram");
 
-    if !tmem_dir.exists() {
-        fs::create_dir_all(&tmem_dir).map_err(|e| {
-            TMemError::Hydration(HydrationError::Failed {
-                reason: format!("failed to create .tmem directory: {e}"),
+    if !engram_dir.exists() {
+        fs::create_dir_all(&engram_dir).map_err(|e| {
+            EngramError::Hydration(HydrationError::Failed {
+                reason: format!("failed to create .engram directory: {e}"),
             })
         })?;
         return Ok(HydrationSummary::default());
     }
 
-    let tasks_path = tmem_dir.join("tasks.md");
+    let tasks_path = engram_dir.join("tasks.md");
     let task_count = if tasks_path.exists() {
         count_tasks(&tasks_path)?
     } else {
@@ -81,16 +81,16 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, TMemErro
 
     let context_count = 0;
 
-    let file_mtimes = collect_file_mtimes(&tmem_dir);
-    let (last_flush, stale_files) = last_flush_state(&tmem_dir, &file_mtimes);
+    let file_mtimes = collect_file_mtimes(&engram_dir);
+    let (last_flush, stale_files) = last_flush_state(&engram_dir, &file_mtimes);
 
     // Validate schema version if present
-    let version_path = tmem_dir.join(".version");
+    let version_path = engram_dir.join(".version");
     if version_path.exists() {
         let version = fs::read_to_string(&version_path).unwrap_or_default();
         let version = version.trim();
         if !version.is_empty() && version != SCHEMA_VERSION {
-            return Err(TMemError::Hydration(HydrationError::SchemaMismatch {
+            return Err(EngramError::Hydration(HydrationError::SchemaMismatch {
                 expected: SCHEMA_VERSION.to_string(),
                 found: version.to_string(),
             }));
@@ -106,20 +106,23 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, TMemErro
     })
 }
 
-/// Parse `.tmem/` files and load all entities into the database.
+/// Parse `.engram/` files and load all entities into the database.
 ///
 /// Parses `tasks.md` for task data and `graph.surql` for relationship
 /// edges. Upserts tasks (idempotent) and recreates edges.
-pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<HydrationResult, TMemError> {
-    let tmem_dir = path.join(".tmem");
+pub async fn hydrate_into_db(
+    path: &Path,
+    queries: &Queries,
+) -> Result<HydrationResult, EngramError> {
+    let engram_dir = path.join(".engram");
     let mut tasks_loaded = 0;
     let mut edges_loaded = 0;
 
     // Parse and load tasks from tasks.md
-    let tasks_path = tmem_dir.join("tasks.md");
+    let tasks_path = engram_dir.join("tasks.md");
     if tasks_path.exists() {
         let content = fs::read_to_string(&tasks_path).map_err(|e| {
-            TMemError::Hydration(HydrationError::Failed {
+            EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read tasks.md: {e}"),
             })
         })?;
@@ -135,10 +138,10 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
     }
 
     // Parse and load edges from graph.surql
-    let graph_path = tmem_dir.join("graph.surql");
+    let graph_path = engram_dir.join("graph.surql");
     if graph_path.exists() {
         let content = fs::read_to_string(&graph_path).map_err(|e| {
-            TMemError::Hydration(HydrationError::Failed {
+            EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read graph.surql: {e}"),
             })
         })?;
@@ -150,10 +153,10 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
     }
 
     // Parse and load comments from comments.md (FR-063b)
-    let comments_path = tmem_dir.join("comments.md");
+    let comments_path = engram_dir.join("comments.md");
     if comments_path.exists() {
         let content = fs::read_to_string(&comments_path).map_err(|e| {
-            TMemError::Hydration(HydrationError::Failed {
+            EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read comments.md: {e}"),
             })
         })?;
@@ -180,11 +183,11 @@ pub async fn hydrate_into_db(path: &Path, queries: &Queries) -> Result<Hydration
 /// Perform corruption recovery: delete DB state and re-hydrate from files.
 ///
 /// Called when DB is suspected corrupt. Clears all task and edge data,
-/// then re-hydrates from the canonical `.tmem/` files.
+/// then re-hydrates from the canonical `.engram/` files.
 pub async fn recover_from_corruption(
     path: &Path,
     queries: &Queries,
-) -> Result<HydrationResult, TMemError> {
+) -> Result<HydrationResult, EngramError> {
     // Clear existing DB data
     queries.clear_all_data().await?;
 
@@ -229,40 +232,40 @@ pub async fn backfill_embeddings(queries: &Queries) {
         }
     }
 }
-/// Detect whether `.tmem/` files have been modified since the last flush.
-pub fn detect_stale(tmem_dir: &Path) -> bool {
-    let file_mtimes = collect_file_mtimes(tmem_dir);
-    let (_, stale) = last_flush_state(tmem_dir, &file_mtimes);
+/// Detect whether `.engram/` files have been modified since the last flush.
+pub fn detect_stale(engram_dir: &Path) -> bool {
+    let file_mtimes = collect_file_mtimes(engram_dir);
+    let (_, stale) = last_flush_state(engram_dir, &file_mtimes);
     stale
 }
 
-/// Read the `.tmem/.version` file contents.
-pub fn read_version(tmem_dir: &Path) -> Option<String> {
-    let path = tmem_dir.join(".version");
+/// Read the `.engram/.version` file contents.
+pub fn read_version(engram_dir: &Path) -> Option<String> {
+    let path = engram_dir.join(".version");
     fs::read_to_string(path)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
-/// Read the `.tmem/.lastflush` timestamp.
-pub fn read_lastflush(tmem_dir: &Path) -> Option<DateTime<Utc>> {
-    let path = tmem_dir.join(".lastflush");
+/// Read the `.engram/.lastflush` timestamp.
+pub fn read_lastflush(engram_dir: &Path) -> Option<DateTime<Utc>> {
+    let path = engram_dir.join(".lastflush");
     fs::read_to_string(path)
         .ok()
         .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-/// Capture modification times for known `.tmem/` files to support stale detection.
-pub fn collect_file_mtimes(tmem_dir: &Path) -> HashMap<String, FileFingerprint> {
+/// Capture modification times for known `.engram/` files to support stale detection.
+pub fn collect_file_mtimes(engram_dir: &Path) -> HashMap<String, FileFingerprint> {
     let mut mtimes = HashMap::new();
 
     let candidates = [
-        ("tasks.md", tmem_dir.join("tasks.md")),
-        ("graph.surql", tmem_dir.join("graph.surql")),
-        (".version", tmem_dir.join(".version")),
-        (".lastflush", tmem_dir.join(".lastflush")),
+        ("tasks.md", engram_dir.join("tasks.md")),
+        ("graph.surql", engram_dir.join("graph.surql")),
+        (".version", engram_dir.join(".version")),
+        (".lastflush", engram_dir.join(".lastflush")),
     ];
 
     for (name, path) in candidates {
@@ -282,13 +285,13 @@ pub fn collect_file_mtimes(tmem_dir: &Path) -> HashMap<String, FileFingerprint> 
     mtimes
 }
 
-/// Determine if any tracked `.tmem/` file has changed since the recorded mtimes.
-pub fn detect_stale_since(recorded: &HashMap<String, FileFingerprint>, tmem_dir: &Path) -> bool {
+/// Determine if any tracked `.engram/` file has changed since the recorded mtimes.
+pub fn detect_stale_since(recorded: &HashMap<String, FileFingerprint>, engram_dir: &Path) -> bool {
     if recorded.is_empty() {
         return false;
     }
 
-    let current = collect_file_mtimes(tmem_dir);
+    let current = collect_file_mtimes(engram_dir);
 
     // Changed or missing files compared to baseline
     for (name, recorded_time) in recorded {
@@ -527,7 +530,7 @@ pub struct ParsedComment {
     pub content: String,
 }
 
-/// Parse `.tmem/comments.md` into a list of comments.
+/// Parse `.engram/comments.md` into a list of comments.
 ///
 /// Expected format:
 /// ```text
@@ -611,7 +614,7 @@ pub fn parse_comments_md(content: &str) -> Vec<ParsedComment> {
 }
 
 /// Apply a parsed RELATE statement to the database.
-async fn apply_relation(queries: &Queries, rel: &ParsedRelation) -> Result<(), TMemError> {
+async fn apply_relation(queries: &Queries, rel: &ParsedRelation) -> Result<(), EngramError> {
     match rel.edge_type.as_str() {
         "depends_on" => {
             let from_id = strip_table_prefix(&rel.from);
@@ -660,9 +663,9 @@ fn strip_table_prefix(record: &str) -> String {
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
-fn count_tasks(path: &Path) -> Result<u64, TMemError> {
+fn count_tasks(path: &Path) -> Result<u64, EngramError> {
     let contents = fs::read_to_string(path).map_err(|e| {
-        TMemError::Hydration(HydrationError::Failed {
+        EngramError::Hydration(HydrationError::Failed {
             reason: format!("failed to read tasks.md: {e}"),
         })
     })?;
@@ -676,10 +679,10 @@ fn count_tasks(path: &Path) -> Result<u64, TMemError> {
 }
 
 pub fn last_flush_state(
-    tmem_dir: &Path,
+    engram_dir: &Path,
     file_mtimes: &HashMap<String, FileFingerprint>,
 ) -> (Option<String>, bool) {
-    let last_flush_path = tmem_dir.join(".lastflush");
+    let last_flush_path = engram_dir.join(".lastflush");
 
     let last_flush_str = fs::read_to_string(&last_flush_path).ok();
     let last_flush = last_flush_str
@@ -781,7 +784,7 @@ Task B desc.
 
     #[test]
     fn parse_graph_surql_extracts_relations() {
-        let content = r#"-- Generated by T-Mem
+        let content = r#"-- Generated by Engram
 -- Schema version: 1.0.0
 
 -- Dependencies

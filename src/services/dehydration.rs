@@ -1,4 +1,4 @@
-//! Dehydration: serialize workspace state from SurrealDB to `.tmem/` files.
+//! Dehydration: serialize workspace state from SurrealDB to `.engram/` files.
 //!
 //! Produces human-readable Markdown (`tasks.md`) and SurrealQL (`graph.surql`)
 //! files that can be committed to Git. User-added comments in existing
@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, MutexGuard};
 
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
 use crate::db::{self};
-use crate::errors::{SystemError, TMemError};
+use crate::errors::{EngramError, SystemError};
 use crate::models::comment::Comment;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus};
@@ -30,10 +30,10 @@ pub async fn acquire_flush_lock() -> MutexGuard<'static, ()> {
     FLUSH_LOCK.lock().await
 }
 
-/// Flush all active workspaces to `.tmem/` files (FR-006 graceful shutdown).
+/// Flush all active workspaces to `.engram/` files (FR-006 graceful shutdown).
 ///
 /// Acquires the flush lock and dehydrates the active workspace, if any.
-pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), TMemError> {
+pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError> {
     let _guard = acquire_flush_lock().await;
     let Some(snapshot) = state.snapshot_workspace().await else {
         return Ok(());
@@ -47,7 +47,7 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), TMemError> 
     Ok(())
 }
 
-/// Schema version written to `.tmem/.version`.
+/// Schema version written to `.engram/.version`.
 pub const SCHEMA_VERSION: &str = "1.0.0";
 
 /// Result of a dehydration (flush) operation.
@@ -60,16 +60,16 @@ pub struct DehydrationResult {
     pub flush_timestamp: String,
 }
 
-/// Dehydrate full workspace state from the database into `.tmem/` files.
+/// Dehydrate full workspace state from the database into `.engram/` files.
 ///
 /// Writes `tasks.md`, `graph.surql`, `.version`, and `.lastflush`.
 /// Preserves user-added comments in existing `tasks.md` (FR-012).
 pub async fn dehydrate_workspace(
     queries: &Queries,
     workspace_path: &Path,
-) -> Result<DehydrationResult, TMemError> {
-    let tmem_dir = workspace_path.join(".tmem");
-    fs::create_dir_all(&tmem_dir).map_err(|_| flush_err(&tmem_dir))?;
+) -> Result<DehydrationResult, EngramError> {
+    let engram_dir = workspace_path.join(".engram");
+    fs::create_dir_all(&engram_dir).map_err(|_| flush_err(&engram_dir))?;
 
     let tasks = queries.all_tasks().await?;
     let dep_edges = queries.all_dependency_edges().await?;
@@ -77,7 +77,7 @@ pub async fn dehydrate_workspace(
     let rel_edges = queries.all_relates_to_edges().await?;
 
     // Read existing tasks.md for comment preservation (FR-012)
-    let tasks_path = tmem_dir.join("tasks.md");
+    let tasks_path = engram_dir.join("tasks.md");
     let old_content = fs::read_to_string(&tasks_path).unwrap_or_default();
     let old_blocks = parse_task_blocks(&old_content);
     let old_bodies: HashMap<String, String> = old_blocks
@@ -100,14 +100,14 @@ pub async fn dehydrate_workspace(
     atomic_write(&tasks_path, &tasks_content)?;
 
     // Serialize graph.surql
-    let graph_path = tmem_dir.join("graph.surql");
+    let graph_path = engram_dir.join("graph.surql");
     let total_edges = dep_edges.len() + impl_edges.len() + rel_edges.len();
     let graph_content = serialize_graph_surql(&dep_edges, &impl_edges, &rel_edges);
     atomic_write(&graph_path, &graph_content)?;
 
     // Serialize comments.md (FR-063b)
     let all_comments = queries.all_comments().await?;
-    let comments_path = tmem_dir.join("comments.md");
+    let comments_path = engram_dir.join("comments.md");
     if !all_comments.is_empty() {
         let comments_content = serialize_comments_md(&all_comments);
         atomic_write(&comments_path, &comments_content)?;
@@ -117,23 +117,23 @@ pub async fn dehydrate_workspace(
     }
 
     // Write version
-    let version_path = tmem_dir.join(".version");
+    let version_path = engram_dir.join(".version");
     atomic_write(&version_path, SCHEMA_VERSION)?;
 
     // Write lastflush timestamp
     let flush_ts = Utc::now().to_rfc3339();
-    let lastflush_path = tmem_dir.join(".lastflush");
+    let lastflush_path = engram_dir.join(".lastflush");
     atomic_write(&lastflush_path, &flush_ts)?;
 
     let mut files_written = vec![
-        ".tmem/tasks.md".to_string(),
-        ".tmem/graph.surql".to_string(),
-        ".tmem/.version".to_string(),
-        ".tmem/.lastflush".to_string(),
+        ".engram/tasks.md".to_string(),
+        ".engram/graph.surql".to_string(),
+        ".engram/.version".to_string(),
+        ".engram/.lastflush".to_string(),
     ];
 
     if !all_comments.is_empty() {
-        files_written.push(".tmem/comments.md".to_string());
+        files_written.push(".engram/comments.md".to_string());
     }
 
     Ok(DehydrationResult {
@@ -298,7 +298,7 @@ pub fn serialize_graph_surql(
     let mut out = String::new();
     let now = Utc::now().to_rfc3339();
 
-    out.push_str("-- Generated by T-Mem. Do not edit manually.\n");
+    out.push_str("-- Generated by Engram. Do not edit manually.\n");
     out.push_str(&format!("-- Schema version: {SCHEMA_VERSION}\n"));
     out.push_str(&format!("-- Generated at: {now}\n\n"));
 
@@ -452,7 +452,7 @@ pub fn parse_task_blocks(content: &str) -> Vec<TaskBlock> {
 ///
 /// Creates a temporary `.tmp` file alongside the target, writes content,
 /// then renames atomically to prevent partial writes on crash.
-pub fn atomic_write(path: &Path, content: &str) -> Result<(), TMemError> {
+pub fn atomic_write(path: &Path, content: &str) -> Result<(), EngramError> {
     let tmp_path = path.with_extension("tmp");
     let mut file = fs::File::create(&tmp_path).map_err(|_| flush_err(path))?;
     file.write_all(content.as_bytes())
@@ -465,8 +465,8 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<(), TMemError> {
     Ok(())
 }
 
-fn flush_err(path: &Path) -> TMemError {
-    TMemError::System(SystemError::FlushFailed {
+fn flush_err(path: &Path) -> EngramError {
+    EngramError::System(SystemError::FlushFailed {
         path: path.display().to_string(),
     })
 }
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn serialize_graph_surql_empty() {
         let out = serialize_graph_surql(&[], &[], &[]);
-        assert!(out.contains("Generated by T-Mem"));
+        assert!(out.contains("Generated by Engram"));
         assert!(out.contains(&format!("Schema version: {SCHEMA_VERSION}")));
     }
 

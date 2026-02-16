@@ -5,7 +5,7 @@ use serde::Deserialize;
 use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
-use crate::errors::{TMemError, TaskError};
+use crate::errors::{EngramError, TaskError};
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::models::{Context, Spec};
@@ -255,7 +255,7 @@ impl Queries {
     /// The last `UPSERT` to execute wins, and its `updated_at` timestamp
     /// reflects the final state. Callers should always set `updated_at`
     /// to `Utc::now()` before calling this method.
-    pub async fn upsert_task(&self, task: &Task) -> Result<(), TMemError> {
+    pub async fn upsert_task(&self, task: &Task) -> Result<(), EngramError> {
         let record = Thing::from(("task", task.id.as_str()));
         let status_str = task.status.as_str().to_string();
         let created = task.created_at.to_rfc3339();
@@ -315,7 +315,7 @@ impl Queries {
         work_item_id: Option<&str>,
         parent_id: Option<&str>,
         issue_type: Option<&str>,
-    ) -> Result<Task, TMemError> {
+    ) -> Result<Task, EngramError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
         let task = Task {
@@ -348,7 +348,7 @@ impl Queries {
         Ok(task)
     }
 
-    pub async fn get_task(&self, id: &str) -> Result<Option<Task>, TMemError> {
+    pub async fn get_task(&self, id: &str) -> Result<Option<Task>, EngramError> {
         let record = Thing::from(("task", id));
         let rows: Vec<TaskRow> = self
             .db
@@ -366,7 +366,7 @@ impl Queries {
         id: &str,
         status: TaskStatus,
         updated_at: DateTime<Utc>,
-    ) -> Result<(), TMemError> {
+    ) -> Result<(), EngramError> {
         let record = Thing::from(("task", id));
         let status_str = status.as_str().to_string();
         self.db
@@ -384,7 +384,7 @@ impl Queries {
     /// Uses `CREATE` (not `UPSERT`) so existing records are never overwritten.
     /// Each context has a unique UUID, ensuring concurrent insertions from
     /// multiple clients never collide or lose data.
-    pub async fn insert_context(&self, ctx: &Context) -> Result<(), TMemError> {
+    pub async fn insert_context(&self, ctx: &Context) -> Result<(), EngramError> {
         let record = Thing::from(("context", ctx.id.as_str()));
         let created = ctx.created_at.to_rfc3339();
         self.db
@@ -409,7 +409,7 @@ impl Queries {
         &self,
         task_id: &str,
         context_id: &str,
-    ) -> Result<(), TMemError> {
+    ) -> Result<(), EngramError> {
         let from = Thing::from(("task", task_id));
         let to = Thing::from(("context", context_id));
         self.db
@@ -421,7 +421,7 @@ impl Queries {
         Ok(())
     }
 
-    pub async fn link_task_spec(&self, task_id: &str, spec_id: &str) -> Result<(), TMemError> {
+    pub async fn link_task_spec(&self, task_id: &str, spec_id: &str) -> Result<(), EngramError> {
         let from = Thing::from(("task", task_id));
         let to = Thing::from(("spec", spec_id));
         self.db
@@ -438,13 +438,13 @@ impl Queries {
         dependent: &str,
         blocker: &str,
         kind: DependencyType,
-    ) -> Result<(), TMemError> {
+    ) -> Result<(), EngramError> {
         if dependent == blocker {
-            return Err(TMemError::Task(TaskError::CyclicDependency));
+            return Err(EngramError::Task(TaskError::CyclicDependency));
         }
 
         if self.detect_cycle(blocker, dependent).await? {
-            return Err(TMemError::Task(TaskError::CyclicDependency));
+            return Err(EngramError::Task(TaskError::CyclicDependency));
         }
 
         let from = Thing::from(("task", dependent));
@@ -459,7 +459,7 @@ impl Queries {
         Ok(())
     }
 
-    pub async fn dependencies_of(&self, task_id: &str) -> Result<Vec<DependencyEdge>, TMemError> {
+    pub async fn dependencies_of(&self, task_id: &str) -> Result<Vec<DependencyEdge>, EngramError> {
         let record = Thing::from(("task", task_id));
         let rows: Vec<DependsOnRow> = self
             .db
@@ -489,7 +489,7 @@ impl Queries {
         Ok(edges)
     }
 
-    pub async fn task_by_work_item(&self, work_item_id: &str) -> Result<Option<Task>, TMemError> {
+    pub async fn task_by_work_item(&self, work_item_id: &str) -> Result<Option<Task>, EngramError> {
         let id_owned = work_item_id.to_string();
         let rows: Vec<TaskRow> = self
             .db
@@ -502,7 +502,7 @@ impl Queries {
         Ok(rows.into_iter().next().map(TaskRow::into_task))
     }
 
-    pub async fn all_tasks(&self) -> Result<Vec<Task>, TMemError> {
+    pub async fn all_tasks(&self) -> Result<Vec<Task>, EngramError> {
         let rows: Vec<TaskRow> = self
             .db
             .query("SELECT * FROM task")
@@ -522,7 +522,7 @@ impl Queries {
     pub async fn get_ready_work(
         &self,
         params: &ReadyWorkParams,
-    ) -> Result<ReadyWorkResult, TMemError> {
+    ) -> Result<ReadyWorkResult, EngramError> {
         // Step 1: Get all non-done, non-blocked tasks.
         let rows: Vec<TaskRow> = self
             .db
@@ -590,7 +590,7 @@ impl Queries {
     }
 
     /// Find task IDs that are blocked by unresolved hard_blocker or blocked_by edges.
-    async fn find_blocked_task_ids(&self) -> Result<HashSet<String>, TMemError> {
+    async fn find_blocked_task_ids(&self) -> Result<HashSet<String>, EngramError> {
         // Get all hard_blocker and blocked_by edges.
         // `type` is a reserved keyword in SurrealQL, requires backtick escaping.
         let rows: Vec<DependsOnRow> = self
@@ -627,7 +627,7 @@ impl Queries {
     }
 
     /// Find task IDs that have an outgoing duplicate_of edge.
-    async fn find_duplicate_task_ids(&self) -> Result<HashSet<String>, TMemError> {
+    async fn find_duplicate_task_ids(&self) -> Result<HashSet<String>, EngramError> {
         let rows: Vec<DependsOnRow> = self
             .db
             .query(
@@ -648,7 +648,7 @@ impl Queries {
 
     /// Insert a label for a task. Returns error if the label already exists
     /// (UNIQUE constraint on `label_task_name` index).
-    pub async fn insert_label(&self, task_id: &str, name: &str) -> Result<(), TMemError> {
+    pub async fn insert_label(&self, task_id: &str, name: &str) -> Result<(), EngramError> {
         // Check for duplicate first (UNIQUE index enforcement)
         let existing: Vec<CountRow> = self
             .db
@@ -664,7 +664,7 @@ impl Queries {
             .map_err(map_db_err)?;
 
         if existing.first().map_or(0, |r| r.count) > 0 {
-            return Err(TMemError::Task(TaskError::DuplicateLabel {
+            return Err(EngramError::Task(TaskError::DuplicateLabel {
                 task_id: task_id.to_string(),
                 label: name.to_string(),
             }));
@@ -687,7 +687,7 @@ impl Queries {
     }
 
     /// Delete a label from a task.
-    pub async fn delete_label(&self, task_id: &str, name: &str) -> Result<(), TMemError> {
+    pub async fn delete_label(&self, task_id: &str, name: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM label WHERE task_id = $task_id AND name = $name")
             .bind(("task_id", task_id.to_string()))
@@ -698,7 +698,7 @@ impl Queries {
     }
 
     /// Get all labels for a task.
-    pub async fn get_labels_for_task(&self, task_id: &str) -> Result<Vec<String>, TMemError> {
+    pub async fn get_labels_for_task(&self, task_id: &str) -> Result<Vec<String>, EngramError> {
         #[derive(Deserialize)]
         struct LabelRow {
             name: String,
@@ -716,7 +716,7 @@ impl Queries {
     }
 
     /// Count labels for a task.
-    pub async fn count_labels_for_task(&self, task_id: &str) -> Result<u32, TMemError> {
+    pub async fn count_labels_for_task(&self, task_id: &str) -> Result<u32, EngramError> {
         let rows: Vec<CountRow> = self
             .db
             .query(
@@ -737,7 +737,7 @@ impl Queries {
         &self,
         task_id: &str,
         labels: &[String],
-    ) -> Result<bool, TMemError> {
+    ) -> Result<bool, EngramError> {
         if labels.is_empty() {
             return Ok(true);
         }
@@ -766,7 +766,7 @@ impl Queries {
         task_id: &str,
         content: &str,
         author: &str,
-    ) -> Result<String, TMemError> {
+    ) -> Result<String, EngramError> {
         let comment_id = format!("comment:{}", uuid::Uuid::new_v4());
 
         self.db
@@ -798,7 +798,7 @@ impl Queries {
     pub async fn get_comments_for_task(
         &self,
         task_id: &str,
-    ) -> Result<Vec<crate::models::Comment>, TMemError> {
+    ) -> Result<Vec<crate::models::Comment>, EngramError> {
         let rows: Vec<CommentRow> = self
             .db
             .query(
@@ -816,7 +816,7 @@ impl Queries {
     }
 
     /// Retrieve ALL comments in the workspace, ordered by task_id then created_at.
-    pub async fn all_comments(&self) -> Result<Vec<crate::models::Comment>, TMemError> {
+    pub async fn all_comments(&self) -> Result<Vec<crate::models::Comment>, EngramError> {
         let rows: Vec<CommentRow> = self
             .db
             .query("SELECT * FROM comment ORDER BY task_id ASC, created_at ASC")
@@ -836,7 +836,7 @@ impl Queries {
         &self,
         threshold_days: u32,
         max_candidates: u32,
-    ) -> Result<Vec<Task>, TMemError> {
+    ) -> Result<Vec<Task>, EngramError> {
         let rows: Vec<TaskRow> = self
             .db
             .query(
@@ -858,7 +858,11 @@ impl Queries {
 
     /// Apply compaction to a single task: replace description, increment
     /// `compaction_level`, and set `compacted_at` to now.
-    pub async fn apply_compaction(&self, task_id: &str, summary: &str) -> Result<Task, TMemError> {
+    pub async fn apply_compaction(
+        &self,
+        task_id: &str,
+        summary: &str,
+    ) -> Result<Task, EngramError> {
         let record = Thing::from(("task", task_id));
         let now = Utc::now().to_rfc3339();
         let rows: Vec<TaskRow> = self
@@ -883,7 +887,7 @@ impl Queries {
             .next()
             .map(TaskRow::into_task)
             .ok_or_else(|| {
-                TMemError::Task(TaskError::CompactionFailed {
+                EngramError::Task(TaskError::CompactionFailed {
                     id: task_id.to_string(),
                     reason: "task not found".to_string(),
                 })
@@ -896,7 +900,7 @@ impl Queries {
     /// TOCTOU races. Returns `Ok(task)` if the claim succeeds.
     /// Returns `AlreadyClaimed` if someone else holds the claim.
     /// Returns `TaskNotFound` if the task does not exist.
-    pub async fn claim_task(&self, task_id: &str, claimant: &str) -> Result<Task, TMemError> {
+    pub async fn claim_task(&self, task_id: &str, claimant: &str) -> Result<Task, EngramError> {
         let record = Thing::from(("task", task_id));
         let now = Utc::now().to_rfc3339();
 
@@ -924,12 +928,12 @@ impl Queries {
 
         // UPDATE returned no rows: either task doesn't exist or already claimed
         let task = self.get_task(task_id).await?.ok_or_else(|| {
-            TMemError::Task(TaskError::NotFound {
+            EngramError::Task(TaskError::NotFound {
                 id: task_id.to_string(),
             })
         })?;
 
-        Err(TMemError::Task(TaskError::AlreadyClaimed {
+        Err(EngramError::Task(TaskError::AlreadyClaimed {
             id: task_id.to_string(),
             assignee: task.assignee.unwrap_or_default(),
         }))
@@ -940,15 +944,15 @@ impl Queries {
     /// Returns `Ok(previous_claimant)` on success.
     /// Returns `NotClaimable` if the task has no current assignee.
     /// Returns `TaskNotFound` if the task does not exist.
-    pub async fn release_task(&self, task_id: &str) -> Result<String, TMemError> {
+    pub async fn release_task(&self, task_id: &str) -> Result<String, EngramError> {
         let task = self.get_task(task_id).await?.ok_or_else(|| {
-            TMemError::Task(TaskError::NotFound {
+            EngramError::Task(TaskError::NotFound {
                 id: task_id.to_string(),
             })
         })?;
 
         let previous = task.assignee.ok_or_else(|| {
-            TMemError::Task(TaskError::NotClaimable {
+            EngramError::Task(TaskError::NotClaimable {
                 id: task_id.to_string(),
                 status: "not claimed".to_string(),
             })
@@ -971,7 +975,7 @@ impl Queries {
         Ok(previous)
     }
 
-    pub async fn all_contexts(&self) -> Result<Vec<Context>, TMemError> {
+    pub async fn all_contexts(&self) -> Result<Vec<Context>, EngramError> {
         let rows: Vec<ContextRow> = self
             .db
             .query("SELECT * FROM context")
@@ -983,7 +987,7 @@ impl Queries {
     }
 
     /// Return all specs in the workspace.
-    pub async fn all_specs(&self) -> Result<Vec<Spec>, TMemError> {
+    pub async fn all_specs(&self) -> Result<Vec<Spec>, EngramError> {
         let rows: Vec<SpecRow> = self
             .db
             .query("SELECT * FROM spec")
@@ -995,7 +999,7 @@ impl Queries {
     }
 
     /// Insert or update a spec record.
-    pub async fn upsert_spec(&self, spec: &Spec) -> Result<(), TMemError> {
+    pub async fn upsert_spec(&self, spec: &Spec) -> Result<(), EngramError> {
         let record = Thing::from(("spec", spec.id.as_str()));
         let created = spec.created_at.to_rfc3339();
         let updated = spec.updated_at.to_rfc3339();
@@ -1021,7 +1025,7 @@ impl Queries {
         Ok(())
     }
 
-    pub async fn all_dependency_edges(&self) -> Result<Vec<DependencyEdge>, TMemError> {
+    pub async fn all_dependency_edges(&self) -> Result<Vec<DependencyEdge>, EngramError> {
         let rows: Vec<DependsOnRow> = self
             .db
             .query("SELECT in, out, type FROM depends_on")
@@ -1046,7 +1050,7 @@ impl Queries {
         Ok(edges)
     }
 
-    pub async fn all_implements_edges(&self) -> Result<Vec<ImplementsEdge>, TMemError> {
+    pub async fn all_implements_edges(&self) -> Result<Vec<ImplementsEdge>, EngramError> {
         let rows: Vec<RelationRow> = self
             .db
             .query("SELECT in, out FROM implements")
@@ -1066,7 +1070,7 @@ impl Queries {
         Ok(edges)
     }
 
-    pub async fn all_relates_to_edges(&self) -> Result<Vec<RelatesToEdge>, TMemError> {
+    pub async fn all_relates_to_edges(&self) -> Result<Vec<RelatesToEdge>, EngramError> {
         let rows: Vec<RelationRow> = self
             .db
             .query("SELECT in, out FROM relates_to")
@@ -1091,7 +1095,7 @@ impl Queries {
         &self,
         id: &str,
         embedding: Vec<f32>,
-    ) -> Result<(), TMemError> {
+    ) -> Result<(), EngramError> {
         let record = Thing::from(("context", id));
         self.db
             .query("UPDATE $record SET embedding = $embedding")
@@ -1103,7 +1107,7 @@ impl Queries {
     }
 
     /// Clear all data from the database (used for corruption recovery).
-    pub async fn clear_all_data(&self) -> Result<(), TMemError> {
+    pub async fn clear_all_data(&self) -> Result<(), EngramError> {
         self.db
             .query("DELETE task; DELETE context; DELETE spec; DELETE depends_on; DELETE implements; DELETE relates_to; DELETE label; DELETE comment;")
             .await
@@ -1111,7 +1115,7 @@ impl Queries {
         Ok(())
     }
 
-    pub async fn tasks_by_ids(&self, ids: &[String]) -> Result<Vec<Task>, TMemError> {
+    pub async fn tasks_by_ids(&self, ids: &[String]) -> Result<Vec<Task>, EngramError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1131,7 +1135,7 @@ impl Queries {
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
     }
 
-    async fn detect_cycle(&self, start: &str, target: &str) -> Result<bool, TMemError> {
+    async fn detect_cycle(&self, start: &str, target: &str) -> Result<bool, EngramError> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = VecDeque::from([start.to_string()]);
 
@@ -1158,7 +1162,7 @@ impl Queries {
     ///
     /// Returns grouped counts by status, priority, issue type, plus
     /// deferred, pinned, claimed, and compaction metrics.
-    pub async fn get_workspace_statistics(&self) -> Result<WorkspaceStatistics, TMemError> {
+    pub async fn get_workspace_statistics(&self) -> Result<WorkspaceStatistics, EngramError> {
         // SurrealDB v2 GROUP BY requires SELECT fields to match GROUP BY columns
         // exactly — aliasing with AS breaks grouping. Use per-field structs.
 
@@ -1378,7 +1382,7 @@ mod tests {
             .expect_err("self-dep must fail");
 
         assert!(
-            matches!(err, TMemError::Task(TaskError::CyclicDependency)),
+            matches!(err, EngramError::Task(TaskError::CyclicDependency)),
             "expected CyclicDependency, got {err:?}"
         );
     }
@@ -1402,7 +1406,7 @@ mod tests {
             .expect_err("cycle must fail");
 
         assert!(
-            matches!(err, TMemError::Task(TaskError::CyclicDependency)),
+            matches!(err, EngramError::Task(TaskError::CyclicDependency)),
             "expected CyclicDependency, got {err:?}"
         );
     }
@@ -1430,7 +1434,7 @@ mod tests {
             .expect_err("transitive cycle must fail");
 
         assert!(
-            matches!(err, TMemError::Task(TaskError::CyclicDependency)),
+            matches!(err, EngramError::Task(TaskError::CyclicDependency)),
             "expected CyclicDependency, got {err:?}"
         );
     }

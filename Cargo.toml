@@ -3,15 +3,15 @@ members = ["."]
 resolver = "2"
 
 [package]
-name = "t-mem"
+name = "engram"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "T-Mem Core MCP daemon"
+description = "Monocoque Agent Engram MCP daemon"
 license = "MIT"
 publish = false
 
-authors = ["T-Mem Contributors"]
+authors = ["Engram Contributors"]
 
 [dependencies]
 axum = "0.7"
@@ -50,8 +50,8 @@ tempfile = "3"
 tokio-test = "0.4"
 
 [[bin]]
-name = "t-mem"
-path = "src/bin/t-mem.rs"
+name = "engram"
+path = "src/bin/engram.rs"
 
 [[test]]
 name = "contract_lifecycle"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "T-Mem MCP Tools — Enhanced Task Management",
+  "title": "engram MCP Tools — Enhanced Task Management",
   "description": "New and modified MCP tool definitions for enhanced task management features",
   "version": "0.2.0",
   "tools": {
@@ -589,8 +589,8 @@
       "new_errors": [3009, 3010]
     },
     "flush_state": {
-      "description": "Enhanced to write .tmem/comments.md and .tmem/config.toml in addition to tasks.md and graph.surql.",
-      "additional_files": [".tmem/comments.md", ".tmem/config.toml"]
+      "description": "Enhanced to write .engram/comments.md and .engram/config.toml in addition to tasks.md and graph.surql.",
+      "additional_files": [".engram/comments.md", ".engram/config.toml"]
     },
     "get_task_graph": {
       "description": "Enhanced to include all 8 dependency types in graph output.",

@@ -1,7 +1,7 @@
 //! Verify error codes in code match contracts/error-codes.md (T107).
 
-use t_mem::errors::codes::*;
-use t_mem::errors::*;
+use engram::errors::codes::*;
+use engram::errors::*;
 
 /// Verify all workspace error codes match the contract.
 #[test]
@@ -70,7 +70,7 @@ fn config_error_codes_match_contract() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn error_response_codes_are_consistent() {
-    let cases: Vec<(TMemError, u16, &str)> = vec![
+    let cases: Vec<(EngramError, u16, &str)> = vec![
         (
             WorkspaceError::NotFound { path: "x".into() }.into(),
             1001,
@@ -264,7 +264,7 @@ fn error_response_codes_are_consistent() {
 /// the v0 error taxonomy — `{ error: { code, name, message, details? } }`.
 #[test]
 fn t094_error_response_json_shape() {
-    let test_cases: Vec<(TMemError, bool)> = vec![
+    let test_cases: Vec<(EngramError, bool)> = vec![
         // Errors WITH details
         (
             WorkspaceError::NotFound {

@@ -1,7 +1,7 @@
-//! Domain model types for T-Mem workspace entities.
+//! Domain model types for Engram workspace entities.
 //!
 //! Provides [Task], [Spec], [Context], and [DependencyType] — the
-//! core entities stored in SurrealDB and serialized to `.tmem/` files.
+//! core entities stored in SurrealDB and serialized to `.engram/` files.
 
 pub mod comment;
 pub mod config;

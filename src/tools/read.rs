@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::db::connect_db;
 use crate::db::queries::{Queries, ReadyWorkParams};
-use crate::errors::{SystemError, TMemError, TaskError, WorkspaceError};
+use crate::errors::{EngramError, SystemError, TaskError, WorkspaceError};
 use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
 use crate::server::state::SharedState;
@@ -57,26 +57,29 @@ fn default_depth() -> u32 {
     5
 }
 
-async fn ensure_workspace(state: &SharedState) -> Result<(), TMemError> {
+async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
     if state.snapshot_workspace().await.is_none() {
-        return Err(TMemError::Workspace(WorkspaceError::NotSet));
+        return Err(EngramError::Workspace(WorkspaceError::NotSet));
     }
     Ok(())
 }
 
-async fn workspace_id(state: &SharedState) -> Result<String, TMemError> {
+async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
         return Ok(snapshot.workspace_id);
     }
-    Err(TMemError::Workspace(WorkspaceError::NotSet))
+    Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
-pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn get_task_graph(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
     let parsed: TaskGraphParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -89,7 +92,7 @@ pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result
         .get_task(&parsed.root_task_id)
         .await?
         .ok_or_else(|| {
-            TMemError::Task(TaskError::NotFound {
+            EngramError::Task(TaskError::NotFound {
                 id: parsed.root_task_id.clone(),
             })
         })?;
@@ -105,12 +108,12 @@ pub async fn get_task_graph(state: SharedState, params: Option<Value>) -> Result
     }))
 }
 
-pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn check_status(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
     let parsed: CheckStatusParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -162,12 +165,15 @@ fn default_ready_limit() -> u32 {
 }
 
 /// Get prioritized list of actionable tasks.
-pub async fn get_ready_work(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn get_ready_work(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
     let parsed: GetReadyWorkParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -204,7 +210,7 @@ pub async fn get_ready_work(state: SharedState, params: Option<Value>) -> Result
 pub async fn get_workspace_statistics(
     state: SharedState,
     _params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
     let ws_id = workspace_id(&state).await?;
@@ -240,12 +246,12 @@ struct GetCompactionCandidatesParams {
 pub async fn get_compaction_candidates(
     state: SharedState,
     params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
     let parsed: GetCompactionCandidatesParams = serde_json::from_value(params.unwrap_or_default())
         .map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -294,12 +300,12 @@ fn default_limit() -> usize {
     10
 }
 
-pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, TMemError> {
+pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
     let parsed: QueryMemoryParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            TMemError::System(SystemError::InvalidParams {
+            EngramError::System(SystemError::InvalidParams {
                 reason: format!("invalid params: {e}"),
             })
         })?;
@@ -362,7 +368,8 @@ fn build_node<'a>(
     task: Task,
     depth: u32,
     visited: &'a Arc<tokio::sync::Mutex<HashSet<String>>>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, TMemError>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskNode, EngramError>> + Send + 'a>>
+{
     Box::pin(async move {
         if depth == 0 {
             return Ok(TaskNode {

@@ -1,9 +1,9 @@
-//! T-Mem: a local-first MCP daemon providing persistent task memory and
+//! Engram: a local-first MCP daemon providing persistent task memory and
 //! semantic search for AI coding assistants.
 //!
-//! This crate exposes library modules used by the `t-mem` binary. The daemon
+//! This crate exposes library modules used by the `engram` binary. The daemon
 //! binds to `127.0.0.1` via axum, accepts MCP JSON-RPC over SSE, and stores
-//! workspace state in an embedded SurrealDB instance backed by `.tmem/` files.
+//! workspace state in an embedded SurrealDB instance backed by `.engram/` files.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::pedantic)]
@@ -25,8 +25,8 @@
 #![allow(clippy::unnecessary_filter_map)]
 #![allow(clippy::trivially_copy_pass_by_ref)]
 
-/// Crate-level constants and shared library entrypoints for the T-Mem daemon.
-pub const APP_NAME: &str = "t-mem";
+/// Crate-level constants and shared library entrypoints for the Engram daemon.
+pub const APP_NAME: &str = "engram";
 pub mod config;
 pub mod db;
 pub mod errors;
@@ -47,7 +47,7 @@ static TRACING_INIT: OnceLock<()> = OnceLock::new();
 pub fn init_tracing(format: LogFormat) {
     TRACING_INIT.get_or_init(|| {
         let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("t_mem=debug,hyper=info,surrealdb=info"));
+            .unwrap_or_else(|_| EnvFilter::new("engram=debug,hyper=info,surrealdb=info"));
 
         let registry = tracing_subscriber::registry().with(env_filter);
 
