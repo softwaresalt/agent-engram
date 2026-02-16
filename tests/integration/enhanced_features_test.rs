@@ -2177,10 +2177,10 @@ async fn t087_rehydrate_after_config_change_and_missing_config() {
     // Initial config: batch.max_size=10
     std::fs::write(
         tmem_dir.join("config.toml"),
-        r#"
+        r"
 [batch]
 max_size = 10
-"#,
+",
     )
     .expect("write initial config");
 
@@ -2207,10 +2207,10 @@ max_size = 10
     // Update config on disk: batch.max_size=20
     std::fs::write(
         tmem_dir.join("config.toml"),
-        r#"
+        r"
 [batch]
 max_size = 20
-"#,
+",
     )
     .expect("write updated config");
 
@@ -2297,7 +2297,7 @@ max_size = 50
     .await
     .expect("set_workspace");
     assert_eq!(
-        ws_result.get("hydrated").and_then(|v| v.as_bool()),
+        ws_result.get("hydrated").and_then(serde_json::Value::as_bool),
         Some(true)
     );
 
@@ -2477,7 +2477,7 @@ max_size = 50
     )
     .await
     .expect("batch update t1 to done");
-    assert_eq!(batch_res.get("succeeded").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(batch_res.get("succeeded").and_then(serde_json::Value::as_u64), Some(1));
 
     // 9) get_ready_work with filters
     let ready = tools::dispatch(
@@ -2536,14 +2536,14 @@ max_size = 50
     .expect("apply_compaction");
 
     // 12) get_workspace_statistics
-    let stats = tools::dispatch(state.clone(), "get_workspace_statistics", Some(json!({})))
+    let statistics = tools::dispatch(state.clone(), "get_workspace_statistics", Some(json!({})))
         .await
         .expect("get_workspace_statistics");
     assert!(
-        stats.get("total_tasks").is_some(),
+        statistics.get("total_tasks").is_some(),
         "should have total_tasks"
     );
-    let total = stats.get("total_tasks").and_then(|v| v.as_u64()).unwrap();
+    let total = statistics.get("total_tasks").and_then(serde_json::Value::as_u64).unwrap();
     assert_eq!(total, 3, "should have 3 total tasks");
 
     // 13) flush_state
@@ -2566,12 +2566,12 @@ max_size = 50
     .expect("rehydrate set_workspace");
 
     // 15) verify all state preserved
-    let ws2_id = state2
+    let workspace2_id = state2
         .snapshot_workspace()
         .await
         .expect("snapshot2")
         .workspace_id;
-    let db2 = connect_db(&ws2_id).await.expect("db2");
+    let db2 = connect_db(&workspace2_id).await.expect("db2");
     let queries2 = Queries::new(db2);
 
     // Verify task count
@@ -2630,11 +2630,11 @@ max_size = 50
     assert_eq!(cfg2.allowed_labels, vec!["frontend", "backend", "urgent"]);
 
     // Verify statistics after rehydrate
-    let stats2 = tools::dispatch(state2.clone(), "get_workspace_statistics", Some(json!({})))
+    let statistics2 = tools::dispatch(state2.clone(), "get_workspace_statistics", Some(json!({})))
         .await
         .expect("statistics after rehydrate");
     assert_eq!(
-        stats2.get("total_tasks").and_then(|v| v.as_u64()),
+        statistics2.get("total_tasks").and_then(serde_json::Value::as_u64),
         Some(3),
         "should still have 3 tasks after rehydrate"
     );
@@ -2778,12 +2778,12 @@ async fn t091_workflow_fields_reserved() {
     .await
     .expect("rehydrate");
 
-    let ws2_id = state2
+    let workspace2_id = state2
         .snapshot_workspace()
         .await
         .expect("snapshot2")
         .workspace_id;
-    let queries2 = Queries::new(connect_db(&ws2_id).await.expect("db3"));
+    let queries2 = Queries::new(connect_db(&workspace2_id).await.expect("db3"));
     let task_rehydrated = queries2
         .get_task(&task_id)
         .await
@@ -2993,11 +2993,11 @@ async fn t092_quickstart_payload_validation() {
     .expect("quickstart: add_comment");
 
     // Quickstart: get_workspace_statistics
-    let stats = tools::dispatch(state.clone(), "get_workspace_statistics", Some(json!({})))
+    let statistics = tools::dispatch(state.clone(), "get_workspace_statistics", Some(json!({})))
         .await
         .expect("quickstart: get_workspace_statistics");
     assert!(
-        stats.get("total_tasks").is_some(),
+        statistics.get("total_tasks").is_some(),
         "statistics should have total_tasks"
     );
 }

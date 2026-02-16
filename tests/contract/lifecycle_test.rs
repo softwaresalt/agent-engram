@@ -337,10 +337,10 @@ async fn contract_invalid_config_value_returns_error() {
     fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
     fs::write(
         tmem_dir.join("config.toml"),
-        r#"
+        r"
 [compaction]
 threshold_days = 0
-"#,
+",
     )
     .expect("write config with invalid threshold");
 
