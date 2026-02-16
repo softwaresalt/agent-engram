@@ -116,9 +116,11 @@ Execute tasks in dependency order following TDD discipline:
 
 4. Track architectural decisions made during implementation for recording in Step 6.
 
-### Step 4: Test Phase (Iterative)
+### Step 4: Test Phase (Mandatory Gate)
 
-Run the full test suite and iterate until all tests pass:
+This step is a hard gate. The phase is not complete until all tests pass **and** both `cargo clippy` and `cargo fmt` exit cleanly. Do not skip lint or format checks under any circumstances, including context pressure or time constraints.
+
+Run the full test suite and iterate until all checks pass:
 
 1. Run `cargo test` to execute all test suites.
 2. If any test fails:
@@ -126,13 +128,14 @@ Run the full test suite and iterate until all tests pass:
    * Fix the implementation (not the test, unless the test itself has a bug).
    * Re-run `cargo test` to verify the fix.
    * Repeat until all tests pass.
-3. Run `cargo clippy -- -D warnings -D clippy::pedantic` to verify lint compliance.
+3. Run `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` to verify lint compliance.
 4. If clippy reports warnings or errors, fix them and re-run until clean.
 5. Run `cargo fmt --all -- --check` to verify formatting.
-6. If formatting violations exist, run `cargo fmt --all` and verify.
-7. Report final test results: suite counts, pass rates, and any notable findings.
+6. If formatting violations exist, run `cargo fmt --all` to auto-fix, then re-run `cargo fmt --all -- --check` to confirm the check passes.
+7. If fixes in steps 3–6 introduced new test failures, return to step 1 and repeat the full cycle.
+8. Report final results: test suite counts, pass rates, clippy exit code, fmt exit code, and any notable findings.
 
-Return to Step 3 if test failures reveal missing implementation work. Continue iterating between Step 3 and Step 4 until both build and test pass cleanly.
+All three checks (`cargo test`, `cargo clippy`, `cargo fmt --check`) must exit 0 before proceeding to Step 5. Return to Step 3 if test failures reveal missing implementation work. Continue iterating between Step 3 and Step 4 until build, test, lint, and format all pass cleanly.
 
 ### Step 5: Constitution Validation
 
@@ -143,6 +146,7 @@ Re-check the constitution after implementation is complete:
 * Verify all new public items have `///` doc comments.
 * Verify error handling uses `TMemError` with proper error codes.
 * Verify any new async code follows tokio patterns (no mutex guards held across await points).
+* If any remediation changes were made during this step, re-run the Step 4 gate checks (`cargo test`, `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`, `cargo fmt --all -- --check`) to confirm the fixes did not introduce new lint or format violations. All three must exit 0 before proceeding.
 * Verify test coverage aligns with the 80% target from the constitution.
 * If any violation is found, return to Step 3 to remediate before proceeding.
 
@@ -177,12 +181,16 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
 * Use the existing memory files in `.copilot-tracking/memory/` as format examples.
 * After writing the file, verify it exists by reading it back. If the file is missing or empty, halt and retry.
 
-### Step 8: Stage and Commit
+### Step 8: Pre-Commit Verification and Stage
 
-1. Review all changes made during the phase to ensure they align with the completed tasks and constitution.
-2. Review the ADRs created in Step 6 for clarity and completeness.
-3. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
-4. Review the session memory file for completeness and accuracy.
+1. Run `cargo fmt --all -- --check` to confirm formatting is clean. If it fails, run `cargo fmt --all` to auto-fix, then re-run the check.
+2. Run `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` to confirm lint compliance. If it fails, fix violations and re-run until clean.
+3. Run `cargo test` to confirm all tests still pass. If any test fails, fix and re-run.
+4. If any fixes were applied in steps 1–3, repeat all three checks from step 1 to ensure no cascading violations. All three commands must exit 0 before proceeding.
+5. Review all changes made during the phase to ensure they align with the completed tasks and constitution.
+6. Review the ADRs created in Step 6 for clarity and completeness.
+7. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
+8. Review the session memory file for completeness and accuracy.
 
 ### Step 9: Stage, Commit, and Sync
 

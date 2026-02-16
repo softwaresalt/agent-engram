@@ -2297,7 +2297,9 @@ max_size = 50
     .await
     .expect("set_workspace");
     assert_eq!(
-        ws_result.get("hydrated").and_then(serde_json::Value::as_bool),
+        ws_result
+            .get("hydrated")
+            .and_then(serde_json::Value::as_bool),
         Some(true)
     );
 
@@ -2477,7 +2479,12 @@ max_size = 50
     )
     .await
     .expect("batch update t1 to done");
-    assert_eq!(batch_res.get("succeeded").and_then(serde_json::Value::as_u64), Some(1));
+    assert_eq!(
+        batch_res
+            .get("succeeded")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
 
     // 9) get_ready_work with filters
     let ready = tools::dispatch(
@@ -2543,7 +2550,10 @@ max_size = 50
         statistics.get("total_tasks").is_some(),
         "should have total_tasks"
     );
-    let total = statistics.get("total_tasks").and_then(serde_json::Value::as_u64).unwrap();
+    let total = statistics
+        .get("total_tasks")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap();
     assert_eq!(total, 3, "should have 3 total tasks");
 
     // 13) flush_state
@@ -2634,7 +2644,9 @@ max_size = 50
         .await
         .expect("statistics after rehydrate");
     assert_eq!(
-        statistics2.get("total_tasks").and_then(serde_json::Value::as_u64),
+        statistics2
+            .get("total_tasks")
+            .and_then(serde_json::Value::as_u64),
         Some(3),
         "should still have 3 tasks after rehydrate"
     );

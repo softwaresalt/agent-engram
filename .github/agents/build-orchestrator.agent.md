@@ -55,13 +55,14 @@ Read and follow the build-feature skill at `.github/skills/build-feature/SKILL.m
 
 ### Step 4: Verify Phase Completion Gates
 
-After the build-feature skill finishes, verify that both mandatory gates were satisfied before considering the phase complete:
+After the build-feature skill finishes, verify that all mandatory gates were satisfied before considering the phase complete:
 
-1. **Memory gate**: Confirm that a memory file exists at `.copilot-tracking/memory/{YYYY-MM-DD}/{spec-name}-phase-{N}-memory.md`. If the file is missing, halt and run the memory recording step from the build-feature skill before proceeding.
-2. **Compaction gate**: Confirm that a checkpoint file was created in `.copilot-tracking/checkpoints/` during this phase's execution. If missing, run the compact-context skill at `.github/skills/compact-context/SKILL.md` before proceeding.
-3. **Commit gate**: Confirm that `git status` shows a clean working tree (all changes committed and pushed). If uncommitted changes remain, run the commit step from the build-feature skill.
+1. **Lint and format gate**: Run `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`. Both commands must exit 0. If either fails, fix the violations, re-run both checks, and do not proceed until both pass. This gate ensures the committed code matches what CI will enforce.
+2. **Memory gate**: Confirm that a memory file exists at `.copilot-tracking/memory/{YYYY-MM-DD}/{spec-name}-phase-{N}-memory.md`. If the file is missing, halt and run the memory recording step from the build-feature skill before proceeding.
+3. **Compaction gate**: Confirm that a checkpoint file was created in `.copilot-tracking/checkpoints/` during this phase's execution. If missing, run the compact-context skill at `.github/skills/compact-context/SKILL.md` before proceeding.
+4. **Commit gate**: Confirm that `git status` shows a clean working tree (all changes committed and pushed). If uncommitted changes remain, run the commit step from the build-feature skill.
 
-All three gates are mandatory. Do not advance to the next phase until all gates pass.
+All four gates are mandatory. Do not advance to the next phase until all gates pass.
 
 ### Step 5: Phase Loop (Full Mode Only)
 

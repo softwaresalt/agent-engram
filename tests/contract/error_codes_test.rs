@@ -313,7 +313,10 @@ fn t094_error_response_json_shape() {
 
         // Verify required fields exist with correct types
         assert!(
-            error_obj.get("code").and_then(serde_json::Value::as_u64).is_some(),
+            error_obj
+                .get("code")
+                .and_then(serde_json::Value::as_u64)
+                .is_some(),
             "error.code should be a number: {json}"
         );
         assert!(

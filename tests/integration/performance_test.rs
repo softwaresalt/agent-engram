@@ -228,7 +228,9 @@ async fn t089_sc015_statistics_performance() {
         "should return total_tasks"
     );
     assert_eq!(
-        result.get("total_tasks").and_then(serde_json::Value::as_u64),
+        result
+            .get("total_tasks")
+            .and_then(serde_json::Value::as_u64),
         Some(5000)
     );
     assert!(
