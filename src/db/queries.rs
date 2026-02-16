@@ -1310,6 +1310,565 @@ fn format_dependency(kind: DependencyType) -> &'static str {
     }
 }
 
+// ── Code Graph Row Types ───────────────────────────────────────────────
+
+/// Internal row type for deserializing code_file records from SurrealDB.
+#[derive(Deserialize)]
+struct CodeFileRow {
+    id: Thing,
+    path: String,
+    language: String,
+    size_bytes: u64,
+    content_hash: String,
+    last_indexed_at: DateTime<Utc>,
+}
+
+impl CodeFileRow {
+    fn into_code_file(self) -> crate::models::CodeFile {
+        crate::models::CodeFile {
+            id: format!("code_file:{}", self.id.id.to_raw()),
+            path: self.path,
+            language: self.language,
+            size_bytes: self.size_bytes,
+            content_hash: self.content_hash,
+            last_indexed_at: self.last_indexed_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Internal row type for deserializing function records from SurrealDB.
+#[derive(Deserialize)]
+struct FunctionRow {
+    id: Thing,
+    name: String,
+    file_path: String,
+    line_start: u32,
+    line_end: u32,
+    #[serde(default)]
+    signature: String,
+    #[serde(default)]
+    docstring: Option<String>,
+    body_hash: String,
+    token_count: u32,
+    embed_type: String,
+    #[serde(default)]
+    embedding: Vec<f32>,
+    #[serde(default)]
+    summary: String,
+}
+
+impl FunctionRow {
+    fn into_function(self) -> crate::models::Function {
+        crate::models::Function {
+            id: format!("function:{}", self.id.id.to_raw()),
+            name: self.name,
+            file_path: self.file_path,
+            line_start: self.line_start,
+            line_end: self.line_end,
+            signature: self.signature,
+            docstring: self.docstring,
+            body: String::new(), // body populated at runtime from source
+            body_hash: self.body_hash,
+            token_count: self.token_count,
+            embed_type: self.embed_type,
+            embedding: self.embedding,
+            summary: self.summary,
+        }
+    }
+}
+
+/// Internal row type for deserializing class records from SurrealDB.
+#[derive(Deserialize)]
+struct ClassRow {
+    id: Thing,
+    name: String,
+    file_path: String,
+    line_start: u32,
+    line_end: u32,
+    #[serde(default)]
+    docstring: Option<String>,
+    body_hash: String,
+    token_count: u32,
+    embed_type: String,
+    #[serde(default)]
+    embedding: Vec<f32>,
+    #[serde(default)]
+    summary: String,
+}
+
+impl ClassRow {
+    fn into_class(self) -> crate::models::Class {
+        crate::models::Class {
+            id: format!("class:{}", self.id.id.to_raw()),
+            name: self.name,
+            file_path: self.file_path,
+            line_start: self.line_start,
+            line_end: self.line_end,
+            docstring: self.docstring,
+            body: String::new(),
+            body_hash: self.body_hash,
+            token_count: self.token_count,
+            embed_type: self.embed_type,
+            embedding: self.embedding,
+            summary: self.summary,
+        }
+    }
+}
+
+/// Internal row type for deserializing interface records from SurrealDB.
+#[derive(Deserialize)]
+struct InterfaceRow {
+    id: Thing,
+    name: String,
+    file_path: String,
+    line_start: u32,
+    line_end: u32,
+    #[serde(default)]
+    docstring: Option<String>,
+    body_hash: String,
+    token_count: u32,
+    embed_type: String,
+    #[serde(default)]
+    embedding: Vec<f32>,
+    #[serde(default)]
+    summary: String,
+}
+
+impl InterfaceRow {
+    fn into_interface(self) -> crate::models::Interface {
+        crate::models::Interface {
+            id: format!("interface:{}", self.id.id.to_raw()),
+            name: self.name,
+            file_path: self.file_path,
+            line_start: self.line_start,
+            line_end: self.line_end,
+            docstring: self.docstring,
+            body: String::new(),
+            body_hash: self.body_hash,
+            token_count: self.token_count,
+            embed_type: self.embed_type,
+            embedding: self.embedding,
+            summary: self.summary,
+        }
+    }
+}
+
+/// Internal row type for deserializing code edge records from SurrealDB.
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CodeEdgeRow {
+    r#in: Thing,
+    out: Thing,
+    #[serde(default)]
+    import_path: Option<String>,
+    #[serde(default)]
+    linked_by: Option<String>,
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+}
+
+// ── Code Graph Queries ─────────────────────────────────────────────────
+
+/// Query helper for code graph CRUD operations.
+///
+/// Follows the same pattern as [`Queries`] — wraps a cloneable SurrealDB
+/// handle and provides typed, validated methods for all code graph tables.
+#[derive(Clone)]
+pub struct CodeGraphQueries {
+    db: Db,
+}
+
+impl CodeGraphQueries {
+    /// Create a new `CodeGraphQueries` instance wrapping the given DB handle.
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    // ── code_file CRUD ──────────────────────────────────────────────
+
+    /// Insert or update a code file record.
+    pub async fn upsert_code_file(
+        &self,
+        file: &crate::models::CodeFile,
+    ) -> Result<(), EngramError> {
+        let id_raw = file.id.strip_prefix("code_file:").unwrap_or(&file.id);
+        let record = Thing::from(("code_file", id_raw));
+        #[allow(clippy::cast_possible_wrap)]
+        let size_i64 = file.size_bytes as i64;
+        self.db
+            .query("UPSERT $id SET path = $path, language = $lang, size_bytes = $size, content_hash = $hash, last_indexed_at = time::now()")
+            .bind(("id", record))
+            .bind(("path", file.path.clone()))
+            .bind(("lang", file.language.clone()))
+            .bind(("size", size_i64))
+            .bind(("hash", file.content_hash.clone()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Look up a code file by its workspace-relative path.
+    pub async fn get_code_file_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<crate::models::CodeFile>, EngramError> {
+        let mut response = self
+            .db
+            .query("SELECT * FROM code_file WHERE path = $path LIMIT 1")
+            .bind(("path", path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeFileRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(CodeFileRow::into_code_file))
+    }
+
+    /// Delete a code file record and all its `defines` edges.
+    pub async fn delete_code_file(&self, path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM code_file WHERE path = $path")
+            .bind(("path", path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// List all indexed code files.
+    pub async fn list_code_files(&self) -> Result<Vec<crate::models::CodeFile>, EngramError> {
+        let mut response = self
+            .db
+            .query("SELECT * FROM code_file ORDER BY path ASC")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeFileRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().map(CodeFileRow::into_code_file).collect())
+    }
+
+    // ── function CRUD ───────────────────────────────────────────────
+
+    /// Insert or update a function record.
+    pub async fn upsert_function(&self, func: &crate::models::Function) -> Result<(), EngramError> {
+        let id_raw = func.id.strip_prefix("function:").unwrap_or(&func.id);
+        let record = Thing::from(("function", id_raw));
+        self.db
+            .query("UPSERT $id SET name = $name, file_path = $fp, line_start = $ls, line_end = $le, signature = $sig, docstring = $doc, body_hash = $bh, token_count = $tc, embed_type = $et, embedding = $emb, summary = $sum")
+            .bind(("id", record))
+            .bind(("name", func.name.clone()))
+            .bind(("fp", func.file_path.clone()))
+            .bind(("ls", i64::from(func.line_start)))
+            .bind(("le", i64::from(func.line_end)))
+            .bind(("sig", func.signature.clone()))
+            .bind(("doc", func.docstring.clone()))
+            .bind(("bh", func.body_hash.clone()))
+            .bind(("tc", i64::from(func.token_count)))
+            .bind(("et", func.embed_type.clone()))
+            .bind(("emb", func.embedding.clone()))
+            .bind(("sum", func.summary.clone()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Look up a function by name.
+    pub async fn get_function_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::models::Function>, EngramError> {
+        let mut response = self
+            .db
+            .query("SELECT * FROM function WHERE name = $name LIMIT 1")
+            .bind(("name", name.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<FunctionRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(FunctionRow::into_function))
+    }
+
+    /// List all functions in a given file.
+    pub async fn get_functions_by_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<crate::models::Function>, EngramError> {
+        let mut response = self
+            .db
+            .query("SELECT * FROM function WHERE file_path = $fp ORDER BY line_start ASC")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<FunctionRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().map(FunctionRow::into_function).collect())
+    }
+
+    /// Delete all functions in a given file.
+    pub async fn delete_functions_by_file(&self, file_path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM function WHERE file_path = $fp")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    // ── class CRUD ──────────────────────────────────────────────────
+
+    /// Insert or update a class record.
+    pub async fn upsert_class(&self, class: &crate::models::Class) -> Result<(), EngramError> {
+        let id_raw = class.id.strip_prefix("class:").unwrap_or(&class.id);
+        let record = Thing::from(("class", id_raw));
+        self.db
+            .query("UPSERT $id SET name = $name, file_path = $fp, line_start = $ls, line_end = $le, docstring = $doc, body_hash = $bh, token_count = $tc, embed_type = $et, embedding = $emb, summary = $sum")
+            .bind(("id", record))
+            .bind(("name", class.name.clone()))
+            .bind(("fp", class.file_path.clone()))
+            .bind(("ls", i64::from(class.line_start)))
+            .bind(("le", i64::from(class.line_end)))
+            .bind(("doc", class.docstring.clone()))
+            .bind(("bh", class.body_hash.clone()))
+            .bind(("tc", i64::from(class.token_count)))
+            .bind(("et", class.embed_type.clone()))
+            .bind(("emb", class.embedding.clone()))
+            .bind(("sum", class.summary.clone()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Look up a class by name.
+    pub async fn get_class_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::models::Class>, EngramError> {
+        let mut response = self
+            .db
+            .query("SELECT * FROM class WHERE name = $name LIMIT 1")
+            .bind(("name", name.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<ClassRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(ClassRow::into_class))
+    }
+
+    /// Delete all classes in a given file.
+    pub async fn delete_classes_by_file(&self, file_path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM class WHERE file_path = $fp")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    // ── interface CRUD ──────────────────────────────────────────────
+
+    /// Insert or update an interface record.
+    pub async fn upsert_interface(
+        &self,
+        iface: &crate::models::Interface,
+    ) -> Result<(), EngramError> {
+        let id_raw = iface.id.strip_prefix("interface:").unwrap_or(&iface.id);
+        let record = Thing::from(("interface", id_raw));
+        self.db
+            .query("UPSERT $id SET name = $name, file_path = $fp, line_start = $ls, line_end = $le, docstring = $doc, body_hash = $bh, token_count = $tc, embed_type = $et, embedding = $emb, summary = $sum")
+            .bind(("id", record))
+            .bind(("name", iface.name.clone()))
+            .bind(("fp", iface.file_path.clone()))
+            .bind(("ls", i64::from(iface.line_start)))
+            .bind(("le", i64::from(iface.line_end)))
+            .bind(("doc", iface.docstring.clone()))
+            .bind(("bh", iface.body_hash.clone()))
+            .bind(("tc", i64::from(iface.token_count)))
+            .bind(("et", iface.embed_type.clone()))
+            .bind(("emb", iface.embedding.clone()))
+            .bind(("sum", iface.summary.clone()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Look up an interface by name.
+    pub async fn get_interface_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::models::Interface>, EngramError> {
+        let mut response = self
+            .db
+            .query("SELECT * FROM interface WHERE name = $name LIMIT 1")
+            .bind(("name", name.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<InterfaceRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(InterfaceRow::into_interface))
+    }
+
+    /// Delete all interfaces in a given file.
+    pub async fn delete_interfaces_by_file(&self, file_path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM interface WHERE file_path = $fp")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    // ── Edge CRUD ───────────────────────────────────────────────────
+
+    /// Create a `calls` edge between two functions.
+    #[allow(clippy::similar_names)]
+    pub async fn create_calls_edge(
+        &self,
+        caller_id: &str,
+        callee_id: &str,
+    ) -> Result<(), EngramError> {
+        let from = Thing::from((
+            "function",
+            caller_id.strip_prefix("function:").unwrap_or(caller_id),
+        ));
+        let to = Thing::from((
+            "function",
+            callee_id.strip_prefix("function:").unwrap_or(callee_id),
+        ));
+        self.db
+            .query("RELATE $from->calls->$to")
+            .bind(("from", from))
+            .bind(("to", to))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Create an `imports` edge between two code files.
+    #[allow(clippy::similar_names)]
+    pub async fn create_imports_edge(
+        &self,
+        importer_id: &str,
+        imported_id: &str,
+        import_path: &str,
+    ) -> Result<(), EngramError> {
+        let from = Thing::from((
+            "code_file",
+            importer_id
+                .strip_prefix("code_file:")
+                .unwrap_or(importer_id),
+        ));
+        let to = Thing::from((
+            "code_file",
+            imported_id
+                .strip_prefix("code_file:")
+                .unwrap_or(imported_id),
+        ));
+        self.db
+            .query("RELATE $from->imports->$to SET import_path = $path")
+            .bind(("from", from))
+            .bind(("to", to))
+            .bind(("path", import_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Create a `defines` edge from a code file to a symbol.
+    pub async fn create_defines_edge(
+        &self,
+        file_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
+    ) -> Result<(), EngramError> {
+        let from = Thing::from((
+            "code_file",
+            file_id.strip_prefix("code_file:").unwrap_or(file_id),
+        ));
+        let prefix = format!("{symbol_table}:");
+        let to = Thing::from((
+            symbol_table,
+            symbol_id.strip_prefix(&prefix).unwrap_or(symbol_id),
+        ));
+        self.db
+            .query("RELATE $from->defines->$to")
+            .bind(("from", from))
+            .bind(("to", to))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Create an `inherits_from` edge from class to class/interface.
+    pub async fn create_inherits_edge(
+        &self,
+        child_table: &str,
+        child_id: &str,
+        parent_table: &str,
+        parent_id: &str,
+    ) -> Result<(), EngramError> {
+        let child_prefix = format!("{child_table}:");
+        let parent_prefix = format!("{parent_table}:");
+        let from = Thing::from((
+            child_table,
+            child_id.strip_prefix(&child_prefix).unwrap_or(child_id),
+        ));
+        let to = Thing::from((
+            parent_table,
+            parent_id.strip_prefix(&parent_prefix).unwrap_or(parent_id),
+        ));
+        self.db
+            .query("RELATE $from->inherits_from->$to")
+            .bind(("from", from))
+            .bind(("to", to))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Create a `concerns` edge from a task to a code symbol.
+    pub async fn create_concerns_edge(
+        &self,
+        task_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
+        linked_by: &str,
+    ) -> Result<(), EngramError> {
+        let sym_prefix = format!("{symbol_table}:");
+        let from = Thing::from(("task", task_id.strip_prefix("task:").unwrap_or(task_id)));
+        let to = Thing::from((
+            symbol_table,
+            symbol_id.strip_prefix(&sym_prefix).unwrap_or(symbol_id),
+        ));
+        self.db
+            .query("RELATE $from->concerns->$to SET linked_by = $by")
+            .bind(("from", from))
+            .bind(("to", to))
+            .bind(("by", linked_by.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Delete all edges of a given type originating from a code file.
+    pub async fn delete_edges_from_file(
+        &self,
+        edge_table: &str,
+        file_id: &str,
+    ) -> Result<(), EngramError> {
+        let from = Thing::from((
+            "code_file",
+            file_id.strip_prefix("code_file:").unwrap_or(file_id),
+        ));
+        let query = format!("DELETE FROM {edge_table} WHERE in = $from");
+        self.db
+            .query(&query)
+            .bind(("from", from))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Delete all symbols and edges for a file (used during re-indexing).
+    pub async fn clear_file_graph(&self, file_path: &str) -> Result<(), EngramError> {
+        self.delete_functions_by_file(file_path).await?;
+        self.delete_classes_by_file(file_path).await?;
+        self.delete_interfaces_by_file(file_path).await?;
+        Ok(())
+    }
+}
+
 fn parse_dependency_type(raw: String) -> DependencyType {
     match raw.as_str() {
         "soft_dependency" => DependencyType::SoftDependency,

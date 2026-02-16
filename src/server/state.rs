@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
 use crate::config::StaleStrategy;
@@ -72,6 +73,8 @@ pub struct AppState {
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
     rate_limiter: RateLimiter,
+    indexing_in_progress: AtomicBool,
+    last_indexed_at: RwLock<Option<DateTime<Utc>>>,
 }
 
 impl AppState {
@@ -99,6 +102,8 @@ impl AppState {
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
+            indexing_in_progress: AtomicBool::new(false),
+            last_indexed_at: RwLock::new(None),
         }
     }
 
@@ -197,6 +202,32 @@ impl AppState {
     /// Set the workspace config.
     pub async fn set_workspace_config(&self, config: Option<WorkspaceConfig>) {
         *self.workspace_config.write().await = config;
+    }
+
+    /// Check whether an indexing operation is currently in progress.
+    pub fn is_indexing(&self) -> bool {
+        self.indexing_in_progress.load(Ordering::SeqCst)
+    }
+
+    /// Attempt to start an indexing operation.
+    ///
+    /// Returns `true` if the flag was set (no other indexing was running).
+    /// Returns `false` if indexing was already in progress.
+    pub fn try_start_indexing(&self) -> bool {
+        self.indexing_in_progress
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Clear the indexing-in-progress flag and record the completion time.
+    pub async fn finish_indexing(&self) {
+        self.indexing_in_progress.store(false, Ordering::SeqCst);
+        *self.last_indexed_at.write().await = Some(Utc::now());
+    }
+
+    /// Get the timestamp of the last completed indexing operation.
+    pub async fn last_indexed_at(&self) -> Option<DateTime<Utc>> {
+        *self.last_indexed_at.read().await
     }
 }
 

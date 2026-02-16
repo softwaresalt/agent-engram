@@ -75,6 +75,19 @@ async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
     db.query(schema::DEFINE_RELATIONSHIPS)
         .await
         .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CODE_FILE)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_FUNCTION)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CLASS).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_INTERFACE)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CODE_EDGES)
+        .await
+        .map_err(map_db_err)?;
     Ok(())
 }
 

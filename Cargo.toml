@@ -110,3 +110,7 @@ path = "tests/integration/enhanced_features_test.rs"
 [[test]]
 name = "integration_performance"
 path = "tests/integration/performance_test.rs"
+
+[[test]]
+name = "unit_parsing"
+path = "tests/unit/parsing_test.rs"

@@ -56,18 +56,18 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T019 [P] Create `CodeFile` model struct with path, language, size_bytes, content_hash, last_indexed_at fields in src/models/code_file.rs
-- [ ] T020 [P] Create `Function` model struct with name, file_path, line range, signature, docstring, body, body_hash, token_count, embed_type, embedding, summary fields in src/models/function.rs
-- [ ] T021 [P] Create `Class` model struct (same schema as Function minus signature, maps to Rust `struct_item`) in src/models/class.rs
-- [ ] T022 [P] Create `Interface` model struct (same schema as Function minus signature, maps to Rust `trait_item`) in src/models/interface.rs
-- [ ] T023 [P] Create `CodeEdge` enums and structs for calls, imports, inherits_from, defines, concerns edge types in src/models/code_edge.rs
-- [ ] T024 Add `DEFINE TABLE`/`FIELD`/`INDEX` statements for code_file, function, class, interface nodes and calls, imports, inherits_from, defines, concerns edges to src/db/schema.rs
-- [ ] T025 Add code graph CRUD queries (insert/update/delete/lookup for nodes and edges) to src/db/queries.rs
-- [ ] T026 Create tree-sitter AST parsing service with node extraction for `function_item`, `struct_item`, `trait_item`, `impl_item` and edge discovery for `call_expression`, `use_declaration` in src/services/parsing.rs
-- [ ] T027 Add indexing-in-progress `AtomicBool` flag and `last_indexed_at` timestamp to `AppState` in src/server/state.rs
-- [ ] T028 [P] Add proptest `Arbitrary` implementations for `CodeFile`, `Function`, `Class`, `Interface`, `CodeEdge` types in tests/unit/proptest_models.rs
-- [ ] T029 [P] Add serde serialization round-trip property tests for code graph models in tests/unit/proptest_serialization.rs
-- [ ] T030 Add unit tests for tree-sitter node extraction (function, struct, trait, impl, call sites, use declarations) in tests/unit/parsing_test.rs
+- [X] T019 [P] Create `CodeFile` model struct with path, language, size_bytes, content_hash, last_indexed_at fields in src/models/code_file.rs
+- [X] T020 [P] Create `Function` model struct with name, file_path, line range, signature, docstring, body, body_hash, token_count, embed_type, embedding, summary fields in src/models/function.rs
+- [X] T021 [P] Create `Class` model struct (same schema as Function minus signature, maps to Rust `struct_item`) in src/models/class.rs
+- [X] T022 [P] Create `Interface` model struct (same schema as Function minus signature, maps to Rust `trait_item`) in src/models/interface.rs
+- [X] T023 [P] Create `CodeEdge` enums and structs for calls, imports, inherits_from, defines, concerns edge types in src/models/code_edge.rs
+- [X] T024 Add `DEFINE TABLE`/`FIELD`/`INDEX` statements for code_file, function, class, interface nodes and calls, imports, inherits_from, defines, concerns edges to src/db/schema.rs
+- [X] T025 Add code graph CRUD queries (insert/update/delete/lookup for nodes and edges) to src/db/queries.rs
+- [X] T026 Create tree-sitter AST parsing service with node extraction for `function_item`, `struct_item`, `trait_item`, `impl_item` and edge discovery for `call_expression`, `use_declaration` in src/services/parsing.rs
+- [X] T027 Add indexing-in-progress `AtomicBool` flag and `last_indexed_at` timestamp to `AppState` in src/server/state.rs
+- [X] T028 [P] Add proptest `Arbitrary` implementations for `CodeFile`, `Function`, `Class`, `Interface`, `CodeEdge` types in tests/unit/proptest_models.rs
+- [X] T029 [P] Add serde serialization round-trip property tests for code graph models in tests/unit/proptest_serialization.rs
+- [X] T030 Add unit tests for tree-sitter node extraction (function, struct, trait, impl, call sites, use declarations) in tests/unit/parsing_test.rs
 
 **Checkpoint**: Foundation ready — models, schema, parsing, and queries are in place. User story implementation can begin.
 
