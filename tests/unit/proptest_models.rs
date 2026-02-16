@@ -2,7 +2,7 @@ use chrono::Utc;
 use proptest::prelude::*;
 
 use engram::models::comment::Comment;
-use engram::models::config::{BatchConfig, CompactionConfig, WorkspaceConfig};
+use engram::models::config::{BatchConfig, CodeGraphConfig, CompactionConfig, WorkspaceConfig};
 use engram::models::graph::DependencyType;
 use engram::models::label::Label;
 use engram::models::task::{Task, TaskStatus};
@@ -127,6 +127,7 @@ fn arb_workspace_config() -> impl Strategy<Value = WorkspaceConfig> {
                 batch: BatchConfig { max_size: batch },
                 allowed_labels: vec![],
                 allowed_types: vec![],
+                code_graph: CodeGraphConfig::default(),
             },
         )
 }

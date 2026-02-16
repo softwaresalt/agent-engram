@@ -40,13 +40,13 @@
 
 **Purpose**: Add dependencies, error codes, configuration structures, and module declarations
 
-- [ ] T012 Add tree-sitter 0.24, tree-sitter-rust 0.23, and ignore 0.4 dependencies to Cargo.toml
-- [ ] T013 Switch embedding model from `AllMiniLML6V2` to `BGESmallENV15` and update `InitOptions` to `TextInitOptions` in src/services/embedding.rs
-- [ ] T014 [P] Add 7xxx error code constants (`PARSE_ERROR` through `SYNC_CONFLICT`) to src/errors/codes.rs
-- [ ] T015 [P] Add `CodeGraphError` enum with 7 variants and `#[from]` conversion to `EngramError` in src/errors/mod.rs
-- [ ] T016 [P] Add `CodeGraphConfig` and `EmbeddingConfig` structs with serde defaults to src/config/mod.rs
-- [ ] T017 [P] Add `pub mod parsing;` and `pub mod code_graph;` declarations to src/services/mod.rs
-- [ ] T018 [P] Add code graph model re-exports (`CodeFile`, `Function`, `Class`, `Interface`, `CodeEdge` types) to src/models/mod.rs
+- [X] T012 Add tree-sitter 0.24, tree-sitter-rust 0.23, and ignore 0.4 dependencies to Cargo.toml
+- [X] T013 Switch embedding model from `AllMiniLML6V2` to `BGESmallENV15` and update `InitOptions` to `TextInitOptions` in src/services/embedding.rs
+- [X] T014 [P] Add 7xxx error code constants (`PARSE_ERROR` through `SYNC_CONFLICT`) to src/errors/codes.rs
+- [X] T015 [P] Add `CodeGraphError` enum with 7 variants and `#[from]` conversion to `EngramError` in src/errors/mod.rs
+- [X] T016 [P] Add `CodeGraphConfig` and `EmbeddingConfig` structs with serde defaults to src/config/mod.rs
+- [X] T017 [P] Add `pub mod parsing;` and `pub mod code_graph;` declarations to src/services/mod.rs
+- [X] T018 [P] Add code graph model re-exports (`CodeFile`, `Function`, `Class`, `Interface`, `CodeEdge` types) to src/models/mod.rs
 
 ---
 

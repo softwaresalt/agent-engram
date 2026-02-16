@@ -47,3 +47,11 @@ pub const INVALID_PARAMS: u16 = 5005;
 pub const CONFIG_PARSE_ERROR: u16 = 6001;
 pub const CONFIG_INVALID_VALUE: u16 = 6002;
 pub const UNKNOWN_CONFIG_KEY: u16 = 6003;
+
+/// Code graph error codes
+pub const PARSE_ERROR: u16 = 7001;
+pub const UNSUPPORTED_LANGUAGE: u16 = 7002;
+pub const INDEX_IN_PROGRESS: u16 = 7003;
+pub const SYMBOL_NOT_FOUND: u16 = 7004;
+pub const FILE_TOO_LARGE: u16 = 7006;
+pub const SYNC_CONFLICT: u16 = 7007;

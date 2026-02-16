@@ -3,14 +3,14 @@
 //! Wraps `fastembed-rs` behind the `embeddings` feature flag. When the
 //! feature is disabled, all calls return `Err(QueryError::ModelNotLoaded)`.
 //!
-//! The model (`all-MiniLM-L6-v2`, 384 dimensions) is lazily downloaded
+//! The model (`bge-small-en-v1.5`, 384 dimensions) is lazily downloaded
 //! on first use and cached under `~/.local/share/engram/models/`.
 
 use std::path::PathBuf;
 
 use crate::errors::{EngramError, QueryError};
 
-/// Embedding vector dimension for `all-MiniLM-L6-v2`.
+/// Embedding vector dimension for `bge-small-en-v1.5`.
 pub const EMBEDDING_DIM: usize = 384;
 
 /// Maximum query length in characters (rough proxy for 500 tokens).
@@ -43,7 +43,7 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
         let cache = model_cache_dir();
         std::fs::create_dir_all(&cache).ok();
 
-        let options = fastembed::InitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2)
+        let options = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::BGESmallENV15)
             .with_cache_dir(cache)
             .with_show_download_progress(true);
 
