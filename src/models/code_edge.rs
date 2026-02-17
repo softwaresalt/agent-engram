@@ -18,6 +18,19 @@ pub enum CodeEdgeType {
     Concerns,
 }
 
+impl CodeEdgeType {
+    /// Return the snake_case string for this edge type.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Calls => "calls",
+            Self::Imports => "imports",
+            Self::InheritsFrom => "inherits_from",
+            Self::Defines => "defines",
+            Self::Concerns => "concerns",
+        }
+    }
+}
+
 /// A directed edge in the code knowledge graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeEdge {

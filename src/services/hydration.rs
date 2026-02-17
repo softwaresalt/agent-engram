@@ -232,6 +232,292 @@ pub async fn backfill_embeddings(queries: &Queries) {
         }
     }
 }
+
+/// Result of loading code graph JSONL files into the database.
+#[derive(Debug, Clone, Default)]
+pub struct CodeGraphHydrationResult {
+    /// Total nodes loaded (code_files + functions + classes + interfaces).
+    pub nodes_loaded: usize,
+    /// Total edges loaded.
+    pub edges_loaded: usize,
+    /// Lines skipped due to parse errors (FR-135).
+    pub lines_skipped: usize,
+}
+
+/// Hydrate code graph from `.engram/code-graph/` JSONL files (FR-132, FR-135).
+///
+/// Parses `nodes.jsonl` and `edges.jsonl`, upserting into SurrealDB.
+/// Corrupt lines are logged and skipped (FR-135: graceful degradation).
+pub async fn hydrate_code_graph(
+    path: &Path,
+    cg_queries: &crate::db::queries::CodeGraphQueries,
+) -> Result<CodeGraphHydrationResult, EngramError> {
+    let code_graph_dir = path.join(".engram").join("code-graph");
+    let mut result = CodeGraphHydrationResult::default();
+
+    // Parse nodes.jsonl
+    let nodes_path = code_graph_dir.join("nodes.jsonl");
+    if nodes_path.exists() {
+        let content = fs::read_to_string(&nodes_path).map_err(|e| {
+            EngramError::Hydration(HydrationError::Failed {
+                reason: format!("failed to read nodes.jsonl: {e}"),
+            })
+        })?;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(node) = parse_node_line(line) {
+                if upsert_node(cg_queries, node).await {
+                    result.nodes_loaded += 1;
+                } else {
+                    result.lines_skipped += 1;
+                }
+            } else {
+                tracing::warn!(
+                    line_preview = &line[..line.len().min(80)],
+                    "skipping corrupt nodes.jsonl line (FR-135)"
+                );
+                result.lines_skipped += 1;
+            }
+        }
+    }
+
+    // Parse edges.jsonl
+    let edges_path = code_graph_dir.join("edges.jsonl");
+    if edges_path.exists() {
+        let content = fs::read_to_string(&edges_path).map_err(|e| {
+            EngramError::Hydration(HydrationError::Failed {
+                reason: format!("failed to read edges.jsonl: {e}"),
+            })
+        })?;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(edge) = parse_edge_line(line) {
+                if upsert_edge(cg_queries, &edge).await {
+                    result.edges_loaded += 1;
+                } else {
+                    result.lines_skipped += 1;
+                }
+            } else {
+                tracing::warn!(
+                    line_preview = &line[..line.len().min(80)],
+                    "skipping corrupt edges.jsonl line (FR-135)"
+                );
+                result.lines_skipped += 1;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Intermediate node representation parsed from a JSONL line.
+#[derive(Debug, serde::Deserialize)]
+struct ParsedNode {
+    id: String,
+    #[serde(rename = "type")]
+    node_type: String,
+    // code_file fields
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    size_bytes: Option<u64>,
+    #[serde(default)]
+    content_hash: Option<String>,
+    #[serde(default)]
+    last_indexed_at: Option<String>,
+    // symbol fields
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    line_start: Option<u32>,
+    #[serde(default)]
+    line_end: Option<u32>,
+    #[serde(default)]
+    signature: Option<String>,
+    #[serde(default)]
+    docstring: Option<String>,
+    #[serde(default)]
+    body_hash: Option<String>,
+    #[serde(default)]
+    token_count: Option<u32>,
+    #[serde(default)]
+    embed_type: Option<String>,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+/// Intermediate edge representation parsed from a JSONL line.
+#[derive(Debug, serde::Deserialize)]
+struct ParsedEdge {
+    #[serde(rename = "type")]
+    edge_type: String,
+    from: String,
+    to: String,
+    #[serde(default)]
+    import_path: Option<String>,
+    #[serde(default)]
+    linked_by: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    created_at: Option<String>,
+}
+
+fn parse_node_line(line: &str) -> Result<ParsedNode, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+fn parse_edge_line(line: &str) -> Result<ParsedEdge, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+/// Upsert a parsed node into the database. Returns `true` on success.
+async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: ParsedNode) -> bool {
+    use crate::models::{Class, CodeFile, Function, Interface};
+
+    match node.node_type.as_str() {
+        "code_file" => {
+            let cf = CodeFile {
+                id: node.id,
+                path: node.path.unwrap_or_default(),
+                language: node.language.unwrap_or_default(),
+                size_bytes: node.size_bytes.unwrap_or(0),
+                content_hash: node.content_hash.unwrap_or_default(),
+                last_indexed_at: node.last_indexed_at.unwrap_or_default(),
+            };
+            cg_queries.upsert_code_file(&cf).await.is_ok()
+        }
+        "function" => {
+            let f = Function {
+                id: node.id,
+                name: node.name.unwrap_or_default(),
+                file_path: node.file_path.unwrap_or_default(),
+                line_start: node.line_start.unwrap_or(0),
+                line_end: node.line_end.unwrap_or(0),
+                signature: node.signature.unwrap_or_default(),
+                docstring: node.docstring,
+                body: String::new(), // body not persisted
+                body_hash: node.body_hash.unwrap_or_default(),
+                token_count: node.token_count.unwrap_or(0),
+                embed_type: node.embed_type.unwrap_or_default(),
+                embedding: node.embedding.unwrap_or_default(),
+                summary: node.summary.unwrap_or_default(),
+            };
+            cg_queries.upsert_function(&f).await.is_ok()
+        }
+        "class" => {
+            let c = Class {
+                id: node.id,
+                name: node.name.unwrap_or_default(),
+                file_path: node.file_path.unwrap_or_default(),
+                line_start: node.line_start.unwrap_or(0),
+                line_end: node.line_end.unwrap_or(0),
+                docstring: node.docstring,
+                body: String::new(),
+                body_hash: node.body_hash.unwrap_or_default(),
+                token_count: node.token_count.unwrap_or(0),
+                embed_type: node.embed_type.unwrap_or_default(),
+                embedding: node.embedding.unwrap_or_default(),
+                summary: node.summary.unwrap_or_default(),
+            };
+            cg_queries.upsert_class(&c).await.is_ok()
+        }
+        "interface" => {
+            let i = Interface {
+                id: node.id,
+                name: node.name.unwrap_or_default(),
+                file_path: node.file_path.unwrap_or_default(),
+                line_start: node.line_start.unwrap_or(0),
+                line_end: node.line_end.unwrap_or(0),
+                docstring: node.docstring,
+                body: String::new(),
+                body_hash: node.body_hash.unwrap_or_default(),
+                token_count: node.token_count.unwrap_or(0),
+                embed_type: node.embed_type.unwrap_or_default(),
+                embedding: node.embedding.unwrap_or_default(),
+                summary: node.summary.unwrap_or_default(),
+            };
+            cg_queries.upsert_interface(&i).await.is_ok()
+        }
+        _ => {
+            tracing::warn!(
+                node_type = node.node_type,
+                "unknown node type in nodes.jsonl"
+            );
+            false
+        }
+    }
+}
+
+/// Upsert a parsed edge into the database. Returns `true` on success.
+async fn upsert_edge(cg_queries: &crate::db::queries::CodeGraphQueries, edge: &ParsedEdge) -> bool {
+    match edge.edge_type.as_str() {
+        "calls" => cg_queries
+            .create_calls_edge(&edge.from, &edge.to)
+            .await
+            .is_ok(),
+        "imports" => {
+            let import_path = edge.import_path.as_deref().unwrap_or("");
+            cg_queries
+                .create_imports_edge(&edge.from, &edge.to, import_path)
+                .await
+                .is_ok()
+        }
+        "defines" => {
+            // create_defines_edge(file_id, symbol_table, symbol_id)
+            let (to_table, to_id) = split_thing_id(&edge.to);
+            cg_queries
+                .create_defines_edge(&edge.from, to_table, to_id)
+                .await
+                .is_ok()
+        }
+        "inherits_from" => {
+            // create_inherits_edge(child_table, child_id, parent_table, parent_id)
+            let (from_table, from_id) = split_thing_id(&edge.from);
+            let (to_table, to_id) = split_thing_id(&edge.to);
+            cg_queries
+                .create_inherits_edge(from_table, from_id, to_table, to_id)
+                .await
+                .is_ok()
+        }
+        "concerns" => {
+            // create_concerns_edge(task_id, symbol_table, symbol_id, linked_by)
+            let (to_table, to_id) = split_thing_id(&edge.to);
+            let linked_by = edge.linked_by.as_deref().unwrap_or("hydration");
+            cg_queries
+                .create_concerns_edge(&edge.from, to_table, to_id, linked_by)
+                .await
+                .is_ok()
+        }
+        _ => {
+            tracing::warn!(
+                edge_type = edge.edge_type,
+                "unknown edge type in edges.jsonl"
+            );
+            false
+        }
+    }
+}
+
+/// Split a `"table:id"` string into `("table", "id")`.
+/// Falls back to `("unknown", full_id)` if no colon is found.
+fn split_thing_id(id: &str) -> (&str, &str) {
+    id.split_once(':').unwrap_or(("unknown", id))
+}
+
 /// Detect whether `.engram/` files have been modified since the last flush.
 pub fn detect_stale(engram_dir: &Path) -> bool {
     let file_mtimes = collect_file_mtimes(engram_dir);

@@ -1735,3 +1735,33 @@ async fn contract_unlink_task_from_code_requires_workspace() {
 
     assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
 }
+
+// ── Phase 9: flush_state FR-153 guard ───────────────────────────────
+
+#[test]
+async fn contract_flush_state_rejects_while_indexing() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Simulate an indexing operation in progress
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "flush_state", Some(json!({})))
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+}

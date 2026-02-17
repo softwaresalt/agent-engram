@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 use crate::db::connect_db;
-use crate::db::queries::Queries;
+use crate::db::queries::{CodeGraphQueries, Queries};
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::hydration::{
-    backfill_embeddings, detect_stale_since, hydrate_into_db, hydrate_workspace,
+    backfill_embeddings, detect_stale_since, hydrate_code_graph, hydrate_into_db, hydrate_workspace,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,6 +41,17 @@ pub struct WorkspaceStatus {
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,
+    pub code_graph: CodeGraphStats,
+}
+
+/// Summary statistics for the indexed code graph.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CodeGraphStats {
+    pub code_files: u64,
+    pub functions: u64,
+    pub classes: u64,
+    pub interfaces: u64,
+    pub edges: u64,
 }
 
 pub async fn set_workspace(
@@ -64,6 +75,10 @@ pub async fn set_workspace(
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
     let db_result = hydrate_into_db(&canonical, &queries).await?;
+
+    // Hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
+    let cg_queries = CodeGraphQueries::new(db.clone());
+    let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
 
     // Backfill embeddings for specs/contexts that lack them (T086)
     backfill_embeddings(&queries).await;
@@ -129,6 +144,37 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
                 .await;
         }
 
+        // Gather code graph stats from the database
+        let code_graph = if let Ok(db) = connect_db(&snapshot.workspace_id).await {
+            let cg_queries = CodeGraphQueries::new(db);
+            let code_files = cg_queries
+                .list_code_files()
+                .await
+                .map_or(0, |v| v.len() as u64);
+            let functions = cg_queries
+                .all_functions()
+                .await
+                .map_or(0, |v| v.len() as u64);
+            let classes = cg_queries.all_classes().await.map_or(0, |v| v.len() as u64);
+            let interfaces = cg_queries
+                .all_interfaces()
+                .await
+                .map_or(0, |v| v.len() as u64);
+            let edges = cg_queries
+                .all_code_edges()
+                .await
+                .map_or(0, |v| v.len() as u64);
+            CodeGraphStats {
+                code_files,
+                functions,
+                classes,
+                interfaces,
+                edges,
+            }
+        } else {
+            CodeGraphStats::default()
+        };
+
         return Ok(WorkspaceStatus {
             path: snapshot.path,
             task_count: snapshot.task_count,
@@ -136,6 +182,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             last_flush: snapshot.last_flush,
             stale_files: stale_now,
             connection_count: state.active_connections(),
+            code_graph,
         });
     }
 

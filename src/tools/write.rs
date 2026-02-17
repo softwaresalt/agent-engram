@@ -381,6 +381,11 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
     Ok(response)
 }
 pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    // FR-153: Reject flush while indexing — code graph may be in inconsistent state
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
     // T092: Acquire per-workspace write lock for FIFO serialization of concurrent flushes
     let _flush_guard = dehydration::acquire_flush_lock().await;
     let snapshot = state
@@ -418,6 +423,14 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     }
 
     let result = dehydration::dehydrate_workspace(&queries, &path).await?;
+
+    // Code graph serialization (FR-132, FR-133, FR-134)
+    let cg_queries = crate::db::queries::CodeGraphQueries::new(db);
+    let cg_result = dehydration::dehydrate_code_graph(&cg_queries, &path).await?;
+
+    let mut all_files = result.files_written.clone();
+    all_files.extend(cg_result.files_written);
+
     let new_mtimes = hydration::collect_file_mtimes(&engram_dir);
 
     let _ = state
@@ -430,9 +443,13 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
         .await;
 
     Ok(json!({
-        "files_written": result.files_written,
+        "files_written": all_files,
         "warnings": warnings,
         "flush_timestamp": result.flush_timestamp,
+        "code_graph": {
+            "nodes_written": cg_result.nodes_written,
+            "edges_written": cg_result.edges_written,
+        },
     }))
 }
 

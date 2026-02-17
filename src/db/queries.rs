@@ -1558,6 +1558,157 @@ impl CodeGraphQueries {
         Ok(rows.into_iter().map(CodeFileRow::into_code_file).collect())
     }
 
+    /// Return all functions in the code graph.
+    pub async fn all_functions(&self) -> Result<Vec<crate::models::Function>, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM `function` ORDER BY id ASC")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().map(FunctionRow::into_function).collect())
+    }
+
+    /// Return all classes in the code graph.
+    pub async fn all_classes(&self) -> Result<Vec<crate::models::Class>, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM class ORDER BY id ASC")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().map(ClassRow::into_class).collect())
+    }
+
+    /// Return all interfaces in the code graph.
+    pub async fn all_interfaces(&self) -> Result<Vec<crate::models::Interface>, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM interface ORDER BY id ASC")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().map(InterfaceRow::into_interface).collect())
+    }
+
+    /// Return all code edges across every edge type.
+    pub async fn all_code_edges(&self) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
+        use crate::models::code_edge::{CodeEdge, CodeEdgeType};
+
+        let mut edges: Vec<CodeEdge> = Vec::new();
+
+        // Calls edges
+        let mut resp = self
+            .db
+            .query("SELECT * FROM calls")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeEdgeRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            edges.push(CodeEdge {
+                edge_type: CodeEdgeType::Calls,
+                from: format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw()),
+                to: format!("{}:{}", row.out.tb, row.out.id.to_raw()),
+                import_path: None,
+                linked_by: None,
+                created_at: row
+                    .created_at
+                    .map_or_else(String::new, |dt| dt.to_rfc3339()),
+            });
+        }
+
+        // Imports edges
+        let mut resp = self
+            .db
+            .query("SELECT * FROM imports")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeEdgeRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            edges.push(CodeEdge {
+                edge_type: CodeEdgeType::Imports,
+                from: format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw()),
+                to: format!("{}:{}", row.out.tb, row.out.id.to_raw()),
+                import_path: row.import_path,
+                linked_by: None,
+                created_at: row
+                    .created_at
+                    .map_or_else(String::new, |dt| dt.to_rfc3339()),
+            });
+        }
+
+        // Defines edges
+        let mut resp = self
+            .db
+            .query("SELECT * FROM defines")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeEdgeRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            edges.push(CodeEdge {
+                edge_type: CodeEdgeType::Defines,
+                from: format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw()),
+                to: format!("{}:{}", row.out.tb, row.out.id.to_raw()),
+                import_path: None,
+                linked_by: None,
+                created_at: row
+                    .created_at
+                    .map_or_else(String::new, |dt| dt.to_rfc3339()),
+            });
+        }
+
+        // Inherits_from edges
+        let mut resp = self
+            .db
+            .query("SELECT * FROM inherits_from")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeEdgeRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            edges.push(CodeEdge {
+                edge_type: CodeEdgeType::InheritsFrom,
+                from: format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw()),
+                to: format!("{}:{}", row.out.tb, row.out.id.to_raw()),
+                import_path: None,
+                linked_by: None,
+                created_at: row
+                    .created_at
+                    .map_or_else(String::new, |dt| dt.to_rfc3339()),
+            });
+        }
+
+        // Concerns edges
+        let mut resp = self
+            .db
+            .query("SELECT * FROM concerns")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CodeEdgeRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            edges.push(CodeEdge {
+                edge_type: CodeEdgeType::Concerns,
+                from: format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw()),
+                to: format!("{}:{}", row.out.tb, row.out.id.to_raw()),
+                import_path: None,
+                linked_by: row.linked_by,
+                created_at: row
+                    .created_at
+                    .map_or_else(String::new, |dt| dt.to_rfc3339()),
+            });
+        }
+
+        // Sort by (type, from, to)
+        edges.sort_by(|a, b| {
+            a.edge_type
+                .as_str()
+                .cmp(b.edge_type.as_str())
+                .then(a.from.cmp(&b.from))
+                .then(a.to.cmp(&b.to))
+        });
+
+        Ok(edges)
+    }
+
     // ── function CRUD ───────────────────────────────────────────────
 
     /// Insert or update a function record.
