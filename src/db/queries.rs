@@ -1868,6 +1868,166 @@ impl CodeGraphQueries {
         Ok(())
     }
 
+    // ── Concerns Edge Management (T044) ─────────────────────────────
+
+    /// Retrieve all `concerns` edges whose target (`out`) is a symbol in the
+    /// given file path. Returns `(task_id, symbol_table, symbol_id, linked_by)`
+    /// tuples for every matching edge.
+    pub async fn get_concerns_edges_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<ConcernsEdgeInfo>, EngramError> {
+        let mut results = Vec::new();
+
+        // Collect symbol IDs from this file across all symbol tables.
+        for table in &["function", "class", "interface"] {
+            let table_name = if *table == "function" {
+                "`function`"
+            } else {
+                *table
+            };
+            let sym_query = format!("SELECT id FROM {table_name} WHERE file_path = $fp");
+            let mut sym_resp = self
+                .db
+                .query(&sym_query)
+                .bind(("fp", file_path.to_owned()))
+                .await
+                .map_err(map_db_err)?;
+            let sym_ids: Vec<IdOnlyRow> = sym_resp.take(0).map_err(map_db_err)?;
+
+            for sym_row in sym_ids {
+                let sym_thing = sym_row.id.clone();
+                let mut edge_resp = self
+                    .db
+                    .query("SELECT * FROM concerns WHERE out = $sym")
+                    .bind(("sym", sym_thing.clone()))
+                    .await
+                    .map_err(map_db_err)?;
+                let edge_rows: Vec<ConcernsRow> = edge_resp.take(0).map_err(map_db_err)?;
+
+                for edge in edge_rows {
+                    results.push(ConcernsEdgeInfo {
+                        task_id: format!("{}:{}", edge.r#in.tb, edge.r#in.id.to_raw()),
+                        symbol_table: (*table).to_string(),
+                        symbol_id: format!("{}:{}", sym_thing.tb, sym_thing.id.to_raw()),
+                        symbol_name: String::new(), // will be filled by caller
+                        symbol_body_hash: String::new(), // will be filled by caller
+                        linked_by: edge.linked_by.unwrap_or_default(),
+                    });
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Delete all `concerns` edges targeting a specific symbol node.
+    pub async fn delete_concerns_edges_for_symbol(
+        &self,
+        symbol_table: &str,
+        symbol_id: &str,
+    ) -> Result<usize, EngramError> {
+        let prefix = format!("{symbol_table}:");
+        let thing = Thing::from((
+            symbol_table,
+            symbol_id.strip_prefix(&prefix).unwrap_or(symbol_id),
+        ));
+        let mut resp = self
+            .db
+            .query("SELECT * FROM concerns WHERE out = $sym")
+            .bind(("sym", thing.clone()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<ConcernsRow> = resp.take(0).map_err(map_db_err)?;
+        let count = rows.len();
+
+        self.db
+            .query("DELETE FROM concerns WHERE out = $sym")
+            .bind(("sym", thing))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(count)
+    }
+
+    /// Look up all symbols with a given `(name, body_hash)` across all symbol
+    /// tables. Used for hash-resilient concerns edge relinking (FR-124).
+    pub async fn find_symbols_by_name_and_hash(
+        &self,
+        name: &str,
+        body_hash: &str,
+    ) -> Result<Vec<SymbolIdentity>, EngramError> {
+        let mut results = Vec::new();
+
+        for table in &["function", "class", "interface"] {
+            let table_name = if *table == "function" {
+                "`function`"
+            } else {
+                *table
+            };
+            let query = format!(
+                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE name = $name AND body_hash = $bh"
+            );
+            let mut resp = self
+                .db
+                .query(&query)
+                .bind(("name", name.to_owned()))
+                .bind(("bh", body_hash.to_owned()))
+                .await
+                .map_err(map_db_err)?;
+            let rows: Vec<SymbolIdentityRow> = resp.take(0).map_err(map_db_err)?;
+            for row in rows {
+                results.push(SymbolIdentity {
+                    table: (*table).to_string(),
+                    id: format!("{}:{}", row.id.tb, row.id.id.to_raw()),
+                    name: row.name,
+                    file_path: row.file_path,
+                    body_hash: row.body_hash,
+                });
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Get all symbols (name + body_hash) in a given file, for pre-sync
+    /// snapshot used by hash-resilient concerns relinking.
+    pub async fn get_symbol_identities_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<SymbolIdentity>, EngramError> {
+        let mut results = Vec::new();
+
+        for table in &["function", "class", "interface"] {
+            let table_name = if *table == "function" {
+                "`function`"
+            } else {
+                *table
+            };
+            let query = format!(
+                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE file_path = $fp"
+            );
+            let mut resp = self
+                .db
+                .query(&query)
+                .bind(("fp", file_path.to_owned()))
+                .await
+                .map_err(map_db_err)?;
+            let rows: Vec<SymbolIdentityRow> = resp.take(0).map_err(map_db_err)?;
+            for row in rows {
+                results.push(SymbolIdentity {
+                    table: (*table).to_string(),
+                    id: format!("{}:{}", row.id.tb, row.id.id.to_raw()),
+                    name: row.name,
+                    file_path: row.file_path,
+                    body_hash: row.body_hash,
+                });
+            }
+        }
+
+        Ok(results)
+    }
+
     // ── BFS Traversal Queries (T038) ────────────────────────────────
 
     /// Look up all symbols (functions, classes, interfaces) whose name matches exactly.
@@ -2486,6 +2646,65 @@ impl CodeGraphQueries {
 
         Ok(matches)
     }
+}
+
+// ── Supporting Types for Concerns Edge Management ──────────────────────
+
+/// Information about a `concerns` edge targeting a symbol.
+#[derive(Debug, Clone)]
+pub struct ConcernsEdgeInfo {
+    /// The task ID that has the concerns edge (e.g., `task:abc123`).
+    pub task_id: String,
+    /// Table name of the target symbol (function, class, interface).
+    pub symbol_table: String,
+    /// Full qualified ID of the target symbol.
+    pub symbol_id: String,
+    /// Name of the target symbol (populated by caller).
+    pub symbol_name: String,
+    /// Body hash of the target symbol (populated by caller).
+    pub symbol_body_hash: String,
+    /// The client/agent that created the link.
+    pub linked_by: String,
+}
+
+/// Symbol identity tuple for hash-resilient concerns relinking (FR-124).
+#[derive(Debug, Clone)]
+pub struct SymbolIdentity {
+    /// Table name (function, class, interface).
+    pub table: String,
+    /// Full qualified ID (e.g., `function:abc123`).
+    pub id: String,
+    /// Symbol name.
+    pub name: String,
+    /// Workspace-relative file path.
+    pub file_path: String,
+    /// Body hash for identity matching.
+    pub body_hash: String,
+}
+
+/// Internal row for ID-only queries.
+#[derive(Deserialize)]
+struct IdOnlyRow {
+    id: Thing,
+}
+
+/// Internal row for concerns edge queries.
+#[derive(Deserialize)]
+struct ConcernsRow {
+    r#in: Thing,
+    #[allow(dead_code)]
+    out: Thing,
+    #[serde(default)]
+    linked_by: Option<String>,
+}
+
+/// Internal row for symbol identity queries.
+#[derive(Deserialize)]
+struct SymbolIdentityRow {
+    id: Thing,
+    name: String,
+    file_path: String,
+    body_hash: String,
 }
 
 // ── Supporting Types for BFS / Symbol Listing ──────────────────────────

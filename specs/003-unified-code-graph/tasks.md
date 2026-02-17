@@ -124,14 +124,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T042 [P] [US3] Add contract test for `sync_workspace` (workspace-not-set returns 1003, sync while indexing returns 7003) in tests/contract/write_test.rs
+- [x] T042 [P] [US3] Add contract test for `sync_workspace` (workspace-not-set returns 1003, sync while indexing returns 7003) in tests/contract/write_test.rs
 
 ### Implementation for User Story 3
 
-- [ ] T043 [US3] Add two-level hash comparison logic (file-level content_hash then per-symbol body_hash) and selective re-embedding to src/services/code_graph.rs
-- [ ] T044 [US3] Add hash-resilient concerns edge relinking logic using `(name, body_hash)` tuple identity matching with orphan cleanup and context notes (FR-124) to src/services/code_graph.rs
-- [ ] T045 [US3] Implement `sync_workspace` tool handler that detects file changes, delegates to incremental sync, records sync context note (FR-125), and returns structured summary in src/tools/write.rs
-- [ ] T046 [US3] Add `sync_workspace` match arm to `dispatch()` in src/tools/mod.rs
+- [x] T043 [US3] Add two-level hash comparison logic (file-level content_hash then per-symbol body_hash) and selective re-embedding to src/services/code_graph.rs
+- [x] T044 [US3] Add hash-resilient concerns edge relinking logic using `(name, body_hash)` tuple identity matching with orphan cleanup and context notes (FR-124) to src/services/code_graph.rs
+- [x] T045 [US3] Implement `sync_workspace` tool handler that detects file changes, delegates to incremental sync, records sync context note (FR-125), and returns structured summary in src/tools/write.rs
+- [x] T046 [US3] Add `sync_workspace` match arm to `dispatch()` in src/tools/mod.rs
 
 **Checkpoint**: Code graph stays current with minimal cost. Only changed symbols are re-embedded.
 

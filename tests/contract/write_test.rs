@@ -1628,3 +1628,45 @@ async fn contract_index_workspace_rejects_while_in_progress() {
 
     assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
 }
+
+// ── sync_workspace contract tests (T042) ────────────────────────────
+
+#[test]
+async fn contract_sync_workspace_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "sync_workspace", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_sync_workspace_rejects_while_in_progress() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Simulate an indexing operation in progress.
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "sync_workspace", Some(json!({})))
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+}

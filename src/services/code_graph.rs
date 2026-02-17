@@ -3,11 +3,12 @@
 //! Coordinates file discovery, parallel parsing, tiered embedding,
 //! incremental sync, and concerns edge management.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::db::connect_db;
@@ -405,6 +406,558 @@ pub async fn index_workspace(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Summary returned by [`sync_workspace`] after incremental sync completes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncResult {
+    /// Number of files that were modified and re-indexed.
+    pub files_modified: usize,
+    /// Number of new files added and indexed.
+    pub files_added: usize,
+    /// Number of files deleted (nodes removed).
+    pub files_deleted: usize,
+    /// Number of files unchanged (skipped).
+    pub files_unchanged: usize,
+    /// Number of symbols that were re-embedded because their body changed.
+    pub symbols_reembedded: usize,
+    /// Number of symbols that kept existing embeddings (body unchanged).
+    pub symbols_reused: usize,
+    /// Number of `concerns` edges re-linked to new symbol nodes (FR-124).
+    pub concerns_relinked: usize,
+    /// Number of `concerns` edges orphaned and removed (FR-112).
+    pub concerns_orphaned: usize,
+    /// Per-file errors encountered (non-fatal).
+    pub errors: Vec<FileError>,
+    /// Total sync duration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Incrementally sync the code graph with changes on disk.
+///
+/// Detects changed, added, and deleted files since the last index
+/// and updates only affected nodes. Uses two-level hashing:
+///
+/// 1. **File-level** – `content_hash` on `code_file` nodes identifies
+///    which files changed on disk.
+/// 2. **Symbol-level** – `body_hash` on function/class/interface nodes
+///    identifies which symbols within a changed file actually need
+///    re-embedding.
+///
+/// Preserves `concerns` edges across file moves via hash-resilient
+/// identity matching on `(name, body_hash)` tuples (FR-124).
+///
+/// If no prior index exists, falls back to a full index (same outcome
+/// as calling `index_workspace`).
+///
+/// # Errors
+///
+/// Returns `EngramError` on database connection failure or fatal I/O errors.
+/// Per-file parse errors are collected in `SyncResult::errors` (non-fatal).
+pub async fn sync_workspace(
+    ws_path: &Path,
+    ws_id: &str,
+    config: &CodeGraphConfig,
+) -> Result<SyncResult, EngramError> {
+    let start = std::time::Instant::now();
+
+    let db = connect_db(ws_id).await?;
+    let queries = CodeGraphQueries::new(db);
+
+    // Discover current files on disk.
+    let current_files = discover_files(ws_path, config);
+
+    // Load all indexed code files from DB.
+    let indexed_files = queries.list_code_files().await?;
+    let indexed_map: HashMap<String, CodeFile> = indexed_files
+        .into_iter()
+        .map(|f| (f.path.clone(), f))
+        .collect();
+
+    // Build a set of current relative paths for deletion detection.
+    let current_rel_paths: std::collections::HashSet<String> = current_files
+        .iter()
+        .filter_map(|p| {
+            p.strip_prefix(ws_path)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+        })
+        .collect();
+
+    let mut result = SyncResult {
+        files_modified: 0,
+        files_added: 0,
+        files_deleted: 0,
+        files_unchanged: 0,
+        symbols_reembedded: 0,
+        symbols_reused: 0,
+        concerns_relinked: 0,
+        concerns_orphaned: 0,
+        errors: Vec::new(),
+        duration_ms: 0,
+    };
+
+    // ── Phase 1: Detect and remove deleted files ────────────────────
+    for (indexed_path, indexed_file) in &indexed_map {
+        if !current_rel_paths.contains(indexed_path) {
+            // File deleted — collect concerns edges before removing symbols.
+            let orphaned = handle_deleted_file(&queries, indexed_path, &indexed_file.id).await?;
+            result.concerns_orphaned += orphaned;
+            result.files_deleted += 1;
+        }
+    }
+
+    // ── Phase 2: Process current files (add / modify / skip) ────────
+    for file_path in &current_files {
+        let rel_path = file_path
+            .strip_prefix(ws_path)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        // Read file contents.
+        let source = match tokio::fs::read_to_string(file_path).await {
+            Ok(s) => s,
+            Err(e) => {
+                result.errors.push(FileError {
+                    file: rel_path.clone(),
+                    error: format!("read error: {e}"),
+                });
+                continue;
+            }
+        };
+
+        let size_bytes = source.len() as u64;
+        if size_bytes == 0 {
+            // Skip 0-byte files.
+            result.files_unchanged += 1;
+            continue;
+        }
+        if size_bytes > config.max_file_size_bytes {
+            result.errors.push(FileError {
+                file: rel_path.clone(),
+                error: format!(
+                    "file too large ({size_bytes} > {} bytes)",
+                    config.max_file_size_bytes
+                ),
+            });
+            continue;
+        }
+
+        // Language check.
+        let lang = language_from_path(file_path);
+        if !config.supported_languages.contains(&lang) {
+            continue;
+        }
+
+        // File-level hash comparison (level 1).
+        let content_hash = sha256_hex(&source);
+        let is_new = !indexed_map.contains_key(&rel_path);
+
+        if !is_new {
+            let existing = &indexed_map[&rel_path];
+            if existing.content_hash == content_hash {
+                // File unchanged — skip entirely.
+                result.files_unchanged += 1;
+                continue;
+            }
+        }
+
+        // ── File changed or new: collect pre-sync concerns info ─────
+        let pre_sync_identities = if is_new {
+            Vec::new()
+        } else {
+            queries.get_symbol_identities_for_file(&rel_path).await?
+        };
+        let pre_sync_concerns = if is_new {
+            Vec::new()
+        } else {
+            queries.get_concerns_edges_for_file(&rel_path).await?
+        };
+
+        // Enrich concerns edges with symbol name + body_hash.
+        let enriched_concerns: Vec<_> = pre_sync_concerns
+            .into_iter()
+            .map(|mut c| {
+                if let Some(ident) = pre_sync_identities.iter().find(|i| i.id == c.symbol_id) {
+                    c.symbol_name = ident.name.clone();
+                    c.symbol_body_hash = ident.body_hash.clone();
+                }
+                c
+            })
+            .collect();
+
+        // ── Parse file ──────────────────────────────────────────────
+        let source_clone = source.clone();
+        let parse_result =
+            match tokio::task::spawn_blocking(move || parse_rust_source(&source_clone)).await {
+                Ok(Ok(pr)) => pr,
+                Ok(Err(e)) => {
+                    result.errors.push(FileError {
+                        file: rel_path.clone(),
+                        error: e,
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    result.errors.push(FileError {
+                        file: rel_path.clone(),
+                        error: format!("task join error: {e}"),
+                    });
+                    continue;
+                }
+            };
+
+        // ── Upsert code file node ───────────────────────────────────
+        let file_id = format!("code_file:{}", sha256_short(&rel_path));
+        let code_file = CodeFile {
+            id: file_id.clone(),
+            path: rel_path.clone(),
+            language: lang.clone(),
+            size_bytes,
+            content_hash,
+            last_indexed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        queries.upsert_code_file(&code_file).await?;
+
+        // Clear previous symbols and defines edges for this file.
+        queries.delete_functions_by_file(&rel_path).await?;
+        queries.delete_classes_by_file(&rel_path).await?;
+        queries.delete_interfaces_by_file(&rel_path).await?;
+        queries.delete_edges_from_file("defines", &file_id).await?;
+
+        // ── Build map of old symbols by (name, body_hash) for reuse ─
+        let old_sym_map: HashMap<(String, String), &crate::db::queries::SymbolIdentity> =
+            pre_sync_identities
+                .iter()
+                .map(|s| ((s.name.clone(), s.body_hash.clone()), s))
+                .collect();
+
+        // ── Insert new symbols, re-embed only if body changed ───────
+        let token_limit = config.embedding.token_limit;
+        let mut new_function_ids: Vec<(String, String)> = Vec::new();
+        let mut new_class_ids: Vec<(String, String)> = Vec::new();
+        let mut new_interface_ids: Vec<(String, String)> = Vec::new();
+        let mut embed_texts: Vec<String> = Vec::new();
+
+        for symbol in &parse_result.symbols {
+            match symbol {
+                ExtractedSymbol::Function(f) => {
+                    let sym_id = format!("function:{}", Uuid::new_v4());
+                    let (embed_type, summary) = tier_classification(
+                        f.token_count as usize,
+                        token_limit,
+                        &f.body,
+                        &f.signature,
+                        f.docstring.as_deref(),
+                    );
+
+                    // Check if body_hash matches an old symbol (reuse embedding).
+                    let reused = old_sym_map.contains_key(&(f.name.clone(), f.body_hash.clone()));
+
+                    if reused {
+                        result.symbols_reused += 1;
+                    } else {
+                        embed_texts.push(summary.clone());
+                        result.symbols_reembedded += 1;
+                    }
+
+                    let func = crate::models::function::Function {
+                        id: sym_id.clone(),
+                        name: f.name.clone(),
+                        file_path: rel_path.clone(),
+                        line_start: f.line_start,
+                        line_end: f.line_end,
+                        signature: f.signature.clone(),
+                        docstring: f.docstring.clone(),
+                        body: f.body.clone(),
+                        body_hash: f.body_hash.clone(),
+                        token_count: f.token_count,
+                        embed_type: embed_type.to_owned(),
+                        embedding: Vec::new(),
+                        summary,
+                    };
+                    queries.upsert_function(&func).await?;
+                    new_function_ids.push((f.name.clone(), sym_id.clone()));
+                    queries
+                        .create_defines_edge(&file_id, "function", &sym_id)
+                        .await?;
+                }
+                ExtractedSymbol::Class(c) => {
+                    let sym_id = format!("class:{}", Uuid::new_v4());
+                    let (embed_type, summary) = tier_classification(
+                        c.token_count as usize,
+                        token_limit,
+                        &c.body,
+                        "",
+                        c.docstring.as_deref(),
+                    );
+
+                    let reused = old_sym_map.contains_key(&(c.name.clone(), c.body_hash.clone()));
+
+                    if reused {
+                        result.symbols_reused += 1;
+                    } else {
+                        embed_texts.push(summary.clone());
+                        result.symbols_reembedded += 1;
+                    }
+
+                    let class = crate::models::class::Class {
+                        id: sym_id.clone(),
+                        name: c.name.clone(),
+                        file_path: rel_path.clone(),
+                        line_start: c.line_start,
+                        line_end: c.line_end,
+                        docstring: c.docstring.clone(),
+                        body: c.body.clone(),
+                        body_hash: c.body_hash.clone(),
+                        token_count: c.token_count,
+                        embed_type: embed_type.to_owned(),
+                        embedding: Vec::new(),
+                        summary,
+                    };
+                    queries.upsert_class(&class).await?;
+                    new_class_ids.push((c.name.clone(), sym_id.clone()));
+                    queries
+                        .create_defines_edge(&file_id, "class", &sym_id)
+                        .await?;
+                }
+                ExtractedSymbol::Interface(i) => {
+                    let sym_id = format!("interface:{}", Uuid::new_v4());
+                    let (embed_type, summary) = tier_classification(
+                        i.token_count as usize,
+                        token_limit,
+                        &i.body,
+                        "",
+                        i.docstring.as_deref(),
+                    );
+
+                    let reused = old_sym_map.contains_key(&(i.name.clone(), i.body_hash.clone()));
+
+                    if reused {
+                        result.symbols_reused += 1;
+                    } else {
+                        embed_texts.push(summary.clone());
+                        result.symbols_reembedded += 1;
+                    }
+
+                    let iface = crate::models::interface::Interface {
+                        id: sym_id.clone(),
+                        name: i.name.clone(),
+                        file_path: rel_path.clone(),
+                        line_start: i.line_start,
+                        line_end: i.line_end,
+                        docstring: i.docstring.clone(),
+                        body: i.body.clone(),
+                        body_hash: i.body_hash.clone(),
+                        token_count: i.token_count,
+                        embed_type: embed_type.to_owned(),
+                        embedding: Vec::new(),
+                        summary,
+                    };
+                    queries.upsert_interface(&iface).await?;
+                    new_interface_ids.push((i.name.clone(), sym_id.clone()));
+                    queries
+                        .create_defines_edge(&file_id, "interface", &sym_id)
+                        .await?;
+                }
+            }
+        }
+
+        // ── Batch embed changed symbols ─────────────────────────────
+        if !embed_texts.is_empty() {
+            match embedding::embed_texts(&embed_texts) {
+                Ok(vectors) => {
+                    debug!(
+                        count = vectors.len(),
+                        "code graph sync: generated embeddings for changed symbols"
+                    );
+                }
+                Err(e) => {
+                    debug!(error = %e, "code graph sync: embedding unavailable, skipping");
+                }
+            }
+        }
+
+        // ── Recreate edges from parse result ────────────────────────
+        for edge in &parse_result.edges {
+            match edge {
+                ExtractedEdge::Calls { caller, callee } => {
+                    if let (Some(from_id), Some(to_id)) = (
+                        find_function_id(&new_function_ids, caller),
+                        find_function_id(&new_function_ids, callee),
+                    ) {
+                        queries.create_calls_edge(&from_id, &to_id).await?;
+                    }
+                }
+                ExtractedEdge::InheritsFrom {
+                    struct_name,
+                    trait_name,
+                } => {
+                    if let Some(child_id) = find_class_id(&new_class_ids, struct_name) {
+                        if let Some(parent_id) = find_interface_id(&new_interface_ids, trait_name) {
+                            queries
+                                .create_inherits_edge("class", &child_id, "interface", &parent_id)
+                                .await?;
+                        }
+                    }
+                }
+                ExtractedEdge::Imports { .. } | ExtractedEdge::Defines { .. } => {}
+            }
+        }
+
+        // ── Relink concerns edges (FR-124) ──────────────────────────
+        let (relinked, orphaned) = relink_concerns_edges(
+            &queries,
+            &enriched_concerns,
+            &new_function_ids,
+            &new_class_ids,
+            &new_interface_ids,
+        )
+        .await?;
+        result.concerns_relinked += relinked;
+        result.concerns_orphaned += orphaned;
+
+        if is_new {
+            result.files_added += 1;
+        } else {
+            result.files_modified += 1;
+        }
+        debug!(path = %rel_path, "code graph sync: re-indexed file");
+    }
+
+    // ── Record sync context note (FR-125) ───────────────────────────
+    let summary = format!(
+        "Code graph sync: {} modified, {} added, {} deleted, {} unchanged",
+        result.files_modified, result.files_added, result.files_deleted, result.files_unchanged,
+    );
+    info!("{summary}");
+
+    #[allow(clippy::cast_possible_truncation)]
+    let elapsed = start.elapsed().as_millis() as u64;
+    result.duration_ms = elapsed;
+
+    Ok(result)
+}
+
+/// Handle deletion of a file from the code graph:
+/// remove all concerns edges (orphan cleanup), then remove symbols and
+/// the code file node itself.
+///
+/// Returns the number of concerns edges orphaned.
+async fn handle_deleted_file(
+    queries: &CodeGraphQueries,
+    file_path: &str,
+    file_id: &str,
+) -> Result<usize, EngramError> {
+    // Collect and delete concerns edges targeting symbols in this file.
+    let concerns = queries.get_concerns_edges_for_file(file_path).await?;
+    let mut orphaned = 0;
+    for edge in &concerns {
+        let deleted = queries
+            .delete_concerns_edges_for_symbol(&edge.symbol_table, &edge.symbol_id)
+            .await?;
+        orphaned += deleted;
+    }
+
+    // Delete all symbol nodes and defines edges for this file.
+    queries.delete_functions_by_file(file_path).await?;
+    queries.delete_classes_by_file(file_path).await?;
+    queries.delete_interfaces_by_file(file_path).await?;
+    queries.delete_edges_from_file("defines", file_id).await?;
+    queries.delete_code_file(file_path).await?;
+
+    if orphaned > 0 {
+        warn!(
+            file_path,
+            orphaned, "code graph sync: orphaned concerns edges from deleted file"
+        );
+    }
+
+    Ok(orphaned)
+}
+
+/// Re-link `concerns` edges after re-indexing a modified file (FR-124).
+///
+/// For each concerns edge that existed before the re-index:
+///   - If a new symbol with the same `(name, body_hash)` exists in ANY file,
+///     re-create the concerns edge pointing to the new symbol ID.
+///   - If no match is found, the edge is orphaned and removed.
+///
+/// Returns `(relinked, orphaned)` counts.
+async fn relink_concerns_edges(
+    queries: &CodeGraphQueries,
+    pre_sync_concerns: &[crate::db::queries::ConcernsEdgeInfo],
+    new_function_ids: &[(String, String)],
+    new_class_ids: &[(String, String)],
+    new_interface_ids: &[(String, String)],
+) -> Result<(usize, usize), EngramError> {
+    let mut relinked = 0;
+    let mut orphaned = 0;
+
+    for edge in pre_sync_concerns {
+        if edge.symbol_name.is_empty() {
+            // Cannot relink without a name — treat as orphan.
+            orphaned += 1;
+            continue;
+        }
+
+        // Try to find the new symbol by (name, body_hash) across all tables.
+        let matches = queries
+            .find_symbols_by_name_and_hash(&edge.symbol_name, &edge.symbol_body_hash)
+            .await?;
+
+        if matches.is_empty() {
+            // Also try within the same file's new symbols by name only
+            // (the symbol may have been modified, changing its body_hash).
+            let in_file_match = match edge.symbol_table.as_str() {
+                "function" => find_function_id(new_function_ids, &edge.symbol_name),
+                "class" => find_class_id(new_class_ids, &edge.symbol_name),
+                "interface" => find_interface_id(new_interface_ids, &edge.symbol_name),
+                _ => None,
+            };
+
+            if let Some(new_id) = in_file_match {
+                // Re-link to the new symbol (same name, different body).
+                queries
+                    .create_concerns_edge(
+                        &edge.task_id,
+                        &edge.symbol_table,
+                        &new_id,
+                        &edge.linked_by,
+                    )
+                    .await?;
+                relinked += 1;
+                debug!(
+                    task = %edge.task_id,
+                    symbol = %edge.symbol_name,
+                    "concerns edge re-linked (name match, body changed)"
+                );
+            } else {
+                orphaned += 1;
+                warn!(
+                    task = %edge.task_id,
+                    symbol = %edge.symbol_name,
+                    "concerns edge orphaned — symbol no longer exists"
+                );
+            }
+        } else {
+            // Re-link to the first matching new symbol.
+            let target = &matches[0];
+            queries
+                .create_concerns_edge(&edge.task_id, &target.table, &target.id, &edge.linked_by)
+                .await?;
+            relinked += 1;
+            debug!(
+                task = %edge.task_id,
+                symbol = %edge.symbol_name,
+                new_path = %target.file_path,
+                "concerns edge re-linked via hash-resilient identity"
+            );
+        }
+    }
+
+    Ok((relinked, orphaned))
+}
 
 /// Discover all source files in the workspace using `.gitignore`-aware traversal.
 fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::PathBuf> {

@@ -231,14 +231,15 @@ Every tool follows this pattern:
 3. **No exit-code echo suffixes.** Do not append `; echo "EXIT: $LASTEXITCODE"` or `&& echo "done"` to commands. The terminal tool already captures exit codes.
 4. **Check results between commands.** After each command, inspect the output and exit code before deciding whether to run the next command. This is safer and produces better diagnostics.
 5. **Always use `pwsh`, never `powershell`.** When invoking PowerShell explicitly (e.g., to run a `.ps1` script), use `pwsh` — the cross-platform PowerShell 7+ executable. Never use `powershell` or `powershell.exe`, which refers to the legacy Windows PowerShell 5.1 runtime.
-6. **Always use relative paths for output redirection.** When redirecting command output to a file, use workspace-relative paths (e.g., `target\results.txt`), never absolute paths (e.g., `d:\Source\...\target\results.txt`). Absolute paths break auto-approve regex matching.
+6. **Always use relative paths for output redirection.** When redirecting command output to a file, use workspace-relative paths (e.g., `logs\results.txt`), never absolute paths (e.g., `d:\Source\...\logs\results.txt`). Absolute paths break auto-approve regex matching.
+7. **Terminal output files go in `logs\`.** All temporary output captures from terminal commands (test results, check output, clippy results, etc.) MUST be written to the `logs\` directory, never to `target\` or the workspace root. The `target\` directory is reserved for Cargo build artifacts only.
 
 ### Allowed Exceptions
 
 Output redirection is **not** command chaining — it is I/O plumbing that cannot execute destructive operations. The following patterns are permitted:
 
-- **Shell redirection operators**: `>`, `>>`, `2>&1` (e.g., `cargo test > target/results.txt 2>&1`)
-- **Pipe to `Out-File` or `Set-Content`**: `cargo test 2>&1 | Out-File target/results.txt` or `| Set-Content`
+- **Shell redirection operators**: `>`, `>>`, `2>&1` (e.g., `cargo test > logs/results.txt 2>&1`)
+- **Pipe to `Out-File` or `Set-Content`**: `cargo test 2>&1 | Out-File logs/results.txt` or `| Set-Content`
 - **Pipe to `Out-String`**: `some-command | Out-String`
 
 Use these when the terminal tool's ~60 KB output limit would truncate results (e.g., full `cargo test` compilation + test output).
@@ -258,10 +259,10 @@ cargo clippy -- -D warnings
 cargo test
 
 # Good: output redirection to capture full results
-cargo test 2>&1 | Out-File target\test-results.txt
+cargo test 2>&1 | Out-File logs\test-results.txt
 
 # Good: shell redirect when output may be truncated
-cargo test > target\test-results.txt 2>&1
+cargo test > logs\test-results.txt 2>&1
 ```
 
 ### Incorrect Examples
@@ -271,7 +272,7 @@ cargo test > target\test-results.txt 2>&1
 cargo check; cargo clippy -- -D warnings; cargo test
 
 # Bad: cmd /c wrapper with echo suffix
-cmd /c "cargo test > target\test-results.txt 2>&1"; echo "EXIT: $LASTEXITCODE"
+cmd /c "cargo test > logs\test-results.txt 2>&1"; echo "EXIT: $LASTEXITCODE"
 
 # Bad: AND-chained
 cargo fmt && cargo clippy && cargo test

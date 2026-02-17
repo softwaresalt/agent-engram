@@ -1206,6 +1206,56 @@ async fn index_workspace_inner(
     })
 }
 
+// ── sync_workspace (T045) ───────────────────────────────────────────
+
+/// Detect changed, added, and deleted files since the last index and
+/// update only affected nodes in the code graph.
+///
+/// Uses two-level hashing (file-level `content_hash` then per-symbol
+/// `body_hash`) to minimise re-embedding. Preserves `concerns` edges
+/// across file moves via hash-resilient identity matching (FR-124).
+pub async fn sync_workspace(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_path = workspace_path(&state).await?;
+    let ws_id = workspace_id(&state).await?;
+
+    // Reject if indexing is already running (FR-121 / 7003).
+    if !state.try_start_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
+    // Run the sync logic, ensuring the flag is cleared on all exit paths.
+    let result = sync_workspace_inner(&state, &ws_path, &ws_id, params).await;
+    state.finish_indexing().await;
+    result
+}
+
+/// Inner sync logic separated to guarantee `finish_indexing()` runs.
+async fn sync_workspace_inner(
+    state: &SharedState,
+    ws_path: &std::path::Path,
+    ws_id: &str,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let _ = params; // no params for sync_workspace currently
+
+    let config = state
+        .workspace_config()
+        .await
+        .map(|c| c.code_graph.clone())
+        .unwrap_or_default();
+
+    let result = crate::services::code_graph::sync_workspace(ws_path, ws_id, &config).await?;
+
+    serde_json::to_value(result).map_err(|e| {
+        EngramError::System(SystemError::InvalidParams {
+            reason: e.to_string(),
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
