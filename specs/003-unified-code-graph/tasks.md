@@ -145,16 +145,16 @@
 
 ### Tests for User Story 4
 
-- [ ] T047 [P] [US4] Add contract tests for `link_task_to_code` (workspace-not-set 1003, invalid task 3001, symbol-not-found 7004) and `unlink_task_from_code` in tests/contract/write_test.rs
-- [ ] T048 [P] [US4] Add integration test for cross-region concerns edge lifecycle (create link → `get_active_context` → unlink → verify removed) in tests/integration/cross_region_test.rs
+- [x] T047 [P] [US4] Add contract tests for `link_task_to_code` (workspace-not-set 1003, invalid task 3001, symbol-not-found 7004) and `unlink_task_from_code` in tests/contract/write_test.rs
+- [x] T048 [P] [US4] Add integration test for cross-region concerns edge lifecycle (create link → `get_active_context` → unlink → verify removed) in tests/integration/cross_region_test.rs
 
 ### Implementation for User Story 4
 
-- [ ] T049 [US4] Add concerns edge CRUD queries (create by task+symbol name with idempotency per FR-152, delete by task+symbol name, orphan cleanup, list by task) to src/db/queries.rs
-- [ ] T050 [US4] Implement `link_task_to_code` tool handler that resolves symbol names to node IDs and creates idempotent concerns edges (FR-152) in src/tools/write.rs
-- [ ] T051 [US4] Implement `unlink_task_from_code` tool handler that removes matching concerns edges in src/tools/write.rs
-- [ ] T052 [US4] Implement `get_active_context` tool handler that returns all in-progress tasks, expands full code neighborhoods (with source bodies) for highest-priority task only, and returns symbol names only for remaining tasks (FR-127) in src/tools/read.rs
-- [ ] T053 [US4] Add `link_task_to_code`, `unlink_task_from_code`, and `get_active_context` match arms to `dispatch()` in src/tools/mod.rs
+- [x] T049 [US4] Add concerns edge CRUD queries (create by task+symbol name with idempotency per FR-152, delete by task+symbol name, orphan cleanup, list by task) to src/db/queries.rs
+- [x] T050 [US4] Implement `link_task_to_code` tool handler that resolves symbol names to node IDs and creates idempotent concerns edges (FR-152) in src/tools/write.rs
+- [x] T051 [US4] Implement `unlink_task_from_code` tool handler that removes matching concerns edges in src/tools/write.rs
+- [x] T052 [US4] Implement `get_active_context` tool handler that returns all in-progress tasks, expands full code neighborhoods (with source bodies) for highest-priority task only, and returns symbol names only for remaining tasks (FR-127) in src/tools/read.rs
+- [x] T053 [US4] Add `link_task_to_code`, `unlink_task_from_code`, and `get_active_context` match arms to `dispatch()` in src/tools/mod.rs
 
 **Checkpoint**: Tasks and code are unified via concerns edges. `get_active_context` returns grounded code context.
 

@@ -1295,6 +1295,21 @@ impl Queries {
             compacted_count: compacted_rows.first().map_or(0, |r| r.count),
         })
     }
+
+    /// Get all tasks with `in_progress` status, ordered by priority then creation time.
+    pub async fn get_in_progress_tasks(&self) -> Result<Vec<Task>, EngramError> {
+        let rows: Vec<TaskRow> = self
+            .db
+            .query(
+                "SELECT * FROM task WHERE status = 'in_progress' \
+                 ORDER BY priority_order ASC, created_at ASC",
+            )
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
 }
 
 fn format_dependency(kind: DependencyType) -> &'static str {
@@ -1564,6 +1579,8 @@ impl CodeGraphQueries {
             .bind(("emb", func.embedding.clone()))
             .bind(("sum", func.summary.clone()))
             .await
+            .map_err(map_db_err)?
+            .check()
             .map_err(map_db_err)?;
         Ok(())
     }
@@ -1628,6 +1645,8 @@ impl CodeGraphQueries {
             .bind(("emb", class.embedding.clone()))
             .bind(("sum", class.summary.clone()))
             .await
+            .map_err(map_db_err)?
+            .check()
             .map_err(map_db_err)?;
         Ok(())
     }
@@ -1680,6 +1699,8 @@ impl CodeGraphQueries {
             .bind(("emb", iface.embedding.clone()))
             .bind(("sum", iface.summary.clone()))
             .await
+            .map_err(map_db_err)?
+            .check()
             .map_err(map_db_err)?;
         Ok(())
     }
@@ -2028,6 +2049,109 @@ impl CodeGraphQueries {
         Ok(results)
     }
 
+    // ── Concerns Edge CRUD for link/unlink (T049) ───────────────────
+
+    /// Check if a `concerns` edge already exists between task and symbol (FR-152 idempotency).
+    pub async fn concerns_edge_exists(
+        &self,
+        task_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
+    ) -> Result<bool, EngramError> {
+        let from = Thing::from(("task", task_id.strip_prefix("task:").unwrap_or(task_id)));
+        let sym_prefix = format!("{symbol_table}:");
+        let to = Thing::from((
+            symbol_table,
+            symbol_id.strip_prefix(&sym_prefix).unwrap_or(symbol_id),
+        ));
+        let mut resp = self
+            .db
+            .query("SELECT count() AS count FROM concerns WHERE in = $from AND out = $to GROUP ALL")
+            .bind(("from", from))
+            .bind(("to", to))
+            .await
+            .map_err(map_db_err)?;
+        let row: Option<CountRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(row.is_some_and(|r| r.count > 0))
+    }
+
+    /// Delete all `concerns` edges from a task to symbols with the given name.
+    ///
+    /// Returns the number of edges deleted.
+    pub async fn delete_concerns_by_task_and_symbol_name(
+        &self,
+        task_id: &str,
+        symbol_name: &str,
+    ) -> Result<usize, EngramError> {
+        let from = Thing::from(("task", task_id.strip_prefix("task:").unwrap_or(task_id)));
+
+        // Find all symbol IDs matching the name across tables.
+        let symbols = self.find_symbols_by_name(symbol_name).await?;
+        let mut deleted = 0;
+        for sym in &symbols {
+            let (table, raw_id) = sym
+                .id
+                .split_once(':')
+                .unwrap_or(("function", sym.id.as_str()));
+            let to = Thing::from((table, raw_id));
+            let mut resp = self
+                .db
+                .query("SELECT * FROM concerns WHERE in = $from AND out = $to")
+                .bind(("from", from.clone()))
+                .bind(("to", to.clone()))
+                .await
+                .map_err(map_db_err)?;
+            let rows: Vec<ConcernsRow> = resp.take(0).map_err(map_db_err)?;
+            if !rows.is_empty() {
+                self.db
+                    .query("DELETE FROM concerns WHERE in = $from AND out = $to")
+                    .bind(("from", from.clone()))
+                    .bind(("to", to))
+                    .await
+                    .map_err(map_db_err)?;
+                deleted += rows.len();
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// List all `concerns` edges for a given task, returning symbol info.
+    pub async fn list_concerns_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<ConcernsLink>, EngramError> {
+        let from = Thing::from(("task", task_id.strip_prefix("task:").unwrap_or(task_id)));
+        let mut resp = self
+            .db
+            .query("SELECT * FROM concerns WHERE in = $from")
+            .bind(("from", from))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<ConcernsLinkRow> = resp.take(0).map_err(map_db_err)?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let symbol_id = format!("{}:{}", row.out.tb, row.out.id.to_raw());
+            let symbol_table = row.out.tb.clone();
+
+            // Resolve the symbol to get its name and file_path.
+            let (name, file_path) = if let Some(sym) = self.resolve_symbol(&symbol_id).await? {
+                (sym.name, sym.file_path)
+            } else {
+                (String::new(), String::new())
+            };
+
+            results.push(ConcernsLink {
+                symbol_table,
+                symbol_id,
+                symbol_name: name,
+                file_path,
+                linked_by: row.linked_by.unwrap_or_default(),
+            });
+        }
+        Ok(results)
+    }
+
     // ── BFS Traversal Queries (T038) ────────────────────────────────
 
     /// Look up all symbols (functions, classes, interfaces) whose name matches exactly.
@@ -2247,7 +2371,7 @@ impl CodeGraphQueries {
     }
 
     /// Resolve any symbol ID to its full metadata.
-    async fn resolve_symbol(&self, node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
+    pub async fn resolve_symbol(&self, node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
         let (table, _raw_id) = parse_node_id(node_id);
 
         match table.as_str() {
@@ -2696,6 +2820,31 @@ struct ConcernsRow {
     out: Thing,
     #[serde(default)]
     linked_by: Option<String>,
+}
+
+/// Internal row for concerns edge listing (includes `out` for resolution).
+#[derive(Deserialize)]
+struct ConcernsLinkRow {
+    #[allow(dead_code)]
+    r#in: Thing,
+    out: Thing,
+    #[serde(default)]
+    linked_by: Option<String>,
+}
+
+/// A resolved `concerns` edge link with symbol metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcernsLink {
+    /// Table name of the target symbol (function, class, interface).
+    pub symbol_table: String,
+    /// Full qualified ID of the target symbol.
+    pub symbol_id: String,
+    /// Symbol name.
+    pub symbol_name: String,
+    /// File path of the symbol.
+    pub file_path: String,
+    /// The client/agent that created the link.
+    pub linked_by: String,
 }
 
 /// Internal row for symbol identity queries.

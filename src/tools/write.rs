@@ -1256,6 +1256,134 @@ async fn sync_workspace_inner(
     })
 }
 
+// ── link_task_to_code (T050) ────────────────────────────────────────
+
+/// Create `concerns` edges between a task and all code symbols matching
+/// the given `symbol_name`. Idempotent per FR-152: calling with the same
+/// `(task_id, symbol_name)` pair does not create duplicate edges.
+pub async fn link_task_to_code(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        task_id: String,
+        symbol_name: String,
+        #[serde(default = "default_linked_by")]
+        linked_by: String,
+    }
+
+    fn default_linked_by() -> String {
+        "agent".to_owned()
+    }
+
+    let ws_id = workspace_id(&state).await?;
+
+    let parsed: Params =
+        serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let cg_db = connect_db(&ws_id).await?;
+    let cg_queries = crate::db::queries::CodeGraphQueries::new(cg_db);
+
+    // Verify task exists.
+    let task = queries.get_task(&parsed.task_id).await?;
+    if task.is_none() {
+        return Err(EngramError::Task(TaskError::NotFound {
+            id: parsed.task_id,
+        }));
+    }
+
+    // Find all symbols matching the name.
+    let symbols = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
+    if symbols.is_empty() {
+        return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+            name: parsed.symbol_name,
+        }));
+    }
+
+    let mut links_created = 0u32;
+    let mut links_existing = 0u32;
+
+    for sym in &symbols {
+        // Idempotency check (FR-152).
+        let exists = cg_queries
+            .concerns_edge_exists(&parsed.task_id, &sym.table, &sym.id)
+            .await?;
+        if exists {
+            links_existing += 1;
+            continue;
+        }
+
+        cg_queries
+            .create_concerns_edge(&parsed.task_id, &sym.table, &sym.id, &parsed.linked_by)
+            .await?;
+        links_created += 1;
+    }
+
+    Ok(json!({
+        "task_id": parsed.task_id,
+        "symbol_name": parsed.symbol_name,
+        "links_created": links_created,
+        "links_existing": links_existing,
+        "total_matches": symbols.len(),
+    }))
+}
+
+// ── unlink_task_from_code (T051) ────────────────────────────────────
+
+/// Remove `concerns` edges between a task and all code symbols matching
+/// the given `symbol_name`.
+pub async fn unlink_task_from_code(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        task_id: String,
+        symbol_name: String,
+    }
+
+    let ws_id = workspace_id(&state).await?;
+
+    let parsed: Params =
+        serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let cg_db = connect_db(&ws_id).await?;
+    let cg_queries = crate::db::queries::CodeGraphQueries::new(cg_db);
+
+    // Verify task exists.
+    let task = queries.get_task(&parsed.task_id).await?;
+    if task.is_none() {
+        return Err(EngramError::Task(TaskError::NotFound {
+            id: parsed.task_id,
+        }));
+    }
+
+    let deleted = cg_queries
+        .delete_concerns_by_task_and_symbol_name(&parsed.task_id, &parsed.symbol_name)
+        .await?;
+
+    Ok(json!({
+        "task_id": parsed.task_id,
+        "symbol_name": parsed.symbol_name,
+        "links_removed": deleted,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

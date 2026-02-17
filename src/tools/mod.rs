@@ -74,8 +74,11 @@ pub async fn dispatch(
         "add_comment" => write::add_comment(state, params).await,
         "index_workspace" => write::index_workspace(state, params).await,
         "sync_workspace" => write::sync_workspace(state, params).await,
+        "link_task_to_code" => write::link_task_to_code(state, params).await,
+        "unlink_task_from_code" => write::unlink_task_from_code(state, params).await,
         "map_code" => read::map_code(state, params).await,
         "list_symbols" => read::list_symbols(state, params).await,
+        "get_active_context" => read::get_active_context(state, params).await,
         _ => Err(not_implemented(method)),
     }
 }

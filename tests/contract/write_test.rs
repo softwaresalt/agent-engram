@@ -1670,3 +1670,68 @@ async fn contract_sync_workspace_rejects_while_in_progress() {
 
     assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
 }
+
+// ─── Phase 6: Cross-Region Task-to-Code Linking ─────────────────────────────
+
+#[test]
+async fn contract_link_task_to_code_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc123",
+        "symbol_name": "my_function",
+    }));
+
+    let err = tools::dispatch(state, "link_task_to_code", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_link_task_to_code_invalid_task() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    let err = tools::dispatch(
+        state,
+        "link_task_to_code",
+        Some(json!({
+            "task_id": "task:nonexistent",
+            "symbol_name": "some_fn",
+        })),
+    )
+    .await
+    .expect_err("expected task not found error");
+
+    assert_eq!(err.to_response().error.code, TASK_NOT_FOUND);
+}
+
+#[test]
+async fn contract_unlink_task_from_code_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc123",
+        "symbol_name": "my_function",
+    }));
+
+    let err = tools::dispatch(state, "unlink_task_from_code", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}

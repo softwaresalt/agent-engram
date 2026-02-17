@@ -640,3 +640,107 @@ fn build_node<'a>(
         })
     })
 }
+
+// ── get_active_context (T052) ───────────────────────────────────────
+
+/// Return all in-progress tasks. For the highest-priority task,
+/// expand full code neighborhoods (source bodies) of all `concerns`-linked
+/// symbols. For remaining tasks, return task metadata and linked
+/// symbol names only (FR-127).
+pub async fn get_active_context(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let cg_db = connect_db(&ws_id).await?;
+    let cg_queries = CodeGraphQueries::new(cg_db);
+
+    // Get all in_progress tasks ordered by priority.
+    let in_progress = queries.get_in_progress_tasks().await?;
+
+    if in_progress.is_empty() {
+        return Ok(json!({
+            "primary_task": null,
+            "other_tasks": [],
+        }));
+    }
+
+    // First task = highest priority (lowest priority_order, oldest if tied).
+    let primary = &in_progress[0];
+    let primary_links = cg_queries.list_concerns_for_task(&primary.id).await?;
+
+    // Expand neighborhoods for primary task's linked symbols.
+    let mut primary_code_context = Vec::new();
+    for link in &primary_links {
+        // Get the symbol details.
+        if let Some(sym) = cg_queries.resolve_symbol(&link.symbol_id).await? {
+            // Get 1-hop neighborhood.
+            let neighborhood = cg_queries.bfs_neighborhood(&link.symbol_id, 1, 20).await?;
+            primary_code_context.push(json!({
+                "symbol": {
+                    "table": sym.table,
+                    "id": sym.id,
+                    "name": sym.name,
+                    "file_path": sym.file_path,
+                    "line_start": sym.line_start,
+                    "line_end": sym.line_end,
+                    "signature": sym.signature,
+                    "body": sym.body,
+                },
+                "neighbors": neighborhood.neighbors.iter().map(|n| json!({
+                    "table": n.table,
+                    "id": n.id,
+                    "name": n.name,
+                    "file_path": n.file_path,
+                    "line_start": n.line_start,
+                    "line_end": n.line_end,
+                    "signature": n.signature,
+                    "body": n.body,
+                })).collect::<Vec<_>>(),
+                "edges": neighborhood.edges.iter().map(|e| json!({
+                    "type": e.edge_type,
+                    "from": e.from,
+                    "to": e.to,
+                })).collect::<Vec<_>>(),
+                "truncated": neighborhood.truncated,
+            }));
+        }
+    }
+
+    let primary_json = json!({
+        "task": {
+            "id": primary.id,
+            "title": primary.title,
+            "status": primary.status.as_str(),
+            "priority": primary.priority,
+            "description": primary.description,
+            "context_summary": primary.context_summary,
+        },
+        "linked_symbols": primary_links.iter().map(|l| &l.symbol_name).collect::<Vec<_>>(),
+        "code_context": primary_code_context,
+    });
+
+    // Other in-progress tasks: metadata + symbol names only.
+    let mut other_tasks = Vec::new();
+    for task in &in_progress[1..] {
+        let links = cg_queries.list_concerns_for_task(&task.id).await?;
+        other_tasks.push(json!({
+            "task": {
+                "id": task.id,
+                "title": task.title,
+                "status": task.status.as_str(),
+                "priority": task.priority,
+            },
+            "linked_symbols": links.iter().map(|l| &l.symbol_name).collect::<Vec<_>>(),
+        }));
+    }
+
+    Ok(json!({
+        "primary_task": primary_json,
+        "other_tasks": other_tasks,
+    }))
+}

@@ -600,3 +600,18 @@ async fn contract_list_symbols_empty_graph_returns_error() {
     let code = err.to_response().error.code;
     assert_eq!(code, SYMBOL_NOT_FOUND);
 }
+
+// ─── Phase 6: Cross-Region Task-to-Code Linking ─────────────────────────────
+
+#[test]
+async fn contract_get_active_context_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "get_active_context", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}

@@ -230,7 +230,7 @@ pub async fn index_workspace(
                         body_hash: f.body_hash.clone(),
                         token_count: f.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: Vec::new(), // placeholder until batch embed
+                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                         summary,
                     };
                     queries.upsert_function(&func).await?;
@@ -272,7 +272,7 @@ pub async fn index_workspace(
                         body_hash: c.body_hash.clone(),
                         token_count: c.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: Vec::new(),
+                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                         summary,
                     };
                     queries.upsert_class(&class).await?;
@@ -313,7 +313,7 @@ pub async fn index_workspace(
                         body_hash: i.body_hash.clone(),
                         token_count: i.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: Vec::new(),
+                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                         summary,
                     };
                     queries.upsert_interface(&iface).await?;
@@ -673,7 +673,7 @@ pub async fn sync_workspace(
                         body_hash: f.body_hash.clone(),
                         token_count: f.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: Vec::new(),
+                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                         summary,
                     };
                     queries.upsert_function(&func).await?;
@@ -712,7 +712,7 @@ pub async fn sync_workspace(
                         body_hash: c.body_hash.clone(),
                         token_count: c.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: Vec::new(),
+                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                         summary,
                     };
                     queries.upsert_class(&class).await?;
@@ -751,7 +751,7 @@ pub async fn sync_workspace(
                         body_hash: i.body_hash.clone(),
                         token_count: i.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: Vec::new(),
+                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                         summary,
                     };
                     queries.upsert_interface(&iface).await?;

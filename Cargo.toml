@@ -118,3 +118,7 @@ path = "tests/unit/parsing_test.rs"
 [[test]]
 name = "integration_code_graph"
 path = "tests/integration/code_graph_test.rs"
+
+[[test]]
+name = "integration_cross_region"
+path = "tests/integration/cross_region_test.rs"
