@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::connect_db;
-use crate::db::queries::{Queries, ReadyWorkParams};
-use crate::errors::{EngramError, SystemError, TaskError, WorkspaceError};
+use crate::db::queries::{CodeGraphQueries, Queries, ReadyWorkParams, SymbolFilter};
+use crate::errors::{CodeGraphError, EngramError, SystemError, TaskError, WorkspaceError};
 use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
 use crate::server::state::SharedState;
@@ -361,6 +361,237 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     let results = hybrid_search(&parsed.query, &candidates, parsed.limit)?;
 
     Ok(json!({ "results": results }))
+}
+
+// ── map_code (T039) ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct MapCodeParams {
+    symbol_name: String,
+    #[serde(default = "default_map_depth")]
+    depth: usize,
+    #[serde(default = "default_map_max_nodes")]
+    max_nodes: usize,
+}
+
+const fn default_map_depth() -> usize {
+    1
+}
+
+const fn default_map_max_nodes() -> usize {
+    50
+}
+
+/// Retrieve a code symbol's definition plus its graph neighborhood.
+///
+/// Falls back to vector search when the exact symbol name is not found.
+/// Returns full source bodies for all nodes (FR-148).
+pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: MapCodeParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // Clamp depth and max_nodes to config limits (FR-149)
+    let config = state.workspace_config().await.unwrap_or_default();
+    let effective_depth = parsed.depth.min(config.code_graph.max_traversal_depth);
+    let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let cg_queries = CodeGraphQueries::new(db);
+
+    // Exact-name lookup across all symbol tables
+    let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
+
+    if matches.is_empty() {
+        // Fall back to vector search (FR-130)
+        let Ok(query_embedding) = embedding::embed_text(&parsed.symbol_name) else {
+            // No embedding model available — return empty fallback result
+            return Ok(json!({
+                "root": null,
+                "neighbors": [],
+                "edges": [],
+                "truncated": false,
+                "fallback_used": true,
+                "matches": [],
+                "effective_depth": effective_depth,
+                "effective_max_nodes": effective_max_nodes,
+            }));
+        };
+
+        let vector_matches = cg_queries
+            .vector_search_symbols(&query_embedding, effective_max_nodes)
+            .await?;
+
+        let match_nodes: Vec<Value> = vector_matches.iter().map(symbol_match_to_json).collect();
+
+        return Ok(json!({
+            "root": null,
+            "neighbors": [],
+            "edges": [],
+            "truncated": false,
+            "fallback_used": true,
+            "matches": match_nodes,
+            "effective_depth": effective_depth,
+            "effective_max_nodes": effective_max_nodes,
+        }));
+    }
+
+    if matches.len() == 1 {
+        // Single match: return root + BFS neighborhood
+        let root = &matches[0];
+        let bfs = cg_queries
+            .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
+            .await?;
+
+        let root_json = symbol_match_to_json(root);
+        let neighbor_json: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
+        let edge_json: Vec<Value> = bfs
+            .edges
+            .iter()
+            .map(|e| {
+                json!({
+                    "type": e.edge_type,
+                    "from": e.from,
+                    "to": e.to,
+                })
+            })
+            .collect();
+
+        return Ok(json!({
+            "root": root_json,
+            "neighbors": neighbor_json,
+            "edges": edge_json,
+            "truncated": bfs.truncated,
+            "fallback_used": false,
+            "matches": null,
+            "effective_depth": effective_depth,
+            "effective_max_nodes": effective_max_nodes,
+        }));
+    }
+
+    // Multiple matches: return all matches grouped by file, with first match's neighborhood
+    let first_root = &matches[0];
+    let bfs = cg_queries
+        .bfs_neighborhood(&first_root.id, effective_depth, effective_max_nodes)
+        .await?;
+
+    let match_nodes: Vec<Value> = matches.iter().map(symbol_match_to_json).collect();
+    let neighbor_json: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
+    let edge_json: Vec<Value> = bfs
+        .edges
+        .iter()
+        .map(|e| {
+            json!({
+                "type": e.edge_type,
+                "from": e.from,
+                "to": e.to,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "root": null,
+        "neighbors": neighbor_json,
+        "edges": edge_json,
+        "truncated": bfs.truncated,
+        "fallback_used": false,
+        "matches": match_nodes,
+        "effective_depth": effective_depth,
+        "effective_max_nodes": effective_max_nodes,
+    }))
+}
+
+/// Convert a `SymbolMatch` to a JSON `CodeNode` object.
+fn symbol_match_to_json(m: &crate::db::queries::SymbolMatch) -> Value {
+    json!({
+        "id": m.id,
+        "type": m.table,
+        "name": m.name,
+        "file_path": m.file_path,
+        "line_start": m.line_start,
+        "line_end": m.line_end,
+        "signature": m.signature,
+        "body": m.body,
+        "embed_type": m.embed_type,
+        "summary": m.summary,
+    })
+}
+
+// ── list_symbols (T040) ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ListSymbolsParams {
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    node_type: Option<String>,
+    #[serde(default)]
+    name_prefix: Option<String>,
+    #[serde(default = "default_list_limit")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
+}
+
+const fn default_list_limit() -> usize {
+    50
+}
+
+/// Return a paginated list of indexed code symbols (FR-150).
+///
+/// Enables agents to discover valid symbol names before invoking
+/// `map_code`, `link_task_to_code`, or `impact_analysis`.
+pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    ensure_workspace(&state).await?;
+
+    // Reject while indexing — graph state is not yet consistent
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
+    let parsed: ListSymbolsParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // Clamp limit
+    let limit = parsed.limit.clamp(1, 500);
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let cg_queries = CodeGraphQueries::new(db);
+
+    let filter = SymbolFilter {
+        file_path: parsed.file_path,
+        node_type: parsed.node_type,
+        name_prefix: parsed.name_prefix,
+        limit,
+        offset: parsed.offset,
+    };
+
+    let result = cg_queries.list_symbols(&filter).await?;
+
+    // If graph is empty (no symbols at all) and no specific filter was applied,
+    // return 7004 per contract
+    if result.total_count == 0 && filter.file_path.is_none() && filter.name_prefix.is_none() {
+        return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+            name: String::new(),
+        }));
+    }
+
+    Ok(json!({
+        "symbols": result.symbols,
+        "total_count": result.total_count,
+        "has_more": result.has_more,
+    }))
 }
 
 fn build_node<'a>(

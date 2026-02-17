@@ -73,6 +73,8 @@ pub async fn dispatch(
         "batch_update_tasks" => write::batch_update_tasks(state, params).await,
         "add_comment" => write::add_comment(state, params).await,
         "index_workspace" => write::index_workspace(state, params).await,
+        "map_code" => read::map_code(state, params).await,
+        "list_symbols" => read::list_symbols(state, params).await,
         _ => Err(not_implemented(method)),
     }
 }

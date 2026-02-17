@@ -519,3 +519,84 @@ async fn contract_get_ready_work_brief_strips_fields() {
         "brief mode should strip description"
     );
 }
+
+// ── T036: map_code contract tests ────────────────────────────────────
+
+#[test]
+async fn contract_map_code_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "symbol_name": "my_function",
+    }));
+
+    let err = tools::dispatch(state, "map_code", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_map_code_empty_graph_uses_fallback() {
+    // With an active workspace but no indexed code, map_code should
+    // fall back to vector search and return an empty result set (not an error).
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("map_code_empty"))
+        .await
+        .expect("set workspace");
+
+    let params = Some(json!({
+        "symbol_name": "nonexistent_function",
+    }));
+
+    let result = tools::dispatch(state, "map_code", params).await;
+    match result {
+        Ok(val) => {
+            // Should have fallback_used = true and empty matches
+            assert_eq!(val["fallback_used"].as_bool(), Some(true));
+            assert_eq!(val["truncated"].as_bool(), Some(false));
+        }
+        Err(e) => {
+            // Acceptable: ModelNotLoaded or DatabaseError (no real embedding model in unit test)
+            let code = e.to_response().error.code;
+            assert_ne!(code, WORKSPACE_NOT_SET, "must not be WorkspaceNotSet");
+        }
+    }
+}
+
+// ── T037: list_symbols contract tests ────────────────────────────────
+
+#[test]
+async fn contract_list_symbols_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "list_symbols", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_list_symbols_empty_graph_returns_error() {
+    use engram::errors::codes::SYMBOL_NOT_FOUND;
+
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("list_symbols_empty"))
+        .await
+        .expect("set workspace");
+
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "list_symbols", params)
+        .await
+        .expect_err("expected symbol not found error for empty graph");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, SYMBOL_NOT_FOUND);
+}

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
@@ -1867,6 +1867,761 @@ impl CodeGraphQueries {
         self.delete_interfaces_by_file(file_path).await?;
         Ok(())
     }
+
+    // ── BFS Traversal Queries (T038) ────────────────────────────────
+
+    /// Look up all symbols (functions, classes, interfaces) whose name matches exactly.
+    ///
+    /// Returns a vec of `(table, id, name, file_path)` tuples across all symbol tables.
+    pub async fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
+        let mut results = Vec::new();
+
+        // Query functions
+        let mut resp = self
+            .db
+            .query("SELECT * FROM `function` WHERE name = $name")
+            .bind(("name", name.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            let func = row.into_function();
+            results.push(SymbolMatch {
+                table: "function".to_owned(),
+                id: func.id,
+                name: func.name,
+                file_path: func.file_path,
+                line_start: Some(func.line_start),
+                line_end: Some(func.line_end),
+                signature: Some(func.signature),
+                body: func.body,
+                embed_type: Some(func.embed_type),
+                summary: Some(func.summary),
+                embedding: func.embedding,
+            });
+        }
+
+        // Query classes
+        let mut resp = self
+            .db
+            .query("SELECT * FROM class WHERE name = $name")
+            .bind(("name", name.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            let cls = row.into_class();
+            results.push(SymbolMatch {
+                table: "class".to_owned(),
+                id: cls.id,
+                name: cls.name,
+                file_path: cls.file_path,
+                line_start: Some(cls.line_start),
+                line_end: Some(cls.line_end),
+                signature: None,
+                body: cls.body,
+                embed_type: Some(cls.embed_type),
+                summary: Some(cls.summary),
+                embedding: cls.embedding,
+            });
+        }
+
+        // Query interfaces
+        let mut resp = self
+            .db
+            .query("SELECT * FROM interface WHERE name = $name")
+            .bind(("name", name.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+        for row in rows {
+            let iface = row.into_interface();
+            results.push(SymbolMatch {
+                table: "interface".to_owned(),
+                id: iface.id,
+                name: iface.name,
+                file_path: iface.file_path,
+                line_start: Some(iface.line_start),
+                line_end: Some(iface.line_end),
+                signature: None,
+                body: iface.body,
+                embed_type: Some(iface.embed_type),
+                summary: Some(iface.summary),
+                embedding: iface.embedding,
+            });
+        }
+
+        Ok(results)
+    }
+
+    /// BFS traversal from a symbol node, collecting neighbors up to `max_depth`
+    /// hops and capping at `max_nodes` total results.
+    ///
+    /// Returns the list of neighbor nodes (excluding the root) and edges.
+    pub async fn bfs_neighborhood(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<BfsResult, EngramError> {
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        let mut neighbors: Vec<SymbolMatch> = Vec::new();
+        let mut edges: Vec<BfsEdge> = Vec::new();
+
+        visited.insert(root_id.to_owned());
+        queue.push_back((root_id.to_owned(), 0));
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+
+            // Get outbound edges (current -> other)
+            let outbound = self.get_outbound_edges(&current_id).await?;
+            for (edge_type, target_id) in &outbound {
+                if visited.contains(target_id) {
+                    continue;
+                }
+                if neighbors.len() >= max_nodes {
+                    return Ok(BfsResult {
+                        neighbors,
+                        edges,
+                        truncated: true,
+                    });
+                }
+                visited.insert(target_id.clone());
+                if let Some(sym) = self.resolve_symbol(target_id).await? {
+                    neighbors.push(sym);
+                    edges.push(BfsEdge {
+                        edge_type: edge_type.clone(),
+                        from: current_id.clone(),
+                        to: target_id.clone(),
+                    });
+                    queue.push_back((target_id.clone(), depth + 1));
+                }
+            }
+
+            // Get inbound edges (other -> current)
+            let inbound = self.get_inbound_edges(&current_id).await?;
+            for (edge_type, source_id) in &inbound {
+                if visited.contains(source_id) {
+                    continue;
+                }
+                if neighbors.len() >= max_nodes {
+                    return Ok(BfsResult {
+                        neighbors,
+                        edges,
+                        truncated: true,
+                    });
+                }
+                visited.insert(source_id.clone());
+                if let Some(sym) = self.resolve_symbol(source_id).await? {
+                    neighbors.push(sym);
+                    edges.push(BfsEdge {
+                        edge_type: edge_type.clone(),
+                        from: source_id.clone(),
+                        to: current_id.clone(),
+                    });
+                    queue.push_back((source_id.clone(), depth + 1));
+                }
+            }
+        }
+
+        Ok(BfsResult {
+            neighbors,
+            edges,
+            truncated: false,
+        })
+    }
+
+    /// Get outbound code edges from a node (calls, imports, defines, inherits_from).
+    async fn get_outbound_edges(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<(String, String)>, EngramError> {
+        let (table, raw_id) = parse_node_id(node_id);
+        let record = Thing::from((table.as_str(), raw_id.as_str()));
+        let mut results = Vec::new();
+
+        for edge_table in &["calls", "imports", "defines", "inherits_from"] {
+            let query = format!("SELECT out FROM {edge_table} WHERE in = $node");
+            let mut resp = self
+                .db
+                .query(&query)
+                .bind(("node", record.clone()))
+                .await
+                .map_err(map_db_err)?;
+            let rows: Vec<OutEdgeRow> = resp.take(0).map_err(map_db_err)?;
+            for row in rows {
+                let target_id = format!("{}:{}", row.out.tb, row.out.id.to_raw());
+                results.push(((*edge_table).to_owned(), target_id));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Get inbound code edges to a node.
+    async fn get_inbound_edges(&self, node_id: &str) -> Result<Vec<(String, String)>, EngramError> {
+        let (table, raw_id) = parse_node_id(node_id);
+        let record = Thing::from((table.as_str(), raw_id.as_str()));
+        let mut results = Vec::new();
+
+        for edge_table in &["calls", "imports", "defines", "inherits_from"] {
+            let query = format!("SELECT in FROM {edge_table} WHERE out = $node");
+            let mut resp = self
+                .db
+                .query(&query)
+                .bind(("node", record.clone()))
+                .await
+                .map_err(map_db_err)?;
+            let rows: Vec<InEdgeRow> = resp.take(0).map_err(map_db_err)?;
+            for row in rows {
+                let source_id = format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw());
+                results.push(((*edge_table).to_owned(), source_id));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Resolve any symbol ID to its full metadata.
+    async fn resolve_symbol(&self, node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
+        let (table, _raw_id) = parse_node_id(node_id);
+
+        match table.as_str() {
+            "function" => {
+                let mut resp = self
+                    .db
+                    .query("SELECT * FROM $id")
+                    .bind(("id", parse_thing(node_id)))
+                    .await
+                    .map_err(map_db_err)?;
+                let rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+                Ok(rows.into_iter().next().map(|r| {
+                    let f = r.into_function();
+                    SymbolMatch {
+                        table: "function".to_owned(),
+                        id: f.id,
+                        name: f.name,
+                        file_path: f.file_path,
+                        line_start: Some(f.line_start),
+                        line_end: Some(f.line_end),
+                        signature: Some(f.signature),
+                        body: f.body,
+                        embed_type: Some(f.embed_type),
+                        summary: Some(f.summary),
+                        embedding: f.embedding,
+                    }
+                }))
+            }
+            "class" => {
+                let mut resp = self
+                    .db
+                    .query("SELECT * FROM $id")
+                    .bind(("id", parse_thing(node_id)))
+                    .await
+                    .map_err(map_db_err)?;
+                let rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+                Ok(rows.into_iter().next().map(|r| {
+                    let c = r.into_class();
+                    SymbolMatch {
+                        table: "class".to_owned(),
+                        id: c.id,
+                        name: c.name,
+                        file_path: c.file_path,
+                        line_start: Some(c.line_start),
+                        line_end: Some(c.line_end),
+                        signature: None,
+                        body: c.body,
+                        embed_type: Some(c.embed_type),
+                        summary: Some(c.summary),
+                        embedding: c.embedding,
+                    }
+                }))
+            }
+            "interface" => {
+                let mut resp = self
+                    .db
+                    .query("SELECT * FROM $id")
+                    .bind(("id", parse_thing(node_id)))
+                    .await
+                    .map_err(map_db_err)?;
+                let rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+                Ok(rows.into_iter().next().map(|r| {
+                    let i = r.into_interface();
+                    SymbolMatch {
+                        table: "interface".to_owned(),
+                        id: i.id,
+                        name: i.name,
+                        file_path: i.file_path,
+                        line_start: Some(i.line_start),
+                        line_end: Some(i.line_end),
+                        signature: None,
+                        body: i.body,
+                        embed_type: Some(i.embed_type),
+                        summary: Some(i.summary),
+                        embedding: i.embedding,
+                    }
+                }))
+            }
+            "code_file" => {
+                let mut resp = self
+                    .db
+                    .query("SELECT * FROM $id")
+                    .bind(("id", parse_thing(node_id)))
+                    .await
+                    .map_err(map_db_err)?;
+                let rows: Vec<CodeFileRow> = resp.take(0).map_err(map_db_err)?;
+                Ok(rows.into_iter().next().map(|r| {
+                    let cf = r.into_code_file();
+                    SymbolMatch {
+                        table: "code_file".to_owned(),
+                        id: cf.id,
+                        name: cf.path.clone(),
+                        file_path: cf.path,
+                        line_start: None,
+                        line_end: None,
+                        signature: None,
+                        body: String::new(),
+                        embed_type: None,
+                        summary: None,
+                        embedding: Vec::new(),
+                    }
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    // ── Symbol Listing Queries (T038) ───────────────────────────────
+
+    /// List symbols with optional filtering and pagination.
+    ///
+    /// Filters by `file_path`, `node_type` (function/class/interface),
+    /// and `name_prefix`. Returns paginated results with total count.
+    pub async fn list_symbols(
+        &self,
+        filter: &SymbolFilter,
+    ) -> Result<SymbolListResult, EngramError> {
+        let mut all_symbols: Vec<SymbolListEntry> = Vec::new();
+
+        let tables = match filter.node_type.as_deref() {
+            Some("function") => vec!["function"],
+            Some("class") => vec!["class"],
+            Some("interface") => vec!["interface"],
+            _ => vec!["function", "class", "interface"],
+        };
+
+        for table in &tables {
+            let mut conditions = Vec::new();
+            let mut has_file_path = false;
+            let mut has_prefix = false;
+
+            if filter.file_path.is_some() {
+                conditions.push("file_path = $fp");
+                has_file_path = true;
+            }
+            if filter.name_prefix.is_some() {
+                conditions.push("name CONTAINS $prefix OR string::starts_with(name, $prefix)");
+                has_prefix = true;
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", conditions.join(" AND "))
+            };
+
+            // Backtick the function table name since it is a reserved keyword
+            let table_name = if *table == "function" {
+                "`function`"
+            } else {
+                table
+            };
+
+            // Count query
+            // Count query is done globally in count_all_symbols; skip per-table count here.
+            let table_count: u64 = 0;
+
+            // Data query with pagination
+            let data_query = format!(
+                "SELECT * FROM {table_name}{where_clause} ORDER BY name ASC LIMIT $lim START $off"
+            );
+            let mut data_qb = self.db.query(&data_query);
+            if has_file_path {
+                data_qb = data_qb.bind(("fp", filter.file_path.clone().unwrap_or_default()));
+            }
+            if has_prefix {
+                data_qb = data_qb.bind(("prefix", filter.name_prefix.clone().unwrap_or_default()));
+            }
+            #[allow(clippy::cast_possible_wrap)]
+            let limit_i64 = filter.limit as i64;
+            #[allow(clippy::cast_possible_wrap)]
+            let offset_i64 = filter.offset as i64;
+            data_qb = data_qb.bind(("lim", limit_i64)).bind(("off", offset_i64));
+
+            let mut data_resp = data_qb.await.map_err(map_db_err)?;
+
+            match *table {
+                "function" => {
+                    let rows: Vec<FunctionRow> = data_resp.take(0).map_err(map_db_err)?;
+                    for row in rows {
+                        let f = row.into_function();
+                        all_symbols.push(SymbolListEntry {
+                            name: f.name,
+                            node_type: "function".to_owned(),
+                            file_path: f.file_path,
+                            line_start: Some(f.line_start),
+                            line_end: Some(f.line_end),
+                        });
+                    }
+                }
+                "class" => {
+                    let rows: Vec<ClassRow> = data_resp.take(0).map_err(map_db_err)?;
+                    for row in rows {
+                        let c = row.into_class();
+                        all_symbols.push(SymbolListEntry {
+                            name: c.name,
+                            node_type: "class".to_owned(),
+                            file_path: c.file_path,
+                            line_start: Some(c.line_start),
+                            line_end: Some(c.line_end),
+                        });
+                    }
+                }
+                "interface" => {
+                    let rows: Vec<InterfaceRow> = data_resp.take(0).map_err(map_db_err)?;
+                    for row in rows {
+                        let i = row.into_interface();
+                        all_symbols.push(SymbolListEntry {
+                            name: i.name,
+                            node_type: "interface".to_owned(),
+                            file_path: i.file_path,
+                            line_start: Some(i.line_start),
+                            line_end: Some(i.line_end),
+                        });
+                    }
+                }
+                _ => {}
+            }
+
+            // Accumulate total count across tables (for unfiltered or multi-table queries)
+            // Note: offset/limit apply per table in this implementation; for cross-table
+            // pagination the total_count reflects the sum.
+            all_symbols.sort_by(|a, b| a.name.cmp(&b.name));
+            let _ = table_count; // used below
+        }
+
+        // Calculate total count across all queried tables
+        let total = self.count_all_symbols(filter).await?;
+
+        let has_more = (filter.offset + filter.limit) < total;
+
+        Ok(SymbolListResult {
+            symbols: all_symbols,
+            total_count: total,
+            has_more,
+        })
+    }
+
+    /// Count total symbols matching the filter across all relevant tables.
+    async fn count_all_symbols(&self, filter: &SymbolFilter) -> Result<usize, EngramError> {
+        let tables = match filter.node_type.as_deref() {
+            Some("function") => vec!["function"],
+            Some("class") => vec!["class"],
+            Some("interface") => vec!["interface"],
+            _ => vec!["function", "class", "interface"],
+        };
+
+        let mut total: usize = 0;
+        for table in &tables {
+            let mut conditions = Vec::new();
+            let mut has_file_path = false;
+            let mut has_prefix = false;
+
+            if filter.file_path.is_some() {
+                conditions.push("file_path = $fp");
+                has_file_path = true;
+            }
+            if filter.name_prefix.is_some() {
+                conditions.push("name CONTAINS $prefix OR string::starts_with(name, $prefix)");
+                has_prefix = true;
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", conditions.join(" AND "))
+            };
+
+            let table_name = if *table == "function" {
+                "`function`"
+            } else {
+                table
+            };
+
+            let query = format!("SELECT count() FROM {table_name}{where_clause} GROUP ALL");
+            let mut qb = self.db.query(&query);
+            if has_file_path {
+                qb = qb.bind(("fp", filter.file_path.clone().unwrap_or_default()));
+            }
+            if has_prefix {
+                qb = qb.bind(("prefix", filter.name_prefix.clone().unwrap_or_default()));
+            }
+            let mut resp = qb.await.map_err(map_db_err)?;
+            let rows: Vec<CountRow> = resp.take(0).map_err(map_db_err)?;
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total += rows.first().map_or(0, |r| r.count) as usize;
+            }
+        }
+
+        Ok(total)
+    }
+
+    /// Vector search across all symbol embeddings. Returns up to `limit` nearest
+    /// matches by cosine similarity.
+    pub async fn vector_search_symbols(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<SymbolMatch>, EngramError> {
+        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
+
+        // Search functions
+        let mut resp = self
+            .db
+            .query("SELECT * FROM `function`")
+            .await
+            .map_err(map_db_err)?;
+        let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+        for row in func_rows {
+            let f = row.into_function();
+            if !f.embedding.is_empty() {
+                let score = cosine_similarity(query_embedding, &f.embedding);
+                results.push((
+                    score,
+                    SymbolMatch {
+                        table: "function".to_owned(),
+                        id: f.id,
+                        name: f.name,
+                        file_path: f.file_path,
+                        line_start: Some(f.line_start),
+                        line_end: Some(f.line_end),
+                        signature: Some(f.signature),
+                        body: f.body,
+                        embed_type: Some(f.embed_type),
+                        summary: Some(f.summary),
+                        embedding: f.embedding,
+                    },
+                ));
+            }
+        }
+
+        // Search classes
+        let mut resp = self
+            .db
+            .query("SELECT * FROM class")
+            .await
+            .map_err(map_db_err)?;
+        let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+        for row in class_rows {
+            let c = row.into_class();
+            if !c.embedding.is_empty() {
+                let score = cosine_similarity(query_embedding, &c.embedding);
+                results.push((
+                    score,
+                    SymbolMatch {
+                        table: "class".to_owned(),
+                        id: c.id,
+                        name: c.name,
+                        file_path: c.file_path,
+                        line_start: Some(c.line_start),
+                        line_end: Some(c.line_end),
+                        signature: None,
+                        body: c.body,
+                        embed_type: Some(c.embed_type),
+                        summary: Some(c.summary),
+                        embedding: c.embedding,
+                    },
+                ));
+            }
+        }
+
+        // Search interfaces
+        let mut resp = self
+            .db
+            .query("SELECT * FROM interface")
+            .await
+            .map_err(map_db_err)?;
+        let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+        for row in iface_rows {
+            let i = row.into_interface();
+            if !i.embedding.is_empty() {
+                let score = cosine_similarity(query_embedding, &i.embedding);
+                results.push((
+                    score,
+                    SymbolMatch {
+                        table: "interface".to_owned(),
+                        id: i.id,
+                        name: i.name,
+                        file_path: i.file_path,
+                        line_start: Some(i.line_start),
+                        line_end: Some(i.line_end),
+                        signature: None,
+                        body: i.body,
+                        embed_type: Some(i.embed_type),
+                        summary: Some(i.summary),
+                        embedding: i.embedding,
+                    },
+                ));
+            }
+        }
+
+        // Sort by score descending and take top `limit`
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let matches: Vec<SymbolMatch> = results.into_iter().take(limit).map(|(_, m)| m).collect();
+
+        Ok(matches)
+    }
+}
+
+// ── Supporting Types for BFS / Symbol Listing ──────────────────────────
+
+/// A matched code symbol with full metadata.
+#[derive(Debug, Clone)]
+pub struct SymbolMatch {
+    /// Table name (function, class, interface, code_file).
+    pub table: String,
+    /// Full qualified ID (e.g., `function:abc123`).
+    pub id: String,
+    /// Symbol name.
+    pub name: String,
+    /// Workspace-relative file path.
+    pub file_path: String,
+    /// 1-based start line, if applicable.
+    pub line_start: Option<u32>,
+    /// 1-based end line, if applicable.
+    pub line_end: Option<u32>,
+    /// Function signature, if applicable.
+    pub signature: Option<String>,
+    /// Full source body (may be empty until loaded from disk).
+    pub body: String,
+    /// Embedding type (`explicit_code` or `summary_pointer`).
+    pub embed_type: Option<String>,
+    /// Summary text.
+    pub summary: Option<String>,
+    /// Embedding vector.
+    pub embedding: Vec<f32>,
+}
+
+/// An edge discovered during BFS traversal.
+#[derive(Debug, Clone)]
+pub struct BfsEdge {
+    /// Edge type (calls, imports, defines, inherits_from).
+    pub edge_type: String,
+    /// Source node ID.
+    pub from: String,
+    /// Target node ID.
+    pub to: String,
+}
+
+/// Result of a BFS neighborhood query.
+#[derive(Debug)]
+pub struct BfsResult {
+    /// Neighbor nodes discovered.
+    pub neighbors: Vec<SymbolMatch>,
+    /// Edges connecting root to neighbors.
+    pub edges: Vec<BfsEdge>,
+    /// Whether the traversal was truncated at `max_nodes`.
+    pub truncated: bool,
+}
+
+/// Filter criteria for `list_symbols`.
+#[derive(Debug, Default)]
+pub struct SymbolFilter {
+    /// Filter by workspace-relative file path.
+    pub file_path: Option<String>,
+    /// Filter by node type (function, class, interface).
+    pub node_type: Option<String>,
+    /// Filter by name prefix.
+    pub name_prefix: Option<String>,
+    /// Maximum results per page.
+    pub limit: usize,
+    /// Offset for pagination.
+    pub offset: usize,
+}
+
+/// A single entry in a `list_symbols` result.
+#[derive(Debug, Clone, Serialize)]
+pub struct SymbolListEntry {
+    /// Symbol name.
+    pub name: String,
+    /// Node type (function, class, interface).
+    #[serde(rename = "type")]
+    pub node_type: String,
+    /// Workspace-relative file path.
+    pub file_path: String,
+    /// 1-based start line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<u32>,
+    /// 1-based end line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<u32>,
+}
+
+/// Result of a `list_symbols` query.
+#[derive(Debug)]
+pub struct SymbolListResult {
+    /// The matched symbols for this page.
+    pub symbols: Vec<SymbolListEntry>,
+    /// Total count of matching symbols (for pagination).
+    pub total_count: usize,
+    /// Whether more results exist beyond limit+offset.
+    pub has_more: bool,
+}
+
+/// Internal row for outbound edge queries.
+#[derive(Deserialize)]
+struct OutEdgeRow {
+    out: Thing,
+}
+
+/// Internal row for inbound edge queries.
+#[derive(Deserialize)]
+struct InEdgeRow {
+    r#in: Thing,
+}
+
+/// Parse a node ID like `function:abc123` into `("function", "abc123")`.
+fn parse_node_id(node_id: &str) -> (String, String) {
+    if let Some((table, raw_id)) = node_id.split_once(':') {
+        (table.to_owned(), raw_id.to_owned())
+    } else {
+        ("unknown".to_owned(), node_id.to_owned())
+    }
+}
+
+/// Parse a node ID string into a SurrealDB `Thing`.
+fn parse_thing(node_id: &str) -> Thing {
+    let (table, raw_id) = parse_node_id(node_id);
+    Thing::from((table.as_str(), raw_id.as_str()))
+}
+
+/// Compute cosine similarity between two vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
 }
 
 fn parse_dependency_type(raw: String) -> DependencyType {

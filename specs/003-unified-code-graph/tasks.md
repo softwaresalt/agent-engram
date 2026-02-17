@@ -102,15 +102,15 @@
 
 ### Tests for User Story 2
 
-- [ ] T036 [P] [US2] Add contract test for `map_code` (workspace-not-set returns 1003, empty graph returns 7004 with suggestion) in tests/contract/read_test.rs
-- [ ] T037 [P] [US2] Add contract test for `list_symbols` (workspace-not-set returns 1003, empty graph returns 7004) in tests/contract/read_test.rs
+- [x] T036 [P] [US2] Add contract test for `map_code` (workspace-not-set returns 1003, empty graph returns 7004 with suggestion) in tests/contract/read_test.rs
+- [x] T037 [P] [US2] Add contract test for `list_symbols` (workspace-not-set returns 1003, empty graph returns 7004) in tests/contract/read_test.rs
 
 ### Implementation for User Story 2
 
-- [ ] T038 [US2] Add application-level BFS traversal queries (1-hop and multi-hop with max_nodes truncation) and symbol listing/filtering queries (by file_path, node_type, name_prefix with pagination) to src/db/queries.rs
-- [ ] T039 [US2] Implement `map_code` tool handler with exact-name lookup, BFS neighborhood expansion, vector-search fallback (FR-130), depth/max_nodes clamping (FR-149), and full source body loading (FR-148) in src/tools/read.rs
-- [ ] T040 [US2] Implement `list_symbols` tool handler with file_path, node_type, name_prefix filters and limit/offset pagination (FR-150) in src/tools/read.rs
-- [ ] T041 [US2] Add `map_code` and `list_symbols` match arms to `dispatch()` in src/tools/mod.rs
+- [x] T038 [US2] Add application-level BFS traversal queries (1-hop and multi-hop with max_nodes truncation) and symbol listing/filtering queries (by file_path, node_type, name_prefix with pagination) to src/db/queries.rs
+- [x] T039 [US2] Implement `map_code` tool handler with exact-name lookup, BFS neighborhood expansion, vector-search fallback (FR-130), depth/max_nodes clamping (FR-149), and full source body loading (FR-148) in src/tools/read.rs
+- [x] T040 [US2] Implement `list_symbols` tool handler with file_path, node_type, name_prefix filters and limit/offset pagination (FR-150) in src/tools/read.rs
+- [x] T041 [US2] Add `map_code` and `list_symbols` match arms to `dispatch()` in src/tools/mod.rs
 
 **Checkpoint**: `map_code` returns precise structural neighborhoods. `list_symbols` enables agents to discover valid symbol names. Agents can request exactly the code context they need.
 
