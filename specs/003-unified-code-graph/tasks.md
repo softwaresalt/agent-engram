@@ -168,14 +168,14 @@
 
 ### Tests for User Story 5
 
-- [ ] T054 [P] [US5] Add contract test for `unified_search` (workspace-not-set 1003, empty query 4001 per FR-157) in tests/contract/read_test.rs
+- [x] T054 [P] [US5] Add contract test for `unified_search` (workspace-not-set 1003, empty query 4001 per FR-157) in tests/contract/read_test.rs
 
 ### Implementation for User Story 5
 
-- [ ] T055 [US5] Add hybrid vector search queries across code tables (function, class, interface) and task tables (task, context, spec) with cosine similarity scoring to src/db/queries.rs
-- [ ] T056 [US5] Extend search service with cross-region result merging, ranking by descending cosine score, and region filtering in src/services/search.rs
-- [ ] T057 [US5] Implement `unified_search` tool handler with query embedding, empty query validation (FR-157), region dispatch, and merged response assembly (summary text only, not full bodies per FR-148 exemption) in src/tools/read.rs
-- [ ] T058 [US5] Add `unified_search` match arm to `dispatch()` in src/tools/mod.rs
+- [x] T055 [US5] Add hybrid vector search queries across code tables (function, class, interface) and task tables (task, context, spec) with cosine similarity scoring to src/db/queries.rs
+- [x] T056 [US5] Extend search service with cross-region result merging, ranking by descending cosine score, and region filtering in src/services/search.rs
+- [x] T057 [US5] Implement `unified_search` tool handler with query embedding, empty query validation (FR-157), region dispatch, and merged response assembly (summary text only, not full bodies per FR-148 exemption) in src/tools/read.rs
+- [x] T058 [US5] Add `unified_search` match arm to `dispatch()` in src/tools/mod.rs
 
 **Checkpoint**: Single query spans both code and task domains. Agents get holistic workspace results.
 
@@ -189,13 +189,13 @@
 
 ### Tests for User Story 6
 
-- [ ] T059 [P] [US6] Add contract test for `impact_analysis` (workspace-not-set 1003, symbol-not-found 7004) in tests/contract/read_test.rs
+- [x] T059 [P] [US6] Add contract test for `impact_analysis` (workspace-not-set 1003, symbol-not-found 7004) in tests/contract/read_test.rs
 
 ### Implementation for User Story 6
 
-- [ ] T060 [US6] Add cross-region traversal queries (code BFS → collect node IDs → concerns edge lookup → task filtering by status) to src/db/queries.rs
-- [ ] T061 [US6] Implement `impact_analysis` tool handler with code neighborhood BFS, cross-region edge resolution, dependency path tracking, depth/max_nodes clamping (FR-149), task status filtering, and full source body loading (FR-148) in src/tools/read.rs
-- [ ] T062 [US6] Add `impact_analysis` match arm to `dispatch()` in src/tools/mod.rs
+- [x] T060 [US6] Add cross-region traversal queries (code BFS → collect node IDs → concerns edge lookup → task filtering by status) to src/db/queries.rs
+- [x] T061 [US6] Implement `impact_analysis` tool handler with code neighborhood BFS, cross-region edge resolution, dependency path tracking, depth/max_nodes clamping (FR-149), task status filtering, and full source body loading (FR-148) in src/tools/read.rs
+- [x] T062 [US6] Add `impact_analysis` match arm to `dispatch()` in src/tools/mod.rs
 
 **Checkpoint**: Agents can assess the blast radius of a code change across both code and task domains.
 
