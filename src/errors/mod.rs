@@ -116,6 +116,8 @@ pub enum CodeGraphError {
 
 #[derive(Debug, Error)]
 pub enum QueryError {
+    #[error("Query must not be empty")]
+    QueryEmpty,
     #[error("Query too long")]
     QueryTooLong,
     #[error("Model not loaded")]
@@ -316,6 +318,7 @@ impl EngramError {
                 ),
             },
             EngramError::Query(inner) => match inner {
+                QueryError::QueryEmpty => (QUERY_TOO_LONG, "QueryEmpty", inner.to_string(), None),
                 QueryError::QueryTooLong => {
                     (QUERY_TOO_LONG, "QueryTooLong", inner.to_string(), None)
                 }

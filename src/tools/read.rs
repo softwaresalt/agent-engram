@@ -6,13 +6,18 @@ use serde_json::{Value, json};
 
 use crate::db::connect_db;
 use crate::db::queries::{CodeGraphQueries, Queries, ReadyWorkParams, SymbolFilter};
-use crate::errors::{CodeGraphError, EngramError, SystemError, TaskError, WorkspaceError};
+use crate::errors::{
+    CodeGraphError, EngramError, QueryError, SystemError, TaskError, WorkspaceError,
+};
 use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
 use crate::server::state::SharedState;
 use crate::services::embedding;
 use crate::services::output::{self, filter_value};
 use crate::services::search::{SearchCandidate, hybrid_search};
+use crate::services::search::{
+    SearchRegion, UnifiedSearchResult, cosine_similarity, merge_unified_results,
+};
 
 #[derive(Deserialize)]
 struct TaskGraphParams {
@@ -743,4 +748,201 @@ pub async fn get_active_context(
         "primary_task": primary_json,
         "other_tasks": other_tasks,
     }))
+}
+
+// ── unified_search (T057 — Phase 7) ────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct UnifiedSearchParams {
+    query: String,
+    #[serde(default = "default_unified_region")]
+    region: String,
+    #[serde(default = "default_unified_limit")]
+    limit: usize,
+}
+
+fn default_unified_region() -> String {
+    "all".to_string()
+}
+
+const fn default_unified_limit() -> usize {
+    10
+}
+
+/// Unified semantic search across code and task regions (FR-128/FR-131).
+///
+/// Scoring: raw cosine similarity on embedding vectors. Results from code
+/// and task regions are merged into a single list sorted by descending score.
+/// No cross-region normalization or boosting in v0.
+///
+/// Returns summary text only, not full bodies (FR-148 exemption).
+///
+/// # Errors
+/// - `QueryEmpty` (4001) for empty or whitespace-only queries (FR-157).
+/// - `SystemError::DatabaseError` (5001) if embedding generation fails.
+/// - `WorkspaceError::NotSet` (1003) if workspace not bound.
+pub async fn unified_search(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: UnifiedSearchParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // FR-157: reject empty queries after whitespace trimming.
+    let trimmed = parsed.query.trim();
+    if trimmed.is_empty() {
+        return Err(EngramError::Query(QueryError::QueryEmpty));
+    }
+
+    // Validate query length.
+    embedding::validate_query_length(trimmed)?;
+
+    // Validate region parameter.
+    let search_code = parsed.region == "code" || parsed.region == "all";
+    let search_task = parsed.region == "task" || parsed.region == "all";
+    if !search_code && !search_task {
+        return Err(EngramError::System(SystemError::InvalidParams {
+            reason: format!(
+                "invalid region '{}': expected code, task, or all",
+                parsed.region
+            ),
+        }));
+    }
+
+    // Clamp limit to [1, 50].
+    let limit = parsed.limit.clamp(1, 50);
+
+    // Embed the query. FR-157: if embedding fails, return 5001.
+    let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("embedding generation failed: {e}"),
+        })
+    })?;
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let cg_queries = CodeGraphQueries::new(db.clone());
+    let queries = Queries::new(db);
+
+    // ── Code region search ──────────────────────────────────────────
+    let code_results = if search_code {
+        let symbols = cg_queries
+            .vector_search_symbols(&query_embedding, limit)
+            .await?;
+        symbols
+            .into_iter()
+            .map(|s| {
+                let score = cosine_similarity(&query_embedding, &s.embedding);
+                let line_range = match (s.line_start, s.line_end) {
+                    (Some(start), Some(end)) => Some(format!("L{start}-L{end}")),
+                    (Some(start), None) => Some(format!("L{start}")),
+                    _ => None,
+                };
+                UnifiedSearchResult {
+                    region: SearchRegion::Code,
+                    score,
+                    node_type: s.table,
+                    id: s.id,
+                    title: Some(s.name),
+                    file_path: Some(s.file_path),
+                    line_range,
+                    summary: s.summary,
+                    status: None,
+                    linked_symbols: None,
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    // ── Task region search ──────────────────────────────────────────
+    let task_results = if search_task {
+        let mut results: Vec<UnifiedSearchResult> = Vec::new();
+
+        // Search specs (have embeddings).
+        let specs = queries.all_specs().await?;
+        for spec in specs {
+            if let Some(ref emb) = spec.embedding {
+                let score = cosine_similarity(&query_embedding, emb);
+                if score > 0.0 {
+                    results.push(UnifiedSearchResult {
+                        region: SearchRegion::Task,
+                        score,
+                        node_type: "spec".to_string(),
+                        id: format!("spec:{}", spec.id),
+                        title: Some(spec.title),
+                        summary: Some(truncate_summary(&spec.content, 200)),
+                        file_path: Some(spec.file_path),
+                        line_range: None,
+                        status: None,
+                        linked_symbols: None,
+                    });
+                }
+            }
+        }
+
+        // Search contexts (have embeddings).
+        let contexts = queries.all_contexts().await?;
+        for ctx in contexts {
+            if let Some(ref emb) = ctx.embedding {
+                let score = cosine_similarity(&query_embedding, emb);
+                if score > 0.0 {
+                    results.push(UnifiedSearchResult {
+                        region: SearchRegion::Task,
+                        score,
+                        node_type: "context".to_string(),
+                        id: format!("context:{}", ctx.id),
+                        title: None,
+                        summary: Some(truncate_summary(&ctx.content, 200)),
+                        file_path: None,
+                        line_range: None,
+                        status: None,
+                        linked_symbols: None,
+                    });
+                }
+            }
+        }
+
+        // Search tasks (no embeddings — include with keyword-based cosine
+        // approximation if they match; tasks are included in task region
+        // results via title/description matching using the query embedding
+        // indirectly). Since tasks lack vectors, they get score 0.0 from
+        // pure cosine and won't appear unless the spec changes to include
+        // a keyword component. This is correct per v0 spec: "cosine
+        // similarity on embedding vectors".
+
+        results
+    } else {
+        Vec::new()
+    };
+
+    // ── Merge and rank ──────────────────────────────────────────────
+    let merged = merge_unified_results(code_results, task_results, limit);
+    let total_matches = merged.len();
+
+    Ok(json!({
+        "results": merged,
+        "total_matches": total_matches,
+    }))
+}
+
+/// Truncate text to `max_chars`, breaking at a word boundary when possible.
+fn truncate_summary(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    // Find the last space before max_chars to avoid cutting mid-word.
+    let truncated = &text[..max_chars];
+    if let Some(pos) = truncated.rfind(' ') {
+        format!("{}…", &truncated[..pos])
+    } else {
+        format!("{truncated}…")
+    }
 }

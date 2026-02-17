@@ -37,6 +37,72 @@ pub struct SearchCandidate {
     pub embedding: Option<Vec<f32>>,
 }
 
+// ── Unified Semantic Search Types (Phase 7 — US5) ────────────────────────
+
+/// Region tag for unified search results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchRegion {
+    Code,
+    Task,
+}
+
+/// A single result from unified cross-region search (FR-128/FR-131).
+///
+/// Returns summary text only, not full bodies (FR-148 exemption).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnifiedSearchResult {
+    /// Which region this result comes from.
+    pub region: SearchRegion,
+    /// Cosine similarity score in `[0.0, 1.0]`.
+    pub score: f32,
+    /// Node type: function, class, interface, task, context, spec.
+    pub node_type: String,
+    /// Entity ID (e.g. `function:abc123`, `task:xyz`).
+    pub id: String,
+    /// Symbol name or task title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// File path (code nodes only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// Line range string, e.g. `"L42-L78"` (code nodes only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_range: Option<String>,
+    /// Summary text (FR-148: no full bodies).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Task status (task nodes only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Linked code symbol names (task nodes only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_symbols: Option<Vec<String>>,
+}
+
+/// Merge code-region and task-region results into a single list sorted by
+/// descending cosine score, truncated to `limit` (FR-131).
+///
+/// No cross-region normalization or boosting in v0.
+#[must_use]
+pub fn merge_unified_results(
+    code_results: Vec<UnifiedSearchResult>,
+    task_results: Vec<UnifiedSearchResult>,
+    limit: usize,
+) -> Vec<UnifiedSearchResult> {
+    let mut merged: Vec<UnifiedSearchResult> =
+        Vec::with_capacity(code_results.len() + task_results.len());
+    merged.extend(code_results);
+    merged.extend(task_results);
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    merged.truncate(limit);
+    merged
+}
+
 /// Compute cosine similarity between two vectors.
 ///
 /// Returns `0.0` when either vector is zero-length or dimensions mismatch.

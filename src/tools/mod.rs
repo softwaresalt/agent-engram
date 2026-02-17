@@ -79,6 +79,7 @@ pub async fn dispatch(
         "map_code" => read::map_code(state, params).await,
         "list_symbols" => read::list_symbols(state, params).await,
         "get_active_context" => read::get_active_context(state, params).await,
+        "unified_search" => read::unified_search(state, params).await,
         _ => Err(not_implemented(method)),
     }
 }

@@ -615,3 +615,46 @@ async fn contract_get_active_context_requires_workspace() {
     let code = err.to_response().error.code;
     assert_eq!(code, WORKSPACE_NOT_SET);
 }
+
+// ─── Phase 7: Unified Semantic Search ───────────────────────────────────────
+
+#[test]
+async fn contract_unified_search_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({ "query": "billing logic" }));
+
+    let err = tools::dispatch(state, "unified_search", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_unified_search_rejects_empty_query() {
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("unified_search_empty"))
+        .await
+        .expect("set workspace");
+
+    // Empty string
+    let params = Some(json!({ "query": "" }));
+    let err = tools::dispatch(state.clone(), "unified_search", params)
+        .await
+        .expect_err("expected empty query error");
+    let code = err.to_response().error.code;
+    assert_eq!(code, QUERY_TOO_LONG, "empty query should return 4001");
+
+    // Whitespace-only string
+    let params = Some(json!({ "query": "   " }));
+    let err = tools::dispatch(state, "unified_search", params)
+        .await
+        .expect_err("expected empty query error for whitespace");
+    let code = err.to_response().error.code;
+    assert_eq!(
+        code, QUERY_TOO_LONG,
+        "whitespace-only query should return 4001"
+    );
+}
