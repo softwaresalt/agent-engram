@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::config::StaleStrategy;
 use crate::db::connect_db;
 use crate::db::queries::Queries;
-use crate::errors::{EngramError, SystemError, TaskError, WorkspaceError};
+use crate::errors::{CodeGraphError, EngramError, SystemError, TaskError, WorkspaceError};
 use crate::models::context::Context;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
@@ -1144,6 +1144,66 @@ pub async fn add_comment(state: SharedState, params: Option<Value>) -> Result<Va
         "author": parsed.author,
         "created_at": now.to_rfc3339(),
     }))
+}
+
+// ── index_workspace ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct IndexWorkspaceParams {
+    #[serde(default)]
+    force: bool,
+}
+
+/// Parse all supported source files and populate the code knowledge graph.
+///
+/// Returns a structured summary of files parsed, symbols indexed, edges
+/// created, and any per-file errors encountered.
+pub async fn index_workspace(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_path = workspace_path(&state).await?;
+    let ws_id = workspace_id(&state).await?;
+
+    // Reject if indexing is already running.
+    if !state.try_start_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
+    // Run the indexing logic, ensuring the flag is cleared on all exit paths.
+    let result = index_workspace_inner(&state, &ws_path, &ws_id, params).await;
+    state.finish_indexing().await;
+    result
+}
+
+/// Inner indexing logic separated to guarantee `finish_indexing()` runs.
+async fn index_workspace_inner(
+    state: &SharedState,
+    ws_path: &std::path::Path,
+    ws_id: &str,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let parsed: IndexWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let config = state
+        .workspace_config()
+        .await
+        .map(|c| c.code_graph.clone())
+        .unwrap_or_default();
+
+    let result =
+        crate::services::code_graph::index_workspace(ws_path, ws_id, &config, parsed.force).await?;
+
+    serde_json::to_value(result).map_err(|e| {
+        EngramError::System(SystemError::InvalidParams {
+            reason: e.to_string(),
+        })
+    })
 }
 
 #[cfg(test)]

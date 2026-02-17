@@ -72,6 +72,7 @@ pub async fn dispatch(
         "get_workspace_statistics" => read::get_workspace_statistics(state, params).await,
         "batch_update_tasks" => write::batch_update_tasks(state, params).await,
         "add_comment" => write::add_comment(state, params).await,
+        "index_workspace" => write::index_workspace(state, params).await,
         _ => Err(not_implemented(method)),
     }
 }

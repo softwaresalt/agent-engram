@@ -1575,7 +1575,7 @@ impl CodeGraphQueries {
     ) -> Result<Option<crate::models::Function>, EngramError> {
         let mut response = self
             .db
-            .query("SELECT * FROM function WHERE name = $name LIMIT 1")
+            .query("SELECT * FROM `function` WHERE name = $name LIMIT 1")
             .bind(("name", name.to_owned()))
             .await
             .map_err(map_db_err)?;
@@ -1590,7 +1590,7 @@ impl CodeGraphQueries {
     ) -> Result<Vec<crate::models::Function>, EngramError> {
         let mut response = self
             .db
-            .query("SELECT * FROM function WHERE file_path = $fp ORDER BY line_start ASC")
+            .query("SELECT * FROM `function` WHERE file_path = $fp ORDER BY line_start ASC")
             .bind(("fp", file_path.to_owned()))
             .await
             .map_err(map_db_err)?;
@@ -1601,7 +1601,7 @@ impl CodeGraphQueries {
     /// Delete all functions in a given file.
     pub async fn delete_functions_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
-            .query("DELETE FROM function WHERE file_path = $fp")
+            .query("DELETE FROM `function` WHERE file_path = $fp")
             .bind(("fp", file_path.to_owned()))
             .await
             .map_err(map_db_err)?;

@@ -6,8 +6,8 @@ use tokio::test;
 
 use engram::errors::codes::{
     BATCH_PARTIAL_FAILURE, COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL,
-    INVALID_ISSUE_TYPE, INVALID_STATUS, LABEL_VALIDATION, TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE,
-    TASK_NOT_FOUND, WORKSPACE_NOT_SET,
+    INDEX_IN_PROGRESS, INVALID_ISSUE_TYPE, INVALID_STATUS, LABEL_VALIDATION, TASK_ALREADY_CLAIMED,
+    TASK_NOT_CLAIMABLE, TASK_NOT_FOUND, WORKSPACE_NOT_SET,
 };
 use engram::server::state::AppState;
 use engram::tools;
@@ -1585,4 +1585,46 @@ async fn contract_add_comment_nonexistent_task_fails() {
     .expect_err("add_comment on nonexistent task should fail");
 
     assert_eq!(err.to_response().error.code, TASK_NOT_FOUND);
+}
+
+// ── index_workspace contract tests ──────────────────────────────────
+
+#[test]
+async fn contract_index_workspace_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "index_workspace", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_index_workspace_rejects_while_in_progress() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Simulate an indexing operation in progress.
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "index_workspace", Some(json!({})))
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
 }

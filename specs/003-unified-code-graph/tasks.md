@@ -81,14 +81,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T031 [P] [US1] Add contract test for `index_workspace` (workspace-not-set returns error 1003, index-in-progress returns error 7003) in tests/contract/write_test.rs
+- [X] T031 [P] [US1] Add contract test for `index_workspace` (workspace-not-set returns error 1003, index-in-progress returns error 7003) in tests/contract/write_test.rs
 
 ### Implementation for User Story 1
 
-- [ ] T032 [US1] Create code_graph indexing orchestration service with file discovery (`ignore` crate for .gitignore + `code_graph.exclude_patterns` from config), parallel file parsing (`spawn_blocking`, concurrency bounded by `code_graph.parse_concurrency`), character-based token counting (4 chars/token), tiered embedding via batched `embed_texts()`, SSE progress event emission (FR-120), and batch edge creation in src/services/code_graph.rs
-- [ ] T033 [US1] Implement `index_workspace` tool handler that validates workspace, checks in-progress flag, delegates to code_graph service, and returns structured summary in src/tools/write.rs
-- [ ] T034 [US1] Add `index_workspace` match arm to `dispatch()` in src/tools/mod.rs
-- [ ] T035 [US1] Add integration test for full index round-trip (index workspace → verify nodes and edges in DB → verify embeddings generated → verify tier classification) in tests/integration/code_graph_test.rs
+- [X] T032 [US1] Create code_graph indexing orchestration service with file discovery (`ignore` crate for .gitignore + `code_graph.exclude_patterns` from config), parallel file parsing (`spawn_blocking`, concurrency bounded by `code_graph.parse_concurrency`), character-based token counting (4 chars/token), tiered embedding via batched `embed_texts()`, SSE progress event emission (FR-120), and batch edge creation in src/services/code_graph.rs
+- [X] T033 [US1] Implement `index_workspace` tool handler that validates workspace, checks in-progress flag, delegates to code_graph service, and returns structured summary in src/tools/write.rs
+- [X] T034 [US1] Add `index_workspace` match arm to `dispatch()` in src/tools/mod.rs
+- [X] T035 [US1] Add integration test for full index round-trip (index workspace → verify nodes and edges in DB → verify embeddings generated → verify tier classification) in tests/integration/code_graph_test.rs
 
 **Checkpoint**: `index_workspace` is functional. Workspace code is parsed into a navigable graph with embeddings. MVP is testable.
 

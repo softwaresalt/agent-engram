@@ -4,6 +4,7 @@
         "speckit.specify": true,
         "speckit.plan": true,
         "speckit.tasks": true,
+        "build-orchestrator": true,
         "speckit.implement": true
     },
     "chat.tools.terminal.autoApprove": {

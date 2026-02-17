@@ -55,7 +55,8 @@
         "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "cargo test": true
     },
 	"powershell.cwd": "monocoque-agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,

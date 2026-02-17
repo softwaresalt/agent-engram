@@ -101,22 +101,25 @@ DEFINE INDEX IF NOT EXISTS code_file_language ON TABLE code_file COLUMNS languag
 "#;
 
 /// Function node — a callable code unit extracted via AST parsing.
+///
+/// The table name `function` is a reserved keyword in SurrealDB v2 and MUST
+/// be backtick-escaped in all SurrealQL statements.
 pub const DEFINE_FUNCTION: &str = r#"
-DEFINE TABLE IF NOT EXISTS function SCHEMAFULL;
-DEFINE FIELD OVERWRITE name ON TABLE function TYPE string ASSERT $value != '';
-DEFINE FIELD OVERWRITE file_path ON TABLE function TYPE string ASSERT $value != '';
-DEFINE FIELD OVERWRITE line_start ON TABLE function TYPE int ASSERT $value >= 1;
-DEFINE FIELD OVERWRITE line_end ON TABLE function TYPE int ASSERT $value >= 1;
-DEFINE FIELD OVERWRITE signature ON TABLE function TYPE string;
-DEFINE FIELD OVERWRITE docstring ON TABLE function TYPE option<string>;
-DEFINE FIELD OVERWRITE body_hash ON TABLE function TYPE string ASSERT $value != '';
-DEFINE FIELD OVERWRITE token_count ON TABLE function TYPE int ASSERT $value >= 0;
-DEFINE FIELD OVERWRITE embed_type ON TABLE function TYPE string ASSERT $value INSIDE ['explicit_code', 'summary_pointer'];
-DEFINE FIELD OVERWRITE embedding ON TABLE function TYPE array<float>;
-DEFINE FIELD OVERWRITE summary ON TABLE function TYPE string;
-DEFINE INDEX IF NOT EXISTS function_name ON TABLE function COLUMNS name;
-DEFINE INDEX IF NOT EXISTS function_file ON TABLE function COLUMNS file_path;
-DEFINE INDEX IF NOT EXISTS function_embedding ON TABLE function COLUMNS embedding MTREE DIMENSION 384 DIST COSINE;
+DEFINE TABLE IF NOT EXISTS `function` SCHEMAFULL;
+DEFINE FIELD OVERWRITE name ON TABLE `function` TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE file_path ON TABLE `function` TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE line_start ON TABLE `function` TYPE int ASSERT $value >= 1;
+DEFINE FIELD OVERWRITE line_end ON TABLE `function` TYPE int ASSERT $value >= 1;
+DEFINE FIELD OVERWRITE signature ON TABLE `function` TYPE string;
+DEFINE FIELD OVERWRITE docstring ON TABLE `function` TYPE option<string>;
+DEFINE FIELD OVERWRITE body_hash ON TABLE `function` TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE token_count ON TABLE `function` TYPE int ASSERT $value >= 0;
+DEFINE FIELD OVERWRITE embed_type ON TABLE `function` TYPE string ASSERT $value INSIDE ['explicit_code', 'summary_pointer'];
+DEFINE FIELD OVERWRITE embedding ON TABLE `function` TYPE array<float>;
+DEFINE FIELD OVERWRITE summary ON TABLE `function` TYPE string;
+DEFINE INDEX IF NOT EXISTS function_name ON TABLE `function` COLUMNS name;
+DEFINE INDEX IF NOT EXISTS function_file ON TABLE `function` COLUMNS file_path;
+DEFINE INDEX IF NOT EXISTS function_embedding ON TABLE `function` COLUMNS embedding MTREE DIMENSION 384 DIST COSINE;
 "#;
 
 /// Class node — a type definition (struct in Rust) extracted via AST parsing.
