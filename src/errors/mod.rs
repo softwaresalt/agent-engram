@@ -138,6 +138,8 @@ pub enum SystemError {
     ShuttingDown,
     #[error("Invalid request parameters: {reason}")]
     InvalidParams { reason: String },
+    #[error("Embedding model failed to load: {reason}")]
+    ModelLoadFailed { reason: String },
 }
 
 #[derive(Debug, Error)]
@@ -354,6 +356,12 @@ impl EngramError {
                     "InvalidParams",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
+                ),
+                SystemError::ModelLoadFailed { reason } => (
+                    MODEL_LOAD_FAILED,
+                    "ModelLoadFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason, "suggestion": "try restarting" })),
                 ),
             },
             EngramError::Config(inner) => match inner {

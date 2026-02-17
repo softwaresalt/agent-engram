@@ -42,6 +42,7 @@ pub const FLUSH_FAILED: u16 = 5002;
 pub const RATE_LIMITED: u16 = 5003;
 pub const SHUTTING_DOWN: u16 = 5004;
 pub const INVALID_PARAMS: u16 = 5005;
+pub const MODEL_LOAD_FAILED: u16 = 5006;
 
 /// Config error codes
 pub const CONFIG_PARSE_ERROR: u16 = 6001;

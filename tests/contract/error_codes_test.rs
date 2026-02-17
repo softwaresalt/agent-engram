@@ -56,6 +56,7 @@ fn system_error_codes_match_contract() {
     assert_eq!(RATE_LIMITED, 5003);
     assert_eq!(SHUTTING_DOWN, 5004);
     assert_eq!(INVALID_PARAMS, 5005);
+    assert_eq!(MODEL_LOAD_FAILED, 5006);
 }
 
 /// Verify all config error codes match the contract.
@@ -223,6 +224,11 @@ fn error_response_codes_are_consistent() {
             SystemError::InvalidParams { reason: "x".into() }.into(),
             5005,
             "InvalidParams",
+        ),
+        (
+            SystemError::ModelLoadFailed { reason: "x".into() }.into(),
+            5006,
+            "ModelLoadFailed",
         ),
         (
             ConfigError::ParseError { reason: "x".into() }.into(),

@@ -122,3 +122,7 @@ path = "tests/integration/code_graph_test.rs"
 [[test]]
 name = "integration_cross_region"
 path = "tests/integration/cross_region_test.rs"
+
+[[test]]
+name = "contract_quickstart"
+path = "tests/contract/quickstart_test.rs"

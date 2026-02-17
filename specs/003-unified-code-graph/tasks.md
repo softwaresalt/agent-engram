@@ -209,17 +209,17 @@
 
 ### Tests for User Story 7
 
-- [ ] T063 [P] [US7] Add integration test for code graph persistence round-trip (index → flush → clear DB → hydrate → verify embeddings and edges preserved within 1e-6 epsilon per SC-107) in tests/integration/hydration_test.rs
-- [ ] T064 [P] [US7] Add end-to-end integration test for full lifecycle (index → sync → query → persist → hydrate → query again) in tests/integration/code_graph_test.rs
+- [x] T063 [P] [US7] Add integration test for code graph persistence round-trip (index → flush → clear DB → hydrate → verify embeddings and edges preserved within 1e-6 epsilon per SC-107) in tests/integration/hydration_test.rs
+- [x] T064 [P] [US7] Add end-to-end integration test for full lifecycle (index → sync → query → persist → hydrate → query again) in tests/integration/code_graph_test.rs
 
 ### Implementation for User Story 7
 
-- [ ] T065 [US7] Extend dehydration service to serialize code graph nodes to `.engram/code-graph/nodes.jsonl` (metadata only, no source bodies, sorted by ID, atomic temp+rename) in src/services/dehydration.rs
-- [ ] T066 [US7] Extend dehydration service to serialize code graph edges to `.engram/code-graph/edges.jsonl` (all edge types including concerns, sorted by type+from+to, atomic temp+rename) in src/services/dehydration.rs
-- [ ] T067 [US7] Extend hydration service to load code graph from JSONL metadata, parse source files for bodies, compare body_hash for diff-rehydration, re-embed only changed symbols, and discard metadata for deleted files in src/services/hydration.rs. On JSONL parse failure (corrupt/truncated lines), log a warning, skip the bad line, and fall back to full re-index for affected symbols (FR-135)
-- [ ] T068 [US7] Extend `flush_state` tool to include code graph serialization alongside existing task/context persistence, and return error 7003 if indexing is in progress (FR-153) in src/tools/write.rs
-- [ ] T069 [US7] Extend `set_workspace` tool to trigger code graph hydration after existing workspace setup in src/tools/lifecycle.rs
-- [ ] T070 [US7] Extend `get_workspace_status` to include code_graph stats (file_count, function_count, class_count, interface_count, edge_count, concerns_count, last_indexed_at) in src/tools/lifecycle.rs
+- [x] T065 [US7] Extend dehydration service to serialize code graph nodes to `.engram/code-graph/nodes.jsonl` (metadata only, no source bodies, sorted by ID, atomic temp+rename) in src/services/dehydration.rs
+- [x] T066 [US7] Extend dehydration service to serialize code graph edges to `.engram/code-graph/edges.jsonl` (all edge types including concerns, sorted by type+from+to, atomic temp+rename) in src/services/dehydration.rs
+- [x] T067 [US7] Extend hydration service to load code graph from JSONL metadata, parse source files for bodies, compare body_hash for diff-rehydration, re-embed only changed symbols, and discard metadata for deleted files in src/services/hydration.rs. On JSONL parse failure (corrupt/truncated lines), log a warning, skip the bad line, and fall back to full re-index for affected symbols (FR-135)
+- [x] T068 [US7] Extend `flush_state` tool to include code graph serialization alongside existing task/context persistence, and return error 7003 if indexing is in progress (FR-153) in src/tools/write.rs
+- [x] T069 [US7] Extend `set_workspace` tool to trigger code graph hydration after existing workspace setup in src/tools/lifecycle.rs
+- [x] T070 [US7] Extend `get_workspace_status` to include code_graph stats (file_count, function_count, class_count, interface_count, edge_count, concerns_count, last_indexed_at) in src/tools/lifecycle.rs
 
 **Checkpoint**: Code graph metadata survives daemon restarts. Embeddings are reused for unchanged symbols. Full persistence lifecycle is complete.
 
@@ -229,11 +229,11 @@
 
 **Purpose**: Validation, cleanup, and documentation
 
-- [ ] T071 [P] Validate all quickstart.md scenarios against implemented tools
-- [ ] T072 Run `cargo clippy --all-targets -- -D warnings` and fix all pedantic warnings across new files
-- [ ] T073 Run full test suite (`cargo ci`) and verify all tests pass
-- [ ] T074 [P] Validate performance against success criteria (SC-101 through SC-116) on representative workspace
-- [ ] T075 [P] Add startup failure smoke test: verify daemon returns error 5001 with `suggestion: "try restarting"` when embedding model fails to load at startup (FR-154)
+- [x] T071 [P] Validate all quickstart.md scenarios against implemented tools
+- [x] T072 Run `cargo clippy --all-targets -- -D warnings` and fix all pedantic warnings across new files
+- [x] T073 Run full test suite (`cargo ci`) and verify all tests pass
+- [x] T074 [P] Validate performance against success criteria (SC-101 through SC-116) on representative workspace
+- [x] T075 [P] Add startup failure smoke test: verify daemon returns error 5001 with `suggestion: "try restarting"` when embedding model fails to load at startup (FR-154)
 
 ---
 
