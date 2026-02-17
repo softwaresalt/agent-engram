@@ -658,3 +658,40 @@ async fn contract_unified_search_rejects_empty_query() {
         "whitespace-only query should return 4001"
     );
 }
+
+// ─── Phase 8: Impact Analysis Queries ───────────────────────────────────────
+
+#[test]
+async fn contract_impact_analysis_requires_workspace() {
+    use engram::errors::codes::WORKSPACE_NOT_SET;
+
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({ "symbol_name": "EngramError" }));
+
+    let err = tools::dispatch(state, "impact_analysis", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_impact_analysis_symbol_not_found() {
+    use engram::errors::codes::SYMBOL_NOT_FOUND;
+
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("impact_analysis_not_found"))
+        .await
+        .expect("set workspace");
+
+    let params = Some(json!({ "symbol_name": "NonExistentSymbol" }));
+
+    let err = tools::dispatch(state, "impact_analysis", params)
+        .await
+        .expect_err("expected symbol not found error");
+
+    let code = err.to_response().error.code;
+    assert_eq!(code, SYMBOL_NOT_FOUND);
+}

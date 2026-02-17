@@ -946,3 +946,132 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
         format!("{truncated}…")
     }
 }
+
+// ── impact_analysis (T061 — Phase 8) ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ImpactAnalysisParams {
+    symbol_name: String,
+    #[serde(default = "default_impact_depth")]
+    depth: usize,
+    #[serde(default)]
+    status_filter: Option<String>,
+}
+
+const fn default_impact_depth() -> usize {
+    1
+}
+
+/// Impact analysis: traverse code dependencies and cross-region concerns edges
+/// to find all tasks affected by changes to a specific code symbol (FR-129).
+///
+/// 1. Resolve `symbol_name` via exact-name lookup.
+/// 2. BFS traverse code graph to `depth` hops (clamped by FR-149).
+/// 3. Collect all visited node IDs (root + neighbors).
+/// 4. Reverse-lookup `concerns` edges to find linked tasks.
+/// 5. Optionally filter tasks by `status_filter`.
+/// 6. Return full source bodies for code nodes (FR-148).
+///
+/// # Errors
+/// - `WorkspaceError::NotSet` (1003) if workspace not bound.
+/// - `CodeGraphError::SymbolNotFound` (7004) if symbol not in graph.
+pub async fn impact_analysis(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    ensure_workspace(&state).await?;
+
+    let parsed: ImpactAnalysisParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    // FR-149: clamp depth to config limits.
+    let config = state.workspace_config().await.unwrap_or_default();
+    let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
+    let effective_max_nodes = config.code_graph.max_traversal_nodes;
+
+    let workspace_id = workspace_id(&state).await?;
+    let db = connect_db(&workspace_id).await?;
+    let cg_queries = CodeGraphQueries::new(db.clone());
+    let queries = Queries::new(db);
+
+    // Step 1: Resolve symbol name to code node(s).
+    let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
+    if matches.is_empty() {
+        return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+            name: parsed.symbol_name,
+        }));
+    }
+
+    let root = &matches[0];
+
+    // Step 2: BFS traverse code graph.
+    let bfs = cg_queries
+        .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
+        .await?;
+
+    // Step 3: Collect all visited node IDs (root + neighbors).
+    let mut all_node_ids: Vec<String> = vec![root.id.clone()];
+    for neighbor in &bfs.neighbors {
+        all_node_ids.push(neighbor.id.clone());
+    }
+    all_node_ids.dedup();
+
+    // Step 4: Reverse-lookup concerns edges to find linked tasks.
+    let task_symbol_pairs = cg_queries.find_tasks_for_symbols(&all_node_ids).await?;
+
+    // Deduplicate task IDs and collect dependency paths.
+    let mut task_map: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (task_id, symbol_id) in &task_symbol_pairs {
+        task_map
+            .entry(task_id.clone())
+            .or_default()
+            .push(symbol_id.clone());
+    }
+
+    // Step 5: Fetch tasks and apply status filter.
+    let mut affected_tasks: Vec<Value> = Vec::new();
+    for (task_id, dependency_path) in &task_map {
+        let raw_id = task_id.strip_prefix("task:").unwrap_or(task_id);
+        if let Some(task) = queries.get_task(raw_id).await? {
+            // Apply status filter if provided.
+            if let Some(ref filter) = parsed.status_filter {
+                if task.status.as_str() != filter.as_str() {
+                    continue;
+                }
+            }
+            affected_tasks.push(json!({
+                "task": {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": task.status.as_str(),
+                    "priority": task.priority,
+                    "work_item_id": task.work_item_id,
+                },
+                "dependency_path": dependency_path,
+            }));
+        }
+    }
+
+    // Build code neighborhood JSON (FR-148: full source bodies).
+    let code_neighborhood: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
+
+    let no_task_links = affected_tasks.is_empty();
+
+    Ok(json!({
+        "symbol": {
+            "name": root.name,
+            "type": root.table,
+            "file_path": root.file_path,
+        },
+        "code_neighborhood": code_neighborhood,
+        "affected_tasks": affected_tasks,
+        "no_task_links": no_task_links,
+        "effective_depth": effective_depth,
+        "effective_max_nodes": effective_max_nodes,
+    }))
+}

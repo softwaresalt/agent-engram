@@ -2152,6 +2152,36 @@ impl CodeGraphQueries {
         Ok(results)
     }
 
+    /// Reverse-lookup: given a set of symbol IDs, find all task IDs linked via
+    /// `concerns` edges (task → symbol direction, queried in reverse).
+    ///
+    /// Returns `(task_id, symbol_id)` pairs so callers can build dependency paths.
+    pub async fn find_tasks_for_symbols(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<Vec<(String, String)>, EngramError> {
+        let mut results: Vec<(String, String)> = Vec::new();
+        for sym_id in symbol_ids {
+            let parts: Vec<&str> = sym_id.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+            let thing = Thing::from((parts[0], parts[1]));
+            let mut resp = self
+                .db
+                .query("SELECT * FROM concerns WHERE out = $sym")
+                .bind(("sym", thing))
+                .await
+                .map_err(map_db_err)?;
+            let rows: Vec<ConcernsRow> = resp.take(0).map_err(map_db_err)?;
+            for row in rows {
+                let task_id = format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw());
+                results.push((task_id, sym_id.clone()));
+            }
+        }
+        Ok(results)
+    }
+
     // ── BFS Traversal Queries (T038) ────────────────────────────────
 
     /// Look up all symbols (functions, classes, interfaces) whose name matches exactly.
