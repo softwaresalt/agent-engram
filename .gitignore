@@ -17,6 +17,10 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Dev data directories for engram daemon debugging
+.engram-dev-data/
+.engram-dev-data-alt/
+
 # Environment and secrets
 .env
 .env.*

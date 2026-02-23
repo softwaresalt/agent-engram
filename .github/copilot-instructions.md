@@ -330,4 +330,41 @@ cargo test | Select-String "FAILED" | Remove-Item foo.txt
     "git add": true,
     "git push": true
 }
+
+## MCP Server Registry
+
+The workspace uses multiple MCP servers with distinct responsibilities. Never call a tool on the wrong server — VS Code pre-registers them, but the agent must know which tool lives where.
+
+| Server ID | URL | Purpose |
+|-----------|-----|---------|
+| `monocoque-agent-rc` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
+| engram daemon | `http://127.0.0.1:7437/sse` | Task memory, context tracking, workspace state |
+
+### `monocoque-agent-rc` tools (Slack relay)
+
+| Tool | Purpose |
+|------|---------|
+| `ask_approval` | Submit a code diff for remote operator approval; blocks until approved/rejected |
+| `accept_diff` | Apply a previously approved diff to the local filesystem |
+| `check_auto_approve` | Query workspace auto-approve policy before asking for remote approval |
+| `forward_prompt` | Forward a continuation or clarification prompt to the operator via Slack |
+| `remote_log` | Send a non-blocking status message to the Slack channel |
+| `recover_state` | Retrieve last known session state from persistent storage |
+| `set_operational_mode` | Switch between `remote`, `local`, and `hybrid` modes at runtime |
+| `wait_for_instruction` | Place the agent in standby, polling for a resume signal from the operator |
+| `heartbeat` | Liveness signal; resets stall detection timer with optional progress snapshot |
+
+### Engram daemon tools (task memory)
+
+See **MCP Tools Registry** table above for the full list (`set_workspace`, `get_daemon_status`, `update_task`, etc.).
+
+### Startup verification
+
+If `get_daemon_status` or any engram tool returns a connection error, the engram daemon is not running. Start it with:
+
+```bash
+cargo run --bin engram
+```
+
+The relay server (`monocoque-agent-rc`) is a separate process managed outside this repo and runs on port 3000.
 <!-- MANUAL ADDITIONS END -->

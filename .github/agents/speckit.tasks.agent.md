@@ -25,8 +25,9 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 2. **Load design documents**: Read from FEATURE_DIR:
    - **Required**: plan.md (tech stack, libraries, structure), spec.md (user stories with priorities)
-   - **Optional**: data-model.md (entities), contracts/ (API endpoints), research.md (decisions), quickstart.md (test scenarios)
+   - **Optional**: SCENARIOS.md (behavioral matrix — permutations, edge cases, expected outcomes), data-model.md (entities), contracts/ (API endpoints), research.md (decisions), quickstart.md (test scenarios)
    - Note: Not all projects have all documents. Generate tasks based on what's available.
+   - **Priority**: If `SCENARIOS.md` exists, it is the authoritative source for test scenarios. Your very first tasks in each user story phase MUST be to write the automated tests that verify every row in the `SCENARIOS.md` behavioral matrix. Implementation tasks must strictly follow the testing tasks.
 
 3. **Execute task generation workflow**:
    - Load plan.md and extract tech stack, libraries, project structure
@@ -34,6 +35,7 @@ You **MUST** consider the user input before proceeding (if not empty).
    - If data-model.md exists: Extract entities and map to user stories
    - If contracts/ exists: Map endpoints to user stories
    - If research.md exists: Extract decisions for setup tasks
+   - If SCENARIOS.md exists: Map each scenario row to test tasks, grouped by component/user story
    - Generate tasks organized by user story (see Task Generation Rules below)
    - Generate dependency graph showing user story completion order
    - Create parallel execution examples per user story
