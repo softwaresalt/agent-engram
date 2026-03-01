@@ -54,5 +54,6 @@ pub const PARSE_ERROR: u16 = 7001;
 pub const UNSUPPORTED_LANGUAGE: u16 = 7002;
 pub const INDEX_IN_PROGRESS: u16 = 7003;
 pub const SYMBOL_NOT_FOUND: u16 = 7004;
+/// 7005 is reserved for future use.
 pub const FILE_TOO_LARGE: u16 = 7006;
 pub const SYNC_CONFLICT: u16 = 7007;

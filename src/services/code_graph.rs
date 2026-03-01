@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::db::connect_db;
-use crate::db::queries::CodeGraphQueries;
+use crate::db::queries::{CodeGraphQueries, Queries};
 use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
@@ -40,6 +40,8 @@ pub struct IndexResult {
     pub tier1_count: usize,
     /// Count of Tier 2 (`summary_pointer`) symbols.
     pub tier2_count: usize,
+    /// Number of cross-file import/call edges dropped (deferred to future phase).
+    pub cross_file_edges_dropped: usize,
     /// Per-file errors encountered (non-fatal).
     pub errors: Vec<FileError>,
     /// Total indexing duration in milliseconds.
@@ -93,17 +95,20 @@ pub async fn index_workspace(
         embeddings_generated: 0,
         tier1_count: 0,
         tier2_count: 0,
+        cross_file_edges_dropped: 0,
         errors: Vec::new(),
         duration_ms: 0,
     };
 
     // ── Step 2: Process each file ───────────────────────────────────
     for file_path in &files {
-        let rel_path = file_path
-            .strip_prefix(ws_path)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
+            p.to_string_lossy().replace('\\', "/")
+        } else {
+            warn!(path = %file_path.display(), "code graph: file outside workspace root, skipping");
+            result.files_skipped += 1;
+            continue;
+        };
 
         // Read file contents.
         let source = match tokio::fs::read_to_string(file_path).await {
@@ -197,14 +202,14 @@ pub async fn index_workspace(
         // ── Collect symbols for embedding ───────────────────────────
         let token_limit = config.embedding.token_limit;
         let mut embed_texts: Vec<String> = Vec::new();
-        let mut embed_indices: Vec<usize> = Vec::new();
+        let mut embed_ids: Vec<String> = Vec::new();
 
         // Track symbol IDs for edge creation.
         let mut function_ids: Vec<(String, String)> = Vec::new(); // (name, id)
         let mut class_ids: Vec<(String, String)> = Vec::new();
         let mut interface_ids: Vec<(String, String)> = Vec::new();
 
-        for (idx, symbol) in parse_result.symbols.iter().enumerate() {
+        for symbol in &parse_result.symbols {
             match symbol {
                 ExtractedSymbol::Function(f) => {
                     let sym_id = format!("function:{}", Uuid::new_v4());
@@ -216,7 +221,7 @@ pub async fn index_workspace(
                         f.docstring.as_deref(),
                     );
                     embed_texts.push(summary.clone());
-                    embed_indices.push(idx);
+                    embed_ids.push(sym_id.clone());
 
                     let func = crate::models::function::Function {
                         id: sym_id.clone(),
@@ -259,7 +264,7 @@ pub async fn index_workspace(
                         c.docstring.as_deref(),
                     );
                     embed_texts.push(summary.clone());
-                    embed_indices.push(idx);
+                    embed_ids.push(sym_id.clone());
 
                     let class = crate::models::class::Class {
                         id: sym_id.clone(),
@@ -300,7 +305,7 @@ pub async fn index_workspace(
                         i.docstring.as_deref(),
                     );
                     embed_texts.push(summary.clone());
-                    embed_indices.push(idx);
+                    embed_ids.push(sym_id.clone());
 
                     let iface = crate::models::interface::Interface {
                         id: sym_id.clone(),
@@ -339,12 +344,14 @@ pub async fn index_workspace(
             match embedding::embed_texts(&embed_texts) {
                 Ok(vectors) => {
                     result.embeddings_generated += vectors.len();
-                    // TODO: Update symbol records with embedding vectors.
-                    // This requires a set_embedding query per symbol type,
-                    // which will be added when embeddings feature is active.
+                    for (sym_id, vector) in embed_ids.iter().zip(vectors.into_iter()) {
+                        if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
+                            debug!(error = %e, sym_id = %sym_id, "code graph: embedding write-back failed");
+                        }
+                    }
                     debug!(
-                        count = vectors.len(),
-                        "code graph: generated embeddings for file"
+                        count = result.embeddings_generated,
+                        "code graph: generated and stored embeddings for file"
                     );
                 }
                 Err(e) => {
@@ -379,8 +386,11 @@ pub async fn index_workspace(
                         }
                     }
                 }
-                // Imports are cross-file (deferred); Defines already created above.
-                ExtractedEdge::Imports { .. } | ExtractedEdge::Defines { .. } => {}
+                // Defines already created above; Imports are cross-file (deferred, counted).
+                ExtractedEdge::Imports { .. } => {
+                    result.cross_file_edges_dropped += 1;
+                }
+                ExtractedEdge::Defines { .. } => {}
             }
         }
 
@@ -426,6 +436,8 @@ pub struct SyncResult {
     pub concerns_relinked: usize,
     /// Number of `concerns` edges orphaned and removed (FR-112).
     pub concerns_orphaned: usize,
+    /// Number of cross-file import/call edges dropped (deferred to future phase).
+    pub cross_file_edges_dropped: usize,
     /// Per-file errors encountered (non-fatal).
     pub errors: Vec<FileError>,
     /// Total sync duration in milliseconds.
@@ -461,6 +473,7 @@ pub async fn sync_workspace(
     let start = std::time::Instant::now();
 
     let db = connect_db(ws_id).await?;
+    let task_queries = Queries::new(db.clone());
     let queries = CodeGraphQueries::new(db);
 
     // Discover current files on disk.
@@ -492,6 +505,7 @@ pub async fn sync_workspace(
         symbols_reused: 0,
         concerns_relinked: 0,
         concerns_orphaned: 0,
+        cross_file_edges_dropped: 0,
         errors: Vec::new(),
         duration_ms: 0,
     };
@@ -508,11 +522,12 @@ pub async fn sync_workspace(
 
     // ── Phase 2: Process current files (add / modify / skip) ────────
     for file_path in &current_files {
-        let rel_path = file_path
-            .strip_prefix(ws_path)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
+            p.to_string_lossy().replace('\\', "/")
+        } else {
+            warn!(path = %file_path.display(), "code graph sync: file outside workspace root, skipping");
+            continue;
+        };
 
         // Read file contents.
         let source = match tokio::fs::read_to_string(file_path).await {
@@ -638,6 +653,7 @@ pub async fn sync_workspace(
         let mut new_class_ids: Vec<(String, String)> = Vec::new();
         let mut new_interface_ids: Vec<(String, String)> = Vec::new();
         let mut embed_texts: Vec<String> = Vec::new();
+        let mut embed_ids: Vec<String> = Vec::new();
 
         for symbol in &parse_result.symbols {
             match symbol {
@@ -658,6 +674,7 @@ pub async fn sync_workspace(
                         result.symbols_reused += 1;
                     } else {
                         embed_texts.push(summary.clone());
+                        embed_ids.push(sym_id.clone());
                         result.symbols_reembedded += 1;
                     }
 
@@ -698,6 +715,7 @@ pub async fn sync_workspace(
                         result.symbols_reused += 1;
                     } else {
                         embed_texts.push(summary.clone());
+                        embed_ids.push(sym_id.clone());
                         result.symbols_reembedded += 1;
                     }
 
@@ -737,6 +755,7 @@ pub async fn sync_workspace(
                         result.symbols_reused += 1;
                     } else {
                         embed_texts.push(summary.clone());
+                        embed_ids.push(sym_id.clone());
                         result.symbols_reembedded += 1;
                     }
 
@@ -767,9 +786,14 @@ pub async fn sync_workspace(
         if !embed_texts.is_empty() {
             match embedding::embed_texts(&embed_texts) {
                 Ok(vectors) => {
+                    for (sym_id, vector) in embed_ids.iter().zip(vectors.into_iter()) {
+                        if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
+                            debug!(error = %e, sym_id = %sym_id, "code graph sync: embedding write-back failed");
+                        }
+                    }
                     debug!(
-                        count = vectors.len(),
-                        "code graph sync: generated embeddings for changed symbols"
+                        count = embed_ids.len(),
+                        "code graph sync: generated and stored embeddings for changed symbols"
                     );
                 }
                 Err(e) => {
@@ -801,8 +825,19 @@ pub async fn sync_workspace(
                         }
                     }
                 }
-                ExtractedEdge::Imports { .. } | ExtractedEdge::Defines { .. } => {}
+                // Defines already created above; Imports are cross-file (deferred, counted).
+                ExtractedEdge::Imports { .. } => {
+                    result.cross_file_edges_dropped += 1;
+                }
+                ExtractedEdge::Defines { .. } => {}
             }
+        }
+
+        // ── Delete old concerns edges before relinking (prevent duplicates) ──
+        for edge in &enriched_concerns {
+            let _ = queries
+                .delete_concerns_edges_for_symbol(&edge.symbol_table, &edge.symbol_id)
+                .await;
         }
 
         // ── Relink concerns edges (FR-124) ──────────────────────────
@@ -826,11 +861,21 @@ pub async fn sync_workspace(
     }
 
     // ── Record sync context note (FR-125) ───────────────────────────
-    let summary = format!(
+    let sync_summary = format!(
         "Code graph sync: {} modified, {} added, {} deleted, {} unchanged",
         result.files_modified, result.files_added, result.files_deleted, result.files_unchanged,
     );
-    info!("{summary}");
+    let ctx = crate::models::context::Context {
+        id: Uuid::new_v4().to_string(),
+        content: sync_summary.clone(),
+        embedding: None,
+        source_client: "engram-sync".to_owned(),
+        created_at: chrono::Utc::now(),
+    };
+    if let Err(e) = task_queries.insert_context(&ctx).await {
+        debug!(error = %e, "code graph sync: failed to record context note");
+    }
+    info!("{sync_summary}");
 
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
@@ -966,16 +1011,25 @@ fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::Pa
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
-        .git_exclude(true);
+        .git_exclude(true)
+        .follow_links(false);
 
-    // Add custom exclude patterns from config.
-    for pattern in &config.exclude_patterns {
-        let glob = ignore::overrides::OverrideBuilder::new(ws_path)
-            .add(&format!("!{pattern}"))
-            .and_then(|b| b.build());
-        if let Ok(overrides) = glob {
-            builder.overrides(overrides);
-            break; // WalkBuilder only supports one override set
+    // Add custom exclude patterns from config using a single OverrideBuilder.
+    if !config.exclude_patterns.is_empty() {
+        let mut ob = ignore::overrides::OverrideBuilder::new(ws_path);
+        for pattern in &config.exclude_patterns {
+            // Ignore patterns that fail to parse; log and continue.
+            if ob.add(&format!("!{pattern}")).is_err() {
+                warn!(pattern = %pattern, "code graph: invalid exclude pattern, skipping");
+            }
+        }
+        match ob.build() {
+            Ok(overrides) => {
+                builder.overrides(overrides);
+            }
+            Err(e) => {
+                warn!(error = %e, "code graph: failed to build exclude overrides, patterns ignored");
+            }
         }
     }
 
@@ -1031,7 +1085,25 @@ fn tier_classification(
     } else {
         let summary = match docstring {
             Some(doc) if !doc.is_empty() => format!("{signature}\n\n{doc}"),
-            _ => signature.to_owned(),
+            _ => {
+                // No docstring: include first 5 lines / 256 chars of body as preview.
+                let preview: String = body.lines().take(5).collect::<Vec<_>>().join("\n");
+                let preview = if preview.len() > 256 {
+                    // Safe truncation at char boundary.
+                    let end = preview
+                        .char_indices()
+                        .nth(256)
+                        .map_or(preview.len(), |(i, _)| i);
+                    &preview[..end]
+                } else {
+                    &preview
+                };
+                if preview.is_empty() {
+                    signature.to_owned()
+                } else {
+                    format!("{signature}\n\n{preview}")
+                }
+            }
         };
         ("summary_pointer", summary)
     }

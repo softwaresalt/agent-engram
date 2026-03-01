@@ -1217,8 +1217,8 @@ async fn index_workspace_inner(
         crate::services::code_graph::index_workspace(ws_path, ws_id, &config, parsed.force).await?;
 
     serde_json::to_value(result).map_err(|e| {
-        EngramError::System(SystemError::InvalidParams {
-            reason: e.to_string(),
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("result serialization failed: {e}"),
         })
     })
 }
@@ -1267,8 +1267,8 @@ async fn sync_workspace_inner(
     let result = crate::services::code_graph::sync_workspace(ws_path, ws_id, &config).await?;
 
     serde_json::to_value(result).map_err(|e| {
-        EngramError::System(SystemError::InvalidParams {
-            reason: e.to_string(),
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("result serialization failed: {e}"),
         })
     })
 }
@@ -1304,16 +1304,18 @@ pub async fn link_task_to_code(
         })?;
 
     let db = connect_db(&ws_id).await?;
+    let cg_queries = crate::db::queries::CodeGraphQueries::new(db.clone());
     let queries = Queries::new(db);
 
-    let cg_db = connect_db(&ws_id).await?;
-    let cg_queries = crate::db::queries::CodeGraphQueries::new(cg_db);
-
     // Verify task exists.
-    let task = queries.get_task(&parsed.task_id).await?;
+    let bare_task_id = parsed
+        .task_id
+        .strip_prefix("task:")
+        .unwrap_or(&parsed.task_id);
+    let task = queries.get_task(bare_task_id).await?;
     if task.is_none() {
         return Err(EngramError::Task(TaskError::NotFound {
-            id: parsed.task_id,
+            id: parsed.task_id.clone(),
         }));
     }
 
@@ -1331,7 +1333,7 @@ pub async fn link_task_to_code(
     for sym in &symbols {
         // Idempotency check (FR-152).
         let exists = cg_queries
-            .concerns_edge_exists(&parsed.task_id, &sym.table, &sym.id)
+            .concerns_edge_exists(bare_task_id, &sym.table, &sym.id)
             .await?;
         if exists {
             links_existing += 1;
@@ -1339,13 +1341,13 @@ pub async fn link_task_to_code(
         }
 
         cg_queries
-            .create_concerns_edge(&parsed.task_id, &sym.table, &sym.id, &parsed.linked_by)
+            .create_concerns_edge(bare_task_id, &sym.table, &sym.id, &parsed.linked_by)
             .await?;
         links_created += 1;
     }
 
     Ok(json!({
-        "task_id": parsed.task_id,
+        "task_id": bare_task_id,
         "symbol_name": parsed.symbol_name,
         "links_created": links_created,
         "links_existing": links_existing,
@@ -1377,10 +1379,8 @@ pub async fn unlink_task_from_code(
         })?;
 
     let db = connect_db(&ws_id).await?;
+    let cg_queries = crate::db::queries::CodeGraphQueries::new(db.clone());
     let queries = Queries::new(db);
-
-    let cg_db = connect_db(&ws_id).await?;
-    let cg_queries = crate::db::queries::CodeGraphQueries::new(cg_db);
 
     // Verify task exists.
     let task = queries.get_task(&parsed.task_id).await?;

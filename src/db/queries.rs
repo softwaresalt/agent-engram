@@ -2951,6 +2951,105 @@ impl CodeGraphQueries {
 
         Ok(matches)
     }
+
+    // ── Embedding write-back (T076/T077) ────────────────────────────
+
+    /// Update the embedding vector for any symbol node by its full ID (e.g., `"function:abc"`).
+    pub async fn update_symbol_embedding(
+        &self,
+        sym_id: &str,
+        embedding: Vec<f32>,
+    ) -> Result<(), EngramError> {
+        let (table, raw_id) = sym_id.split_once(':').unwrap_or(("", sym_id));
+        let record = Thing::from((table, raw_id));
+        self.db
+            .query("UPDATE $id SET embedding = $emb")
+            .bind(("id", record))
+            .bind(("emb", embedding))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    // ── COUNT queries (T094) ─────────────────────────────────────────
+
+    /// Return the total count of indexed code files.
+    pub async fn count_code_files(&self) -> Result<u64, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT count() AS count FROM code_file GROUP ALL")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CountRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map_or(0, |r| r.count))
+    }
+
+    /// Return the total count of indexed functions.
+    pub async fn count_functions(&self) -> Result<u64, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT count() AS count FROM `function` GROUP ALL")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CountRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map_or(0, |r| r.count))
+    }
+
+    /// Return the total count of indexed classes.
+    pub async fn count_classes(&self) -> Result<u64, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT count() AS count FROM class GROUP ALL")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CountRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map_or(0, |r| r.count))
+    }
+
+    /// Return the total count of indexed interfaces.
+    pub async fn count_interfaces(&self) -> Result<u64, EngramError> {
+        let mut resp = self
+            .db
+            .query("SELECT count() AS count FROM interface GROUP ALL")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<CountRow> = resp.take(0).map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map_or(0, |r| r.count))
+    }
+
+    /// Return the total count of code edges across all edge types.
+    pub async fn count_code_edges(&self) -> Result<u64, EngramError> {
+        let mut total = 0u64;
+        for table in &["calls", "imports", "defines", "inherits_from", "concerns"] {
+            let query = format!("SELECT count() AS count FROM {table} GROUP ALL");
+            let mut resp = self.db.query(&query).await.map_err(map_db_err)?;
+            let rows: Vec<CountRow> = resp.take(0).map_err(map_db_err)?;
+            total += rows.into_iter().next().map_or(0, |r| r.count);
+        }
+        Ok(total)
+    }
+
+    // ── Batch concerns query (T096) ──────────────────────────────────
+
+    /// List all `concerns` edges for multiple tasks in a single query.
+    ///
+    /// Returns a map of `task_id` → `Vec<ConcernsLink>`.
+    pub async fn list_concerns_for_tasks(
+        &self,
+        task_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<ConcernsLink>>, EngramError> {
+        let mut result: std::collections::HashMap<String, Vec<ConcernsLink>> =
+            std::collections::HashMap::new();
+        if task_ids.is_empty() {
+            return Ok(result);
+        }
+        // Query each task individually; SurrealDB doesn't support IN on Thing lists easily.
+        for task_id in task_ids {
+            let links = self.list_concerns_for_task(task_id).await?;
+            result.insert(task_id.clone(), links);
+        }
+        Ok(result)
+    }
 }
 
 // ── Supporting Types for Concerns Edge Management ──────────────────────

@@ -394,6 +394,10 @@ const fn default_map_max_nodes() -> usize {
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
     let parsed: MapCodeParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
             EngramError::System(SystemError::InvalidParams {
@@ -403,7 +407,7 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
 
     // Clamp depth and max_nodes to config limits (FR-149)
     let config = state.workspace_config().await.unwrap_or_default();
-    let effective_depth = parsed.depth.min(config.code_graph.max_traversal_depth);
+    let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
     let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
 
     let workspace_id = workspace_id(&state).await?;
@@ -480,31 +484,14 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
         }));
     }
 
-    // Multiple matches: return all matches grouped by file, with first match's neighborhood
-    let first_root = &matches[0];
-    let bfs = cg_queries
-        .bfs_neighborhood(&first_root.id, effective_depth, effective_max_nodes)
-        .await?;
-
+    // Multiple matches: return disambiguation array; caller must qualify with file_path.
     let match_nodes: Vec<Value> = matches.iter().map(symbol_match_to_json).collect();
-    let neighbor_json: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
-    let edge_json: Vec<Value> = bfs
-        .edges
-        .iter()
-        .map(|e| {
-            json!({
-                "type": e.edge_type,
-                "from": e.from,
-                "to": e.to,
-            })
-        })
-        .collect();
 
     Ok(json!({
         "root": null,
-        "neighbors": neighbor_json,
-        "edges": edge_json,
-        "truncated": bfs.truncated,
+        "neighbors": [],
+        "edges": [],
+        "truncated": false,
         "fallback_used": false,
         "matches": match_nodes,
         "effective_depth": effective_depth,
@@ -584,12 +571,13 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
 
     let result = cg_queries.list_symbols(&filter).await?;
 
-    // If graph is empty (no symbols at all) and no specific filter was applied,
-    // return 7004 per contract
-    if result.total_count == 0 && filter.file_path.is_none() && filter.name_prefix.is_none() {
-        return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
-            name: String::new(),
-        }));
+    // Return 7004 only when a name_prefix filter produced no results.
+    if result.total_count == 0 {
+        if let Some(ref prefix) = filter.name_prefix {
+            return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+                name: prefix.clone(),
+            }));
+        }
     }
 
     Ok(json!({
@@ -656,13 +644,12 @@ pub async fn get_active_context(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
+    ensure_workspace(&state).await?;
     let ws_id = workspace_id(&state).await?;
 
     let db = connect_db(&ws_id).await?;
+    let cg_queries = CodeGraphQueries::new(db.clone());
     let queries = Queries::new(db);
-
-    let cg_db = connect_db(&ws_id).await?;
-    let cg_queries = CodeGraphQueries::new(cg_db);
 
     // Get all in_progress tasks ordered by priority.
     let in_progress = queries.get_in_progress_tasks().await?;
@@ -729,10 +716,15 @@ pub async fn get_active_context(
         "code_context": primary_code_context,
     });
 
+    // Batch-load concerns for remaining in-progress tasks.
+    let other_task_ids: Vec<String> = in_progress[1..].iter().map(|t| t.id.clone()).collect();
+    let other_concerns = cg_queries.list_concerns_for_tasks(&other_task_ids).await?;
+
     // Other in-progress tasks: metadata + symbol names only.
     let mut other_tasks = Vec::new();
     for task in &in_progress[1..] {
-        let links = cg_queries.list_concerns_for_task(&task.id).await?;
+        let empty_links = Vec::new();
+        let links = other_concerns.get(&task.id).unwrap_or(&empty_links);
         other_tasks.push(json!({
             "task": {
                 "id": task.id,
@@ -910,13 +902,46 @@ pub async fn unified_search(
             }
         }
 
-        // Search tasks (no embeddings — include with keyword-based cosine
-        // approximation if they match; tasks are included in task region
-        // results via title/description matching using the query embedding
-        // indirectly). Since tasks lack vectors, they get score 0.0 from
-        // pure cosine and won't appear unless the spec changes to include
-        // a keyword component. This is correct per v0 spec: "cosine
-        // similarity on embedding vectors".
+        // Search tasks via keyword scoring (tasks lack embedding vectors).
+        // Score = fraction of query words found in title+description (case-insensitive).
+        let tasks = queries.all_tasks().await?;
+        let query_words: Vec<&str> = trimmed.split_whitespace().collect();
+        for task in tasks {
+            if query_words.is_empty() {
+                continue;
+            }
+            let haystack = format!(
+                "{} {}",
+                task.title.to_lowercase(),
+                task.description.to_lowercase()
+            );
+            let matched = query_words
+                .iter()
+                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+                .count();
+            let score = matched as f32 / query_words.len() as f32;
+            if score > 0.0 {
+                let linked = cg_queries
+                    .list_concerns_for_task(&task.id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|l| l.symbol_name)
+                    .collect::<Vec<_>>();
+                results.push(UnifiedSearchResult {
+                    region: SearchRegion::Task,
+                    score,
+                    node_type: "task".to_string(),
+                    id: format!("task:{}", task.id),
+                    title: Some(task.title),
+                    summary: Some(truncate_summary(&task.description, 200)),
+                    file_path: None,
+                    line_range: None,
+                    status: Some(task.status.as_str().to_string()),
+                    linked_symbols: Some(linked),
+                });
+            }
+        }
 
         results
     } else {
@@ -935,11 +960,15 @@ pub async fn unified_search(
 
 /// Truncate text to `max_chars`, breaking at a word boundary when possible.
 fn truncate_summary(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
+    if text.chars().count() <= max_chars {
         return text.to_string();
     }
-    // Find the last space before max_chars to avoid cutting mid-word.
-    let truncated = &text[..max_chars];
+    // Find the byte position at max_chars character boundary (safe for multi-byte chars).
+    let byte_end = text
+        .char_indices()
+        .nth(max_chars)
+        .map_or(text.len(), |(i, _)| i);
+    let truncated = &text[..byte_end];
     if let Some(pos) = truncated.rfind(' ') {
         format!("{}…", &truncated[..pos])
     } else {
@@ -956,10 +985,16 @@ struct ImpactAnalysisParams {
     depth: usize,
     #[serde(default)]
     status_filter: Option<String>,
+    #[serde(default = "default_impact_max_nodes")]
+    max_nodes: usize,
 }
 
 const fn default_impact_depth() -> usize {
     1
+}
+
+const fn default_impact_max_nodes() -> usize {
+    50
 }
 
 /// Impact analysis: traverse code dependencies and cross-region concerns edges
@@ -981,6 +1016,10 @@ pub async fn impact_analysis(
 ) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
     let parsed: ImpactAnalysisParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
             EngramError::System(SystemError::InvalidParams {
@@ -991,7 +1030,10 @@ pub async fn impact_analysis(
     // FR-149: clamp depth to config limits.
     let config = state.workspace_config().await.unwrap_or_default();
     let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
-    let effective_max_nodes = config.code_graph.max_traversal_nodes;
+    let effective_max_nodes = parsed
+        .max_nodes
+        .clamp(1, 100)
+        .min(config.code_graph.max_traversal_nodes);
 
     let workspace_id = workspace_id(&state).await?;
     let db = connect_db(&workspace_id).await?;

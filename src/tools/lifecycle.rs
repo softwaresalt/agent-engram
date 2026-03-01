@@ -147,23 +147,11 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         // Gather code graph stats from the database
         let code_graph = if let Ok(db) = connect_db(&snapshot.workspace_id).await {
             let cg_queries = CodeGraphQueries::new(db);
-            let code_files = cg_queries
-                .list_code_files()
-                .await
-                .map_or(0, |v| v.len() as u64);
-            let functions = cg_queries
-                .all_functions()
-                .await
-                .map_or(0, |v| v.len() as u64);
-            let classes = cg_queries.all_classes().await.map_or(0, |v| v.len() as u64);
-            let interfaces = cg_queries
-                .all_interfaces()
-                .await
-                .map_or(0, |v| v.len() as u64);
-            let edges = cg_queries
-                .all_code_edges()
-                .await
-                .map_or(0, |v| v.len() as u64);
+            let code_files = cg_queries.count_code_files().await.unwrap_or(0);
+            let functions = cg_queries.count_functions().await.unwrap_or(0);
+            let classes = cg_queries.count_classes().await.unwrap_or(0);
+            let interfaces = cg_queries.count_interfaces().await.unwrap_or(0);
+            let edges = cg_queries.count_code_edges().await.unwrap_or(0);
             CodeGraphStats {
                 code_files,
                 functions,

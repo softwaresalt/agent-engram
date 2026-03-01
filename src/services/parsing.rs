@@ -313,7 +313,11 @@ fn extract_impl(
         let mut cursor = body_node.walk();
         for child in body_node.children(&mut cursor) {
             if child.kind() == "function_item" {
-                if let Some(func) = extract_function(child, source) {
+                if let Some(mut func) = extract_function(child, source) {
+                    // Qualify method name with the impl type to avoid symbol collisions.
+                    if let Some(ref ty) = type_name {
+                        func.name = format!("{ty}::{}", func.name);
+                    }
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: func.name.clone(),
                     });
@@ -371,13 +375,18 @@ fn extract_calls_from_body(
     }
 }
 
+/// Callee names that are too generic to form meaningful edges.
+const CALL_BLOCKLIST: &[&str] = &[
+    "new", "default", "into", "clone", "from", "unwrap", "expect", "ok", "err",
+];
+
 /// Resolve the callee name from a `call_expression` node.
 ///
 /// Handles simple calls (`foo()`), qualified calls (`bar::foo()`),
 /// and field access calls (`self.foo()`).
 fn resolve_call_name(node: Node<'_>, source: &str) -> Option<String> {
     let function_node = node.child_by_field_name("function")?;
-    match function_node.kind() {
+    let name = match function_node.kind() {
         "identifier" => Some(node_text(function_node, source)),
         "scoped_identifier" => {
             // For `path::segment::name(...)`, extract the final segment.
@@ -388,14 +397,14 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<String> {
                 .last()
                 .map(|n| node_text(n, source))
         }
-        "field_expression" => {
-            // For `self.method()` or `obj.method()`, extract the field name.
-            function_node
-                .child_by_field_name("field")
-                .map(|n| node_text(n, source))
-        }
+        // Skip field_expression (`self.foo()`, `obj.method()`) and all other
+        // forms — the receiver object type is not known at parse time, so
+        // linking would produce false positives (e.g., every `.clone()` call
+        // would become an edge).
         _ => None,
-    }
+    };
+    // Filter out generic method names that produce noise edges.
+    name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
 }
 
 /// Extract the function signature (everything before the body block).
@@ -537,8 +546,8 @@ impl Foo {
                 _ => None,
             })
             .collect();
-        assert!(func_names.contains(&"bar"));
-        assert!(func_names.contains(&"baz"));
+        assert!(func_names.contains(&"Foo::bar"));
+        assert!(func_names.contains(&"Foo::baz"));
     }
 
     #[test]
