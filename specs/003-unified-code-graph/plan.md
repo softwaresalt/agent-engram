@@ -177,4 +177,49 @@ tests/
 
 ## Complexity Tracking
 
-No constitution violations detected. Table left empty.
+No constitution violations detected in Phases 0–10. Phase 11 violations tracked below.
+
+| Task | Principle | Violation | Justification | Simpler Alternative Rejected |
+|------|-----------|-----------|---------------|------------------------------|
+| T078 (FR-161) | II MCP Fidelity | FR-120 (SSE progress events) deferred | No SSE broadcast infrastructure exists; adding it is out of scope for remediation | Implementing full SSE broadcast |
+| T079 (FR-162) | IX Simplicity | FR-119 (parallel parsing) deferred | Sequential parsing already meets perf targets for <1000-file workspaces | Adding `futures::buffered` pipeline |
+| T095 (FR-185) | III Test-First | FR-154 (startup smoke test) deferred | Embeddings feature still behind flag; existing contract test covers error shape | Adding runtime model probe at startup |
+
+---
+
+## Phase 11: Adversarial Remediation — Implementation Plan
+
+*Added 2026-02-28. Addresses 40 findings from Final Adversarial Code Review.*
+
+### Overview
+
+Phase 11 fixes all CRITICAL and HIGH severity findings (17 mandatory tasks) and all MEDIUM and LOW findings (18 should-fix tasks) discovered during adversarial review. Three CRITICAL/HIGH items are documented as deferred-with-ADR rather than implemented in code (FR-161, FR-162, FR-185).
+
+### Dependencies
+
+* Depends on: Phases 0–10 (all complete)
+* Blocked by: None
+* Enables: Feature branch merge to `main`
+
+### Sub-Phases
+
+| Sub-Phase | Name | Tasks | Focus |
+|-----------|------|-------|-------|
+| 11a | Correctness Fixes (CRITICAL) | T076–T079 | Embedding write-back, ADRs for deferred FRs |
+| 11b | Data Integrity (HIGH) | T080–T092 | Body re-derivation, discover_files, path safety, error codes, guards |
+| 11c | Performance & Queries (MEDIUM) | T093–T099 | Batch queries, vector search, N+1, upsert atomics |
+| 11d | Edge & Linking Fixes (MEDIUM) | T100–T105 | Import edges, call edges, method resolution, concerns relinking |
+| 11e | Cleanup & Documentation (LOW) | T106–T111 | Dead params, doc comments, ADRs, error code gap |
+
+### Constitution Check — Phase 11
+
+| # | Principle | Status | Phase 11 Evidence |
+|---|-----------|--------|-------------------|
+| I | Rust Safety First | PASS | All fixes use `Result`/`EngramError`; char-boundary-safe truncation (FR-181); no unsafe |
+| II | MCP Protocol Fidelity | PASS (with deferral) | FR-161/FR-162 deferred with ADRs; all tools remain unconditionally visible |
+| III | Test-First Development | PASS | Each task includes test-first criteria; new tests added before implementation |
+| IV | Workspace Isolation | PASS | FR-169 adds symlink protection; FR-176 prevents absolute path leaks |
+| V | Git-Friendly Persistence | PASS | FR-177 eliminates zero-vector bloat in JSONL; FR-163 handles body re-derivation |
+| VI | Single-Binary Simplicity | PASS | No new dependencies added; all fixes to existing crate |
+| VII | Observability | PASS | FR-179 adds dropped-edge counters; FR-174 adds hydration warnings |
+| VIII | Error Handling | PASS | FR-172 fixes wrong error code; FR-199 fixes mismatched error mapping |

@@ -382,4 +382,242 @@ US2: Map Code (Phase 4)  ║  US3: Sync (Phase 5)  ║  US4: Linking (Phase 6)  
 | Phase 8: US6 Impact | 4 | 1 |
 | Phase 9: US7 Persist | 8 | 2 |
 | Phase 10: Polish | 5 | 3 |
-| **Total** | **75** | **32** |
+| Phase 11: Adversarial Remediation | 36 | 12 |
+| **Total** | **111** | **44** |
+
+---
+
+## Phase 11: Adversarial Remediation
+
+*Added 2026-02-28. 36 tasks across 5 sub-phases. CRITICAL+HIGH = mandatory; MEDIUM+LOW = should-fix.*
+
+### Phase 11a: Correctness Fixes (CRITICAL) — 4 tasks
+
+- [ ] **T076** — Implement embedding write-back in `index_workspace` (FR-160)
+  - Update `code_graph.rs:340-355` to persist `embed_texts()` results back to function/class/interface records
+  - Remove dead `embed_indices` vector (FR-171 / U-012)
+  - Write test: index a small workspace → verify `embedding` field is non-zero for all symbols
+  - Write test: index with `embeddings` feature disabled → verify `embedding` field is empty vec
+  - **Files**: `src/services/code_graph.rs`, `src/db/queries.rs`
+
+- [ ] **T077** — Implement embedding write-back in `sync_workspace` (FR-160)
+  - Mirror T076 logic for newly-added and modified files during sync
+  - Write test: sync after adding a new file → new symbol has non-zero embedding
+  - **Files**: `src/services/code_graph.rs`
+
+- [ ] **T078** — Write ADR for deferred SSE progress events (FR-161 / U-002)
+  - Create `docs/adrs/0011-deferred-sse-progress-events.md`
+  - Document: current behavior, spec commitment (FR-120), deferral rationale, resolution path
+  - **Files**: `docs/adrs/0011-deferred-sse-progress-events.md`
+
+- [ ] **T079** — Write ADR for deferred parallel parsing (FR-162 / U-003)
+  - Create `docs/adrs/0012-deferred-parallel-parsing.md`
+  - Document: current behavior, spec commitment (FR-119), deferral rationale, resolution path
+  - Ensure `parse_concurrency` config field remains in schema
+  - **Files**: `docs/adrs/0012-deferred-parallel-parsing.md`, `src/models/config.rs`
+
+### Phase 11b: Data Integrity (HIGH) — 13 tasks
+
+- [ ] **T080** — Implement body re-derivation on hydration (FR-163 / U-004)
+  - After JSONL hydration, re-parse each code_file via tree-sitter to populate `body` fields
+  - Match `content_hash` to detect changed files; mark changed files for re-index
+  - Discard symbols from deleted files
+  - Write test: hydrate → verify `body` is populated; modify source → verify re-index flag set
+  - **Files**: `src/services/hydration.rs`, `src/services/parsing.rs`
+
+- [ ] **T081** — Fix `discover_files` exclude pattern accumulation (FR-164 / U-005)
+  - Replace break-after-first-pattern with full `OverrideBuilder` accumulation
+  - Write test: 3 exclude patterns → all 3 applied
+  - **Files**: `src/services/code_graph.rs`
+
+- [ ] **T082** — Fix `map_code` multi-match behavior (FR-165 / U-006)
+  - Return disambiguation array instead of BFS on matches[0]
+  - Write test: workspace with 2 same-named functions → response has `matches` array, `root: null`
+  - **Files**: `src/tools/read.rs`
+
+- [ ] **T083** — Deduplicate `connect_db` calls in 4 handlers (FR-166 / U-007)
+  - Single `connect_db()` per handler, clone for query structs
+  - Affected: `get_active_context`, `link_task_to_code`, `unlink_task_from_code`, `impact_analysis`
+  - **Files**: `src/tools/read.rs`, `src/tools/write.rs`
+
+- [ ] **T084** — Fix `discover_files` symlink following (FR-169 / U-010)
+  - Add `.follow_links(false)` to `WalkBuilder`
+  - Write test: create symlink outside workspace → not traversed
+  - **Files**: `src/services/code_graph.rs`
+
+- [ ] **T085** — Add `is_indexing()` guard to `map_code` and `impact_analysis` (FR-170 / U-011)
+  - Return error 7003 when indexing is active
+  - Write test: set indexing flag → call map_code → get 7003 error
+  - **Files**: `src/tools/read.rs`
+
+- [ ] **T086** — Fix `list_symbols` error code for empty graph (FR-172 / U-013)
+  - Return empty array on no-filter empty graph; use 7004 only for name_prefix miss
+  - Write test: empty graph + no filter → Ok with empty symbols; empty graph + filter → 7004
+  - **Files**: `src/tools/read.rs`
+
+- [ ] **T087** — Implement sync context note (FR-173 / U-014)
+  - Insert Context record with sync summary after successful sync_workspace
+  - Write test: sync → verify context record exists with correct summary fields
+  - **Files**: `src/tools/write.rs`, `src/db/queries.rs`
+
+- [ ] **T088** — Implement hydration fallback tracking (FR-174 / U-015)
+  - Track code_file paths with parse-failed lines; add `hydration_warnings` to result
+  - Write test: JSONL with corrupt line → hydration completes with warning; next sync re-indexes
+  - **Files**: `src/services/hydration.rs`
+
+- [ ] **T089** — Clamp `map_code` depth lower-bound (FR-175 / U-016)
+  - Change `.min(max)` to `.clamp(1, max)`
+  - Write test: depth=0 → response has depth=1
+  - **Files**: `src/tools/read.rs`
+
+- [ ] **T090** — Fix `strip_prefix` fallback path leak (FR-176 / U-017)
+  - Replace `unwrap_or(file_path)` with match+skip+warn
+  - Write test: file outside workspace root → skipped, warning logged
+  - **Files**: `src/services/code_graph.rs`
+
+- [ ] **T091** — Fix `IndexResult` serialization error code (FR-199 / U-040)
+  - Map to `SystemError::DatabaseError` not `InvalidParams`
+  - Write test: force serialization failure → verify error code is 5001 not 5005
+  - **Files**: `src/tools/write.rs`, `src/errors/codes.rs`
+
+- [ ] **T092** — Remove dead `embed_indices` code (FR-171 / U-012)
+  - Remove vector construction and all references after T076 integrates write-back
+  - This task is performed as cleanup after T076; no separate test needed beyond T076's
+  - **Files**: `src/services/code_graph.rs`
+
+### Phase 11c: Performance & Queries (MEDIUM) — 7 tasks
+
+- [ ] **T093** — Implement server-side vector search for `unified_search` (FR-167 / U-008)
+  - Add `vector_search_contexts()` and `vector_search_specs()` to Queries
+  - Replace full-table-scan + in-memory sort with DB-side K-NN or LIMIT query
+  - Write test: 100 contexts → only top-K returned; no full heap load
+  - **Files**: `src/db/queries.rs`, `src/tools/read.rs`
+
+- [ ] **T094** — Implement COUNT queries for `get_workspace_status` (FR-168 / U-009)
+  - Add `count_code_files()`, `count_functions()`, `count_classes()`, `count_interfaces()`, `count_code_edges()`
+  - Replace 5 full-table loads with COUNT GROUP ALL
+  - Write test: workspace with known counts → status matches
+  - **Files**: `src/db/queries.rs`, `src/tools/lifecycle.rs`
+
+- [ ] **T095** — Write ADR for deferred startup smoke test (FR-185 / U-026)
+  - Create `docs/adrs/0014-deferred-startup-smoke-test.md`
+  - **Files**: `docs/adrs/0014-deferred-startup-smoke-test.md`
+
+- [ ] **T096** — Batch concerns query for `get_active_context` (FR-182 / U-023)
+  - Add `list_concerns_for_tasks(ids: &[&str])` to CodeGraphQueries
+  - Replace N per-task queries with single batch
+  - Write test: 3 tasks with concerns → single query returns all
+  - **Files**: `src/db/queries.rs`, `src/tools/read.rs`
+
+- [ ] **T097** — Atomic upsert for `link_task_to_code` (FR-183 / U-024)
+  - Replace EXISTS-then-CREATE with RELATE … ON DUPLICATE KEY IGNORE
+  - Write test: concurrent link calls → no duplicate edges, no errors
+  - **Files**: `src/tools/write.rs`, `src/db/queries.rs`
+
+- [ ] **T098** — Add `ensure_workspace` guard to `get_active_context` (FR-184 / U-025)
+  - Add missing guard at handler entry
+  - Write test: call without workspace → 1001 error
+  - **Files**: `src/tools/read.rs`
+
+- [ ] **T099** — Add keyword scoring for tasks in `unified_search` (FR-189 / U-030)
+  - Add term-match scoring on task `title` + `description` alongside cosine
+  - Write test: search for task keyword → task appears in results even with zero embedding
+  - **Files**: `src/tools/read.rs`
+
+### Phase 11d: Edge & Linking Fixes (MEDIUM) — 6 tasks
+
+- [ ] **T100** — Handle import edges during indexing (FR-178 / U-019)
+  - Either persist via `create_imports_edge()` or log dropped count with ADR
+  - Write test: file with `use` statements → import edges persisted (or dropped with count)
+  - **Files**: `src/services/code_graph.rs`, `src/db/queries.rs`
+
+- [ ] **T101** — Track cross-file dropped edges count (FR-179 / U-020)
+  - Add `cross_file_edges_dropped: usize` to IndexResult and SyncResult
+  - Write ADR: `docs/adrs/0013-cross-file-call-edges.md`
+  - **Files**: `src/services/code_graph.rs`, `docs/adrs/0013-cross-file-call-edges.md`
+
+- [ ] **T102** — Fix method call false positives in `extract_calls_from_body` (FR-180 / U-021)
+  - Skip `field_expression` call targets; only emit edges for `identifier` and `scoped_identifier`
+  - Add blocklist for `new`, `default`, `into`, `clone`, `from`
+  - Write test: code with method calls → no false `Calls` edges
+  - **Files**: `src/services/parsing.rs`
+
+- [ ] **T103** — Normalize `task_id` prefix in `link_task_to_code` (FR-186 / U-027)
+  - Strip `"task:"` prefix if present before DB lookup
+  - Write test: `link_task_to_code("task:abc")` and `link_task_to_code("abc")` both succeed
+  - **Files**: `src/tools/write.rs`
+
+- [ ] **T104** — Explicit concerns edge deletion in `sync_workspace` (FR-190 / U-031)
+  - DELETE old concerns edges before CREATE new ones during relinking
+  - Write test: relink concerns → old edges gone, new edges present
+  - **Files**: `src/services/code_graph.rs`, `src/db/queries.rs`
+
+- [ ] **T105** — Qualify `find_function_id` key for impl methods (FR-191 / U-032)
+  - Use `"{impl_type}::{func_name}"` for methods in impl blocks
+  - Write test: two methods named `new` in different impls → distinct IDs
+  - **Files**: `src/services/parsing.rs`
+
+### Phase 11e: Cleanup & Documentation (LOW) — 6 tasks
+
+- [ ] **T106** — Remove dead `brief` and `fields` from `MapCodeParams` (FR-192 / U-033)
+  - Remove fields; return `InvalidParams` if caller supplies them
+  - Update MCP tool contract docs
+  - **Files**: `src/tools/read.rs`, `specs/003-unified-code-graph/contracts/`
+
+- [ ] **T107** — Fix JSONL zero-vector serialization (FR-177 / U-018)
+  - Serialize `embedding` as `null` when all-zeros or embeddings feature disabled
+  - Hydration: treat `null`/missing embedding as "needs re-embedding"
+  - Write test: dehydrate with zero vec → JSONL has `null`; hydrate `null` → marked for re-embed
+  - **Files**: `src/services/dehydration.rs`, `src/services/hydration.rs`
+
+- [ ] **T108** — Fix `truncate_summary` char boundary safety (FR-181 / U-022)
+  - Replace `&text[..N]` with char-boundary-safe indexing
+  - Write test: UTF-8 multi-byte string → no panic; truncated at valid boundary
+  - **Files**: `src/tools/read.rs`, `src/services/hydration.rs`
+
+- [ ] **T109** — Add `max_nodes` parameter to `impact_analysis` (FR-187 / U-028)
+  - Add `max_nodes` to `ImpactAnalysisParams` (clamped 1..=100)
+  - Write test: impact_analysis with max_nodes=5 → at most 5 nodes returned
+  - **Files**: `src/tools/read.rs`
+
+- [ ] **T110** — Tier-2 summary: add body preview when no docstring (FR-188 / U-029)
+  - Include first 5 lines / 256 chars as preview fallback
+  - Write test: function with no docstring → summary includes body preview
+  - **Files**: `src/services/code_graph.rs`
+
+- [ ] **T111** — Documentation & error-code cleanups (FR-195, FR-196, FR-197, FR-198)
+  - Add error code 7005 gap comment in `errors/codes.rs`
+  - Fix `unified_search` doc comment FR citations
+  - Add doc comment to `max_file_size_bytes` clarifying byte semantics
+  - Correct `unified_search` doc comment to cite FR-131/FR-157
+  - **Files**: `src/errors/codes.rs`, `src/tools/read.rs`, `src/models/config.rs`
+
+### Phase 11 Task Dependencies
+
+```
+T076 (embed write-back index) ──→ T077 (embed write-back sync)
+T076 ──→ T092 (remove dead embed_indices)
+T076 ──→ T093 (vector search needs real embeddings)
+T076 ──→ T099 (task keyword scoring meaningful only with real embeddings)
+T076 ──→ T107 (JSONL null-vector depends on knowing what "real" vs "zero" means)
+T080 (body re-derivation) ──→ T110 (body preview needs body populated)
+T081 (exclude patterns) ──∥── T084 (symlinks) — parallel, both in discover_files
+T101 (cross-file ADR) ──∥── T102 (method call fix) — parallel
+T078, T079, T095 — ADR tasks, independent of all code tasks
+```
+
+### Phase 11 Parallelism
+
+| Parallel Group | Tasks | Max Parallel |
+|----------------|-------|-------------|
+| 11a: ADRs | T078, T079 | 2 |
+| 11a: Embed write-back | T076 → T077 | 1 (sequential) |
+| 11b: discover_files fixes | T081, T084 | 2 |
+| 11b: Tool guards & codes | T085, T086, T089, T091 | 4 |
+| 11b: Data integrity | T080, T088, T090 | 3 |
+| 11b: Handler fixes | T082, T083, T087 | 3 |
+| 11c: Query perf | T093, T094, T096 | 3 |
+| 11c: Other | T095, T097, T098, T099 | 4 |
+| 11d: Edges | T100, T101, T102 | 3 |
+| 11d: Linking | T103, T104, T105 | 3 |
+| 11e: All | T106–T111 | 6 |

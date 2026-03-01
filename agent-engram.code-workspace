@@ -56,7 +56,8 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "cargo test": true
+        "cargo test": true,
+        "Get-Item": true
     },
 	"powershell.cwd": "monocoque-agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,

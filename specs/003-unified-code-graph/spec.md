@@ -422,3 +422,109 @@ The server is being renamed from "engram" (also appearing as `engram`, `engram`,
 * Embedding model fine-tuning for code-specific semantics
 * Dynamic model selection or per-node model routing (all nodes use the same model)
 * Token-level streaming or partial embedding for nodes near the token limit
+
+---
+
+## Phase 11: Adversarial Remediation
+
+*Added 2026-02-28 after Final Adversarial Code Review (3 reviewers, 40 deduplicated findings).*
+
+### Context
+
+Three parallel adversarial reviewers (Correctness/Security, Technical Quality/Architecture, Logical Consistency/Completeness) each produced 25 findings against the completed Phase 0–10 implementation. After dedup and synthesis: **3 CRITICAL, 14 HIGH, 15 MEDIUM, 8 LOW** unique findings. This section adds formal requirements for all findings that require code changes.
+
+### Remediation Requirements — CRITICAL (Mandatory)
+
+* **FR-160**: System MUST persist embedding vectors returned by `embed_texts()` back to their corresponding function, class, and interface records in SurrealDB. The current implementation generates embeddings but discards the returned vectors (TODO at `code_graph.rs:340`). Every symbol record MUST have its `embedding` field updated with the actual model output. When the `embeddings` feature flag is disabled, symbols MUST be stored with an empty `Vec<f32>` (not a zero-filled vector). **Fixes U-001.**
+
+* **FR-161**: *(DEFERRED — documented with ADR)* FR-120 (SSE progress events during indexing) is deferred to a future version. An ADR MUST be written at `docs/adrs/0011-deferred-sse-progress-events.md` documenting: the current behavior (tracing spans only), the spec commitment, the deferral rationale (no SSE broadcast infrastructure in current architecture), and the planned resolution path. The existing tracing spans MUST remain for observability. **Defers U-002.**
+
+* **FR-162**: *(DEFERRED — documented with ADR)* FR-119 (parallel file parsing via `parse_concurrency` config) is deferred to a future version. An ADR MUST be written at `docs/adrs/0012-deferred-parallel-parsing.md` documenting: the current behavior (sequential processing with `spawn_blocking` for CPU-bound parse step), the spec commitment, the deferral rationale (correctness-first implementation, sequential sufficient for workspaces under 1000 files), and the planned resolution path (`futures::stream::buffered` or `JoinSet`). The `parse_concurrency` config field MUST remain in the schema for forward compatibility. **Defers U-003.**
+
+### Remediation Requirements — HIGH (Mandatory)
+
+* **FR-163**: On hydration from `.engram/code-graph/nodes.jsonl`, the system MUST re-derive source bodies by reading each referenced source file from disk and re-parsing via tree-sitter. For files whose `content_hash` matches the JSONL metadata, body fields MUST be populated from the parsed AST without triggering re-embedding. For files whose hash has changed, the system MUST mark them for re-indexing on the next `sync_workspace` call. Symbols from deleted files MUST be discarded. **Fixes U-004.**
+
+* **FR-164**: `discover_files` MUST apply ALL entries in `config.exclude_patterns`, not just the first. The `OverrideBuilder` MUST accumulate all glob patterns before calling `.build()` once. **Fixes U-005.**
+
+* **FR-165**: When `map_code` finds multiple symbols matching the same name, the response MUST NOT run BFS on any match. Instead it MUST return `"root": null`, `"neighbors": []`, `"edges": []`, and a `"matches"` array listing all matching symbols with their `file_path`, `node_type`, and `line_start` so the caller can disambiguate. **Fixes U-006.**
+
+* **FR-166**: Tool handlers that require both `Queries` and `CodeGraphQueries` MUST create a single `Db` handle via one `connect_db()` call and pass `db.clone()` to each query struct. Affected handlers: `get_active_context`, `link_task_to_code`, `unlink_task_from_code`, `impact_analysis`. **Fixes U-007.**
+
+* **FR-167**: `unified_search` task-region queries MUST use server-side vector search (SurrealDB `<|D|>` K-nearest-neighbour operator or equivalent) with a `LIMIT` clause, instead of loading all records into Rust heap memory. A `vector_search_contexts(embedding, limit)` and `vector_search_specs(embedding, limit)` query method MUST be added to `Queries`. **Fixes U-008.**
+
+* **FR-168**: `get_workspace_status` MUST use dedicated `SELECT count() FROM {table} GROUP ALL` queries for code graph counts instead of loading full record sets. Query methods: `count_code_files()`, `count_functions()`, `count_classes()`, `count_interfaces()`, `count_code_edges()`. **Fixes U-009.**
+
+* **FR-169**: `discover_files` MUST NOT follow symlinks. Add `.follow_links(false)` to the `WalkBuilder` configuration. This enforces Principle IV workspace isolation. **Fixes U-010.**
+
+* **FR-170**: `map_code` and `impact_analysis` MUST check `state.is_indexing()` at entry and return error 7003 (`IndexInProgress`) if an indexing or sync operation is active, consistent with the existing guard pattern in `list_symbols`. **Fixes U-011.**
+
+* **FR-171**: Remove the dead `embed_indices` vector from `index_workspace` and `sync_workspace`. The embedding write-back (FR-160) MUST use symbol IDs directly from the upsert loop, not a separate index-tracking vector. **Fixes U-012.**
+
+* **FR-172**: `list_symbols` on an empty graph with no filters MUST return `Ok(json!({"symbols": [], "total_count": 0, "has_more": false}))` instead of error 7004. Error 7004 (`SymbolNotFound`) MUST only be returned when a specific `name_prefix` filter matches no results. **Fixes U-013.**
+
+* **FR-173**: `sync_workspace` MUST insert a `Context` record into SurrealDB containing the sync summary (files added, modified, deleted, unchanged, concerns relinked, concerns orphaned) after a successful sync. This satisfies FR-125. **Fixes U-014.**
+
+* **FR-174**: On JSONL hydration, when lines fail to parse, the system MUST track affected `code_file` paths. After hydration completes, any `code_file` with missing symbols (due to skipped lines) MUST be flagged for re-indexing. The next `sync_workspace` or explicit `index_workspace` call MUST re-index those files. A `hydration_warnings` field MUST be added to the hydration result. **Fixes U-015.**
+
+* **FR-175**: `map_code` MUST clamp the `depth` parameter using `.clamp(1, max)` (not `.min(max)`), matching the pattern already used in `impact_analysis`. This ensures depth=0 is never accepted. **Fixes U-016.**
+
+* **FR-176**: When `strip_prefix(ws_path)` fails for a file path, the system MUST skip the file and log a warning. It MUST NOT fall back to the absolute path. The `unwrap_or(file_path)` pattern MUST be replaced with a `match` that pushes a `FileError` and continues. **Fixes U-017.**
+
+### Remediation Requirements — MEDIUM (Should-Fix)
+
+* **FR-177**: JSONL serialization MUST omit the `embedding` field (serialize as `null`) when the vector is all-zeros or when the `embeddings` feature flag is disabled. Hydration MUST treat a `null` or missing `embedding` field as "needs re-embedding" rather than loading zeros. **Fixes U-018.**
+
+* **FR-178**: `ExtractedEdge::Imports` edges MUST either be persisted to the database via `create_imports_edge()` during indexing, or the match arm MUST log a `debug!()` message counting dropped imports and an ADR MUST document the deferral. **Fixes U-019.**
+
+* **FR-179**: `index_workspace` and `sync_workspace` MUST track a `cross_file_edges_dropped: usize` counter for unresolved `Calls` edges. This count MUST appear in the `IndexResult`/`SyncResult` response. An ADR at `docs/adrs/0013-cross-file-call-edges.md` MUST document the limitation. **Fixes U-020.**
+
+* **FR-180**: `extract_calls_from_body` MUST NOT emit `Calls` edges for `field_expression` call targets (method calls) since receiver type resolution is not available. Only `identifier` and `scoped_identifier` targets produce call edges. A configurable blocklist of common names (`new`, `default`, `into`, `clone`, `from`) MAY be added to reduce false positives. **Fixes U-021.**
+
+* **FR-181**: `truncate_summary` and all string-slicing operations on user/source content MUST use char-boundary-safe truncation. Replace `&text[..N]` with `text.char_indices().nth(N).map_or(text.len(), |(i, _)| i)` or equivalent. Affected locations: `tools/read.rs:truncate_summary`, `services/hydration.rs:line_preview`. **Fixes U-022.**
+
+* **FR-182**: `get_active_context` MUST use a batch query `list_concerns_for_tasks(ids: &[&str])` instead of per-task sequential queries. **Fixes U-023.**
+
+* **FR-183**: `link_task_to_code` MUST use an atomic upsert (SurrealDB `RELATE … SET … ON DUPLICATE KEY IGNORE` or equivalent) instead of a read-then-write pattern, eliminating the TOCTOU race for concurrent requests. **Fixes U-024.**
+
+* **FR-184**: `get_active_context` MUST call `ensure_workspace(&state).await?` at entry, consistent with all other tool handlers. **Fixes U-025.**
+
+* **FR-185**: *(DEFERRED — documented with ADR)* FR-154 startup model smoke test is deferred. An ADR MUST be written at `docs/adrs/0014-deferred-startup-smoke-test.md`. The existing contract test (`t075`) validates the error shape; runtime startup probing is deferred until the `embeddings` feature is stabilized. **Defers U-026.**
+
+* **FR-186**: `link_task_to_code` MUST normalize the `task_id` parameter by stripping the `"task:"` prefix if present, matching the pattern used throughout `tools/write.rs`. **Fixes U-027.**
+
+* **FR-187**: `impact_analysis` MUST accept a `max_nodes` parameter (clamped `1..=100`) in `ImpactAnalysisParams`, matching FR-149's specification that both `depth` and `max_nodes` are caller-supplied. **Fixes U-028.**
+
+* **FR-188**: Tier-2 summary generation MUST include an N-line body preview (first 5 lines or 256 characters, whichever is shorter) when no docstring is available. Format: `"{signature}\n/* {preview} */"`. **Fixes U-029.**
+
+* **FR-189**: `unified_search` task-region MUST include a keyword-score component (simple term-match on task `title` + `description`) so that tasks without embeddings still surface in results. Pure cosine-only scoring for tasks is insufficient. **Fixes U-030.**
+
+* **FR-190**: Concerns edge relinking in `sync_workspace` MUST explicitly delete old concerns edges before creating new ones, rather than relying on implicit SurrealDB cascade deletion. **Fixes U-031.**
+
+* **FR-191**: `find_function_id` MUST use a qualified key `"{impl_type}::{func_name}"` for methods inside `impl` blocks to avoid name collisions between identically-named methods in different impl blocks within the same file. **Fixes U-032.**
+
+### Remediation Requirements — LOW (Should-Fix)
+
+* **FR-192**: Remove dead `brief` and `fields` parameters from `MapCodeParams`. Return `InvalidParams` error if a caller supplies them. Update MCP tool contract documentation to remove these fields. **Fixes U-033.**
+
+* **FR-193**: *(INFORMATIONAL)* Tree-sitter `Parser::new()` per `spawn_blocking` call is acceptable for v0. Thread-local parser pooling MAY be added as a performance optimization in a future version. No code change required. **Acknowledges U-034.**
+
+* **FR-194**: *(INFORMATIONAL)* Random UUID symbol IDs with hash-resilient relinking is the current design. Deterministic IDs based on `(file_path, name, line_start)` MAY be explored in a future version to simplify relinking. No code change required for v0. **Acknowledges U-035.**
+
+* **FR-195**: An ADR MUST be written at `docs/adrs/0013-cross-file-call-edges.md` (shared with FR-179) documenting the limitation that import edges and cross-file call edges are intentionally deferred. **Fixes U-036.**
+
+* **FR-196**: Add a code comment in `errors/codes.rs` at the 7004/7006 gap: `// 7005 RETIRED — was TraversalDepthExceeded; removed per FR-149; MUST NOT be reused`. **Fixes U-037.**
+
+* **FR-197**: Correct the `unified_search` doc comment to cite FR-131 and FR-157 (not FR-128). **Fixes U-038.**
+
+* **FR-198**: Rename the config field `max_file_size_bytes` to document that it measures in-memory decoded UTF-8 byte count, not on-disk file size. Add a doc comment: `/// Maximum decoded source size in bytes (not disk file size)`. **Fixes U-039.**
+
+* **FR-199**: Map `IndexResult` serialization failures to `SystemError::DatabaseError` (not `InvalidParams`). **Fixes U-040.**
+
+### Success Criteria — Phase 11 Additions
+
+* **SC-117**: After FR-160 (embedding write-back), `unified_search("billing")` on a workspace containing billing-related code MUST return at least one code-region result with cosine similarity > 0.0.
+* **SC-118**: After FR-163 (body re-derivation), a daemon restart followed by `map_code("dispatch")` MUST return a non-empty `body` field for the root symbol without requiring a manual re-index.
+* **SC-119**: After FR-164 and FR-169, `discover_files` on a workspace with 3 exclude patterns and 1 symlink pointing outside the workspace MUST: apply all 3 patterns AND not traverse the symlink.
+* **SC-120**: After FR-175, `map_code("foo", depth: 0)` MUST return a response with `depth: 1` (clamped), not an empty neighborhood.
+* **SC-121**: After FR-167, `unified_search` on a workspace with 10,000 context records MUST complete within 200ms (p95) without loading all records into Rust heap memory.

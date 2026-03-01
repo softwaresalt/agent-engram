@@ -27,6 +27,141 @@ Implements a single phase from a feature specification's task plan. The workflow
 * The project compiles before starting (`cargo check` passes)
 * The `.github/copilot-instructions.md` constitution and coding standards are accessible
 
+## Remote Operator Integration (agent-intercom)
+
+When the agent-intercom MCP server is reachable, all file modifications and status updates route through it so the remote operator can follow progress and approve changes via Slack.
+
+### Availability Detection
+
+At the start of every phase, call `ping` with a brief status message. If the call succeeds, agent-intercom is active — follow all remote workflow rules below. If it fails or times out, fall back to direct file writes and local-only operation.
+
+### Status Broadcasting
+
+Use `broadcast` (non-blocking) and `ping` (progress snapshots) throughout the phase to keep the operator informed. These calls never block the agent.
+
+| When | Tool | Level | Message Pattern |
+|---|---|---|---|
+| Phase start | `broadcast` | `info` | `[BUILD] Starting phase {N}: {title} — {task_count} tasks` |
+| Before each task | `broadcast` | `info` | `[TASK] {task_id}: {task_description}` |
+| File created | `broadcast` | `info` | `[FILE] created: {file_path}` — include full file content in body |
+| File modified | `broadcast` | `info` | `[FILE] modified: {file_path}` — include unified diff in body |
+| After each task passes | `broadcast` | `success` | `[TASK] {task_id}: complete` |
+| Task failure / retry | `broadcast` | `warning` | `[TASK] {task_id}: failed — {reason}, retrying` |
+| After test suite run | `ping` | — | Include `progress_snapshot` with per-task `done`/`in_progress`/`pending` |
+| Gate check result | `broadcast` | `success` or `error` | `[GATE] {gate_name}: PASS` or `FAIL — {details}` |
+| Architectural decision | `broadcast` | `info` | `[ADR] {title} — {one-line rationale}` |
+| Adversarial review complete | `broadcast` | `info` | `[REVIEW] Adversarial code review complete — {critical} critical, {high} high, {medium} medium, {low} low findings` |
+| Adversarial fix applied | `broadcast` | `info` | `[FIX] {finding_id}: {file_path}` — include unified diff in body |
+| Adversarial fixes complete | `broadcast` | `success` | `[REVIEW] Fixes applied — {applied} fixes, {deferred} deferred, compilation {status}` |
+| Phase complete | `broadcast` | `success` | `[BUILD] Phase {N} complete — {tasks_done}/{tasks_total} tasks, commit {short_hash}` |
+
+Post the first `broadcast` of each phase as a new top-level message and capture the returned `ts` value. Use that `ts` as the `thread_ts` parameter for all subsequent messages in the same phase to keep them grouped in a single Slack thread.
+
+### File Change Approval Workflow
+
+When agent-intercom is active, file creation and modification may proceed with direct writes. The three-step approval workflow is reserved for **destructive operations only** — file deletion, directory removal, or any operation that permanently removes content from the filesystem.
+
+#### Destructive Operations (approval required)
+
+Before deleting a file, removing a directory, or performing any other destructive filesystem operation, route the change through the approval workflow:
+
+1. **`auto_check`** — Call with `tool_name` set to the destructive action (e.g., `"delete_file"`, `"remove_directory"`) and `context: { "file_path": "<relative_path>", "risk_level": "<low|high|critical>" }`. If `auto_approved: true`, execute the operation directly and skip steps 2–3.
+2. **`check_clearance`** — Submit the proposal with a `title` describing the deletion, `diff` listing the files or directories to be removed, `file_path`, `description`, appropriate `risk_level`, and curated `snippets` (see Curating Code Snippets below). This call **blocks** until the operator responds.
+3. **`check_diff`** — After receiving `status: "approved"`, call with the returned `request_id` to execute the deletion.
+
+Response handling:
+* `approved` → call `check_diff` to execute, then `broadcast` confirmation at `success` level.
+* `rejected` → `broadcast` the rejection reason at `warning` level, adapt the approach based on the operator's `reason` field.
+* `timeout` → treat as rejection. `broadcast` at `warning` level and do not retry automatically.
+
+Risk level conventions:
+* `low` — removing generated files, test fixtures, temporary artifacts
+* `high` — removing configuration files, security modules (`diff/path_safety.rs`, `policy/`), Slack event handlers
+* `critical` — removing database schema files (`persistence/schema.rs`), authentication/authorization code, CI/CD pipeline files
+
+**One deletion per approval.** Submit each destructive operation as a separate `check_clearance` call.
+
+#### Non-Destructive Operations (no approval needed)
+
+File creation, modification, and all other non-destructive filesystem writes proceed directly without calling `check_clearance`. After each file write, call `broadcast` at `info` level with:
+* `[FILE] {action}: {file_path}` as the message prefix, where `action` is `created` or `modified`.
+* Include the unified diff for modifications or the full file content for new files in the broadcast message body so the operator can follow changes in real time.
+
+These broadcasts are non-blocking and do not require operator response.
+
+#### Curating Code Snippets for Operator Review
+
+When calling `check_clearance`, always populate the **`snippets`** array with the most meaningful excerpts from the file being reviewed. The Slack UI renders snippets as inline, syntax-highlighted code blocks, giving the operator an immediately readable view without needing to open any attachment. Uploading the full file is a server-side fallback for when `snippets` is omitted — avoid it, because Slack desktop labels complex source files as "Binary".
+
+**What to include in `snippets`:**
+
+| Priority | Include when… | Example label |
+|---|---|---|
+| **Always** | The diff changes an existing function or method | `"handle() — main MCP tool entry point"` |
+| **Always** | A public API signature changes (fn, struct, trait) | `"ApprovalRequest struct — field layout"` |
+| **High** | Security-relevant code in scope of the change | `"path_safety::validate_path — traversal check"` |
+| **High** | The surrounding context needed to understand the diff | `"fn build_approval_blocks — full context"` |
+| **Optional** | Important callers of the changed code | `"SlackService::enqueue — caller site"` |
+| **Skip** | Boilerplate, derives, trivial getters, auto-generated code | — |
+
+**Snippet curation algorithm:**
+
+1. Read the target file before writing your change.
+2. Identify the chunk(s) you are modifying (functions, structs, trait impls).
+3. For each chunk: extract the complete item — from its `pub`/`fn`/`struct`/`impl` line to its closing `}` — not just the changed lines. Context is what makes a diff reviewable.
+4. Limit each snippet to the natural boundary of the item (don't truncate mid-function). The server truncates at 2,600 chars with a visible notice if a snippet is too long.
+5. Supply 1–4 snippets per approval. More than 4 risks overwhelming the operator; fewer than 1 defeats the purpose.
+6. Set `language` to the markdown code-fence label matching the file extension (e.g. `"rust"`, `"toml"`, `"typescript"`). Use `file_extension_language` conventions: `.rs` → `rust`, `.toml` → `toml`, `.json` → `json`, `.ts` → `typescript`, `.py` → `python`, etc.
+
+**Function-boundary scoping rule:**
+
+Each snippet must span *one complete function or method* — from its signature (including `pub`, `async`, generics) to its closing delimiter. If a change touches a single line inside a 30-line function, include all 30 lines. Never submit a snippet that starts or ends mid-function: the operator needs the full call site to reason about correctness, not a decontextualized fragment.
+
+**Highlighting changed lines:**
+
+Slack renders content inside backtick code fences (` ``` `) as literal preformatted text — no inline markdown is processed. `**bold**` and `_italic_` appear as literal asterisks and underscores. The only viable way to mark changed lines is to append an inline comment after each one:
+
+| Change type | Annotation |
+|---|---|
+| Modified line | `// ← modified` |
+| New line | `// ← new` |
+| Deleted line | `// ← deleted` |
+
+Use the comment prefix for the target language:
+
+| Languages | Comment syntax |
+|---|---|
+| Rust, Go, Java, JS, TS, C, C++ | `//` |
+| Python, Ruby, YAML, Shell | `#` |
+| SQL, Lua | `--` |
+| HTML, XML | `<!-- -->` |
+
+Apply the annotation to every line that differs from the pre-change version of the function. Leave unchanged lines unannotated. A line already longer than ~90 characters may have the comment on the next line as a standalone remark (not standard practice — prefer one-line annotations).
+
+**Example `check_clearance` call with snippets:**
+
+```json
+{
+  "title": "Add retry_count field to ApprovalRequest",
+  "diff": "--- a/src/models/approval.rs\n+++ b/src/models/approval.rs\n@@ -12,6 +12,7 @@ pub struct ApprovalRequest {\n     pub request_id: String,\n     pub file_path: String,\n     pub diff: String,\n+    pub retry_count: u32,\n     pub status: ApprovalStatus,\n }",
+  "file_path": "src/models/approval.rs",
+  "description": "Adds retry_count to track how many times a request has been resubmitted after a patch conflict.",
+  "risk_level": "low",
+  "snippets": [
+    {
+      "label": "ApprovalRequest struct — field layout after change",
+      "language": "rust",
+      "content": "pub struct ApprovalRequest {\n    pub request_id: String,\n    pub file_path: String,\n    pub diff: String,\n    pub retry_count: u32,  // ← new\n    pub status: ApprovalStatus,\n    pub created_at: DateTime<Utc>,\n    pub resolved_at: Option<DateTime<Utc>>,\n}"
+    },
+    {
+      "label": "ApprovalRequest::new() — constructor updated to initialise retry_count",
+      "language": "rust",
+      "content": "impl ApprovalRequest {\n    pub fn new(request_id: String, file_path: String, diff: String) -> Self {\n        Self {\n            request_id,\n            file_path,\n            diff,\n            retry_count: 0,  // ← new\n            status: ApprovalStatus::Pending,\n            created_at: Utc::now(),\n            resolved_at: None,\n        }\n    }\n}"
+    }
+  ]
+}
+```
+
 ## Quick Start
 
 Invoke the skill with both required parameters:
@@ -116,7 +251,139 @@ Execute tasks in dependency order following TDD discipline:
 
 4. Track architectural decisions made during implementation for recording in Step 6.
 
-### Step 4: Test Phase (Mandatory Gate)
+### Step 4: Adversarial Code Review (Mandatory Gate)
+
+This step is a mandatory quality gate. After all tasks in the phase have been built in Step 3, two independent adversarial code reviewers analyze the implementation for correctness, security, and constitution compliance before the code proceeds to testing.
+
+1. **Collect phase artifacts**: Gather the list of all files created or modified during Step 3. For each file, capture the current content and the unified diff representing changes made during this phase.
+
+2. **Dispatch adversarial reviewers**: Launch two adversarial code review subagents in parallel using `runSubagent`, each configured with a different model and a distinct review focus. Both receive the identical set of file contents, diffs, the project constitution (`.github/instructions/constitution.instructions.md`), and the phase's task list from `specs/${input:spec-name}/tasks.md`.
+
+   Each reviewer produces a structured findings list. Limit each reviewer to 20 findings maximum to keep synthesis tractable.
+
+   #### A. Reviewer — Code Correctness and Security (Gemini 3.1 Pro Preview)
+
+   Invoke `runSubagent` with `model: "gemini-3.1-pro-preview"` and the following prompt:
+
+   ```text
+   You are an adversarial code reviewer focused on correctness, security,
+   and edge-case handling in a Rust codebase.
+
+   Analyze the provided source files and diffs from this build phase alongside
+   the project constitution. Produce structured findings for:
+
+   1. Logic errors, off-by-one mistakes, or incorrect control flow.
+   2. Security vulnerabilities — path traversal, injection, unauthorized access,
+      missing input validation.
+   3. Error handling gaps — unwrap/expect usage, missing error propagation,
+      swallowed errors.
+   4. Edge cases not covered — empty inputs, boundary values, concurrent access,
+      resource exhaustion.
+   5. Constitution violations — unsafe code, missing doc comments, incorrect
+      error handling patterns.
+   6. Missing or inadequate test coverage for new code paths.
+
+   For each finding, produce a table row with columns:
+   ID (prefix CS), Severity (CRITICAL/HIGH/MEDIUM/LOW),
+   File, Line(s), Summary, Recommended Fix.
+
+   After the findings table, include:
+   - A summary paragraph with your overall assessment of code quality.
+   - A count of findings by severity level.
+
+   Limit output to 20 findings. Prioritize by severity.
+   ```
+
+   When constructing the `runSubagent` prompt parameter, concatenate the reviewer prompt text above with the full content of each modified file, the corresponding diffs, and the constitution.
+
+   #### B. Reviewer — Technical Quality and Architecture (GPT-5.3 Codex)
+
+   Invoke `runSubagent` with `model: "gpt-5.3-codex"` and the following prompt:
+
+   ```text
+   You are an adversarial code reviewer focused on technical quality,
+   architectural consistency, and performance in a Rust codebase.
+
+   Analyze the provided source files and diffs from this build phase alongside
+   the project constitution. Produce structured findings for:
+
+   1. Architectural violations — code that breaks module boundaries, bypasses
+      the repository layer, or introduces circular dependencies.
+   2. Performance concerns — unnecessary allocations, blocking operations in
+      async contexts, missing concurrency primitives.
+   3. API design issues — inconsistent naming, leaky abstractions, missing
+      pub(crate) visibility restrictions.
+   4. Code duplication — repeated logic that should be extracted into shared
+      functions or traits.
+   5. Clippy and idiomatic Rust violations — non-idiomatic patterns that
+      clippy pedantic would flag.
+   6. Test quality — tests that don't assert meaningful behavior, missing
+      negative test cases, brittle test assumptions.
+
+   For each finding, produce a table row with columns:
+   ID (prefix TQ), Severity (CRITICAL/HIGH/MEDIUM/LOW),
+   File, Line(s), Summary, Recommended Fix.
+
+   After the findings table, include:
+   - A summary paragraph with your overall assessment of code quality.
+   - A count of findings by severity level.
+
+   Limit output to 20 findings. Prioritize by severity.
+   ```
+
+   When constructing the `runSubagent` prompt parameter, concatenate the reviewer prompt text above with the full content of each modified file, the corresponding diffs, and the constitution.
+
+3. **Synthesize findings**: After both reviewers return, merge their findings into a unified report:
+   * **Agreement elevation**: Findings identified by both reviewers are elevated in confidence. When reviewers assign different severities, adopt the higher severity.
+   * **Deduplication**: Merge findings referencing the same file and line range with the same issue. Retain the strongest reasoning and most actionable recommendation.
+   * **Severity normalization**:
+     * *Critical*: Constitution violations, security vulnerabilities, data loss risks.
+     * *High*: Logic errors, missing error handling, architectural violations agreed by both reviewers.
+     * *Medium*: Performance concerns, code duplication, test quality issues, or findings identified by only one reviewer with strong justification.
+     * *Low*: Style improvements, minor naming inconsistencies, or single-reviewer findings without corroboration.
+   * **Consensus tagging**: Tag each finding as *agreed* (2/2 reviewers) or *single* (1/2).
+   * Limit the unified findings list to 30 entries.
+
+4. **Report findings**: Produce a summary of the adversarial review results including:
+   * A reviewer summary table (model, focus area, findings count).
+   * The unified findings table (ID, Severity, File, Lines, Summary, Recommended Fix, Consensus).
+   * A metrics summary: total findings pre-deduplication, post-synthesis, agreement rate.
+
+5. **When agent-intercom is active**: `broadcast` the review summary at `info` level: `[REVIEW] Adversarial code review complete — {critical} critical, {high} high, {medium} medium, {low} low findings`.
+
+If the review produces zero critical or high findings, proceed directly to Step 6. Otherwise, proceed to Step 5 to apply fixes before testing.
+
+### Step 5: Apply Adversarial Review Fixes (Mandatory Gate)
+
+This step applies fixes from the adversarial code review in Step 4. It is mandatory when the review produced critical or high severity findings. Skip to Step 6 only when the review found zero critical or high findings.
+
+1. **Severity-gated remediation**:
+   * **Critical and High**: Apply the recommended fix directly to the affected source file. These fixes are mandatory and non-negotiable.
+   * **Medium**: Apply the recommended fix. If the fix conflicts with the phase's design intent, document the reasoning for deferral in the review report.
+   * **Low**: Record as suggestions in the review report. Do not apply unless the fix is trivial and risk-free.
+
+2. **Apply fixes iteratively**: For each finding with an actionable recommendation:
+   * Read the affected source file.
+   * Apply the recommended code change.
+   * **When agent-intercom is active**: write fixes directly and `broadcast` at `info` level with `[FIX] {finding_id}: {file_path}` and include the unified diff.
+   * Run `cargo check` after each fix to verify compilation is maintained.
+   * If a fix introduces a compilation error, diagnose and adjust the fix before proceeding.
+
+3. **Verification pass**: After all fixes are applied:
+   * Run `cargo check` to confirm the project still compiles.
+   * Run `cargo test` to confirm no regressions were introduced.
+   * If new test failures appear, diagnose whether the fix or the test is incorrect and resolve.
+   * If the verification pass reveals new issues at critical or high severity, apply those fixes immediately (maximum two correction cycles to prevent infinite loops).
+
+4. **Log remediation**: Record all applied fixes in the session's review log:
+   * Finding ID, file path, description of the change, severity, and consensus tag.
+   * Note any findings that were deferred with justification.
+
+5. **When agent-intercom is active**: `broadcast` the remediation result at `success` level: `[REVIEW] Fixes applied — {applied} fixes, {deferred} deferred, compilation {status}`.
+
+Proceed to Step 6 after all fixes are applied and the verification pass succeeds.
+
+### Step 6: Test Phase (Mandatory Gate)
 
 This step is a hard gate. The phase is not complete until all tests pass **and** both `cargo clippy` and `cargo fmt` exit cleanly. Do not skip lint or format checks under any circumstances, including context pressure or time constraints.
 
@@ -135,9 +402,9 @@ Run the full test suite and iterate until all checks pass:
 7. If fixes in steps 3–6 introduced new test failures, return to step 1 and repeat the full cycle.
 8. Report final results: test suite counts, pass rates, clippy exit code, fmt exit code, and any notable findings.
 
-All three checks (`cargo test`, `cargo clippy`, `cargo fmt --check`) must exit 0 before proceeding to Step 5. Return to Step 3 if test failures reveal missing implementation work. Continue iterating between Step 3 and Step 4 until build, test, lint, and format all pass cleanly.
+All three checks (`cargo test`, `cargo clippy`, `cargo fmt --check`) must exit 0 before proceeding to Step 7. Return to Step 3 if test failures reveal missing implementation work. Continue iterating between Step 3 and Step 4 until build, test, lint, and format all pass cleanly.
 
-### Step 5: Constitution Validation
+### Step 7: Constitution Validation
 
 Re-check the constitution after implementation is complete:
 
@@ -150,7 +417,7 @@ Re-check the constitution after implementation is complete:
 * Verify test coverage aligns with the 80% target from the constitution.
 * If any violation is found, return to Step 3 to remediate before proceeding.
 
-### Step 6: Record Architectural Decisions
+### Step 8: Record Architectural Decisions
 
 For each significant decision made during the build phase:
 
@@ -165,7 +432,7 @@ For each significant decision made during the build phase:
 * Decisions worth recording include: dependency choices, API design trade-offs, data model changes, SurrealDB workarounds, error handling strategies, and performance trade-offs.
 * Skip this step if no significant architectural decisions were made during the phase.
 
-### Step 7: Record Session Memory (Mandatory Gate)
+### Step 9: Record Session Memory (Mandatory Gate)
 
 This step is a hard gate. The phase is not complete until the memory file exists on disk. Do not skip this step under any circumstances, including context pressure or time constraints.
 
@@ -181,7 +448,7 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
 * Use the existing memory files in `.copilot-tracking/memory/` as format examples.
 * After writing the file, verify it exists by reading it back. If the file is missing or empty, halt and retry.
 
-### Step 8: Pre-Commit Verification and Stage
+### Step 10: Pre-Commit Verification and Stage
 
 1. Run `cargo fmt --all -- --check` to confirm formatting is clean. If it fails, run `cargo fmt --all` to auto-fix, then re-run the check.
 2. Run `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` to confirm lint compliance. If it fails, fix violations and re-run until clean.
@@ -192,7 +459,7 @@ Persist the full session details to `.copilot-tracking/memory/` following the pr
 7. Review all steps to ensure that no steps have been missed and address any missing steps in the sequence before proceeding.
 8. Review the session memory file for completeness and accuracy.
 
-### Step 9: Stage, Commit, and Sync
+### Step 11: Stage, Commit, and Sync
 
 Finalize all changes with a Git commit:
 
@@ -207,7 +474,7 @@ Finalize all changes with a Git commit:
 6. Report the commit hash and a summary of changes committed.
 
 
-### Step 10: Compact Context (Mandatory Gate)
+### Step 12: Compact Context (Mandatory Gate)
 
 This step is a hard gate. The phase is not complete until context compaction has run and a checkpoint file exists. Do not skip this step, even if context space appears sufficient. When running in full-spec loop mode, the orchestrator verifies checkpoint existence before advancing to the next phase.
 

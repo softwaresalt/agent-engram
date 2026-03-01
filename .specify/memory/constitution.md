@@ -1,24 +1,27 @@
 <!--
 Sync Impact Report
 ==================
-Version Change: 1.0.1 → 1.0.2 (PATCH)
-Bump Rationale: Factual corrections - no semantic governance changes
+Version Change: 1.0.2 → 1.1.0 (MINOR)
+Bump Rationale: Alignment with updated constitution.instructions.md;
+  added Git-Friendly Persistence as explicit principle VIII; expanded
+  Technical Constraints to reflect actual dependency inventory.
 
 Modified Principles:
-- VI. Git-Friendly Persistence: "diff-match-patch" → "structured diff merge (via `similar` crate)" (D3 analysis fix)
+- I. Rust Safety First: Added edition 2024 / rust-version 1.85 specifics
+- IV. MCP Protocol Compliance: Clarified mcp-sdk 0.0.3 and SSE transport
+- V. Workspace Isolation: Confirmed localhost-only, SHA-256 namespace
+- IX. Simplicity & YAGNI: Added Cargo feature flag guidance
+
+Added Sections:
+- Principle VIII redefined: Git-Friendly Persistence (previously missing
+  as an explicit principle; rules were scattered in VI and VIII)
+
+Removed Sections:
+- None (all original principles retained; numbering preserved)
 
 Modified Sections:
-- Database Requirements: "HNSW" → "MTREE" (D1 analysis fix, aligns with SurrealDB native index type)
-Version Change: 1.0.0 → 1.0.1 (PATCH)
-Bump Rationale: Terminology alignment with spec - no semantic changes
-
-Modified Principles:
-- VI. Git-Friendly Persistence: `.mem/` → `.engram/` (consistency with spec)
-- VIII. Error Handling & Recovery: `.mem/` → `.engram/` (consistency with spec)
-- Security Requirements > Data Security: `.mem/` → `.engram/` (consistency with spec)
-
-Added Sections: None
-Removed Sections: None
+- Technical Constraints: Updated dependency versions to match Cargo.toml
+- Database Requirements: Confirmed MTREE for vector index
 
 Templates Requiring Updates:
 - .specify/templates/plan-template.md ✅ No changes needed
@@ -218,4 +221,4 @@ When principles conflict:
 3. **Simplicity > Flexibility** — specific solution beats generic framework
 4. **Explicit > Implicit** — verbose clarity beats clever concision
 
-**Version**: 1.0.2 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-12
+**Version**: 1.1.0 | **Ratified**: 2026-02-05 | **Last Amended**: 2026-02-28
