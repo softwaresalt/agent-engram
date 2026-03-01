@@ -24,7 +24,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^cargo --(help|version|verbose|quiet|release|features)(\\s[^;|&`]*)?$/": {
+        "/^cargo --(help|version|verbose|quiet|release|features|test)(\\s[^;|&`]*)?$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -32,7 +32,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^(Out-File|Set-Content|Add-Content|Get-Content|Get-ChildItem|Copy-Item|Move-Item|New-Item|Test-Path)(\\s[^;|&`]*)?$/": {
+        "/^(Out-File|Set-Content|Add-Content|Get-Content|Get-Item|Get-ChildItem|Copy-Item|Move-Item|New-Item|Test-Path)(\\s[^;|&`]*)?$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -55,9 +55,7 @@
         "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
             "approve": true,
             "matchCommandLine": true
-        },
-        "cargo test": true,
-        "Get-Item": true
+        }
     },
 	"powershell.cwd": "monocoque-agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,
