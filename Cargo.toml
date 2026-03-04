@@ -130,3 +130,7 @@ path = "tests/integration/cross_region_test.rs"
 [[test]]
 name = "contract_quickstart"
 path = "tests/contract/quickstart_test.rs"
+
+[[test]]
+name = "helpers_daemon_harness"
+path = "tests/helpers/mod.rs"

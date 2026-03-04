@@ -68,8 +68,8 @@
 
 **Purpose**: Constitution amendments and test infrastructure required before feature implementation.
 
-- [ ] T088 [US1] Update existing contract and integration test files in tests/ to remove mcp-sdk imports — test setup may reference mcp-sdk types removed in T002; adapt to direct JSON-RPC construction or rmcp types
-- [ ] T089 [US1] Build process-based test harness for spawning daemon processes in tests/ — helper that starts `engram daemon`, waits for IPC ready, provides cleanup on drop; required by T020-T025 (shim lifecycle tests)
+- [X] T088 [US1] Update existing contract and integration test files in tests/ to remove mcp-sdk imports — test setup may reference mcp-sdk types removed in T002; adapt to direct JSON-RPC construction or rmcp types
+- [X] T089 [US1] Build process-based test harness for spawning daemon processes in tests/ — helper that starts `engram daemon`, waits for IPC ready, provides cleanup on drop; required by T020-T025 (shim lifecycle tests)
 
 ---
 
