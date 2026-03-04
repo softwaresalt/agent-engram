@@ -52,7 +52,14 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
 
     match result {
         Ok(model) => Ok(model),
-        Err(reason) => Err(EngramError::Query(QueryError::ModelNotLoaded)),
+        Err(reason) => {
+            tracing::error!(reason = %reason, "embedding model initialisation failed");
+            Err(EngramError::System(
+                crate::errors::SystemError::ModelLoadFailed {
+                    reason: reason.clone(),
+                },
+            ))
+        }
     }
 }
 

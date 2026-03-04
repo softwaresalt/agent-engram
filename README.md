@@ -1,4 +1,4 @@
-# Monocoque Agent Engram MCP Server
+# Agent Engram MCP Server
 
 A high-performance, local-first Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. Engram runs as a localhost HTTP server, accepting MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace.
 
@@ -19,21 +19,21 @@ A high-performance, local-first Model Context Protocol (MCP) daemon that provide
 
 ## Installation
 
-`ash
+```bash
 # Clone and build
-git clone https://github.com/softwaresalt/monocoque-agent-engram.git
-cd monocoque-agent-engram
+git clone https://github.com/softwaresalt/agent-engram.git
+cd agent-engram
 cargo build --release
 
 # Optional: enable semantic search (downloads ~90 MB embedding model on first use)
 cargo build --release --features embeddings
-`
+```
 
-The binary is at `target/release/monocoque-agent-engram`.
+The binary is at `target/release/engram`.
 
 ## Quick Start
 
-`ash
+```bash
 # Start the daemon (default port 7437)
 cargo run --release
 
@@ -44,19 +44,19 @@ curl -N http://127.0.0.1:7437/sse
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_daemon_status","arguments":{}},"id":1}'
-`
+```
 
 ### Bind a workspace
 
-`ash
+```bash
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"set_workspace","arguments":{"path":"/path/to/git/repo"}},"id":2}'
-`
+```
 
 ### Create and update tasks
 
-`ash
+```bash
 # Create a task
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
@@ -71,7 +71,7 @@ curl -X POST http://127.0.0.1:7437/mcp \
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"flush_state","arguments":{}},"id":5}'
-`
+```
 
 ## Configuration
 
@@ -84,10 +84,10 @@ curl -X POST http://127.0.0.1:7437/mcp \
 | `--data-dir` | `ENGRAM_DATA_DIR` | `~/.local/share/engram/` | SurrealDB and model cache directory |
 | `--log-format` | `ENGRAM_LOG_FORMAT` | `pretty` | Tracing output format: `json` or `pretty` |
 
-`ash
+```bash
 # Example with custom configuration
 ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
-`
+```
 
 ## MCP Tools
 
@@ -161,7 +161,7 @@ src/
 
 ## Development
 
-`ash
+```bash
 # Run tests
 cargo test
 
@@ -176,7 +176,7 @@ cargo doc --no-deps --open
 
 # Run with debug logging
 RUST_LOG=engram=debug cargo run
-`
+```
 
 ### Test Organization
 

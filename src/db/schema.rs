@@ -93,7 +93,7 @@ pub const DEFINE_CODE_FILE: &str = r#"
 DEFINE TABLE IF NOT EXISTS code_file SCHEMAFULL;
 DEFINE FIELD OVERWRITE path ON TABLE code_file TYPE string ASSERT $value != '';
 DEFINE FIELD OVERWRITE language ON TABLE code_file TYPE string ASSERT $value != '';
-DEFINE FIELD OVERWRITE size_bytes ON TABLE code_file TYPE int ASSERT $value > 0;
+DEFINE FIELD OVERWRITE size_bytes ON TABLE code_file TYPE int ASSERT $value >= 0;
 DEFINE FIELD OVERWRITE content_hash ON TABLE code_file TYPE string ASSERT $value != '';
 DEFINE FIELD OVERWRITE last_indexed_at ON TABLE code_file TYPE datetime DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS code_file_path ON TABLE code_file COLUMNS path UNIQUE;
