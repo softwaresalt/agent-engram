@@ -28,11 +28,14 @@
 /// Crate-level constants and shared library entrypoints for the Engram daemon.
 pub const APP_NAME: &str = "engram";
 pub mod config;
+pub mod daemon;
 pub mod db;
 pub mod errors;
+pub mod installer;
 pub mod models;
 pub mod server;
 pub mod services;
+pub mod shim;
 pub mod tools;
 
 use std::sync::OnceLock;

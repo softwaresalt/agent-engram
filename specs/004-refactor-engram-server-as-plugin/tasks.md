@@ -50,15 +50,15 @@
 
 **Purpose**: Add dependencies, restructure binary entrypoint, create module stubs
 
-- [ ] T001 Add new dependencies to Cargo.toml: `interprocess = { version = "2", features = ["tokio"] }`, `fd-lock = "4"`, `rmcp = { version = "1.1", features = ["server", "transport-io"] }`, `notify = "9"`, `notify-debouncer-full = "0.7"`
-- [ ] T002 Remove unused `mcp-sdk = "0.0.3"` dependency from Cargo.toml (replaced by rmcp)
-- [ ] T003 Restructure src/bin/engram.rs with clap subcommands: `shim` (default), `daemon`, `install`, `update`, `reinstall`, `uninstall` per plan.md architecture
-- [ ] T004 [P] Create module stubs: src/shim/mod.rs (re-exports), src/shim/transport.rs, src/shim/ipc_client.rs, src/shim/lifecycle.rs
-- [ ] T005 [P] Create module stubs: src/daemon/mod.rs (re-exports), src/daemon/ipc_server.rs, src/daemon/watcher.rs, src/daemon/debounce.rs, src/daemon/ttl.rs, src/daemon/lockfile.rs
-- [ ] T006 [P] Create module stubs: src/installer/mod.rs, src/installer/templates.rs
-- [ ] T007 Add new error variants to src/errors/mod.rs: `IpcConnection`, `DaemonSpawn`, `LockAcquisition`, `WatcherInit`, `ConfigParse`, `InstallError` per data-model.md
-- [ ] T008 [P] Add error code constants to src/errors/codes.rs: 8xxx range (IPC/daemon) and 9xxx range (installer) per data-model.md
-- [ ] T009 Verify `cargo check` passes with new dependencies and module stubs
+- [X] T001 Add new dependencies to Cargo.toml: `interprocess = { version = "2", features = ["tokio"] }`, `fd-lock = "4"`, `rmcp = { version = "1.1", features = ["server", "transport-io"] }`, `notify = "9"`, `notify-debouncer-full = "0.7"`
+- [X] T002 Remove unused `mcp-sdk = "0.0.3"` dependency from Cargo.toml (replaced by rmcp)
+- [X] T003 Restructure src/bin/engram.rs with clap subcommands: `shim` (default), `daemon`, `install`, `update`, `reinstall`, `uninstall` per plan.md architecture
+- [X] T004 [P] Create module stubs: src/shim/mod.rs (re-exports), src/shim/transport.rs, src/shim/ipc_client.rs, src/shim/lifecycle.rs
+- [X] T005 [P] Create module stubs: src/daemon/mod.rs (re-exports), src/daemon/ipc_server.rs, src/daemon/watcher.rs, src/daemon/debounce.rs, src/daemon/ttl.rs, src/daemon/lockfile.rs
+- [X] T006 [P] Create module stubs: src/installer/mod.rs, src/installer/templates.rs
+- [X] T007 Add new error variants to src/errors/mod.rs: `IpcConnection`, `DaemonSpawn`, `LockAcquisition`, `WatcherInit`, `ConfigParse`, `InstallError` per data-model.md
+- [X] T008 [P] Add error code constants to src/errors/codes.rs: 8xxx range (IPC/daemon) and 9xxx range (installer) per data-model.md
+- [X] T009 Verify `cargo check` passes with new dependencies and module stubs
 
 **Checkpoint**: Project compiles with all new dependencies and module structure.
 
