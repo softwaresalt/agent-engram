@@ -20,11 +20,11 @@
     "chat.tools.terminal.autoApprove": {
         ".specify/scripts/bash/": true,
         ".specify/scripts/powershell/": true,
-        "/^cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "/^cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|info|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^cargo --(help|version|verbose|quiet|release|features|test)(\\s[^;|&`]*)?$/": {
+        "/^cargo --(help|version|verbose|quiet|release|features|test|info|bench)(\\s[^;|&`]*)?$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -53,6 +53,18 @@
             "matchCommandLine": true
         },
         "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^& \\.specify/scripts/powershell/setup-plan\\.ps1 -Json$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^& \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^& \\.specify/scripts/powershell/update-agent-context\\.ps1 -AgentType copilot$/": {
             "approve": true,
             "matchCommandLine": true
         }
