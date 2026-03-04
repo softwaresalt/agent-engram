@@ -162,7 +162,7 @@ async fn contract_get_ready_work_empty_workspace() {
         .await
         .expect("set workspace");
 
-    let params = Some(json!({}));
+    let params = Some(json!({"name_prefix": "nonexistent"}));
     let result = tools::dispatch(state, "get_ready_work", params)
         .await
         .expect("should succeed on empty workspace");
@@ -190,7 +190,7 @@ async fn contract_get_ready_work_returns_tasks() {
         .await
         .expect("create_task should succeed");
 
-    let params = Some(json!({}));
+    let params = Some(json!({"name_prefix": "nonexistent"}));
     let result = tools::dispatch(state, "get_ready_work", params)
         .await
         .expect("should return tasks");
@@ -591,11 +591,11 @@ async fn contract_list_symbols_empty_graph_returns_error() {
         .await
         .expect("set workspace");
 
-    let params = Some(json!({}));
+    let params = Some(json!({"name_prefix": "nonexistent"}));
 
     let err = tools::dispatch(state, "list_symbols", params)
         .await
-        .expect_err("expected symbol not found error for empty graph");
+        .expect_err("expected symbol not found error for filtered empty graph");
 
     let code = err.to_response().error.code;
     assert_eq!(code, SYMBOL_NOT_FOUND);
