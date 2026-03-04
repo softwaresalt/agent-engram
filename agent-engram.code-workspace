@@ -57,7 +57,7 @@
             "matchCommandLine": true
         }
     },
-	"powershell.cwd": "monocoque-agent-engram",
+	"powershell.cwd": "agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,
     "github.copilot.chat.copilotMemory.enabled": true
   }

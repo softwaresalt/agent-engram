@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Monocoque Agent Engram MCP Tools — Unified Code Knowledge Graph",
+  "title": "Agent Engram MCP Tools — Unified Code Knowledge Graph",
   "description": "New MCP tool definitions for code graph indexing, traversal, cross-region linking, and unified search",
   "version": "0.3.0",
   "tools": {

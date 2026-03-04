@@ -337,10 +337,10 @@ The workspace uses multiple MCP servers with distinct responsibilities. Never ca
 
 | Server ID | URL | Purpose |
 |-----------|-----|---------|
-| `monocoque-agent-rc` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
+| `agent-engram` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
 | engram daemon | `http://127.0.0.1:7437/sse` | Task memory, context tracking, workspace state |
 
-### `monocoque-agent-rc` tools (Slack relay)
+### `agent-engram` tools (Slack relay)
 
 | Tool | Purpose |
 |------|---------|
@@ -366,5 +366,5 @@ If `get_daemon_status` or any engram tool returns a connection error, the engram
 cargo run --bin engram
 ```
 
-The relay server (`monocoque-agent-rc`) is a separate process managed outside this repo and runs on port 3000.
+The relay server (`agent-engram`) is a separate process managed outside this repo and runs on port 3000.
 <!-- MANUAL ADDITIONS END -->

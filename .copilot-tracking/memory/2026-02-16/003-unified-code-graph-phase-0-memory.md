@@ -6,7 +6,7 @@
 
 ## Task Overview
 
-Phase 0 performed a mechanical rename of the entire codebase from "T-MEM" / `t-mem` / `t_mem` / `tmem` / `.tmem` / `TMEM` naming to "Monocoque Agent Engram" / `engram` / `.engram` / `ENGRAM`. No behavioral changes — pure find-and-replace across source, tests, specs, and documentation.
+Phase 0 performed a mechanical rename of the entire codebase from "T-MEM" / `t-mem` / `t_mem` / `tmem` / `.tmem` / `TMEM` naming to "Agent Engram" / `engram` / `.engram` / `ENGRAM`. No behavioral changes — pure find-and-replace across source, tests, specs, and documentation.
 
 ## Current State
 

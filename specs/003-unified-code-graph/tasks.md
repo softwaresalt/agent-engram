@@ -15,14 +15,14 @@
 
 ## Phase 0: Prerequisites (PRQ-001 — Codebase Rename)
 
-**Purpose**: Rename all codebase references from engram / `engram` / `engram` / `engram` / `.engram` / `engram` to Monocoque Agent Engram / `engram` / `.engram` / `ENGRAM`. No behavioral changes — mechanical find-and-replace only.
+**Purpose**: Rename all codebase references from engram / `engram` / `engram` / `engram` / `.engram` / `engram` to Agent Engram / `engram` / `.engram` / `ENGRAM`. No behavioral changes — mechanical find-and-replace only.
 
 **GATE**: All verification gates (T011) must pass before Phase 1 begins.
 
 - [X] T001 Rename binary source file from src/bin/engram.rs to src/bin/engram.rs and update internal content references (doc comments, module-level attributes)
-- [X] T002 Update Cargo.toml — package name to `engram`, description to "Monocoque Agent Engram MCP daemon", authors to "Engram Contributors", `[[bin]]` name to `engram` and path to `src/bin/engram.rs`
+- [X] T002 Update Cargo.toml — package name to `engram`, description to "Agent Engram MCP daemon", authors to "Engram Contributors", `[[bin]]` name to `engram` and path to `src/bin/engram.rs`
   > **Atomicity**: T001 and T002 MUST be applied in the same commit — renaming the binary without updating `Cargo.toml` (or vice versa) leaves the build broken.
-- [X] T003 [P] Update src/config/mod.rs — all `ENGRAM_` env annotations to `ENGRAM_`, clap command name to `engram`, about text to "Monocoque Agent Engram MCP daemon", default data directory path from `engram` to `engram`
+- [X] T003 [P] Update src/config/mod.rs — all `ENGRAM_` env annotations to `ENGRAM_`, clap command name to `engram`, about text to "Agent Engram MCP daemon", default data directory path from `engram` to `engram`
 - [X] T004 [P] Update src/lib.rs — `APP_NAME` constant from `"engram"` to `"engram"`, crate-level doc comments, tracing filter from `engram=debug` to `engram=debug`
 - [X] T005 [P] Update src/errors/mod.rs — rename `EngramError` enum to `EngramError`, update all doc comments and inline references
 - [X] T006 [P] Update src/db/ — DB storage path segment from `engram/db/` to `engram/db/` in mod.rs, any `engram` or `.engram` references in workspace.rs and queries.rs

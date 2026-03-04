@@ -7,7 +7,7 @@ name = "engram"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Monocoque Agent Engram MCP daemon"
+description = "Agent Engram MCP daemon"
 license = "MIT"
 publish = false
 
