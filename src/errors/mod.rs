@@ -320,7 +320,7 @@ impl EngramError {
                 ),
             },
             EngramError::Query(inner) => match inner {
-                QueryError::QueryEmpty => (QUERY_TOO_LONG, "QueryEmpty", inner.to_string(), None),
+                QueryError::QueryEmpty => (QUERY_EMPTY, "QueryEmpty", inner.to_string(), None),
                 QueryError::QueryTooLong => {
                     (QUERY_TOO_LONG, "QueryTooLong", inner.to_string(), None)
                 }

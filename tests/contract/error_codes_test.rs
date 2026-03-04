@@ -46,6 +46,7 @@ fn query_error_codes_match_contract() {
     assert_eq!(QUERY_TOO_LONG, 4001);
     assert_eq!(MODEL_NOT_LOADED, 4002);
     assert_eq!(SEARCH_FAILED, 4003);
+    assert_eq!(QUERY_EMPTY, 4004);
 }
 
 /// Verify all system error codes match the contract.
@@ -202,6 +203,7 @@ fn error_response_codes_are_consistent() {
             "TaskNotClaimable",
         ),
         (QueryError::QueryTooLong.into(), 4001, "QueryTooLong"),
+        (QueryError::QueryEmpty.into(), 4004, "QueryEmpty"),
         (QueryError::ModelNotLoaded.into(), 4002, "ModelNotLoaded"),
         (
             QueryError::SearchFailed { reason: "x".into() }.into(),

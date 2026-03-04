@@ -35,6 +35,7 @@ pub const TASK_TITLE_TOO_LONG: u16 = 3014;
 pub const QUERY_TOO_LONG: u16 = 4001;
 pub const MODEL_NOT_LOADED: u16 = 4002;
 pub const SEARCH_FAILED: u16 = 4003;
+pub const QUERY_EMPTY: u16 = 4004;
 
 /// System error codes
 pub const DATABASE_ERROR: u16 = 5001;

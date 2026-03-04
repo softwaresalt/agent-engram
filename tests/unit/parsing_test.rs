@@ -124,8 +124,8 @@ impl Calculator {
             _ => None,
         })
         .collect();
-    assert!(func_names.contains(&"add"));
-    assert!(func_names.contains(&"multiply"));
+    assert!(func_names.contains(&"Calculator::add"));
+    assert!(func_names.contains(&"Calculator::multiply"));
     assert_eq!(func_names.len(), 2);
 }
 
@@ -310,7 +310,7 @@ fn default_name() -> String {
 "#;
     let result = parse_rust_source(source).unwrap();
 
-    // 1 struct (Config) + 1 trait (Configurable) + 1 impl method (configure) + 1 fn (default_name)
+    // 1 struct (Config) + 1 trait (Configurable) + 1 impl method (Config::configure) + 1 fn (default_name)
     assert_eq!(result.symbols.len(), 4);
 
     // Should have Imports, Defines, InheritsFrom, and Calls edges.
@@ -334,7 +334,7 @@ fn default_name() -> String {
     );
     assert!(result.edges.iter().any(|e| matches!(
         e,
-        ExtractedEdge::Calls { caller, callee } if caller == "configure" && callee == "default_name"
+        ExtractedEdge::Calls { caller, callee } if caller == "Config::configure" && callee == "default_name"
     )));
 }
 

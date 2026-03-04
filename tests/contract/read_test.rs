@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use engram::errors::codes::{QUERY_TOO_LONG, WORKSPACE_NOT_SET};
+use engram::errors::codes::{QUERY_EMPTY, QUERY_TOO_LONG, WORKSPACE_NOT_SET};
 use engram::models::task::{Task, TaskStatus};
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use engram::tools;
@@ -645,7 +645,7 @@ async fn contract_unified_search_rejects_empty_query() {
         .await
         .expect_err("expected empty query error");
     let code = err.to_response().error.code;
-    assert_eq!(code, QUERY_TOO_LONG, "empty query should return 4001");
+    assert_eq!(code, QUERY_EMPTY, "empty query should return 4004");
 
     // Whitespace-only string
     let params = Some(json!({ "query": "   " }));
@@ -654,8 +654,8 @@ async fn contract_unified_search_rejects_empty_query() {
         .expect_err("expected empty query error for whitespace");
     let code = err.to_response().error.code;
     assert_eq!(
-        code, QUERY_TOO_LONG,
-        "whitespace-only query should return 4001"
+        code, QUERY_EMPTY,
+        "whitespace-only query should return 4004"
     );
 }
 
