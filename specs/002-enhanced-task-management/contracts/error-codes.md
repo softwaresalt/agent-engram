@@ -45,7 +45,7 @@ New error category for workspace configuration issues.
 
 | Code | Name | Description | Retry | Recovery |
 |------|------|-------------|-------|----------|
-| 6001 | `ConfigParseError` | `.tmem/config.toml` has syntax errors | No | Fix TOML syntax; daemon uses defaults in the meantime |
+| 6001 | `ConfigParseError` | `.engram/config.toml` has syntax errors | No | Fix TOML syntax; daemon uses defaults in the meantime |
 | 6002 | `InvalidConfigValue` | A configuration value is out of range or invalid type | No | Correct the value in config.toml |
 | 6003 | `UnknownConfigKey` | Configuration file contains unrecognized keys (warning) | N/A | Remove unknown keys or ignore the warning |
 
@@ -81,7 +81,7 @@ New error category for workspace configuration issues.
     "details": {
       "label": "experimental",
       "allowed_labels": ["frontend", "backend", "bug", "feature", "urgent"],
-      "suggestion": "Use one of the allowed labels or update .tmem/config.toml"
+      "suggestion": "Use one of the allowed labels or update .engram/config.toml"
     }
   }
 }
@@ -160,7 +160,7 @@ New error category for workspace configuration issues.
     "details": {
       "issue_type": "epic",
       "allowed_types": ["task", "bug", "spike", "decision", "milestone"],
-      "suggestion": "Use an allowed type or add 'epic' to allowed_types in .tmem/config.toml"
+      "suggestion": "Use an allowed type or add 'epic' to allowed_types in .engram/config.toml"
     }
   }
 }
@@ -207,9 +207,9 @@ New error category for workspace configuration issues.
   "error": {
     "code": 6001,
     "name": "ConfigParseError",
-    "message": "Failed to parse .tmem/config.toml",
+    "message": "Failed to parse .engram/config.toml",
     "details": {
-      "file": ".tmem/config.toml",
+      "file": ".engram/config.toml",
       "line": 5,
       "error": "expected value, found newline at line 5",
       "fallback": "Using built-in defaults"
@@ -276,7 +276,7 @@ pub const UNKNOWN_CONFIG_KEY: u16 = 6003;
 ```
 
 ```rust
-// New variants for TMemError in src/errors/mod.rs
+// New variants for EngramError in src/errors/mod.rs
 
 #[derive(Error, Debug)]
 pub enum TaskError {

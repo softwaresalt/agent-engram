@@ -1,4 +1,4 @@
-# Specification Quality Checklist: T-Mem Core MCP Daemon
+# Specification Quality Checklist: engram Core MCP Daemon
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-02-05
@@ -39,7 +39,7 @@
 
 ## Notes
 
-* Spec derived from existing T-Mem v0 technical specification
+* Spec derived from existing engram v0 technical specification
 * Implementation details (Rust, SurrealDB, axum) intentionally excluded from this spec
 * Technical stack decisions documented in constitution and will be referenced in plan.md
 * Ready for `/speckit.plan` phase

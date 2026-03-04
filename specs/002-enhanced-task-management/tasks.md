@@ -38,7 +38,7 @@
 - [X] T010 Update src/models/mod.rs to declare and re-export Label, Comment, WorkspaceConfig, CompactionConfig, BatchConfig
 - [X] T011 [P] Add error code constants 3005–3012 (TASK_ALREADY_CLAIMED through TASK_NOT_CLAIMABLE) and 6001–6003 (CONFIG_PARSE_ERROR through UNKNOWN_CONFIG_KEY) in src/errors/codes.rs (FR-069, FR-070)
 - [X] T012 [P] Add TaskError variants (AlreadyClaimed, LabelValidation, BatchPartialFailure, CompactionFailed, InvalidPriority, InvalidIssueType, DuplicateLabel, NotClaimable) and ConfigError enum (ParseError, InvalidValue, UnknownKey) to src/errors/mod.rs (FR-071)
-- [X] T013 Extend SurrealDB schema in src/db/schema.rs: DEFINE FIELD for all new task fields with defaults, DEFINE TABLE label SCHEMAFULL and comment SCHEMAFULL, DEFINE INDEX for task_priority, task_assignee, task_defer_until, task_issue_type, task_pinned, task_compaction, label_task_name (UNIQUE), label_name, comment_task; implement `.tmem/.version` bump from 1.0.0 to 2.0.0 on schema bootstrap
+- [X] T013 Extend SurrealDB schema in src/db/schema.rs: DEFINE FIELD for all new task fields with defaults, DEFINE TABLE label SCHEMAFULL and comment SCHEMAFULL, DEFINE INDEX for task_priority, task_assignee, task_defer_until, task_issue_type, task_pinned, task_compaction, label_task_name (UNIQUE), label_name, comment_task; implement `.engram/.version` bump from 1.0.0 to 2.0.0 on schema bootstrap
 - [X] T014 [P] Add property tests for extended Task, Label, Comment, WorkspaceConfig, and 8-variant DependencyType serde JSON round-trips in tests/unit/proptest_models.rs (FR-068)
 - [X] T015 [P] Add YAML frontmatter serialization round-trip property tests for enhanced Task (with labels array, all new fields) in tests/unit/proptest_serialization.rs (SC-019)
 - [X] T016 Extend AppState to store Option\<WorkspaceConfig\> alongside workspace snapshot in src/server/state.rs
@@ -111,8 +111,8 @@
 - [X] T035 [US3] Implement add_dependency query in src/db/queries.rs: validate dependency_type against 8-variant enum, reject self-reference (in == out), cycle detection via recursive graph traversal across all edge types, insert RELATE edge (FR-035b, FR-036)
 - [X] T036 [US3] Implement add_dependency tool handler in src/tools/write.rs: parse from_task_id, to_task_id, dependency_type; call query; return edge details with created_at (FR-035b)
 - [X] T037 [US3] Extend get_task_graph in src/tools/read.rs to include all 8 dependency types in graph output with type annotations (FR-035)
-- [X] T038 [US3] Extend dehydration to serialize all 8 edge types in .tmem/graph.surql in src/services/dehydration.rs (FR-035)
-- [X] T039 [US3] Extend hydration to parse all 8 edge types from .tmem/graph.surql RELATE statements in src/services/hydration.rs (FR-035)
+- [X] T038 [US3] Extend dehydration to serialize all 8 edge types in .engram/graph.surql in src/services/dehydration.rs (FR-035)
+- [X] T039 [US3] Extend hydration to parse all 8 edge types from .engram/graph.surql RELATE statements in src/services/hydration.rs (FR-035)
 - [X] T040 [US3] Integration test in tests/integration/enhanced_features_test.rs: parent task with 3 children (child_of), mark duplicate (duplicate_of → excluded from ready-work), add blocked_by (blocked in ready-work), mark all children done → parent surfaced in ready-work as completable (US3 scenario 5) (FR-037)
 
 **Checkpoint**: All 8 dependency types functional with cycle detection and ready-work interaction. US3 independently testable.
@@ -233,7 +233,7 @@
 
 ## Phase 11: User Story 9 — Batch Operations and Comments (Priority: P9)
 
-**Goal**: `batch_update_tasks` with per-item results, `add_comment` with chronological retrieval, `.tmem/comments.md` serialization.
+**Goal**: `batch_update_tasks` with per-item results, `add_comment` with chronological retrieval, `.engram/comments.md` serialization.
 
 **Independent Test**: Batch 10 tasks in one call, verify all updated; add comments, verify chronological order.
 
@@ -247,17 +247,17 @@
 - [X] T075 [US9] Implement comment queries in src/db/queries.rs: insert_comment(task_id, content, author), get_comments_for_task(task_id) ordered by created_at ASC (FR-061, FR-062, FR-063)
 - [X] T076 [US9] Implement add_comment tool handler in src/tools/write.rs: parse task_id + content + author, validate task exists, call insert_comment, return comment_id + task_id + author + created_at (FR-062)
 - [X] T077 [US9] Implement comments.md hydration in src/services/hydration.rs: parse ## task:\* section headers, ### timestamp — author comment headers, body content until next header; populate comment table (FR-063b)
-- [X] T078 [US9] Implement comments.md dehydration in src/services/dehydration.rs: query comments per task grouped chronologically, write .tmem/comments.md with ## task:\* and ### timestamp — author format (FR-063b)
+- [X] T078 [US9] Implement comments.md dehydration in src/services/dehydration.rs: query comments per task grouped chronologically, write .engram/comments.md with ## task:\* and ### timestamp — author format (FR-063b)
 - [X] T079 [US9] Integration test in tests/integration/enhanced_features_test.rs: batch_update_tasks on 10 tasks (one invalid → partial failure), verify per-item results; add 3 comments to one task, verify chronological order; flush → rehydrate → verify comments preserved (SC-019)
 - [X] T080 [US9] Edge case test: batch with duplicate task IDs → last update wins, each generates its own context note
 
-**Checkpoint**: Batch operations and comments functional including `.tmem/comments.md` serialization. US9 independently testable.
+**Checkpoint**: Batch operations and comments functional including `.engram/comments.md` serialization. US9 independently testable.
 
 ---
 
 ## Phase 12: User Story 10 — Project Configuration (Priority: P10)
 
-**Goal**: Read `.tmem/config.toml` on hydration, validate values, apply defaults on missing/invalid, wire into dependent tools.
+**Goal**: Read `.engram/config.toml` on hydration, validate values, apply defaults on missing/invalid, wire into dependent tools.
 
 **Independent Test**: Create config with custom values, verify daemon reads on hydration and enforces them.
 
@@ -267,7 +267,7 @@
 
 ### Green Phase (Implementation)
 
-- [X] T082 [US10] Implement parse_config() in src/services/config.rs: read .tmem/config.toml via tokio::fs::read_to_string, deserialize with toml::from_str::\<WorkspaceConfig\>, on missing file return Ok(default), on parse error emit tracing::warn and return Ok(default) (FR-064, FR-066)
+- [X] T082 [US10] Implement parse_config() in src/services/config.rs: read .engram/config.toml via tokio::fs::read_to_string, deserialize with toml::from_str::\<WorkspaceConfig\>, on missing file return Ok(default), on parse error emit tracing::warn and return Ok(default) (FR-064, FR-066)
 - [X] T083 [US10] Implement validate_config() in src/services/config.rs: check threshold_days >= 1, max_candidates >= 1, truncation_length >= 50, batch.max_size in 1..=1000, default_priority parsable; return Err(ConfigError::InvalidValue) on violation (FR-065)
 - [X] T084 [US10] Integrate config loading into hydration flow in src/services/hydration.rs: after workspace bind, call parse_config() + validate_config(), store result in AppState via state.rs (FR-064, FR-066, SC-016)
 - [X] T085 [US10] Wire WorkspaceConfig values into all dependent tool handlers: add_label checks allowed_labels (FR-034), update_task checks allowed_types (FR-048), get_compaction_candidates uses threshold_days + max_candidates (FR-065), apply_compaction truncation uses truncation_length (FR-042), batch_update_tasks uses max_size (FR-060)
@@ -372,7 +372,7 @@ T024: Assignee filter
 2. Complete Phase 2: Foundational (14 tasks) — **CRITICAL, blocks all stories**
 3. Complete Phase 3: User Story 1 — Ready-Work Queue (8 tasks)
 4. **STOP and VALIDATE**: Test US1 independently with 20-task scenario
-5. Deploy if ready — this single story transforms t-mem from passive storage to active work coordinator
+5. Deploy if ready — this single story transforms engram from passive storage to active work coordinator
 
 ### Incremental Delivery
 

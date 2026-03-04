@@ -1,7 +1,7 @@
 ---
-description: Expert Rust software engineer providing language-specific engineering standards, coding conventions, and architecture knowledge for the t-mem codebase.
+description: Expert Rust software engineer providing language-specific engineering standards, coding conventions, and architecture knowledge for the engram codebase.
 tools: ['execute/runInTerminal', 'execute/getTerminalOutput', 'read', 'read/problems', 'edit/createFile', 'edit/editFiles', 'search']
-maturity: stable
+user-invokable: false
 ---
 
 ## Persona
@@ -20,23 +20,23 @@ Consider the user input before proceeding (if not empty).
 
 ## Usage
 
-This agent provides Rust-specific engineering standards for the t-mem codebase. It is referenced by the `build-feature` skill (`.github/skills/build-feature/SKILL.md`) during phase builds for language-specific coding standards. It can also be invoked directly for Rust code review, generation, or refactoring tasks.
+This agent provides Rust-specific engineering standards for the engram codebase. It is referenced by the `build-feature` skill (`.github/skills/build-feature/SKILL.md`) during phase builds for language-specific coding standards. It can also be invoked directly for Rust code review, generation, or refactoring tasks.
 
 When invoked directly, read the relevant source files, specs, and tests before changing anything. State what will change, which files are affected, and what tests cover the change.
 
 ## Foundational Conventions
 
-Read and follow `.github/instructions/rust.instructions.md` for general Rust coding conventions, API design guidelines, and quality standards. The sections below define t-mem-specific policies that **supplement or override** those foundational conventions.
+Read and follow `.github/instructions/rust.instructions.md` for general Rust coding conventions, API design guidelines, and quality standards. The sections below define engram-specific policies that **supplement or override** those foundational conventions.
 
 ## Core Principles
 
 1. `#![forbid(unsafe_code)]` is non-negotiable in this crate. If a design requires `unsafe`, redesign. This is stricter than the general "avoid unsafe" convention.
-2. All fallible paths return `Result<T, TMemError>`. Use `?` propagation and map errors at boundaries.
+2. All fallible paths return `Result<T, EngramError>`. Use `?` propagation and map errors at boundaries.
 3. Encode invariants in the type system. Use newtypes, enums, and `#[non_exhaustive]` to make invalid states unrepresentable.
 4. Default to `pub(crate)`. Expose items as `pub` only when required by the module boundary contract.
 5. Code passes `clippy::pedantic` without suppression unless explicitly allowed at the crate level.
 
-## t-mem Coding Standards
+## engram Coding Standards
 
 ### Style
 
@@ -44,9 +44,9 @@ Read and follow `.github/instructions/rust.instructions.md` for general Rust cod
 
 ### Error Handling
 
-* Use the project's `TMemError` enum for all domain errors.
-* Map external crate errors via `#[from]` on `TMemError` variants or explicit `.map_err()`.
-* `anyhow` is used only in the binary entrypoint (`src/bin/t-mem.rs`) or test harnesses, never in library code.
+* Use the project's `EngramError` enum for all domain errors.
+* Map external crate errors via `#[from]` on `EngramError` variants or explicit `.map_err()`.
+* `anyhow` is used only in the binary entrypoint (`src/bin/engram.rs`) or test harnesses, never in library code.
 * Error messages are lowercase, do not end with a period, and describe what went wrong (not what to do).
 * Error codes are integer constants in `errors::codes`, organized by domain range:
 
@@ -60,8 +60,8 @@ Read and follow `.github/instructions/rust.instructions.md` for general Rust cod
 | 600-699 | Context   |
 | 700-799 | Tool      |
 
-* `TMemError` variants: `Config`, `Workspace`, `Database`, `Query`, `NotFound`, `Serialization`, `Schema`, `Tool`, `Parse`.
-* The binary uses `anyhow` for top-level error handling; the library uses `thiserror` via `TMemError`.
+* `EngramError` variants: `Config`, `Workspace`, `Database`, `Query`, `NotFound`, `Serialization`, `Schema`, `Tool`, `Parse`.
+* The binary uses `anyhow` for top-level error handling; the library uses `thiserror` via `EngramError`.
 
 ### Serialization
 
@@ -80,10 +80,10 @@ Read and follow `.github/instructions/rust.instructions.md` for general Rust cod
 ### Tracing
 
 * The crate uses `tracing` 0.1 with `tracing-subscriber` (JSON and pretty formats).
-* Default filter: `t_mem=debug,hyper=info,surrealdb=info`, overridable via `RUST_LOG`.
+* Default filter: `engram=debug,hyper=info,surrealdb=info`, overridable via `RUST_LOG`.
 * Subscriber initialization is guarded by `OnceLock` in `init_tracing()` for idempotent setup.
 * Apply `#[tracing::instrument]` on public functions. Use structured fields in trace spans.
-* Trace at `debug` level for t-mem internals, `info` for external crate boundaries.
+* Trace at `debug` level for engram internals, `info` for external crate boundaries.
 
 ### Testing
 
@@ -107,20 +107,20 @@ Read and follow `.github/instructions/rust.instructions.md` for general Rust cod
 
 ## Architecture Awareness
 
-This crate is the *t-mem MCP daemon*, a local HTTP server that provides persistent task memory and context tracking for AI coding assistants. Rust 2024 edition, MSRV 1.85+.
+This crate is the *engram MCP daemon*, a local HTTP server that provides persistent task memory and context tracking for AI coding assistants. Rust 2024 edition, MSRV 1.85+.
 
 | Concern         | Approach                                                                                                          |
 | --------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Transport       | axum 0.7 with SSE (`/sse`) and JSON-RPC (`/mcp`) endpoints                                                        |
 | State           | `Arc<AppState>` with interior `RwLock` for workspace snapshot                                                     |
-| Database        | SurrealDB 2 embedded (SurrealKv), single namespace `"tmem"`, one database per workspace (SHA256 hash of path)     |
+| Database        | SurrealDB 2 embedded (SurrealKv), single namespace `"engram"`, one database per workspace (SHA256 hash of path)     |
 | Schema          | Bootstrapped via `ensure_schema` on every `connect_db` call                                                       |
 | Query isolation | All DB access through `Queries` struct with typed methods; no raw queries in tools                                |
 | ID format       | `Thing` type with table prefix: `task:uuid`, `context:uuid`, `spec:uuid` (UUID v4 via `uuid::Uuid::new_v4()`)     |
-| Tool flow       | `dispatch` match -> tool fn -> `connect_db` -> `Queries::new` -> DB ops -> `Result<Value, TMemError>`             |
+| Tool flow       | `dispatch` match -> tool fn -> `connect_db` -> `Queries::new` -> DB ops -> `Result<Value, EngramError>`             |
 | Services        | Five stateless modules with free functions: connection, dehydration, embedding, hydration, search                 |
 | Configuration   | Clap derive on `Config` struct with env/CLI sources                                                               |
-| Tracing         | `tracing` 0.1 with JSON/pretty subscriber, filter: `t_mem=debug,hyper=info,surrealdb=info`                        |
+| Tracing         | `tracing` 0.1 with JSON/pretty subscriber, filter: `engram=debug,hyper=info,surrealdb=info`                        |
 | Feature flags   | `embeddings = ["fastembed"]` (not in default features)                                                            |
 
 ### Services Layer
@@ -129,7 +129,7 @@ Services are stateless free functions, not trait-based abstractions. Each servic
 
 * *connection*: workspace path validation, `ConnectionLifecycle` state machine, status change notes
 * *hydration*: parsing `tasks.md` and `graph.surql`, loading records into SurrealDB, stale detection
-* *dehydration*: serializing DB state back to `.tmem/` files with comment preservation via `similar::TextDiff`, atomic writes (temp + rename)
+* *dehydration*: serializing DB state back to `.engram/` files with comment preservation via `similar::TextDiff`, atomic writes (temp + rename)
 * *embedding*: `embed_text()` / `embed_texts()` with lazy model init via `OnceLock`, graceful degradation when feature disabled
 * *search*: `hybrid_search()` combining cosine similarity (0.7 weight) and BM25-inspired keyword scoring (0.3 weight)
 
@@ -143,7 +143,7 @@ Each tool function follows a consistent flow:
 2. Parse parameters from `serde_json::Value`
 3. Connect to the workspace database via `connect_db`
 4. Execute domain logic through `Queries` and service functions
-5. Return `Result<Value, TMemError>` where `Value` is `serde_json::Value`
+5. Return `Result<Value, EngramError>` where `Value` is `serde_json::Value`
 
 The `dispatch` function in `tools/mod.rs` matches tool names to handler functions. Tool parameters arrive as `serde_json::Value` and are deserialized within each tool.
 
@@ -156,12 +156,12 @@ The `dispatch` function in `tools/mod.rs` matches tool names to handler function
 
 ### CLI and Configuration
 
-The binary entrypoint (`src/bin/t-mem.rs`) uses `clap::Parser` derive on the `Config` struct:
+The binary entrypoint (`src/bin/engram.rs`) uses `clap::Parser` derive on the `Config` struct:
 
-* `port` (u16, env `TMEM_PORT`, default 7437)
-* `request_timeout_ms` (u64, env `TMEM_REQUEST_TIMEOUT_MS`, default 60000)
-* `data_dir` (PathBuf, env `TMEM_DATA_DIR`)
-* `log_format` (String, env `TMEM_LOG_FORMAT`, default "pretty")
+* `port` (u16, env `ENGRAM_PORT`, default 7437)
+* `request_timeout_ms` (u64, env `ENGRAM_REQUEST_TIMEOUT_MS`, default 60000)
+* `data_dir` (PathBuf, env `ENGRAM_DATA_DIR`)
+* `log_format` (String, env `ENGRAM_LOG_FORMAT`, default "pretty")
 
 Startup sequence: parse config -> validate -> ensure data directory -> init tracing -> bind socket -> build router -> serve with graceful shutdown.
 

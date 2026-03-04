@@ -4,9 +4,9 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tokio::test;
 
-use t_mem::errors::codes::{CONFIG_INVALID_VALUE, WORKSPACE_LIMIT_REACHED};
-use t_mem::server::state::AppState;
-use t_mem::tools;
+use engram::errors::codes::{CONFIG_INVALID_VALUE, WORKSPACE_LIMIT_REACHED};
+use engram::server::state::AppState;
+use engram::tools;
 
 #[test]
 async fn contract_set_workspace_returns_hydrated_flag() {
@@ -147,9 +147,9 @@ async fn contract_rate_limiting_rejects_excess_connections() {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use t_mem::config::StaleStrategy;
-    use t_mem::errors::codes::RATE_LIMITED;
-    use t_mem::server::router::build_router;
+    use engram::config::StaleStrategy;
+    use engram::errors::codes::RATE_LIMITED;
+    use engram::server::router::build_router;
 
     // Rate limit of 2 connections per 60s window for testing
     let state = Arc::new(AppState::with_options(10, StaleStrategy::Warn, 2, 60));
@@ -216,7 +216,7 @@ async fn contract_rate_limiting_rejects_excess_connections() {
 
 #[test]
 async fn contract_no_config_toml_uses_defaults() {
-    // When no .tmem/config.toml exists, set_workspace should succeed
+    // When no .engram/config.toml exists, set_workspace should succeed
     // and the config should use built-in defaults.
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -253,10 +253,10 @@ async fn contract_valid_config_populates_workspace_config() {
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
     // Write a valid config.toml
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram dir");
     fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"
 default_priority = "p1"
 allowed_labels = ["urgent", "bug"]
@@ -300,9 +300,9 @@ async fn contract_toml_parse_error_uses_defaults_with_warning() {
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
     // Write invalid TOML
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
-    fs::write(tmem_dir.join("config.toml"), "{{invalid toml").expect("write bad config");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram dir");
+    fs::write(engram_dir.join("config.toml"), "{{invalid toml").expect("write bad config");
 
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
@@ -333,10 +333,10 @@ async fn contract_invalid_config_value_returns_error() {
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
     // Write config.toml with invalid value: threshold_days=0
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem dir");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram dir");
     fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r"
 [compaction]
 threshold_days = 0

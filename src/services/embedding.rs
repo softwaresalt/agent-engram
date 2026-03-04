@@ -3,14 +3,14 @@
 //! Wraps `fastembed-rs` behind the `embeddings` feature flag. When the
 //! feature is disabled, all calls return `Err(QueryError::ModelNotLoaded)`.
 //!
-//! The model (`all-MiniLM-L6-v2`, 384 dimensions) is lazily downloaded
-//! on first use and cached under `~/.local/share/t-mem/models/`.
+//! The model (`bge-small-en-v1.5`, 384 dimensions) is lazily downloaded
+//! on first use and cached under `~/.local/share/engram/models/`.
 
 use std::path::PathBuf;
 
-use crate::errors::{QueryError, TMemError};
+use crate::errors::{EngramError, QueryError};
 
-/// Embedding vector dimension for `all-MiniLM-L6-v2`.
+/// Embedding vector dimension for `bge-small-en-v1.5`.
 pub const EMBEDDING_DIM: usize = 384;
 
 /// Maximum query length in characters (rough proxy for 500 tokens).
@@ -20,7 +20,7 @@ pub const MAX_QUERY_CHARS: usize = 2000;
 #[must_use]
 pub fn model_cache_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("t-mem").join("models")
+    base.join("engram").join("models")
 }
 
 /// Global, lazily-initialised embedding model.
@@ -38,12 +38,12 @@ static MODEL: std::sync::OnceLock<Result<fastembed::TextEmbedding, String>> =
 /// - The `embeddings` feature is disabled.
 /// - The ONNX model fails to download or load.
 #[cfg(feature = "embeddings")]
-fn get_model() -> Result<&'static fastembed::TextEmbedding, TMemError> {
+fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
     let result = MODEL.get_or_init(|| {
         let cache = model_cache_dir();
         std::fs::create_dir_all(&cache).ok();
 
-        let options = fastembed::InitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2)
+        let options = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::BGESmallENV15)
             .with_cache_dir(cache)
             .with_show_download_progress(true);
 
@@ -52,7 +52,14 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, TMemError> {
 
     match result {
         Ok(model) => Ok(model),
-        Err(reason) => Err(TMemError::Query(QueryError::ModelNotLoaded)),
+        Err(reason) => {
+            tracing::error!(reason = %reason, "embedding model initialisation failed");
+            Err(EngramError::System(
+                crate::errors::SystemError::ModelLoadFailed {
+                    reason: reason.clone(),
+                },
+            ))
+        }
     }
 }
 
@@ -62,16 +69,16 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, TMemError> {
 /// - `QueryError::ModelNotLoaded` when the model cannot be initialised.
 /// - `QueryError::SearchFailed` when generation itself fails.
 #[cfg(feature = "embeddings")]
-pub fn embed_text(text: &str) -> Result<Vec<f32>, TMemError> {
+pub fn embed_text(text: &str) -> Result<Vec<f32>, EngramError> {
     let model = get_model()?;
     let embeddings = model.embed(vec![text.to_string()], None).map_err(|e| {
-        TMemError::Query(QueryError::SearchFailed {
+        EngramError::Query(QueryError::SearchFailed {
             reason: e.to_string(),
         })
     })?;
 
     embeddings.into_iter().next().ok_or_else(|| {
-        TMemError::Query(QueryError::SearchFailed {
+        EngramError::Query(QueryError::SearchFailed {
             reason: "model returned no embeddings".to_string(),
         })
     })
@@ -82,13 +89,13 @@ pub fn embed_text(text: &str) -> Result<Vec<f32>, TMemError> {
 /// # Errors
 /// Same as [`embed_text`].
 #[cfg(feature = "embeddings")]
-pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, TMemError> {
+pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
     let model = get_model()?;
     model.embed(texts.to_vec(), None).map_err(|e| {
-        TMemError::Query(QueryError::SearchFailed {
+        EngramError::Query(QueryError::SearchFailed {
             reason: e.to_string(),
         })
     })
@@ -98,23 +105,23 @@ pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, TMemError> {
 
 /// Stub: always returns `ModelNotLoaded` when the `embeddings` feature is off.
 #[cfg(not(feature = "embeddings"))]
-pub fn embed_text(_text: &str) -> Result<Vec<f32>, TMemError> {
-    Err(TMemError::Query(QueryError::ModelNotLoaded))
+pub fn embed_text(_text: &str) -> Result<Vec<f32>, EngramError> {
+    Err(EngramError::Query(QueryError::ModelNotLoaded))
 }
 
 /// Stub: always returns `ModelNotLoaded` when the `embeddings` feature is off.
 #[cfg(not(feature = "embeddings"))]
-pub fn embed_texts(_texts: &[String]) -> Result<Vec<Vec<f32>>, TMemError> {
-    Err(TMemError::Query(QueryError::ModelNotLoaded))
+pub fn embed_texts(_texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
+    Err(EngramError::Query(QueryError::ModelNotLoaded))
 }
 
 /// Validate that a query string is within the token-length budget.
 ///
 /// # Errors
 /// Returns `QueryError::QueryTooLong` when the text exceeds [`MAX_QUERY_CHARS`].
-pub fn validate_query_length(query: &str) -> Result<(), TMemError> {
+pub fn validate_query_length(query: &str) -> Result<(), EngramError> {
     if query.len() > MAX_QUERY_CHARS {
-        return Err(TMemError::Query(QueryError::QueryTooLong));
+        return Err(EngramError::Query(QueryError::QueryTooLong));
     }
     Ok(())
 }

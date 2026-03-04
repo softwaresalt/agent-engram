@@ -8,12 +8,12 @@
 
 ### R1: TOML Configuration Parsing
 
-**Decision**: Use the `toml` crate (v0.8+) for parsing `.tmem/config.toml`.
+**Decision**: Use the `toml` crate (v0.8+) for parsing `.engram/config.toml`.
 
 **Rationale**: The `toml` crate is the de facto standard Rust TOML parser, directly compatible with serde derive. It supports nested tables natively (e.g., `[compaction]` section maps to nested struct or flat fields via `#[serde(rename)]`). Alternatives like `toml_edit` preserve formatting but add complexity unnecessary for read-only config loading.
 
 **Alternatives Considered**:
-- `toml_edit`: Preserves comments and formatting on write-back. Rejected because config.toml is read-only (t-mem never writes config).
+- `toml_edit`: Preserves comments and formatting on write-back. Rejected because config.toml is read-only (engram never writes config).
 - `serde_json` with JSON config: Rejected because TOML is more human-readable for workspace config files committed to Git.
 - Environment variables only: Rejected because per-workspace configuration requires file-based config, not process-level env vars.
 
@@ -61,17 +61,17 @@ Optional filters are appended dynamically via parameterized query building in th
 
 **Decision**: Two-phase MCP flow with rule-based truncation fallback.
 
-**Rationale**: Agents call `get_compaction_candidates()` → receive eligible tasks → generate summaries externally → call `apply_compaction(summaries)`. This avoids embedding an LLM in t-mem or managing API keys. For non-agent callers (e.g., CI pipelines), a rule-based truncation fallback truncates descriptions to 500 characters at word boundaries.
+**Rationale**: Agents call `get_compaction_candidates()` → receive eligible tasks → generate summaries externally → call `apply_compaction(summaries)`. This avoids embedding an LLM in engram or managing API keys. For non-agent callers (e.g., CI pipelines), a rule-based truncation fallback truncates descriptions to 500 characters at word boundaries.
 
 **Key Design Choices**:
-- Compaction is **one-way**: original content is not recoverable from t-mem (exists in Git history via `.tmem/tasks.md` commits).
+- Compaction is **one-way**: original content is not recoverable from engram (exists in Git history via `.engram/tasks.md` commits).
 - `compaction_level` counter increments on each application, allowing agents to detect already-compacted tasks.
 - Pinned tasks are excluded from candidates (they serve as permanent context).
 - Graph relationships (all edge types) are preserved — only description/content is compressed.
 
 **Alternatives Considered**:
 - Embedded local LLM (e.g., via candle): Rejected because it adds >500MB model weight, GPU dependency, and contradicts the spec's explicit decision.
-- API key-based summarization in t-mem: Rejected per spec — the calling agent provides summaries.
+- API key-based summarization in engram: Rejected per spec — the calling agent provides summaries.
 - Automatic compaction on `flush_state`: Rejected because compaction requires agent judgment for quality summaries.
 
 ### R5: Claim Semantics and Conflict Resolution
@@ -101,9 +101,9 @@ Optional filters are appended dynamically via parameterized query building in th
 
 ### R7: Comment Storage and Serialization
 
-**Decision**: Separate `comment` table in DB, serialized to `.tmem/comments.md` file.
+**Decision**: Separate `comment` table in DB, serialized to `.engram/comments.md` file.
 
-**Rationale**: Comments are append-only discussion entries separate from context notes (which track system events). Storing them in a separate table keeps the context table clean. Serialization to a dedicated `.tmem/comments.md` file avoids bloating task frontmatter and allows easy human review of discussions.
+**Rationale**: Comments are append-only discussion entries separate from context notes (which track system events). Storing them in a separate table keeps the context table clean. Serialization to a dedicated `.engram/comments.md` file avoids bloating task frontmatter and allows easy human review of discussions.
 
 **File Format**:
 ```markdown

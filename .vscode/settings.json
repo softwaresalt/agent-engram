@@ -4,19 +4,8 @@
         "speckit.specify": true,
         "speckit.plan": true,
         "speckit.tasks": true,
-        "build-orchestrator": true
-    },
-    "chat.agentFilesLocations": {
-      //"lib/hve-core/.github/agents": true,
-      ".github/agents": true
-    },
-    "chat.promptFilesLocations": {
-        "lib/hve-core/.github/prompts": true,
-        ".github/prompts": true
-    },
-    "chat.instructionsFilesLocations": {
-        "lib/hve-core/.github/instructions": true,
-        ".github/instructions": true
+        "build-orchestrator": true,
+        "speckit.implement": true
     },
     "chat.tools.terminal.autoApprove": {
         ".specify/scripts/bash/": true,
@@ -29,7 +18,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^git (status|add|commit|diff|log|fetch|pull|push|checkout|branch|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
+        "/^git (status|merge-base|add|commit|diff|log|fetch|pull|push|checkout|branch|llvm-cov|--version)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
             "approve": true,
             "matchCommandLine": true
         },
@@ -45,16 +34,17 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -File \"lib/hve-core/scripts/powershell/check-prerequisites.ps1\" -Json -RequireTasks -IncludeTasks$/": {
+        "/^pwsh -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -File \"\\.specify/scripts/powershell/check-prerequisites.ps1\" -Json -RequireTasks -IncludeTasks$/": {
+        "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "Out-Null": true,
-        "Get-Item": true,
-        "cargo test": true
+        "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

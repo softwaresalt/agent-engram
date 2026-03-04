@@ -1,8 +1,9 @@
-//! Typed error hierarchy for T-Mem domain operations.
+//! Typed error hierarchy for Engram domain operations.
 //!
 //! Errors are organized by domain: workspace (1xxx), hydration (2xxx),
-//! task (3xxx), query (4xxx), and system (5xxx). Each variant maps to a
-//! numeric error code defined in [codes].
+//! task (3xxx), query (4xxx), system (5xxx), config (6xxx), and
+//! code graph (7xxx). Each variant maps to a numeric error code
+//! defined in [codes].
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -84,7 +85,39 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Error)]
+pub enum CodeGraphError {
+    /// A source file could not be parsed by tree-sitter.
+    #[error("Failed to parse source file '{file_path}': line {line}, column {column}")]
+    ParseError {
+        file_path: String,
+        line: u32,
+        column: u32,
+    },
+    /// A file's language is not in the configured supported_languages list.
+    #[error("Language '{language}' is not supported for file '{file_path}'")]
+    UnsupportedLanguage { file_path: String, language: String },
+    /// An indexing or sync operation is already running for this workspace.
+    #[error("Indexing is already in progress for this workspace")]
+    IndexInProgress,
+    /// The requested symbol name does not exist in the code graph.
+    #[error("Symbol '{name}' not found in code graph")]
+    SymbolNotFound { name: String },
+    /// A source file exceeds the configured maximum file size.
+    #[error("File '{file_path}' exceeds maximum size ({size_bytes} > {max_bytes} bytes)")]
+    FileTooLarge {
+        file_path: String,
+        size_bytes: u64,
+        max_bytes: u64,
+    },
+    /// A sync operation detected conflicting state.
+    #[error("File '{file_path}' changed during sync operation")]
+    SyncConflict { file_path: String },
+}
+
+#[derive(Debug, Error)]
 pub enum QueryError {
+    #[error("Query must not be empty")]
+    QueryEmpty,
     #[error("Query too long")]
     QueryTooLong,
     #[error("Model not loaded")]
@@ -105,10 +138,12 @@ pub enum SystemError {
     ShuttingDown,
     #[error("Invalid request parameters: {reason}")]
     InvalidParams { reason: String },
+    #[error("Embedding model failed to load: {reason}")]
+    ModelLoadFailed { reason: String },
 }
 
 #[derive(Debug, Error)]
-pub enum TMemError {
+pub enum EngramError {
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
     #[error(transparent)]
@@ -121,6 +156,8 @@ pub enum TMemError {
     System(#[from] SystemError),
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error(transparent)]
+    CodeGraph(#[from] CodeGraphError),
 }
 
 #[derive(Debug, Serialize)]
@@ -137,10 +174,10 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-impl TMemError {
+impl EngramError {
     pub fn to_response(&self) -> ErrorResponse {
         let (code, name, message, details) = match self {
-            TMemError::Workspace(inner) => match inner {
+            EngramError::Workspace(inner) => match inner {
                 WorkspaceError::NotFound { path } => (
                     WORKSPACE_NOT_FOUND,
                     "WorkspaceNotFound",
@@ -172,7 +209,7 @@ impl TMemError {
                     Some(json!({ "limit": limit })),
                 ),
             },
-            TMemError::Hydration(inner) => match inner {
+            EngramError::Hydration(inner) => match inner {
                 HydrationError::Failed { reason } => (
                     HYDRATION_FAILED,
                     "HydrationFailed",
@@ -195,7 +232,7 @@ impl TMemError {
                     (STALE_WORKSPACE, "StaleWorkspace", inner.to_string(), None)
                 }
             },
-            TMemError::Task(inner) => match inner {
+            EngramError::Task(inner) => match inner {
                 TaskError::NotFound { id } => (
                     TASK_NOT_FOUND,
                     "TaskNotFound",
@@ -282,7 +319,8 @@ impl TMemError {
                     None,
                 ),
             },
-            TMemError::Query(inner) => match inner {
+            EngramError::Query(inner) => match inner {
+                QueryError::QueryEmpty => (QUERY_EMPTY, "QueryEmpty", inner.to_string(), None),
                 QueryError::QueryTooLong => {
                     (QUERY_TOO_LONG, "QueryTooLong", inner.to_string(), None)
                 }
@@ -296,7 +334,7 @@ impl TMemError {
                     Some(json!({ "reason": reason })),
                 ),
             },
-            TMemError::System(inner) => match inner {
+            EngramError::System(inner) => match inner {
                 SystemError::DatabaseError { reason } => (
                     DATABASE_ERROR,
                     "DatabaseError",
@@ -319,8 +357,14 @@ impl TMemError {
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
                 ),
+                SystemError::ModelLoadFailed { reason } => (
+                    MODEL_LOAD_FAILED,
+                    "ModelLoadFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason, "suggestion": "try restarting" })),
+                ),
             },
-            TMemError::Config(inner) => match inner {
+            EngramError::Config(inner) => match inner {
                 ConfigError::ParseError { reason } => (
                     CONFIG_PARSE_ERROR,
                     "ConfigParseError",
@@ -338,6 +382,67 @@ impl TMemError {
                     "UnknownConfigKey",
                     inner.to_string(),
                     Some(json!({ "key": key })),
+                ),
+            },
+            EngramError::CodeGraph(inner) => match inner {
+                CodeGraphError::ParseError {
+                    file_path,
+                    line,
+                    column,
+                } => (
+                    PARSE_ERROR,
+                    "ParseError",
+                    inner.to_string(),
+                    Some(
+                        json!({ "file_path": file_path, "line": line, "column": column, "suggestion": "Fix the syntax error and re-run sync_workspace" }),
+                    ),
+                ),
+                CodeGraphError::UnsupportedLanguage {
+                    file_path,
+                    language,
+                } => (
+                    UNSUPPORTED_LANGUAGE,
+                    "UnsupportedLanguage",
+                    inner.to_string(),
+                    Some(
+                        json!({ "file_path": file_path, "language": language, "supported": ["rust"], "suggestion": "Add language support or exclude the file via code_graph.exclude_patterns" }),
+                    ),
+                ),
+                CodeGraphError::IndexInProgress => (
+                    INDEX_IN_PROGRESS,
+                    "IndexInProgress",
+                    inner.to_string(),
+                    Some(
+                        json!({ "suggestion": "Wait for the current indexing operation to complete" }),
+                    ),
+                ),
+                CodeGraphError::SymbolNotFound { name } => (
+                    SYMBOL_NOT_FOUND,
+                    "SymbolNotFound",
+                    inner.to_string(),
+                    Some(
+                        json!({ "symbol_name": name, "suggestion": "Run index_workspace or check the symbol name spelling" }),
+                    ),
+                ),
+                CodeGraphError::FileTooLarge {
+                    file_path,
+                    size_bytes,
+                    max_bytes,
+                } => (
+                    FILE_TOO_LARGE,
+                    "FileTooLarge",
+                    inner.to_string(),
+                    Some(
+                        json!({ "file_path": file_path, "size_bytes": size_bytes, "max_bytes": max_bytes, "suggestion": "Exclude the file via code_graph.exclude_patterns or increase code_graph.max_file_size_bytes" }),
+                    ),
+                ),
+                CodeGraphError::SyncConflict { file_path } => (
+                    SYNC_CONFLICT,
+                    "SyncConflict",
+                    inner.to_string(),
+                    Some(
+                        json!({ "file_path": file_path, "suggestion": "Re-run sync_workspace to resolve the conflict" }),
+                    ),
                 ),
             },
         };
@@ -359,7 +464,7 @@ mod tests {
 
     #[test]
     fn maps_workspace_not_found() {
-        let err = TMemError::from(WorkspaceError::NotFound {
+        let err = EngramError::from(WorkspaceError::NotFound {
             path: "./missing".into(),
         });
         let payload = err.to_response();

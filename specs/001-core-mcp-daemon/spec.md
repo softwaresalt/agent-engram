@@ -1,20 +1,20 @@
-# Feature Specification: T-Mem Core MCP Daemon
+# Feature Specification: engram Core MCP Daemon
 
 **Feature Branch**: `001-core-mcp-daemon`  
 **Created**: 2026-02-05  
 **Status**: Draft  
-**Input**: Implement T-Mem v0 core MCP daemon: a high-performance local-first state engine serving as the shared brain for software development environments with SurrealDB backend, SSE transport, workspace isolation, and git-backed persistence
+**Input**: Implement engram v0 core MCP daemon: a high-performance local-first state engine serving as the shared brain for software development environments with SurrealDB backend, SSE transport, workspace isolation, and git-backed persistence
 
 ## User Scenarios & Testing *(mandatory)*
 
 <!--
-  User stories derived from T-Mem v0 specification.
+  User stories derived from engram v0 specification.
   Each story represents an independently deliverable slice of the daemon.
 -->
 
 ### User Story 1 - Daemon Connection & Workspace Binding (Priority: P1)
 
-As an MCP client (CLI, IDE, or agent), I connect to the T-Mem daemon and bind to a specific Git repository workspace so that all subsequent operations are scoped to that project's state.
+As an MCP client (CLI, IDE, or agent), I connect to the engram daemon and bind to a specific Git repository workspace so that all subsequent operations are scoped to that project's state.
 
 **Why this priority**: This is the foundational capability. Without connection and workspace binding, no other features can function. Every client interaction begins here.
 
@@ -35,7 +35,7 @@ As an orchestrator or agent, I create, update, and query tasks within my workspa
 
 **Why this priority**: Task management is the core value proposition. Once connected, clients need to read and write task state to coordinate work.
 
-**Independent Test**: Connect to workspace, call `create_task` to add a new task, call `update_task` to modify its status, call `get_task_graph` to verify the change, then call `flush_state` and verify the `.tmem/tasks.md` file reflects the update.
+**Independent Test**: Connect to workspace, call `create_task` to add a new task, call `update_task` to modify its status, call `get_task_graph` to verify the change, then call `flush_state` and verify the `.engram/tasks.md` file reflects the update.
 
 **Acceptance Scenarios**:
 
@@ -49,18 +49,18 @@ As an orchestrator or agent, I create, update, and query tasks within my workspa
 
 ### User Story 3 - Git-Backed Persistence (Priority: P3)
 
-As a developer, I flush workspace state to `.tmem/` files in my Git repository so that task state, context, and decisions travel with the codebase and can be committed, merged, and shared with teammates.
+As a developer, I flush workspace state to `.engram/` files in my Git repository so that task state, context, and decisions travel with the codebase and can be committed, merged, and shared with teammates.
 
-**Why this priority**: Persistence to Git-friendly files enables collaboration and state recovery. Without this, T-Mem is ephemeral.
+**Why this priority**: Persistence to Git-friendly files enables collaboration and state recovery. Without this, engram is ephemeral.
 
-**Independent Test**: Modify task state via MCP tools, call `flush_state`, verify `.tmem/tasks.md` contains human-readable task entries with preserved comments, and verify round-trip hydration reproduces the same state.
+**Independent Test**: Modify task state via MCP tools, call `flush_state`, verify `.engram/tasks.md` contains human-readable task entries with preserved comments, and verify round-trip hydration reproduces the same state.
 
 **Acceptance Scenarios**:
 
-1. **Given** modified workspace state, **When** `flush_state()` is called, **Then** the daemon writes `.tmem/tasks.md`, `.tmem/graph.surql`, and updates `.tmem/.lastflush`
-2. **Given** a `.tmem/tasks.md` with user comments, **When** `flush_state()` is called after task updates, **Then** user comments are preserved using structured diff merge
-3. **Given** a new workspace with no `.tmem/` directory, **When** `set_workspace` is called, **Then** the daemon initializes an empty workspace structure
-4. **Given** corrupted SurrealDB database files, **When** `set_workspace` is called, **Then** the daemon recovers by re-hydrating from `.tmem/` files
+1. **Given** modified workspace state, **When** `flush_state()` is called, **Then** the daemon writes `.engram/tasks.md`, `.engram/graph.surql`, and updates `.engram/.lastflush`
+2. **Given** a `.engram/tasks.md` with user comments, **When** `flush_state()` is called after task updates, **Then** user comments are preserved using structured diff merge
+3. **Given** a new workspace with no `.engram/` directory, **When** `set_workspace` is called, **Then** the daemon initializes an empty workspace structure
+4. **Given** corrupted SurrealDB database files, **When** `set_workspace` is called, **Then** the daemon recovers by re-hydrating from `.engram/` files
 
 ---
 
@@ -75,7 +75,7 @@ As an AI agent, I query the workspace memory using natural language so that I re
 **Acceptance Scenarios**:
 
 1. **Given** a workspace with specs and context, **When** `query_memory("user login")` is called, **Then** the daemon returns ranked snippets combining vector similarity and keyword matching
-2. **Given** the embedding model is not yet downloaded, **When** `query_memory` is called for the first time, **Then** the model is lazily downloaded to `~/.local/share/t-mem/models/`
+2. **Given** the embedding model is not yet downloaded, **When** `query_memory` is called for the first time, **Then** the model is lazily downloaded to `~/.local/share/engram/models/`
 3. **Given** no network access and model in cache, **When** `query_memory` is called, **Then** the search completes using cached model (offline-capable)
 4. **Given** a query exceeding 500 tokens, **When** `query_memory` is called, **Then** error code 4001 (QueryTooLong) is returned
 
@@ -101,17 +101,17 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 ### Edge Cases
 
 * What happens when workspace path contains symlinks? Canonicalize and validate the resolved path.
-* How does system handle concurrent external edits to `.tmem/` files? Default: warn-and-proceed (emit StaleWorkspace warning 2004, continue with in-memory state). Configurable via daemon config to `rehydrate` (reload from disk) or `fail` (reject operation until explicit resolve).
+* How does system handle concurrent external edits to `.engram/` files? Default: warn-and-proceed (emit StaleWorkspace warning 2004, continue with in-memory state). Configurable via daemon config to `rehydrate` (reload from disk) or `fail` (reject operation until explicit resolve).
 * What happens if SurrealDB database grows very large (>10K tasks)? Operations may degrade up to 3× baseline latency; recommend periodic archival of old context.
 * How does system handle workspaces on network drives? Not officially supported; may have latency issues.
-* What happens during ungraceful daemon termination (SIGKILL)? State in SurrealDB preserved; `.tmem/` may be stale until next flush.
+* What happens during ungraceful daemon termination (SIGKILL)? State in SurrealDB preserved; `.engram/` may be stale until next flush.
 
 ## Clarifications
 
 ### Session 2026-02-09
 
 - Q: What is the maximum number of concurrent workspaces per daemon? → A: Configurable upper bound with default of 10 (matches FR-002 client limit)
-- Q: What is the default conflict strategy for concurrent external edits to `.tmem/` files? → A: Default warn (emit stale-workspace warning, proceed with in-memory state); configurable to rehydrate or fail
+- Q: What is the default conflict strategy for concurrent external edits to `.engram/` files? → A: Default warn (emit stale-workspace warning, proceed with in-memory state); configurable to rehydrate or fail
 
 ### Session 2026-02-12
 
@@ -140,10 +140,10 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 * **FR-008**: System MUST reject paths containing `..` after canonicalization (path traversal prevention)
 * **FR-009**: System MUST map each workspace to an isolated SurrealDB database via deterministic path hash
 * **FR-009a**: System MUST enforce a configurable maximum number of concurrent active workspaces (default: 10); exceeding the limit returns an error prompting the client to release an existing workspace
-* **FR-010**: System MUST hydrate workspace state from `.tmem/` files on first access
-* **FR-011**: System MUST dehydrate workspace state to `.tmem/` files on `flush_state` call
+* **FR-010**: System MUST hydrate workspace state from `.engram/` files on first access
+* **FR-011**: System MUST dehydrate workspace state to `.engram/` files on `flush_state` call
 * **FR-012**: System MUST preserve user comments in `tasks.md` during dehydration using structured diff merge (via `similar` crate)
-* **FR-012a**: System MUST detect external modifications to `.tmem/` files (via mtime or content hash) before flush or hydrate operations
+* **FR-012a**: System MUST detect external modifications to `.engram/` files (via mtime or content hash) before flush or hydrate operations
 * **FR-012b**: System MUST default to warn-and-proceed when stale files are detected (emit error 2004 StaleWorkspace as warning, continue with in-memory state); behavior MUST be configurable to `rehydrate` or `fail`
 
 **Task Operations:**
@@ -207,6 +207,6 @@ As a development team, multiple clients (CLI orchestrator, IDE, dashboard) conne
 * Bidirectional sync with external work item trackers (ADO, GitHub Issues)
 * Multi-user authentication/authorization
 * Remote daemon access (always localhost)
-* Real-time file watching for `.tmem/` changes
+* Real-time file watching for `.engram/` changes
 * Web UI or dashboard
 * Workspace archival/cleanup utilities

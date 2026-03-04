@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 use crate::db::connect_db;
-use crate::db::queries::Queries;
+use crate::db::queries::{CodeGraphQueries, Queries};
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
-use crate::errors::{TMemError, WorkspaceError};
+use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::hydration::{
-    backfill_embeddings, detect_stale_since, hydrate_into_db, hydrate_workspace,
+    backfill_embeddings, detect_stale_since, hydrate_code_graph, hydrate_into_db, hydrate_workspace,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,26 +41,44 @@ pub struct WorkspaceStatus {
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,
+    pub code_graph: CodeGraphStats,
 }
 
-pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBinding, TMemError> {
+/// Summary statistics for the indexed code graph.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CodeGraphStats {
+    pub code_files: u64,
+    pub functions: u64,
+    pub classes: u64,
+    pub interfaces: u64,
+    pub edges: u64,
+}
+
+pub async fn set_workspace(
+    state: &AppState,
+    path: String,
+) -> Result<WorkspaceBinding, EngramError> {
     validate_workspace_path(&path)?;
 
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
 
     if !state.has_workspace_capacity().await {
-        return Err(TMemError::Workspace(WorkspaceError::LimitReached {
+        return Err(EngramError::Workspace(WorkspaceError::LimitReached {
             limit: state.max_workspaces(),
         }));
     }
 
     let hydration = hydrate_workspace(&canonical).await?;
 
-    // Connect to DB and load .tmem/ data into SurrealDB (T072)
+    // Connect to DB and load .engram/ data into SurrealDB (T072)
     let db = connect_db(&workspace_id).await?;
     let queries = Queries::new(db.clone());
     let db_result = hydrate_into_db(&canonical, &queries).await?;
+
+    // Hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
+    let cg_queries = CodeGraphQueries::new(db.clone());
+    let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
 
     // Backfill embeddings for specs/contexts that lack them (T086)
     backfill_embeddings(&queries).await;
@@ -98,7 +116,7 @@ pub async fn set_workspace(state: &AppState, path: String) -> Result<WorkspaceBi
     })
 }
 
-pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, TMemError> {
+pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
     let mut sys = System::new();
     sys.refresh_memory();
     let memory_bytes = sys.used_memory(); // sysinfo 0.30+ returns bytes
@@ -114,17 +132,36 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, TMemErr
     })
 }
 
-pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, TMemError> {
+pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
-        let tmem_dir = Path::new(&snapshot.path).join(".tmem");
+        let engram_dir = Path::new(&snapshot.path).join(".engram");
         let stale_now =
-            snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &tmem_dir);
+            snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &engram_dir);
 
         if stale_now != snapshot.stale_files {
             let _ = state
                 .update_workspace(|ws| ws.stale_files = stale_now)
                 .await;
         }
+
+        // Gather code graph stats from the database
+        let code_graph = if let Ok(db) = connect_db(&snapshot.workspace_id).await {
+            let cg_queries = CodeGraphQueries::new(db);
+            let code_files = cg_queries.count_code_files().await.unwrap_or(0);
+            let functions = cg_queries.count_functions().await.unwrap_or(0);
+            let classes = cg_queries.count_classes().await.unwrap_or(0);
+            let interfaces = cg_queries.count_interfaces().await.unwrap_or(0);
+            let edges = cg_queries.count_code_edges().await.unwrap_or(0);
+            CodeGraphStats {
+                code_files,
+                functions,
+                classes,
+                interfaces,
+                edges,
+            }
+        } else {
+            CodeGraphStats::default()
+        };
 
         return Ok(WorkspaceStatus {
             path: snapshot.path,
@@ -133,8 +170,9 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, T
             last_flush: snapshot.last_flush,
             stale_files: stale_now,
             connection_count: state.active_connections(),
+            code_graph,
         });
     }
 
-    Err(TMemError::Workspace(WorkspaceError::NotSet))
+    Err(EngramError::Workspace(WorkspaceError::NotSet))
 }

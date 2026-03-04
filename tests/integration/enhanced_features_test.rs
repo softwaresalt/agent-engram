@@ -11,15 +11,15 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use serde_json::json;
 
-use t_mem::db::connect_db;
-use t_mem::db::queries::Queries;
-use t_mem::errors::codes::LABEL_VALIDATION;
-use t_mem::models::graph::DependencyType;
-use t_mem::models::task::{Task, TaskStatus};
-use t_mem::server::state::{AppState, WorkspaceSnapshot};
-use t_mem::services::dehydration::dehydrate_workspace;
-use t_mem::services::hydration::hydrate_into_db;
-use t_mem::tools;
+use engram::db::connect_db;
+use engram::db::queries::Queries;
+use engram::errors::codes::LABEL_VALIDATION;
+use engram::models::graph::DependencyType;
+use engram::models::task::{Task, TaskStatus};
+use engram::server::state::{AppState, WorkspaceSnapshot};
+use engram::services::dehydration::dehydrate_workspace;
+use engram::services::hydration::hydrate_into_db;
+use engram::tools;
 
 fn test_snapshot(id: &str) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
@@ -290,14 +290,14 @@ async fn t033_labels_add_remove_filter_and_flush_rehydrate() {
     assert!(filtered_ids.contains(&"lbl1"), "lbl1 has both labels");
     assert!(filtered_ids.contains(&"lbl4"), "lbl4 has both labels");
 
-    // ── Flush (dehydrate) to .tmem/ files ──
+    // ── Flush (dehydrate) to .engram/ files ──
     dehydrate_workspace(&queries, tmpdir.path())
         .await
         .expect("dehydrate should succeed");
 
     // Verify tasks.md was written with labels
     let tasks_md =
-        std::fs::read_to_string(tmpdir.path().join(".tmem/tasks.md")).expect("read tasks.md");
+        std::fs::read_to_string(tmpdir.path().join(".engram/tasks.md")).expect("read tasks.md");
     assert!(
         tasks_md.contains("labels:"),
         "tasks.md should contain labels frontmatter"
@@ -539,8 +539,8 @@ async fn t040_parent_children_duplicate_blocked_by_in_ready_work() {
         .await
         .expect("dehydrate");
 
-    let graph_surql =
-        std::fs::read_to_string(tmpdir.path().join(".tmem/graph.surql")).expect("read graph.surql");
+    let graph_surql = std::fs::read_to_string(tmpdir.path().join(".engram/graph.surql"))
+        .expect("read graph.surql");
     assert!(
         graph_surql.contains("child_of"),
         "graph.surql should contain child_of edges"
@@ -756,7 +756,7 @@ async fn t047_compaction_50_done_tasks_apply_and_graph_preserved() {
         .expect("dehydrate after compaction");
 
     let tasks_md =
-        std::fs::read_to_string(tmpdir.path().join(".tmem/tasks.md")).expect("read tasks.md");
+        std::fs::read_to_string(tmpdir.path().join(".engram/tasks.md")).expect("read tasks.md");
     assert!(
         tasks_md.contains("Compacted summary for task 1"),
         "tasks.md should have compacted summary"
@@ -1019,7 +1019,7 @@ async fn t053_claim_release_conflict_audit_trail_and_assignee_filter() {
 
     assert_eq!(
         err.to_response().error.code,
-        t_mem::errors::codes::TASK_ALREADY_CLAIMED
+        engram::errors::codes::TASK_ALREADY_CLAIMED
     );
 
     // Agent-2 claims cl2 (different task, should succeed)
@@ -1112,7 +1112,7 @@ async fn t053_claim_release_conflict_audit_trail_and_assignee_filter() {
 
     assert_eq!(
         unclaimed_err.to_response().error.code,
-        t_mem::errors::codes::TASK_NOT_CLAIMABLE
+        engram::errors::codes::TASK_NOT_CLAIMABLE
     );
 }
 
@@ -1124,10 +1124,10 @@ async fn t058_issue_types_filter_custom_type_and_context_note() {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
     std::fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"allowed_types = ["task", "bug", "spike", "decision", "milestone"]
 "#,
     )
@@ -1204,7 +1204,7 @@ async fn t058_issue_types_filter_custom_type_and_context_note() {
     .expect_err("epic not in allowed_types");
     assert_eq!(
         err.to_response().error.code,
-        t_mem::errors::codes::INVALID_ISSUE_TYPE
+        engram::errors::codes::INVALID_ISSUE_TYPE
     );
 
     // ── Type change via update_task creates context note ────────
@@ -1251,7 +1251,7 @@ async fn t058_issue_types_filter_custom_type_and_context_note() {
     .expect_err("feature not in allowed_types");
     assert_eq!(
         err.to_response().error.code,
-        t_mem::errors::codes::INVALID_ISSUE_TYPE
+        engram::errors::codes::INVALID_ISSUE_TYPE
     );
 
     // ── Flush and rehydrate preserves issue_type ────────────────
@@ -1260,7 +1260,7 @@ async fn t058_issue_types_filter_custom_type_and_context_note() {
         .expect("flush_state");
 
     // Read tasks.md and verify issue_type appears in frontmatter
-    let tasks_md = std::fs::read_to_string(tmem_dir.join("tasks.md")).expect("read tasks.md");
+    let tasks_md = std::fs::read_to_string(engram_dir.join("tasks.md")).expect("read tasks.md");
     assert!(
         tasks_md.contains("issue_type: bug"),
         "bug type in frontmatter"
@@ -1305,9 +1305,9 @@ async fn t058_issue_types_filter_custom_type_and_context_note() {
 async fn t065_defer_pin_ready_work_interaction() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    std::fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
+    std::fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_str().unwrap().to_string();
@@ -1453,7 +1453,7 @@ async fn t065_defer_pin_ready_work_interaction() {
 
     // Verify frontmatter content
     let tasks_md =
-        std::fs::read_to_string(tmem_dir.join("tasks.md")).expect("read flushed tasks.md");
+        std::fs::read_to_string(engram_dir.join("tasks.md")).expect("read flushed tasks.md");
     assert!(
         tasks_md.contains("defer_until:"),
         "defer_until in frontmatter"
@@ -1494,12 +1494,12 @@ async fn t065_defer_pin_ready_work_interaction() {
 async fn t066_past_defer_until_immediately_eligible() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
 
     // Seed a task with defer_until in the past via markdown
     std::fs::write(
-        tmem_dir.join("tasks.md"),
+        engram_dir.join("tasks.md"),
         r"# Tasks
 
 ## task:past_defer
@@ -1552,9 +1552,9 @@ async fn t072_statistics_and_brief_mode_20_tasks() {
     let state = Arc::new(AppState::new(10));
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    std::fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
+    std::fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     tools::dispatch(
         state.clone(),
@@ -1864,7 +1864,7 @@ async fn t079_batch_update_comments_and_flush_rehydrate() {
         .expect("dehydrate");
 
     // Verify comments.md was written
-    let comments_path = tmp.path().join(".tmem").join("comments.md");
+    let comments_path = tmp.path().join(".engram").join("comments.md");
     assert!(
         comments_path.exists(),
         "comments.md should exist after flush"
@@ -1969,10 +1969,10 @@ async fn t086_config_enforces_labels_batch_and_compaction() {
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
     // Write config with restricted labels, batch max_size=5, threshold_days=14
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
     std::fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"
 allowed_labels = ["a", "b"]
 
@@ -2171,12 +2171,12 @@ async fn t087_rehydrate_after_config_change_and_missing_config() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
 
     // Initial config: batch.max_size=10
     std::fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r"
 [batch]
 max_size = 10
@@ -2206,7 +2206,7 @@ max_size = 10
 
     // Update config on disk: batch.max_size=20
     std::fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r"
 [batch]
 max_size = 20
@@ -2234,7 +2234,7 @@ max_size = 20
     );
 
     // Part 2: Remove config.toml, re-bind, defaults should apply
-    std::fs::remove_file(tmem_dir.join("config.toml")).expect("remove config.toml");
+    std::fs::remove_file(engram_dir.join("config.toml")).expect("remove config.toml");
 
     let state3 = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -2265,10 +2265,10 @@ async fn t088_end_to_end_full_workflow() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect("create .engram");
     std::fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"
 default_priority = "p2"
 allowed_labels = ["frontend", "backend", "urgent"]
@@ -2659,7 +2659,7 @@ async fn t091_workflow_fields_reserved() {
     // Setup workspace
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    std::fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+    std::fs::create_dir_all(workspace.path().join(".engram")).expect("create .engram");
 
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
@@ -2803,7 +2803,7 @@ async fn t091_workflow_fields_reserved() {
         .expect("task exists after rehydrate");
 
     // Workflow fields are DB-only, not persisted to markdown:
-    // after rehydration from .tmem/ files they're reset to None.
+    // after rehydration from .engram/ files they're reset to None.
     assert!(
         task_rehydrated.workflow_state.is_none(),
         "workflow_state is DB-only, not in markdown — None after rehydrate"
@@ -2827,7 +2827,7 @@ async fn t092_quickstart_payload_validation() {
     // Setup workspace
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    std::fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+    std::fs::create_dir_all(workspace.path().join(".engram")).expect("create .engram");
 
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();

@@ -16,11 +16,11 @@ use std::time::Instant;
 use chrono::{Duration, Utc};
 use serde_json::json;
 
-use t_mem::db::connect_db;
-use t_mem::db::queries::Queries;
-use t_mem::models::task::{Task, TaskStatus, compute_priority_order};
-use t_mem::server::state::AppState;
-use t_mem::tools;
+use engram::db::connect_db;
+use engram::db::queries::Queries;
+use engram::models::task::{Task, TaskStatus, compute_priority_order};
+use engram::server::state::AppState;
+use engram::tools;
 
 /// Helper: create a `Task` value for bulk insertion.
 fn make_perf_task(index: usize, status: TaskStatus, priority: &str) -> Task {
@@ -55,8 +55,8 @@ fn make_perf_task(index: usize, status: TaskStatus, priority: &str) -> Task {
 async fn perf_setup(task_count: usize) -> (Arc<AppState>, Queries) {
     let workspace = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect(".git");
-    let tmem_dir = workspace.path().join(".tmem");
-    std::fs::create_dir_all(&tmem_dir).expect(".tmem");
+    let engram_dir = workspace.path().join(".engram");
+    std::fs::create_dir_all(&engram_dir).expect(".engram");
 
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();

@@ -4,13 +4,13 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use t_mem::errors::codes::{
+use engram::errors::codes::{
     BATCH_PARTIAL_FAILURE, COMPACTION_FAILED, CYCLIC_DEPENDENCY, DUPLICATE_LABEL,
-    INVALID_ISSUE_TYPE, INVALID_STATUS, LABEL_VALIDATION, TASK_ALREADY_CLAIMED, TASK_NOT_CLAIMABLE,
-    TASK_NOT_FOUND, WORKSPACE_NOT_SET,
+    INDEX_IN_PROGRESS, INVALID_ISSUE_TYPE, INVALID_STATUS, LABEL_VALIDATION, TASK_ALREADY_CLAIMED,
+    TASK_NOT_CLAIMABLE, TASK_NOT_FOUND, WORKSPACE_NOT_SET,
 };
-use t_mem::server::state::AppState;
-use t_mem::tools;
+use engram::server::state::AppState;
+use engram::tools;
 
 #[test]
 async fn contract_update_task_requires_workspace() {
@@ -34,10 +34,10 @@ async fn contract_update_task_rejects_invalid_transition() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(
-        tmem_dir.join("tasks.md"),
+        engram_dir.join("tasks.md"),
         r"# Tasks
 
 ## task:t1
@@ -155,13 +155,13 @@ async fn contract_flush_state_response_shape() {
     assert!(
         files_arr
             .iter()
-            .any(|f| f.as_str() == Some(".tmem/tasks.md")),
+            .any(|f| f.as_str() == Some(".engram/tasks.md")),
         "should write tasks.md"
     );
     assert!(
         files_arr
             .iter()
-            .any(|f| f.as_str() == Some(".tmem/.lastflush")),
+            .any(|f| f.as_str() == Some(".engram/.lastflush")),
         "should write .lastflush"
     );
 
@@ -174,11 +174,14 @@ async fn contract_flush_state_response_shape() {
     assert!(ts.is_string(), "flush_timestamp should be string");
 
     // Verify files exist on disk
-    let tmem_dir = workspace.path().join(".tmem");
-    assert!(tmem_dir.join("tasks.md").exists(), "tasks.md on disk");
-    assert!(tmem_dir.join("graph.surql").exists(), "graph.surql on disk");
-    assert!(tmem_dir.join(".version").exists(), ".version on disk");
-    assert!(tmem_dir.join(".lastflush").exists(), ".lastflush on disk");
+    let engram_dir = workspace.path().join(".engram");
+    assert!(engram_dir.join("tasks.md").exists(), "tasks.md on disk");
+    assert!(
+        engram_dir.join("graph.surql").exists(),
+        "graph.surql on disk"
+    );
+    assert!(engram_dir.join(".version").exists(), ".version on disk");
+    assert!(engram_dir.join(".lastflush").exists(), ".lastflush on disk");
 }
 
 // ─── T127: Contract test for work_item_id assignment and retrieval (FR-017) ──
@@ -188,10 +191,10 @@ async fn contract_work_item_id_roundtrip_via_update_and_graph() {
     let workspace = tempfile::tempdir().expect("workspace");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(
-        tmem_dir.join("tasks.md"),
+        engram_dir.join("tasks.md"),
         r"# Tasks
 
 ## task:wi1
@@ -303,7 +306,7 @@ async fn contract_create_task_rejects_empty_title() {
         .expect_err("expected TaskTitleEmpty error");
 
     let code = err.to_response().error.code;
-    assert_eq!(code, t_mem::errors::codes::TASK_TITLE_EMPTY);
+    assert_eq!(code, engram::errors::codes::TASK_TITLE_EMPTY);
 }
 
 #[test]
@@ -333,7 +336,7 @@ async fn contract_create_task_rejects_oversized_title() {
     .expect_err("expected TaskTitleTooLong error for oversized title");
 
     let code = err.to_response().error.code;
-    assert_eq!(code, t_mem::errors::codes::TASK_TITLE_TOO_LONG);
+    assert_eq!(code, engram::errors::codes::TASK_TITLE_TOO_LONG);
 }
 
 // ─── T026: Contract tests for add_label and remove_label ────────────────────
@@ -473,11 +476,11 @@ async fn contract_add_label_not_in_allowed_list_returns_error() {
     let workspace = tempfile::tempdir().expect("workspace");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    // Write a .tmem/config.toml with allowed_labels
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    // Write a .engram/config.toml with allowed_labels
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"allowed_labels = ["frontend", "backend", "bug"]
 "#,
     )
@@ -735,9 +738,9 @@ async fn contract_apply_compaction_requires_workspace() {
 async fn contract_apply_compaction_nonexistent_task() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -794,9 +797,9 @@ async fn contract_release_task_requires_workspace() {
 async fn contract_claim_task_sets_assignee() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -835,9 +838,9 @@ async fn contract_claim_task_sets_assignee() {
 async fn contract_claim_already_claimed_returns_error() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -882,9 +885,9 @@ async fn contract_claim_already_claimed_returns_error() {
 async fn contract_release_unclaimed_returns_error() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -920,9 +923,9 @@ async fn contract_release_unclaimed_returns_error() {
 async fn contract_release_records_previous_claimant() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1018,11 +1021,11 @@ async fn contract_update_task_invalid_issue_type_returns_error() {
     let workspace = tempfile::tempdir().expect("workspace");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    // Write a .tmem/config.toml with allowed_types
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    // Write a .engram/config.toml with allowed_types
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"allowed_types = ["task", "bug", "spike"]
 "#,
     )
@@ -1111,11 +1114,11 @@ async fn contract_create_task_invalid_issue_type_returns_error() {
     let workspace = tempfile::tempdir().expect("workspace");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    // Write a .tmem/config.toml with allowed_types
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
+    // Write a .engram/config.toml with allowed_types
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(
-        tmem_dir.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"allowed_types = ["task", "bug", "spike"]
 "#,
     )
@@ -1202,9 +1205,9 @@ async fn contract_unpin_task_requires_workspace() {
 async fn contract_defer_task_sets_defer_until_and_creates_note() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1243,9 +1246,9 @@ async fn contract_defer_task_sets_defer_until_and_creates_note() {
 async fn contract_undefer_task_clears_and_returns_previous() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1294,9 +1297,9 @@ async fn contract_undefer_task_clears_and_returns_previous() {
 async fn contract_pin_task_sets_pinned_and_creates_note() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1334,9 +1337,9 @@ async fn contract_pin_task_sets_pinned_and_creates_note() {
 async fn contract_unpin_task_clears_pinned() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let tmem_dir = workspace.path().join(".tmem");
-    fs::create_dir_all(&tmem_dir).expect("create .tmem");
-    fs::write(tmem_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "# Tasks\n").expect("write tasks.md");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1399,7 +1402,7 @@ async fn contract_batch_update_tasks_requires_workspace() {
 async fn contract_batch_update_tasks_returns_per_item_results() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+    fs::create_dir_all(workspace.path().join(".engram")).expect("create .engram");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1454,7 +1457,7 @@ async fn contract_batch_update_tasks_returns_per_item_results() {
 async fn contract_batch_update_with_invalid_id_returns_partial_failure() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+    fs::create_dir_all(workspace.path().join(".engram")).expect("create .engram");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1514,7 +1517,7 @@ async fn contract_add_comment_requires_workspace() {
 async fn contract_add_comment_returns_comment_id() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+    fs::create_dir_all(workspace.path().join(".engram")).expect("create .engram");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1558,7 +1561,7 @@ async fn contract_add_comment_returns_comment_id() {
 async fn contract_add_comment_nonexistent_task_fails() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    fs::create_dir_all(workspace.path().join(".tmem")).expect("create .tmem");
+    fs::create_dir_all(workspace.path().join(".engram")).expect("create .engram");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1582,4 +1585,183 @@ async fn contract_add_comment_nonexistent_task_fails() {
     .expect_err("add_comment on nonexistent task should fail");
 
     assert_eq!(err.to_response().error.code, TASK_NOT_FOUND);
+}
+
+// ── index_workspace contract tests ──────────────────────────────────
+
+#[test]
+async fn contract_index_workspace_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "index_workspace", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_index_workspace_rejects_while_in_progress() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Simulate an indexing operation in progress.
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "index_workspace", Some(json!({})))
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+}
+
+// ── sync_workspace contract tests (T042) ────────────────────────────
+
+#[test]
+async fn contract_sync_workspace_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({}));
+
+    let err = tools::dispatch(state, "sync_workspace", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_sync_workspace_rejects_while_in_progress() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Simulate an indexing operation in progress.
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "sync_workspace", Some(json!({})))
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+}
+
+// ─── Phase 6: Cross-Region Task-to-Code Linking ─────────────────────────────
+
+#[test]
+async fn contract_link_task_to_code_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc123",
+        "symbol_name": "my_function",
+    }));
+
+    let err = tools::dispatch(state, "link_task_to_code", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+#[test]
+async fn contract_link_task_to_code_invalid_task() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    let err = tools::dispatch(
+        state,
+        "link_task_to_code",
+        Some(json!({
+            "task_id": "task:nonexistent",
+            "symbol_name": "some_fn",
+        })),
+    )
+    .await
+    .expect_err("expected task not found error");
+
+    assert_eq!(err.to_response().error.code, TASK_NOT_FOUND);
+}
+
+#[test]
+async fn contract_unlink_task_from_code_requires_workspace() {
+    let state = Arc::new(AppState::new(10));
+    let params = Some(json!({
+        "task_id": "task:abc123",
+        "symbol_name": "my_function",
+    }));
+
+    let err = tools::dispatch(state, "unlink_task_from_code", params)
+        .await
+        .expect_err("expected workspace not set error");
+
+    assert_eq!(err.to_response().error.code, WORKSPACE_NOT_SET);
+}
+
+// ── Phase 9: flush_state FR-153 guard ───────────────────────────────
+
+#[test]
+async fn contract_flush_state_rejects_while_indexing() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    let engram_dir = workspace.path().join(".engram");
+    fs::create_dir_all(&engram_dir).expect("create .engram");
+    fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
+    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+
+    let state = Arc::new(AppState::new(10));
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": workspace.path().to_str().unwrap() })),
+    )
+    .await
+    .expect("set_workspace should succeed");
+
+    // Simulate an indexing operation in progress
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "flush_state", Some(json!({})))
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
 }

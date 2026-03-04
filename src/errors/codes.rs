@@ -35,6 +35,7 @@ pub const TASK_TITLE_TOO_LONG: u16 = 3014;
 pub const QUERY_TOO_LONG: u16 = 4001;
 pub const MODEL_NOT_LOADED: u16 = 4002;
 pub const SEARCH_FAILED: u16 = 4003;
+pub const QUERY_EMPTY: u16 = 4004;
 
 /// System error codes
 pub const DATABASE_ERROR: u16 = 5001;
@@ -42,8 +43,18 @@ pub const FLUSH_FAILED: u16 = 5002;
 pub const RATE_LIMITED: u16 = 5003;
 pub const SHUTTING_DOWN: u16 = 5004;
 pub const INVALID_PARAMS: u16 = 5005;
+pub const MODEL_LOAD_FAILED: u16 = 5006;
 
 /// Config error codes
 pub const CONFIG_PARSE_ERROR: u16 = 6001;
 pub const CONFIG_INVALID_VALUE: u16 = 6002;
 pub const UNKNOWN_CONFIG_KEY: u16 = 6003;
+
+/// Code graph error codes
+pub const PARSE_ERROR: u16 = 7001;
+pub const UNSUPPORTED_LANGUAGE: u16 = 7002;
+pub const INDEX_IN_PROGRESS: u16 = 7003;
+pub const SYMBOL_NOT_FOUND: u16 = 7004;
+/// 7005 is reserved for future use.
+pub const FILE_TOO_LARGE: u16 = 7006;
+pub const SYNC_CONFLICT: u16 = 7007;

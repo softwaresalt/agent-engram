@@ -1,5 +1,10 @@
 ---
-description: Perform a non-destructive cross-artifact consistency and quality analysis across spec.md, plan.md, and tasks.md after task generation.
+description: Perform a non-destructive cross-artifact consistency and quality analysis across spec.md, plan.md, tasks.md, and SCENARIOS.md after task generation.
+handoffs: 
+  - label: Build the Feature
+    agent: build-orchestrator
+    prompt: feature: {specName}; phase: {phaseNumber}; mode: (single|full)
+    send: false
 ---
 
 ## User Input
@@ -12,7 +17,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 ## Goal
 
-Identify inconsistencies, duplications, ambiguities, and underspecified items across the three core artifacts (`spec.md`, `plan.md`, `tasks.md`) before implementation. This command MUST run only after `/speckit.tasks` has successfully produced a complete `tasks.md`.
+Identify inconsistencies, duplications, ambiguities, and underspecified items across the core artifacts (`spec.md`, `plan.md`, `tasks.md`, and optionally `SCENARIOS.md`) before implementation. This command MUST run only after `/speckit.tasks` has successfully produced a complete `tasks.md`. If `SCENARIOS.md` exists (produced by `/speckit.behavior`), it is included in the analysis automatically.
 
 ## Operating Constraints
 
@@ -31,6 +36,10 @@ Run `.specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireTasks -In
 - TASKS = FEATURE_DIR/tasks.md
 
 Abort with an error message if any required file is missing (instruct the user to run missing prerequisite command).
+
+Also check for the optional behavioral matrix:
+
+- SCENARIOS = FEATURE_DIR/SCENARIOS.md (optional — include in analysis if present)
 For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
 
 ### 2. Load Artifacts (Progressive Disclosure)
@@ -60,6 +69,14 @@ Load only the minimal necessary context from each artifact:
 - Parallel markers [P]
 - Referenced file paths
 
+**From SCENARIOS.md (if present):**
+
+- Scenario IDs and descriptions
+- Input states and execution triggers
+- Expected outputs and system states
+- Category classifications (happy-path, edge-case, error, boundary, concurrent, security)
+- Component/subsystem groupings
+
 **From constitution:**
 
 - Load `.specify/memory/constitution.md` for principle validation
@@ -71,6 +88,7 @@ Create internal representations (do not include raw artifacts in output):
 - **Requirements inventory**: Each functional + non-functional requirement with a stable key (derive slug based on imperative phrase; e.g., "User can upload file" → `user-can-upload-file`)
 - **User story/action inventory**: Discrete user actions with acceptance criteria
 - **Task coverage mapping**: Map each task to one or more requirements or stories (inference by keyword / explicit reference patterns like IDs or key phrases)
+- **Scenario coverage mapping** (if SCENARIOS.md present): Map each scenario to one or more requirements, stories, or tasks; track category distribution
 - **Constitution rule set**: Extract principle names and MUST/SHOULD normative statements
 
 ### 4. Detection Passes (Token-Efficient Analysis)
@@ -111,6 +129,16 @@ Focus on high-signal findings. Limit to 50 findings total; aggregate remainder i
 - Task ordering contradictions (e.g., integration tasks before foundational setup tasks without dependency note)
 - Conflicting requirements (e.g., one requires Next.js while other specifies Vue)
 
+#### G. Scenario Consistency (if SCENARIOS.md present)
+
+- Requirements with zero associated scenarios
+- Scenarios referencing components, entities, or endpoints not defined in spec/plan
+- Non-deterministic scenarios (ambiguous expected outcomes or multiple possible states)
+- Category distribution imbalance (less than 30% non-happy-path coverage)
+- Scenarios not reflected in test tasks (scenario rows with no corresponding task in tasks.md)
+- Tasks marked as test tasks with no corresponding scenario in SCENARIOS.md
+- Scenario triggers inconsistent with API contracts in `contracts/` or entity states in `data-model.md`
+
 ### 5. Severity Assignment
 
 Use this heuristic to prioritize findings:
@@ -134,8 +162,8 @@ Output a Markdown report (no file writes) with the following structure:
 
 **Coverage Summary Table:**
 
-| Requirement Key | Has Task? | Task IDs | Notes |
-|-----------------|-----------|----------|-------|
+| Requirement Key | Has Task? | Task IDs | Has Scenario? | Scenario IDs | Notes |
+|-----------------|-----------|----------|---------------|--------------|-------|
 
 **Constitution Alignment Issues:** (if any)
 
@@ -145,7 +173,10 @@ Output a Markdown report (no file writes) with the following structure:
 
 - Total Requirements
 - Total Tasks
-- Coverage % (requirements with >=1 task)
+- Total Scenarios (if SCENARIOS.md present)
+- Task Coverage % (requirements with >=1 task)
+- Scenario Coverage % (requirements with >=1 scenario, if SCENARIOS.md present)
+- Non-Happy-Path Scenario % (if SCENARIOS.md present)
 - Ambiguity Count
 - Duplication Count
 - Critical Issues Count

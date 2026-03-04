@@ -5,13 +5,13 @@
 
 ## Summary
 
-Add beads-inspired enhanced task management to t-mem: a priority-based ready-work queue, labels, 8-type dependency graph, agent-driven compaction, task claiming, issue types, defer/pin, output controls, batch operations, comments, and workspace configuration. The approach extends the existing v0 data model with new fields on the Task table, three new tables (label, comment, workspace_config), expanded edge types, and ~15 new MCP tools — all following the established dispatch pattern. Configuration is read from `.tmem/config.toml` during hydration. Compaction uses an agent-driven two-phase MCP flow (no embedded LLM).
+Add beads-inspired enhanced task management to engram: a priority-based ready-work queue, labels, 8-type dependency graph, agent-driven compaction, task claiming, issue types, defer/pin, output controls, batch operations, comments, and workspace configuration. The approach extends the existing v0 data model with new fields on the Task table, three new tables (label, comment, workspace_config), expanded edge types, and ~15 new MCP tools — all following the established dispatch pattern. Configuration is read from `.engram/config.toml` during hydration. Compaction uses an agent-driven two-phase MCP flow (no embedded LLM).
 
 ## Technical Context
 
 **Language/Version**: Rust 2024 edition, stable toolchain (1.85+)
 **Primary Dependencies**: axum 0.7, tokio 1 (full), surrealdb 2 (kv-surrealkv), mcp-sdk 0.0.3, fastembed 3 (optional), pulldown-cmark 0.10, similar 2, clap 4, tracing 0.1, toml (new — workspace config parsing), chrono 0.4 (existing — defer_until datetime)
-**Storage**: SurrealDB embedded (surrealkv backend), `.tmem/` markdown/SurrealQL/TOML files
+**Storage**: SurrealDB embedded (surrealkv backend), `.engram/` markdown/SurrealQL/TOML files
 **Testing**: cargo test, proptest 1 (property-based), tempfile 3, tokio-test 0.4
 **Target Platform**: Windows, macOS, Linux (local developer workstations)
 **Project Type**: Single Rust binary with library crate (extends v0 crate structure)
@@ -25,12 +25,12 @@ Add beads-inspired enhanced task management to t-mem: a priority-based ready-wor
 
 | # | Constitution Principle | Status | Evidence |
 |---|------------------------|--------|----------|
-| I | Rust Safety First | PASS | `#![forbid(unsafe_code)]` maintained; all new handlers return `Result<Value, TMemError>`; new error types use `thiserror`; no `unwrap()`/`expect()` in any handler code |
+| I | Rust Safety First | PASS | `#![forbid(unsafe_code)]` maintained; all new handlers return `Result<Value, EngramError>`; new error types use `thiserror`; no `unwrap()`/`expect()` in any handler code |
 | II | Async Concurrency Model | PASS | Tokio-only; claim/release uses existing `RwLock<AppState>`; batch_update iterates sequentially within a single tool call (no new locking primitives required); `spawn_blocking` for config file I/O |
 | III | Test-First Development | PASS | TDD enforced: all 10 user story phases start with contract tests (Red phase) before implementation (Green phase); property tests for all new models; 94 tasks with explicit Red/Green structure |
 | IV | MCP Protocol Compliance | PASS | SSE transport only; 15 new tool schemas follow existing JSON contract pattern; non-idempotent tools explicitly documented (FR-032 add_label, FR-039 apply_compaction, FR-044 claim_task); structured error responses for all new error codes |
-| V | Workspace Isolation | PASS | All new queries execute within workspace-scoped DB context; config.toml is per-workspace in `.tmem/`; no cross-workspace operations |
-| VI | Git-Friendly Persistence | PASS | Labels serialized in YAML frontmatter arrays (FR-031b); comments serialized to `.tmem/comments.md` (FR-063b); config in TOML (FR-064); all new files are human-readable text; atomic writes maintained |
+| V | Workspace Isolation | PASS | All new queries execute within workspace-scoped DB context; config.toml is per-workspace in `.engram/`; no cross-workspace operations |
+| VI | Git-Friendly Persistence | PASS | Labels serialized in YAML frontmatter arrays (FR-031b); comments serialized to `.engram/comments.md` (FR-063b); config in TOML (FR-064); all new files are human-readable text; atomic writes maintained |
 | VII | Observability & Debugging | PASS | Existing tracing infrastructure; claim/release events include claimant identity in context notes; batch operations return per-item results for debugging |
 | VIII | Error Handling & Recovery | PASS | 11 new error codes (3005–3012 task ops, 6001–6003 config) following existing taxonomy; malformed config falls back to defaults with `tracing::warn` (FR-066) |
 | IX | Simplicity & YAGNI | PASS | Workflow automation deferred to v1 (schema-ready only via reserved fields); no embedded LLM (agent-driven compaction); incremental delivery: each US independently deployable; single crate maintained |
@@ -61,7 +61,7 @@ specs/002-enhanced-task-management/
 src/
 ├── lib.rs               # Library root (unchanged)
 ├── bin/
-│   └── t-mem.rs         # Binary entry point (unchanged)
+│   └── engram.rs         # Binary entry point (unchanged)
 ├── config/
 │   └── mod.rs           # CLI config (unchanged)
 ├── db/
@@ -130,7 +130,7 @@ tests/
 | II | Async Concurrency Model | PASS | PASS | Config parsing uses `tokio::fs::read_to_string` + `toml::from_str` (sync parse in async context is negligible); no new locks beyond existing `RwLock<AppState>` |
 | III | Test-First Development | PASS | PASS | Data model includes `#[cfg(test)]` example for `compute_priority_order`; contracts define clear inputSchema/outputSchema for test assertion targets |
 | IV | MCP Protocol Compliance | PASS | PASS | 15 tool schemas fully defined in mcp-tools.json with error code references; `modified_tools` section documents backward-compatible v0 tool changes |
-| V | Workspace Isolation | PASS | PASS | `WorkspaceConfig` loaded per-workspace from `.tmem/config.toml`; `label` and `comment` tables scoped to workspace DB namespace |
+| V | Workspace Isolation | PASS | PASS | `WorkspaceConfig` loaded per-workspace from `.engram/config.toml`; `label` and `comment` tables scoped to workspace DB namespace |
 | VI | Git-Friendly Persistence | PASS | PASS | Three new file formats (config.toml, comments.md, enhanced tasks.md) are all human-readable text; parsing rules documented for each format |
 | VII | Observability & Debugging | PASS | PASS | Error examples with `details` objects include suggestion fields; batch results provide per-item diagnostics |
 | VIII | Error Handling & Recovery | PASS | PASS | 11 error codes fully specified with JSON examples, Retry/Recovery guidance, and Rust type definitions |

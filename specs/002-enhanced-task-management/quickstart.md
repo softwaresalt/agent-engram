@@ -29,7 +29,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-toml = "0.8"          # .tmem/config.toml parsing
+toml = "0.8"          # .engram/config.toml parsing
 # All other dependencies unchanged from v0
 ```
 
@@ -37,7 +37,7 @@ toml = "0.8"          # .tmem/config.toml parsing
 
 ## New File Formats
 
-### `.tmem/config.toml`
+### `.engram/config.toml`
 
 ```toml
 # Optional — defaults are used when absent
@@ -54,7 +54,7 @@ truncation_length = 500
 max_size = 100
 ```
 
-### `.tmem/comments.md`
+### `.engram/comments.md`
 
 ```markdown
 # Comments
@@ -346,7 +346,7 @@ cargo test -- --nocapture
 
 ## Configuration Reference
 
-### Workspace Config (`.tmem/config.toml`)
+### Workspace Config (`.engram/config.toml`)
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

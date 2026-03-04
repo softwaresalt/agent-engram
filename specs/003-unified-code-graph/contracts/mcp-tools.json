@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Monocoque Agent Engram MCP Tools — Unified Code Knowledge Graph",
+  "description": "New MCP tool definitions for code graph indexing, traversal, cross-region linking, and unified search",
+  "version": "0.3.0",
+  "tools": {
+    "index_workspace": {
+      "description": "Parse all supported source files in the workspace and populate the code knowledge graph with file, function, class, and interface nodes plus structural edges (calls, imports, inherits_from, defines). Generates embeddings using the tiered strategy (direct for small nodes, summary-pointer for large). Reports progress via SSE events.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "description": "If true, re-index all files regardless of existing state. If false (default), skips files with matching content_hash.",
+            "default": false
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "files_parsed": {
+            "type": "integer",
+            "description": "Number of source files parsed"
+          },
+          "files_skipped": {
+            "type": "integer",
+            "description": "Number of files skipped (unsupported language, too large, excluded)"
+          },
+          "functions_indexed": {
+            "type": "integer",
+            "description": "Total function nodes created"
+          },
+          "classes_indexed": {
+            "type": "integer",
+            "description": "Total class/struct nodes created"
+          },
+          "interfaces_indexed": {
+            "type": "integer",
+            "description": "Total interface/trait nodes created"
+          },
+          "edges_created": {
+            "type": "integer",
+            "description": "Total edges created (calls + imports + inherits_from + defines)"
+          },
+          "embeddings_generated": {
+            "type": "integer",
+            "description": "Number of embedding vectors generated"
+          },
+          "tier1_count": {
+            "type": "integer",
+            "description": "Nodes embedded as explicit_code (Tier 1)"
+          },
+          "tier2_count": {
+            "type": "integer",
+            "description": "Nodes embedded as summary_pointer (Tier 2)"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": { "type": "string" },
+                "error": { "type": "string" }
+              }
+            },
+            "description": "Per-file parse errors (non-fatal)"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "description": "Total indexing time in milliseconds"
+          }
+        },
+        "required": ["files_parsed", "files_skipped", "functions_indexed", "classes_indexed", "interfaces_indexed", "edges_created", "embeddings_generated", "duration_ms"]
+      },
+      "errors": [1003, 7003, 7006]
+    },
+    "sync_workspace": {
+      "description": "Detect changed, added, and deleted files since the last index and incrementally update the code graph. Uses two-level hashing: file-level content_hash to find changed files, symbol-level body_hash to re-embed only changed symbols. Preserves concerns edges via hash-resilient identity matching.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "files_added": {
+            "type": "integer",
+            "description": "Number of new files parsed"
+          },
+          "files_modified": {
+            "type": "integer",
+            "description": "Number of changed files re-parsed"
+          },
+          "files_deleted": {
+            "type": "integer",
+            "description": "Number of deleted files removed from graph"
+          },
+          "files_unchanged": {
+            "type": "integer",
+            "description": "Number of files with matching content_hash (skipped)"
+          },
+          "symbols_re_embedded": {
+            "type": "integer",
+            "description": "Number of symbols whose body_hash changed and required re-embedding"
+          },
+          "symbols_reused": {
+            "type": "integer",
+            "description": "Number of symbols with matching body_hash (embedding reused)"
+          },
+          "concerns_relinked": {
+            "type": "integer",
+            "description": "Number of concerns edges re-linked to moved symbols"
+          },
+          "concerns_orphaned": {
+            "type": "integer",
+            "description": "Number of concerns edges removed (symbol no longer exists)"
+          },
+          "no_changes": {
+            "type": "boolean",
+            "description": "True if no files changed since last index"
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        },
+        "required": ["files_added", "files_modified", "files_deleted", "files_unchanged", "no_changes", "duration_ms"]
+      },
+      "errors": [1003, 7003, 7007]
+    },
+    "map_code": {
+      "description": "Retrieve a code symbol's definition plus its graph neighborhood to the specified traversal depth. Returns full source bodies for all nodes. Falls back to vector search when the exact symbol name is not found.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol_name": {
+            "type": "string",
+            "description": "Name of the function, class, or interface to look up"
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Graph traversal depth (1 = direct neighbors only). Silently clamped to config max_traversal_depth if exceeded.",
+            "default": 1,
+            "minimum": 1,
+            "maximum": 5
+          },
+          "max_nodes": {
+            "type": "integer",
+            "description": "Maximum nodes to return before truncation. Silently clamped to config max_traversal_nodes if exceeded.",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "required": ["symbol_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/CodeNode",
+            "description": "The requested symbol with full source body"
+          },
+          "neighbors": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/CodeNode" },
+            "description": "Neighboring nodes within traversal depth, each with full source body"
+          },
+          "edges": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/Edge" },
+            "description": "Edges connecting root and neighbors"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True if results were truncated at max_nodes"
+          },
+          "fallback_used": {
+            "type": "boolean",
+            "description": "True if vector search was used (exact name not found)"
+          },
+          "matches": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/CodeNode" },
+            "description": "When symbol_name matches multiple nodes, all matches grouped by file"
+          },
+          "effective_depth": {
+            "type": "integer",
+            "description": "Actual depth used after config clamping"
+          },
+          "effective_max_nodes": {
+            "type": "integer",
+            "description": "Actual max_nodes used after config clamping"
+          }
+        },
+        "required": ["truncated", "fallback_used"],
+        "_response_modes": {
+          "description": "map_code returns one of three response shapes depending on match results",
+          "single_match": "root is populated with the matched node, neighbors contains BFS neighborhood, edges contains connecting edges, matches is null",
+          "multiple_matches": "root is null, matches contains all matching nodes grouped by file, neighbors and edges cover the first match's neighborhood",
+          "fallback_vector_search": "root is null, fallback_used is true, matches contains top vector-similarity results, neighbors is empty",
+          "no_results": "root is null, fallback_used is true, matches is empty array, neighbors is empty array"
+        }
+      },
+      "errors": [1003]
+    },
+    "link_task_to_code": {
+      "description": "Create concerns edges between a task and all code nodes matching the given symbol name.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task record ID (e.g., task:abc123)"
+          },
+          "symbol_name": {
+            "type": "string",
+            "description": "Name of the code symbol to link to"
+          }
+        },
+        "required": ["task_id", "symbol_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "symbol_name": { "type": "string" },
+          "links_created": {
+            "type": "integer",
+            "description": "Number of concerns edges created"
+          },
+          "matched_nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "type": { "type": "string" },
+                "file_path": { "type": "string" }
+              }
+            },
+            "description": "Code nodes that were linked"
+          }
+        },
+        "required": ["task_id", "symbol_name", "links_created"]
+      },
+      "errors": [1003, 3001, 7004]
+    },
+    "unlink_task_from_code": {
+      "description": "Remove concerns edges between a task and all code nodes matching the given symbol name.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task record ID"
+          },
+          "symbol_name": {
+            "type": "string",
+            "description": "Name of the code symbol to unlink from"
+          }
+        },
+        "required": ["task_id", "symbol_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string" },
+          "symbol_name": { "type": "string" },
+          "links_removed": {
+            "type": "integer",
+            "description": "Number of concerns edges removed"
+          }
+        },
+        "required": ["task_id", "symbol_name", "links_removed"]
+      },
+      "errors": [1003, 3001, 7004]
+    },
+    "get_active_context": {
+      "description": "Return all in-progress tasks with their linked code context. For the highest-priority task, includes full source bodies and 1-hop dependency neighborhoods of all concerns-linked code nodes. For remaining tasks, includes task metadata and linked symbol names only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "primary_task": {
+            "type": ["object", "null"],
+            "properties": {
+              "task": { "$ref": "#/$defs/TaskSummary" },
+              "relevant_code": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/CodeContext" },
+                "description": "Full code neighborhoods for linked symbols"
+              }
+            },
+            "description": "Highest-priority in-progress task with expanded code context. Null when no tasks are in_progress. Tiebreaker: created_at (oldest first)."
+          },
+          "other_tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task": { "$ref": "#/$defs/TaskSummary" },
+                "linked_symbols": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Symbol names only (no expanded neighborhoods)"
+                }
+              }
+            },
+            "description": "Remaining in-progress tasks with linked symbol names"
+          }
+        },
+        "required": ["other_tasks"]
+      },
+      "errors": [1003]
+    },
+    "unified_search": {
+      "description": "Perform hybrid vector+keyword search across both code and task regions, returning merged ranked results.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language search query"
+          },
+          "region": {
+            "type": "string",
+            "enum": ["code", "task", "all"],
+            "description": "Scope the search to a specific region",
+            "default": "all"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum results to return",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": ["query"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "region": { "type": "string", "enum": ["code", "task"] },
+                "score": { "type": "number" },
+                "node_type": { "type": "string", "description": "function, class, interface, code_file, task, context, spec" },
+                "id": { "type": "string" },
+                "title": { "type": "string", "description": "Symbol name or task title" },
+                "file_path": { "type": "string", "description": "For code nodes only" },
+                "line_range": { "type": "string", "description": "For code nodes: 'L42-L78'" },
+                "summary": { "type": "string" },
+                "status": { "type": "string", "description": "For task nodes only" },
+                "linked_symbols": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "For task nodes: linked code symbol names"
+                }
+              },
+              "required": ["region", "score", "node_type", "id"]
+            }
+          },
+          "total_matches": { "type": "integer" }
+        },
+        "required": ["results", "total_matches"]
+      },
+      "errors": [1003, 4001, 4002, 4003]
+    },
+    "impact_analysis": {
+      "description": "Traverse code dependencies and cross-region concerns edges to find all tasks affected by changes to a specific code symbol.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol_name": {
+            "type": "string",
+            "description": "Name of the code symbol to analyze"
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Traversal depth for code dependencies",
+            "default": 1,
+            "minimum": 1,
+            "maximum": 5
+          },
+          "status_filter": {
+            "type": "string",
+            "description": "Filter tasks by status (e.g., 'in_progress')"
+          }
+        },
+        "required": ["symbol_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string" },
+              "file_path": { "type": "string" }
+            }
+          },
+          "code_neighborhood": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/CodeNode" },
+            "description": "Code nodes reachable within depth"
+          },
+          "affected_tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task": { "$ref": "#/$defs/TaskSummary" },
+                "dependency_path": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Chain of symbol names from the target to the linked symbol"
+                }
+              }
+            },
+            "description": "Tasks linked to any code node in the neighborhood"
+          },
+          "no_task_links": {
+            "type": "boolean",
+            "description": "True if no tasks reference this symbol or its neighbors"
+          },
+          "effective_depth": {
+            "type": "integer",
+            "description": "Actual depth used after config clamping"
+          },
+          "effective_max_nodes": {
+            "type": "integer",
+            "description": "Actual max_nodes used after config clamping"
+          }
+        },
+        "required": ["affected_tasks", "no_task_links"]
+      },
+      "errors": [1003, 7004]
+    },
+    "list_symbols": {
+      "description": "Return a paginated list of indexed code symbols (functions, classes, interfaces). Enables agents to discover valid symbol names before invoking map_code, link_task_to_code, or impact_analysis.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Filter symbols by file path (workspace-relative)"
+          },
+          "node_type": {
+            "type": "string",
+            "enum": ["function", "class", "interface"],
+            "description": "Filter by node type"
+          },
+          "name_prefix": {
+            "type": "string",
+            "description": "Filter symbols whose name starts with this prefix"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum results to return",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Number of results to skip for pagination",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "type": "string", "enum": ["function", "class", "interface"] },
+                "file_path": { "type": "string" },
+                "line_start": { "type": "integer" },
+                "line_end": { "type": "integer" }
+              },
+              "required": ["name", "type", "file_path"]
+            }
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Total number of matching symbols (for pagination)"
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "True if more results exist beyond limit+offset"
+          }
+        },
+        "required": ["symbols", "total_count", "has_more"]
+      },
+      "errors": [1003, 7003, 7004]
+    }
+  },
+  "modified_tools": {
+    "flush_state": {
+      "description": "Extended to also serialize code graph metadata to .engram/code-graph/nodes.jsonl and .engram/code-graph/edges.jsonl. Returns error 7003 if indexing is in progress.",
+      "changes": ["Writes .engram/code-graph/nodes.jsonl (code node metadata, embeddings, hashes — no source bodies)", "Writes .engram/code-graph/edges.jsonl (all code and cross-region edges)", "Returns error 7003 (IndexInProgress) if index_workspace or sync_workspace is running"],
+      "backward_compatible": true
+    },
+    "set_workspace": {
+      "description": "Extended to hydrate code graph from .engram/code-graph/ metadata + source file parsing",
+      "changes": ["Reads .engram/code-graph/nodes.jsonl and edges.jsonl", "Parses source files for code node bodies", "Compares body_hash for diff-rehydration (reuses persisted embeddings for unchanged symbols)"],
+      "backward_compatible": true
+    },
+    "get_workspace_status": {
+      "description": "Extended to include code graph statistics",
+      "changes": ["Response includes code_graph object with file_count, function_count, class_count, interface_count, edge_count, concerns_count, last_indexed_at"],
+      "backward_compatible": true
+    }
+  },
+  "$defs": {
+    "CodeNode": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["function", "class", "interface", "code_file"] },
+        "name": { "type": "string" },
+        "file_path": { "type": "string" },
+        "line_start": { "type": "integer" },
+        "line_end": { "type": "integer" },
+        "signature": { "type": "string" },
+        "body": { "type": "string", "description": "Full source body (included per FR-148 for map_code, get_active_context, impact_analysis; NOT included for unified_search results)" },
+        "embed_type": { "type": "string" },
+        "summary": { "type": "string" }
+      },
+      "required": ["id", "type", "name", "file_path"]
+    },
+    "CodeContext": {
+      "type": "object",
+      "properties": {
+        "symbol": { "$ref": "#/$defs/CodeNode" },
+        "neighbors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CodeNode" },
+          "description": "1-hop dependency neighborhood"
+        }
+      },
+      "required": ["symbol"]
+    },
+    "Edge": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["calls", "imports", "inherits_from", "defines", "concerns"] },
+        "from": { "type": "string" },
+        "to": { "type": "string" }
+      },
+      "required": ["type", "from", "to"]
+    },
+    "TaskSummary": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "status": { "type": "string" },
+        "priority": { "type": "string" },
+        "work_item_id": { "type": "string" }
+      },
+      "required": ["id", "title", "status"]
+    }
+  }
+}

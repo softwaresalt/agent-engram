@@ -14,7 +14,7 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
 use tokio::sync::RwLock;
 
-use crate::errors::{SystemError, TMemError};
+use crate::errors::{EngramError, SystemError};
 
 pub mod queries;
 pub mod schema;
@@ -30,7 +30,7 @@ static DB_CACHE: LazyLock<RwLock<HashMap<String, Db>>> =
 
 /// Return a cached SurrealDB handle for the given workspace, opening a new
 /// connection only on the first call for each hash.
-pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
+pub async fn connect_db(workspace_hash: &str) -> Result<Db, EngramError> {
     // Fast path: existing connection
     {
         let cache = DB_CACHE.read().await;
@@ -41,10 +41,10 @@ pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
 
     // Slow path: open, schema-bootstrap, then cache
     let base = data_dir().unwrap_or_else(|| PathBuf::from("./"));
-    let db_path = base.join("t-mem").join("db").join(workspace_hash);
+    let db_path = base.join("engram").join("db").join(workspace_hash);
 
     fs::create_dir_all(&db_path).map_err(|e| {
-        TMemError::from(SystemError::DatabaseError {
+        EngramError::from(SystemError::DatabaseError {
             reason: format!("failed to create db directory: {e}"),
         })
     })?;
@@ -53,7 +53,7 @@ pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
         .await
         .map_err(map_db_err)?;
 
-    db.use_ns("tmem")
+    db.use_ns("engram")
         .use_db(workspace_hash)
         .await
         .map_err(map_db_err)?;
@@ -66,7 +66,7 @@ pub async fn connect_db(workspace_hash: &str) -> Result<Db, TMemError> {
     Ok(db)
 }
 
-async fn ensure_schema(db: &Db) -> Result<(), TMemError> {
+async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
     db.query(schema::DEFINE_SPEC).await.map_err(map_db_err)?;
     db.query(schema::DEFINE_TASK).await.map_err(map_db_err)?;
     db.query(schema::DEFINE_CONTEXT).await.map_err(map_db_err)?;
@@ -75,12 +75,25 @@ async fn ensure_schema(db: &Db) -> Result<(), TMemError> {
     db.query(schema::DEFINE_RELATIONSHIPS)
         .await
         .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CODE_FILE)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_FUNCTION)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CLASS).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_INTERFACE)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CODE_EDGES)
+        .await
+        .map_err(map_db_err)?;
     Ok(())
 }
 
-/// Map Surreal errors into TMemError
-pub fn map_db_err<E: ToString>(err: E) -> TMemError {
-    TMemError::from(SystemError::DatabaseError {
+/// Map Surreal errors into EngramError
+pub fn map_db_err<E: ToString>(err: E) -> EngramError {
+    EngramError::from(SystemError::DatabaseError {
         reason: err.to_string(),
     })
 }

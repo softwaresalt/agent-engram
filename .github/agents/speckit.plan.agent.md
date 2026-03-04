@@ -1,6 +1,10 @@
 ---
 description: Execute the implementation planning workflow using the plan template to generate design artifacts.
 handoffs: 
+  - label: Generate Behavioral Matrix
+    agent: speckit.behavior
+    prompt: Generate the behavioral matrix from the plan
+    send: true
   - label: Create Tasks
     agent: speckit.tasks
     prompt: Break the plan into tasks
@@ -87,3 +91,11 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 - Use absolute paths
 - ERROR on gate failures or unresolved clarifications
+
+## Next Steps & Handoff
+
+When you have successfully generated and saved `PLAN.md`, you MUST explicitly prompt the user to generate the behavioral matrix before moving to task breakdown.
+
+End your response with this exact message:
+> **Plan Generated.** Your next step in the Spec-Driven Development workflow is to define the exact permutations and edge cases for these features.
+> Please run: `/speckit.behavior`

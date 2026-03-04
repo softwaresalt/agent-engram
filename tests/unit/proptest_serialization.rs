@@ -2,15 +2,21 @@
 //!
 //! Verifies that tasks serialized to tasks.md format and parsed back
 //! produce equivalent structured data — SC-008 compliance.
+//! Also includes code graph model serde round-trips (T029).
 
 use std::collections::HashMap;
 
 use chrono::Utc;
 use proptest::prelude::*;
 
-use t_mem::models::task::{Task, TaskStatus, compute_priority_order};
-use t_mem::services::dehydration::serialize_tasks_md;
-use t_mem::services::hydration::parse_tasks_md;
+use engram::models::class::Class;
+use engram::models::code_edge::{CodeEdge, CodeEdgeType};
+use engram::models::code_file::CodeFile;
+use engram::models::function::Function;
+use engram::models::interface::Interface;
+use engram::models::task::{Task, TaskStatus, compute_priority_order};
+use engram::services::dehydration::serialize_tasks_md;
+use engram::services::hydration::parse_tasks_md;
 
 fn arb_status() -> impl Strategy<Value = TaskStatus> {
     prop_oneof![
@@ -374,4 +380,240 @@ fn t090_round_trip_all_enhanced_fields() {
     assert_eq!(rt.compaction_level, 2);
     assert!(rt.compacted_at.is_some());
     assert_eq!(parsed[0].labels, vec!["frontend", "urgent"]);
+}
+
+// --- Code graph model serde round-trip tests (T029) ---
+
+fn arb_code_file_serde() -> impl Strategy<Value = CodeFile> {
+    (
+        "code_file:[a-f0-9]{8}",
+        "src/[a-z]{3,10}\\.rs",
+        Just("rust".to_owned()),
+        100..100_000u64,
+        "[a-f0-9]{64}",
+    )
+        .prop_map(|(id, path, language, size_bytes, content_hash)| CodeFile {
+            id,
+            path,
+            language,
+            size_bytes,
+            content_hash,
+            last_indexed_at: Utc::now().to_rfc3339(),
+        })
+}
+
+fn arb_embedding_serde() -> impl Strategy<Value = Vec<f32>> {
+    prop::collection::vec(-1.0f32..1.0f32, 384..=384)
+}
+
+fn arb_function_serde() -> impl Strategy<Value = Function> {
+    (
+        (
+            "function:[a-z0-9]{8}",
+            "[a-z_]{3,20}",
+            "src/[a-z]{3,10}\\.rs",
+            1..500u32,
+            1..500u32,
+            "fn [a-z_]{3,20}\\(\\)",
+            prop::option::of(".{5,60}"),
+        ),
+        (
+            ".{10,200}",
+            "[a-f0-9]{64}",
+            1..500u32,
+            prop::sample::select(vec!["explicit_code", "summary_pointer"]),
+            arb_embedding_serde(),
+            ".{10,100}",
+        ),
+    )
+        .prop_map(
+            |(
+                (id, name, file_path, line_start, line_end_offset, signature, docstring),
+                (body, body_hash, token_count, embed_type, embedding, summary),
+            )| {
+                Function {
+                    id,
+                    name,
+                    file_path,
+                    line_start,
+                    line_end: line_start + line_end_offset,
+                    signature,
+                    docstring,
+                    body,
+                    body_hash,
+                    token_count,
+                    embed_type: embed_type.to_owned(),
+                    embedding,
+                    summary,
+                }
+            },
+        )
+}
+
+fn arb_class_serde() -> impl Strategy<Value = Class> {
+    (
+        "class:[a-z0-9]{8}",
+        "[A-Z][a-z]{2,15}",
+        "src/[a-z]{3,10}\\.rs",
+        1..500u32,
+        1..500u32,
+        prop::option::of(".{5,60}"),
+        ".{10,200}",
+        "[a-f0-9]{64}",
+        1..500u32,
+        prop::sample::select(vec!["explicit_code", "summary_pointer"]),
+        arb_embedding_serde(),
+        ".{10,100}",
+    )
+        .prop_map(
+            |(
+                id,
+                name,
+                file_path,
+                line_start,
+                line_end_offset,
+                docstring,
+                body,
+                body_hash,
+                token_count,
+                embed_type,
+                embedding,
+                summary,
+            )| {
+                Class {
+                    id,
+                    name,
+                    file_path,
+                    line_start,
+                    line_end: line_start + line_end_offset,
+                    docstring,
+                    body,
+                    body_hash,
+                    token_count,
+                    embed_type: embed_type.to_owned(),
+                    embedding,
+                    summary,
+                }
+            },
+        )
+}
+
+fn arb_interface_serde() -> impl Strategy<Value = Interface> {
+    (
+        "interface:[a-z0-9]{8}",
+        "[A-Z][a-z]{2,15}",
+        "src/[a-z]{3,10}\\.rs",
+        1..500u32,
+        1..500u32,
+        prop::option::of(".{5,60}"),
+        ".{10,200}",
+        "[a-f0-9]{64}",
+        1..500u32,
+        prop::sample::select(vec!["explicit_code", "summary_pointer"]),
+        arb_embedding_serde(),
+        ".{10,100}",
+    )
+        .prop_map(
+            |(
+                id,
+                name,
+                file_path,
+                line_start,
+                line_end_offset,
+                docstring,
+                body,
+                body_hash,
+                token_count,
+                embed_type,
+                embedding,
+                summary,
+            )| {
+                Interface {
+                    id,
+                    name,
+                    file_path,
+                    line_start,
+                    line_end: line_start + line_end_offset,
+                    docstring,
+                    body,
+                    body_hash,
+                    token_count,
+                    embed_type: embed_type.to_owned(),
+                    embedding,
+                    summary,
+                }
+            },
+        )
+}
+
+fn arb_code_edge_type_serde() -> impl Strategy<Value = CodeEdgeType> {
+    prop_oneof![
+        Just(CodeEdgeType::Calls),
+        Just(CodeEdgeType::Imports),
+        Just(CodeEdgeType::InheritsFrom),
+        Just(CodeEdgeType::Defines),
+        Just(CodeEdgeType::Concerns),
+    ]
+}
+
+fn arb_code_edge_serde() -> impl Strategy<Value = CodeEdge> {
+    (
+        arb_code_edge_type_serde(),
+        "function:[a-z0-9]{8}",
+        "function:[a-z0-9]{8}",
+        prop::option::of("[a-z:]{5,30}"),
+        prop::option::of("[a-z_]{3,15}"),
+    )
+        .prop_map(|(edge_type, from, to, import_path, linked_by)| CodeEdge {
+            edge_type,
+            from,
+            to,
+            import_path,
+            linked_by,
+            created_at: Utc::now().to_rfc3339(),
+        })
+}
+
+proptest! {
+    #[test]
+    fn code_file_serde_roundtrip(cf in arb_code_file_serde()) {
+        let json = serde_json::to_string(&cf).unwrap();
+        let decoded: CodeFile = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(cf, decoded);
+    }
+
+    #[test]
+    fn function_serde_roundtrip(f in arb_function_serde()) {
+        let json = serde_json::to_string(&f).unwrap();
+        let decoded: Function = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(f, decoded);
+    }
+
+    #[test]
+    fn class_serde_roundtrip(c in arb_class_serde()) {
+        let json = serde_json::to_string(&c).unwrap();
+        let decoded: Class = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(c, decoded);
+    }
+
+    #[test]
+    fn interface_serde_roundtrip(i in arb_interface_serde()) {
+        let json = serde_json::to_string(&i).unwrap();
+        let decoded: Interface = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(i, decoded);
+    }
+
+    #[test]
+    fn code_edge_serde_roundtrip(edge in arb_code_edge_serde()) {
+        let json = serde_json::to_string(&edge).unwrap();
+        let decoded: CodeEdge = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(edge, decoded);
+    }
+
+    #[test]
+    fn code_edge_type_serde_roundtrip(et in arb_code_edge_type_serde()) {
+        let json = serde_json::to_string(&et).unwrap();
+        let decoded: CodeEdgeType = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(et, decoded);
+    }
 }

@@ -1,4 +1,4 @@
-# Full Specification Quality Checklist: T-Mem Core MCP Daemon
+# Full Specification Quality Checklist: engram Core MCP Daemon
 
 **Purpose**: Deep requirements-quality validation across all 5 user stories, functional requirements, success criteria, edge cases, and cross-cutting concerns. Designed for consumption by automated agent development workflows.
 **Created**: 2026-02-12
@@ -20,11 +20,11 @@
 - [ ] CHK008 - Are requirements defined for deleting or archiving tasks, specs, or context nodes? [Completeness, Gap — only CRUD create/update paths exist; no delete/archive FR]
 - [ ] CHK009 - Are requirements defined for `source_client` validation on Context creation — what values are valid? [Completeness, Gap — data-model.md says "alphanumeric + underscore" but no FR enforces this]
 - [ ] CHK010 - Are requirements defined for how the daemon determines its own `version` string reported by `get_daemon_status`? [Completeness, Gap — FR-022 says "version" but source of truth (Cargo.toml, hardcoded, env var) is unspecified]
-- [ ] CHK011 - Are requirements defined for what files `set_workspace` creates when initializing a new `.tmem/` directory? [Completeness, Gap — US3 scenario 3 says "initializes empty workspace structure" but doesn't enumerate which files]
-- [ ] CHK012 - Are requirements defined for `.tmem/.version` file handling — migration behavior when version mismatch is detected? [Completeness, Gap — data-model.md §Schema Migration describes forward migration but spec.md has no FR for it]
+- [ ] CHK011 - Are requirements defined for what files `set_workspace` creates when initializing a new `.engram/` directory? [Completeness, Gap — US3 scenario 3 says "initializes empty workspace structure" but doesn't enumerate which files]
+- [ ] CHK012 - Are requirements defined for `.engram/.version` file handling — migration behavior when version mismatch is detected? [Completeness, Gap — data-model.md §Schema Migration describes forward migration but spec.md has no FR for it]
 - [ ] CHK013 - Are requirements defined for `max_workspaces` behavior when the same workspace is re-bound by a different client — does it count as one or two? [Completeness, Gap — FR-009a says "concurrent active workspaces" but doesn't define counting semantics]
 - [ ] CHK014 - Is the `work_item_id` format validation requirement (ADO `AB#\d+` or GitHub `[\w-]+/[\w-]+#\d+`) specified in spec.md, or only in data-model.md? [Completeness, Gap — FR-017 says "reference storage only" without format validation; data-model.md adds regex constraint]
-- [ ] CHK015 - Are requirements defined for what happens when a workspace path is valid but the `.tmem/` directory contains unparseable files? [Completeness, Gap — US3 scenario 4 covers corrupted DB but not corrupted `.tmem/` files]
+- [ ] CHK015 - Are requirements defined for what happens when a workspace path is valid but the `.engram/` directory contains unparseable files? [Completeness, Gap — US3 scenario 4 covers corrupted DB but not corrupted `.engram/` files]
 
 ## Requirement Clarity
 
@@ -66,7 +66,7 @@
 - [ ] CHK042 - Are requirements defined for the `add_blocker` tool when the task is already `blocked` — is it a no-op, additional blocker, or error? [Coverage, Gap — US2§3 assumes non-blocked task; re-block path unspecified]
 - [ ] CHK043 - Are requirements defined for `update_task` when the task is already in the target status — is same-status update allowed? [Coverage, Gap — idempotency annotation says "no-op for status" but no FR specifies this]
 - [ ] CHK044 - Are requirements defined for concurrent `set_workspace` calls to the same path from different connections — second call hydration behavior? [Coverage, Gap — FR-010 says "first access" but doesn't address same-workspace re-binding]
-- [ ] CHK045 - Are requirements defined for what `flush_state` does when the workspace has no tasks and no context — empty `.tmem/` files? [Coverage, Gap — US3 covers populated workspace; empty-state flush unspecified]
+- [ ] CHK045 - Are requirements defined for what `flush_state` does when the workspace has no tasks and no context — empty `.engram/` files? [Coverage, Gap — US3 covers populated workspace; empty-state flush unspecified]
 - [ ] CHK046 - Are requirements defined for `query_memory` when the workspace has zero searchable documents (no specs, tasks, or context)? [Coverage, Gap — US4 assumes populated workspace]
 - [ ] CHK047 - Are requirements defined for the daemon receiving MCP calls before any SSE connection is established (HTTP POST to `/mcp` without SSE)? [Coverage, Gap — protocol flow assumes SSE first]
 - [ ] CHK048 - Are requirements defined for `register_decision` uniqueness — can two decisions with the same topic be registered? [Coverage, Gap — idempotency annotation says non-idempotent but no dedup requirement exists]
@@ -75,10 +75,10 @@
 
 - [ ] CHK049 - Are requirements defined for workspace paths at OS max path length (260 chars Windows, 4096 Linux)? [Edge Case, Gap]
 - [ ] CHK050 - Are requirements defined for task title containing special characters (newlines, null bytes, Unicode, markdown syntax)? [Edge Case, Gap — data-model.md says max 200 chars but no character set restriction]
-- [ ] CHK051 - Are requirements defined for `.tmem/tasks.md` containing tasks that were deleted from the database but still exist in the file? [Edge Case, Gap — hydration behavior for orphan file entries unspecified]
+- [ ] CHK051 - Are requirements defined for `.engram/tasks.md` containing tasks that were deleted from the database but still exist in the file? [Edge Case, Gap — hydration behavior for orphan file entries unspecified]
 - [ ] CHK052 - Are requirements defined for `flush_state` when the filesystem is read-only or disk is full? [Edge Case, Gap — error code 5001/5002 exist but no FR describes the behavior]
 - [ ] CHK053 - Are requirements defined for SSE connection behavior when the daemon is under memory pressure (approaching 500MB limit)? [Edge Case, Gap — SC-006 sets idle limit but load ceiling behavior unspecified]
-- [ ] CHK054 - Are requirements defined for hydration when `.tmem/graph.surql` references task IDs not present in `.tmem/tasks.md`? [Edge Case, Gap — orphan edge handling unspecified]
+- [ ] CHK054 - Are requirements defined for hydration when `.engram/graph.surql` references task IDs not present in `.engram/tasks.md`? [Edge Case, Gap — orphan edge handling unspecified]
 - [ ] CHK055 - Are requirements defined for `set_workspace` with a valid Git repo that has an empty `.git/` directory (bare repo or fresh `git init`)? [Edge Case, Gap — FR-007 requires `.git/` subdirectory but doesn't define minimum Git state]
 - [ ] CHK056 - Are requirements defined for the embedding model file being corrupted or truncated in the cache directory? [Edge Case, Gap — FR-020/021 address download and offline use but not cache corruption]
 - [ ] CHK057 - Are requirements defined for `get_task_graph` with `depth` set to 0 or negative values? [Edge Case — mcp-tools.json sets `minimum: 1` but spec.md has no depth validation FR]

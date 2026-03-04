@@ -4,9 +4,10 @@
 //! result IDs each. Target: 95% of expected documents appear in top-5 results.
 //! Per SC-010 and clarification: relevant = expected document in top-5 (precision@5).
 
-use t_mem::services::search::{SearchCandidate, hybrid_search};
+use engram::services::search::{SearchCandidate, hybrid_search};
 
 /// Build the fixed test corpus of searchable documents.
+#[allow(clippy::too_many_lines)]
 fn test_corpus() -> Vec<SearchCandidate> {
     vec![
         SearchCandidate {
@@ -71,8 +72,9 @@ fn test_corpus() -> Vec<SearchCandidate> {
         SearchCandidate {
             id: "context:config".into(),
             source_type: "context".into(),
-            content: "Configuration with clap CLI arguments and environment variables TMEM_ prefix"
-                .into(),
+            content:
+                "Configuration with clap CLI arguments and environment variables ENGRAM_ prefix"
+                    .into(),
             embedding: None,
         },
         SearchCandidate {
@@ -90,7 +92,7 @@ fn test_corpus() -> Vec<SearchCandidate> {
         SearchCandidate {
             id: "task:impl_flush".into(),
             source_type: "task".into(),
-            content: "Implement flush_state to serialize workspace to tmem files markdown".into(),
+            content: "Implement flush_state to serialize workspace to engram files markdown".into(),
             embedding: None,
         },
         SearchCandidate {

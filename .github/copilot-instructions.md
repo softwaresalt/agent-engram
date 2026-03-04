@@ -1,13 +1,13 @@
 ﻿---
-description: Shared t-mem development guidelines for custom agents.
+description: Shared Agent Engram development guidelines for custom agents.
 maturity: stable
 ---
 
-# t-mem Development Guidelines
+# Agent Engram Development Guidelines
 
 Last updated: 2026-02-07
 
-t-mem is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.tmem/` files in the workspace. 
+Agent Engram is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace. 
 
 ## Technology Stack
 
@@ -18,7 +18,7 @@ t-mem is a Model Context Protocol (MCP) daemon that provides persistent task mem
 | MCP protocol | mcp-sdk 0.0.3                     | JSON-RPC 2.0 over `/mcp`, SSE events over `/sse`   |
 | Database     | SurrealDB 2 (embedded SurrealKv)   | Per-workspace namespace via SHA-256 path hash       |
 | Serialization| serde 1, serde_json 1             | `#[serde(rename_all = "snake_case")]` on enums      |
-| CLI          | clap 4 (derive + env)             | Env prefix `TMEM_`                                  |
+| CLI          | clap 4 (derive + env)             | Env prefix `ENGRAM_`                                  |
 | Tracing      | tracing 0.1, tracing-subscriber 0.3 | JSON or pretty format, `RUST_LOG` env filter      |
 | Testing      | proptest 1, tokio-test 0.4        | TDD required; contract, integration, unit, property |
 
@@ -27,7 +27,7 @@ t-mem is a Model Context Protocol (MCP) daemon that provides persistent task mem
 ```text
 src/
   lib.rs              # Crate root: forbid(unsafe_code), warn(clippy::pedantic), tracing init
-  bin/t-mem.rs         # Binary entrypoint: Config, Router, graceful shutdown
+  bin/engram.rs         # Binary entrypoint: Config, Router, graceful shutdown
   config/mod.rs        # Config struct (port, timeout, data_dir, log_format) via clap
   db/
     mod.rs             # connect_db(workspace_hash) -> Db, schema bootstrap
@@ -35,7 +35,7 @@ src/
     queries.rs         # Queries struct: task CRUD, graph edges, cyclic detection, contexts
     workspace.rs       # SHA-256 workspace path hashing, canonicalization
   errors/
-    mod.rs             # TMemError enum (Workspace|Hydration|Task|Query|System), JSON response
+    mod.rs             # EngramError enum (Workspace|Hydration|Task|Query|System), JSON response
     codes.rs           # u16 error code constants: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system
   models/
     mod.rs             # Re-exports: Task, TaskStatus, Spec, Context, DependencyType
@@ -52,9 +52,9 @@ src/
   services/
     mod.rs             # Module re-exports
     connection.rs      # ConnectionLifecycle, validate_workspace_path, create_status_change_note
-    hydration.rs       # Hydrate workspace from .tmem/ files on set_workspace
+    hydration.rs       # Hydrate workspace from .engram/ files on set_workspace
   tools/
-    mod.rs             # dispatch(state, method, params) -> Result<Value, TMemError>
+    mod.rs             # dispatch(state, method, params) -> Result<Value, EngramError>
     lifecycle.rs       # set_workspace, get_daemon_status, get_workspace_status
     read.rs            # get_task_graph, check_status, query_memory (stub)
     write.rs           # update_task, add_blocker, register_decision, flush_state
@@ -91,13 +91,13 @@ cargo test --test contract_lifecycle contract_set_workspace_returns_hydrated_fla
 
 ## Hydration/Dehydration Lifecycle
 
-t-mem persists workspace state as human-readable, Git-committable files in `.tmem/` at the workspace root. The lifecycle has two phases:
+engram persists workspace state as human-readable, Git-committable files in `.engram/` at the workspace root. The lifecycle has two phases:
 
-1. **Hydration** (`services/hydration.rs`): On `set_workspace`, the daemon reads `.tmem/tasks.md` and `.tmem/graph.surql`, parsing them into domain models, then loads them into the embedded SurrealDB. Stale file detection uses file modification times captured at hydration.
+1. **Hydration** (`services/hydration.rs`): On `set_workspace`, the daemon reads `.engram/tasks.md` and `.engram/graph.surql`, parsing them into domain models, then loads them into the embedded SurrealDB. Stale file detection uses file modification times captured at hydration.
 
-2. **Dehydration** (`services/dehydration.rs`): On `flush_state` or graceful shutdown (FR-006), the daemon serializes DB state back to `.tmem/` files. User-added HTML comments in `tasks.md` are preserved across flushes via diff-based merging (`similar` crate, FR-012). Writes use atomic temp-file-then-rename to prevent corruption.
+2. **Dehydration** (`services/dehydration.rs`): On `flush_state` or graceful shutdown (FR-006), the daemon serializes DB state back to `.engram/` files. User-added HTML comments in `tasks.md` are preserved across flushes via diff-based merging (`similar` crate, FR-012). Writes use atomic temp-file-then-rename to prevent corruption.
 
-`.tmem/` directory contents:
+`.engram/` directory contents:
 
 | File | Purpose |
 |------|---------|
@@ -130,8 +130,8 @@ Every `update_task` call MUST create a context note recording the transition (FR
 
 ### Error Handling
 
-* All fallible operations return `Result<T, TMemError>`
-* `TMemError` wraps domain-specific sub-errors via `#[from]`; each variant maps to a u16 error code
+* All fallible operations return `Result<T, EngramError>`
+* `EngramError` wraps domain-specific sub-errors via `#[from]`; each variant maps to a u16 error code
 * MCP responses use `ErrorResponse { error: ErrorBody { code, name, message, details } }`
 * Never use `unwrap()` or `expect()` on fallible paths in production code; use `?` or explicit error mapping
 
@@ -145,7 +145,7 @@ Every `update_task` call MUST create a context note recording the transition (FR
 ### Database
 
 * One `Db` handle per workspace via `connect_db(workspace_hash)`
-* Namespace: `tmem`, database: SHA-256 hash of canonical workspace path
+* Namespace: `engram`, database: SHA-256 hash of canonical workspace path
 * Schema bootstrapped on every connection via `ensure_schema`
 * All queries go through the `Queries` struct — never raw `db.query()` in tool handlers
 * SurrealDB v2 returns `id` as `Thing` (not `String`), so internal `TaskRow`/`ContextRow`/`SpecRow` structs deserialize raw DB rows then convert to public domain models via `into_task()`/`into_context()`/`into_spec()`
@@ -158,7 +158,7 @@ Every tool follows this pattern:
 2. Parse `params: Option<Value>` into a typed struct via `serde_json::from_value`
 3. Connect to DB via `connect_db(&workspace_id)`
 4. Execute business logic through `Queries`
-5. Return `Ok(json!({ ... }))` or `Err(TMemError::...)`
+5. Return `Ok(json!({ ... }))` or `Err(EngramError::...)`
 
 ### Testing
 
@@ -185,7 +185,7 @@ Every tool follows this pattern:
 | `update_task`        | write         | Change task status, always creates context note |
 | `add_blocker`        | write         | Block a task with reason context                |
 | `register_decision`  | write         | Record architectural decision as context        |
-| `flush_state`        | write         | Serialize DB state to `.tmem/` files            |
+| `flush_state`        | write         | Serialize DB state to `.engram/` files            |
 | `get_task_graph`     | read          | Recursive dependency graph traversal            |
 | `check_status`       | read          | Batch work item status lookup                   |
 | `query_memory`       | read          | Semantic search (not yet implemented)           |
@@ -194,10 +194,10 @@ Every tool follows this pattern:
 
 | Env Var | CLI Flag | Default | Description |
 | -------------------------- | ---------------------- | ----------- | --------------------------------- |
-| `TMEM_PORT`                | `--port`               | `7437`      | HTTP/SSE listen port              |
-| `TMEM_REQUEST_TIMEOUT_MS`  | `--request-timeout-ms` | `60000`     | Request timeout in ms             |
-| `TMEM_DATA_DIR`            | `--data-dir`           | OS data dir | SurrealDB and model storage       |
-| `TMEM_LOG_FORMAT`          | `--log-format`         | `pretty`    | `json` or `pretty`               |
+| `ENGRAM_PORT`                | `--port`               | `7437`      | HTTP/SSE listen port              |
+| `ENGRAM_REQUEST_TIMEOUT_MS`  | `--request-timeout-ms` | `60000`     | Request timeout in ms             |
+| `ENGRAM_DATA_DIR`            | `--data-dir`           | OS data dir | SurrealDB and model storage       |
+| `ENGRAM_LOG_FORMAT`          | `--log-format`         | `pretty`    | `json` or `pretty`               |
 
 ## Implementation Progress
 
@@ -231,14 +231,15 @@ Every tool follows this pattern:
 3. **No exit-code echo suffixes.** Do not append `; echo "EXIT: $LASTEXITCODE"` or `&& echo "done"` to commands. The terminal tool already captures exit codes.
 4. **Check results between commands.** After each command, inspect the output and exit code before deciding whether to run the next command. This is safer and produces better diagnostics.
 5. **Always use `pwsh`, never `powershell`.** When invoking PowerShell explicitly (e.g., to run a `.ps1` script), use `pwsh` — the cross-platform PowerShell 7+ executable. Never use `powershell` or `powershell.exe`, which refers to the legacy Windows PowerShell 5.1 runtime.
-6. **Always use relative paths for output redirection.** When redirecting command output to a file, use workspace-relative paths (e.g., `target\results.txt`), never absolute paths (e.g., `d:\Source\...\target\results.txt`). Absolute paths break auto-approve regex matching.
+6. **Always use relative paths for output redirection.** When redirecting command output to a file, use workspace-relative paths (e.g., `logs\results.txt`), never absolute paths (e.g., `d:\Source\...\logs\results.txt`). Absolute paths break auto-approve regex matching.
+7. **Terminal output files go in `logs\`.** All temporary output captures from terminal commands (test results, check output, clippy results, etc.) MUST be written to the `logs\` directory, never to `target\` or the workspace root. The `target\` directory is reserved for Cargo build artifacts only.
 
 ### Allowed Exceptions
 
 Output redirection is **not** command chaining — it is I/O plumbing that cannot execute destructive operations. The following patterns are permitted:
 
-- **Shell redirection operators**: `>`, `>>`, `2>&1` (e.g., `cargo test > target/results.txt 2>&1`)
-- **Pipe to `Out-File` or `Set-Content`**: `cargo test 2>&1 | Out-File target/results.txt` or `| Set-Content`
+- **Shell redirection operators**: `>`, `>>`, `2>&1` (e.g., `cargo test > logs/results.txt 2>&1`)
+- **Pipe to `Out-File` or `Set-Content`**: `cargo test 2>&1 | Out-File logs/results.txt` or `| Set-Content`
 - **Pipe to `Out-String`**: `some-command | Out-String`
 
 Use these when the terminal tool's ~60 KB output limit would truncate results (e.g., full `cargo test` compilation + test output).
@@ -258,10 +259,10 @@ cargo clippy -- -D warnings
 cargo test
 
 # Good: output redirection to capture full results
-cargo test 2>&1 | Out-File target\test-results.txt
+cargo test 2>&1 | Out-File logs\test-results.txt
 
 # Good: shell redirect when output may be truncated
-cargo test > target\test-results.txt 2>&1
+cargo test > logs\test-results.txt 2>&1
 ```
 
 ### Incorrect Examples
@@ -271,7 +272,7 @@ cargo test > target\test-results.txt 2>&1
 cargo check; cargo clippy -- -D warnings; cargo test
 
 # Bad: cmd /c wrapper with echo suffix
-cmd /c "cargo test > target\test-results.txt 2>&1"; echo "EXIT: $LASTEXITCODE"
+cmd /c "cargo test > logs\test-results.txt 2>&1"; echo "EXIT: $LASTEXITCODE"
 
 # Bad: AND-chained
 cargo fmt && cargo clippy && cargo test
@@ -329,4 +330,41 @@ cargo test | Select-String "FAILED" | Remove-Item foo.txt
     "git add": true,
     "git push": true
 }
+
+## MCP Server Registry
+
+The workspace uses multiple MCP servers with distinct responsibilities. Never call a tool on the wrong server — VS Code pre-registers them, but the agent must know which tool lives where.
+
+| Server ID | URL | Purpose |
+|-----------|-----|---------|
+| `monocoque-agent-rc` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
+| engram daemon | `http://127.0.0.1:7437/sse` | Task memory, context tracking, workspace state |
+
+### `monocoque-agent-rc` tools (Slack relay)
+
+| Tool | Purpose |
+|------|---------|
+| `ask_approval` | Submit a code diff for remote operator approval; blocks until approved/rejected |
+| `accept_diff` | Apply a previously approved diff to the local filesystem |
+| `check_auto_approve` | Query workspace auto-approve policy before asking for remote approval |
+| `forward_prompt` | Forward a continuation or clarification prompt to the operator via Slack |
+| `remote_log` | Send a non-blocking status message to the Slack channel |
+| `recover_state` | Retrieve last known session state from persistent storage |
+| `set_operational_mode` | Switch between `remote`, `local`, and `hybrid` modes at runtime |
+| `wait_for_instruction` | Place the agent in standby, polling for a resume signal from the operator |
+| `heartbeat` | Liveness signal; resets stall detection timer with optional progress snapshot |
+
+### Engram daemon tools (task memory)
+
+See **MCP Tools Registry** table above for the full list (`set_workspace`, `get_daemon_status`, `update_task`, etc.).
+
+### Startup verification
+
+If `get_daemon_status` or any engram tool returns a connection error, the engram daemon is not running. Start it with:
+
+```bash
+cargo run --bin engram
+```
+
+The relay server (`monocoque-agent-rc`) is a separate process managed outside this repo and runs on port 3000.
 <!-- MANUAL ADDITIONS END -->

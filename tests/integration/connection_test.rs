@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::{test, time};
 use tower::ServiceExt;
 
-use t_mem::server::{router::build_router, state::AppState};
+use engram::server::{router::build_router, state::AppState};
 
 #[test]
 async fn sse_connection_lifecycle_accepts_and_times_out() {

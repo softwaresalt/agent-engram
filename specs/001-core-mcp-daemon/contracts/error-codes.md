@@ -1,4 +1,4 @@
-# Error Codes: T-Mem MCP Daemon
+# Error Codes: engram MCP Daemon
 
 **Version**: 0.1.0
 **Purpose**: Define structured error codes for MCP tool responses
@@ -53,12 +53,12 @@ Errors related to workspace binding and path validation.
 
 ### 2xxx: Hydration Errors
 
-Errors during workspace state loading from `.tmem/` files.
+Errors during workspace state loading from `.engram/` files.
 
 | Code | Name | Description | Retry | Recovery |
 |------|------|-------------|-------|----------|
-| 2001 | `HydrationFailed` | Failed to parse `.tmem/` files | No | Fix file syntax |
-| 2002 | `SchemaMismatch` | `.tmem/` version incompatible with daemon | No | Upgrade daemon or migrate files |
+| 2001 | `HydrationFailed` | Failed to parse `.engram/` files | No | Fix file syntax |
+| 2002 | `SchemaMismatch` | `.engram/` version incompatible with daemon | No | Upgrade daemon or migrate files |
 | 2003 | `CorruptedState` | Database or file integrity check failed | Auto | Re-hydrate from files |
 | 2004 | `StaleWorkspace` | External modifications detected (warning) | N/A | Consider re-hydrate |
 
@@ -70,7 +70,7 @@ Errors during workspace state loading from `.tmem/` files.
     "name": "HydrationFailed",
     "message": "Failed to parse tasks.md",
     "details": {
-      "file": ".tmem/tasks.md",
+      "file": ".engram/tasks.md",
       "line": 42,
       "error": "Invalid YAML frontmatter: missing 'id' field"
     }
@@ -144,7 +144,7 @@ Errors during semantic search operations.
     "message": "Failed to load embedding model",
     "details": {
       "model": "all-MiniLM-L6-v2",
-      "cache_path": "~/.local/share/t-mem/models/",
+      "cache_path": "~/.local/share/engram/models/",
       "reason": "Download failed: network timeout",
       "suggestion": "Check network connection or manually download model"
     }
@@ -161,7 +161,7 @@ Internal system errors.
 | Code | Name | Description | Retry | Recovery |
 |------|------|-------------|-------|----------|
 | 5001 | `DatabaseError` | SurrealDB operation failed | Yes | Retry or check logs |
-| 5002 | `FlushFailed` | Could not write to `.tmem/` directory | No | Check permissions |
+| 5002 | `FlushFailed` | Could not write to `.engram/` directory | No | Check permissions |
 | 5003 | `RateLimited` | Too many requests from connection | Yes | Back off and retry |
 | 5004 | `ShuttingDown` | Daemon is in graceful shutdown | No | Reconnect after restart |
 
@@ -173,9 +173,9 @@ Internal system errors.
     "name": "FlushFailed",
     "message": "Failed to write workspace state",
     "details": {
-      "path": "/repo/.tmem/tasks.md",
+      "path": "/repo/.engram/tasks.md",
       "reason": "Permission denied",
-      "suggestion": "Check file permissions for .tmem/ directory"
+      "suggestion": "Check file permissions for .engram/ directory"
     }
   }
 }

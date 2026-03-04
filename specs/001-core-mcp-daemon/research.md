@@ -1,4 +1,4 @@
-# Research: T-Mem Core MCP Daemon
+# Research: engram Core MCP Daemon
 
 **Phase**: 0 — Research & Decision Documentation
 **Created**: 2026-02-05
@@ -69,7 +69,7 @@
 **Configuration**:
 ```rust
 // Embedded mode with surrealkv backend
-let db = Surreal::new::<SurrealKv>("~/.local/share/t-mem/db").await?;
+let db = Surreal::new::<SurrealKv>("~/.local/share/engram/db").await?;
 db.use_ns("tmem").use_db(workspace_hash).await?;
 ```
 
@@ -94,7 +94,7 @@ db.use_ns("tmem").use_db(workspace_hash).await?;
 | Python sentence-transformers | FFI complexity; deployment burden |
 
 **Model Storage**:
-- Cache: `~/.local/share/t-mem/models/`
+- Cache: `~/.local/share/engram/models/`
 - Lazy download on first `query_memory` call
 - Offline mode if model already cached
 
@@ -153,7 +153,7 @@ db.use_ns("tmem").use_db(workspace_hash).await?;
 **Error Hierarchy**:
 ```rust
 #[derive(thiserror::Error, Debug)]
-pub enum TMemError {
+pub enum EngramError {
     #[error("Workspace error: {0}")]
     Workspace(#[from] WorkspaceError),
     
@@ -182,7 +182,7 @@ pub enum TMemError {
 **Configuration**:
 ```rust
 tracing_subscriber::fmt()
-    .with_env_filter("t_mem=debug,surrealdb=warn")
+    .with_env_filter("engram=debug,surrealdb=warn")
     .with_span_events(FmtSpan::CLOSE)
     .json() // or .pretty() for development
     .init();
@@ -196,7 +196,7 @@ tracing_subscriber::fmt()
 - Each workspace opens an isolated SurrealDB database (memory + file handles)
 - Unbounded workspaces risk OOM on developer laptops
 - Default of 10 matches FR-002 concurrent client limit (natural parity)
-- Configurable via CLI flag `--max-workspaces` or env `T_MEM_MAX_WORKSPACES`
+- Configurable via CLI flag `--max-workspaces` or env `engram_MAX_WORKSPACES`
 
 **Alternatives Considered**:
 
@@ -230,7 +230,7 @@ tracing_subscriber::fmt()
 | File watching | Out of scope for v0; adds inotify/kqueue complexity |
 
 **Detection Mechanism**:
-- Record mtime of `.tmem/` files at hydration time
+- Record mtime of `.engram/` files at hydration time
 - Before flush or re-hydrate, compare current mtime to recorded value
 - If mtime differs, apply configured strategy (warn/rehydrate/fail)
 - Expose `stale_files` boolean in `get_workspace_status` response
@@ -284,7 +284,7 @@ All initial unknowns have been resolved during research:
 | Vector index type? | MTREE in SurrealDB — built-in |
 | How to hash workspace paths? | SHA256 of canonicalized path |
 | Max concurrent workspaces? | Configurable upper bound, default 10 (matches FR-002 client limit) |
-| Stale `.tmem/` file conflict strategy? | Default: warn-and-proceed (emit 2004 StaleWorkspace, continue with in-memory state); configurable to `rehydrate` or `fail` |
+| Stale `.engram/` file conflict strategy? | Default: warn-and-proceed (emit 2004 StaleWorkspace, continue with in-memory state); configurable to `rehydrate` or `fail` |
 
 ## Dependencies Summary
 

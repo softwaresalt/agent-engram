@@ -1,8 +1,8 @@
-﻿# t-mem Development Guidelines
+# engram Development Guidelines
 
 Last updated: 2026-02-07
 
-t-mem is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.tmem/` files in the workspace.
+engram is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace.
 
 ## Technology Stack
 
@@ -13,7 +13,7 @@ t-mem is a Model Context Protocol (MCP) daemon that provides persistent task mem
 | MCP protocol | mcp-sdk 0.0.3                     | JSON-RPC 2.0 over `/mcp`, SSE events over `/sse`   |
 | Database     | SurrealDB 2 (embedded SurrealKv)   | Per-workspace namespace via SHA-256 path hash       |
 | Serialization| serde 1, serde_json 1             | `#[serde(rename_all = "snake_case")]` on enums      |
-| CLI          | clap 4 (derive + env)             | Env prefix `TMEM_`                                  |
+| CLI          | clap 4 (derive + env)             | Env prefix `ENGRAM_`                                  |
 | Tracing      | tracing 0.1, tracing-subscriber 0.3 | JSON or pretty format, `RUST_LOG` env filter      |
 | Testing      | proptest 1, tokio-test 0.4        | TDD required; contract, integration, unit, property |
 
@@ -22,7 +22,7 @@ t-mem is a Model Context Protocol (MCP) daemon that provides persistent task mem
 ```text
 src/
   lib.rs              # Crate root: forbid(unsafe_code), warn(clippy::pedantic), tracing init
-  bin/t-mem.rs         # Binary entrypoint: Config, Router, graceful shutdown
+  bin/engram.rs         # Binary entrypoint: Config, Router, graceful shutdown
   config/mod.rs        # Config struct (port, timeout, data_dir, log_format) via clap
   db/
     mod.rs             # connect_db(workspace_hash) -> Db, schema bootstrap
@@ -30,7 +30,7 @@ src/
     queries.rs         # Queries struct: task CRUD, graph edges, cyclic detection, contexts
     workspace.rs       # SHA-256 workspace path hashing, canonicalization
   errors/
-    mod.rs             # TMemError enum (Workspace|Hydration|Task|Query|System), JSON response
+    mod.rs             # EngramError enum (Workspace|Hydration|Task|Query|System), JSON response
     codes.rs           # u16 error code constants: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system
   models/
     mod.rs             # Re-exports: Task, TaskStatus, Spec, Context, DependencyType
@@ -47,9 +47,9 @@ src/
   services/
     mod.rs             # Module re-exports
     connection.rs      # ConnectionLifecycle, validate_workspace_path, create_status_change_note
-    hydration.rs       # Hydrate workspace from .tmem/ files on set_workspace
+    hydration.rs       # Hydrate workspace from .engram/ files on set_workspace
   tools/
-    mod.rs             # dispatch(state, method, params) -> Result<Value, TMemError>
+    mod.rs             # dispatch(state, method, params) -> Result<Value, EngramError>
     lifecycle.rs       # set_workspace, get_daemon_status, get_workspace_status
     read.rs            # get_task_graph, check_status, query_memory (stub)
     write.rs           # update_task, add_blocker, register_decision, flush_state
@@ -88,8 +88,8 @@ cargo ci                      # Alias: test --all-targets --all-features
 
 ### Error Handling
 
-* All fallible operations return `Result<T, TMemError>`
-* `TMemError` wraps domain-specific sub-errors via `#[from]`; each variant maps to a u16 error code
+* All fallible operations return `Result<T, EngramError>`
+* `EngramError` wraps domain-specific sub-errors via `#[from]`; each variant maps to a u16 error code
 * MCP responses use `ErrorResponse { error: ErrorBody { code, name, message, details } }`
 * Never use `unwrap()` or `expect()` on fallible paths in production code; use `?` or explicit error mapping
 
@@ -103,7 +103,7 @@ cargo ci                      # Alias: test --all-targets --all-features
 ### Database
 
 * One `Db` handle per workspace via `connect_db(workspace_hash)`
-* Namespace: `tmem`, database: SHA-256 hash of canonical workspace path
+* Namespace: `engram`, database: SHA-256 hash of canonical workspace path
 * Schema bootstrapped on every connection via `ensure_schema`
 * All queries go through the `Queries` struct — never raw `db.query()` in tool handlers
 
@@ -115,7 +115,7 @@ Every tool follows this pattern:
 2. Parse `params: Option<Value>` into a typed struct via `serde_json::from_value`
 3. Connect to DB via `connect_db(&workspace_id)`
 4. Execute business logic through `Queries`
-5. Return `Ok(json!({ ... }))` or `Err(TMemError::...)`
+5. Return `Ok(json!({ ... }))` or `Err(EngramError::...)`
 
 ### Testing
 
@@ -142,7 +142,7 @@ Every tool follows this pattern:
 | `update_task`        | write         | Change task status, always creates context note |
 | `add_blocker`        | write         | Block a task with reason context                |
 | `register_decision`  | write         | Record architectural decision as context        |
-| `flush_state`        | write         | Serialize DB state to `.tmem/` files            |
+| `flush_state`        | write         | Serialize DB state to `.engram/` files            |
 | `get_task_graph`     | read          | Recursive dependency graph traversal            |
 | `check_status`       | read          | Batch work item status lookup                   |
 | `query_memory`       | read          | Semantic search (not yet implemented)           |
@@ -151,10 +151,10 @@ Every tool follows this pattern:
 
 | Env Var | CLI Flag | Default | Description |
 | -------------------------- | ---------------------- | ----------- | --------------------------------- |
-| `TMEM_PORT`                | `--port`               | `7437`      | HTTP/SSE listen port              |
-| `TMEM_REQUEST_TIMEOUT_MS`  | `--request-timeout-ms` | `60000`     | Request timeout in ms             |
-| `TMEM_DATA_DIR`            | `--data-dir`           | OS data dir | SurrealDB and model storage       |
-| `TMEM_LOG_FORMAT`          | `--log-format`         | `pretty`    | `json` or `pretty`               |
+| `ENGRAM_PORT`                | `--port`               | `7437`      | HTTP/SSE listen port              |
+| `ENGRAM_REQUEST_TIMEOUT_MS`  | `--request-timeout-ms` | `60000`     | Request timeout in ms             |
+| `ENGRAM_DATA_DIR`            | `--data-dir`           | OS data dir | SurrealDB and model storage       |
+| `ENGRAM_LOG_FORMAT`          | `--log-format`         | `pretty`    | `json` or `pretty`               |
 
 ## Implementation Progress
 

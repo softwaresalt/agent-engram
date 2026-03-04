@@ -1,7 +1,7 @@
 //! Verify error codes in code match contracts/error-codes.md (T107).
 
-use t_mem::errors::codes::*;
-use t_mem::errors::*;
+use engram::errors::codes::*;
+use engram::errors::*;
 
 /// Verify all workspace error codes match the contract.
 #[test]
@@ -46,6 +46,7 @@ fn query_error_codes_match_contract() {
     assert_eq!(QUERY_TOO_LONG, 4001);
     assert_eq!(MODEL_NOT_LOADED, 4002);
     assert_eq!(SEARCH_FAILED, 4003);
+    assert_eq!(QUERY_EMPTY, 4004);
 }
 
 /// Verify all system error codes match the contract.
@@ -56,6 +57,7 @@ fn system_error_codes_match_contract() {
     assert_eq!(RATE_LIMITED, 5003);
     assert_eq!(SHUTTING_DOWN, 5004);
     assert_eq!(INVALID_PARAMS, 5005);
+    assert_eq!(MODEL_LOAD_FAILED, 5006);
 }
 
 /// Verify all config error codes match the contract.
@@ -70,7 +72,7 @@ fn config_error_codes_match_contract() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn error_response_codes_are_consistent() {
-    let cases: Vec<(TMemError, u16, &str)> = vec![
+    let cases: Vec<(EngramError, u16, &str)> = vec![
         (
             WorkspaceError::NotFound { path: "x".into() }.into(),
             1001,
@@ -201,6 +203,7 @@ fn error_response_codes_are_consistent() {
             "TaskNotClaimable",
         ),
         (QueryError::QueryTooLong.into(), 4001, "QueryTooLong"),
+        (QueryError::QueryEmpty.into(), 4004, "QueryEmpty"),
         (QueryError::ModelNotLoaded.into(), 4002, "ModelNotLoaded"),
         (
             QueryError::SearchFailed { reason: "x".into() }.into(),
@@ -223,6 +226,11 @@ fn error_response_codes_are_consistent() {
             SystemError::InvalidParams { reason: "x".into() }.into(),
             5005,
             "InvalidParams",
+        ),
+        (
+            SystemError::ModelLoadFailed { reason: "x".into() }.into(),
+            5006,
+            "ModelLoadFailed",
         ),
         (
             ConfigError::ParseError { reason: "x".into() }.into(),
@@ -264,7 +272,7 @@ fn error_response_codes_are_consistent() {
 /// the v0 error taxonomy — `{ error: { code, name, message, details? } }`.
 #[test]
 fn t094_error_response_json_shape() {
-    let test_cases: Vec<(TMemError, bool)> = vec![
+    let test_cases: Vec<(EngramError, bool)> = vec![
         // Errors WITH details
         (
             WorkspaceError::NotFound {

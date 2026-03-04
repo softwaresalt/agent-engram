@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::errors::{SystemError, TMemError};
+use crate::errors::{EngramError, SystemError};
 use crate::server::state::SharedState;
 
 pub mod lifecycle;
@@ -19,8 +19,8 @@ struct WorkspaceParams {
     path: String,
 }
 
-fn not_implemented(method: &str) -> TMemError {
-    TMemError::System(SystemError::InvalidParams {
+fn not_implemented(method: &str) -> EngramError {
+    EngramError::System(SystemError::InvalidParams {
         reason: format!("{method} not implemented"),
     })
 }
@@ -29,12 +29,12 @@ pub async fn dispatch(
     state: SharedState,
     method: &str,
     params: Option<Value>,
-) -> Result<Value, TMemError> {
+) -> Result<Value, EngramError> {
     match method {
         "set_workspace" => {
             let parsed: WorkspaceParams =
                 serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
-                    TMemError::System(SystemError::InvalidParams {
+                    EngramError::System(SystemError::InvalidParams {
                         reason: e.to_string(),
                     })
                 })?;
@@ -72,6 +72,15 @@ pub async fn dispatch(
         "get_workspace_statistics" => read::get_workspace_statistics(state, params).await,
         "batch_update_tasks" => write::batch_update_tasks(state, params).await,
         "add_comment" => write::add_comment(state, params).await,
+        "index_workspace" => write::index_workspace(state, params).await,
+        "sync_workspace" => write::sync_workspace(state, params).await,
+        "link_task_to_code" => write::link_task_to_code(state, params).await,
+        "unlink_task_from_code" => write::unlink_task_from_code(state, params).await,
+        "map_code" => read::map_code(state, params).await,
+        "list_symbols" => read::list_symbols(state, params).await,
+        "get_active_context" => read::get_active_context(state, params).await,
+        "unified_search" => read::unified_search(state, params).await,
+        "impact_analysis" => read::impact_analysis(state, params).await,
         _ => Err(not_implemented(method)),
     }
 }
