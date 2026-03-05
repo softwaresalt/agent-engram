@@ -98,19 +98,26 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     let _lock = DaemonLock::acquire(&workspace_path)?;
     info!(workspace = %workspace_path.display(), "daemon lock acquired");
 
-    // ── 3. Parse idle timeout ─────────────────────────────────────────────────
-    let timeout_ms = std::env::var("ENGRAM_IDLE_TIMEOUT_MS")
+    // ── 3a. Load plugin config ────────────────────────────────────────────────
+    let plugin_config = crate::models::PluginConfig::load(&workspace_path);
+
+    // ── 3b. Resolve idle timeout (env var overrides config for test harness) ──
+    let idle_timeout = std::env::var("ENGRAM_IDLE_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0); // 0 = run forever (S049)
+        .map(|ms| {
+            if ms == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(ms)
+            }
+        })
+        .unwrap_or_else(|| plugin_config.idle_timeout());
 
-    let idle_timeout = if timeout_ms == 0 {
-        Duration::ZERO
-    } else {
-        Duration::from_millis(timeout_ms)
-    };
-
-    info!(idle_timeout_ms = timeout_ms, "idle TTL configured");
+    info!(
+        idle_timeout_ms = idle_timeout.as_millis(),
+        "idle TTL configured"
+    );
 
     // ── 4. Create TTL timer and shutdown channel ──────────────────────────────
     let ttl = TtlTimer::new(idle_timeout);
@@ -137,8 +144,13 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     // ── 7. Start file watcher and wire TTL reset ──────────────────────────────
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<WatcherEvent>();
 
-    let _watcher_handle = start_watcher(&workspace_path, WatcherConfig::default(), event_tx)
-        .unwrap_or_else(|e| {
+    let watcher_config = WatcherConfig {
+        debounce_ms: plugin_config.debounce_ms,
+        exclude_patterns: plugin_config.exclude_patterns.clone(),
+        watch_patterns: plugin_config.watch_patterns.clone(),
+    };
+    let _watcher_handle =
+        start_watcher(&workspace_path, watcher_config, event_tx).unwrap_or_else(|e| {
             error!(error = %e, "file watcher failed to start; daemon continues degraded");
             None
         });

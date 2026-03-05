@@ -170,3 +170,11 @@ path = "tests/integration/installer_test.rs"
 [[test]]
 name = "integration_daemon_lifecycle"
 path = "tests/integration/daemon_lifecycle_test.rs"
+
+[[test]]
+name = "unit_plugin_config"
+path = "tests/unit/plugin_config_test.rs"
+
+[[test]]
+name = "integration_config"
+path = "tests/integration/config_test.rs"

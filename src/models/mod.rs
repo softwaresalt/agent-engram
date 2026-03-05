@@ -25,7 +25,7 @@ pub use code_edge::CodeEdge;
 pub use code_file::CodeFile;
 pub use comment::Comment;
 pub use config::{
-    BatchConfig, CodeGraphConfig, CompactionConfig, EmbeddingConfig, WorkspaceConfig,
+    BatchConfig, CodeGraphConfig, CompactionConfig, EmbeddingConfig, PluginConfig, WorkspaceConfig,
 };
 pub use context::Context;
 pub use function::Function;

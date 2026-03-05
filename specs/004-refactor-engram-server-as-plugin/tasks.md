@@ -218,16 +218,16 @@
 
 ### Tests for US6 (write first, verify they fail)
 
-- [ ] T067 [P] [US6] Unit test for PluginConfig parsing in tests/unit/plugin_config_test.rs — no config file defaults (S079), valid config (S080-S081), unknown fields ignored (S082), malformed TOML fallback (S083), negative values (S084), boundary values (S085, S087)
-- [ ] T068 [P] [US6] Integration test for config-driven behavior in tests/integration/config_test.rs — custom exclusion patterns (S060-S061), custom timeout (S048), runtime config change no-op (S086)
+- [X] T067 [P] [US6] Unit test for PluginConfig parsing in tests/unit/plugin_config_test.rs — no config file defaults (S079), valid config (S080-S081), unknown fields ignored (S082), malformed TOML fallback (S083), negative values (S084), boundary values (S085, S087)
+- [X] T068 [P] [US6] Integration test for config-driven behavior in tests/integration/config_test.rs — custom exclusion patterns (S060-S061), custom timeout (S048), runtime config change no-op (S086)
 
 ### Implementation for US6
 
-- [ ] T069 [US6] Implement PluginConfig struct with TOML parsing in src/models/config.rs — all fields per data-model.md with Default impl for sensible fallbacks; covers S079-S081
-- [ ] T070 [US6] Implement config validation in src/models/config.rs — reject negative values, warn on unknown fields, clamp extreme values; covers S082-S085
-- [ ] T071 [US6] Implement config file loading in src/daemon/mod.rs — read `.engram/config.toml`, fall back to defaults on missing or invalid; covers S083
-- [ ] T072 [US6] Wire config into daemon subsystems — pass idle_timeout to TTL timer, debounce_ms to watcher, exclusion/watch patterns to watcher; covers S048, S060-S061, S087
-- [ ] T073 [US6] Verify `cargo test` passes for all Phase 7 tests
+- [X] T069 [US6] Implement PluginConfig struct with TOML parsing in src/models/config.rs — all fields per data-model.md with Default impl for sensible fallbacks; covers S079-S081
+- [X] T070 [US6] Implement config validation in src/models/config.rs — reject negative values, warn on unknown fields, clamp extreme values; covers S082-S085
+- [X] T071 [US6] Implement config file loading in src/daemon/mod.rs — read `.engram/config.toml`, fall back to defaults on missing or invalid; covers S083
+- [X] T072 [US6] Wire config into daemon subsystems — pass idle_timeout to TTL timer, debounce_ms to watcher, exclusion/watch patterns to watcher; covers S048, S060-S061, S087
+- [X] T073 [US6] Verify `cargo test` passes for all Phase 7 tests
 
 **Checkpoint**: Configuration complete — daemon adapts to project-specific settings. User Story 6 independently testable.
 
