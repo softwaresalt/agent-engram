@@ -8,14 +8,14 @@
 //! # Platform notes
 //!
 //! - **Unix / macOS**: IPC endpoint is a Unix domain socket at
-//!   `{workspace}/.engram/run/engram.sock`. Ready detection polls the
-//!   filesystem for socket file presence.
+//!   `{workspace}/.engram/run/engram.sock`. Ready detection polls via an IPC
+//!   health-check request (more reliable than filesystem presence alone).
 //! - **Windows**: IPC endpoint is a named pipe at
 //!   `\\.\pipe\engram-{sha256_prefix_16}`, where `sha256_prefix_16` is the
-//!   first 16 hex characters of the SHA-256 hash of the canonical workspace
-//!   path (matching the daemon's own naming logic from ADR 0015). Ready
-//!   detection calls `std::fs::metadata` on the pipe path, which returns `Ok`
-//!   once the pipe server is listening.
+//!   first 16 hex characters of the SHA-256 hash of the **canonical** workspace
+//!   path string, matching the daemon's own naming logic (ADR 0015). Ready
+//!   detection uses an IPC health-check because `std::fs::metadata` does not
+//!   detect named-pipe server readiness on Windows.
 //!
 //! # Usage (Phase 3+)
 //!
@@ -64,23 +64,22 @@ fn ipc_path_for_workspace(workspace: &Path) -> PathBuf {
     }
 }
 
-/// Returns `true` if the IPC endpoint is available for connection.
+/// Returns `true` if the IPC endpoint is accepting health-check requests.
 ///
-/// On Unix, checks that the socket file exists on the filesystem. On Windows,
-/// probes the named pipe via `std::fs::metadata`, which succeeds once the pipe
-/// server is listening (without requiring `unsafe` `WinAPI` calls).
-fn ipc_ready(path: &Path) -> bool {
-    #[cfg(not(windows))]
-    {
-        path.exists()
-    }
-
-    #[cfg(windows)]
-    {
-        // Named pipes at `\\.\pipe\*` respond to `metadata` once the server
-        // is listening; an `Err` means not yet ready or access denied.
-        std::fs::metadata(path).is_ok()
-    }
+/// Uses an actual `_health` IPC request instead of a filesystem probe because:
+/// - On **Unix**, a socket file can exist before the daemon enters its accept
+///   loop, causing false positives.
+/// - On **Windows**, `std::fs::metadata` does not detect named-pipe server
+///   readiness — the `\\.\pipe\*` namespace is not accessible via the normal
+///   file-metadata API on all configurations.
+///
+/// A successful response (no error, `status == "ready"`) means the daemon is
+/// fully initialized and ready to serve tool calls.
+async fn ipc_ready(path: &Path) -> bool {
+    let Some(endpoint) = path.to_str() else {
+        return false;
+    };
+    engram::shim::lifecycle::check_health(endpoint).await
 }
 
 /// Test harness for spawning an `engram daemon` subprocess.
@@ -124,6 +123,12 @@ impl DaemonHarness {
         let workspace_path = workspace.path().canonicalize()?;
         let ipc_path = ipc_path_for_workspace(&workspace_path);
 
+        // Create a minimal `.git` directory so the daemon accepts this as a workspace.
+        // `canonicalize_workspace()` rejects paths where `.git` is not a directory.
+        let git_dir = workspace_path.join(".git");
+        std::fs::create_dir_all(&git_dir)?;
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+
         let workspace_str = workspace_path
             .to_str()
             .ok_or("workspace path contains non-UTF-8 characters")?;
@@ -137,7 +142,7 @@ impl DaemonHarness {
         let mut attempt: u32 = 0;
 
         loop {
-            if ipc_ready(&ipc_path) {
+            if ipc_ready(&ipc_path).await {
                 return Ok(Self {
                     workspace,
                     child,

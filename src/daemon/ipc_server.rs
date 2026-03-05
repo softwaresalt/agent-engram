@@ -40,7 +40,7 @@ use crate::tools;
 ///
 /// Returns [`EngramError::Ipc`] if the workspace path contains non-UTF-8
 /// characters or if the platform is unsupported.
-pub(crate) fn ipc_endpoint(workspace: &Path) -> Result<String, EngramError> {
+pub fn ipc_endpoint(workspace: &Path) -> Result<String, EngramError> {
     ipc_endpoint_impl(workspace)
 }
 

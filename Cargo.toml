@@ -142,3 +142,15 @@ path = "tests/unit/lockfile_test.rs"
 [[test]]
 name = "helpers_daemon_harness"
 path = "tests/helpers/mod.rs"
+
+[[test]]
+name = "contract_shim_lifecycle"
+path = "tests/contract/shim_lifecycle_test.rs"
+
+[[test]]
+name = "integration_shim_error"
+path = "tests/integration/shim_error_test.rs"
+
+[[test]]
+name = "integration_multi_workspace"
+path = "tests/integration/multi_workspace_test.rs"
