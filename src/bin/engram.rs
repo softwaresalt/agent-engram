@@ -54,16 +54,20 @@ async fn main() -> Result<()> {
             engram::daemon::run(&workspace).await?;
         }
         Command::Install => {
-            engram::installer::install().await?;
+            let workspace = std::env::current_dir()?;
+            engram::installer::install(&workspace).await?;
         }
         Command::Update => {
-            engram::installer::update().await?;
+            let workspace = std::env::current_dir()?;
+            engram::installer::update(&workspace).await?;
         }
         Command::Reinstall => {
-            engram::installer::reinstall().await?;
+            let workspace = std::env::current_dir()?;
+            engram::installer::reinstall(&workspace).await?;
         }
         Command::Uninstall { keep_data } => {
-            engram::installer::uninstall(keep_data).await?;
+            let workspace = std::env::current_dir()?;
+            engram::installer::uninstall(&workspace, keep_data).await?;
         }
     }
 

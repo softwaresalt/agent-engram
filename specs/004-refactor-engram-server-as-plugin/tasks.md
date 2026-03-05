@@ -191,20 +191,20 @@
 
 ### Tests for US5 (write first, verify they fail)
 
-- [ ] T056 [P] [US5] Integration test for install command in tests/integration/installer_test.rs — clean workspace (S067), existing installation (S068), path with spaces (S076), Unicode path (S077), read-only FS (S078)
-- [ ] T057 [P] [US5] Integration test for update/reinstall/uninstall in tests/integration/installer_test.rs — update preserves data (S069), reinstall after corruption (S070), uninstall with keep-data (S071), full removal (S072)
-- [ ] T058 [P] [US5] Integration test for installer with running daemon in tests/integration/installer_test.rs — install while running (S073), uninstall stops daemon first (S074)
+- [X] T056 [P] [US5] Integration test for install command in tests/integration/installer_test.rs — clean workspace (S067), existing installation (S068), path with spaces (S076), Unicode path (S077), read-only FS (S078)
+- [X] T057 [P] [US5] Integration test for update/reinstall/uninstall in tests/integration/installer_test.rs — update preserves data (S069), reinstall after corruption (S070), uninstall with keep-data (S071), full removal (S072)
+- [X] T058 [P] [US5] Integration test for installer with running daemon in tests/integration/installer_test.rs — install while running (S073), uninstall stops daemon first (S074)
 
 ### Implementation for US5
 
-- [ ] T059 [US5] Implement install command in src/installer/mod.rs — create `.engram/` structure (tasks.md, .version, config stub, run/, logs/), generate MCP config, health check verification; covers S067, S075
-- [ ] T060 [P] [US5] Implement MCP config templates in src/installer/templates.rs — `.vscode/mcp.json` template with correct command path, `.gitignore` entries for runtime artifacts
-- [ ] T061 [US5] Implement update command in src/installer/mod.rs — replace runtime artifacts, preserve data files (tasks.md, graph.surql, config.toml); covers S069
-- [ ] T062 [US5] Implement reinstall command in src/installer/mod.rs — clean runtime, re-create structure, rehydrate from `.engram/` files; covers S070
-- [ ] T063 [US5] Implement uninstall command in src/installer/mod.rs — stop running daemon (_shutdown), remove artifacts, `--keep-data` flag for data preservation; covers S071-S074
-- [ ] T064 [US5] Detect existing installation in src/installer/mod.rs — check for `.engram/` directory, running daemon; covers S068, S073
-- [ ] T065 [US5] Wire installer subcommands in src/bin/engram.rs — install, update, reinstall, uninstall subcommands invoke installer module
-- [ ] T066 [US5] Verify `cargo test` passes for all Phase 6 tests
+- [X] T059 [US5] Implement install command in src/installer/mod.rs — create `.engram/` structure (tasks.md, .version, config stub, run/, logs/), generate MCP config, health check verification; covers S067, S075
+- [X] T060 [P] [US5] Implement MCP config templates in src/installer/templates.rs — `.vscode/mcp.json` template with correct command path, `.gitignore` entries for runtime artifacts
+- [X] T061 [US5] Implement update command in src/installer/mod.rs — replace runtime artifacts, preserve data files (tasks.md, graph.surql, config.toml); covers S069
+- [X] T062 [US5] Implement reinstall command in src/installer/mod.rs — clean runtime, re-create structure, rehydrate from `.engram/` files; covers S070
+- [X] T063 [US5] Implement uninstall command in src/installer/mod.rs — stop running daemon (_shutdown), remove artifacts, `--keep-data` flag for data preservation; covers S071-S074
+- [X] T064 [US5] Detect existing installation in src/installer/mod.rs — check for `.engram/` directory, running daemon; covers S068, S073
+- [X] T065 [US5] Wire installer subcommands in src/bin/engram.rs — install, update, reinstall, uninstall subcommands invoke installer module
+- [X] T066 [US5] Verify `cargo test` passes for all Phase 6 tests
 
 **Checkpoint**: Plugin installer complete — single-command setup and management. User Story 5 independently testable.
 

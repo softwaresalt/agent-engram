@@ -164,5 +164,9 @@ name = "unit_ttl"
 path = "tests/unit/ttl_test.rs"
 
 [[test]]
+name = "integration_installer"
+path = "tests/integration/installer_test.rs"
+
+[[test]]
 name = "integration_daemon_lifecycle"
 path = "tests/integration/daemon_lifecycle_test.rs"
