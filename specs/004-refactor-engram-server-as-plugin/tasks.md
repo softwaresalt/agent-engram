@@ -239,23 +239,23 @@
 
 ### Tests
 
-- [ ] T074 [P] Integration test for security scenarios in tests/integration/security_test.rs — Unix socket permissions (S097), path traversal rejection (S099), IPC message injection (S101), no secrets in `.engram/` (S102)
-- [ ] T075 [P] Integration test for error recovery in tests/integration/recovery_test.rs — disk full during flush (S093-S094), corrupted tasks.md recovery (S095)
+- [X] T074 [P] Integration test for security scenarios in tests/integration/security_test.rs — Unix socket permissions (S097), path traversal rejection (S099), IPC message injection (S101), no secrets in `.engram/` (S102)
+- [X] T075 [P] Integration test for error recovery in tests/integration/recovery_test.rs — disk full during flush (S093-S094), corrupted tasks.md recovery (S095)
 
 ### Implementation
 
-- [ ] T076 [P] Implement cross-platform path handling in src/daemon/mod.rs and src/installer/mod.rs — spaces, Unicode, symlink resolution; covers S031, S076-S077, S091, FR-018
-- [ ] T077 [P] Implement IPC artifact permissions in src/daemon/ipc_server.rs — Unix `0o600` socket permissions (S097), Windows default ACL (S098); covers FR-016
-- [ ] T078 [P] Implement structured logging to `.engram/logs/` in src/daemon/mod.rs — tracing-subscriber file appender, structured spans for all significant operations; covers S044, S103, FR-014
-- [ ] T079 Implement atomic flush failure handling in src/services/dehydration.rs — detect disk-full during temp file write, preserve existing `.engram/` files; covers S093-S094
-- [ ] T080 Implement workspace-moved detection in src/daemon/mod.rs — periodic check that workspace path still valid, shutdown if moved; covers S092
-- [ ] T081 [P] Implement IPC request size validation in src/daemon/ipc_server.rs — reject oversized requests to prevent memory exhaustion; covers S024, S101
-- [ ] T082 Performance validation: cold start under 2s benchmark in tests/integration/ — covers SC-003, S005
-- [ ] T083 Performance validation: read latency <50ms, write latency <10ms benchmark in tests/integration/ — covers SC-002
-- [ ] T084 [P] Large workspace test: 100k+ files background indexing does not block tool calls — covers FR-019, S063
-- [ ] T085 [P] Documentation updates: update README.md with new architecture, update docs/ with ADR for rmcp migration
-- [ ] T086 Run specs/004-refactor-engram-server-as-plugin/quickstart.md validation end-to-end
-- [ ] T087 Final `cargo clippy -- -D warnings` and `cargo test` full pass
+- [X] T076 [P] Implement cross-platform path handling in src/daemon/mod.rs and src/installer/mod.rs — spaces, Unicode, symlink resolution; covers S031, S076-S077, S091, FR-018
+- [X] T077 [P] Implement IPC artifact permissions in src/daemon/ipc_server.rs — Unix `0o600` socket permissions (S097), Windows default ACL (S098); covers FR-016
+- [X] T078 [P] Implement structured logging to `.engram/logs/` in src/daemon/mod.rs — tracing-subscriber file appender, structured spans for all significant operations; covers S044, S103, FR-014
+- [X] T079 Implement atomic flush failure handling in src/services/dehydration.rs — detect disk-full during temp file write, preserve existing `.engram/` files; covers S093-S094
+- [X] T080 Implement workspace-moved detection in src/daemon/mod.rs — periodic check that workspace path still valid, shutdown if moved; covers S092
+- [X] T081 [P] Implement IPC request size validation in src/daemon/ipc_server.rs — reject oversized requests to prevent memory exhaustion; covers S024, S101
+- [X] T082 Performance validation: cold start under 2s benchmark in tests/integration/ — covers SC-003, S005
+- [X] T083 Performance validation: read latency <50ms, write latency <10ms benchmark in tests/integration/ — covers SC-002
+- [X] T084 [P] Large workspace test: 100k+ files background indexing does not block tool calls — covers FR-019, S063
+- [X] T085 [P] Documentation updates: update README.md with new architecture, update docs/ with ADR for rmcp migration
+- [X] T086 Run specs/004-refactor-engram-server-as-plugin/quickstart.md validation end-to-end
+- [X] T087 Final `cargo clippy -- -D warnings` and `cargo test` full pass
 - [ ] T090 Verify all module stubs from Phase 1 (T004-T006) are replaced with real implementations — no placeholder code remaining per constitution "No dead code" rule
 - [ ] T091 Decide on server/ module (HTTP/SSE): either remove entirely or feature-gate behind `legacy-sse` flag — document decision in ADR
 - [ ] T092 [US4] Implement WatcherEvent→service adapter in src/daemon/debounce.rs — bridge WatcherEvent to existing code_graph and embedding service interfaces (existing services don't accept WatcherEvent directly)

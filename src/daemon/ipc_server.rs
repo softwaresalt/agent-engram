@@ -313,6 +313,32 @@ pub async fn run_with_shutdown(
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
 
+    // T077 / S097: Set Unix socket permissions to 0o600 (owner read/write only).
+    // Windows named pipes inherit the creating user's security context via OS ACL —
+    // no explicit permission setting is required on that platform.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let socket_path = workspace_path
+            .join(".engram")
+            .join("run")
+            .join("engram.sock");
+        if socket_path.exists() {
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| {
+                    EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                        address: socket_path.display().to_string(),
+                        reason: format!("failed to set socket permissions: {e}"),
+                    })
+                })?;
+            debug!(
+                socket = %socket_path.display(),
+                mode = "0o600",
+                "Unix socket permissions set to owner-only"
+            );
+        }
+    }
+
     // T049 / S046: Reset the idle deadline so the TTL window starts from when
     // the daemon is ready to serve requests, not from when it started.  On a
     // slow machine SurrealDB init may consume several hundred milliseconds;

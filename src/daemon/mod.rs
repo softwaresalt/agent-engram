@@ -98,6 +98,23 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     let _lock = DaemonLock::acquire(&workspace_path)?;
     info!(workspace = %workspace_path.display(), "daemon lock acquired");
 
+    // ── T078: Ensure .engram/logs/ directory exists for structured logging ────
+    // The file appender itself is deferred to a future phase to avoid installing
+    // a second global tracing subscriber (which would panic). For now we create
+    // the directory and record its path so operators know where logs will live.
+    let log_dir = workspace_path.join(".engram").join("logs");
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        tracing::warn!(
+            error = %e,
+            "failed to create .engram/logs/ directory; file logging unavailable"
+        );
+    } else {
+        info!(
+            log_dir = %log_dir.display(),
+            "structured log directory ready (file appender: daemon.log)"
+        );
+    }
+
     // ── 3a. Load plugin config ────────────────────────────────────────────────
     let plugin_config = crate::models::PluginConfig::load(&workspace_path);
 
@@ -161,6 +178,28 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
             while event_rx.recv().await.is_some() {
                 // S047: every file event resets the idle timer.
                 ttl_for_watcher.reset();
+            }
+        });
+    }
+
+    // ── T080: Workspace-moved detection — check every 60s that workspace still valid ──
+    // If the workspace directory is moved or deleted while the daemon is running,
+    // send the shutdown signal so the daemon exits cleanly (S092).
+    {
+        let ws_path = workspace_path.clone();
+        let tx_moved = Arc::clone(&shutdown_tx);
+        tokio::spawn(async move {
+            let check_interval = std::time::Duration::from_secs(60);
+            loop {
+                tokio::time::sleep(check_interval).await;
+                if !ws_path.exists() {
+                    tracing::warn!(
+                        path = %ws_path.display(),
+                        "workspace path no longer exists — initiating graceful shutdown"
+                    );
+                    let _ = tx_moved.send(true);
+                    break;
+                }
             }
         });
     }

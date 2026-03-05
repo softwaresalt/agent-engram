@@ -2,7 +2,7 @@
 //!
 //! Covers US5 scenarios:
 //! - S067: clean install creates all expected paths
-//! - S068: second install returns AlreadyInstalled
+//! - S068: second install returns `AlreadyInstalled`
 //! - S069: update preserves tasks.md content
 //! - S070: reinstall after corruption preserves tasks.md
 //! - S071: uninstall --keep-data preserves tasks.md
@@ -537,7 +537,7 @@ async fn install_appends_gitignore_entries() {
 }
 
 /// Install does not duplicate `.gitignore` entries on a second install
-/// (actually the second install returns AlreadyInstalled, but if entries exist
+/// (actually the second install returns `AlreadyInstalled`, but if entries exist
 /// they must not be duplicated — tested via the template guard).
 #[tokio::test]
 async fn install_no_duplicate_gitignore_entries() {

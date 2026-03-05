@@ -139,25 +139,52 @@ See [contracts/error-codes.md](specs/001-core-mcp-daemon/contracts/error-codes.m
 
 ## Architecture
 
+Engram uses a per-workspace **shim/daemon** model:
+
+- The **shim** (`engram shim`, default MCP entry point) is a thin process invoked by MCP clients (VS Code, Copilot CLI, Cursor) via stdio. It checks whether a daemon is already running for the workspace, spawns one if not, then forwards the tool call over IPC and writes the response back to stdout.
+- The **daemon** runs as a long-lived background process per workspace. It manages embedded SurrealDB state, serves MCP tool calls over a Unix domain socket (`{workspace}/.engram/run/engram.sock`) or Windows named pipe, watches workspace files for changes, and self-terminates after a configurable idle timeout (default: 4 hours).
+- The **installer** (`engram install`) creates the `.engram/` directory structure, generates the `.vscode/mcp.json` MCP client configuration, and updates `.gitignore` with the runtime artifact paths.
+
+```
+MCP Client (VS Code / Copilot CLI)
+    │  stdio
+    ▼
+engram shim          ← lightweight, spawns on each tool call
+    │  IPC (Unix socket / Windows named pipe)
+    ▼
+engram daemon        ← long-lived per-workspace background process
+    │
+    ├── SurrealDB (embedded SurrealKv)
+    ├── File watcher (notify)
+    ├── TTL idle timer
+    └── .engram/ files (tasks.md, graph.surql, ...)
+```
+
+**Key design decisions:**
+
+- `#![forbid(unsafe_code)]` — no unsafe Rust anywhere
+- Per-workspace process isolation — each Git repository gets its own daemon and database
+- Embedded SurrealDB with SHA-256 path-based namespace isolation
+- Atomic writes (temp-file → rename) prevent partial-write corruption during flush
+- Unix socket permissions set to `0o600` (owner-only) after bind
+- Stateless service functions with dependency injection via parameters
+- Flush lock serialization for concurrent dehydration safety
+
 `
 src/
 ├── lib.rs               # Crate root: forbid(unsafe_code), warn(clippy::pedantic)
-├── bin/engram.rs        # Binary: config, router, graceful shutdown
+├── bin/engram.rs        # Binary: clap subcommands (shim, daemon, install, …)
 ├── config/              # CLI/env configuration via clap
+├── daemon/              # Daemon: IPC server, lockfile, watcher, TTL, protocol
+├── shim/                # Shim: IPC client, lifecycle (spawn + health), transport
+├── installer/           # Install/update/reinstall/uninstall commands
 ├── db/                  # SurrealDB embedded (SurrealKv) with schema bootstrap
-├── errors/              # EngramError enum with typed error codes (1xxx–5xxx)
+├── errors/              # EngramError enum with typed error codes
 ├── models/              # Domain entities: Task, Spec, Context, DependencyType
-├── server/              # axum HTTP/SSE layer with rate limiting
+├── server/              # axum HTTP/SSE layer (legacy; retained for direct access)
 ├── services/            # Stateless business logic (connection, hydration, search)
 └── tools/               # MCP tool implementations (lifecycle, read, write)
 `
-
-**Key design decisions:**
-- `#![forbid(unsafe_code)]` — no unsafe Rust anywhere
-- Embedded SurrealDB with per-workspace namespace isolation
-- Stateless service functions with dependency injection via parameters
-- `ConnectionGuard` drop pattern for automatic SSE cleanup
-- Flush lock serialization for concurrent dehydration safety
 
 ## Development
 

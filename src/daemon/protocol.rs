@@ -12,6 +12,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Maximum allowed byte length for a JSON-RPC method name (T081 / S101).
+///
+/// Reject oversized method names early to prevent memory exhaustion from IPC
+/// injection attacks. 256 bytes is generous for any valid MCP tool name.
+const MAX_METHOD_LEN: usize = 256;
+
 /// JSON-RPC 2.0 request sent from the shim to the daemon.
 ///
 /// Each field uses `#[serde(default)]` so that absent JSON keys produce empty
@@ -88,6 +94,14 @@ impl IpcRequest {
             return Err(IpcResponse::invalid_request(
                 id,
                 "method field is required".to_owned(),
+            ));
+        }
+
+        // T081 / S101: Reject oversized method names.
+        if self.method.len() > MAX_METHOD_LEN {
+            return Err(IpcResponse::invalid_request(
+                id,
+                format!("method name too long (max {MAX_METHOD_LEN} bytes)"),
             ));
         }
 

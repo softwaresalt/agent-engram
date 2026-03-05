@@ -36,6 +36,7 @@ similar = "2"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 tokio-stream = "0.1"
@@ -178,3 +179,11 @@ path = "tests/unit/plugin_config_test.rs"
 [[test]]
 name = "integration_config"
 path = "tests/integration/config_test.rs"
+
+[[test]]
+name = "integration_security"
+path = "tests/integration/security_test.rs"
+
+[[test]]
+name = "integration_recovery"
+path = "tests/integration/recovery_test.rs"
