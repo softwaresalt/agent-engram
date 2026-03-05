@@ -138,19 +138,19 @@
 
 ### Tests for US4 (write first, verify they fail)
 
-- [ ] T035 [P] [US4] Integration test for file change detection in tests/integration/file_watcher_test.rs — create, modify, delete events (S052-S054); verify WatcherEvent emission
-- [ ] T036 [P] [US4] Integration test for debounce behavior in tests/integration/file_watcher_test.rs — rapid saves collapse to single event (S055); verify timing with 500ms default
-- [ ] T037 [P] [US4] Integration test for exclusion patterns in tests/integration/file_watcher_test.rs — .engram/, .git/, node_modules/, target/ ignored (S056-S059); custom exclusions (S060)
-- [ ] T038 [P] [US4] Integration test for edge cases in tests/integration/file_watcher_test.rs — file rename (S062), large batch creates (S063), symlinks (S065), binary files (S066)
+- [X] T035 [P] [US4] Integration test for file change detection in tests/integration/file_watcher_test.rs — create, modify, delete events (S052-S054); verify WatcherEvent emission
+- [X] T036 [P] [US4] Integration test for debounce behavior in tests/integration/file_watcher_test.rs — rapid saves collapse to single event (S055); verify timing with 500ms default
+- [X] T037 [P] [US4] Integration test for exclusion patterns in tests/integration/file_watcher_test.rs — .engram/, .git/, node_modules/, target/ ignored (S056-S059); custom exclusions (S060)
+- [X] T038 [P] [US4] Integration test for edge cases in tests/integration/file_watcher_test.rs — file rename (S062), large batch creates (S063), symlinks (S065), binary files (S066)
 
 ### Implementation for US4
 
-- [ ] T039 [P] [US4] Implement WatcherEvent and WatchEventKind models in src/models/ per data-model.md — Created, Modified, Deleted, Renamed variants
-- [ ] T040 [US4] Implement file watcher setup in src/daemon/watcher.rs — notify v9 RecommendedWatcher with exclusion pattern filtering; covers S052-S059, S064
-- [ ] T041 [US4] Implement debouncer integration in src/daemon/debounce.rs — notify-debouncer-full with configurable duration (default 500ms); covers S055, S063
-- [ ] T042 [US4] Wire debounced events to existing pipelines in src/daemon/debounce.rs — emit WatcherEvent, trigger code_graph and embedding services (thin event source per clarification); covers S052-S054, S062
-- [ ] T043 [US4] Handle watcher initialization failure gracefully in src/daemon/watcher.rs — log WatcherInit error, daemon continues without file watching (S064 degraded mode)
-- [ ] T044 [US4] Verify `cargo test` passes for all Phase 4 tests
+- [X] T039 [P] [US4] Implement WatcherEvent and WatchEventKind models in src/models/ per data-model.md — Created, Modified, Deleted, Renamed variants
+- [X] T040 [US4] Implement file watcher setup in src/daemon/watcher.rs — notify v9 RecommendedWatcher with exclusion pattern filtering; covers S052-S059, S064
+- [X] T041 [US4] Implement debouncer integration in src/daemon/debounce.rs — notify-debouncer-full with configurable duration (default 500ms); covers S055, S063
+- [X] T042 [US4] Wire debounced events to existing pipelines in src/daemon/debounce.rs — emit WatcherEvent, trigger code_graph and embedding services (thin event source per clarification); covers S052-S054, S062
+- [X] T043 [US4] Handle watcher initialization failure gracefully in src/daemon/watcher.rs — log WatcherInit error, daemon continues without file watching (S064 degraded mode)
+- [X] T044 [US4] Verify `cargo test` passes for all Phase 4 tests
 
 **Checkpoint**: File watching operational — changes reflected in queries within 2 seconds. User Story 4 independently testable.
 

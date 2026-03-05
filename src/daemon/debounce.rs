@@ -1,9 +1,21 @@
-//! Event debouncer: `notify-debouncer-full` integration.
+//! Event debouncer re-exports and pipeline documentation.
 //!
-//! Wraps the file watcher output in a configurable debounce window (default 500 ms).
-//! Collapsed events are emitted as `WatcherEvent` values and routed to the
-//! code graph and embedding services.
+//! The debounce logic is implemented inside [`crate::daemon::watcher`] via
+//! `notify-debouncer-full`.  This module re-exports the result type so
+//! consumers can name it without spelling out the full crate path.
+//!
+//! ## Pipeline
+//!
+//! ```text
+//! OS kernel event
+//!   → notify backend (ReadDirectoryChangesW / inotify / kqueue)
+//!   → notify-debouncer-full (500 ms window, collapse per path)
+//!   → exclusion filter (.engram/, .git/, node_modules/, target/, .env*)
+//!   → WatcherEvent { path, old_path, kind, timestamp }
+//!   → tokio::sync::mpsc::UnboundedSender<WatcherEvent>
+//! ```
+//!
+//! Future phases (T092) will add a `WatcherEvent → service` adapter that fans
+//! events out to the code-graph indexer and embedding pipeline.
 
-// TODO(T041): implement notify-debouncer-full with configurable duration
-// TODO(T042): wire debounced events to existing pipelines (code_graph, embeddings)
-// TODO(T092): implement WatcherEvent→service adapter
+pub use notify_debouncer_full::DebounceEventResult;

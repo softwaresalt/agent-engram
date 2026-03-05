@@ -3,7 +3,8 @@
 //! Provides [Task], [Spec], [Context], and [DependencyType] — the
 //! core entities stored in SurrealDB and serialized to `.engram/` files.
 //! Also provides code graph models: [CodeFile], [Function], [Class],
-//! [Interface], and [CodeEdge].
+//! [Interface], and [CodeEdge], and the file watcher event types
+//! [`WatcherEvent`] and [`WatchEventKind`].
 
 pub mod class;
 pub mod code_edge;
@@ -17,6 +18,7 @@ pub mod interface;
 pub mod label;
 pub mod spec;
 pub mod task;
+pub mod watcher;
 
 pub use class::Class;
 pub use code_edge::CodeEdge;
@@ -32,3 +34,4 @@ pub use interface::Interface;
 pub use label::Label;
 pub use spec::Spec;
 pub use task::{Task, TaskStatus, compute_priority_order};
+pub use watcher::{WatchEventKind, WatcherEvent};

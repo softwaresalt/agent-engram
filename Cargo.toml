@@ -154,3 +154,7 @@ path = "tests/integration/shim_error_test.rs"
 [[test]]
 name = "integration_multi_workspace"
 path = "tests/integration/multi_workspace_test.rs"
+
+[[test]]
+name = "integration_file_watcher"
+path = "tests/integration/file_watcher_test.rs"
