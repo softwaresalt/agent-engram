@@ -115,6 +115,11 @@ impl DaemonLock {
                     })
                 })?;
 
+                // T053: clean up any stale Unix socket left behind by a crashed
+                // daemon so the next `bind_listener` call succeeds (S039-S040).
+                // On Windows, named pipes are cleaned up by the OS automatically.
+                clean_stale_socket(&run_dir);
+
                 Ok(Self {
                     _guard: guard,
                     path: pid_path,
@@ -149,4 +154,45 @@ fn read_pid(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| s.trim().parse().ok())
+}
+
+/// Remove a stale Unix domain socket file if it exists in `run_dir`.
+///
+/// On Unix, a crashed daemon may leave behind `.engram/run/engram.sock`. The
+/// OS does not auto-clean socket files the way it cleans file-descriptor locks,
+/// so a subsequent `bind()` call on the same path would fail with `EADDRINUSE`
+/// unless the file is removed first.
+///
+/// On Windows this is a no-op — named pipes are automatically cleaned up by
+/// the OS when the server process dies.
+fn clean_stale_socket(run_dir: &Path) {
+    #[cfg(unix)]
+    {
+        let sock_path = run_dir.join("engram.sock");
+        match std::fs::remove_file(&sock_path) {
+            Ok(()) => {
+                tracing::info!(
+                    path = %sock_path.display(),
+                    "removed stale IPC socket from previous daemon run"
+                );
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Nothing to clean up; this is the normal case for a clean start.
+            }
+            Err(e) => {
+                // Warn but don't fail — `bind_listener` in `ipc_server` also
+                // removes the socket, so this is defence-in-depth only.
+                tracing::warn!(
+                    path = %sock_path.display(),
+                    error = %e,
+                    "failed to remove stale IPC socket; bind_listener will retry"
+                );
+            }
+        }
+    }
+
+    // On non-Unix platforms the socket concept doesn't apply; suppress the
+    // unused-variable warning.
+    #[cfg(not(unix))]
+    let _ = run_dir;
 }

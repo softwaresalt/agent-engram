@@ -20,10 +20,11 @@ use interprocess::local_socket::{
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::watch;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::daemon::lockfile::DaemonLock;
 use crate::daemon::protocol::{IpcError as WireError, IpcRequest, IpcResponse};
+use crate::daemon::ttl::TtlTimer;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::server::state::{AppState, SharedState};
 use crate::tools;
@@ -168,8 +169,12 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 ///
 /// Errors are logged but not propagated; the accept loop continues after each
 /// connection regardless of outcome.
-#[instrument(skip(stream, state))]
-async fn handle_connection(stream: Stream, state: SharedState) {
+#[instrument(skip(stream, state, shutdown_tx))]
+async fn handle_connection(
+    stream: Stream,
+    state: SharedState,
+    shutdown_tx: Arc<watch::Sender<bool>>,
+) {
     let (recv_half, mut send_half) = stream.split();
     let mut reader = BufReader::new(recv_half);
     let mut line = String::new();
@@ -182,7 +187,7 @@ async fn handle_connection(stream: Stream, state: SharedState) {
         Ok(n) if n > MAX_REQUEST_BYTES => {
             IpcResponse::parse_error(format!("request exceeds {MAX_REQUEST_BYTES} byte limit"))
         }
-        Ok(_) => process_request(&line, &state).await,
+        Ok(_) => process_request(&line, &state, &shutdown_tx).await,
         Err(e) => {
             warn!(error = %e, "failed to read IPC request line");
             return;
@@ -204,7 +209,11 @@ async fn handle_connection(stream: Stream, state: SharedState) {
 }
 
 /// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].
-async fn process_request(line: &str, state: &SharedState) -> IpcResponse {
+async fn process_request(
+    line: &str,
+    state: &SharedState,
+    shutdown_tx: &Arc<watch::Sender<bool>>,
+) -> IpcResponse {
     let request = match IpcRequest::from_line(line.trim()) {
         Ok(r) => r,
         Err(err_response) => return err_response,
@@ -227,8 +236,11 @@ async fn process_request(line: &str, state: &SharedState) -> IpcResponse {
                 "active_connections": state.active_connections(),
             }),
         ),
+        // T052: `_shutdown` triggers the shared shutdown channel so the accept
+        // loop exits after returning this response (S022, S037).
         "_shutdown" => {
-            info!("daemon received _shutdown IPC request");
+            info!("daemon received _shutdown IPC request — initiating graceful shutdown");
+            let _ = shutdown_tx.send(true);
             IpcResponse::success(
                 id,
                 json!({ "status": "shutting_down", "flush_started": true }),
@@ -253,7 +265,7 @@ async fn process_request(line: &str, state: &SharedState) -> IpcResponse {
 
 // ── Daemon entry point ───────────────────────────────────────────────────────
 
-/// Run the daemon accept loop for the given workspace path.
+/// Run the daemon accept loop with graceful shutdown support.
 ///
 /// Steps:
 /// 1. Canonicalize and validate the workspace path.
@@ -261,13 +273,18 @@ async fn process_request(line: &str, state: &SharedState) -> IpcResponse {
 /// 3. Acquire the daemon lockfile.
 /// 4. Build [`AppState`] and set the active workspace.
 /// 5. Compute and bind the IPC endpoint.
-/// 6. Enter the accept loop; break on `Ctrl-C`.
+/// 6. Enter the accept loop; exit when `shutdown_rx` becomes `true`.
 ///
 /// # Errors
 ///
 /// Returns [`EngramError`] if path validation, lock acquisition, or listener
 /// binding fails.
-pub async fn run(workspace: &str) -> Result<(), EngramError> {
+pub async fn run_with_shutdown(
+    workspace: &str,
+    ttl: Arc<TtlTimer>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), EngramError> {
     let workspace_path = std::fs::canonicalize(workspace).map_err(|e| {
         EngramError::Ipc(DomainIpcError::ConnectionFailed {
             address: workspace.to_owned(),
@@ -284,8 +301,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
         })
     })?;
 
-    let _lock = DaemonLock::acquire(&workspace_path)?;
-    info!(workspace = %workspace_path.display(), "daemon lock acquired");
+    // Lock is already acquired by `daemon::mod::run()` which holds it for the
+    // daemon's entire lifetime. No re-acquisition needed here.
 
     let state: SharedState = Arc::new(AppState::new(1));
 
@@ -296,30 +313,89 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
 
-    accept_loop(listener, state).await;
+    // T049 / S046: Reset the idle deadline so the TTL window starts from when
+    // the daemon is ready to serve requests, not from when it started.  On a
+    // slow machine SurrealDB init may consume several hundred milliseconds;
+    // without this reset a short idle timeout (e.g. 500 ms in tests) would
+    // fire before the readiness probe even connects.
+    ttl.reset();
+
+    // T045: Spawn the TTL expiry task now that the daemon is ready to serve.
+    // Spawning here (after bind) rather than at process startup ensures the
+    // idle window begins from "daemon ready", preventing false expiry during
+    // slow SurrealDB initialization.
+    {
+        let ttl_task = Arc::clone(&ttl);
+        let tx_for_ttl = Arc::clone(&shutdown_tx);
+        tokio::spawn(async move {
+            ttl_task.run_until_expired(tx_for_ttl).await;
+        });
+    }
+
+    accept_loop(listener, state, ttl, shutdown_tx, shutdown_rx).await;
     Ok(())
+}
+
+/// Run the daemon accept loop for the given workspace path (legacy API).
+///
+/// Delegates to [`run_with_shutdown`] with a no-op TTL and a one-time
+/// Ctrl-C shutdown. New code should call [`run_with_shutdown`] directly.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] if path validation, lock acquisition, or listener
+/// binding fails.
+pub async fn run(workspace: &str) -> Result<(), EngramError> {
+    let ttl = TtlTimer::new(std::time::Duration::ZERO); // no auto-shutdown
+    let (tx, rx) = watch::channel(false);
+    run_with_shutdown(workspace, ttl, Arc::new(tx), rx).await
 }
 
 // ── Accept loop ──────────────────────────────────────────────────────────────
 
-/// Drive the main accept loop until `Ctrl-C` is received.
-async fn accept_loop(listener: Listener, state: SharedState) {
+/// Drive the main accept loop until the shutdown channel fires.
+///
+/// On each accepted connection the idle TTL is reset (S046). The `_shutdown`
+/// IPC handler and the TTL expiry task both write `true` to `shutdown_tx`,
+/// which causes `shutdown_rx.changed()` to fire and exit this loop.
+async fn accept_loop(
+    listener: Listener,
+    state: SharedState,
+    ttl: Arc<TtlTimer>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok(stream) => {
+                        // T049: every accepted connection resets the idle timer (S046).
+                        ttl.reset();
+
                         let state = Arc::clone(&state);
-                        tokio::spawn(handle_connection(stream, state));
+                        let tx = Arc::clone(&shutdown_tx);
+                        tokio::spawn(handle_connection(stream, state, tx));
                     }
                     Err(e) => {
                         error!(error = %e, "IPC listener accept error");
                     }
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("daemon received Ctrl-C, shutting down");
-                break;
+            // Watch for shutdown signal from TTL expiry, _shutdown handler, or signal.
+            changed = shutdown_rx.changed() => {
+                match changed {
+                    Ok(()) if *shutdown_rx.borrow() => {
+                        info!("shutdown signal received — stopping IPC listener");
+                        break;
+                    }
+                    Ok(()) => {}   // value changed to false — ignore
+                    Err(_) => {
+                        // Sender dropped; treat as shutdown.
+                        info!("shutdown channel closed — stopping IPC listener");
+                        break;
+                    }
+                }
             }
         }
     }

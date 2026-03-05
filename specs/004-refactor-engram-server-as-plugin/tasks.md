@@ -164,20 +164,20 @@
 
 ### Tests for US3 (write first, verify they fail)
 
-- [ ] T045 [P] [US3] Unit test for TTL timer in tests/unit/ttl_test.rs — expiry triggers shutdown (S045), activity resets timer (S046-S047), zero timeout = run forever (S049), rapid activity (S051)
-- [ ] T046 [P] [US3] Integration test for daemon lifecycle in tests/integration/daemon_lifecycle_test.rs — graceful shutdown flushes state (S037), shutdown during request (S038), restart after timeout (S050)
-- [ ] T047 [P] [US3] Integration test for crash recovery in tests/integration/daemon_lifecycle_test.rs — SIGKILL recovery (S039-S040), stale lock detection, data rehydration; covers S095-S096
+- [X] T045 [P] [US3] Unit test for TTL timer in tests/unit/ttl_test.rs — expiry triggers shutdown (S045), activity resets timer (S046-S047), zero timeout = run forever (S049), rapid activity (S051)
+- [X] T046 [P] [US3] Integration test for daemon lifecycle in tests/integration/daemon_lifecycle_test.rs — graceful shutdown flushes state (S037), shutdown during request (S038), restart after timeout (S050)
+- [X] T047 [P] [US3] Integration test for crash recovery in tests/integration/daemon_lifecycle_test.rs — SIGKILL recovery (S039-S040), stale lock detection, data rehydration; covers S095-S096
 
 ### Implementation for US3
 
-- [ ] T048 [US3] Implement idle TTL timer in src/daemon/ttl.rs — activity timestamp tracking, periodic expiry check (S045), configurable duration; covers S048-S049
-- [ ] T049 [US3] Wire TTL reset into IPC request handler in src/daemon/ipc_server.rs — every tool call resets idle timer (S046)
-- [ ] T050 [US3] Wire TTL reset into file watcher event handler in src/daemon/watcher.rs — every file event resets idle timer (S047)
-- [ ] T051 [US3] Implement graceful shutdown sequence in src/daemon/mod.rs — transition to ShuttingDown, flush state, close IPC listener, remove lock file, remove socket, exit; covers S037
-- [ ] T052 [US3] Implement _shutdown IPC handler in src/daemon/ipc_server.rs — trigger graceful shutdown from shim command per contracts/ipc-protocol.md (S022)
-- [ ] T053 [US3] Implement crash recovery in src/daemon/lockfile.rs — detect stale lock (fd-lock not held), clean stale socket/pipe, allow fresh daemon start; covers S039-S040, S042
-- [ ] T054 [US3] Handle SIGTERM/SIGINT via tokio signal handler in src/daemon/mod.rs — trigger graceful shutdown on signal; covers S038
-- [ ] T055 [US3] Verify `cargo test` passes for all Phase 5 tests
+- [X] T048 [US3] Implement idle TTL timer in src/daemon/ttl.rs — activity timestamp tracking, periodic expiry check (S045), configurable duration; covers S048-S049
+- [X] T049 [US3] Wire TTL reset into IPC request handler in src/daemon/ipc_server.rs — every tool call resets idle timer (S046)
+- [X] T050 [US3] Wire TTL reset into file watcher event handler in src/daemon/watcher.rs — every file event resets idle timer (S047)
+- [X] T051 [US3] Implement graceful shutdown sequence in src/daemon/mod.rs — transition to ShuttingDown, flush state, close IPC listener, remove lock file, remove socket, exit; covers S037
+- [X] T052 [US3] Implement _shutdown IPC handler in src/daemon/ipc_server.rs — trigger graceful shutdown from shim command per contracts/ipc-protocol.md (S022)
+- [X] T053 [US3] Implement crash recovery in src/daemon/lockfile.rs — detect stale lock (fd-lock not held), clean stale socket/pipe, allow fresh daemon start; covers S039-S040, S042
+- [X] T054 [US3] Handle SIGTERM/SIGINT via tokio signal handler in src/daemon/mod.rs — trigger graceful shutdown on signal; covers S038
+- [X] T055 [US3] Verify `cargo test` passes for all Phase 5 tests
 
 **Checkpoint**: Lifecycle management complete — daemon auto-shuts down, recovers from crashes, zero resource waste. User Story 3 independently testable.
 

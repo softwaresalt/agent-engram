@@ -173,11 +173,169 @@ impl DaemonHarness {
     pub fn ipc_path(&self) -> &Path {
         &self.ipc_path
     }
+
+    // ── Lifecycle control ─────────────────────────────────────────────────────
+
+    /// Poll for process exit without blocking.
+    ///
+    /// Returns `Ok(Some(status))` if the process has exited, `Ok(None)` if it
+    /// is still running.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` on OS error (e.g., the process handle is invalid).
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    // ── Alternative spawn constructors ────────────────────────────────────────
+
+    /// Spawn a daemon for a specific, pre-existing workspace directory.
+    ///
+    /// The caller is responsible for creating `.git/HEAD` in the workspace
+    /// before calling this function.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the workspace path cannot be canonicalized, the
+    /// binary cannot be spawned, or the daemon does not become ready within
+    /// `ready_timeout`.
+    pub async fn spawn_for_workspace(
+        workspace: &Path,
+        ready_timeout: Duration,
+    ) -> Result<HarnessWithoutOwnership, Box<dyn std::error::Error>> {
+        const MAX_ATTEMPTS: u32 = 30;
+
+        let workspace_path = workspace.canonicalize()?;
+        let ipc_path = ipc_path_for_workspace(&workspace_path);
+
+        let workspace_str = workspace_path
+            .to_str()
+            .ok_or("workspace path contains non-UTF-8 characters")?;
+
+        let child = Command::new(env!("CARGO_BIN_EXE_engram"))
+            .args(["daemon", "--workspace", workspace_str])
+            .spawn()?;
+
+        let deadline = std::time::Instant::now() + ready_timeout;
+        let mut delay = Duration::from_millis(10);
+        let mut attempt: u32 = 0;
+
+        loop {
+            if ipc_ready(&ipc_path).await {
+                return Ok(HarnessWithoutOwnership { child, ipc_path });
+            }
+
+            attempt += 1;
+            if attempt >= MAX_ATTEMPTS || std::time::Instant::now() >= deadline {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "daemon IPC endpoint did not become ready within {ready_timeout:?} \
+                     ({attempt} attempts)"
+                )
+                .into());
+            }
+
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(500));
+        }
+    }
+
+    /// Spawn a daemon with a short idle timeout (for TTL/lifecycle tests).
+    ///
+    /// Sets the `ENGRAM_IDLE_TIMEOUT_MS` environment variable so the daemon
+    /// self-terminates after `timeout_ms` milliseconds of inactivity.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`DaemonHarness::spawn`].
+    pub async fn spawn_with_idle_timeout_ms(
+        timeout_ms: u64,
+        ready_timeout: Duration,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        const MAX_ATTEMPTS: u32 = 30;
+
+        let workspace = TempDir::new()?;
+        let workspace_path = workspace.path().canonicalize()?;
+        let ipc_path = ipc_path_for_workspace(&workspace_path);
+
+        let git_dir = workspace_path.join(".git");
+        std::fs::create_dir_all(&git_dir)?;
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+
+        let workspace_str = workspace_path
+            .to_str()
+            .ok_or("workspace path contains non-UTF-8 characters")?;
+
+        let child = Command::new(env!("CARGO_BIN_EXE_engram"))
+            .args(["daemon", "--workspace", workspace_str])
+            .env("ENGRAM_IDLE_TIMEOUT_MS", timeout_ms.to_string())
+            .spawn()?;
+
+        let deadline = std::time::Instant::now() + ready_timeout;
+        let mut delay = Duration::from_millis(10);
+        let mut attempt: u32 = 0;
+
+        loop {
+            if ipc_ready(&ipc_path).await {
+                return Ok(Self {
+                    workspace,
+                    child,
+                    ipc_path,
+                });
+            }
+
+            attempt += 1;
+            if attempt >= MAX_ATTEMPTS || std::time::Instant::now() >= deadline {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "daemon IPC endpoint did not become ready within {ready_timeout:?} \
+                     ({attempt} attempts)"
+                )
+                .into());
+            }
+
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(500));
+        }
+    }
 }
 
 impl Drop for DaemonHarness {
     fn drop(&mut self) {
         // Best-effort cleanup: ignore errors so drop never panics.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+// ── HarnessWithoutOwnership ───────────────────────────────────────────────────
+
+/// A daemon harness that does **not** own the workspace [`TempDir`].
+///
+/// Returned by [`DaemonHarness::spawn_for_workspace`] when the caller already
+/// owns the workspace directory and must keep it alive independently.
+pub struct HarnessWithoutOwnership {
+    /// Child process handle; killed on drop.
+    child: Child,
+    /// IPC endpoint for this daemon.
+    ipc_path: PathBuf,
+}
+
+impl HarnessWithoutOwnership {
+    /// Returns the IPC endpoint path.
+    #[must_use]
+    pub fn ipc_path(&self) -> &Path {
+        &self.ipc_path
+    }
+}
+
+impl Drop for HarnessWithoutOwnership {
+    fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
