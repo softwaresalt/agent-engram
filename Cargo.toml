@@ -132,5 +132,13 @@ name = "contract_quickstart"
 path = "tests/contract/quickstart_test.rs"
 
 [[test]]
+name = "contract_ipc_protocol"
+path = "tests/contract/ipc_protocol_test.rs"
+
+[[test]]
+name = "unit_lockfile"
+path = "tests/unit/lockfile_test.rs"
+
+[[test]]
 name = "helpers_daemon_harness"
 path = "tests/helpers/mod.rs"

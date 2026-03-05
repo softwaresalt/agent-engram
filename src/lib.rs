@@ -24,6 +24,10 @@
 #![allow(clippy::map_unwrap_or)]
 #![allow(clippy::unnecessary_filter_map)]
 #![allow(clippy::trivially_copy_pass_by_ref)]
+// IpcResponse is a wire-format struct returned as an Err variant in the IPC
+// dispatch path. Its size is bounded by the JSON-RPC 2.0 spec and cannot be
+// meaningfully reduced without complicating the public API.
+#![allow(clippy::result_large_err)]
 
 /// Crate-level constants and shared library entrypoints for the Engram daemon.
 pub const APP_NAME: &str = "engram";

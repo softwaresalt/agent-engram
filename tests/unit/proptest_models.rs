@@ -405,3 +405,97 @@ proptest! {
         prop_assert_eq!(edge, decoded);
     }
 }
+
+// ── Phase 2: IPC protocol round-trip tests (T012) ────────────────────────────
+
+use engram::daemon::DaemonStatus;
+use engram::daemon::protocol::{
+    IpcError as ProtocolError, IpcRequest, IpcResponse as ProtocolResponse,
+};
+
+fn arb_json_id() -> impl Strategy<Value = serde_json::Value> {
+    prop_oneof![
+        (0i64..100_000).prop_map(serde_json::Value::from),
+        "[a-zA-Z0-9_-]{1,30}".prop_map(serde_json::Value::from),
+    ]
+}
+
+fn arb_protocol_error() -> impl Strategy<Value = ProtocolError> {
+    ("[a-z_]{1,30}", ".{1,80}").prop_map(|(method, message)| ProtocolError {
+        code: match method.len() % 4 {
+            0 => -32_700,
+            1 => -32_600,
+            2 => -32_601,
+            _ => -32_603,
+        },
+        message,
+        data: None,
+    })
+}
+
+fn arb_ipc_request() -> impl Strategy<Value = IpcRequest> {
+    (
+        prop_oneof![Just("2.0".to_owned()), Just("1.0".to_owned())],
+        prop::option::of(arb_json_id()),
+        "[a-z_]{1,40}",
+        // Avoid Some(Value::Null): JSON null deserializes to None for Option<Value>,
+        // so Some(Null) does not round-trip. Use None or a non-null value.
+        prop_oneof![
+            Just(None::<serde_json::Value>),
+            "[a-z]{1,10}".prop_map(|s| Some(serde_json::Value::from(s))),
+        ],
+    )
+        .prop_map(|(jsonrpc, id, method, params)| IpcRequest {
+            jsonrpc,
+            id,
+            method,
+            params,
+        })
+}
+
+fn arb_ipc_response() -> impl Strategy<Value = ProtocolResponse> {
+    prop_oneof![
+        // Use a non-null result value: Some(Null) round-trips as None via serde.
+        arb_json_id().prop_map(|id| ProtocolResponse::success(id, serde_json::json!({}))),
+        (arb_json_id(), arb_protocol_error())
+            .prop_map(|(id, err)| ProtocolResponse::error(id, err)),
+    ]
+}
+
+fn arb_daemon_status() -> impl Strategy<Value = DaemonStatus> {
+    prop_oneof![
+        Just(DaemonStatus::Starting),
+        Just(DaemonStatus::Ready),
+        Just(DaemonStatus::ShuttingDown),
+    ]
+}
+
+proptest! {
+    #[test]
+    fn ipc_request_roundtrip(req in arb_ipc_request()) {
+        let json = serde_json::to_string(&req).unwrap();
+        let decoded: IpcRequest = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn ipc_response_roundtrip(resp in arb_ipc_response()) {
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: ProtocolResponse = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn ipc_error_roundtrip(err in arb_protocol_error()) {
+        let json = serde_json::to_string(&err).unwrap();
+        let decoded: ProtocolError = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(err, decoded);
+    }
+
+    #[test]
+    fn daemon_status_roundtrip(status in arb_daemon_status()) {
+        let json = serde_json::to_string(&status).unwrap();
+        let decoded: DaemonStatus = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(status, decoded);
+    }
+}

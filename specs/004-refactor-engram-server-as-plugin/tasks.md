@@ -81,19 +81,19 @@
 
 ### Tests (write first, verify they fail)
 
-- [ ] T010 [P] Contract test for IPC JSON-RPC request/response format in tests/contract/ipc_protocol_test.rs — validate request serialization (S014-S016), missing fields (S017-S020), parse errors (S025) per SCENARIOS.md
-- [ ] T011 [P] Unit test for lockfile acquire/release/stale detection in tests/unit/lockfile_test.rs — validate lock acquisition (S027), stale lock detection (S029), cleanup on release (S032), read-only directory error (S030) per SCENARIOS.md
-- [ ] T012 [P] Unit test for IpcRequest/IpcResponse/IpcError serialization round-trips in tests/unit/proptest_models.rs — extend existing proptest coverage to new IPC models
+- [X] T010 [P] Contract test for IPC JSON-RPC request/response format in tests/contract/ipc_protocol_test.rs — validate request serialization (S014-S016), missing fields (S017-S020), parse errors (S025) per SCENARIOS.md
+- [X] T011 [P] Unit test for lockfile acquire/release/stale detection in tests/unit/lockfile_test.rs — validate lock acquisition (S027), stale lock detection (S029), cleanup on release (S032), read-only directory error (S030) per SCENARIOS.md
+- [X] T012 [P] Unit test for IpcRequest/IpcResponse/IpcError serialization round-trips in tests/unit/proptest_models.rs — extend existing proptest coverage to new IPC models
 
 ### Implementation
 
-- [ ] T013 [P] Implement IpcRequest, IpcResponse, IpcError structs with serde in src/daemon/protocol.rs per data-model.md — include JSON-RPC 2.0 validation (jsonrpc field, id echoing). Note: IPC types are transport-layer, not domain models.
-- [ ] T014 [P] Implement DaemonState and DaemonStatus enum in src/daemon/mod.rs per data-model.md — Starting, Ready, ShuttingDown variants with serde(rename_all = "snake_case")
-- [ ] T015 Implement daemon lockfile management in src/daemon/lockfile.rs — fd-lock PID file acquire, release, stale detection (process liveness check), cleanup; covers S027-S033
-- [ ] T016 Implement daemon IPC server (listener + accept loop) in src/daemon/ipc_server.rs — interprocess LocalSocketListener, newline-delimited JSON-RPC framing, dispatch to tools::dispatch(); covers S014-S026
-- [ ] T017 Implement IPC endpoint naming in src/daemon/ipc_server.rs — Unix: `.engram/run/engram.sock`, Windows: `\\.\pipe\engram-{hash_prefix_16}` per contracts/ipc-protocol.md
-- [ ] T018 Wire IPC server into daemon startup sequence in src/daemon/mod.rs — hydrate → bind IPC → transition to Ready; covers S034-S036 state transitions
-- [ ] T019 Verify `cargo test` passes for all Phase 2 tests
+- [X] T013 [P] Implement IpcRequest, IpcResponse, IpcError structs with serde in src/daemon/protocol.rs per data-model.md — include JSON-RPC 2.0 validation (jsonrpc field, id echoing). Note: IPC types are transport-layer, not domain models.
+- [X] T014 [P] Implement DaemonState and DaemonStatus enum in src/daemon/mod.rs per data-model.md — Starting, Ready, ShuttingDown variants with serde(rename_all = "snake_case")
+- [X] T015 Implement daemon lockfile management in src/daemon/lockfile.rs — fd-lock PID file acquire, release, stale detection (process liveness check), cleanup; covers S027-S033
+- [X] T016 Implement daemon IPC server (listener + accept loop) in src/daemon/ipc_server.rs — interprocess LocalSocketListener, newline-delimited JSON-RPC framing, dispatch to tools::dispatch(); covers S014-S026
+- [X] T017 Implement IPC endpoint naming in src/daemon/ipc_server.rs — Unix: `.engram/run/engram.sock`, Windows: `\\.\pipe\engram-{hash_prefix_16}` per contracts/ipc-protocol.md
+- [X] T018 Wire IPC server into daemon startup sequence in src/daemon/mod.rs — hydrate → bind IPC → transition to Ready; covers S034-S036 state transitions
+- [X] T019 Verify `cargo test` passes for all Phase 2 tests
 
 **Checkpoint**: Foundation ready — IPC transport functional, lockfile enforced. User story implementation can begin.
 
