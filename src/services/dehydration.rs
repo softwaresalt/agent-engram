@@ -47,8 +47,8 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
     Ok(())
 }
 
-/// Schema version written to `.engram/.version`.
-pub const SCHEMA_VERSION: &str = "1.0.0";
+/// Version written to `.engram/.version`, derived from `Cargo.toml`.
+pub const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Result of a dehydration (flush) operation.
 #[derive(Debug, Clone)]

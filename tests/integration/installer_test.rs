@@ -427,15 +427,13 @@ fn s075_templates_mcp_json_windows_path() {
     );
 }
 
-/// S075: `gitignore_entries` contains the three expected patterns.
+/// S075: `gitignore_entries` contains the `.engram/` exclusion pattern.
 #[test]
 fn s075_gitignore_entries() {
     use engram::installer::templates;
 
     let entries = templates::gitignore_entries();
-    assert!(entries.contains(".engram/run/"));
-    assert!(entries.contains(".engram/logs/"));
-    assert!(entries.contains(".engram/.db/"));
+    assert!(entries.contains(".engram/"));
 }
 
 // ── S076: path with spaces ────────────────────────────────────────────────────
@@ -525,16 +523,8 @@ async fn install_appends_gitignore_entries() {
 
     let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
     assert!(
-        content.contains(".engram/run/"),
-        ".gitignore must contain .engram/run/"
-    );
-    assert!(
-        content.contains(".engram/logs/"),
-        ".gitignore must contain .engram/logs/"
-    );
-    assert!(
-        content.contains(".engram/.db/"),
-        ".gitignore must contain .engram/.db/"
+        content.contains(".engram/"),
+        ".gitignore must contain .engram/"
     );
     // Original entries must be preserved.
     assert!(
@@ -551,18 +541,14 @@ async fn install_no_duplicate_gitignore_entries() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    // Pre-seed a .gitignore that already contains the engram run entry.
+    // Pre-seed a .gitignore that already contains the engram entry.
     let gitignore_path = workspace.join(".gitignore");
-    fs::write(
-        &gitignore_path,
-        "node_modules/\n.engram/run/\n.engram/logs/\n",
-    )
-    .expect("write .gitignore");
+    fs::write(&gitignore_path, "node_modules/\n.engram/\n").expect("write .gitignore");
 
     installer::install(workspace).await.expect("install");
 
     let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
     // The guard prevents double-appending.
-    let count = content.matches(".engram/run/").count();
-    assert_eq!(count, 1, ".engram/run/ must appear exactly once");
+    let count = content.matches(".engram/").count();
+    assert_eq!(count, 1, ".engram/ must appear exactly once");
 }

@@ -49,10 +49,8 @@ pub fn mcp_json(engram_exe: &Path) -> String {
 ///
 /// ```
 /// let entries = engram::installer::templates::gitignore_entries();
-/// assert!(entries.contains(".engram/run/"));
-/// assert!(entries.contains(".engram/logs/"));
-/// assert!(entries.contains(".engram/.db/"));
+/// assert!(entries.contains(".engram/"));
 /// ```
 pub fn gitignore_entries() -> &'static str {
-    "\n# engram plugin (runtime artifacts)\n.engram/run/\n.engram/logs/\n.engram/.db/\n"
+    "\n# engram plugin (workspace-local state)\n.engram/\n"
 }

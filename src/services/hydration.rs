@@ -1151,8 +1151,8 @@ RELATE task:abc->relates_to->context:note1;
     #[test]
     fn read_version_returns_content() {
         let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join(".version"), "1.0.0\n").expect("write");
-        assert_eq!(read_version(dir.path()), Some("1.0.0".to_string()));
+        fs::write(dir.path().join(".version"), format!("{SCHEMA_VERSION}\n")).expect("write");
+        assert_eq!(read_version(dir.path()), Some(SCHEMA_VERSION.to_string()));
     }
 
     #[test]

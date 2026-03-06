@@ -16,6 +16,7 @@ use engram::db::queries::CodeGraphQueries;
 use engram::models::config::CodeGraphConfig;
 use engram::server::state::AppState;
 use engram::services::code_graph;
+use engram::services::dehydration::SCHEMA_VERSION;
 use engram::tools;
 
 /// Helper: write a sample Rust file into the workspace.
@@ -39,7 +40,7 @@ async fn cross_region_link_lifecycle() {
     let engram_dir = ws.join(".engram");
     fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
-    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+    fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     write_sample_file(
         ws,

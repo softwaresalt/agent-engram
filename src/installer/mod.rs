@@ -167,7 +167,7 @@ pub async fn install(workspace: &Path) -> Result<(), EngramError> {
                 reason: format!("cannot read .gitignore: {e}"),
             })
         })?;
-        if !existing.contains(".engram/run/") {
+        if !existing.contains(".engram/") {
             let appended = format!("{existing}{}", templates::gitignore_entries());
             std::fs::write(&gitignore_path, appended).map_err(|e| {
                 EngramError::Install(InstallError::Failed {
