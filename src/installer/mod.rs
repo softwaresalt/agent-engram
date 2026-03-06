@@ -17,9 +17,7 @@ use crate::errors::{EngramError, InstallError};
 use crate::shim::ipc_client::send_request;
 use crate::shim::lifecycle::check_health;
 
-// ── Embedded content constants ────────────────────────────────────────────────
-
-const PLUGIN_VERSION: &str = "0.1.0";
+use crate::services::dehydration::SCHEMA_VERSION;
 
 const TASKS_MD_STUB: &str = "# Tasks\n\n<!-- Managed by engram. Do not edit manually. -->\n";
 
@@ -153,7 +151,7 @@ pub async fn install(workspace: &Path) -> Result<(), EngramError> {
 
     // Write stub data files.
     write_file(&engram_dir.join("tasks.md"), TASKS_MD_STUB)?;
-    write_file(&engram_dir.join(".version"), PLUGIN_VERSION)?;
+    write_file(&engram_dir.join(".version"), SCHEMA_VERSION)?;
     write_file(&engram_dir.join("config.toml"), CONFIG_TOML_STUB)?;
 
     // Generate .vscode/mcp.json.
@@ -202,7 +200,7 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
 
     let engram_dir = workspace.join(".engram");
 
-    std::fs::write(engram_dir.join(".version"), PLUGIN_VERSION).map_err(|e| {
+    std::fs::write(engram_dir.join(".version"), SCHEMA_VERSION).map_err(|e| {
         EngramError::Install(InstallError::UpdateFailed {
             reason: format!("cannot write .version: {e}"),
         })
@@ -259,7 +257,7 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
         create_dir(&dir)?;
     }
 
-    std::fs::write(engram_dir.join(".version"), PLUGIN_VERSION).map_err(|e| {
+    std::fs::write(engram_dir.join(".version"), SCHEMA_VERSION).map_err(|e| {
         EngramError::Install(InstallError::Failed {
             reason: format!("cannot write .version: {e}"),
         })

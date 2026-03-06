@@ -89,7 +89,10 @@ async fn s067_version_file_content() {
         .expect("install should succeed");
 
     let version = fs::read_to_string(workspace.join(".engram/.version")).expect("read .version");
-    assert_eq!(version.trim(), "0.1.0");
+    assert_eq!(
+        version.trim(),
+        engram::services::dehydration::SCHEMA_VERSION
+    );
 }
 
 /// S067 – tasks.md has the expected stub content.
@@ -185,7 +188,11 @@ async fn s069_update_refreshes_artifacts() {
         .expect("update should succeed");
 
     let version = fs::read_to_string(workspace.join(".engram/.version")).expect("read .version");
-    assert_eq!(version.trim(), "0.1.0", ".version must be updated to 0.1.0");
+    assert_eq!(
+        version.trim(),
+        engram::services::dehydration::SCHEMA_VERSION,
+        ".version must match SCHEMA_VERSION"
+    );
 
     let mcp = fs::read_to_string(workspace.join(".vscode/mcp.json")).expect("read mcp.json");
     assert!(
