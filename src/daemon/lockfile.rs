@@ -19,6 +19,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fd_lock::RwLock;
+use sysinfo::{Pid, System};
+use tracing::warn;
 
 use crate::errors::{EngramError, LockError};
 
@@ -42,9 +44,11 @@ impl DaemonLock {
     /// Creates `.engram/run/` if it does not exist. On success the current
     /// process ID is written to the PID file.
     ///
-    /// If the file exists but the owning process is dead (stale lock), the OS
-    /// already released the lock, so `try_write()` succeeds and we overwrite
-    /// the stale PID.
+    /// If `try_write()` fails with `WouldBlock` and the recorded PID belongs
+    /// to a dead process (stale lockfile), the stale file is removed and
+    /// acquisition is retried once. If the second attempt also fails, or if
+    /// the recorded process is still alive, [`LockError::AlreadyHeld`] is
+    /// returned without a retry.
     ///
     /// # Errors
     ///
@@ -52,89 +56,7 @@ impl DaemonLock {
     /// - [`LockError::AcquisitionFailed`] — directory or file creation failed
     ///   (e.g. permission denied).
     pub fn acquire(workspace: &Path) -> Result<Self, EngramError> {
-        let run_dir = workspace.join(".engram").join("run");
-
-        std::fs::create_dir_all(&run_dir).map_err(|e| {
-            EngramError::Lock(LockError::AcquisitionFailed {
-                path: run_dir.display().to_string(),
-                reason: e.to_string(),
-            })
-        })?;
-
-        let pid_path = run_dir.join("engram.pid");
-
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&pid_path)
-            .map_err(|e| {
-                EngramError::Lock(LockError::AcquisitionFailed {
-                    path: pid_path.display().to_string(),
-                    reason: e.to_string(),
-                })
-            })?;
-
-        // Leak the RwLock to obtain a `'static` reference for the guard.
-        // Safety contract: the OS releases the file lock when the guard drops
-        // (triggered by DaemonLock::drop) or when the process exits.
-        let rw_lock: &'static mut RwLock<File> = Box::leak(Box::new(RwLock::new(file)));
-
-        match rw_lock.try_write() {
-            Ok(mut guard) => {
-                // Truncate to zero before writing our PID so that stale bytes
-                // from a longer previous PID (e.g. "12345678" → "99") do not
-                // survive and produce a corrupted PID on the next read.
-                guard.set_len(0).map_err(|e| {
-                    EngramError::Lock(LockError::AcquisitionFailed {
-                        path: pid_path.display().to_string(),
-                        reason: format!("truncate PID file failed: {e}"),
-                    })
-                })?;
-                guard.seek(SeekFrom::Start(0)).map_err(|e| {
-                    EngramError::Lock(LockError::AcquisitionFailed {
-                        path: pid_path.display().to_string(),
-                        reason: e.to_string(),
-                    })
-                })?;
-
-                let pid = std::process::id();
-                let pid_str = pid.to_string();
-                guard.write_all(pid_str.as_bytes()).map_err(|e| {
-                    EngramError::Lock(LockError::AcquisitionFailed {
-                        path: pid_path.display().to_string(),
-                        reason: e.to_string(),
-                    })
-                })?;
-
-                guard.flush().map_err(|e| {
-                    EngramError::Lock(LockError::AcquisitionFailed {
-                        path: pid_path.display().to_string(),
-                        reason: e.to_string(),
-                    })
-                })?;
-
-                // T053: clean up any stale Unix socket left behind by a crashed
-                // daemon so the next `bind_listener` call succeeds (S039-S040).
-                // On Windows, named pipes are cleaned up by the OS automatically.
-                clean_stale_socket(&run_dir);
-
-                Ok(Self {
-                    _guard: guard,
-                    path: pid_path,
-                    pid,
-                })
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                let pid = read_pid(&pid_path).unwrap_or(0);
-                Err(EngramError::Lock(LockError::AlreadyHeld { pid }))
-            }
-            Err(e) => Err(EngramError::Lock(LockError::AcquisitionFailed {
-                path: pid_path.display().to_string(),
-                reason: e.to_string(),
-            })),
-        }
+        acquire_inner(workspace, true)
     }
 
     /// Returns the path of the acquired PID file.
@@ -146,6 +68,130 @@ impl DaemonLock {
     pub fn pid(&self) -> u32 {
         self.pid
     }
+}
+
+/// Inner lock acquisition implementation.
+///
+/// When `allow_retry` is `true` and a `WouldBlock` result is found alongside
+/// a stale (dead) PID, the stale file is removed and `acquire_inner` is called
+/// once more with `allow_retry = false` to prevent unbounded recursion.
+fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, EngramError> {
+    let run_dir = workspace.join(".engram").join("run");
+
+    std::fs::create_dir_all(&run_dir).map_err(|e| {
+        EngramError::Lock(LockError::AcquisitionFailed {
+            path: run_dir.display().to_string(),
+            reason: e.to_string(),
+        })
+    })?;
+
+    let pid_path = run_dir.join("engram.pid");
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&pid_path)
+        .map_err(|e| {
+            EngramError::Lock(LockError::AcquisitionFailed {
+                path: pid_path.display().to_string(),
+                reason: e.to_string(),
+            })
+        })?;
+
+    // Leak the RwLock to obtain a `'static` reference for the guard.
+    // Safety contract: the OS releases the file lock when the guard drops
+    // (triggered by DaemonLock::drop) or when the process exits.
+    let rw_lock: &'static mut RwLock<File> = Box::leak(Box::new(RwLock::new(file)));
+
+    match rw_lock.try_write() {
+        Ok(mut guard) => {
+            // Truncate to zero before writing our PID so that stale bytes
+            // from a longer previous PID (e.g. "12345678" → "99") do not
+            // survive and produce a corrupted PID on the next read.
+            guard.set_len(0).map_err(|e| {
+                EngramError::Lock(LockError::AcquisitionFailed {
+                    path: pid_path.display().to_string(),
+                    reason: format!("truncate PID file failed: {e}"),
+                })
+            })?;
+            guard.seek(SeekFrom::Start(0)).map_err(|e| {
+                EngramError::Lock(LockError::AcquisitionFailed {
+                    path: pid_path.display().to_string(),
+                    reason: e.to_string(),
+                })
+            })?;
+
+            let pid = std::process::id();
+            let pid_str = pid.to_string();
+            guard.write_all(pid_str.as_bytes()).map_err(|e| {
+                EngramError::Lock(LockError::AcquisitionFailed {
+                    path: pid_path.display().to_string(),
+                    reason: e.to_string(),
+                })
+            })?;
+
+            guard.flush().map_err(|e| {
+                EngramError::Lock(LockError::AcquisitionFailed {
+                    path: pid_path.display().to_string(),
+                    reason: e.to_string(),
+                })
+            })?;
+
+            // T053: clean up any stale Unix socket left behind by a crashed
+            // daemon so the next `bind_listener` call succeeds (S039-S040).
+            // On Windows, named pipes are cleaned up by the OS automatically.
+            clean_stale_socket(&run_dir);
+
+            Ok(DaemonLock {
+                _guard: guard,
+                path: pid_path,
+                pid,
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            match read_pid(&pid_path) {
+                Some(pid) if is_process_alive(pid) => {
+                    warn!(pid, "daemon lock held by live process, cannot start");
+                    Err(EngramError::Lock(LockError::AlreadyHeld { pid }))
+                }
+                Some(pid) if allow_retry => {
+                    warn!(pid, "found stale lockfile, cleaning up");
+                    // The holding process is dead; remove the stale PID file and
+                    // retry once. On most OSes the OS lock is already released when
+                    // the holding process died, so the retry should succeed.
+                    let _ = std::fs::remove_file(&pid_path);
+                    acquire_inner(workspace, false)
+                }
+                Some(pid) => {
+                    // Second attempt still blocked — return AlreadyHeld.
+                    warn!(pid, "stale lockfile cleanup retry failed; lock still held");
+                    Err(EngramError::Lock(LockError::AlreadyHeld { pid }))
+                }
+                None => {
+                    warn!("lockfile held but PID unreadable");
+                    Err(EngramError::Lock(LockError::AlreadyHeld { pid: 0 }))
+                }
+            }
+        }
+        Err(e) => Err(EngramError::Lock(LockError::AcquisitionFailed {
+            path: pid_path.display().to_string(),
+            reason: e.to_string(),
+        })),
+    }
+}
+
+/// Check whether a process with the given PID is currently running.
+///
+/// Uses [`sysinfo`] to query the OS process table. Returns `false` if the
+/// process is not found (dead, zombie, or never existed) or if the PID is 0.
+fn is_process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let mut sys = System::new();
+    sys.refresh_process(Pid::from_u32(pid))
 }
 
 /// Read a PID from `path`, returning `None` if the file is missing, empty, or

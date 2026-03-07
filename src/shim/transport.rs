@@ -113,13 +113,21 @@ impl ServerHandler for ShimHandler {
         }
     }
 
-    /// Return an empty tool list (tools are enumerated by the daemon).
+    /// Return the full static tool catalog.
+    ///
+    /// The catalog is built at call time from [`crate::shim::tools_catalog::all_tools`]
+    /// so that MCP clients receive accurate schema information without requiring
+    /// a round-trip to the daemon.
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _cx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::default())
+        Ok(ListToolsResult {
+            tools: crate::shim::tools_catalog::all_tools(),
+            next_cursor: None,
+            meta: None,
+        })
     }
 }
 

@@ -6,6 +6,7 @@
 
 pub mod ipc_client;
 pub mod lifecycle;
+pub mod tools_catalog;
 pub mod transport;
 
 use std::time::Duration;

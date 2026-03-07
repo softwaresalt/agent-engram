@@ -24,8 +24,26 @@ const MAX_BACKOFF_ATTEMPTS: u32 = 30;
 const INITIAL_BACKOFF_MS: u64 = 10;
 /// Maximum delay cap per backoff step (milliseconds).
 const MAX_BACKOFF_MS: u64 = 500;
-/// Total wall-clock budget allowed for the ready-wait loop (milliseconds).
-const READY_TIMEOUT_MS: u64 = 2_000;
+/// Default total wall-clock budget allowed for the ready-wait loop (milliseconds).
+const DEFAULT_READY_TIMEOUT_MS: u64 = 10_000;
+
+/// Parse a ready-timeout value from an optional raw string.
+///
+/// Returns the parsed `u64` milliseconds if `raw` is `Some` and parses
+/// successfully, otherwise falls back to [`DEFAULT_READY_TIMEOUT_MS`].
+fn parse_timeout_ms(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_READY_TIMEOUT_MS)
+}
+
+/// Return the ready-wait timeout in milliseconds.
+///
+/// Reads `ENGRAM_READY_TIMEOUT_MS` from the environment. Falls back to
+/// [`DEFAULT_READY_TIMEOUT_MS`] (10 s) if the variable is absent or cannot
+/// be parsed as a `u64`.
+fn ready_timeout_ms() -> u64 {
+    parse_timeout_ms(std::env::var("ENGRAM_READY_TIMEOUT_MS").ok().as_deref())
+}
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
@@ -78,7 +96,7 @@ pub async fn check_health(endpoint: &str) -> bool {
 ///
 /// Returns [`EngramError::Daemon`] if:
 /// - The daemon binary cannot be located or spawned.
-/// - The daemon does not become healthy within [`READY_TIMEOUT_MS`] ms.
+/// - The daemon does not become healthy within the configured timeout ms.
 #[instrument(fields(workspace = %workspace.display()))]
 pub async fn ensure_daemon_running(workspace: &Path) -> Result<(), EngramError> {
     let endpoint = ipc_endpoint(workspace)?;
@@ -132,11 +150,12 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
 /// Poll the health endpoint with exponential backoff until the daemon is ready.
 ///
 /// If the daemon does not become healthy within the budget (wall-clock
-/// [`READY_TIMEOUT_MS`] ms or [`MAX_BACKOFF_ATTEMPTS`] polls), one final
+/// [`ready_timeout_ms()`] ms or [`MAX_BACKOFF_ATTEMPTS`] polls), one final
 /// check is made to handle the race where a concurrent shim spawned the
 /// daemon just ahead of us.
 async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(READY_TIMEOUT_MS);
+    let timeout_ms = ready_timeout_ms();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
 
     for attempt in 0..MAX_BACKOFF_ATTEMPTS {
@@ -161,6 +180,32 @@ async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
     }
 
     Err(EngramError::Daemon(DaemonError::NotReady {
-        timeout_ms: READY_TIMEOUT_MS,
+        timeout_ms,
     }))
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Default timeout is 10 000 ms when no env var value is provided.
+    #[test]
+    fn ready_timeout_default_is_10_seconds() {
+        assert_eq!(parse_timeout_ms(None), DEFAULT_READY_TIMEOUT_MS);
+        assert_eq!(parse_timeout_ms(None), 10_000);
+    }
+
+    /// A valid numeric string overrides the default.
+    #[test]
+    fn ready_timeout_env_var_overrides_default() {
+        assert_eq!(parse_timeout_ms(Some("5000")), 5_000);
+    }
+
+    /// An invalid (non-numeric) string falls back to the default.
+    #[test]
+    fn ready_timeout_invalid_env_var_falls_back_to_default() {
+        assert_eq!(parse_timeout_ms(Some("not_a_number")), DEFAULT_READY_TIMEOUT_MS);
+    }
 }
