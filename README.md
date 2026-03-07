@@ -83,6 +83,8 @@ curl -X POST http://127.0.0.1:7437/mcp \
 | `--stale-strategy` | `ENGRAM_STALE_STRATEGY` | `warn` | Behavior on stale `.engram/` files: `warn`, `rehydrate`, `fail` |
 | `--data-dir` | `ENGRAM_DATA_DIR` | `~/.local/share/engram/` | SurrealDB and model cache directory |
 | `--log-format` | `ENGRAM_LOG_FORMAT` | `pretty` | Tracing output format: `json` or `pretty` |
+| _(shim)_ | `ENGRAM_READY_TIMEOUT_MS` | `10000` | Shim: milliseconds to wait for daemon readiness before giving up |
+| _(shim)_ | `ENGRAM_IDLE_TIMEOUT_MS` | `14400000` | Daemon: milliseconds of idle before automatic shutdown (4 hours) |
 
 ```bash
 # Example with custom configuration
