@@ -242,3 +242,45 @@ fn clean_stale_socket(run_dir: &Path) {
     #[cfg(not(unix))]
     let _ = run_dir;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_process_alive;
+
+    /// Verifies the live-process branch of `is_process_alive`.
+    ///
+    /// `std::process::id()` returns this process's own PID, which is guaranteed
+    /// to be present in the OS process table for the entire duration of the test.
+    /// sysinfo 0.30: `System::new()` + `refresh_process(pid)` probes the OS for
+    /// exactly one PID without loading the full process table.
+    #[test]
+    fn is_process_alive_returns_true_for_live_process() {
+        let pid = std::process::id();
+        assert!(
+            is_process_alive(pid),
+            "is_process_alive({pid}) must return true for the running test process"
+        );
+    }
+
+    /// Verifies the PID-0 guard branch of `is_process_alive`.
+    #[test]
+    fn is_process_alive_returns_false_for_pid_zero() {
+        assert!(
+            !is_process_alive(0),
+            "is_process_alive(0) must always return false (PID-0 guard)"
+        );
+    }
+
+    /// Verifies the dead/nonexistent-PID branch of `is_process_alive`.
+    ///
+    /// PID 99_999_999 cannot exist on any real OS:
+    /// - Linux: `PID_MAX` ≤ 4_194_304
+    /// - Windows: PIDs are multiples of 4, max ~4 million
+    #[test]
+    fn is_process_alive_returns_false_for_nonexistent_pid() {
+        assert!(
+            !is_process_alive(99_999_999),
+            "is_process_alive(99_999_999) must return false — no real process has this PID"
+        );
+    }
+}
