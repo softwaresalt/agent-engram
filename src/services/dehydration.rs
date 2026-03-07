@@ -585,7 +585,8 @@ struct NodeLine {
     body_hash: String,
     token_count: u32,
     embed_type: String,
-    embedding: Vec<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding: Option<Vec<f32>>,
     summary: String,
 }
 
@@ -614,6 +615,14 @@ struct FileLine {
     size_bytes: u64,
     content_hash: String,
     last_indexed_at: String,
+}
+
+/// Returns `true` if `e` contains at least one non-zero component.
+///
+/// Used to distinguish a real embedding from the zero-vector placeholder that is
+/// emitted when the `embeddings` feature is disabled or the model is unavailable.
+fn is_meaningful_embedding(e: &[f32]) -> bool {
+    !e.is_empty() && e.iter().any(|&v| v != 0.0)
 }
 
 /// Serialize code graph nodes (code_files + functions + classes + interfaces) to JSONL.
@@ -658,7 +667,11 @@ pub fn serialize_nodes_jsonl(
             body_hash: f.body_hash.clone(),
             token_count: f.token_count,
             embed_type: f.embed_type.clone(),
-            embedding: f.embedding.clone(),
+            embedding: if is_meaningful_embedding(&f.embedding) {
+                Some(f.embedding.clone())
+            } else {
+                None
+            },
             summary: f.summary.clone(),
         };
         if let Ok(json) = serde_json::to_string(&nl) {
@@ -680,7 +693,11 @@ pub fn serialize_nodes_jsonl(
             body_hash: c.body_hash.clone(),
             token_count: c.token_count,
             embed_type: c.embed_type.clone(),
-            embedding: c.embedding.clone(),
+            embedding: if is_meaningful_embedding(&c.embedding) {
+                Some(c.embedding.clone())
+            } else {
+                None
+            },
             summary: c.summary.clone(),
         };
         if let Ok(json) = serde_json::to_string(&nl) {
@@ -702,7 +719,11 @@ pub fn serialize_nodes_jsonl(
             body_hash: i.body_hash.clone(),
             token_count: i.token_count,
             embed_type: i.embed_type.clone(),
-            embedding: i.embedding.clone(),
+            embedding: if is_meaningful_embedding(&i.embedding) {
+                Some(i.embedding.clone())
+            } else {
+                None
+            },
             summary: i.summary.clone(),
         };
         if let Ok(json) = serde_json::to_string(&nl) {
@@ -1091,5 +1112,99 @@ Other description.
         assert!(out.contains("\"type\":\"code_file\""));
         assert!(out.contains("\"path\":\"src/main.rs\""));
         assert!(out.contains("\"size_bytes\":1024"));
+    }
+
+    // ── GAP-002: zero-vector null serialization tests ───────────────
+
+    #[test]
+    fn is_meaningful_embedding_rejects_empty() {
+        assert!(!is_meaningful_embedding(&[]));
+    }
+
+    #[test]
+    fn is_meaningful_embedding_rejects_all_zeros() {
+        assert!(!is_meaningful_embedding(&vec![0.0_f32; 384]));
+    }
+
+    #[test]
+    fn is_meaningful_embedding_accepts_nonzero() {
+        let mut e = vec![0.0_f32; 384];
+        e[100] = 0.01;
+        assert!(is_meaningful_embedding(&e));
+    }
+
+    #[test]
+    fn zero_embedding_serializes_as_null() {
+        let f = Function {
+            id: "function:test".to_string(),
+            name: "f".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line_start: 1,
+            line_end: 3,
+            signature: "fn f()".to_string(),
+            docstring: None,
+            body: String::new(),
+            body_hash: "abc".to_string(),
+            token_count: 0,
+            embed_type: "summary_pointer".to_string(),
+            embedding: vec![0.0_f32; 384], // all zeros — placeholder
+            summary: "fn f()".to_string(),
+        };
+        let out = serialize_nodes_jsonl(&[], &[f], &[], &[]);
+        // Zero embedding must be omitted (skip_serializing_if = "Option::is_none")
+        assert!(
+            !out.contains("\"embedding\""),
+            "zero embedding must be omitted from JSONL, got: {out}"
+        );
+    }
+
+    #[test]
+    fn non_zero_embedding_serializes_as_array() {
+        let mut emb = vec![0.0_f32; 384];
+        emb[0] = 0.5;
+        let f = Function {
+            id: "function:test2".to_string(),
+            name: "g".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line_start: 5,
+            line_end: 7,
+            signature: "fn g()".to_string(),
+            docstring: None,
+            body: String::new(),
+            body_hash: "def".to_string(),
+            token_count: 0,
+            embed_type: "explicit_code".to_string(),
+            embedding: emb,
+            summary: "fn g()".to_string(),
+        };
+        let out = serialize_nodes_jsonl(&[], &[f], &[], &[]);
+        assert!(
+            out.contains("\"embedding\""),
+            "non-zero embedding must be present in JSONL, got: {out}"
+        );
+    }
+
+    #[test]
+    fn empty_vec_embedding_serializes_as_null() {
+        let f = Function {
+            id: "function:empty".to_string(),
+            name: "h".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line_start: 1,
+            line_end: 1,
+            signature: String::new(),
+            docstring: None,
+            body: String::new(),
+            body_hash: String::new(),
+            token_count: 0,
+            embed_type: String::new(),
+            embedding: vec![], // empty
+            summary: String::new(),
+        };
+        let out = serialize_nodes_jsonl(&[], &[f], &[], &[]);
+        assert!(
+            !out.contains("\"embedding\""),
+            "empty embedding must be omitted from JSONL"
+        );
     }
 }
