@@ -3277,7 +3277,6 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Excludes the zero-vector placeholder used when embeddings are unavailable.
 /// A zero embedding cannot be meaningfully ranked by cosine similarity — its
 /// denominator is zero, so every query matches at score 0.0 uniformly.
-#[allow(dead_code)]
 fn has_meaningful_embedding(e: &[f32]) -> bool {
     !e.is_empty() && e.iter().any(|&v| v != 0.0)
 }
