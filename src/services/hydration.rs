@@ -274,7 +274,7 @@ pub async fn hydrate_code_graph(
                 continue;
             }
             if let Ok(node) = parse_node_line(line) {
-                if upsert_node(cg_queries, node).await {
+                if upsert_node(cg_queries, node, path).await {
                     result.nodes_loaded += 1;
                 } else {
                     result.lines_skipped += 1;
@@ -388,8 +388,53 @@ fn parse_edge_line(line: &str) -> Result<ParsedEdge, serde_json::Error> {
     serde_json::from_str(line)
 }
 
+/// Read the source body for a symbol from its file on disk.
+///
+/// Extracts lines `line_start..=line_end` (1-based, inclusive) from `file_path`
+/// (workspace-relative). Returns an empty `String` if the file cannot be read or
+/// the line range is out of bounds; logs a warning in both cases.
+///
+/// Body re-derivation is best-effort — a missing body is a degraded but non-fatal
+/// condition; the node is still hydrated and searchable by name and hash.
+async fn read_body_lines(workspace: &Path, file_path: &str, line_start: u32, line_end: u32) -> String {
+    if file_path.is_empty() || line_start == 0 {
+        return String::new();
+    }
+    let abs = workspace.join(file_path);
+    let content = match tokio::fs::read_to_string(&abs).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                file = %abs.display(),
+                error = %e,
+                "hydration: cannot read source file for body re-derivation"
+            );
+            return String::new();
+        }
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    // Convert 1-based inclusive range to 0-based half-open slice indices.
+    let start = (line_start as usize).saturating_sub(1);
+    let end = (line_end as usize).min(lines.len());
+    if start >= lines.len() || start >= end {
+        tracing::warn!(
+            file = %abs.display(),
+            line_start,
+            line_end,
+            total_lines = lines.len(),
+            "hydration: line range out of bounds during body re-derivation"
+        );
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
 /// Upsert a parsed node into the database. Returns `true` on success.
-async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: ParsedNode) -> bool {
+async fn upsert_node(
+    cg_queries: &crate::db::queries::CodeGraphQueries,
+    node: ParsedNode,
+    workspace: &Path,
+) -> bool {
     use crate::models::{Class, CodeFile, Function, Interface};
 
     match node.node_type.as_str() {
@@ -405,15 +450,19 @@ async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: Pa
             cg_queries.upsert_code_file(&cf).await.is_ok()
         }
         "function" => {
+            let file_path = node.file_path.unwrap_or_default();
+            let line_start = node.line_start.unwrap_or(0);
+            let line_end = node.line_end.unwrap_or(0);
+            let body = read_body_lines(workspace, &file_path, line_start, line_end).await;
             let f = Function {
                 id: node.id,
                 name: node.name.unwrap_or_default(),
-                file_path: node.file_path.unwrap_or_default(),
-                line_start: node.line_start.unwrap_or(0),
-                line_end: node.line_end.unwrap_or(0),
+                file_path,
+                line_start,
+                line_end,
                 signature: node.signature.unwrap_or_default(),
                 docstring: node.docstring,
-                body: String::new(), // body not persisted
+                body,
                 body_hash: node.body_hash.unwrap_or_default(),
                 token_count: node.token_count.unwrap_or(0),
                 embed_type: node.embed_type.unwrap_or_default(),
@@ -423,14 +472,18 @@ async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: Pa
             cg_queries.upsert_function(&f).await.is_ok()
         }
         "class" => {
+            let file_path = node.file_path.unwrap_or_default();
+            let line_start = node.line_start.unwrap_or(0);
+            let line_end = node.line_end.unwrap_or(0);
+            let body = read_body_lines(workspace, &file_path, line_start, line_end).await;
             let c = Class {
                 id: node.id,
                 name: node.name.unwrap_or_default(),
-                file_path: node.file_path.unwrap_or_default(),
-                line_start: node.line_start.unwrap_or(0),
-                line_end: node.line_end.unwrap_or(0),
+                file_path,
+                line_start,
+                line_end,
                 docstring: node.docstring,
-                body: String::new(),
+                body,
                 body_hash: node.body_hash.unwrap_or_default(),
                 token_count: node.token_count.unwrap_or(0),
                 embed_type: node.embed_type.unwrap_or_default(),
@@ -440,14 +493,18 @@ async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: Pa
             cg_queries.upsert_class(&c).await.is_ok()
         }
         "interface" => {
+            let file_path = node.file_path.unwrap_or_default();
+            let line_start = node.line_start.unwrap_or(0);
+            let line_end = node.line_end.unwrap_or(0);
+            let body = read_body_lines(workspace, &file_path, line_start, line_end).await;
             let i = Interface {
                 id: node.id,
                 name: node.name.unwrap_or_default(),
-                file_path: node.file_path.unwrap_or_default(),
-                line_start: node.line_start.unwrap_or(0),
-                line_end: node.line_end.unwrap_or(0),
+                file_path,
+                line_start,
+                line_end,
                 docstring: node.docstring,
-                body: String::new(),
+                body,
                 body_hash: node.body_hash.unwrap_or_default(),
                 token_count: node.token_count.unwrap_or(0),
                 embed_type: node.embed_type.unwrap_or_default(),
@@ -1163,5 +1220,71 @@ RELATE task:abc->relates_to->context:note1;
     fn read_version_missing_returns_none() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_eq!(read_version(dir.path()), None);
+    }
+
+    // ── GAP-001: read_body_lines unit tests ─────────────────────────
+
+    #[tokio::test]
+    async fn read_body_lines_extracts_correct_lines() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let content = "line1\nline2\nline3\nline4\n";
+        tokio::fs::write(tmp.path().join("src.rs"), content)
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "src.rs", 2, 3).await;
+        assert_eq!(body, "line2\nline3");
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_single_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("f.rs"), "alpha\nbeta\ngamma\n")
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "f.rs", 2, 2).await;
+        assert_eq!(body, "beta");
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_missing_file_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let body = read_body_lines(tmp.path(), "nonexistent.rs", 1, 5).await;
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_out_of_bounds_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("f.rs"), "only one line\n")
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "f.rs", 99, 100).await;
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_empty_file_path_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let body = read_body_lines(tmp.path(), "", 1, 5).await;
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_zero_line_start_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("f.rs"), "content\n")
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "f.rs", 0, 1).await;
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn null_embedding_in_jsonl_deserializes_to_none() {
+        // When embedding is absent from JSONL, ParsedNode.embedding is None.
+        let line = r#"{"id":"function:x","type":"function","name":"x","file_path":"src/lib.rs","line_start":1,"line_end":2,"body_hash":"abc","token_count":0,"embed_type":"summary_pointer","summary":"fn x()"}"#;
+        let node: ParsedNode = serde_json::from_str(line).expect("parse");
+        // embedding absent (null) → unwrap_or_default in upsert_node → empty vec
+        assert!(node.embedding.is_none());
     }
 }
