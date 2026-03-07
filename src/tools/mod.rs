@@ -39,15 +39,27 @@ pub async fn dispatch(
                     })
                 })?;
             let result = lifecycle::set_workspace(state.as_ref(), parsed.path).await?;
-            Ok(serde_json::to_value(result).unwrap())
+            serde_json::to_value(result).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("failed to serialize response: {e}"),
+                })
+            })
         }
         "get_daemon_status" => {
             let result = lifecycle::get_daemon_status(state.as_ref()).await?;
-            Ok(serde_json::to_value(result).unwrap())
+            serde_json::to_value(result).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("failed to serialize response: {e}"),
+                })
+            })
         }
         "get_workspace_status" => {
             let result = lifecycle::get_workspace_status(state.as_ref()).await?;
-            Ok(serde_json::to_value(result).unwrap())
+            serde_json::to_value(result).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("failed to serialize response: {e}"),
+                })
+            })
         }
         "create_task" => write::create_task(state, params).await,
         "update_task" => write::update_task(state, params).await,

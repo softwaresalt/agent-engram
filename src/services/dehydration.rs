@@ -5,11 +5,10 @@
 //! files are preserved across flushes via diff-based merging (FR-012).
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use chrono::Utc;
+use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::db::queries::{DependencyEdge, ImplementsEdge, Queries, RelatesToEdge};
@@ -69,7 +68,9 @@ pub async fn dehydrate_workspace(
     workspace_path: &Path,
 ) -> Result<DehydrationResult, EngramError> {
     let engram_dir = workspace_path.join(".engram");
-    fs::create_dir_all(&engram_dir).map_err(|_| flush_err(&engram_dir))?;
+    tokio::fs::create_dir_all(&engram_dir)
+        .await
+        .map_err(|_| flush_err(&engram_dir))?;
 
     let tasks = queries.all_tasks().await?;
     let dep_edges = queries.all_dependency_edges().await?;
@@ -78,7 +79,9 @@ pub async fn dehydrate_workspace(
 
     // Read existing tasks.md for comment preservation (FR-012)
     let tasks_path = engram_dir.join("tasks.md");
-    let old_content = fs::read_to_string(&tasks_path).unwrap_or_default();
+    let old_content = tokio::fs::read_to_string(&tasks_path)
+        .await
+        .unwrap_or_default();
     let old_blocks = parse_task_blocks(&old_content);
     let old_bodies: HashMap<String, String> = old_blocks
         .into_iter()
@@ -97,33 +100,33 @@ pub async fn dehydrate_workspace(
 
     // Serialize tasks.md preserving user comments
     let tasks_content = serialize_tasks_md(&tasks, &old_bodies, &old_content, &task_labels);
-    atomic_write(&tasks_path, &tasks_content)?;
+    atomic_write(&tasks_path, &tasks_content).await?;
 
     // Serialize graph.surql
     let graph_path = engram_dir.join("graph.surql");
     let total_edges = dep_edges.len() + impl_edges.len() + rel_edges.len();
     let graph_content = serialize_graph_surql(&dep_edges, &impl_edges, &rel_edges);
-    atomic_write(&graph_path, &graph_content)?;
+    atomic_write(&graph_path, &graph_content).await?;
 
     // Serialize comments.md (FR-063b)
     let all_comments = queries.all_comments().await?;
     let comments_path = engram_dir.join("comments.md");
     if !all_comments.is_empty() {
         let comments_content = serialize_comments_md(&all_comments);
-        atomic_write(&comments_path, &comments_content)?;
-    } else if comments_path.exists() {
+        atomic_write(&comments_path, &comments_content).await?;
+    } else if tokio::fs::try_exists(&comments_path).await.unwrap_or(false) {
         // Remove stale comments.md when all comments have been deleted
-        let _ = std::fs::remove_file(&comments_path);
+        let _ = tokio::fs::remove_file(&comments_path).await;
     }
 
     // Write version
     let version_path = engram_dir.join(".version");
-    atomic_write(&version_path, SCHEMA_VERSION)?;
+    atomic_write(&version_path, SCHEMA_VERSION).await?;
 
     // Write lastflush timestamp
     let flush_ts = Utc::now().to_rfc3339();
     let lastflush_path = engram_dir.join(".lastflush");
-    atomic_write(&lastflush_path, &flush_ts)?;
+    atomic_write(&lastflush_path, &flush_ts).await?;
 
     let mut files_written = vec![
         ".engram/tasks.md".to_string(),
@@ -165,7 +168,9 @@ pub async fn dehydrate_code_graph(
     workspace_path: &Path,
 ) -> Result<CodeGraphDehydrationResult, EngramError> {
     let code_graph_dir = workspace_path.join(".engram").join("code-graph");
-    fs::create_dir_all(&code_graph_dir).map_err(|_| flush_err(&code_graph_dir))?;
+    tokio::fs::create_dir_all(&code_graph_dir)
+        .await
+        .map_err(|_| flush_err(&code_graph_dir))?;
 
     let code_files = cg_queries.list_code_files().await?;
     let functions = cg_queries.all_functions().await?;
@@ -181,20 +186,20 @@ pub async fn dehydrate_code_graph(
     let nodes_path = code_graph_dir.join("nodes.jsonl");
     if total_nodes > 0 {
         let nodes_content = serialize_nodes_jsonl(&code_files, &functions, &classes, &interfaces);
-        atomic_write(&nodes_path, &nodes_content)?;
+        atomic_write(&nodes_path, &nodes_content).await?;
         files_written.push(".engram/code-graph/nodes.jsonl".to_string());
-    } else if nodes_path.exists() {
-        let _ = fs::remove_file(&nodes_path);
+    } else if tokio::fs::try_exists(&nodes_path).await.unwrap_or(false) {
+        let _ = tokio::fs::remove_file(&nodes_path).await;
     }
 
     // Serialize edges.jsonl
     let edges_path = code_graph_dir.join("edges.jsonl");
     if total_edges > 0 {
         let edges_content = serialize_edges_jsonl(&edges);
-        atomic_write(&edges_path, &edges_content)?;
+        atomic_write(&edges_path, &edges_content).await?;
         files_written.push(".engram/code-graph/edges.jsonl".to_string());
-    } else if edges_path.exists() {
-        let _ = fs::remove_file(&edges_path);
+    } else if tokio::fs::try_exists(&edges_path).await.unwrap_or(false) {
+        let _ = tokio::fs::remove_file(&edges_path).await;
     }
 
     Ok(CodeGraphDehydrationResult {
@@ -511,15 +516,20 @@ pub fn parse_task_blocks(content: &str) -> Vec<TaskBlock> {
 ///
 /// Creates a temporary `.tmp` file alongside the target, writes content,
 /// then renames atomically to prevent partial writes on crash.
-pub fn atomic_write(path: &Path, content: &str) -> Result<(), EngramError> {
+pub async fn atomic_write(path: &Path, content: &str) -> Result<(), EngramError> {
     let tmp_path = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp_path).map_err(|_| flush_err(path))?;
-    file.write_all(content.as_bytes())
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
         .map_err(|_| flush_err(path))?;
-    file.sync_all().map_err(|_| flush_err(path))?;
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|_| flush_err(path))?;
+    file.sync_all().await.map_err(|_| flush_err(path))?;
     drop(file);
 
-    fs::rename(&tmp_path, path).map_err(|_| flush_err(path))?;
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .map_err(|_| flush_err(path))?;
 
     Ok(())
 }
@@ -844,12 +854,12 @@ mod tests {
         assert!(out.contains("RELATE task:a->relates_to->context:c1;"));
     }
 
-    #[test]
-    fn atomic_write_creates_file() {
+    #[tokio::test]
+    async fn atomic_write_creates_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.txt");
-        atomic_write(&path, "hello").expect("write");
-        let content = fs::read_to_string(&path).expect("read");
+        atomic_write(&path, "hello").await.expect("write");
+        let content = tokio::fs::read_to_string(&path).await.expect("read");
         assert_eq!(content, "hello");
     }
 

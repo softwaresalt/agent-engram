@@ -64,7 +64,7 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
     let engram_dir = path.join(".engram");
 
     if !engram_dir.exists() {
-        fs::create_dir_all(&engram_dir).map_err(|e| {
+        tokio::fs::create_dir_all(&engram_dir).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to create .engram directory: {e}"),
             })
@@ -73,8 +73,8 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
     }
 
     let tasks_path = engram_dir.join("tasks.md");
-    let task_count = if tasks_path.exists() {
-        count_tasks(&tasks_path)?
+    let task_count = if tokio::fs::try_exists(&tasks_path).await.unwrap_or(false) {
+        count_tasks(&tasks_path).await?
     } else {
         0
     };
@@ -86,8 +86,10 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
 
     // Validate schema version if present
     let version_path = engram_dir.join(".version");
-    if version_path.exists() {
-        let version = fs::read_to_string(&version_path).unwrap_or_default();
+    if tokio::fs::try_exists(&version_path).await.unwrap_or(false) {
+        let version = tokio::fs::read_to_string(&version_path)
+            .await
+            .unwrap_or_default();
         let version = version.trim();
         if !version.is_empty() && version != SCHEMA_VERSION {
             return Err(EngramError::Hydration(HydrationError::SchemaMismatch {
@@ -120,8 +122,8 @@ pub async fn hydrate_into_db(
 
     // Parse and load tasks from tasks.md
     let tasks_path = engram_dir.join("tasks.md");
-    if tasks_path.exists() {
-        let content = fs::read_to_string(&tasks_path).map_err(|e| {
+    if tokio::fs::try_exists(&tasks_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&tasks_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read tasks.md: {e}"),
             })
@@ -139,8 +141,8 @@ pub async fn hydrate_into_db(
 
     // Parse and load edges from graph.surql
     let graph_path = engram_dir.join("graph.surql");
-    if graph_path.exists() {
-        let content = fs::read_to_string(&graph_path).map_err(|e| {
+    if tokio::fs::try_exists(&graph_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&graph_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read graph.surql: {e}"),
             })
@@ -154,12 +156,14 @@ pub async fn hydrate_into_db(
 
     // Parse and load comments from comments.md (FR-063b)
     let comments_path = engram_dir.join("comments.md");
-    if comments_path.exists() {
-        let content = fs::read_to_string(&comments_path).map_err(|e| {
-            EngramError::Hydration(HydrationError::Failed {
-                reason: format!("failed to read comments.md: {e}"),
-            })
-        })?;
+    if tokio::fs::try_exists(&comments_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&comments_path)
+            .await
+            .map_err(|e| {
+                EngramError::Hydration(HydrationError::Failed {
+                    reason: format!("failed to read comments.md: {e}"),
+                })
+            })?;
         let comments = parse_comments_md(&content);
         for comment in &comments {
             // Strip task: prefix to match internal bare ID convention
@@ -257,8 +261,8 @@ pub async fn hydrate_code_graph(
 
     // Parse nodes.jsonl
     let nodes_path = code_graph_dir.join("nodes.jsonl");
-    if nodes_path.exists() {
-        let content = fs::read_to_string(&nodes_path).map_err(|e| {
+    if tokio::fs::try_exists(&nodes_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&nodes_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read nodes.jsonl: {e}"),
             })
@@ -287,8 +291,8 @@ pub async fn hydrate_code_graph(
 
     // Parse edges.jsonl
     let edges_path = code_graph_dir.join("edges.jsonl");
-    if edges_path.exists() {
-        let content = fs::read_to_string(&edges_path).map_err(|e| {
+    if tokio::fs::try_exists(&edges_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&edges_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read edges.jsonl: {e}"),
             })
@@ -949,8 +953,8 @@ fn strip_table_prefix(record: &str) -> String {
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
-fn count_tasks(path: &Path) -> Result<u64, EngramError> {
-    let contents = fs::read_to_string(path).map_err(|e| {
+async fn count_tasks(path: &Path) -> Result<u64, EngramError> {
+    let contents = tokio::fs::read_to_string(path).await.map_err(|e| {
         EngramError::Hydration(HydrationError::Failed {
             reason: format!("failed to read tasks.md: {e}"),
         })
