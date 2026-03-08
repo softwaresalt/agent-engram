@@ -141,6 +141,7 @@ async fn contract_set_workspace_enforces_limit() {
 
 // ─── T124: Contract test for rate limiting (FR-025, error 5003) ─────────────
 
+#[cfg(feature = "legacy-sse")]
 #[test]
 async fn contract_rate_limiting_rejects_excess_connections() {
     use axum::body::{Body, to_bytes};

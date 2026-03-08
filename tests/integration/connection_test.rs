@@ -1,3 +1,8 @@
+// This test exercises the legacy HTTP/SSE transport layer (axum router, SSE
+// handler, health endpoint).  It is only compiled when the `legacy-sse` Cargo
+// feature is enabled.  Default builds use the IPC transport exclusively.
+#![cfg(feature = "legacy-sse")]
+
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};

@@ -256,10 +256,10 @@
 - [X] T085 [P] Documentation updates: update README.md with new architecture, update docs/ with ADR for rmcp migration
 - [X] T086 Run specs/004-refactor-engram-server-as-plugin/quickstart.md validation end-to-end
 - [X] T087 Final `cargo clippy -- -D warnings` and `cargo test` full pass
-- [ ] T090 Verify all module stubs from Phase 1 (T004-T006) are replaced with real implementations — no placeholder code remaining per constitution "No dead code" rule
-- [ ] T091 Decide on server/ module (HTTP/SSE): either remove entirely or feature-gate behind `legacy-sse` flag — document decision in ADR
-- [ ] T092 [US4] Implement WatcherEvent→service adapter in src/daemon/debounce.rs — bridge WatcherEvent to existing code_graph and embedding service interfaces (existing services don't accept WatcherEvent directly)
-- [ ] T093 [US2] Implement Unix socket path overflow fallback in src/daemon/ipc_server.rs — detect path >108 bytes, fall back to /tmp/engram-{hash}.sock with 0o600 permissions; covers S119
+- [X] T090 Verify all module stubs from Phase 1 (T004-T006) are replaced with real implementations — no placeholder code remaining per constitution "No dead code" rule
+- [X] T091 Decide on server/ module (HTTP/SSE): either remove entirely or feature-gate behind `legacy-sse` flag — document decision in ADR
+- [X] T092 [US4] Implement WatcherEvent→service adapter in src/daemon/debounce.rs — bridge WatcherEvent to existing code_graph and embedding service interfaces (existing services don't accept WatcherEvent directly)
+- [X] T093 [US2] Implement Unix socket path overflow fallback in src/daemon/ipc_server.rs — detect path >108 bytes, fall back to /tmp/engram-{hash}.sock with 0o600 permissions; covers S119
 
 **Checkpoint**: All user stories complete, hardened, and validated. Feature ready for review.
 

@@ -51,6 +51,10 @@ ignore = "0.4"
 [features]
 default = []
 embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+# Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
+# Not required for normal operation; the daemon uses IPC transport by default.
+# See docs/adrs/0016-legacy-sse-feature-gate.md.
+legacy-sse = []
 
 [dev-dependencies]
 proptest = "1"
@@ -76,6 +80,7 @@ path = "tests/contract/write_test.rs"
 [[test]]
 name = "integration_connection"
 path = "tests/integration/connection_test.rs"
+required-features = ["legacy-sse"]
 
 [[test]]
 name = "unit_proptest"

@@ -2,8 +2,10 @@
 //! semantic search for AI coding assistants.
 //!
 //! This crate exposes library modules used by the `engram` binary. The daemon
-//! binds to `127.0.0.1` via axum, accepts MCP JSON-RPC over SSE, and stores
-//! workspace state in an embedded SurrealDB instance backed by `.engram/` files.
+//! manages per-workspace state via an embedded SurrealDB instance backed by
+//! `.engram/` files and serves MCP tool calls over a local IPC channel
+//! (Unix domain socket or Windows named pipe). A lightweight stdio shim
+//! bridges the MCP host to the daemon process.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::pedantic)]

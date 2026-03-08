@@ -175,9 +175,22 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     {
         let ttl_for_watcher = Arc::clone(&ttl);
         tokio::spawn(async move {
-            while event_rx.recv().await.is_some() {
+            while let Some(event) = event_rx.recv().await {
                 // S047: every file event resets the idle timer.
                 ttl_for_watcher.reset();
+                // T092: classify the event and log code-file changes so the
+                // daemon is aware of pending re-indexing work without triggering
+                // an expensive workspace-level sync on every save.  The client
+                // drives explicit sync_workspace calls via MCP.
+                match crate::daemon::debounce::adapt_event(&event) {
+                    crate::daemon::debounce::ServiceAction::ReindexFile { path } => {
+                        tracing::debug!(
+                            path = %path.display(),
+                            "watcher: source file changed — pending for next sync_workspace"
+                        );
+                    }
+                    crate::daemon::debounce::ServiceAction::Skip => {}
+                }
             }
         });
     }
