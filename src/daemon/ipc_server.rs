@@ -493,7 +493,12 @@ mod tests {
             ep.starts_with("/tmp/engram-"),
             "expected /tmp/ fallback, got {ep}"
         );
-        assert!(ep.ends_with(".sock"), "expected .sock suffix, got {ep}");
+        assert!(
+            std::path::Path::new(&ep)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("sock")),
+            "expected .sock suffix, got {ep}"
+        );
         // The fallback path must itself be short enough to bind.
         assert!(
             ep.len() <= 108,

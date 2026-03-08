@@ -51,7 +51,7 @@ fn s097_set_socket_permissions_0o600() {
 /// Requires spawning a real daemon process — marked `#[ignore]` for CI.
 /// Run manually with `cargo test -- --ignored s097_daemon_socket_permissions`.
 #[cfg(unix)]
-#[ignore]
+#[ignore = "requires spawning a live daemon process; run manually with: cargo test -- --ignored s097_daemon_socket_permissions"]
 #[tokio::test]
 async fn s097_daemon_socket_permissions_ignored() {
     // If you wire up DaemonHarness here, assert the socket mode after readiness.
