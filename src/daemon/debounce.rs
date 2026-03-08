@@ -35,7 +35,7 @@ const INDEXED_EXTENSIONS: &[&str] = &["rs", "toml"];
 ///
 /// The daemon event consumer uses this to decide what service operation,
 /// if any, should be enqueued in response to a file system change.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceAction {
     /// The affected file is a supported source file that may need re-indexing.
     ///
