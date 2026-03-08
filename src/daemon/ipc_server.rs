@@ -19,7 +19,7 @@ use interprocess::local_socket::{
     tokio::{Listener, Stream, prelude::*},
 };
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::watch;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -210,7 +210,12 @@ async fn handle_connection(
     shutdown_tx: Arc<watch::Sender<bool>>,
 ) {
     let (recv_half, mut send_half) = stream.split();
-    let mut reader = BufReader::new(recv_half);
+    // Cap reads to MAX_REQUEST_BYTES + 1 bytes before buffering so that an
+    // adversarial local client cannot force unbounded allocation before the
+    // size check on line 221 triggers. `take` limits the underlying AsyncRead
+    // to at most MAX_REQUEST_BYTES + 1 bytes; read_line then returns with
+    // n == MAX_REQUEST_BYTES + 1 which the Err arm below rejects cleanly.
+    let mut reader = BufReader::new(recv_half.take((MAX_REQUEST_BYTES + 1) as u64));
     let mut line = String::new();
 
     let response = match reader.read_line(&mut line).await {
