@@ -739,7 +739,11 @@ mod tests {
             "unified_search",
             "impact_analysis",
         ];
-        assert_eq!(required.len(), TOOL_COUNT, "required array must match TOOL_COUNT");
+        assert_eq!(
+            required.len(),
+            TOOL_COUNT,
+            "required array must match TOOL_COUNT"
+        );
         for name in required {
             assert!(names.contains(name), "missing tool: {name}");
         }

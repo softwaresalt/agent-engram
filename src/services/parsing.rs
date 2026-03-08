@@ -618,7 +618,9 @@ fn callee() {}
                 let expected = (f.body.len() / 4) as u32;
                 assert_eq!(f.token_count, expected);
             }
-            _ => panic!("Expected Function symbol for token_count_uses_char_div_4, got a different variant"),
+            _ => panic!(
+                "Expected Function symbol for token_count_uses_char_div_4, got a different variant"
+            ),
         }
     }
 
@@ -632,7 +634,9 @@ fn callee() {}
                 assert_eq!(f.body_hash.len(), 64);
                 assert!(f.body_hash.chars().all(|c| c.is_ascii_hexdigit()));
             }
-            _ => panic!("Expected Function symbol for body_hash_is_sha256, got a different variant"),
+            _ => {
+                panic!("Expected Function symbol for body_hash_is_sha256, got a different variant")
+            }
         }
     }
 
@@ -651,7 +655,9 @@ fn callee() {}
             ExtractedSymbol::Function(f) => {
                 assert_eq!(f.signature, "pub fn add(a: i32, b: i32) -> i32");
             }
-            _ => panic!("Expected Function symbol for signature_excludes_body_block, got a different variant"),
+            _ => panic!(
+                "Expected Function symbol for signature_excludes_body_block, got a different variant"
+            ),
         }
     }
 }

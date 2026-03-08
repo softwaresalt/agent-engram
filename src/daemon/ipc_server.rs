@@ -49,10 +49,7 @@ pub fn ipc_endpoint(workspace: &Path) -> Result<String, EngramError> {
 fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
     use sha2::{Digest, Sha256};
 
-    let sock_path = workspace
-        .join(".engram")
-        .join("run")
-        .join("engram.sock");
+    let sock_path = workspace.join(".engram").join("run").join("engram.sock");
 
     let path_str = sock_path.to_str().ok_or_else(|| {
         EngramError::Ipc(DomainIpcError::ConnectionFailed {
@@ -363,13 +360,14 @@ pub async fn run_with_shutdown(
         use std::os::unix::fs::PermissionsExt;
         let socket_path = std::path::Path::new(&endpoint);
         if socket_path.exists() {
-            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| {
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| {
                     EngramError::Ipc(DomainIpcError::ConnectionFailed {
                         address: endpoint.clone(),
                         reason: format!("failed to set socket permissions: {e}"),
                     })
-                })?;
+                },
+            )?;
             debug!(
                 socket = %socket_path.display(),
                 mode = "0o600",

@@ -46,8 +46,13 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
     Ok(())
 }
 
-/// Version written to `.engram/.version`, derived from `Cargo.toml`.
-pub const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Schema version written to `.engram/.version`.
+///
+/// This is a **semantic schema version**, not the crate version. It MUST only
+/// be incremented when the on-disk `.engram/` file format changes in a way
+/// that is incompatible with previous readers. Tying it to `CARGO_PKG_VERSION`
+/// would invalidate every existing workspace on every release.
+pub const SCHEMA_VERSION: &str = "1.0";
 
 /// Result of a dehydration (flush) operation.
 #[derive(Debug, Clone)]

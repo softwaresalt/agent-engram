@@ -179,9 +179,7 @@ async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
         return Ok(());
     }
 
-    Err(EngramError::Daemon(DaemonError::NotReady {
-        timeout_ms,
-    }))
+    Err(EngramError::Daemon(DaemonError::NotReady { timeout_ms }))
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -206,6 +204,9 @@ mod tests {
     /// An invalid (non-numeric) string falls back to the default.
     #[test]
     fn ready_timeout_invalid_env_var_falls_back_to_default() {
-        assert_eq!(parse_timeout_ms(Some("not_a_number")), DEFAULT_READY_TIMEOUT_MS);
+        assert_eq!(
+            parse_timeout_ms(Some("not_a_number")),
+            DEFAULT_READY_TIMEOUT_MS
+        );
     }
 }

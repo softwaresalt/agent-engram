@@ -122,19 +122,28 @@ mod tests {
     #[test]
     fn rust_file_modified_produces_reindex() {
         let event = make_event("src/main.rs", WatchEventKind::Modified);
-        assert!(matches!(adapt_event(&event), ServiceAction::ReindexFile { .. }));
+        assert!(matches!(
+            adapt_event(&event),
+            ServiceAction::ReindexFile { .. }
+        ));
     }
 
     #[test]
     fn rust_file_created_produces_reindex() {
         let event = make_event("src/lib.rs", WatchEventKind::Created);
-        assert!(matches!(adapt_event(&event), ServiceAction::ReindexFile { .. }));
+        assert!(matches!(
+            adapt_event(&event),
+            ServiceAction::ReindexFile { .. }
+        ));
     }
 
     #[test]
     fn toml_file_modified_produces_reindex() {
         let event = make_event("Cargo.toml", WatchEventKind::Modified);
-        assert!(matches!(adapt_event(&event), ServiceAction::ReindexFile { .. }));
+        assert!(matches!(
+            adapt_event(&event),
+            ServiceAction::ReindexFile { .. }
+        ));
     }
 
     #[test]

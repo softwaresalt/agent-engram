@@ -1,8 +1,10 @@
 //! rmcp `StdioTransport` setup and `ServerHandler` implementation for the shim.
 //!
 //! The shim's `ServerHandler` does not execute tools locally; it forwards every
-//! `call_tool` request to the workspace daemon via the IPC client and returns
-//! the daemon's response verbatim.
+//! `call_tool` request to the workspace daemon via the IPC client. The daemon's
+//! JSON-RPC response is parsed: if the result contains a `content` array,
+//! text items are extracted and returned as MCP content; otherwise the full
+//! result is serialised as a single text block.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,7 +27,8 @@ use crate::errors::{EngramError, IpcError};
 /// MCP `ServerHandler` for the shim.
 ///
 /// Forwards every [`call_tool`](ServerHandler::call_tool) request to the
-/// workspace daemon via IPC and returns the daemon's response verbatim.
+/// workspace daemon via IPC. Responses with a `content` array have text
+/// items extracted; other results are serialised as a single text block.
 /// All other MCP methods use the default no-op implementations from
 /// [`ServerHandler`].
 #[derive(Clone)]

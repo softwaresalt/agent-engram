@@ -73,7 +73,11 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
     }
 
     let tasks_path = engram_dir.join("tasks.md");
-    let task_count = if tokio::fs::try_exists(&tasks_path).await.unwrap_or(false) {
+    let task_count = if tokio::fs::try_exists(&tasks_path).await.map_err(|e| {
+        EngramError::Hydration(HydrationError::Failed {
+            reason: format!("failed to check tasks.md existence: {e}"),
+        })
+    })? {
         count_tasks(&tasks_path).await?
     } else {
         0
@@ -86,10 +90,18 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
 
     // Validate schema version if present
     let version_path = engram_dir.join(".version");
-    if tokio::fs::try_exists(&version_path).await.unwrap_or(false) {
+    if tokio::fs::try_exists(&version_path).await.map_err(|e| {
+        EngramError::Hydration(HydrationError::Failed {
+            reason: format!("failed to check .version existence: {e}"),
+        })
+    })? {
         let version = tokio::fs::read_to_string(&version_path)
             .await
-            .unwrap_or_default();
+            .map_err(|e| {
+                EngramError::Hydration(HydrationError::Failed {
+                    reason: format!("failed to read .version file: {e}"),
+                })
+            })?;
         let version = version.trim();
         if !version.is_empty() && version != SCHEMA_VERSION {
             return Err(EngramError::Hydration(HydrationError::SchemaMismatch {
@@ -396,7 +408,12 @@ fn parse_edge_line(line: &str) -> Result<ParsedEdge, serde_json::Error> {
 ///
 /// Body re-derivation is best-effort — a missing body is a degraded but non-fatal
 /// condition; the node is still hydrated and searchable by name and hash.
-async fn read_body_lines(workspace: &Path, file_path: &str, line_start: u32, line_end: u32) -> String {
+async fn read_body_lines(
+    workspace: &Path,
+    file_path: &str,
+    line_start: u32,
+    line_end: u32,
+) -> String {
     if file_path.is_empty() || line_start == 0 {
         return String::new();
     }

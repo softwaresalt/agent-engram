@@ -42,15 +42,17 @@ pub fn mcp_json(engram_exe: &Path) -> String {
 
 /// Return the `.gitignore` entries that should be appended for engram.
 ///
-/// Covers runtime artifacts and embedded database files that must not be
-/// tracked by version control.
+/// Only excludes runtime artifacts (Unix socket, lock files) from version
+/// control. State files (`tasks.md`, `graph.surql`, `.version`, `.lastflush`)
+/// are Git-friendly and intentionally committed per the constitution.
 ///
 /// # Examples
 ///
 /// ```
 /// let entries = engram::installer::templates::gitignore_entries();
-/// assert!(entries.contains(".engram/"));
+/// assert!(entries.contains(".engram/run/"));
+/// assert!(!entries.contains(".engram/\n"));
 /// ```
 pub fn gitignore_entries() -> &'static str {
-    "\n# engram plugin (workspace-local state)\n.engram/\n"
+    "\n# engram plugin (runtime artifacts — state files are intentionally tracked)\n.engram/run/\n"
 }

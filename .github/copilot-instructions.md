@@ -339,7 +339,7 @@ Permissive agent modes (`--allow-all`, `--yolo`) exist to reduce friction for ro
 
 ### Rules
 
-1. **One command per terminal call.** Never combine commands with `;`, `&&`, `||`, or `|` unless it falls under an allowed exception below.
+1. **One command per terminal call.** NEVER, NEVER chain or combine commands with `;`, `&&`, `||`, or `|` unless it falls under an allowed exception below.
 2. **No `cmd /c` wrappers.** Run commands directly in the shell rather than wrapping them in `cmd /c "..."`. If `cmd /c` is genuinely required (e.g., for environment isolation), it must contain a single command only.
 3. **No exit-code echo suffixes.** Do not append `; echo "EXIT: $LASTEXITCODE"` or `&& echo "done"` to commands. The terminal tool already captures exit codes.
 4. **Check results between commands.** After each command, inspect the output and exit code before deciding whether to run the next command. This is safer and produces better diagnostics.

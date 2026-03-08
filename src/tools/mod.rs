@@ -40,7 +40,7 @@ pub async fn dispatch(
                 })?;
             let result = lifecycle::set_workspace(state.as_ref(), parsed.path).await?;
             serde_json::to_value(result).map_err(|e| {
-                EngramError::System(SystemError::InvalidParams {
+                EngramError::System(SystemError::DatabaseError {
                     reason: format!("failed to serialize response: {e}"),
                 })
             })
@@ -48,7 +48,7 @@ pub async fn dispatch(
         "get_daemon_status" => {
             let result = lifecycle::get_daemon_status(state.as_ref()).await?;
             serde_json::to_value(result).map_err(|e| {
-                EngramError::System(SystemError::InvalidParams {
+                EngramError::System(SystemError::DatabaseError {
                     reason: format!("failed to serialize response: {e}"),
                 })
             })
@@ -56,7 +56,7 @@ pub async fn dispatch(
         "get_workspace_status" => {
             let result = lifecycle::get_workspace_status(state.as_ref()).await?;
             serde_json::to_value(result).map_err(|e| {
-                EngramError::System(SystemError::InvalidParams {
+                EngramError::System(SystemError::DatabaseError {
                     reason: format!("failed to serialize response: {e}"),
                 })
             })
