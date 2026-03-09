@@ -10,6 +10,7 @@
 
 #[cfg(feature = "legacy-sse")]
 pub mod mcp;
+pub mod observability;
 #[cfg(feature = "legacy-sse")]
 pub mod router;
 #[cfg(feature = "legacy-sse")]

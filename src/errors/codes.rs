@@ -30,12 +30,26 @@ pub const DUPLICATE_LABEL: u16 = 3011;
 pub const TASK_NOT_CLAIMABLE: u16 = 3012;
 pub const TASK_TITLE_EMPTY: u16 = 3013;
 pub const TASK_TITLE_TOO_LONG: u16 = 3014;
+/// Gate enforcement: task blocked by incomplete hard_blocker prerequisites
+pub const TASK_BLOCKED: u16 = 3015;
+/// Rollback operation codes (3020–3029)
+pub const ROLLBACK_DENIED: u16 = 3020;
+pub const EVENT_NOT_FOUND: u16 = 3021;
+pub const ROLLBACK_CONFLICT: u16 = 3022;
+/// Collection error codes (3030–3039)
+pub const COLLECTION_EXISTS: u16 = 3030;
+pub const COLLECTION_NOT_FOUND: u16 = 3031;
+pub const CYCLIC_COLLECTION: u16 = 3032;
 
 /// Query error codes
 pub const QUERY_TOO_LONG: u16 = 4001;
 pub const MODEL_NOT_LOADED: u16 = 4002;
 pub const SEARCH_FAILED: u16 = 4003;
 pub const QUERY_EMPTY: u16 = 4004;
+/// Sandboxed graph query error codes (4010–4019)
+pub const QUERY_REJECTED: u16 = 4010;
+pub const QUERY_TIMEOUT: u16 = 4011;
+pub const QUERY_INVALID: u16 = 4012;
 
 /// System error codes
 pub const DATABASE_ERROR: u16 = 5001;

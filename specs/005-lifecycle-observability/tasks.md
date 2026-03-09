@@ -19,12 +19,12 @@
 
 **Purpose**: New module scaffolding and dependency additions
 
-- [ ] T001 Add new dependencies to Cargo.toml: tracing-opentelemetry and opentelemetry-otlp (optional, behind `otlp-export` feature flag)
-- [ ] T002 [P] Create empty module files: src/models/event.rs, src/models/collection.rs, src/services/gate.rs, src/services/event_ledger.rs, src/server/observability.rs
-- [ ] T003 [P] Register new modules in src/models/mod.rs, src/services/mod.rs, src/server/mod.rs
-- [ ] T004 [P] Add new error code constants to src/errors/codes.rs: TASK_BLOCKED (3010), CYCLIC_DEPENDENCY (3011), ROLLBACK_DENIED (3020), EVENT_NOT_FOUND (3021), ROLLBACK_CONFLICT (3022), COLLECTION_EXISTS (3030), COLLECTION_NOT_FOUND (3031), CYCLIC_COLLECTION (3032), QUERY_REJECTED (4010), QUERY_TIMEOUT (4011), QUERY_INVALID (4012)
-- [ ] T005 [P] Add new EngramError variants to src/errors/mod.rs for gate, event, collection, and query errors
-- [ ] T006 [P] Add new configuration parameters to src/config/mod.rs: event_ledger_max, allow_agent_rollback, query_timeout_ms, query_row_limit, otlp_endpoint
+- [X] T001 Add new dependencies to Cargo.toml: tracing-opentelemetry and opentelemetry-otlp (optional, behind `otlp-export` feature flag)
+- [X] T002 [P] Create empty module files: src/models/event.rs, src/models/collection.rs, src/services/gate.rs, src/services/event_ledger.rs, src/server/observability.rs
+- [X] T003 [P] Register new modules in src/models/mod.rs, src/services/mod.rs, src/server/mod.rs
+- [X] T004 [P] Add new error code constants to src/errors/codes.rs: TASK_BLOCKED (3015), ROLLBACK_DENIED (3020), EVENT_NOT_FOUND (3021), ROLLBACK_CONFLICT (3022), COLLECTION_EXISTS (3030), COLLECTION_NOT_FOUND (3031), CYCLIC_COLLECTION (3032), QUERY_REJECTED (4010), QUERY_TIMEOUT (4011), QUERY_INVALID (4012)
+- [X] T005 [P] Add new EngramError variants to src/errors/mod.rs for gate, event, collection, and query errors
+- [X] T006 [P] Add new configuration parameters to src/config/mod.rs: event_ledger_max, allow_agent_rollback, query_timeout_ms, query_row_limit, otlp_endpoint
 
 ---
 

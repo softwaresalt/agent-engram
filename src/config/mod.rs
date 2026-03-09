@@ -58,6 +58,26 @@ pub struct Config {
     /// Log format: json or pretty
     #[arg(long, env = "ENGRAM_LOG_FORMAT", default_value = "pretty")]
     pub log_format: String,
+
+    /// Maximum number of events stored in the rolling event ledger per workspace
+    #[arg(long, env = "ENGRAM_EVENT_LEDGER_MAX", default_value_t = 500)]
+    pub event_ledger_max: usize,
+
+    /// Allow AI agents to execute rollback_to_event operations
+    #[arg(long, env = "ENGRAM_ALLOW_AGENT_ROLLBACK", default_value_t = false)]
+    pub allow_agent_rollback: bool,
+
+    /// Timeout in milliseconds for sandboxed graph queries
+    #[arg(long, env = "ENGRAM_QUERY_TIMEOUT_MS", default_value_t = 50)]
+    pub query_timeout_ms: u64,
+
+    /// Maximum number of rows returned by sandboxed graph queries
+    #[arg(long, env = "ENGRAM_QUERY_ROW_LIMIT", default_value_t = 1000)]
+    pub query_row_limit: usize,
+
+    /// OTLP gRPC endpoint for exporting trace spans (requires otlp-export feature)
+    #[arg(long, env = "ENGRAM_OTLP_ENDPOINT")]
+    pub otlp_endpoint: Option<String>,
 }
 
 impl Config {
@@ -81,6 +101,15 @@ impl Config {
         }
         if self.data_dir.as_os_str().is_empty() {
             return Err("data_dir must not be empty".into());
+        }
+        if self.event_ledger_max == 0 {
+            return Err("event_ledger_max must be > 0".into());
+        }
+        if self.query_timeout_ms == 0 {
+            return Err("query_timeout_ms must be > 0".into());
+        }
+        if self.query_row_limit == 0 {
+            return Err("query_row_limit must be > 0".into());
         }
         Ok(())
     }

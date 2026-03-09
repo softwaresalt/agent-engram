@@ -72,6 +72,42 @@ pub enum TaskError {
     TitleEmpty,
     #[error("Task title exceeds maximum length of 200 characters")]
     TitleTooLong,
+    /// Gate enforcement: task blocked by incomplete hard_blocker prerequisites
+    #[error("Task '{id}' is blocked: {blockers}")]
+    Blocked { id: String, blockers: String },
+}
+
+/// Errors for the event ledger and rollback operations (3020–3022).
+#[derive(Debug, Error)]
+pub enum EventError {
+    #[error("Rollback denied: allow_agent_rollback is disabled")]
+    RollbackDenied,
+    #[error("Event '{event_id}' not found")]
+    EventNotFound { event_id: String },
+    #[error("Rollback conflict: entity '{entity_id}' was deleted after event '{event_id}'")]
+    RollbackConflict { entity_id: String, event_id: String },
+}
+
+/// Errors for collection operations (3030–3032).
+#[derive(Debug, Error)]
+pub enum CollectionError {
+    #[error("Collection '{name}' already exists")]
+    AlreadyExists { name: String },
+    #[error("Collection '{name}' not found")]
+    NotFound { name: String },
+    #[error("Adding this nesting would create a cycle in collection '{name}'")]
+    CyclicCollection { name: String },
+}
+
+/// Errors for sandboxed graph queries (4010–4012).
+#[derive(Debug, Error)]
+pub enum GraphQueryError {
+    #[error("Query rejected: write operations are not permitted (keyword: {keyword})")]
+    Rejected { keyword: String },
+    #[error("Query timed out after {timeout_ms}ms")]
+    Timeout { timeout_ms: u64 },
+    #[error("Query syntax is invalid: {reason}")]
+    Invalid { reason: String },
 }
 
 #[derive(Debug, Error)]
@@ -216,6 +252,12 @@ pub enum EngramError {
     Watcher(#[from] WatcherError),
     #[error(transparent)]
     Install(#[from] InstallError),
+    #[error(transparent)]
+    Event(#[from] EventError),
+    #[error(transparent)]
+    Collection(#[from] CollectionError),
+    #[error(transparent)]
+    GraphQuery(#[from] GraphQueryError),
 }
 
 #[derive(Debug, Serialize)]
@@ -375,6 +417,12 @@ impl EngramError {
                     "TaskTitleTooLong",
                     inner.to_string(),
                     None,
+                ),
+                TaskError::Blocked { id, blockers } => (
+                    TASK_BLOCKED,
+                    "TaskBlocked",
+                    inner.to_string(),
+                    Some(json!({ "task_id": id, "blockers": blockers })),
                 ),
             },
             EngramError::Query(inner) => match inner {
@@ -592,6 +640,66 @@ impl EngramError {
                     Some(
                         json!({ "file_path": file_path, "suggestion": "Re-run sync_workspace to resolve the conflict" }),
                     ),
+                ),
+            },
+            EngramError::Event(inner) => match inner {
+                EventError::RollbackDenied => {
+                    (ROLLBACK_DENIED, "RollbackDenied", inner.to_string(), None)
+                }
+                EventError::EventNotFound { event_id } => (
+                    EVENT_NOT_FOUND,
+                    "EventNotFound",
+                    inner.to_string(),
+                    Some(json!({ "event_id": event_id })),
+                ),
+                EventError::RollbackConflict {
+                    entity_id,
+                    event_id,
+                } => (
+                    ROLLBACK_CONFLICT,
+                    "RollbackConflict",
+                    inner.to_string(),
+                    Some(json!({ "entity_id": entity_id, "event_id": event_id })),
+                ),
+            },
+            EngramError::Collection(inner) => match inner {
+                CollectionError::AlreadyExists { name } => (
+                    COLLECTION_EXISTS,
+                    "CollectionExists",
+                    inner.to_string(),
+                    Some(json!({ "name": name })),
+                ),
+                CollectionError::NotFound { name } => (
+                    COLLECTION_NOT_FOUND,
+                    "CollectionNotFound",
+                    inner.to_string(),
+                    Some(json!({ "name": name })),
+                ),
+                CollectionError::CyclicCollection { name } => (
+                    CYCLIC_COLLECTION,
+                    "CyclicCollection",
+                    inner.to_string(),
+                    Some(json!({ "name": name })),
+                ),
+            },
+            EngramError::GraphQuery(inner) => match inner {
+                GraphQueryError::Rejected { keyword } => (
+                    QUERY_REJECTED,
+                    "QueryRejected",
+                    inner.to_string(),
+                    Some(json!({ "keyword": keyword })),
+                ),
+                GraphQueryError::Timeout { timeout_ms } => (
+                    QUERY_TIMEOUT,
+                    "QueryTimeout",
+                    inner.to_string(),
+                    Some(json!({ "timeout_ms": timeout_ms })),
+                ),
+                GraphQueryError::Invalid { reason } => (
+                    QUERY_INVALID,
+                    "QueryInvalid",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
                 ),
             },
         };
