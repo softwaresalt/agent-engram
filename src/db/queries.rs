@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
-use crate::errors::{EngramError, TaskError};
+use crate::errors::{EngramError, EventError, SystemError, TaskError};
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::models::{Context, Spec};
@@ -195,6 +195,39 @@ impl CommentRow {
             task_id: self.task_id,
             content: self.content,
             author: self.author,
+            created_at: self.created_at,
+        }
+    }
+}
+
+/// Internal row type for deserializing event records from SurrealDB.
+///
+/// SurrealDB returns `id` as a `Thing`; `kind` is stored as a snake_case
+/// string and deserialized back to [`EventKind`] via its `Deserialize` impl.
+#[derive(Deserialize)]
+struct EventRow {
+    id: Thing,
+    kind: crate::models::event::EventKind,
+    entity_table: String,
+    entity_id: String,
+    #[serde(default)]
+    previous_value: Option<serde_json::Value>,
+    #[serde(default)]
+    new_value: Option<serde_json::Value>,
+    source_client: String,
+    created_at: DateTime<Utc>,
+}
+
+impl EventRow {
+    fn into_event(self) -> crate::models::event::Event {
+        crate::models::event::Event {
+            id: format!("event:{}", self.id.id.to_raw()),
+            kind: self.kind,
+            entity_table: self.entity_table,
+            entity_id: self.entity_id,
+            previous_value: self.previous_value,
+            new_value: self.new_value,
+            source_client: self.source_client,
             created_at: self.created_at,
         }
     }
@@ -1386,6 +1419,291 @@ impl Queries {
             .take(0)
             .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    // ── Event ledger queries ──────────────────────────────────────────────────
+
+    /// Insert a new event into the SurrealDB event table.
+    ///
+    /// The event `id` must include the table prefix (e.g. `"event:abc123"`).
+    pub async fn insert_event(
+        &self,
+        event: &crate::models::event::Event,
+    ) -> Result<(), EngramError> {
+        let raw = event.id.strip_prefix("event:").unwrap_or(&event.id);
+        let record = Thing::from(("event", raw));
+        let created = event.created_at.to_rfc3339();
+        self.db
+            .query(
+                "CREATE $record SET \
+                    kind = $kind, \
+                    entity_table = $entity_table, \
+                    entity_id = $entity_id, \
+                    previous_value = $prev_val, \
+                    new_value = $new_val, \
+                    source_client = $source, \
+                    created_at = <datetime>$created",
+            )
+            .bind(("record", record))
+            .bind(("kind", event.kind.clone()))
+            .bind(("entity_table", event.entity_table.clone()))
+            .bind(("entity_id", event.entity_id.clone()))
+            .bind(("prev_val", event.previous_value.clone()))
+            .bind(("new_val", event.new_value.clone()))
+            .bind(("source", event.source_client.clone()))
+            .bind(("created", created))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Returns the total number of events currently in the ledger.
+    pub async fn count_events(&self) -> Result<u64, EngramError> {
+        let rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM event GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.first().map_or(0, |r| r.count))
+    }
+
+    /// Deletes the `n` oldest events by `created_at` ascending.
+    ///
+    /// Uses two round-trips (SELECT ids → DELETE each) for portability
+    /// across SurrealDB versions that may not support `DELETE … ORDER BY … LIMIT`.
+    pub async fn delete_oldest_events(&self, n: u64) -> Result<(), EngramError> {
+        #[derive(serde::Deserialize)]
+        struct IdRow {
+            id: Thing,
+        }
+        let rows: Vec<IdRow> = self
+            .db
+            .query(
+                "SELECT id, created_at FROM event ORDER BY created_at ASC LIMIT $n",
+            )
+            .bind(("n", n))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        for row in rows {
+            self.db
+                .query("DELETE $record")
+                .bind(("record", row.id))
+                .await
+                .map_err(map_db_err)?;
+        }
+        Ok(())
+    }
+
+    /// Lists events from the ledger with optional filters, ordered by
+    /// `created_at` ascending, limited to `limit` results.
+    pub async fn list_events(
+        &self,
+        kind: Option<&str>,
+        entity_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<crate::models::event::Event>, EngramError> {
+        let rows: Vec<EventRow> = match (kind, entity_id) {
+            (None, None) => self
+                .db
+                .query(
+                    "SELECT * FROM event \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (Some(k), None) => self
+                .db
+                .query(
+                    "SELECT * FROM event WHERE kind = $kind \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("kind", k.to_string()))
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (None, Some(eid)) => self
+                .db
+                .query(
+                    "SELECT * FROM event WHERE entity_id = $entity_id \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("entity_id", eid.to_string()))
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (Some(k), Some(eid)) => self
+                .db
+                .query(
+                    "SELECT * FROM event \
+                         WHERE kind = $kind AND entity_id = $entity_id \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("kind", k.to_string()))
+                .bind(("entity_id", eid.to_string()))
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+        };
+        Ok(rows.into_iter().map(EventRow::into_event).collect())
+    }
+
+    /// Returns all events that occurred **strictly after** the event identified
+    /// by `event_id`, ordered by `created_at` ascending.
+    ///
+    /// Returns [`EventError::EventNotFound`] when the target event is absent.
+    pub async fn get_events_after(
+        &self,
+        event_id: &str,
+    ) -> Result<Vec<crate::models::event::Event>, EngramError> {
+        #[derive(serde::Deserialize)]
+        struct TimeRow {
+            created_at: DateTime<Utc>,
+        }
+
+        // Step 1: look up the target event's timestamp.
+        let raw = event_id.strip_prefix("event:").unwrap_or(event_id);
+        let record = Thing::from(("event", raw));
+        let time_rows: Vec<TimeRow> = self
+            .db
+            .query("SELECT created_at FROM $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        let target_time = time_rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                EngramError::Event(EventError::EventNotFound {
+                    event_id: event_id.to_string(),
+                })
+            })?
+            .created_at;
+
+        // Step 2: select all events after that timestamp.
+        let rows: Vec<EventRow> = self
+            .db
+            .query(
+                "SELECT * FROM event WHERE created_at > $ts \
+                 ORDER BY created_at ASC",
+            )
+            .bind(("ts", target_time.to_rfc3339()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().map(EventRow::into_event).collect())
+    }
+
+    /// Deletes a task by its bare UUID (without the `task:` prefix).
+    ///
+    /// Used during rollback to undo a `TaskCreated` event.
+    pub async fn delete_task(&self, task_id: &str) -> Result<(), EngramError> {
+        let record = Thing::from(("task", task_id));
+        self.db
+            .query("DELETE $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Restores a task from a JSON snapshot captured at event-recording time.
+    ///
+    /// Deserializes the snapshot into a [`Task`] then calls [`Self::upsert_task`],
+    /// overriding the `id` field to match `task_id` (which may include the
+    /// `task:` prefix).
+    pub async fn restore_task_snapshot(
+        &self,
+        task_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), EngramError> {
+        let mut task: Task = serde_json::from_value(snapshot.clone()).map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("invalid task snapshot: {e}"),
+            })
+        })?;
+        // Normalise the ID to the bare UUID (no table prefix).
+        task.id = task_id.strip_prefix("task:").unwrap_or(task_id).to_string();
+        self.upsert_task(&task).await
+    }
+
+    /// Deletes a relation (edge) by its full record ID (e.g. `"depends_on:abc"`).
+    pub async fn delete_relation_by_id(&self, relation_id: &str) -> Result<(), EngramError> {
+        if let Some((table, id)) = relation_id.split_once(':') {
+            let record = Thing::from((table, id));
+            self.db
+                .query("DELETE $record")
+                .bind(("record", record))
+                .await
+                .map_err(map_db_err)?;
+        }
+        Ok(())
+    }
+
+    /// Restores a relation from a JSON snapshot (used during rollback of an
+    /// `EdgeDeleted` event).
+    pub async fn restore_relation_snapshot(
+        &self,
+        relation_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), EngramError> {
+        if let Some((table, id)) = relation_id.split_once(':') {
+            let record = Thing::from((table, id));
+            self.db
+                .query("UPDATE $record MERGE $snapshot")
+                .bind(("record", record))
+                .bind(("snapshot", snapshot.clone()))
+                .await
+                .map_err(map_db_err)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes a context entry by its full record ID (e.g. `"context:abc"`).
+    pub async fn delete_context_by_id(&self, context_id: &str) -> Result<(), EngramError> {
+        let raw = context_id.strip_prefix("context:").unwrap_or(context_id);
+        let record = Thing::from(("context", raw));
+        self.db
+            .query("DELETE $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Restores a collection from a JSON snapshot captured at event-recording
+    /// time.
+    pub async fn restore_collection_snapshot(
+        &self,
+        collection_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), EngramError> {
+        let raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id);
+        let record = Thing::from(("collection", raw));
+        self.db
+            .query("UPDATE $record MERGE $snapshot")
+            .bind(("record", record))
+            .bind(("snapshot", snapshot.clone()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 }
 

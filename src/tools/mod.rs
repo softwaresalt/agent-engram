@@ -101,6 +101,8 @@ pub async fn dispatch(
         "unified_search" => read::unified_search(state.clone(), params).await,
         "impact_analysis" => read::impact_analysis(state.clone(), params).await,
         "get_health_report" => read::get_health_report(state.clone(), params).await,
+        "get_event_history" => read::get_event_history(state.clone(), params).await,
+        "rollback_to_event" => write::rollback_to_event(state.clone(), params).await,
         _ => Err(not_implemented(method)),
     };
 

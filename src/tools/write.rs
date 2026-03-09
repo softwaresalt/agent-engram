@@ -10,12 +10,14 @@ use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::errors::{CodeGraphError, EngramError, SystemError, TaskError, WorkspaceError};
 use crate::models::context::Context;
+use crate::models::event::EventKind;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::server::state::SharedState;
 use crate::services::compaction::truncate_at_word_boundary;
 use crate::services::connection::create_status_change_note;
 use crate::services::dehydration;
+use crate::services::event_ledger;
 use crate::services::gate;
 use crate::services::hydration;
 
@@ -162,6 +164,8 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     let existing = get_task_or_hydrate(&queries, &parsed.id, &workspace_path).await?;
 
+    // Capture previous state before fields are moved into `updated`.
+    let previous_snapshot = serde_json::to_value(&existing).ok();
     let previous_status = existing.status;
 
     validate_transition(previous_status, new_status)?;
@@ -222,6 +226,26 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     };
 
     queries.upsert_task(&updated).await?;
+
+    // Record event — fire-and-forget; event failures must not fail the mutation.
+    let event_max = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::TaskUpdated,
+        "task",
+        &format!("task:{}", parsed.id),
+        previous_snapshot,
+        serde_json::to_value(&updated).ok(),
+        "mcp-tool",
+        event_max,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, task_id = %parsed.id, "event recording failed for update_task");
+    }
 
     // FR-015: always append a context note on task update
     let context_id = create_status_change_note(
@@ -382,6 +406,26 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
             parsed.issue_type.as_deref(),
         )
         .await?;
+
+    // Record event — fire-and-forget; event failures must not fail the mutation.
+    let event_max = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::TaskCreated,
+        "task",
+        &format!("task:{}", task.id),
+        None,
+        serde_json::to_value(&task).ok(),
+        "mcp-tool",
+        event_max,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, task_id = %task.id, "event recording failed for create_task");
+    }
 
     let mut response = json!({
         "task_id": task.id,
@@ -568,6 +612,35 @@ pub async fn add_dependency(
     queries
         .create_dependency(from_id, to_id, parsed.dependency_type)
         .await?;
+
+    // Record event — fire-and-forget.
+    let event_max = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::EdgeCreated,
+        "depends_on",
+        &format!("depends_on:{from_id}_{to_id}"),
+        None,
+        Some(serde_json::json!({
+            "from": from_id,
+            "to": to_id,
+            "type": parsed.dependency_type,
+        })),
+        "mcp-tool",
+        event_max,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %e,
+            from = %from_id,
+            to = %to_id,
+            "event recording failed for add_dependency"
+        );
+    }
 
     Ok(json!({
         "from_task_id": from_id,
@@ -1427,4 +1500,50 @@ mod tests {
         let result = validate_transition(TaskStatus::Done, TaskStatus::Blocked);
         assert!(result.is_err());
     }
+}
+
+// ── Rollback ─────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RollbackParams {
+    event_id: String,
+}
+
+/// Revert workspace state to the point immediately after a specific event.
+///
+/// Requires `allow_agent_rollback = true` in workspace config (disabled by
+/// default for safety). Returns the count of events reversed and the ID of
+/// the new `rollback_applied` event added to the ledger.
+pub async fn rollback_to_event(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: RollbackParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let (allow_rollback, max_events) = state
+        .workspace_config()
+        .await
+        .map_or((false, 500_usize), |c| {
+            (c.allow_agent_rollback, c.event_ledger_max)
+        });
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let events = event_ledger::prepare_rollback(&queries, &parsed.event_id, allow_rollback).await?;
+    let (reversed_count, rollback_event_id) =
+        event_ledger::apply_rollback(&queries, events, &parsed.event_id, "mcp-tool", max_events)
+            .await?;
+
+    Ok(json!({
+        "events_reversed": reversed_count,
+        "rollback_event_id": rollback_event_id,
+        "target_event_id": parsed.event_id,
+    }))
 }

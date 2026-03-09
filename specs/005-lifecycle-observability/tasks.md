@@ -133,28 +133,28 @@
 
 **Independent Test**: Create task, modify several times, rollback to earlier event, verify state restored
 
-### Tests for User Story 3 ⚠️
+### Tests for User Story 3 ✅
 
-- [ ] T045 [P] [US3] Contract test: task creation records event with kind=task_created (S013) in tests/contract/event_test.rs
-- [ ] T046 [P] [US3] Contract test: task update records event with previous/new values (S014) in tests/contract/event_test.rs
-- [ ] T047 [P] [US3] Contract test: edge creation records event (S015) in tests/contract/event_test.rs
-- [ ] T048 [P] [US3] Contract test: rolling retention prunes oldest events (S016) in tests/contract/event_test.rs
-- [ ] T049 [P] [US3] Contract test: get_event_history returns filtered results (S017, S018) in tests/contract/event_test.rs
-- [ ] T050 [P] [US3] Contract test: rollback_to_event restores previous state (S023) in tests/contract/event_test.rs
-- [ ] T051 [P] [US3] Contract test: rollback denied when allow_agent_rollback=false (S025) in tests/contract/event_test.rs
-- [ ] T052 [P] [US3] Contract test: rollback to non-existent event returns error (S027) in tests/contract/event_test.rs
-- [ ] T053 [P] [US3] Integration test: rollback reverses edge creation (S024) in tests/integration/rollback_test.rs
-- [ ] T054 [P] [US3] Integration test: rollback conflict when entity deleted (S028) in tests/integration/rollback_test.rs
+- [X] T045 [P] [US3] Contract test: task creation records event with kind=task_created (S013) in tests/contract/event_test.rs
+- [X] T046 [P] [US3] Contract test: task update records event with previous/new values (S014) in tests/contract/event_test.rs
+- [X] T047 [P] [US3] Contract test: edge creation records event (S015) in tests/contract/event_test.rs
+- [X] T048 [P] [US3] Contract test: rolling retention prunes oldest events (S016) in tests/contract/event_test.rs
+- [X] T049 [P] [US3] Contract test: get_event_history returns filtered results (S017, S018) in tests/contract/event_test.rs
+- [X] T050 [P] [US3] Contract test: rollback_to_event restores previous state (S023) in tests/contract/event_test.rs
+- [X] T051 [P] [US3] Contract test: rollback denied when allow_agent_rollback=false (S025) in tests/contract/event_test.rs
+- [X] T052 [P] [US3] Contract test: rollback to non-existent event returns error (S027) in tests/contract/event_test.rs
+- [X] T053 [P] [US3] Integration test: rollback reverses edge creation (S024) in tests/integration/rollback_test.rs
+- [X] T054 [P] [US3] Integration test: rollback conflict when entity deleted (S028) in tests/integration/rollback_test.rs
 
 ### Implementation for User Story 3
 
-- [ ] T055 [US3] Implement event recording functions in src/services/event_ledger.rs — record_event(), prune_events()
-- [ ] T056 [US3] Implement event ledger queries in src/db/queries.rs — insert_event, list_events, count_events, delete_oldest_events, get_events_after
-- [ ] T057 [US3] Integrate event recording into all write tools in src/tools/write.rs — create_task, update_task, add_dependency, add_blocker, etc.
-- [ ] T058 [US3] Implement get_event_history tool in src/tools/read.rs — filtered retrieval with pagination
-- [ ] T059 [US3] Implement rollback validation in src/services/event_ledger.rs — check event existence, detect conflicts
-- [ ] T060 [US3] Implement rollback_to_event tool in src/tools/write.rs — reverse events, restore previous values, record rollback event
-- [ ] T061 [US3] Register get_event_history and rollback_to_event in src/tools/mod.rs dispatch
+- [X] T055 [US3] Implement event recording functions in src/services/event_ledger.rs — record_event(), prune_events()
+- [X] T056 [US3] Implement event ledger queries in src/db/queries.rs — insert_event, list_events, count_events, delete_oldest_events, get_events_after
+- [X] T057 [US3] Integrate event recording into all write tools in src/tools/write.rs — create_task, update_task, add_dependency, add_blocker, etc.
+- [X] T058 [US3] Implement get_event_history tool in src/tools/read.rs — filtered retrieval with pagination
+- [X] T059 [US3] Implement rollback validation in src/services/event_ledger.rs — check event existence, detect conflicts
+- [X] T060 [US3] Implement rollback_to_event tool in src/tools/write.rs — reverse events, restore previous values, record rollback event
+- [X] T061 [US3] Register get_event_history and rollback_to_event in src/tools/mod.rs dispatch
 
 **Checkpoint**: Event ledger recording all changes, rollback functional
 

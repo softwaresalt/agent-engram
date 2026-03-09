@@ -27,6 +27,18 @@ pub struct WorkspaceConfig {
     /// Code graph indexing and traversal settings.
     #[serde(default)]
     pub code_graph: CodeGraphConfig,
+    /// Maximum number of events retained in the event ledger.
+    ///
+    /// When the ledger exceeds this count, the oldest events are pruned.
+    /// Corresponds to `ENGRAM_EVENT_LEDGER_MAX` in the global CLI config.
+    #[serde(default = "default_event_ledger_max")]
+    pub event_ledger_max: usize,
+    /// Whether MCP clients are permitted to invoke `rollback_to_event`.
+    ///
+    /// Disabled by default for safety; enable via `.engram/config.toml`
+    /// or the `ENGRAM_ALLOW_AGENT_ROLLBACK` environment variable.
+    #[serde(default)]
+    pub allow_agent_rollback: bool,
 }
 
 impl Default for WorkspaceConfig {
@@ -38,6 +50,8 @@ impl Default for WorkspaceConfig {
             allowed_labels: Vec::new(),
             allowed_types: Vec::new(),
             code_graph: CodeGraphConfig::default(),
+            event_ledger_max: default_event_ledger_max(),
+            allow_agent_rollback: false,
         }
     }
 }
@@ -84,6 +98,10 @@ impl Default for BatchConfig {
 
 fn default_priority() -> String {
     "p2".to_owned()
+}
+
+const fn default_event_ledger_max() -> usize {
+    500
 }
 
 const fn default_threshold_days() -> u32 {

@@ -1167,3 +1167,56 @@ pub async fn get_health_report(
         "last_watcher_event": last_watcher_event,
     }))
 }
+
+// ── Event history ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetEventHistoryParams {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    entity_id: Option<String>,
+    #[serde(default = "default_event_limit")]
+    limit: u64,
+}
+
+fn default_event_limit() -> u64 {
+    50
+}
+
+/// Returns a page of events from the event ledger, with optional filters.
+pub async fn get_event_history(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: GetEventHistoryParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let events = queries
+        .list_events(
+            parsed.kind.as_deref(),
+            parsed.entity_id.as_deref(),
+            parsed.limit,
+        )
+        .await?;
+
+    let total = events.len() as u64;
+    let events_json: Vec<Value> = events
+        .into_iter()
+        .map(|e| serde_json::to_value(e).unwrap_or_default())
+        .collect();
+
+    Ok(json!({
+        "events": events_json,
+        "total_count": total,
+        "limit": parsed.limit,
+    }))
+}
