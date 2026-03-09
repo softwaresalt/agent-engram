@@ -1,3 +1,17 @@
+// RwLock Deadlock Audit (T041, 2026-03-09):
+// - All RwLock/Mutex guards are dropped before any `.await` point.
+//   `record_tool_latency` explicitly calls `drop(latencies)` before the
+//   atomic increment; `latency_percentiles` explicitly calls `drop(latencies)`
+//   before the sort.  All other guard acquisitions are either the sole await
+//   in a method or are released via implicit drop before the next await.
+// - Rust's `!Send` bound on `MutexGuard` / `RwLockGuard` would produce a
+//   compile-time error if any guard were held across an await in a multi-
+//   threaded context, providing a mechanical safety net on top of the audit.
+// - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
+//   need no locking at all.
+// - No lock is held across I/O operations.
+// Verdict: no deadlock potential identified.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

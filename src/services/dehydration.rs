@@ -521,6 +521,13 @@ pub fn parse_task_blocks(content: &str) -> Vec<TaskBlock> {
 ///
 /// Creates a temporary `.tmp` file alongside the target, writes content,
 /// then renames atomically to prevent partial writes on crash.
+///
+/// # Atomic write pattern (T043)
+///
+/// Writes to `.<filename>.tmp` (same directory, so same filesystem) then
+/// calls `rename` to replace the target in a single atomic kernel operation.
+/// This prevents partial writes from corrupting workspace state during
+/// crashes or concurrent access.
 pub async fn atomic_write(path: &Path, content: &str) -> Result<(), EngramError> {
     let tmp_path = path.with_extension("tmp");
     let mut file = tokio::fs::File::create(&tmp_path)

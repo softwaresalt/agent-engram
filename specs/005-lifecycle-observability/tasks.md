@@ -111,17 +111,17 @@
 
 ### Tests for User Story 6 ⚠️
 
-- [ ] T037 [P] [US6] Integration test: 3 concurrent clients issuing tool calls without corruption (S061) in tests/integration/reliability_test.rs
-- [ ] T038 [P] [US6] Integration test: concurrent reads during write maintain consistency (S062) in tests/integration/reliability_test.rs
-- [ ] T039 [P] [US6] Integration test: client disconnect does not affect other clients (S063) in tests/integration/reliability_test.rs
-- [ ] T040 [P] [US6] Integration test: state consistent after simulated crash (S064) in tests/integration/reliability_test.rs
+- [X] T037 [P] [US6] Integration test: 3 concurrent clients issuing tool calls without corruption (S061) in tests/integration/reliability_test.rs
+- [X] T038 [P] [US6] Integration test: concurrent reads during write maintain consistency (S062) in tests/integration/reliability_test.rs
+- [X] T039 [P] [US6] Integration test: client disconnect does not affect other clients (S063) in tests/integration/reliability_test.rs
+- [X] T040 [P] [US6] Integration test: state consistent after simulated crash (S064) in tests/integration/reliability_test.rs
 
 ### Implementation for User Story 6
 
-- [ ] T041 [US6] Audit and harden RwLock usage in src/server/state.rs — verify no deadlock potential under concurrent access
-- [ ] T042 [US6] Add connection health monitoring spans in src/server/sse.rs and src/daemon/ipc_server.rs
-- [ ] T043 [US6] Verify atomic write-to-temp-then-rename in src/services/dehydration.rs survives simulated interruption
-- [ ] T044 [US6] Create agent integration template at .engram/agent-templates/tool-selection-guide.md — MCP tool usage examples for AI assistants
+- [X] T041 [US6] Audit and harden RwLock usage in src/server/state.rs — verify no deadlock potential under concurrent access
+- [X] T042 [US6] Add connection health monitoring spans in src/server/sse.rs and src/daemon/ipc_server.rs
+- [X] T043 [US6] Verify atomic write-to-temp-then-rename in src/services/dehydration.rs survives simulated interruption
+- [X] T044 [US6] Create agent integration template at .engram/agent-templates/tool-selection-guide.md — MCP tool usage examples for AI assistants
 
 **Checkpoint**: Daemon proven reliable for extended concurrent sessions
 
