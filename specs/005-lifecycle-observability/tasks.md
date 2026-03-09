@@ -227,12 +227,12 @@
 
 **Purpose**: Documentation, integration, and final validation
 
-- [ ] T093 [P] Update src/tools/mod.rs MCP tool descriptions for discoverability
-- [ ] T094 [P] Update .engram/.version if schema version changes
-- [ ] T095 [P] Update README.md with new tool documentation and configuration parameters
-- [ ] T096 Run cargo clippy to verify zero warnings across all new code
-- [ ] T097 Run cargo test to verify all tests pass
-- [ ] T098 Run quickstart.md validation — verify all example tool calls work end-to-end
+- [X] T093 [P] Update src/tools/mod.rs MCP tool descriptions for discoverability
+- [X] T094 [P] Update .engram/.version if schema version changes
+- [X] T095 [P] Update README.md with new tool documentation and configuration parameters
+- [X] T096 Run cargo clippy to verify zero warnings across all new code
+- [X] T097 Run cargo test to verify all tests pass
+- [X] T098 Run quickstart.md validation — verify all example tool calls work end-to-end
 
 ---
 
