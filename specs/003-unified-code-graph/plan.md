@@ -18,7 +18,7 @@ Build an AST-based code structure graph (Region A: Spatial Memory) that sits alo
 **Status**: Required  
 **Defined in**: [spec.md § Prerequisites](spec.md#prerequisites)  
 
-The entire codebase must be renamed from "engram" / `engram` / `engram` / `engram` / `.engram` to "Monocoque Agent Engram" / `engram` / `.engram` before any 003 implementation begins. This is a mechanical find-and-replace with no behavioral changes.
+The entire codebase must be renamed from "engram" / `engram` / `engram` / `engram` / `.engram` to "Agent Engram" / `engram` / `.engram` before any 003 implementation begins. This is a mechanical find-and-replace with no behavioral changes.
 
 **Key surfaces** (complete mapping in spec.md):
 

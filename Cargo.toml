@@ -4,10 +4,10 @@ resolver = "2"
 
 [package]
 name = "engram"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.85"
-description = "Monocoque Agent Engram MCP daemon"
+description = "Agent Engram MCP daemon"
 license = "MIT"
 publish = false
 
@@ -18,7 +18,11 @@ axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["trace", "cors"] }
-mcp-sdk = "0.0.3"
+rmcp = { version = "1.1", features = ["server", "transport-io"] }
+interprocess = { version = "2", features = ["tokio"] }
+fd-lock = "4"
+notify = "9.0.0-rc.2"
+notify-debouncer-full = "0.7.0"
 surrealdb = { version = "2", features = ["kv-surrealkv"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,6 +36,7 @@ similar = "2"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 tokio-stream = "0.1"
@@ -46,6 +51,10 @@ ignore = "0.4"
 [features]
 default = []
 embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+# Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
+# Not required for normal operation; the daemon uses IPC transport by default.
+# See docs/adrs/0016-legacy-sse-feature-gate.md.
+legacy-sse = []
 
 [dev-dependencies]
 proptest = "1"
@@ -71,6 +80,7 @@ path = "tests/contract/write_test.rs"
 [[test]]
 name = "integration_connection"
 path = "tests/integration/connection_test.rs"
+required-features = ["legacy-sse"]
 
 [[test]]
 name = "unit_proptest"
@@ -126,3 +136,59 @@ path = "tests/integration/cross_region_test.rs"
 [[test]]
 name = "contract_quickstart"
 path = "tests/contract/quickstart_test.rs"
+
+[[test]]
+name = "contract_ipc_protocol"
+path = "tests/contract/ipc_protocol_test.rs"
+
+[[test]]
+name = "unit_lockfile"
+path = "tests/unit/lockfile_test.rs"
+
+[[test]]
+name = "helpers_daemon_harness"
+path = "tests/helpers/mod.rs"
+
+[[test]]
+name = "contract_shim_lifecycle"
+path = "tests/contract/shim_lifecycle_test.rs"
+
+[[test]]
+name = "integration_shim_error"
+path = "tests/integration/shim_error_test.rs"
+
+[[test]]
+name = "integration_multi_workspace"
+path = "tests/integration/multi_workspace_test.rs"
+
+[[test]]
+name = "integration_file_watcher"
+path = "tests/integration/file_watcher_test.rs"
+
+[[test]]
+name = "unit_ttl"
+path = "tests/unit/ttl_test.rs"
+
+[[test]]
+name = "integration_installer"
+path = "tests/integration/installer_test.rs"
+
+[[test]]
+name = "integration_daemon_lifecycle"
+path = "tests/integration/daemon_lifecycle_test.rs"
+
+[[test]]
+name = "unit_plugin_config"
+path = "tests/unit/plugin_config_test.rs"
+
+[[test]]
+name = "integration_config"
+path = "tests/integration/config_test.rs"
+
+[[test]]
+name = "integration_security"
+path = "tests/integration/security_test.rs"
+
+[[test]]
+name = "integration_recovery"
+path = "tests/integration/recovery_test.rs"

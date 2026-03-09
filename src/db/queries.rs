@@ -2864,7 +2864,7 @@ impl CodeGraphQueries {
         let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
         for row in func_rows {
             let f = row.into_function();
-            if !f.embedding.is_empty() {
+            if has_meaningful_embedding(&f.embedding) {
                 let score = cosine_similarity(query_embedding, &f.embedding);
                 results.push((
                     score,
@@ -2894,7 +2894,7 @@ impl CodeGraphQueries {
         let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
         for row in class_rows {
             let c = row.into_class();
-            if !c.embedding.is_empty() {
+            if has_meaningful_embedding(&c.embedding) {
                 let score = cosine_similarity(query_embedding, &c.embedding);
                 results.push((
                     score,
@@ -2924,7 +2924,7 @@ impl CodeGraphQueries {
         let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
         for row in iface_rows {
             let i = row.into_interface();
-            if !i.embedding.is_empty() {
+            if has_meaningful_embedding(&i.embedding) {
                 let score = cosine_similarity(query_embedding, &i.embedding);
                 results.push((
                     score,
@@ -3272,6 +3272,15 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
+/// Returns `true` if `e` is a non-empty vector with at least one non-zero component.
+///
+/// Excludes the zero-vector placeholder used when embeddings are unavailable.
+/// A zero embedding cannot be meaningfully ranked by cosine similarity — its
+/// denominator is zero, so every query matches at score 0.0 uniformly.
+fn has_meaningful_embedding(e: &[f32]) -> bool {
+    !e.is_empty() && e.iter().any(|&v| v != 0.0)
+}
+
 fn parse_dependency_type(raw: String) -> DependencyType {
     match raw.as_str() {
         "soft_dependency" => DependencyType::SoftDependency,
@@ -3419,5 +3428,29 @@ mod tests {
         q.create_dependency("b", "c", DependencyType::HardBlocker)
             .await
             .expect("b->c ok (diamond, no cycle)");
+    }
+
+    // ── GAP-002: has_meaningful_embedding unit tests ─────────────────
+
+    #[test]
+    fn meaningful_embedding_excludes_empty_vec() {
+        assert!(!has_meaningful_embedding(&[]));
+    }
+
+    #[test]
+    fn meaningful_embedding_excludes_zero_vectors() {
+        assert!(!has_meaningful_embedding(&vec![0.0_f32; 384]));
+    }
+
+    #[test]
+    fn meaningful_embedding_accepts_nonzero_vector() {
+        let mut e = vec![0.0_f32; 384];
+        e[100] = 0.01;
+        assert!(has_meaningful_embedding(&e));
+    }
+
+    #[test]
+    fn meaningful_embedding_accepts_small_nonzero() {
+        assert!(has_meaningful_embedding(&[0.0, 0.0, f32::MIN_POSITIVE]));
     }
 }

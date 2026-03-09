@@ -33,7 +33,7 @@ impl LogFormat {
 }
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "engram", about = "Monocoque Agent Engram MCP daemon", version)]
+#[command(name = "engram", about = "Agent Engram MCP daemon", version)]
 pub struct Config {
     /// Port for the HTTP/SSE server
     #[arg(long, env = "ENGRAM_PORT", default_value_t = 7437)]

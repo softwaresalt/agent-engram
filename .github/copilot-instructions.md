@@ -218,6 +218,119 @@ Every tool follows this pattern:
 * **File convention**: Save to `.copilot-tracking/memory/{YYYY-MM-DD}/{descriptive-slug}-memory.md`.
 * **Phase-boundary enforcement**: When the build-orchestrator runs in full-spec loop mode, memory recording and context compaction are mandatory gates between phases. The orchestrator verifies that the memory file and checkpoint file exist before advancing to the next phase. No phase transition occurs without both artifacts on disk.
 
+## Remote Approval Workflow for Destructive File Operations
+
+When the agent-intercom MCP server is running, agents may write files directly for creation and modification. The remote approval workflow is reserved for **destructive operations only** — file deletion, directory removal, or any operation that permanently removes content from the filesystem. This allows the operator to review and approve destructive changes via Slack before they execute.
+
+Additionally, **do not write multiple files in a single proposal.** Each destructive operation must be proposed, reviewed, and approved separately to ensure clear audit trails and granular control.
+
+For terminal commands, **never chain multiple commands together**. Each command must be submitted separately to the `evaluate_command` tool for proper policy evaluation and approval. If the terminal command is **not** already auto-approved for the current workspace or current working directory, it may be executed directly without approval, but still must not be chained with other commands unless those commands are effectively piping output.
+
+### Required Call Sequence (Destructive Operations Only)
+
+```text
+1. auto_check       →  Can this destructive operation bypass approval?
+2. check_clearance   →  Submit the proposal (blocks until operator responds)
+3. check_diff        →  Execute the approved destructive operation
+```
+
+### Step 1 — `auto_check`
+
+Call **before** every destructive file operation (deletion, directory removal) to check if the workspace policy allows the operation without human review.
+
+| Parameter   | Type     | Required | Description |
+|-------------|----------|----------|-------------|
+| `tool_name` | `string` | yes      | Name of the destructive operation being executed |
+| `context`   | `object` | no       | `{ "file_path": "...", "risk_level": "..." }` |
+
+- If `auto_approved: true` → the agent may write the file directly (skip steps 2–3).
+- If `auto_approved: false` → proceed to step 2.
+
+### Step 2 — `check_clearance`
+
+Submit the proposed destructive operation for operator review. This call **blocks** until the operator taps Accept/Reject in Slack or the timeout elapses.
+
+| Parameter     | Type     | Required | Description |
+|---------------|----------|----------|---------------------------------------------------------------------------------------|
+| `title`       | `string` | yes      | Concise summary of the proposed change |
+| `diff`        | `string` | yes      | Standard unified diff or full file content |
+| `file_path`   | `string` | yes      | Target file path relative to workspace root |
+| `description` | `string` | no       | Additional context about the change |
+| `risk_level`  | `string` | no       | `low` (default), `high`, or `critical` |
+| `snippets`    | `array`  | no       | Curated code excerpts for inline Slack review (see below) |
+
+**`snippets` array** — each element has:
+- `label` (string, required) — short human-readable title, e.g. `"handle() — main entry point"`
+- `language` (string, optional) — markdown code-fence language, e.g. `"rust"`, `"toml"`
+- `content` (string, required) — the code to display (server truncates at 2,600 chars)
+
+When `snippets` is provided, the server posts them as a **threaded Slack message** using inline code blocks, which Slack always renders as readable text. This is the preferred approach for all `check_clearance` calls: curate the 1–4 most meaningful sections of the affected file (changed functions, modified public APIs, key callers) rather than relying on the server to upload the whole file. See the build-feature skill for full curation guidance.
+
+Two key conventions apply to every snippet:
+- **Function-boundary scoping**: each snippet must span one complete function or method — from its signature to its closing delimiter. Never include a partial function even if only one line changed.
+- **Changed-line annotation**: Slack code blocks render all content as literal text (`**bold**` becomes asterisks). Annotate changed lines with inline comments instead: `// ← new`, `// ← modified`, `// ← deleted` (or `#`, `--`, `<!-- -->` for Python/SQL/HTML respectively).
+
+**Response:** `{ "status": "approved" | "rejected" | "timeout", "request_id": "...", "reason": "..." }`
+
+- `approved` → proceed to step 3 with the returned `request_id`.
+- `rejected` → do **not** apply the change. Adapt or abandon based on the `reason`.
+- `timeout` → treat as rejection. Do not retry automatically without operator guidance.
+
+### Step 3 — `check_diff`
+
+Execute the approved destructive operation. Only call this after receiving `status: "approved"`.
+
+| Parameter    | Type      | Required | Description |
+|--------------|-----------|----------|-------------|
+| `request_id` | `string`  | yes      | The `request_id` from the `check_clearance` response |
+| `force`      | `boolean` | no       | `true` to overwrite even if the file changed since proposal |
+
+**Response:** `{ "status": "applied", "files_written": [{ "path": "...", "bytes": N }] }`
+
+If the server returns `patch_conflict` (file changed since proposal), the agent should re-read the file, regenerate the diff, and restart from step 2.
+
+### Rules
+
+1. **File creation and modification proceed directly** when the MCP server is reachable. No approval workflow is needed for non-destructive writes.
+2. **Broadcast every file change.** After each non-destructive file write, call `broadcast` at `info` level with `[FILE] {action}: {file_path}` (where `action` is `created` or `modified`) and include the unified diff (for modifications) or full file content (for new files) in the message body. These broadcasts are non-blocking and keep the operator informed in real time.
+3. **Destructive operations require approval.** File deletion, directory removal, or any operation that permanently removes content must go through the `auto_check` → `check_clearance` → `check_diff` workflow.
+4. **One destructive operation per approval.** Submit each deletion or removal as a separate `check_clearance` call.
+5. **Set `risk_level`** to `high` or `critical` for destructive operations targeting configuration files, security-sensitive modules (`diff/path_safety.rs`, `policy/`, `slack/events.rs`), or database schema (`persistence/schema.rs`).
+6. **Do not retry rejected proposals** with the same content. Incorporate the operator's feedback first.
+7. **Handle all response statuses.** Never assume approval — always branch on `approved`, `rejected`, and `timeout`.
+
+## Destructive Terminal Command Approval (NON-NEGOTIABLE)
+
+**All destructive terminal commands MUST go through agent-intercom operator approval regardless of whether the agent is running in `--allow-all`, `--yolo`, or any other permissive mode.** This rule has no exceptions and cannot be overridden by agent configuration, workspace policy, or auto-approve rules.
+
+### Definition of Destructive Terminal Commands
+
+A terminal command is considered **destructive** if it:
+- Deletes files or directories (`rm`, `Remove-Item`, `del`, `rmdir`)
+- Overwrites files without creating backups (`mv` to existing target, `Move-Item -Force`)
+- Modifies system configuration (`reg`, `Set-ExecutionPolicy`, `chmod`, `chown`)
+- Alters version control history (`git reset --hard`, `git push --force`, `git clean -fd`)
+- Drops or truncates database content (`DROP TABLE`, `TRUNCATE`, `DELETE FROM` without `WHERE`)
+- Installs or removes system-level packages (`npm install -g`, `cargo install`, `apt remove`)
+- Executes arbitrary code from untrusted sources (`curl | sh`, `iex (irm ...)`)
+
+### Required Workflow
+
+1. **Detect**: Before executing any terminal command, evaluate whether it is destructive per the definition above.
+2. **Route through agent-intercom**: If destructive, call `auto_check` with the full command string. If not auto-approved, call `check_clearance` with:
+   - `title`: The command being proposed
+   - `description`: Why the command is needed and what it will affect
+   - `risk_level`: `high` for most destructive commands, `critical` for force-pushes, database drops, or system config changes
+3. **Execute only after approval**: Only run the command after receiving `status: "approved"` from the operator.
+4. **Never bypass**: Even if `--allow-all` or `--yolo` flags are active, destructive terminal commands MUST still go through this approval workflow. These flags only affect non-destructive operations.
+
+### Rationale
+
+Permissive agent modes (`--allow-all`, `--yolo`) exist to reduce friction for routine operations like file creation, modification, and safe build/test commands. They must NEVER extend to destructive terminal operations because:
+- A single misrouted destructive command can irrecoverably corrupt repositories, delete production data, or break system configuration.
+- Agents operating autonomously for extended periods may accumulate context drift that leads to incorrect destructive actions.
+- The operator retains final authority over any operation that permanently removes or alters critical resources.
+
 <!-- MANUAL ADDITIONS START -->
 
 ## Terminal Command Execution Policy
@@ -226,7 +339,7 @@ Every tool follows this pattern:
 
 ### Rules
 
-1. **One command per terminal call.** Never combine commands with `;`, `&&`, `||`, or `|` unless it falls under an allowed exception below.
+1. **One command per terminal call.** NEVER, NEVER chain or combine commands with `;`, `&&`, `||`, or `|` unless it falls under an allowed exception below.
 2. **No `cmd /c` wrappers.** Run commands directly in the shell rather than wrapping them in `cmd /c "..."`. If `cmd /c` is genuinely required (e.g., for environment isolation), it must contain a single command only.
 3. **No exit-code echo suffixes.** Do not append `; echo "EXIT: $LASTEXITCODE"` or `&& echo "done"` to commands. The terminal tool already captures exit codes.
 4. **Check results between commands.** After each command, inspect the output and exit code before deciding whether to run the next command. This is safer and produces better diagnostics.
@@ -337,10 +450,10 @@ The workspace uses multiple MCP servers with distinct responsibilities. Never ca
 
 | Server ID | URL | Purpose |
 |-----------|-----|---------|
-| `monocoque-agent-rc` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
+| `agent-engram` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
 | engram daemon | `http://127.0.0.1:7437/sse` | Task memory, context tracking, workspace state |
 
-### `monocoque-agent-rc` tools (Slack relay)
+### `agent-engram` tools (Slack relay)
 
 | Tool | Purpose |
 |------|---------|
@@ -366,5 +479,5 @@ If `get_daemon_status` or any engram tool returns a connection error, the engram
 cargo run --bin engram
 ```
 
-The relay server (`monocoque-agent-rc`) is a separate process managed outside this repo and runs on port 3000.
+The relay server (`agent-engram`) is a separate process managed outside this repo and runs on port 3000.
 <!-- MANUAL ADDITIONS END -->

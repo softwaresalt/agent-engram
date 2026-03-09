@@ -43,6 +43,8 @@ fn make_task(id: &str) -> Task {
 ///
 /// Measures time to create `AppState` and build the axum router,
 /// which represents the daemon's cold start path excluding network bind.
+/// Requires the `legacy-sse` feature (axum router only compiled with that flag).
+#[cfg(feature = "legacy-sse")]
 #[test]
 fn t097_cold_start_under_200ms() {
     let start = Instant::now();

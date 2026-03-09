@@ -58,3 +58,21 @@ pub const SYMBOL_NOT_FOUND: u16 = 7004;
 /// 7005 is reserved for future use.
 pub const FILE_TOO_LARGE: u16 = 7006;
 pub const SYNC_CONFLICT: u16 = 7007;
+
+/// IPC and daemon error codes (8xxx)
+pub const IPC_CONNECTION_FAILED: u16 = 8001;
+pub const IPC_SEND_FAILED: u16 = 8002;
+pub const IPC_RECEIVE_FAILED: u16 = 8003;
+pub const IPC_TIMEOUT: u16 = 8004;
+pub const DAEMON_SPAWN_FAILED: u16 = 8005;
+pub const DAEMON_NOT_READY: u16 = 8006;
+pub const LOCK_ACQUISITION_FAILED: u16 = 8007;
+pub const LOCK_ALREADY_HELD: u16 = 8008;
+pub const WATCHER_INIT_FAILED: u16 = 8009;
+
+/// Installer error codes (9xxx)
+pub const INSTALL_FAILED: u16 = 9001;
+pub const UPDATE_FAILED: u16 = 9002;
+pub const UNINSTALL_FAILED: u16 = 9003;
+pub const ALREADY_INSTALLED: u16 = 9004;
+pub const NOT_INSTALLED: u16 = 9005;

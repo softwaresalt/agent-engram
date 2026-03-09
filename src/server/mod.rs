@@ -1,20 +1,17 @@
-//! HTTP/SSE server layer built on axum 0.7.
+//! Server application state and (optionally) HTTP/SSE transport layer.
 //!
-//! Provides the SSE endpoint (`/sse`), MCP JSON-RPC handler (`/mcp`),
-//! health check (`/health`), and shared application state.
+//! The [`state`] sub-module defines [`state::AppState`] and [`state::SharedState`],
+//! which are used by the IPC daemon as the runtime context for tool dispatch,
+//! workspace management, and connection tracking.
+//!
+//! The HTTP/SSE transport sub-modules (`router`, `mcp`, `sse`) are preserved for
+//! compatibility but are only compiled when the **`legacy-sse`** Cargo feature is
+//! enabled. Default builds use the IPC transport exclusively. See ADR-0016.
 
-#![allow(dead_code)]
-
+#[cfg(feature = "legacy-sse")]
 pub mod mcp;
+#[cfg(feature = "legacy-sse")]
 pub mod router;
+#[cfg(feature = "legacy-sse")]
 pub mod sse;
 pub mod state;
-
-/// Placeholder for correlation ID middleware. Will be wired into axum router in Phase 3.
-pub struct CorrelationIds;
-
-impl CorrelationIds {
-    pub fn new() -> Self {
-        Self
-    }
-}

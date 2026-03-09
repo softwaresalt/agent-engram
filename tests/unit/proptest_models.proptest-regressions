@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9c2a1949d4d571fd6ad94be7958c05d26f704d9d4860869ee65a4504abef857a # shrinks to req = IpcRequest { jsonrpc: "2.0", id: None, method: "_", params: Some(Null) }

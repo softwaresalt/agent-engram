@@ -1,7 +1,8 @@
 //! Workspace configuration models.
 //!
-//! Defines [`WorkspaceConfig`], [`CompactionConfig`], and [`BatchConfig`]
-//! for user-customizable workspace behavior read from `.engram/config.toml`.
+//! Defines [`WorkspaceConfig`], [`CompactionConfig`], [`BatchConfig`], and
+//! [`PluginConfig`] for user-customizable workspace and daemon behavior read
+//! from `.engram/config.toml`.
 
 use serde::{Deserialize, Serialize};
 
@@ -180,4 +181,132 @@ fn default_supported_languages() -> Vec<String> {
 
 const fn default_token_limit() -> usize {
     512
+}
+
+// ── PluginConfig ──────────────────────────────────────────────────────────────
+
+/// User-configurable settings loaded from `.engram/config.toml` at daemon startup.
+///
+/// Unknown fields are silently ignored (serde default behaviour — `deny_unknown_fields`
+/// is intentionally omitted). Missing fields receive their declared defaults.
+///
+/// # Examples
+///
+/// ```toml
+/// idle_timeout_minutes = 30
+/// debounce_ms = 250
+/// exclude_patterns = [".engram/", ".git/", "target/"]
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginConfig {
+    /// Minutes of inactivity before daemon self-terminates (0 = never).
+    #[serde(default = "default_idle_timeout_minutes")]
+    pub idle_timeout_minutes: u64,
+    /// Milliseconds to debounce file-system events.
+    #[serde(default = "default_debounce_ms")]
+    pub debounce_ms: u64,
+    /// Glob patterns for files to watch.
+    #[serde(default = "default_watch_patterns")]
+    pub watch_patterns: Vec<String>,
+    /// Glob patterns for files to exclude from watching.
+    #[serde(default = "default_exclude_patterns")]
+    pub exclude_patterns: Vec<String>,
+    /// Daemon log verbosity (e.g. `"info"`, `"debug"`, `"warn"`).
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    /// Log output format (`"pretty"` or `"json"`).
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            idle_timeout_minutes: default_idle_timeout_minutes(),
+            debounce_ms: default_debounce_ms(),
+            watch_patterns: default_watch_patterns(),
+            exclude_patterns: default_exclude_patterns(),
+            log_level: default_log_level(),
+            log_format: default_log_format(),
+        }
+    }
+}
+
+impl PluginConfig {
+    /// Convert `idle_timeout_minutes` to a [`std::time::Duration`].
+    ///
+    /// Returns [`std::time::Duration::ZERO`] when `idle_timeout_minutes` is 0,
+    /// which the daemon interprets as "run forever".
+    pub fn idle_timeout(&self) -> std::time::Duration {
+        if self.idle_timeout_minutes == 0 {
+            std::time::Duration::ZERO
+        } else {
+            std::time::Duration::from_secs(self.idle_timeout_minutes * 60)
+        }
+    }
+
+    /// Load config from `.engram/config.toml` inside `workspace`.
+    ///
+    /// Falls back to [`PluginConfig::default`] when the file is absent or
+    /// contains invalid TOML; a `warn`-level trace event is emitted in the
+    /// latter case so the operator can diagnose the problem.
+    pub fn load(workspace: &std::path::Path) -> Self {
+        let config_path = workspace.join(".engram").join("config.toml");
+        match std::fs::read_to_string(&config_path) {
+            Err(_) => {
+                tracing::debug!(
+                    "no config.toml found at {config_path}; using defaults",
+                    config_path = config_path.display()
+                );
+                Self::default()
+            }
+            Ok(content) => match toml::from_str::<Self>(&content) {
+                Ok(cfg) => {
+                    tracing::info!(
+                        path = %config_path.display(),
+                        "loaded plugin config from config.toml"
+                    );
+                    cfg
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %config_path.display(),
+                        "failed to parse config.toml; using defaults"
+                    );
+                    Self::default()
+                }
+            },
+        }
+    }
+}
+
+const fn default_idle_timeout_minutes() -> u64 {
+    240 // 4 hours
+}
+
+const fn default_debounce_ms() -> u64 {
+    500
+}
+
+fn default_watch_patterns() -> Vec<String> {
+    vec!["**/*".to_owned()]
+}
+
+fn default_exclude_patterns() -> Vec<String> {
+    vec![
+        ".engram/".to_owned(),
+        ".git/".to_owned(),
+        "node_modules/".to_owned(),
+        "target/".to_owned(),
+        ".env*".to_owned(),
+    ]
+}
+
+fn default_log_level() -> String {
+    "info".to_owned()
+}
+
+fn default_log_format() -> String {
+    "pretty".to_owned()
 }

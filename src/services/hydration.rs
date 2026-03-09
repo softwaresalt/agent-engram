@@ -64,7 +64,7 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
     let engram_dir = path.join(".engram");
 
     if !engram_dir.exists() {
-        fs::create_dir_all(&engram_dir).map_err(|e| {
+        tokio::fs::create_dir_all(&engram_dir).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to create .engram directory: {e}"),
             })
@@ -73,8 +73,12 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
     }
 
     let tasks_path = engram_dir.join("tasks.md");
-    let task_count = if tasks_path.exists() {
-        count_tasks(&tasks_path)?
+    let task_count = if tokio::fs::try_exists(&tasks_path).await.map_err(|e| {
+        EngramError::Hydration(HydrationError::Failed {
+            reason: format!("failed to check tasks.md existence: {e}"),
+        })
+    })? {
+        count_tasks(&tasks_path).await?
     } else {
         0
     };
@@ -86,8 +90,18 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
 
     // Validate schema version if present
     let version_path = engram_dir.join(".version");
-    if version_path.exists() {
-        let version = fs::read_to_string(&version_path).unwrap_or_default();
+    if tokio::fs::try_exists(&version_path).await.map_err(|e| {
+        EngramError::Hydration(HydrationError::Failed {
+            reason: format!("failed to check .version existence: {e}"),
+        })
+    })? {
+        let version = tokio::fs::read_to_string(&version_path)
+            .await
+            .map_err(|e| {
+                EngramError::Hydration(HydrationError::Failed {
+                    reason: format!("failed to read .version file: {e}"),
+                })
+            })?;
         let version = version.trim();
         if !version.is_empty() && version != SCHEMA_VERSION {
             return Err(EngramError::Hydration(HydrationError::SchemaMismatch {
@@ -120,8 +134,8 @@ pub async fn hydrate_into_db(
 
     // Parse and load tasks from tasks.md
     let tasks_path = engram_dir.join("tasks.md");
-    if tasks_path.exists() {
-        let content = fs::read_to_string(&tasks_path).map_err(|e| {
+    if tokio::fs::try_exists(&tasks_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&tasks_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read tasks.md: {e}"),
             })
@@ -139,8 +153,8 @@ pub async fn hydrate_into_db(
 
     // Parse and load edges from graph.surql
     let graph_path = engram_dir.join("graph.surql");
-    if graph_path.exists() {
-        let content = fs::read_to_string(&graph_path).map_err(|e| {
+    if tokio::fs::try_exists(&graph_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&graph_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read graph.surql: {e}"),
             })
@@ -154,12 +168,14 @@ pub async fn hydrate_into_db(
 
     // Parse and load comments from comments.md (FR-063b)
     let comments_path = engram_dir.join("comments.md");
-    if comments_path.exists() {
-        let content = fs::read_to_string(&comments_path).map_err(|e| {
-            EngramError::Hydration(HydrationError::Failed {
-                reason: format!("failed to read comments.md: {e}"),
-            })
-        })?;
+    if tokio::fs::try_exists(&comments_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&comments_path)
+            .await
+            .map_err(|e| {
+                EngramError::Hydration(HydrationError::Failed {
+                    reason: format!("failed to read comments.md: {e}"),
+                })
+            })?;
         let comments = parse_comments_md(&content);
         for comment in &comments {
             // Strip task: prefix to match internal bare ID convention
@@ -257,8 +273,8 @@ pub async fn hydrate_code_graph(
 
     // Parse nodes.jsonl
     let nodes_path = code_graph_dir.join("nodes.jsonl");
-    if nodes_path.exists() {
-        let content = fs::read_to_string(&nodes_path).map_err(|e| {
+    if tokio::fs::try_exists(&nodes_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&nodes_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read nodes.jsonl: {e}"),
             })
@@ -270,7 +286,7 @@ pub async fn hydrate_code_graph(
                 continue;
             }
             if let Ok(node) = parse_node_line(line) {
-                if upsert_node(cg_queries, node).await {
+                if upsert_node(cg_queries, node, path).await {
                     result.nodes_loaded += 1;
                 } else {
                     result.lines_skipped += 1;
@@ -287,8 +303,8 @@ pub async fn hydrate_code_graph(
 
     // Parse edges.jsonl
     let edges_path = code_graph_dir.join("edges.jsonl");
-    if edges_path.exists() {
-        let content = fs::read_to_string(&edges_path).map_err(|e| {
+    if tokio::fs::try_exists(&edges_path).await.unwrap_or(false) {
+        let content = tokio::fs::read_to_string(&edges_path).await.map_err(|e| {
             EngramError::Hydration(HydrationError::Failed {
                 reason: format!("failed to read edges.jsonl: {e}"),
             })
@@ -384,8 +400,58 @@ fn parse_edge_line(line: &str) -> Result<ParsedEdge, serde_json::Error> {
     serde_json::from_str(line)
 }
 
+/// Read the source body for a symbol from its file on disk.
+///
+/// Extracts lines `line_start..=line_end` (1-based, inclusive) from `file_path`
+/// (workspace-relative). Returns an empty `String` if the file cannot be read or
+/// the line range is out of bounds; logs a warning in both cases.
+///
+/// Body re-derivation is best-effort — a missing body is a degraded but non-fatal
+/// condition; the node is still hydrated and searchable by name and hash.
+async fn read_body_lines(
+    workspace: &Path,
+    file_path: &str,
+    line_start: u32,
+    line_end: u32,
+) -> String {
+    if file_path.is_empty() || line_start == 0 {
+        return String::new();
+    }
+    let abs = workspace.join(file_path);
+    let content = match tokio::fs::read_to_string(&abs).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                file = %abs.display(),
+                error = %e,
+                "hydration: cannot read source file for body re-derivation"
+            );
+            return String::new();
+        }
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    // Convert 1-based inclusive range to 0-based half-open slice indices.
+    let start = (line_start as usize).saturating_sub(1);
+    let end = (line_end as usize).min(lines.len());
+    if start >= lines.len() || start >= end {
+        tracing::warn!(
+            file = %abs.display(),
+            line_start,
+            line_end,
+            total_lines = lines.len(),
+            "hydration: line range out of bounds during body re-derivation"
+        );
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
 /// Upsert a parsed node into the database. Returns `true` on success.
-async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: ParsedNode) -> bool {
+async fn upsert_node(
+    cg_queries: &crate::db::queries::CodeGraphQueries,
+    node: ParsedNode,
+    workspace: &Path,
+) -> bool {
     use crate::models::{Class, CodeFile, Function, Interface};
 
     match node.node_type.as_str() {
@@ -401,15 +467,19 @@ async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: Pa
             cg_queries.upsert_code_file(&cf).await.is_ok()
         }
         "function" => {
+            let file_path = node.file_path.unwrap_or_default();
+            let line_start = node.line_start.unwrap_or(0);
+            let line_end = node.line_end.unwrap_or(0);
+            let body = read_body_lines(workspace, &file_path, line_start, line_end).await;
             let f = Function {
                 id: node.id,
                 name: node.name.unwrap_or_default(),
-                file_path: node.file_path.unwrap_or_default(),
-                line_start: node.line_start.unwrap_or(0),
-                line_end: node.line_end.unwrap_or(0),
+                file_path,
+                line_start,
+                line_end,
                 signature: node.signature.unwrap_or_default(),
                 docstring: node.docstring,
-                body: String::new(), // body not persisted
+                body,
                 body_hash: node.body_hash.unwrap_or_default(),
                 token_count: node.token_count.unwrap_or(0),
                 embed_type: node.embed_type.unwrap_or_default(),
@@ -419,14 +489,18 @@ async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: Pa
             cg_queries.upsert_function(&f).await.is_ok()
         }
         "class" => {
+            let file_path = node.file_path.unwrap_or_default();
+            let line_start = node.line_start.unwrap_or(0);
+            let line_end = node.line_end.unwrap_or(0);
+            let body = read_body_lines(workspace, &file_path, line_start, line_end).await;
             let c = Class {
                 id: node.id,
                 name: node.name.unwrap_or_default(),
-                file_path: node.file_path.unwrap_or_default(),
-                line_start: node.line_start.unwrap_or(0),
-                line_end: node.line_end.unwrap_or(0),
+                file_path,
+                line_start,
+                line_end,
                 docstring: node.docstring,
-                body: String::new(),
+                body,
                 body_hash: node.body_hash.unwrap_or_default(),
                 token_count: node.token_count.unwrap_or(0),
                 embed_type: node.embed_type.unwrap_or_default(),
@@ -436,14 +510,18 @@ async fn upsert_node(cg_queries: &crate::db::queries::CodeGraphQueries, node: Pa
             cg_queries.upsert_class(&c).await.is_ok()
         }
         "interface" => {
+            let file_path = node.file_path.unwrap_or_default();
+            let line_start = node.line_start.unwrap_or(0);
+            let line_end = node.line_end.unwrap_or(0);
+            let body = read_body_lines(workspace, &file_path, line_start, line_end).await;
             let i = Interface {
                 id: node.id,
                 name: node.name.unwrap_or_default(),
-                file_path: node.file_path.unwrap_or_default(),
-                line_start: node.line_start.unwrap_or(0),
-                line_end: node.line_end.unwrap_or(0),
+                file_path,
+                line_start,
+                line_end,
                 docstring: node.docstring,
-                body: String::new(),
+                body,
                 body_hash: node.body_hash.unwrap_or_default(),
                 token_count: node.token_count.unwrap_or(0),
                 embed_type: node.embed_type.unwrap_or_default(),
@@ -949,8 +1027,8 @@ fn strip_table_prefix(record: &str) -> String {
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
-fn count_tasks(path: &Path) -> Result<u64, EngramError> {
-    let contents = fs::read_to_string(path).map_err(|e| {
+async fn count_tasks(path: &Path) -> Result<u64, EngramError> {
+    let contents = tokio::fs::read_to_string(path).await.map_err(|e| {
         EngramError::Hydration(HydrationError::Failed {
             reason: format!("failed to read tasks.md: {e}"),
         })
@@ -1151,13 +1229,79 @@ RELATE task:abc->relates_to->context:note1;
     #[test]
     fn read_version_returns_content() {
         let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join(".version"), "1.0.0\n").expect("write");
-        assert_eq!(read_version(dir.path()), Some("1.0.0".to_string()));
+        fs::write(dir.path().join(".version"), format!("{SCHEMA_VERSION}\n")).expect("write");
+        assert_eq!(read_version(dir.path()), Some(SCHEMA_VERSION.to_string()));
     }
 
     #[test]
     fn read_version_missing_returns_none() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_eq!(read_version(dir.path()), None);
+    }
+
+    // ── GAP-001: read_body_lines unit tests ─────────────────────────
+
+    #[tokio::test]
+    async fn read_body_lines_extracts_correct_lines() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let content = "line1\nline2\nline3\nline4\n";
+        tokio::fs::write(tmp.path().join("src.rs"), content)
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "src.rs", 2, 3).await;
+        assert_eq!(body, "line2\nline3");
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_single_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("f.rs"), "alpha\nbeta\ngamma\n")
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "f.rs", 2, 2).await;
+        assert_eq!(body, "beta");
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_missing_file_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let body = read_body_lines(tmp.path(), "nonexistent.rs", 1, 5).await;
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_out_of_bounds_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("f.rs"), "only one line\n")
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "f.rs", 99, 100).await;
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_empty_file_path_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let body = read_body_lines(tmp.path(), "", 1, 5).await;
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_body_lines_zero_line_start_returns_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("f.rs"), "content\n")
+            .await
+            .expect("write");
+        let body = read_body_lines(tmp.path(), "f.rs", 0, 1).await;
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn null_embedding_in_jsonl_deserializes_to_none() {
+        // When embedding is absent from JSONL, ParsedNode.embedding is None.
+        let line = r#"{"id":"function:x","type":"function","name":"x","file_path":"src/lib.rs","line_start":1,"line_end":2,"body_hash":"abc","token_count":0,"embed_type":"summary_pointer","summary":"fn x()"}"#;
+        let node: ParsedNode = serde_json::from_str(line).expect("parse");
+        // embedding absent (null) → unwrap_or_default in upsert_node → empty vec
+        assert!(node.embedding.is_none());
     }
 }

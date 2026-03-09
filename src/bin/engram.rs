@@ -1,61 +1,75 @@
 use anyhow::Result;
-use std::{net::SocketAddr, sync::Arc};
-use tokio::net::TcpListener;
+use clap::{Parser, Subcommand};
 
-use engram::{
-    config::Config,
-    init_tracing,
-    server::{router::build_router, state::AppState},
-    services::dehydration,
-};
+/// Engram workspace-local MCP plugin.
+///
+/// Manages per-workspace daemon processes that serve MCP tool calls via stdio.
+/// The shim subcommand (default) is the MCP client entry point; the daemon
+/// subcommand is spawned automatically by the shim.
+#[derive(Debug, Parser)]
+#[command(name = "engram", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run as MCP stdio shim (default). Connects to or spawns the workspace daemon,
+    /// then proxies MCP JSON-RPC from stdin to the daemon and back to stdout.
+    Shim,
+    /// Run as workspace daemon. Manages workspace state, IPC server, file watching,
+    /// and idle timeout. Spawned automatically by the shim; not intended for direct use.
+    Daemon {
+        /// Absolute path to the workspace root.
+        #[arg(long)]
+        workspace: String,
+    },
+    /// Install the engram plugin into the current workspace.
+    /// Creates `.engram/` directory structure and generates MCP configuration.
+    Install,
+    /// Update the engram plugin runtime artifacts (binary references, config templates).
+    /// Preserves existing workspace data files.
+    Update,
+    /// Reinstall the engram plugin, cleaning runtime artifacts while preserving data.
+    Reinstall,
+    /// Remove the engram plugin from the workspace.
+    /// Stops any running daemon and removes plugin artifacts.
+    Uninstall {
+        /// Keep workspace data files (tasks.md, config.toml, etc.) after uninstall.
+        #[arg(long)]
+        keep_data: bool,
+    },
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::parse();
-    config.validate().map_err(anyhow::Error::msg)?;
-    config.ensure_data_dir()?;
-    init_tracing(config.log_format());
+    let cli = Cli::parse();
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    let state = Arc::new(AppState::with_stale_strategy(
-        config.max_workspaces,
-        config.stale_strategy,
-    ));
-    let app = build_router(state.clone());
-
-    let listener = TcpListener::bind(addr).await?;
-    println!("engram daemon listening on {addr}");
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    // FR-006: flush all active workspaces on graceful shutdown
-    if let Err(e) = dehydration::flush_all_workspaces(&state).await {
-        eprintln!("warning: shutdown flush failed: {e}");
-    }
-
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
-
-        tokio::select! {
-            _ = sigterm.recv() => {}
-            _ = sigint.recv() => {}
+    match cli.command.unwrap_or(Command::Shim) {
+        Command::Shim => {
+            engram::shim::run().await?;
+        }
+        Command::Daemon { workspace } => {
+            engram::daemon::run(&workspace).await?;
+        }
+        Command::Install => {
+            let workspace = std::env::current_dir()?;
+            engram::installer::install(&workspace).await?;
+        }
+        Command::Update => {
+            let workspace = std::env::current_dir()?;
+            engram::installer::update(&workspace).await?;
+        }
+        Command::Reinstall => {
+            let workspace = std::env::current_dir()?;
+            engram::installer::reinstall(&workspace).await?;
+        }
+        Command::Uninstall { keep_data } => {
+            let workspace = std::env::current_dir()?;
+            engram::installer::uninstall(&workspace, keep_data).await?;
         }
     }
 
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
-
-    println!("Shutting down engram daemon");
+    Ok(())
 }

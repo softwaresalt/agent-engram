@@ -1,0 +1,33 @@
+# cargo-release configuration
+# Run: cargo release patch --execute  (or: minor, major, alpha, beta, rc)
+# Dry run (default): cargo release patch
+
+# Only release from main branch
+allow-branch = ["main"]
+
+# Don't publish to crates.io (publish = false in Cargo.toml)
+publish = false
+
+# Don't verify (we have CI for that)
+verify = false
+
+# Git tag format: v0.0.1, v0.1.0, etc.
+tag-name = "v{{version}}"
+tag-message = "release: v{{version}}"
+tag-prefix = ""
+
+# Commit message for version bump
+pre-release-commit-message = "release: v{{version}}"
+
+# Push tags and commits to origin
+push = true
+push-remote = "origin"
+
+# Update CHANGELOG.md on release
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "Unreleased", replace = "{{version}}", min = 0 },
+  { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 0 },
+  { file = "CHANGELOG.md", search = "\\.\\.\\.HEAD", replace = "...v{{version}}", exactly = 1 },
+  { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
+  { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/softwaresalt/agent-engram/compare/v{{version}}...HEAD", exactly = 1 },
+]

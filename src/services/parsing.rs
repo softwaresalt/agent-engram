@@ -488,7 +488,7 @@ mod tests {
                 assert!(!f.body_hash.is_empty());
                 assert!(f.token_count > 0);
             }
-            _ => panic!("Expected Function"),
+            _ => panic!("Expected Function symbol at index 0, got a different variant"),
         }
         // Should have a Defines edge.
         assert!(result.edges.iter().any(|e| matches!(
@@ -508,7 +508,7 @@ mod tests {
                 assert_eq!(c.line_start, 1);
                 assert_eq!(c.line_end, 3);
             }
-            _ => panic!("Expected Class"),
+            _ => panic!("Expected Class symbol at index 0, got a different variant"),
         }
     }
 
@@ -521,7 +521,7 @@ mod tests {
             ExtractedSymbol::Interface(i) => {
                 assert_eq!(i.name, "Handler");
             }
-            _ => panic!("Expected Interface"),
+            _ => panic!("Expected Interface symbol at index 0, got a different variant"),
         }
     }
 
@@ -604,7 +604,7 @@ fn callee() {}
                     Some("This is a doc comment.\nSecond line.")
                 );
             }
-            _ => panic!("Expected Function"),
+            _ => panic!("Expected Function symbol for parse_doc_comment, got a different variant"),
         }
     }
 
@@ -618,7 +618,9 @@ fn callee() {}
                 let expected = (f.body.len() / 4) as u32;
                 assert_eq!(f.token_count, expected);
             }
-            _ => panic!("Expected Function"),
+            _ => panic!(
+                "Expected Function symbol for token_count_uses_char_div_4, got a different variant"
+            ),
         }
     }
 
@@ -632,7 +634,9 @@ fn callee() {}
                 assert_eq!(f.body_hash.len(), 64);
                 assert!(f.body_hash.chars().all(|c| c.is_ascii_hexdigit()));
             }
-            _ => panic!("Expected Function"),
+            _ => {
+                panic!("Expected Function symbol for body_hash_is_sha256, got a different variant")
+            }
         }
     }
 
@@ -651,7 +655,9 @@ fn callee() {}
             ExtractedSymbol::Function(f) => {
                 assert_eq!(f.signature, "pub fn add(a: i32, b: i32) -> i32");
             }
-            _ => panic!("Expected Function"),
+            _ => panic!(
+                "Expected Function symbol for signature_excludes_body_block, got a different variant"
+            ),
         }
     }
 }

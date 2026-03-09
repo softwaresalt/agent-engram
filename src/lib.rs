@@ -2,8 +2,10 @@
 //! semantic search for AI coding assistants.
 //!
 //! This crate exposes library modules used by the `engram` binary. The daemon
-//! binds to `127.0.0.1` via axum, accepts MCP JSON-RPC over SSE, and stores
-//! workspace state in an embedded SurrealDB instance backed by `.engram/` files.
+//! manages per-workspace state via an embedded SurrealDB instance backed by
+//! `.engram/` files and serves MCP tool calls over a local IPC channel
+//! (Unix domain socket or Windows named pipe). A lightweight stdio shim
+//! bridges the MCP host to the daemon process.
 
 #![forbid(unsafe_code)]
 #![warn(clippy::pedantic)]
@@ -24,15 +26,22 @@
 #![allow(clippy::map_unwrap_or)]
 #![allow(clippy::unnecessary_filter_map)]
 #![allow(clippy::trivially_copy_pass_by_ref)]
+// IpcResponse is a wire-format struct returned as an Err variant in the IPC
+// dispatch path. Its size is bounded by the JSON-RPC 2.0 spec and cannot be
+// meaningfully reduced without complicating the public API.
+#![allow(clippy::result_large_err)]
 
 /// Crate-level constants and shared library entrypoints for the Engram daemon.
 pub const APP_NAME: &str = "engram";
 pub mod config;
+pub mod daemon;
 pub mod db;
 pub mod errors;
+pub mod installer;
 pub mod models;
 pub mod server;
 pub mod services;
+pub mod shim;
 pub mod tools;
 
 use std::sync::OnceLock;

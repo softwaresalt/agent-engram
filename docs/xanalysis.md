@@ -1,12 +1,12 @@
 # Comparative Analysis: Engram, Beads, and Backlog.md
 
-This document provides a comparative analysis of three tools designed to aid in agentic software development: `monocoque-agent-engram` (Engram), `beads`, and `backlog.md`. The analysis focuses on the needs they address, their relative strengths and weaknesses, and their roles as developer productivity tools.
+This document provides a comparative analysis of three tools designed to aid in agentic software development: `agent-engram` (Engram), `beads`, and `backlog.md`. The analysis focuses on the needs they address, their relative strengths and weaknesses, and their roles as developer productivity tools.
 
 ## 1. Overview
 
 All three tools address the problem of "agent amnesia" by providing a form of persistent memory for AI coding assistants, grounding their work within a project's Git repository. However, they do so with different philosophies, architectures, and capabilities.
 
-*   **Monocoque Agent Engram (Engram):** A high-performance, local-first MCP (Model Context Protocol) server that provides a rich, multi-modal memory for agents. It combines a structured task graph database with semantic search over the entire workspace, acting as a comprehensive "world model" for an agent.
+*   **Agent Engram (Engram):** A high-performance, local-first MCP (Model Context Protocol) server that provides a rich, multi-modal memory for agents. It combines a structured task graph database with semantic search over the entire workspace, acting as a comprehensive "world model" for an agent.
 *   **Beads:** A lightweight, agent-first, git-backed issue tracker. It focuses exclusively on managing a directed acyclic graph (DAG) of tasks to help agents identify and execute "ready work" efficiently.
 *   **Backlog.md:** A developer-centric methodology and CLI tool for managing tasks and specifications as markdown files within the repository. It emphasizes human-readable documentation and spec-driven collaboration between developers and AI agents.
 
@@ -20,7 +20,7 @@ The fundamental difference lies in their primary focus:
 
 ## 3. Comparative Analysis
 
-| Feature                  | Monocoque Agent Engram                                 | Beads                                                  | Backlog.md                                               |
+| Feature                  | Agent Engram                                 | Beads                                                  | Backlog.md                                               |
 | ------------------------ | ------------------------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------- |
 | **Primary User**         | Sophisticated AI Agent                                 | AI Agent                                               | Human Developer & AI Agent                               |
 | **Storage Mechanism**    | Embedded SurrealDB, flushes to `.engram/` Markdown     | JSONL lines in a `.beads/` file within Git             | Plain Markdown files in a `backlog/` directory           |
@@ -52,7 +52,7 @@ Choose `beads` for the **pure execution phase**, especially with autonomous agen
 
 **Example:** An agent, having been assigned a large feature, breaks it down into 20 sub-tasks and creates a dependency graph in `beads`. Over multiple sessions, it queries `beads` for ready work, executes it, and marks tasks as complete, ensuring it never works on a blocked task.
 
-### When to use `monocoque-agent-engram`:
+### When to use `agent-engram`:
 Choose `engram` for building **advanced, context-aware agents**. It is the best fit for:
 *   Agents that need to answer questions about the codebase ("Where is the authentication logic?").
 *   Workflows requiring an agent to have a deep, persistent "memory" of previous actions, decisions, and code context.
@@ -63,7 +63,7 @@ Choose `engram` for building **advanced, context-aware agents**. It is the best 
 
 ## 5. Conclusion
 
-`backlog.md`, `beads`, and `monocoque-agent-engram` represent three different points on a spectrum of agentic tooling, from simple, human-centric planning to sophisticated, agent-centric execution and context management.
+`backlog.md`, `beads`, and `agent-engram` represent three different points on a spectrum of agentic tooling, from simple, human-centric planning to sophisticated, agent-centric execution and context management.
 
 *   `backlog.md` is the **spec and planning layer**, facilitating human-agent collaboration.
 *   `beads` is the **execution layer**, providing a robust task-tracking system for autonomous agents.

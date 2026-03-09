@@ -1,9 +1,9 @@
 //! Typed error hierarchy for Engram domain operations.
 //!
 //! Errors are organized by domain: workspace (1xxx), hydration (2xxx),
-//! task (3xxx), query (4xxx), system (5xxx), config (6xxx), and
-//! code graph (7xxx). Each variant maps to a numeric error code
-//! defined in [codes].
+//! task (3xxx), query (4xxx), system (5xxx), config (6xxx),
+//! code graph (7xxx), IPC/daemon (8xxx), and installer (9xxx). Each variant
+//! maps to a numeric error code defined in [codes].
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -143,6 +143,54 @@ pub enum SystemError {
 }
 
 #[derive(Debug, Error)]
+pub enum IpcError {
+    #[error("Failed to connect to daemon IPC endpoint '{address}': {reason}")]
+    ConnectionFailed { address: String, reason: String },
+    #[error("Failed to send IPC request: {reason}")]
+    SendFailed { reason: String },
+    #[error("Failed to receive IPC response: {reason}")]
+    ReceiveFailed { reason: String },
+    #[error("IPC request timed out after {timeout_ms}ms")]
+    Timeout { timeout_ms: u64 },
+}
+
+#[derive(Debug, Error)]
+pub enum DaemonError {
+    #[error("Failed to spawn daemon process: {reason}")]
+    SpawnFailed { reason: String },
+    #[error("Daemon failed to reach Ready state within {timeout_ms}ms")]
+    NotReady { timeout_ms: u64 },
+}
+
+#[derive(Debug, Error)]
+pub enum LockError {
+    #[error("Failed to acquire daemon lockfile '{path}': {reason}")]
+    AcquisitionFailed { path: String, reason: String },
+    #[error("Daemon lock already held by PID {pid}")]
+    AlreadyHeld { pid: u32 },
+}
+
+#[derive(Debug, Error)]
+pub enum WatcherError {
+    #[error("Failed to initialize file watcher for '{path}': {reason}")]
+    InitFailed { path: String, reason: String },
+}
+
+#[derive(Debug, Error)]
+pub enum InstallError {
+    #[error("Plugin installation failed: {reason}")]
+    Failed { reason: String },
+    #[error("Plugin update failed: {reason}")]
+    UpdateFailed { reason: String },
+    #[error("Plugin uninstall failed: {reason}")]
+    UninstallFailed { reason: String },
+    #[error("Engram plugin is already installed in this workspace")]
+    AlreadyInstalled,
+    #[error("Engram plugin is not installed in this workspace")]
+    NotInstalled,
+}
+
+#[derive(Debug, Error)]
 pub enum EngramError {
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
@@ -158,6 +206,16 @@ pub enum EngramError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     CodeGraph(#[from] CodeGraphError),
+    #[error(transparent)]
+    Ipc(#[from] IpcError),
+    #[error(transparent)]
+    Daemon(#[from] DaemonError),
+    #[error(transparent)]
+    Lock(#[from] LockError),
+    #[error(transparent)]
+    Watcher(#[from] WatcherError),
+    #[error(transparent)]
+    Install(#[from] InstallError),
 }
 
 #[derive(Debug, Serialize)]
@@ -383,6 +441,97 @@ impl EngramError {
                     inner.to_string(),
                     Some(json!({ "key": key })),
                 ),
+            },
+            EngramError::Ipc(inner) => match inner {
+                IpcError::ConnectionFailed { address, .. } => (
+                    IPC_CONNECTION_FAILED,
+                    "IpcConnectionFailed",
+                    inner.to_string(),
+                    Some(json!({ "address": address })),
+                ),
+                IpcError::SendFailed { reason } => (
+                    IPC_SEND_FAILED,
+                    "IpcSendFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                IpcError::ReceiveFailed { reason } => (
+                    IPC_RECEIVE_FAILED,
+                    "IpcReceiveFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                IpcError::Timeout { timeout_ms } => (
+                    IPC_TIMEOUT,
+                    "IpcTimeout",
+                    inner.to_string(),
+                    Some(json!({ "timeout_ms": timeout_ms })),
+                ),
+            },
+            EngramError::Daemon(inner) => match inner {
+                DaemonError::SpawnFailed { reason } => (
+                    DAEMON_SPAWN_FAILED,
+                    "DaemonSpawnFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                DaemonError::NotReady { timeout_ms } => (
+                    DAEMON_NOT_READY,
+                    "DaemonNotReady",
+                    inner.to_string(),
+                    Some(json!({ "timeout_ms": timeout_ms })),
+                ),
+            },
+            EngramError::Lock(inner) => match inner {
+                LockError::AcquisitionFailed { path, .. } => (
+                    LOCK_ACQUISITION_FAILED,
+                    "LockAcquisitionFailed",
+                    inner.to_string(),
+                    Some(json!({ "path": path })),
+                ),
+                LockError::AlreadyHeld { pid } => (
+                    LOCK_ALREADY_HELD,
+                    "LockAlreadyHeld",
+                    inner.to_string(),
+                    Some(json!({ "pid": pid })),
+                ),
+            },
+            EngramError::Watcher(inner) => match inner {
+                WatcherError::InitFailed { path, .. } => (
+                    WATCHER_INIT_FAILED,
+                    "WatcherInitFailed",
+                    inner.to_string(),
+                    Some(json!({ "path": path })),
+                ),
+            },
+            EngramError::Install(inner) => match inner {
+                InstallError::Failed { reason } => (
+                    INSTALL_FAILED,
+                    "InstallFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                InstallError::UpdateFailed { reason } => (
+                    UPDATE_FAILED,
+                    "UpdateFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                InstallError::UninstallFailed { reason } => (
+                    UNINSTALL_FAILED,
+                    "UninstallFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                InstallError::AlreadyInstalled => (
+                    ALREADY_INSTALLED,
+                    "AlreadyInstalled",
+                    inner.to_string(),
+                    None,
+                ),
+                InstallError::NotInstalled => {
+                    (NOT_INSTALLED, "NotInstalled", inner.to_string(), None)
+                }
             },
             EngramError::CodeGraph(inner) => match inner {
                 CodeGraphError::ParseError {

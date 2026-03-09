@@ -10,6 +10,7 @@ use engram::errors::codes::{
     TASK_NOT_CLAIMABLE, TASK_NOT_FOUND, WORKSPACE_NOT_SET,
 };
 use engram::server::state::AppState;
+use engram::services::dehydration::SCHEMA_VERSION;
 use engram::tools;
 
 #[test]
@@ -1608,7 +1609,7 @@ async fn contract_index_workspace_rejects_while_in_progress() {
     let engram_dir = workspace.path().join(".engram");
     fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
-    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+    fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1650,7 +1651,7 @@ async fn contract_sync_workspace_rejects_while_in_progress() {
     let engram_dir = workspace.path().join(".engram");
     fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
-    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+    fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1696,7 +1697,7 @@ async fn contract_link_task_to_code_invalid_task() {
     let engram_dir = workspace.path().join(".engram");
     fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
-    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+    fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
@@ -1745,7 +1746,7 @@ async fn contract_flush_state_rejects_while_indexing() {
     let engram_dir = workspace.path().join(".engram");
     fs::create_dir_all(&engram_dir).expect("create .engram");
     fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
-    fs::write(engram_dir.join(".version"), "1.0.0").expect("write .version");
+    fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     let state = Arc::new(AppState::new(10));
     tools::dispatch(
