@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use notify_debouncer_full::{
     DebounceEventResult, Debouncer, RecommendedCache, new_debouncer,
@@ -156,7 +156,17 @@ fn make_handler(
                     continue;
                 };
 
+                debug!(
+                    event_kind = ?event.kind,
+                    path = %raw_path.display(),
+                    "watcher_event_detected"
+                );
+
                 if is_excluded(raw_path, &workspace_root, &exclude_patterns) {
+                    debug!(
+                        path = %raw_path.display(),
+                        "watcher_event_excluded"
+                    );
                     continue;
                 }
 
@@ -186,6 +196,11 @@ fn make_handler(
                 };
 
                 // Best-effort; if receiver is dropped we stop silently.
+                debug!(
+                    path = ?watcher_event.path,
+                    kind = ?watcher_event.kind,
+                    "watcher_event_sent"
+                );
                 if event_tx.send(watcher_event).is_err() {
                     break;
                 }

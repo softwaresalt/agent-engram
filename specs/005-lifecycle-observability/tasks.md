@@ -85,19 +85,19 @@
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T027 [P] [US2] Contract test: tool call emits span with tool name, workspace_id, duration (S057) in tests/contract/observability_test.rs
-- [ ] T028 [P] [US2] Contract test: get_health_report returns all expected metrics (S056) in tests/contract/observability_test.rs
-- [ ] T029 [P] [US2] Contract test: get_health_report works without workspace binding (S060) in tests/contract/observability_test.rs
+- [X] T027 [P] [US2] Contract test: tool call emits span with tool name, workspace_id, duration (S057) in tests/contract/observability_test.rs
+- [X] T028 [P] [US2] Contract test: get_health_report returns all expected metrics (S056) in tests/contract/observability_test.rs
+- [X] T029 [P] [US2] Contract test: get_health_report works without workspace binding (S060) in tests/contract/observability_test.rs
 
 ### Implementation for User Story 2
 
-- [ ] T030 [US2] Add latency tracking to AppState in src/server/state.rs — query_latencies VecDeque, tool_call_count AtomicU64, watcher_event_count AtomicU64, last_watcher_event RwLock
-- [ ] T031 [US2] Add #[instrument] tracing spans to all tool dispatch paths in src/tools/mod.rs — record tool name, workspace_id, duration
-- [ ] T032 [P] [US2] Add tracing spans to file watcher event processing in src/daemon/watcher.rs — event_detected, debounce_complete, db_update
-- [ ] T033 [P] [US2] Add tracing spans to TTL lifecycle events in src/daemon/ttl.rs — wake, sleep, expiry
-- [ ] T034 [US2] Implement get_health_report tool in src/tools/read.rs — returns version, uptime, memory, latency percentiles (p50/p95/p99), watcher status, connection count
-- [ ] T035 [US2] Register get_health_report in src/tools/mod.rs dispatch
-- [ ] T036 [US2] Implement OTLP export setup in src/server/observability.rs (behind otlp-export feature flag) — tracing-opentelemetry layer added to subscriber stack when ENGRAM_OTLP_ENDPOINT is set
+- [X] T030 [US2] Add latency tracking to AppState in src/server/state.rs — query_latencies VecDeque, tool_call_count AtomicU64, watcher_event_count AtomicU64, last_watcher_event RwLock
+- [X] T031 [US2] Add #[instrument] tracing spans to all tool dispatch paths in src/tools/mod.rs — record tool name, workspace_id, duration
+- [X] T032 [P] [US2] Add tracing spans to file watcher event processing in src/daemon/watcher.rs — event_detected, debounce_complete, db_update
+- [X] T033 [P] [US2] Add tracing spans to TTL lifecycle events in src/daemon/ttl.rs — wake, sleep, expiry
+- [X] T034 [US2] Implement get_health_report tool in src/tools/read.rs — returns version, uptime, memory, latency percentiles (p50/p95/p99), watcher status, connection count
+- [X] T035 [US2] Register get_health_report in src/tools/mod.rs dispatch
+- [X] T036 [US2] Implement OTLP export setup in src/server/observability.rs (behind otlp-export feature flag) — tracing-opentelemetry layer added to subscriber stack when ENGRAM_OTLP_ENDPOINT is set
 
 **Checkpoint**: All daemon operations emit structured trace spans, health metrics available
 

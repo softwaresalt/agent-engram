@@ -1117,3 +1117,53 @@ pub async fn impact_analysis(
         "effective_max_nodes": effective_max_nodes,
     }))
 }
+
+// ── T034: get_health_report ───────────────────────────────────────────────────
+
+/// Return a structured health report for the running daemon.
+///
+/// Does **not** require a workspace to be bound (S060) — all metrics are
+/// sourced from [`AppState`] and the host process memory via `sysinfo`.
+///
+/// # Errors
+///
+/// This function is infallible in practice but returns `Result` to satisfy
+/// the tool-dispatch contract.
+pub async fn get_health_report(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    use sysinfo::System;
+
+    let version = env!("CARGO_PKG_VERSION");
+    let uptime_secs = state.uptime_seconds();
+    let connections = state.active_connections();
+    let workspace_id = state.snapshot_workspace().await.map(|s| s.workspace_id);
+    let tool_call_count = state.tool_call_count();
+    let (p50, p95, p99) = state.latency_percentiles().await;
+    let (watcher_events, last_watcher_event) = state.watcher_stats().await;
+
+    let mut sys = System::new_all();
+    sys.refresh_memory();
+    let pid = sysinfo::get_current_pid().ok();
+    let memory_mb = pid
+        .and_then(|pid| sys.process(pid))
+        .map(|proc| proc.memory() / 1_048_576)
+        .unwrap_or(0);
+
+    Ok(json!({
+        "version": version,
+        "uptime_seconds": uptime_secs,
+        "active_connections": connections,
+        "workspace_id": workspace_id,
+        "tool_call_count": tool_call_count,
+        "latency_us": {
+            "p50": p50,
+            "p95": p95,
+            "p99": p99,
+        },
+        "memory_mb": memory_mb,
+        "watcher_events": watcher_events,
+        "last_watcher_event": last_watcher_event,
+    }))
+}
