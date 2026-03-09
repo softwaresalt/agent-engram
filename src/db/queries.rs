@@ -1759,6 +1759,23 @@ impl Queries {
         Ok(())
     }
 
+    /// Deletes a collection by its full record ID (e.g. `"collection:abc"`).
+    ///
+    /// Also removes any `contains` edges where this collection is the parent.
+    /// Used during rollback to undo a `CollectionCreated` event.
+    pub async fn delete_collection_by_id(&self, collection_id: &str) -> Result<(), EngramError> {
+        let raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id);
+        let record = Thing::from(("collection", raw));
+        self.db
+            .query("DELETE contains WHERE in = $record; DELETE $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
     // ── Collection CRUD + cycle detection (T084/T085) ──────────────────────
 
     /// Creates a new collection. Returns `Err(CollectionAlreadyExists)` if the

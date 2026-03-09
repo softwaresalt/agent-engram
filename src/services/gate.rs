@@ -94,7 +94,7 @@ pub fn sanitize_query(query: &str) -> Result<(), crate::errors::EngramError> {
 
     const WRITE_KEYWORDS: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "CREATE", "DEFINE", "REMOVE", "RELATE", "KILL", "SLEEP",
-        "THROW",
+        "THROW", "UPSERT", "ALTER", "REBUILD",
     ];
 
     // Strip string literals to avoid false positives on keywords inside quotes.

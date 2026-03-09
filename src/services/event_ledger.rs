@@ -132,9 +132,12 @@ pub async fn apply_rollback(
             EventKind::ContextCreated => {
                 queries.delete_context_by_id(&event.entity_id).await?;
             }
-            EventKind::CollectionCreated
-            | EventKind::CollectionUpdated
-            | EventKind::CollectionMembershipChanged => {
+            EventKind::CollectionCreated => {
+                // Undo creation by deleting the collection (previous_value is
+                // None for creation events, so restore_snapshot would no-op).
+                queries.delete_collection_by_id(&event.entity_id).await?;
+            }
+            EventKind::CollectionUpdated | EventKind::CollectionMembershipChanged => {
                 if let Some(prev) = event.previous_value {
                     queries
                         .restore_collection_snapshot(&event.entity_id, &prev)
