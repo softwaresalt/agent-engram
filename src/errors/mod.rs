@@ -669,7 +669,7 @@ impl EngramError {
             EngramError::Collection(inner) => match inner {
                 CollectionError::AlreadyExists { name } => (
                     COLLECTION_EXISTS,
-                    "CollectionExists",
+                    "CollectionAlreadyExists",
                     inner.to_string(),
                     Some(json!({ "name": name })),
                 ),

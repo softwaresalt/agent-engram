@@ -1547,3 +1547,166 @@ pub async fn rollback_to_event(
         "target_event_id": parsed.event_id,
     }))
 }
+
+// ── Collection Write Tools (T086–T088) ────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateCollectionParams {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AddToCollectionParams {
+    collection_id: String,
+    member_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RemoveFromCollectionParams {
+    collection_id: String,
+    member_ids: Vec<String>,
+}
+
+/// Create a named collection for grouping tasks and sub-collections.
+///
+/// Returns `COLLECTION_EXISTS` (3030) if a collection with the same name
+/// already exists in this workspace.
+#[tracing::instrument(name = "tool.create_collection", skip(state, params))]
+pub async fn create_collection(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: CreateCollectionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    if parsed.name.trim().is_empty() {
+        return Err(EngramError::System(SystemError::InvalidParams {
+            reason: "name must not be empty".to_string(),
+        }));
+    }
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+    let collection = queries
+        .create_collection(&parsed.name, parsed.description.as_deref())
+        .await?;
+
+    let max_events = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::CollectionCreated,
+        "collection",
+        &collection.id,
+        None,
+        serde_json::to_value(&collection).ok(),
+        "mcp-tool",
+        max_events,
+    )
+    .await
+    {
+        tracing::warn!("event recording failed: {e}");
+    }
+
+    Ok(json!({
+        "collection_id": collection.id,
+        "name": collection.name,
+        "description": collection.description,
+        "created_at": collection.created_at.to_rfc3339(),
+    }))
+}
+
+/// Add tasks or sub-collections to an existing collection.
+///
+/// Checks cycle safety before creating any `contains` edges. Returns
+/// `CYCLIC_COLLECTION` (3032) if adding would create a cycle.
+#[tracing::instrument(name = "tool.add_to_collection", skip(state, params))]
+pub async fn add_to_collection(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: AddToCollectionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    // Verify the target collection exists.
+    queries
+        .get_collection_by_id(&parsed.collection_id)
+        .await?
+        .ok_or_else(|| {
+            EngramError::Collection(crate::errors::CollectionError::NotFound {
+                name: parsed.collection_id.clone(),
+            })
+        })?;
+
+    // Guard against cyclic nesting (collection members only).
+    for member_id in &parsed.member_ids {
+        if member_id.starts_with("collection:")
+            && queries
+                .check_collection_cycle(&parsed.collection_id, member_id)
+                .await?
+        {
+            return Err(EngramError::Collection(
+                crate::errors::CollectionError::CyclicCollection {
+                    name: member_id.clone(),
+                },
+            ));
+        }
+    }
+
+    let (added, already) = queries
+        .add_collection_members(&parsed.collection_id, &parsed.member_ids)
+        .await?;
+
+    Ok(json!({
+        "collection_id": parsed.collection_id,
+        "added": added,
+        "already_members": already,
+    }))
+}
+
+/// Remove tasks or sub-collections from a collection.
+///
+/// Non-member IDs are counted in `not_members` and silently skipped.
+#[tracing::instrument(name = "tool.remove_from_collection", skip(state, params))]
+pub async fn remove_from_collection(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: RemoveFromCollectionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let (removed, not_member) = queries
+        .remove_collection_members(&parsed.collection_id, &parsed.member_ids)
+        .await?;
+
+    Ok(json!({
+        "collection_id": parsed.collection_id,
+        "removed": removed,
+        "not_members": not_member,
+    }))
+}

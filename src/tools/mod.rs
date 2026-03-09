@@ -104,6 +104,10 @@ pub async fn dispatch(
         "get_event_history" => read::get_event_history(state.clone(), params).await,
         "rollback_to_event" => write::rollback_to_event(state.clone(), params).await,
         "query_graph" => read::query_graph(state.clone(), params).await,
+        "create_collection" => write::create_collection(state.clone(), params).await,
+        "add_to_collection" => write::add_to_collection(state.clone(), params).await,
+        "remove_from_collection" => write::remove_from_collection(state.clone(), params).await,
+        "get_collection_context" => read::get_collection_context(state.clone(), params).await,
         _ => Err(not_implemented(method)),
     };
 

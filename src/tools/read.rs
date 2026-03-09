@@ -1307,3 +1307,71 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
         }
     }
 }
+
+// ── get_collection_context (T089) ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetCollectionContextParams {
+    collection_id: String,
+    #[serde(default)]
+    status_filter: Option<String>,
+}
+
+/// Retrieve all tasks within a collection hierarchy (BFS, optional status filter).
+///
+/// Traverses `contains` edges recursively from the given collection, collecting
+/// tasks at every depth. An optional `status_filter` narrows results to tasks
+/// whose status string matches exactly (e.g. `"in_progress"`).
+///
+/// Returns `COLLECTION_NOT_FOUND` (3031) when the ID does not exist.
+#[tracing::instrument(name = "tool.get_collection_context", skip(state, params))]
+pub async fn get_collection_context(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: GetCollectionContextParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let collection = queries
+        .get_collection_by_id(&parsed.collection_id)
+        .await?
+        .ok_or_else(|| {
+            EngramError::Collection(crate::errors::CollectionError::NotFound {
+                name: parsed.collection_id.clone(),
+            })
+        })?;
+
+    let tasks = queries
+        .list_collection_members_recursive(&parsed.collection_id, parsed.status_filter.as_deref())
+        .await?;
+
+    let task_count = tasks.len() as u64;
+    let task_json: Vec<Value> = tasks
+        .into_iter()
+        .map(|t| {
+            json!({
+                "id": format!("task:{}", t.id),
+                "title": t.title,
+                "status": t.status.as_str(),
+                "priority": t.priority,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "collection_id": collection.id,
+        "name": collection.name,
+        "description": collection.description,
+        "task_count": task_count,
+        "tasks": task_json,
+        "sub_collections": [],
+    }))
+}

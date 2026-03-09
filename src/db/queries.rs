@@ -200,6 +200,29 @@ impl CommentRow {
     }
 }
 
+/// Internal row type for deserializing collection records from SurrealDB.
+#[derive(Deserialize)]
+struct CollectionRow {
+    id: Thing,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl CollectionRow {
+    fn into_collection(self) -> crate::models::Collection {
+        crate::models::Collection {
+            id: format!("collection:{}", self.id.id.to_raw()),
+            name: self.name,
+            description: self.description,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
 /// Internal row type for deserializing event records from SurrealDB.
 ///
 /// SurrealDB returns `id` as a `Thing`; `kind` is stored as a snake_case
@@ -280,6 +303,38 @@ pub struct WorkspaceStatistics {
 impl Queries {
     pub fn new(db: Db) -> Self {
         Self { db }
+    }
+
+    /// Upsert a collection record, idempotent for re-hydration.
+    ///
+    /// Unlike [`create_collection`](Self::create_collection), this does **not**
+    /// check for name uniqueness — it unconditionally upserts by ID. Intended
+    /// exclusively for hydration from `.engram/collections.md`.
+    pub async fn upsert_collection(
+        &self,
+        collection: &crate::models::Collection,
+    ) -> Result<(), EngramError> {
+        let raw_id = collection
+            .id
+            .strip_prefix("collection:")
+            .unwrap_or(&collection.id);
+        let record = Thing::from(("collection", raw_id));
+        self.db
+            .query(
+                "UPSERT $id SET \
+                 name = $name, \
+                 description = $desc, \
+                 created_at = $created_at, \
+                 updated_at = $updated_at",
+            )
+            .bind(("id", record))
+            .bind(("name", collection.name.clone()))
+            .bind(("desc", collection.description.clone()))
+            .bind(("created_at", collection.created_at))
+            .bind(("updated_at", collection.updated_at))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 
     /// Insert or update a task record using last-write-wins semantics (US5/T093).
@@ -1702,6 +1757,355 @@ impl Queries {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+
+    // ── Collection CRUD + cycle detection (T084/T085) ──────────────────────
+
+    /// Creates a new collection. Returns `Err(CollectionAlreadyExists)` if the
+    /// name is already taken within this workspace.
+    pub async fn create_collection(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<crate::models::Collection, EngramError> {
+        use crate::errors::CollectionError;
+
+        let name_owned = name.to_string();
+        let desc_owned: Option<String> = description.map(str::to_string);
+
+        // Uniqueness guard (the UNIQUE index would also reject duplicates, but
+        // we surface a typed error so the MCP response is meaningful).
+        let existing: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM collection WHERE name = $name")
+            .bind(("name", name_owned.clone()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        if !existing.is_empty() {
+            return Err(EngramError::Collection(CollectionError::AlreadyExists {
+                name: name_owned,
+            }));
+        }
+
+        let id_raw = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let record = Thing::from(("collection", id_raw.as_str()));
+        let now = chrono::Utc::now();
+
+        self.db
+            .query(
+                "CREATE $id SET \
+                 name = $name, \
+                 description = $desc, \
+                 created_at = $now, \
+                 updated_at = $now",
+            )
+            .bind(("id", record))
+            .bind(("name", name_owned.clone()))
+            .bind(("desc", desc_owned.clone()))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(crate::models::Collection {
+            id: format!("collection:{id_raw}"),
+            name: name_owned,
+            description: desc_owned,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Gets a collection by name. Returns `None` when no collection with that
+    /// name exists.
+    pub async fn get_collection_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::models::Collection>, EngramError> {
+        let name_owned = name.to_string();
+        let rows: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM collection WHERE name = $name")
+            .bind(("name", name_owned))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(CollectionRow::into_collection))
+    }
+
+    /// Gets a collection by its raw or prefixed ID (e.g. `"collection:abc"` or
+    /// just `"abc"`).
+    pub async fn get_collection_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::Collection>, EngramError> {
+        let raw_id = id.strip_prefix("collection:").unwrap_or(id).to_string();
+        let record = Thing::from(("collection", raw_id.as_str()));
+        let rows: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(CollectionRow::into_collection))
+    }
+
+    /// Lists all collections ordered by name.
+    pub async fn list_collections(&self) -> Result<Vec<crate::models::Collection>, EngramError> {
+        let rows: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM collection ORDER BY name")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(CollectionRow::into_collection)
+            .collect())
+    }
+
+    /// Adds member IDs (task or collection) to a collection via `contains`
+    /// relation edges. Returns `(added_count, already_member_count)`.
+    pub async fn add_collection_members(
+        &self,
+        collection_id: &str,
+        member_ids: &[String],
+    ) -> Result<(usize, usize), EngramError> {
+        #[derive(Deserialize)]
+        struct ExistsRow {
+            #[allow(dead_code)]
+            id: Thing,
+        }
+
+        let coll_raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id)
+            .to_string();
+        let from = Thing::from(("collection", coll_raw.as_str()));
+        let mut added = 0usize;
+        let mut already = 0usize;
+
+        for member_id in member_ids {
+            let (table, raw_id): (&str, &str) = if let Some(raw) = member_id.strip_prefix("task:") {
+                ("task", raw)
+            } else if let Some(raw) = member_id.strip_prefix("collection:") {
+                ("collection", raw)
+            } else {
+                ("task", member_id.as_str())
+            };
+            let to = Thing::from((table, raw_id));
+
+            let existing: Vec<ExistsRow> = self
+                .db
+                .query("SELECT id FROM contains WHERE in = $from AND out = $to")
+                .bind(("from", from.clone()))
+                .bind(("to", to.clone()))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            if existing.is_empty() {
+                self.db
+                    .query("RELATE $from->contains->$to SET added_at = time::now()")
+                    .bind(("from", from.clone()))
+                    .bind(("to", to))
+                    .await
+                    .map_err(map_db_err)?;
+                added += 1;
+            } else {
+                already += 1;
+            }
+        }
+
+        Ok((added, already))
+    }
+
+    /// Removes members from a collection by deleting their `contains` edges.
+    /// Returns `(removed_count, not_member_count)`.
+    pub async fn remove_collection_members(
+        &self,
+        collection_id: &str,
+        member_ids: &[String],
+    ) -> Result<(usize, usize), EngramError> {
+        #[derive(Deserialize)]
+        struct EdgeRow {
+            id: Thing,
+        }
+
+        let coll_raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id)
+            .to_string();
+        let from = Thing::from(("collection", coll_raw.as_str()));
+        let mut removed = 0usize;
+        let mut not_member = 0usize;
+
+        for member_id in member_ids {
+            let (table, raw_id): (&str, &str) = if let Some(raw) = member_id.strip_prefix("task:") {
+                ("task", raw)
+            } else if let Some(raw) = member_id.strip_prefix("collection:") {
+                ("collection", raw)
+            } else {
+                ("task", member_id.as_str())
+            };
+            let to = Thing::from((table, raw_id));
+
+            let edges: Vec<EdgeRow> = self
+                .db
+                .query("SELECT id FROM contains WHERE in = $from AND out = $to")
+                .bind(("from", from.clone()))
+                .bind(("to", to))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            if edges.is_empty() {
+                not_member += 1;
+            } else {
+                for edge in edges {
+                    self.db
+                        .query("DELETE $edge")
+                        .bind(("edge", edge.id))
+                        .await
+                        .map_err(map_db_err)?;
+                    removed += 1;
+                }
+            }
+        }
+
+        Ok((removed, not_member))
+    }
+
+    /// Recursively retrieves all tasks inside a collection and its sub-collections.
+    ///
+    /// Uses BFS to avoid stack overflow on deep hierarchies. An optional
+    /// `status_filter` narrows results to tasks whose `status` matches.
+    pub async fn list_collection_members_recursive(
+        &self,
+        collection_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<crate::models::task::Task>, EngramError> {
+        use std::collections::VecDeque;
+
+        #[derive(Deserialize)]
+        struct MemberRow {
+            out: Thing,
+        }
+
+        let mut visited_collections: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        let mut tasks: Vec<crate::models::task::Task> = Vec::new();
+
+        let start_raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id)
+            .to_string();
+        queue.push_back(start_raw);
+
+        while let Some(coll_raw) = queue.pop_front() {
+            if !visited_collections.insert(coll_raw.clone()) {
+                continue;
+            }
+            let from = Thing::from(("collection", coll_raw.as_str()));
+
+            let members: Vec<MemberRow> = self
+                .db
+                .query("SELECT out FROM contains WHERE in = $from")
+                .bind(("from", from))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            for member in members {
+                let member_table = member.out.tb.clone();
+                let member_raw = member.out.id.to_raw();
+                match member_table.as_str() {
+                    "task" => {
+                        if let Some(task) = self.get_task(&member_raw).await? {
+                            if let Some(status) = status_filter {
+                                if task.status.as_str() != status {
+                                    continue;
+                                }
+                            }
+                            tasks.push(task);
+                        }
+                    }
+                    "collection" => queue.push_back(member_raw),
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(tasks)
+    }
+
+    /// Returns `true` if nesting `child_id` inside `parent_id` would create a
+    /// cycle in the collection graph.
+    ///
+    /// A cycle exists when `parent_id` is reachable from `child_id` via
+    /// `contains` edges (i.e. `child_id` is already an ancestor of `parent_id`).
+    pub async fn check_collection_cycle(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<bool, EngramError> {
+        use std::collections::VecDeque;
+
+        #[derive(Deserialize)]
+        struct MemberRow {
+            out: Thing,
+        }
+
+        if parent_id == child_id {
+            return Ok(true);
+        }
+
+        let parent_raw = parent_id
+            .strip_prefix("collection:")
+            .unwrap_or(parent_id)
+            .to_string();
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::from([child_id
+            .strip_prefix("collection:")
+            .unwrap_or(child_id)
+            .to_string()]);
+
+        while let Some(node) = queue.pop_front() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            if node == parent_raw {
+                return Ok(true);
+            }
+
+            let from = Thing::from(("collection", node.as_str()));
+
+            let members: Vec<MemberRow> = self
+                .db
+                .query("SELECT out FROM contains WHERE in = $from")
+                .bind(("from", from))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            for m in members {
+                if m.out.tb == "collection" {
+                    queue.push_back(m.out.id.to_raw());
+                }
+            }
+        }
+
+        Ok(false)
     }
 }
 

@@ -198,26 +198,26 @@
 
 ### Tests for User Story 5 ⚠️
 
-- [ ] T076 [P] [US5] Contract test: create_collection succeeds (S044) in tests/contract/collection_test.rs
-- [ ] T077 [P] [US5] Contract test: duplicate collection name rejected (S045) in tests/contract/collection_test.rs
-- [ ] T078 [P] [US5] Contract test: add_to_collection creates contains edges (S046) in tests/contract/collection_test.rs
-- [ ] T079 [P] [US5] Contract test: recursive context retrieval (S048) in tests/contract/collection_test.rs
-- [ ] T080 [P] [US5] Contract test: collection context with status filter (S049) in tests/contract/collection_test.rs
-- [ ] T081 [P] [US5] Contract test: cyclic collection nesting rejected (S053) in tests/contract/collection_test.rs
-- [ ] T082 [P] [US5] Contract test: remove_from_collection removes contains edges (S051) in tests/contract/collection_test.rs
-- [ ] T083 [P] [US5] Contract test: collection_not_found error (S054) in tests/contract/collection_test.rs
+- [x] T076 [P] [US5] Contract test: create_collection succeeds (S044) in tests/contract/collection_test.rs
+- [x] T077 [P] [US5] Contract test: duplicate collection name rejected (S045) in tests/contract/collection_test.rs
+- [x] T078 [P] [US5] Contract test: add_to_collection creates contains edges (S046) in tests/contract/collection_test.rs
+- [x] T079 [P] [US5] Contract test: recursive context retrieval (S048) in tests/contract/collection_test.rs
+- [x] T080 [P] [US5] Contract test: collection context with status filter (S049) in tests/contract/collection_test.rs
+- [x] T081 [P] [US5] Contract test: cyclic collection nesting rejected (S053) in tests/contract/collection_test.rs
+- [x] T082 [P] [US5] Contract test: remove_from_collection removes contains edges (S051) in tests/contract/collection_test.rs
+- [x] T083 [P] [US5] Contract test: collection_not_found error (S054) in tests/contract/collection_test.rs
 
 ### Implementation for User Story 5
 
-- [ ] T084 [US5] Implement collection CRUD queries in src/db/queries.rs — create_collection, get_collection, add_member, remove_member, list_members_recursive
-- [ ] T085 [US5] Implement collection cycle detection in src/db/queries.rs — check_collection_cycle
-- [ ] T086 [US5] Implement create_collection tool in src/tools/write.rs
-- [ ] T087 [US5] Implement add_to_collection tool in src/tools/write.rs
-- [ ] T088 [US5] Implement remove_from_collection tool in src/tools/write.rs
-- [ ] T089 [US5] Implement get_collection_context tool in src/tools/read.rs — recursive traversal with optional filters
-- [ ] T090 [US5] Register all collection tools in src/tools/mod.rs dispatch
-- [ ] T091 [US5] Add collection dehydration to src/services/dehydration.rs — serialize to .engram/collections.md
-- [ ] T092 [US5] Add collection hydration to src/services/hydration.rs — parse from .engram/collections.md
+- [x] T084 [US5] Implement collection CRUD queries in src/db/queries.rs — create_collection, get_collection, add_member, remove_member, list_members_recursive
+- [x] T085 [US5] Implement collection cycle detection in src/db/queries.rs — check_collection_cycle
+- [x] T086 [US5] Implement create_collection tool in src/tools/write.rs
+- [x] T087 [US5] Implement add_to_collection tool in src/tools/write.rs
+- [x] T088 [US5] Implement remove_from_collection tool in src/tools/write.rs
+- [x] T089 [US5] Implement get_collection_context tool in src/tools/read.rs — recursive traversal with optional filters
+- [x] T090 [US5] Register all collection tools in src/tools/mod.rs dispatch
+- [x] T091 [US5] Add collection dehydration to src/services/dehydration.rs — serialize to .engram/collections.md
+- [x] T092 [US5] Add collection hydration to src/services/hydration.rs — parse from .engram/collections.md
 
 **Checkpoint**: Collections working with full recursive context retrieval
 

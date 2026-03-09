@@ -196,6 +196,135 @@ pub async fn hydrate_into_db(
     })
 }
 
+// ── Collection hydration (T092) ───────────────────────────────────────────────
+
+/// Load collections from `.engram/collections.md` into the database.
+///
+/// Parses the Markdown format written by
+/// [`dehydrate_collections`](crate::services::dehydration::dehydrate_collections)
+/// and upserts each collection. Missing collection IDs cause the collection to
+/// be skipped (corrupt line). Returns the number of collections successfully
+/// loaded.
+///
+/// Returns `Ok(0)` when the file does not exist (first run or no collections).
+pub async fn hydrate_collections(path: &Path, queries: &Queries) -> Result<usize, EngramError> {
+    let collections_path = path.join(".engram").join("collections.md");
+
+    if !tokio::fs::try_exists(&collections_path)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(0);
+    }
+
+    let content = tokio::fs::read_to_string(&collections_path)
+        .await
+        .map_err(|e| {
+            EngramError::Hydration(HydrationError::Failed {
+                reason: format!("failed to read collections.md: {e}"),
+            })
+        })?;
+
+    let parsed = parse_collections_md(&content);
+    let mut loaded = 0usize;
+
+    for pc in &parsed {
+        // Use UPSERT so re-hydration is idempotent.
+        let result = upsert_collection(queries, pc).await;
+        match result {
+            Ok(()) => loaded += 1,
+            Err(e) => {
+                tracing::warn!(
+                    collection_name = %pc.name,
+                    "skipping corrupt collection during hydration: {e}"
+                );
+            }
+        }
+    }
+
+    Ok(loaded)
+}
+
+/// A collection parsed from `collections.md`.
+#[derive(Debug, Clone)]
+struct ParsedCollection {
+    name: String,
+    id: Option<String>,
+    description: Option<String>,
+    created_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
+}
+
+/// Parse the `collections.md` format into a list of [`ParsedCollection`]s.
+fn parse_collections_md(content: &str) -> Vec<ParsedCollection> {
+    let mut collections: Vec<ParsedCollection> = Vec::new();
+    let mut current: Option<ParsedCollection> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+
+        // `## Name` starts a new collection section.
+        if let Some(name) = line.strip_prefix("## ") {
+            if let Some(c) = current.take() {
+                collections.push(c);
+            }
+            current = Some(ParsedCollection {
+                name: name.trim().to_string(),
+                id: None,
+                description: None,
+                created_at: None,
+                updated_at: None,
+            });
+            continue;
+        }
+
+        // Parse `- **key**: value` list items.
+        if let Some(rest) = line.strip_prefix("- **") {
+            if let Some((key, value)) = rest.split_once("**: ") {
+                if let Some(ref mut c) = current {
+                    match key {
+                        "id" => c.id = Some(value.trim().to_string()),
+                        "description" => c.description = Some(value.trim().to_string()),
+                        "created_at" => {
+                            c.created_at = value.trim().parse::<DateTime<Utc>>().ok();
+                        }
+                        "updated_at" => {
+                            c.updated_at = value.trim().parse::<DateTime<Utc>>().ok();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(c) = current {
+        collections.push(c);
+    }
+
+    collections
+}
+
+/// Upsert a single parsed collection into the database.
+async fn upsert_collection(queries: &Queries, pc: &ParsedCollection) -> Result<(), EngramError> {
+    let Some(ref full_id) = pc.id else {
+        return Err(EngramError::Hydration(HydrationError::Failed {
+            reason: format!("collection '{}' has no id field", pc.name),
+        }));
+    };
+
+    let now = chrono::Utc::now();
+    let collection = crate::models::Collection {
+        id: full_id.clone(),
+        name: pc.name.clone(),
+        description: pc.description.clone(),
+        created_at: pc.created_at.unwrap_or(now),
+        updated_at: pc.updated_at.unwrap_or(now),
+    };
+
+    queries.upsert_collection(&collection).await
+}
+
 /// Perform corruption recovery: delete DB state and re-hydrate from files.
 ///
 /// Called when DB is suspected corrupt. Clears all task and edge data,
