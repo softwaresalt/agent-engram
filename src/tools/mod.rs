@@ -103,6 +103,7 @@ pub async fn dispatch(
         "get_health_report" => read::get_health_report(state.clone(), params).await,
         "get_event_history" => read::get_event_history(state.clone(), params).await,
         "rollback_to_event" => write::rollback_to_event(state.clone(), params).await,
+        "query_graph" => read::query_graph(state.clone(), params).await,
         _ => Err(not_implemented(method)),
     };
 

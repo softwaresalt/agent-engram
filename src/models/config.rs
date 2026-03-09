@@ -39,6 +39,17 @@ pub struct WorkspaceConfig {
     /// or the `ENGRAM_ALLOW_AGENT_ROLLBACK` environment variable.
     #[serde(default)]
     pub allow_agent_rollback: bool,
+    /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).
+    ///
+    /// Queries that exceed this limit are cancelled with a `QUERY_TIMEOUT` error.
+    #[serde(default = "default_query_timeout_ms")]
+    pub query_timeout_ms: u64,
+    /// Maximum number of rows returned by a single sandboxed graph query.
+    ///
+    /// Results beyond this limit are truncated and the response sets
+    /// `"truncated": true`.
+    #[serde(default = "default_query_row_limit")]
+    pub query_row_limit: usize,
 }
 
 impl Default for WorkspaceConfig {
@@ -52,6 +63,8 @@ impl Default for WorkspaceConfig {
             code_graph: CodeGraphConfig::default(),
             event_ledger_max: default_event_ledger_max(),
             allow_agent_rollback: false,
+            query_timeout_ms: default_query_timeout_ms(),
+            query_row_limit: default_query_row_limit(),
         }
     }
 }
@@ -102,6 +115,14 @@ fn default_priority() -> String {
 
 const fn default_event_ledger_max() -> usize {
     500
+}
+
+const fn default_query_timeout_ms() -> u64 {
+    5_000
+}
+
+const fn default_query_row_limit() -> usize {
+    1_000
 }
 
 const fn default_threshold_days() -> u32 {

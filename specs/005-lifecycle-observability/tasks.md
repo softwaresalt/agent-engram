@@ -168,23 +168,23 @@
 
 ### Tests for User Story 4 ⚠️
 
-- [ ] T062 [P] [US4] Contract test: SELECT query returns correct results (S031) in tests/contract/query_test.rs
-- [ ] T063 [P] [US4] Contract test: graph traversal query returns correct results (S032) in tests/contract/query_test.rs
-- [ ] T064 [P] [US4] Contract test: INSERT query rejected (S033) in tests/contract/query_test.rs
-- [ ] T065 [P] [US4] Contract test: DELETE query rejected (S034) in tests/contract/query_test.rs
-- [ ] T066 [P] [US4] Contract test: UPDATE query rejected (S035) in tests/contract/query_test.rs
-- [ ] T067 [P] [US4] Contract test: DEFINE statement rejected (S041) in tests/contract/query_test.rs
-- [ ] T068 [P] [US4] Contract test: RELATE statement rejected (S042) in tests/contract/query_test.rs
-- [ ] T069 [P] [US4] Contract test: invalid syntax returns QUERY_INVALID (S038) in tests/contract/query_test.rs
-- [ ] T070 [P] [US4] Contract test: non-existent table returns empty result (S039) in tests/contract/query_test.rs
-- [ ] T071 [P] [US4] Contract test: row limit enforced (S037) in tests/contract/query_test.rs
-- [ ] T072 [P] [US4] Contract test: query without workspace returns WORKSPACE_NOT_SET (S043) in tests/contract/query_test.rs
+- [X] T062 [P] [US4] Contract test: SELECT query returns correct results (S031) in tests/contract/query_test.rs
+- [X] T063 [P] [US4] Contract test: graph traversal query returns correct results (S032) in tests/contract/query_test.rs
+- [X] T064 [P] [US4] Contract test: INSERT query rejected (S033) in tests/contract/query_test.rs
+- [X] T065 [P] [US4] Contract test: DELETE query rejected (S034) in tests/contract/query_test.rs
+- [X] T066 [P] [US4] Contract test: UPDATE query rejected (S035) in tests/contract/query_test.rs
+- [X] T067 [P] [US4] Contract test: DEFINE statement rejected (S041) in tests/contract/query_test.rs
+- [X] T068 [P] [US4] Contract test: RELATE statement rejected (S042) in tests/contract/query_test.rs
+- [X] T069 [P] [US4] Contract test: invalid syntax returns QUERY_INVALID (S038) in tests/contract/query_test.rs
+- [X] T070 [P] [US4] Contract test: non-existent table returns empty result (S039) in tests/contract/query_test.rs
+- [X] T071 [P] [US4] Contract test: row limit enforced (S037) in tests/contract/query_test.rs
+- [X] T072 [P] [US4] Contract test: query without workspace returns WORKSPACE_NOT_SET (S043) in tests/contract/query_test.rs
 
 ### Implementation for User Story 4
 
-- [ ] T073 [US4] Implement query sanitizer in src/services/gate.rs — word-boundary keyword blocklist validation (INSERT, UPDATE, DELETE, CREATE, DEFINE, REMOVE, RELATE, KILL, SLEEP, THROW); MUST use word-boundary detection and MUST NOT match keywords inside quoted string literals
-- [ ] T074 [US4] Implement query_graph tool in src/tools/read.rs — sanitize, execute with timeout, enforce row limit, return results
-- [ ] T075 [US4] Register query_graph in src/tools/mod.rs dispatch
+- [X] T073 [US4] Implement query sanitizer in src/services/gate.rs — word-boundary keyword blocklist validation (INSERT, UPDATE, DELETE, CREATE, DEFINE, REMOVE, RELATE, KILL, SLEEP, THROW); MUST use word-boundary detection and MUST NOT match keywords inside quoted string literals
+- [X] T074 [US4] Implement query_graph tool in src/tools/read.rs — sanitize, execute with timeout, enforce row limit, return results
+- [X] T075 [US4] Register query_graph in src/tools/mod.rs dispatch
 
 **Checkpoint**: Agents can query workspace graph with full sandboxing
 

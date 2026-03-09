@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 use crate::db::connect_db;
 use crate::db::queries::{CodeGraphQueries, Queries, ReadyWorkParams, SymbolFilter};
 use crate::errors::{
-    CodeGraphError, EngramError, QueryError, SystemError, TaskError, WorkspaceError,
+    CodeGraphError, EngramError, GraphQueryError, QueryError, SystemError, TaskError,
+    WorkspaceError,
 };
 use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
@@ -1219,4 +1220,90 @@ pub async fn get_event_history(
         "total_count": total,
         "limit": parsed.limit,
     }))
+}
+
+// ── query_graph (T074) ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct QueryGraphParams {
+    query: String,
+    /// Reserved for future parameterised queries; accepted but not yet used.
+    #[serde(default)]
+    #[allow(dead_code)]
+    params: Option<serde_json::Value>,
+}
+
+/// Execute a sandboxed read-only SurrealQL query against the workspace graph.
+///
+/// The query is sanitised by [`crate::services::gate::sanitize_query`] before
+/// execution; any write keyword causes an immediate `QUERY_REJECTED` (4010)
+/// error. Execution is bounded by `query_timeout_ms` from [`WorkspaceConfig`]
+/// and results are capped at `query_row_limit` rows, with a `"truncated"` flag
+/// when the cap is applied.
+#[tracing::instrument(name = "tool.query_graph", skip(state, params))]
+pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    use std::time::Instant;
+
+    use crate::services::gate::sanitize_query;
+
+    let ws_id = workspace_id(&state).await?;
+
+    let parsed: QueryGraphParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    if parsed.query.trim().is_empty() {
+        return Err(EngramError::Query(QueryError::QueryEmpty));
+    }
+
+    // Sanitize: reject write operations before touching the DB.
+    sanitize_query(&parsed.query)?;
+
+    // Pull per-workspace limits (fall back to safe defaults if no config is loaded).
+    let (timeout_ms, row_limit) = state
+        .workspace_config()
+        .await
+        .map_or((5_000_u64, 1_000_usize), |c| {
+            (c.query_timeout_ms, c.query_row_limit)
+        });
+
+    let db = connect_db(&ws_id).await?;
+    let start = Instant::now();
+
+    let timed = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        db.query(&parsed.query),
+    )
+    .await;
+
+    match timed {
+        Err(_elapsed) => Err(EngramError::GraphQuery(GraphQueryError::Timeout {
+            timeout_ms,
+        })),
+        Ok(Err(e)) => Err(EngramError::GraphQuery(GraphQueryError::Invalid {
+            reason: e.to_string(),
+        })),
+        Ok(Ok(mut response)) => {
+            let rows: Vec<serde_json::Value> = response.take(0).map_err(|e| {
+                EngramError::GraphQuery(GraphQueryError::Invalid {
+                    reason: e.to_string(),
+                })
+            })?;
+
+            let truncated = rows.len() > row_limit;
+            let returned_rows: Vec<serde_json::Value> = rows.into_iter().take(row_limit).collect();
+            let row_count = returned_rows.len() as u64;
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            Ok(json!({
+                "rows": returned_rows,
+                "row_count": row_count,
+                "truncated": truncated,
+                "elapsed_ms": elapsed_ms,
+            }))
+        }
+    }
 }

@@ -1480,9 +1480,7 @@ impl Queries {
         }
         let rows: Vec<IdRow> = self
             .db
-            .query(
-                "SELECT id, created_at FROM event ORDER BY created_at ASC LIMIT $n",
-            )
+            .query("SELECT id, created_at FROM event ORDER BY created_at ASC LIMIT $n")
             .bind(("n", n))
             .await
             .map_err(map_db_err)?
