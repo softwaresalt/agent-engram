@@ -34,13 +34,13 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T007 Define Event model struct and EventKind enum in src/models/event.rs per data-model.md
-- [ ] T008 [P] Define Collection model struct in src/models/collection.rs per data-model.md
-- [ ] T009 Add SurrealDB schema for `event` table to src/db/schema.rs (fields: kind, entity_table, entity_id, previous_value, new_value, source_client, created_at; indexes: event_created, event_entity, event_kind)
-- [ ] T010 [P] Add SurrealDB schema for `collection` table to src/db/schema.rs (fields: name, description, created_at, updated_at; index: collection_name UNIQUE)
-- [ ] T011 [P] Add SurrealDB schema for `contains` relation table to src/db/schema.rs (field: added_at)
-- [ ] T012 Register new schema definitions in src/db/mod.rs ensure_schema function
-- [ ] T013 [P] Add proptest round-trip tests for Event and Collection serialization in tests/unit/proptest_events.rs
+- [X] T007 Define Event model struct and EventKind enum in src/models/event.rs per data-model.md
+- [X] T008 [P] Define Collection model struct in src/models/collection.rs per data-model.md
+- [X] T009 Add SurrealDB schema for `event` table to src/db/schema.rs (fields: kind, entity_table, entity_id, previous_value, new_value, source_client, created_at; indexes: event_created, event_entity, event_kind)
+- [X] T010 [P] Add SurrealDB schema for `collection` table to src/db/schema.rs (fields: name, description, created_at, updated_at; index: collection_name UNIQUE)
+- [X] T011 [P] Add SurrealDB schema for `contains` relation table to src/db/schema.rs (field: added_at)
+- [X] T012 Register new schema definitions in src/db/mod.rs ensure_schema function
+- [X] T013 [P] Add proptest round-trip tests for Event and Collection serialization in tests/unit/proptest_events.rs
 
 **Checkpoint**: Schema and models ready — user story implementation can begin
 

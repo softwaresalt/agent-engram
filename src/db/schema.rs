@@ -180,3 +180,44 @@ DEFINE FIELD OVERWRITE created_at ON TABLE concerns TYPE datetime DEFAULT time::
 
 /// Schema version constant for `.engram/.version` file.
 pub const SCHEMA_VERSION: &str = "2.0.0";
+
+/// Event ledger table — append-only record of all state-modifying operations.
+///
+/// Events are immutable after creation. Pruning removes the oldest events when
+/// the ledger exceeds `config.event_ledger_max`.
+pub const DEFINE_EVENT: &str = r#"
+DEFINE TABLE IF NOT EXISTS event SCHEMAFULL;
+DEFINE FIELD OVERWRITE kind ON TABLE event TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE entity_table ON TABLE event TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE entity_id ON TABLE event TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE previous_value ON TABLE event TYPE option<object>;
+DEFINE FIELD OVERWRITE new_value ON TABLE event TYPE option<object>;
+DEFINE FIELD OVERWRITE source_client ON TABLE event TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE created_at ON TABLE event TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS event_created ON TABLE event COLUMNS created_at;
+DEFINE INDEX IF NOT EXISTS event_entity ON TABLE event COLUMNS entity_table, entity_id;
+DEFINE INDEX IF NOT EXISTS event_kind ON TABLE event COLUMNS kind;
+"#;
+
+/// Collection table — named groupings of tasks and sub-collections.
+///
+/// Collection names must be unique within a workspace. Members are linked
+/// via the `contains` relation table.
+pub const DEFINE_COLLECTION: &str = r#"
+DEFINE TABLE IF NOT EXISTS collection SCHEMAFULL;
+DEFINE FIELD OVERWRITE name ON TABLE collection TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE description ON TABLE collection TYPE option<string>;
+DEFINE FIELD OVERWRITE created_at ON TABLE collection TYPE datetime DEFAULT time::now();
+DEFINE FIELD OVERWRITE updated_at ON TABLE collection TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS collection_name ON TABLE collection COLUMNS name UNIQUE;
+"#;
+
+/// Contains relation table — links collections to their member tasks or sub-collections.
+///
+/// The `in` record must be a `collection`; the `out` record may be either a
+/// `task` or another `collection`. Cycle detection prevents a collection from
+/// appearing as a descendant of itself.
+pub const DEFINE_CONTAINS: &str = r#"
+DEFINE TABLE IF NOT EXISTS contains SCHEMALESS TYPE RELATION;
+DEFINE FIELD OVERWRITE added_at ON TABLE contains TYPE datetime DEFAULT time::now();
+"#;
