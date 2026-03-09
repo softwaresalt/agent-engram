@@ -83,8 +83,20 @@ curl -X POST http://127.0.0.1:7437/mcp \
 | `--stale-strategy` | `ENGRAM_STALE_STRATEGY` | `warn` | Behavior on stale `.engram/` files: `warn`, `rehydrate`, `fail` |
 | `--data-dir` | `ENGRAM_DATA_DIR` | `~/.local/share/engram/` | SurrealDB and model cache directory |
 | `--log-format` | `ENGRAM_LOG_FORMAT` | `pretty` | Tracing output format: `json` or `pretty` |
+| `--otlp-endpoint` | `ENGRAM_OTLP_ENDPOINT` | _(disabled)_ | OTLP gRPC endpoint for metrics export (e.g. `http://localhost:4317`). Requires `otlp-export` feature. |
 | _(shim)_ | `ENGRAM_READY_TIMEOUT_MS` | `10000` | Shim: milliseconds to wait for daemon readiness before giving up |
 | _(shim)_ | `ENGRAM_IDLE_TIMEOUT_MS` | `14400000` | Daemon: milliseconds of idle before automatic shutdown (4 hours) |
+
+### Workspace-scoped configuration (`.engram/config.toml`)
+
+These settings are per-workspace and stored in `.engram/config.toml`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `event_ledger_max` | `1000` | Maximum number of events retained in the event ledger before oldest events are pruned |
+| `allow_agent_rollback` | `false` | Allow agents to call `rollback_to_event` to revert workspace state |
+| `query_timeout_ms` | `5000` | Timeout in milliseconds for `query_graph` sandboxed queries |
+| `query_row_limit` | `500` | Maximum rows returned by a `query_graph` call |
 
 ```bash
 # Example with custom configuration
@@ -111,6 +123,19 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 | `register_decision` | Record an architectural decision |
 | `get_task_graph` | Get task dependency tree from a root task |
 | `check_status` | Look up task status by external work item IDs |
+| `claim_task` | Claim a task for the current agent session (→ `in_progress`) |
+| `release_task` | Release a claimed task (→ `todo`) |
+| `defer_task` | Defer a task until a future condition |
+| `undefer_task` | Move a deferred task back to `todo` |
+| `pin_task` | Pin a task so it appears first in ready-work queries |
+| `unpin_task` | Remove pin from a task |
+| `add_label` | Add a label to a task |
+| `remove_label` | Remove a label from a task |
+| `add_dependency` | Add a directed dependency edge between two tasks |
+| `add_comment` | Append a timestamped comment to a task's notes |
+| `batch_update_tasks` | Apply the same status update to multiple tasks atomically |
+| `get_ready_work` | List tasks with no unresolved blockers |
+| `get_workspace_statistics` | Aggregate task counts by status, label distribution, and more |
 
 ### Persistence & Search
 
@@ -118,6 +143,50 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 |------|-------------|
 | `flush_state` | Serialize workspace state to `.engram/` files |
 | `query_memory` | Hybrid semantic + keyword search across workspace content |
+| `get_active_context` | Tasks in progress and recently modified context records |
+| `unified_search` | Search across tasks, context, and code symbols |
+| `get_compaction_candidates` | Tasks eligible for notes compaction |
+| `apply_compaction` | Compact notes on a completed or cancelled task |
+
+### Code Graph
+
+| Tool | Description |
+|------|-------------|
+| `index_workspace` | Parse and index workspace source files into the code graph |
+| `sync_workspace` | Incrementally sync changed source files since last index |
+| `map_code` | Return call graph and usages for a named symbol |
+| `list_symbols` | List symbols indexed in the code graph |
+| `link_task_to_code` | Associate a task with a source symbol |
+| `unlink_task_from_code` | Remove task–symbol association |
+| `impact_analysis` | Identify tasks affected by changes to a code symbol |
+
+### Observability
+
+| Tool | Description |
+|------|-------------|
+| `get_health_report` | Runtime health metrics: memory, tool call counts, query latency percentiles (p50/p95/p99), watcher event statistics |
+
+### Event Ledger
+
+| Tool | Description |
+|------|-------------|
+| `get_event_history` | List recent workspace events from the ledger, optionally filtered by kind or entity ID |
+| `rollback_to_event` | Revert workspace state to a previous event snapshot (requires `allow_agent_rollback: true` in workspace config) |
+
+### Sandboxed Query
+
+| Tool | Description |
+|------|-------------|
+| `query_graph` | Execute a read-only SurrealQL SELECT query against the workspace graph database. Write operations are rejected. |
+
+### Collections
+
+| Tool | Description |
+|------|-------------|
+| `create_collection` | Create a named collection to group tasks and sub-collections hierarchically |
+| `add_to_collection` | Add tasks or sub-collections to a collection (with cycle detection) |
+| `remove_from_collection` | Remove members from a collection |
+| `get_collection_context` | Return all tasks recursively in a collection, with optional status filter |
 
 ## HTTP Endpoints
 
@@ -133,8 +202,10 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 |-------|----------|---------|
 | 1xxx | Workspace | `1001` WorkspaceNotFound, `1003` WorkspaceNotSet |
 | 2xxx | Hydration | `2001` HydrationFailed, `2004` StaleWorkspace |
-| 3xxx | Task | `3001` TaskNotFound, `3003` CyclicDependency |
-| 4xxx | Query | `4001` QueryTooLong, `4002` ModelNotLoaded |
+| 3xxx | Task | `3001` TaskNotFound, `3003` CyclicDependency, `3015` TaskBlocked |
+| 3xxx | Event | `3020` EventNotFound, `3021` RollbackDenied, `3022` NothingToRollback |
+| 3xxx | Collection | `3030` CollectionNotFound, `3031` CollectionAlreadyExists, `3032` CollectionCycleDetected |
+| 4xxx | Query | `4001` QueryTooLong, `4002` ModelNotLoaded, `4010` QueryRejected, `4011` QueryTimeout, `4012` QueryRowLimitExceeded |
 | 5xxx | System | `5001` DatabaseError, `5003` RateLimited |
 
 See [contracts/error-codes.md](specs/001-core-mcp-daemon/contracts/error-codes.md) for the full taxonomy.
