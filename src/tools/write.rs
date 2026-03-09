@@ -16,6 +16,7 @@ use crate::server::state::SharedState;
 use crate::services::compaction::truncate_at_word_boundary;
 use crate::services::connection::create_status_change_note;
 use crate::services::dehydration;
+use crate::services::gate;
 use crate::services::hydration;
 
 #[derive(Deserialize)]
@@ -165,6 +166,18 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     validate_transition(previous_status, new_status)?;
 
+    // Gate enforcement: reject in_progress transitions when hard blockers are
+    // incomplete (S001–S003, S010–S012).
+    let soft_warnings = if new_status == TaskStatus::InProgress {
+        let gate_result = gate::evaluate(&parsed.id, &queries).await?;
+        if gate_result.is_blocked() {
+            return Err(gate::blocked_error(&parsed.id, gate_result));
+        }
+        gate_result.warnings
+    } else {
+        Vec::new()
+    };
+
     // Validate issue_type against allowed_types if configured (FR-048)
     let issue_type = if let Some(ref new_type) = parsed.issue_type {
         if let Some(config) = state.workspace_config().await {
@@ -221,13 +234,17 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     )
     .await?;
 
-    Ok(json!({
+    let mut response = json!({
         "task_id": parsed.id,
         "previous_status": previous_status.as_str(),
         "new_status": new_status.as_str(),
         "context_id": context_id,
         "updated_at": now.to_rfc3339(),
-    }))
+    });
+    if !soft_warnings.is_empty() {
+        response["warnings"] = serde_json::Value::Array(soft_warnings);
+    }
+    Ok(response)
 }
 
 pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {

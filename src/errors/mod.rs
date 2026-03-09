@@ -73,8 +73,12 @@ pub enum TaskError {
     #[error("Task title exceeds maximum length of 200 characters")]
     TitleTooLong,
     /// Gate enforcement: task blocked by incomplete hard_blocker prerequisites
-    #[error("Task '{id}' is blocked: {blockers}")]
-    Blocked { id: String, blockers: String },
+    #[error("Task '{id}' is blocked by {blocker_count} unresolved hard_blocker prerequisite(s)")]
+    Blocked {
+        id: String,
+        blocker_count: usize,
+        blockers: Vec<serde_json::Value>,
+    },
 }
 
 /// Errors for the event ledger and rollback operations (3020–3022).
@@ -418,7 +422,7 @@ impl EngramError {
                     inner.to_string(),
                     None,
                 ),
-                TaskError::Blocked { id, blockers } => (
+                TaskError::Blocked { id, blockers, .. } => (
                     TASK_BLOCKED,
                     "TaskBlocked",
                     inner.to_string(),

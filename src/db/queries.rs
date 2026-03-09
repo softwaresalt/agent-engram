@@ -1158,6 +1158,83 @@ impl Queries {
         Ok(false)
     }
 
+    /// Returns all incomplete hard_blocker prerequisites for a task.
+    ///
+    /// Performs a BFS walk of outgoing `hard_blocker` edges starting at `task_id`,
+    /// collecting every blocker whose status is not `done`. Direct blockers have
+    /// `transitively_blocks: false`; blockers reachable through an intermediate
+    /// blocker have `transitively_blocks: true`.
+    ///
+    /// Used by `gate::evaluate` to enforce dependency-gated task transitions.
+    pub async fn check_blockers(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<serde_json::Value>, EngramError> {
+        let mut visited: HashSet<String> = HashSet::new();
+        // (node_id, is_transitive)
+        let mut queue: VecDeque<(String, bool)> = VecDeque::from([(task_id.to_string(), false)]);
+        let mut blockers: Vec<serde_json::Value> = Vec::new();
+
+        while let Some((node, is_transitive)) = queue.pop_front() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            let edges = self.dependencies_of(&node).await?;
+            for edge in edges {
+                if edge.kind != DependencyType::HardBlocker {
+                    continue;
+                }
+                let blocker_id = edge.to.clone();
+                if visited.contains(&blocker_id) {
+                    continue;
+                }
+                if let Some(blocker_task) = self.get_task(&blocker_id).await? {
+                    let is_blocker_transitive = is_transitive || node != task_id;
+                    if blocker_task.status != TaskStatus::Done {
+                        blockers.push(serde_json::json!({
+                            "id": format!("task:{blocker_id}"),
+                            "status": blocker_task.status.as_str(),
+                            "dependency_type": "hard_blocker",
+                            "transitively_blocks": is_blocker_transitive,
+                        }));
+                        queue.push_back((blocker_id, true));
+                    }
+                }
+            }
+        }
+        Ok(blockers)
+    }
+
+    /// Returns all incomplete direct soft_dependency prerequisites for a task.
+    ///
+    /// Only examines direct (one-hop) `soft_dependency` edges — soft deps are not
+    /// transitively propagated. Returns warning JSON objects with `type`, `id`, and
+    /// `status` fields.
+    ///
+    /// Used by `gate::evaluate` to populate the `warnings` field on success.
+    pub async fn check_soft_deps(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<serde_json::Value>, EngramError> {
+        let edges = self.dependencies_of(task_id).await?;
+        let mut warnings = Vec::new();
+        for edge in edges {
+            if edge.kind != DependencyType::SoftDependency {
+                continue;
+            }
+            if let Some(dep_task) = self.get_task(&edge.to).await? {
+                if dep_task.status != TaskStatus::Done {
+                    warnings.push(serde_json::json!({
+                        "type": "soft_dependency_incomplete",
+                        "id": format!("task:{}", edge.to),
+                        "status": dep_task.status.as_str(),
+                    }));
+                }
+            }
+        }
+        Ok(warnings)
+    }
+
     /// Compute aggregate workspace statistics.
     ///
     /// Returns grouped counts by status, priority, issue type, plus

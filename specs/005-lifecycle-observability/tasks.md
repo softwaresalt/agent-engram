@@ -56,22 +56,22 @@
 
 > **Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T014 [P] [US1] Contract test: update_task rejects in_progress transition when hard_blocker incomplete (S001) in tests/contract/gate_test.rs
-- [ ] T015 [P] [US1] Contract test: update_task succeeds when hard_blocker complete (S002) in tests/contract/gate_test.rs
-- [ ] T016 [P] [US1] Contract test: transitive blocking across 3-task chain (S003) in tests/contract/gate_test.rs
-- [ ] T017 [P] [US1] Contract test: soft_dependency emits warning not rejection (S004) in tests/contract/gate_test.rs
-- [ ] T018 [P] [US1] Contract test: add_dependency rejects cyclic dependency (S006, S007, S008) in tests/contract/gate_test.rs
-- [ ] T019 [P] [US1] Integration test: multiple blockers reported in single error (S010) in tests/integration/gate_integration_test.rs
-- [ ] T020 [P] [US1] Integration test: gate performance under 100-task chain within 50ms (S012) in tests/integration/gate_integration_test.rs
+- [X] T014 [P] [US1] Contract test: update_task rejects in_progress transition when hard_blocker incomplete (S001) in tests/contract/gate_test.rs
+- [X] T015 [P] [US1] Contract test: update_task succeeds when hard_blocker complete (S002) in tests/contract/gate_test.rs
+- [X] T016 [P] [US1] Contract test: transitive blocking across 3-task chain (S003) in tests/contract/gate_test.rs
+- [X] T017 [P] [US1] Contract test: soft_dependency emits warning not rejection (S004) in tests/contract/gate_test.rs
+- [X] T018 [P] [US1] Contract test: add_dependency rejects cyclic dependency (S006, S007, S008) in tests/contract/gate_test.rs
+- [X] T019 [P] [US1] Integration test: multiple blockers reported in single error (S010) in tests/integration/gate_integration_test.rs
+- [X] T020 [P] [US1] Integration test: gate performance under 100-task chain within 50ms (S012) in tests/integration/gate_integration_test.rs
 
 ### Implementation for User Story 1
 
-- [ ] T021 [US1] Implement check_blockers() recursive graph query in src/db/queries.rs — walks upstream depends_on edges filtering hard_blocker type, returns Vec<BlockerInfo>
-- [ ] T022 [US1] Implement check_cycle() path-existence query in src/db/queries.rs — detects if adding an edge would create a cycle
-- [ ] T023 [US1] Implement gate evaluation logic in src/services/gate.rs — calls check_blockers, returns GateResult (pass/fail with blocker details and soft_dependency warnings)
-- [ ] T024 [US1] Integrate gate check into update_task in src/tools/write.rs — call gate evaluation before applying status transition to in_progress
-- [ ] T025 [US1] Integrate cycle detection into add_dependency in src/tools/write.rs — call check_cycle before creating edge
-- [ ] T026 [US1] Add warnings field to update_task response for soft_dependency notifications in src/tools/write.rs
+- [X] T021 [US1] Implement check_blockers() recursive graph query in src/db/queries.rs — walks upstream depends_on edges filtering hard_blocker type, returns Vec<BlockerInfo>
+- [X] T022 [US1] Implement check_cycle() path-existence query in src/db/queries.rs — detects if adding an edge would create a cycle
+- [X] T023 [US1] Implement gate evaluation logic in src/services/gate.rs — calls check_blockers, returns GateResult (pass/fail with blocker details and soft_dependency warnings)
+- [X] T024 [US1] Integrate gate check into update_task in src/tools/write.rs — call gate evaluation before applying status transition to in_progress
+- [X] T025 [US1] Integrate cycle detection into add_dependency in src/tools/write.rs — call check_cycle before creating edge
+- [X] T026 [US1] Add warnings field to update_task response for soft_dependency notifications in src/tools/write.rs
 
 **Checkpoint**: Gate enforcement working — agents cannot start blocked tasks
 
