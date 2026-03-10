@@ -233,3 +233,7 @@ path = "tests/integration/reliability_test.rs"
 [[test]]
 name = "unit_proptest_events"
 path = "tests/unit/proptest_events.rs"
+
+[[test]]
+name = "integration_smoke"
+path = "tests/integration/smoke_test.rs"
