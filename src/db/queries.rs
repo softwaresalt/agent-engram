@@ -535,13 +535,37 @@ impl Queries {
             return Err(EngramError::Task(TaskError::CyclicDependency));
         }
 
+        // Prevent duplicate edges of the same type between the same pair.
         let from = Thing::from(("task", dependent));
         let to = Thing::from(("task", blocker));
+        let kind_str = format_dependency(kind).to_string();
+
+        #[derive(Deserialize)]
+        struct CountRow {
+            count: u64,
+        }
+        let existing: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM depends_on \
+                 WHERE in = $from AND out = $to AND type = $kind GROUP ALL",
+            )
+            .bind(("from", from.clone()))
+            .bind(("to", to.clone()))
+            .bind(("kind", kind_str.clone()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        if existing.first().is_some_and(|r| r.count > 0) {
+            return Ok(());
+        }
+
         self.db
             .query("RELATE $from->depends_on->$to SET type = $kind, created_at = time::now();")
             .bind(("from", from))
             .bind(("to", to))
-            .bind(("kind", format_dependency(kind).to_string()))
+            .bind(("kind", kind_str))
             .await
             .map_err(map_db_err)?;
         Ok(())

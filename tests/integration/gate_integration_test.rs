@@ -102,6 +102,53 @@ async fn t019_multiple_direct_blockers_all_returned() {
     }
 }
 
+/// S011: When both hard_blocker and soft_dependency edges exist, the hard failure
+/// takes precedence and soft warnings are suppressed.
+///
+/// Graph: `target` → `hard-dep` (hard_blocker, todo), `target` → `soft-dep` (soft_dependency, todo).
+///
+/// The gate must return blockers for `hard-dep` and an empty warnings list.
+#[tokio::test]
+async fn t021_mixed_hard_soft_hard_takes_precedence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let q = setup_db(dir.path()).await;
+
+    q.upsert_task(&make_task("target", TaskStatus::Todo))
+        .await
+        .expect("insert target");
+    q.upsert_task(&make_task("hard-dep", TaskStatus::Todo))
+        .await
+        .expect("insert hard-dep");
+    q.upsert_task(&make_task("soft-dep", TaskStatus::Todo))
+        .await
+        .expect("insert soft-dep");
+
+    q.create_dependency("target", "hard-dep", DependencyType::HardBlocker)
+        .await
+        .expect("create hard dependency");
+    q.create_dependency("target", "soft-dep", DependencyType::SoftDependency)
+        .await
+        .expect("create soft dependency");
+
+    let result = gate::evaluate("target", &q)
+        .await
+        .expect("gate::evaluate must succeed");
+
+    assert!(
+        result.is_blocked(),
+        "gate must be blocked when hard_blocker is incomplete"
+    );
+    assert_eq!(
+        result.blockers.len(),
+        1,
+        "exactly one hard blocker expected"
+    );
+    assert!(
+        result.warnings.is_empty(),
+        "soft warnings must be suppressed when hard blockers exist (S011)"
+    );
+}
+
 /// S012: Gate evaluation for a 100-task chain completes within the latency budget.
 ///
 /// Chain: `chain-0` → `chain-1` → … → `chain-99` (all `hard_blocker` edges).

@@ -122,3 +122,26 @@ fn t070_invalid_syntax_error_code() {
     let details = response.error.details.as_ref().unwrap();
     assert_eq!(details["reason"], "unexpected token");
 }
+
+/// Unterminated string literal must be rejected to prevent write-keyword bypass.
+#[test]
+fn t070b_unterminated_string_literal_rejected() {
+    // An unclosed quote could hide a write keyword from the sanitizer.
+    let result =
+        engram::services::gate::sanitize_query("SELECT * FROM task WHERE x = \"DELETE task:A");
+    assert!(result.is_err(), "unterminated string must be rejected");
+    let response = result.unwrap_err().to_response();
+    assert_eq!(
+        response.error.code, 4012,
+        "unterminated string must be QUERY_INVALID (4012)"
+    );
+}
+
+/// Unterminated single-quoted string literal must also be rejected.
+#[test]
+fn t070c_unterminated_single_quote_rejected() {
+    let result =
+        engram::services::gate::sanitize_query("SELECT * FROM task WHERE x = 'DELETE task:A");
+    assert!(result.is_err(), "unterminated single-quote must be rejected");
+    assert_eq!(result.unwrap_err().to_response().error.code, 4012);
+}

@@ -127,6 +127,11 @@ pub async fn apply_rollback(
                     queries
                         .restore_relation_snapshot(&event.entity_id, &prev)
                         .await?;
+                } else {
+                    return Err(EngramError::Event(EventError::RollbackConflict {
+                        entity_id: event.entity_id.clone(),
+                        event_id: event.id.clone(),
+                    }));
                 }
             }
             EventKind::ContextCreated => {
@@ -142,6 +147,11 @@ pub async fn apply_rollback(
                     queries
                         .restore_collection_snapshot(&event.entity_id, &prev)
                         .await?;
+                } else {
+                    return Err(EngramError::Event(EventError::RollbackConflict {
+                        entity_id: event.entity_id.clone(),
+                        event_id: event.id.clone(),
+                    }));
                 }
             }
             EventKind::RollbackApplied => {

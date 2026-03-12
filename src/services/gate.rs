@@ -98,7 +98,7 @@ pub fn sanitize_query(query: &str) -> Result<(), crate::errors::EngramError> {
     ];
 
     // Strip string literals to avoid false positives on keywords inside quotes.
-    let stripped = strip_string_literals(query);
+    let stripped = strip_string_literals(query)?;
     let upper = stripped.to_uppercase();
 
     for keyword in WRITE_KEYWORDS {
@@ -115,12 +115,18 @@ pub fn sanitize_query(query: &str) -> Result<(), crate::errors::EngramError> {
 ///
 /// This prevents keyword detection from matching tokens that appear inside string
 /// values while preserving byte length (and therefore byte offsets).
-fn strip_string_literals(input: &str) -> String {
+///
+/// Returns `Err` if the input contains an unterminated string literal, which could
+/// be used to hide write keywords from the sanitizer.
+fn strip_string_literals(input: &str) -> Result<String, crate::errors::EngramError> {
+    use crate::errors::{EngramError, GraphQueryError};
+
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars();
     while let Some(c) = chars.next() {
         if c == '\'' || c == '"' {
             result.push(c);
+            let mut closed = false;
             // Consume until the matching closing quote, honouring backslash escapes.
             while let Some(inner) = chars.next() {
                 if inner == '\\' {
@@ -131,16 +137,22 @@ fn strip_string_literals(input: &str) -> String {
                     }
                 } else if inner == c {
                     result.push(inner);
+                    closed = true;
                     break;
                 } else {
                     result.push(' ');
                 }
             }
+            if !closed {
+                return Err(EngramError::GraphQuery(GraphQueryError::Invalid {
+                    reason: format!("unterminated string literal (opening {c} has no closing match)"),
+                }));
+            }
         } else {
             result.push(c);
         }
     }
-    result
+    Ok(result)
 }
 
 /// Returns `true` if `keyword` appears as a whole word in `text`.
