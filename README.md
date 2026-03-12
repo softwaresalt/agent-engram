@@ -199,7 +199,7 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 ## Error Codes
 
 | Range | Category | Examples |
-|-------|----------|---------|
+| ------- | ---------- | --------- |
 | 1xxx | Workspace | `1001` WorkspaceNotFound, `1003` WorkspaceNotSet |
 | 2xxx | Hydration | `2001` HydrationFailed, `2004` StaleWorkspace |
 | 3xxx | Task | `3001` TaskNotFound, `3003` CyclicDependency, `3015` TaskBlocked |
@@ -218,7 +218,7 @@ Engram uses a per-workspace **shim/daemon** model:
 - The **daemon** runs as a long-lived background process per workspace. It manages embedded SurrealDB state, serves MCP tool calls over a Unix domain socket (`{workspace}/.engram/run/engram.sock`) or Windows named pipe, watches workspace files for changes, and self-terminates after a configurable idle timeout (default: 4 hours).
 - The **installer** (`engram install`) creates the `.engram/` directory structure, generates the `.vscode/mcp.json` MCP client configuration, and updates `.gitignore` with the runtime artifact paths.
 
-```
+```text
 MCP Client (VS Code / Copilot CLI)
     │  stdio
     ▼
