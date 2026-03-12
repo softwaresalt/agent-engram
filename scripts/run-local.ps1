@@ -52,7 +52,7 @@ if (-not (Test-Path (Join-Path $Workspace ".git"))) {
 }
 
 Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║           engram daemon — local runner                  ║" -ForegroundColor Cyan
+Write-Host "║           engram daemon — local runner                   ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Workspace : $Workspace" -ForegroundColor Gray
