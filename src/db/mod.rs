@@ -88,6 +88,13 @@ async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
     db.query(schema::DEFINE_CODE_EDGES)
         .await
         .map_err(map_db_err)?;
+    db.query(schema::DEFINE_EVENT).await.map_err(map_db_err)?;
+    db.query(schema::DEFINE_COLLECTION)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CONTAINS)
+        .await
+        .map_err(map_db_err)?;
     Ok(())
 }
 

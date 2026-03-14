@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
-use crate::errors::{EngramError, TaskError};
+use crate::errors::{EngramError, EventError, SystemError, TaskError};
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::models::{Context, Spec};
@@ -200,6 +200,62 @@ impl CommentRow {
     }
 }
 
+/// Internal row type for deserializing collection records from SurrealDB.
+#[derive(Deserialize)]
+struct CollectionRow {
+    id: Thing,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl CollectionRow {
+    fn into_collection(self) -> crate::models::Collection {
+        crate::models::Collection {
+            id: format!("collection:{}", self.id.id.to_raw()),
+            name: self.name,
+            description: self.description,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+/// Internal row type for deserializing event records from SurrealDB.
+///
+/// SurrealDB returns `id` as a `Thing`; `kind` is stored as a snake_case
+/// string and deserialized back to [`EventKind`] via its `Deserialize` impl.
+#[derive(Deserialize)]
+struct EventRow {
+    id: Thing,
+    kind: crate::models::event::EventKind,
+    entity_table: String,
+    entity_id: String,
+    #[serde(default)]
+    previous_value: Option<serde_json::Value>,
+    #[serde(default)]
+    new_value: Option<serde_json::Value>,
+    source_client: String,
+    created_at: DateTime<Utc>,
+}
+
+impl EventRow {
+    fn into_event(self) -> crate::models::event::Event {
+        crate::models::event::Event {
+            id: format!("event:{}", self.id.id.to_raw()),
+            kind: self.kind,
+            entity_table: self.entity_table,
+            entity_id: self.entity_id,
+            previous_value: self.previous_value,
+            new_value: self.new_value,
+            source_client: self.source_client,
+            created_at: self.created_at,
+        }
+    }
+}
+
 /// Query helper wrapping SurrealDB handle.
 #[derive(Clone)]
 pub struct Queries {
@@ -247,6 +303,38 @@ pub struct WorkspaceStatistics {
 impl Queries {
     pub fn new(db: Db) -> Self {
         Self { db }
+    }
+
+    /// Upsert a collection record, idempotent for re-hydration.
+    ///
+    /// Unlike [`create_collection`](Self::create_collection), this does **not**
+    /// check for name uniqueness — it unconditionally upserts by ID. Intended
+    /// exclusively for hydration from `.engram/collections.md`.
+    pub async fn upsert_collection(
+        &self,
+        collection: &crate::models::Collection,
+    ) -> Result<(), EngramError> {
+        let raw_id = collection
+            .id
+            .strip_prefix("collection:")
+            .unwrap_or(&collection.id);
+        let record = Thing::from(("collection", raw_id));
+        self.db
+            .query(
+                "UPSERT $id SET \
+                 name = $name, \
+                 description = $desc, \
+                 created_at = $created_at, \
+                 updated_at = $updated_at",
+            )
+            .bind(("id", record))
+            .bind(("name", collection.name.clone()))
+            .bind(("desc", collection.description.clone()))
+            .bind(("created_at", collection.created_at))
+            .bind(("updated_at", collection.updated_at))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 
     /// Insert or update a task record using last-write-wins semantics (US5/T093).
@@ -447,13 +535,33 @@ impl Queries {
             return Err(EngramError::Task(TaskError::CyclicDependency));
         }
 
+        // Prevent duplicate edges of the same type between the same pair.
         let from = Thing::from(("task", dependent));
         let to = Thing::from(("task", blocker));
+        let kind_str = format_dependency(kind).to_string();
+
+        let existing: Vec<CountRow> = self
+            .db
+            .query(
+                "SELECT count() AS count FROM depends_on \
+                 WHERE in = $from AND out = $to AND type = $kind GROUP ALL",
+            )
+            .bind(("from", from.clone()))
+            .bind(("to", to.clone()))
+            .bind(("kind", kind_str.clone()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        if existing.first().is_some_and(|r| r.count > 0) {
+            return Ok(());
+        }
+
         self.db
             .query("RELATE $from->depends_on->$to SET type = $kind, created_at = time::now();")
             .bind(("from", from))
             .bind(("to", to))
-            .bind(("kind", format_dependency(kind).to_string()))
+            .bind(("kind", kind_str))
             .await
             .map_err(map_db_err)?;
         Ok(())
@@ -1158,6 +1266,83 @@ impl Queries {
         Ok(false)
     }
 
+    /// Returns all incomplete hard_blocker prerequisites for a task.
+    ///
+    /// Performs a BFS walk of outgoing `hard_blocker` edges starting at `task_id`,
+    /// collecting every blocker whose status is not `done`. Direct blockers have
+    /// `transitively_blocks: false`; blockers reachable through an intermediate
+    /// blocker have `transitively_blocks: true`.
+    ///
+    /// Used by `gate::evaluate` to enforce dependency-gated task transitions.
+    pub async fn check_blockers(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<serde_json::Value>, EngramError> {
+        let mut visited: HashSet<String> = HashSet::new();
+        // (node_id, is_transitive)
+        let mut queue: VecDeque<(String, bool)> = VecDeque::from([(task_id.to_string(), false)]);
+        let mut blockers: Vec<serde_json::Value> = Vec::new();
+
+        while let Some((node, is_transitive)) = queue.pop_front() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            let edges = self.dependencies_of(&node).await?;
+            for edge in edges {
+                if edge.kind != DependencyType::HardBlocker {
+                    continue;
+                }
+                let blocker_id = edge.to.clone();
+                if visited.contains(&blocker_id) {
+                    continue;
+                }
+                if let Some(blocker_task) = self.get_task(&blocker_id).await? {
+                    let is_blocker_transitive = is_transitive || node != task_id;
+                    if blocker_task.status != TaskStatus::Done {
+                        blockers.push(serde_json::json!({
+                            "id": format!("task:{blocker_id}"),
+                            "status": blocker_task.status.as_str(),
+                            "dependency_type": "hard_blocker",
+                            "transitively_blocks": is_blocker_transitive,
+                        }));
+                        queue.push_back((blocker_id, true));
+                    }
+                }
+            }
+        }
+        Ok(blockers)
+    }
+
+    /// Returns all incomplete direct soft_dependency prerequisites for a task.
+    ///
+    /// Only examines direct (one-hop) `soft_dependency` edges — soft deps are not
+    /// transitively propagated. Returns warning JSON objects with `type`, `id`, and
+    /// `status` fields.
+    ///
+    /// Used by `gate::evaluate` to populate the `warnings` field on success.
+    pub async fn check_soft_deps(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<serde_json::Value>, EngramError> {
+        let edges = self.dependencies_of(task_id).await?;
+        let mut warnings = Vec::new();
+        for edge in edges {
+            if edge.kind != DependencyType::SoftDependency {
+                continue;
+            }
+            if let Some(dep_task) = self.get_task(&edge.to).await? {
+                if dep_task.status != TaskStatus::Done {
+                    warnings.push(serde_json::json!({
+                        "type": "soft_dependency_incomplete",
+                        "id": format!("task:{}", edge.to),
+                        "status": dep_task.status.as_str(),
+                    }));
+                }
+            }
+        }
+        Ok(warnings)
+    }
+
     /// Compute aggregate workspace statistics.
     ///
     /// Returns grouped counts by status, priority, issue type, plus
@@ -1309,6 +1494,655 @@ impl Queries {
             .take(0)
             .map_err(map_db_err)?;
         Ok(rows.into_iter().map(TaskRow::into_task).collect())
+    }
+
+    // ── Event ledger queries ──────────────────────────────────────────────────
+
+    /// Insert a new event into the SurrealDB event table.
+    ///
+    /// The event `id` must include the table prefix (e.g. `"event:abc123"`).
+    pub async fn insert_event(
+        &self,
+        event: &crate::models::event::Event,
+    ) -> Result<(), EngramError> {
+        let raw = event.id.strip_prefix("event:").unwrap_or(&event.id);
+        let record = Thing::from(("event", raw));
+        let created = event.created_at.to_rfc3339();
+        self.db
+            .query(
+                "CREATE $record SET \
+                    kind = $kind, \
+                    entity_table = $entity_table, \
+                    entity_id = $entity_id, \
+                    previous_value = $prev_val, \
+                    new_value = $new_val, \
+                    source_client = $source, \
+                    created_at = <datetime>$created",
+            )
+            .bind(("record", record))
+            .bind(("kind", event.kind.clone()))
+            .bind(("entity_table", event.entity_table.clone()))
+            .bind(("entity_id", event.entity_id.clone()))
+            .bind(("prev_val", event.previous_value.clone()))
+            .bind(("new_val", event.new_value.clone()))
+            .bind(("source", event.source_client.clone()))
+            .bind(("created", created))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Returns the total number of events currently in the ledger.
+    pub async fn count_events(&self) -> Result<u64, EngramError> {
+        let rows: Vec<CountRow> = self
+            .db
+            .query("SELECT count() AS count FROM event GROUP ALL")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.first().map_or(0, |r| r.count))
+    }
+
+    /// Deletes the `n` oldest events by `created_at` ascending.
+    ///
+    /// Uses two round-trips (SELECT ids → DELETE each) for portability
+    /// across SurrealDB versions that may not support `DELETE … ORDER BY … LIMIT`.
+    pub async fn delete_oldest_events(&self, n: u64) -> Result<(), EngramError> {
+        #[derive(serde::Deserialize)]
+        struct IdRow {
+            id: Thing,
+        }
+        let rows: Vec<IdRow> = self
+            .db
+            .query("SELECT id, created_at FROM event ORDER BY created_at ASC LIMIT $n")
+            .bind(("n", n))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        for row in rows {
+            self.db
+                .query("DELETE $record")
+                .bind(("record", row.id))
+                .await
+                .map_err(map_db_err)?;
+        }
+        Ok(())
+    }
+
+    /// Lists events from the ledger with optional filters, ordered by
+    /// `created_at` ascending, limited to `limit` results.
+    pub async fn list_events(
+        &self,
+        kind: Option<&str>,
+        entity_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<crate::models::event::Event>, EngramError> {
+        let rows: Vec<EventRow> = match (kind, entity_id) {
+            (None, None) => self
+                .db
+                .query(
+                    "SELECT * FROM event \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (Some(k), None) => self
+                .db
+                .query(
+                    "SELECT * FROM event WHERE kind = $kind \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("kind", k.to_string()))
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (None, Some(eid)) => self
+                .db
+                .query(
+                    "SELECT * FROM event WHERE entity_id = $entity_id \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("entity_id", eid.to_string()))
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (Some(k), Some(eid)) => self
+                .db
+                .query(
+                    "SELECT * FROM event \
+                         WHERE kind = $kind AND entity_id = $entity_id \
+                         ORDER BY created_at ASC LIMIT $limit",
+                )
+                .bind(("kind", k.to_string()))
+                .bind(("entity_id", eid.to_string()))
+                .bind(("limit", limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+        };
+        Ok(rows.into_iter().map(EventRow::into_event).collect())
+    }
+
+    /// Returns all events that occurred **strictly after** the event identified
+    /// by `event_id`, ordered by `created_at` ascending.
+    ///
+    /// Returns [`EventError::EventNotFound`] when the target event is absent.
+    pub async fn get_events_after(
+        &self,
+        event_id: &str,
+    ) -> Result<Vec<crate::models::event::Event>, EngramError> {
+        #[derive(serde::Deserialize)]
+        struct TimeRow {
+            created_at: DateTime<Utc>,
+        }
+
+        // Step 1: look up the target event's timestamp.
+        let raw = event_id.strip_prefix("event:").unwrap_or(event_id);
+        let record = Thing::from(("event", raw));
+        let time_rows: Vec<TimeRow> = self
+            .db
+            .query("SELECT created_at FROM $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        let target_time = time_rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                EngramError::Event(EventError::EventNotFound {
+                    event_id: event_id.to_string(),
+                })
+            })?
+            .created_at;
+
+        // Step 2: select all events after that timestamp.
+        let rows: Vec<EventRow> = self
+            .db
+            .query(
+                "SELECT * FROM event WHERE created_at > $ts \
+                 ORDER BY created_at ASC",
+            )
+            .bind(("ts", target_time.to_rfc3339()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().map(EventRow::into_event).collect())
+    }
+
+    /// Deletes a task by its bare UUID (without the `task:` prefix).
+    ///
+    /// Used during rollback to undo a `TaskCreated` event.
+    pub async fn delete_task(&self, task_id: &str) -> Result<(), EngramError> {
+        let record = Thing::from(("task", task_id));
+        self.db
+            .query("DELETE $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Restores a task from a JSON snapshot captured at event-recording time.
+    ///
+    /// Deserializes the snapshot into a [`Task`] then calls [`Self::upsert_task`],
+    /// overriding the `id` field to match `task_id` (which may include the
+    /// `task:` prefix).
+    pub async fn restore_task_snapshot(
+        &self,
+        task_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), EngramError> {
+        let mut task: Task = serde_json::from_value(snapshot.clone()).map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("invalid task snapshot: {e}"),
+            })
+        })?;
+        // Normalise the ID to the bare UUID (no table prefix).
+        task.id = task_id.strip_prefix("task:").unwrap_or(task_id).to_string();
+        self.upsert_task(&task).await
+    }
+
+    /// Deletes a relation (edge) by its full record ID (e.g. `"depends_on:abc"`).
+    pub async fn delete_relation_by_id(&self, relation_id: &str) -> Result<(), EngramError> {
+        if let Some((table, id)) = relation_id.split_once(':') {
+            let record = Thing::from((table, id));
+            self.db
+                .query("DELETE $record")
+                .bind(("record", record))
+                .await
+                .map_err(map_db_err)?;
+        }
+        Ok(())
+    }
+
+    /// Restores a relation from a JSON snapshot (used during rollback of an
+    /// `EdgeDeleted` event).
+    pub async fn restore_relation_snapshot(
+        &self,
+        relation_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), EngramError> {
+        if let Some((table, id)) = relation_id.split_once(':') {
+            let record = Thing::from((table, id));
+            self.db
+                .query("UPDATE $record MERGE $snapshot")
+                .bind(("record", record))
+                .bind(("snapshot", snapshot.clone()))
+                .await
+                .map_err(map_db_err)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes a context entry by its full record ID (e.g. `"context:abc"`).
+    pub async fn delete_context_by_id(&self, context_id: &str) -> Result<(), EngramError> {
+        let raw = context_id.strip_prefix("context:").unwrap_or(context_id);
+        let record = Thing::from(("context", raw));
+        self.db
+            .query("DELETE $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Restores a collection from a JSON snapshot captured at event-recording
+    /// time.
+    pub async fn restore_collection_snapshot(
+        &self,
+        collection_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> Result<(), EngramError> {
+        let raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id);
+        let record = Thing::from(("collection", raw));
+        self.db
+            .query("UPDATE $record MERGE $snapshot")
+            .bind(("record", record))
+            .bind(("snapshot", snapshot.clone()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Deletes a collection by its full record ID (e.g. `"collection:abc"`).
+    ///
+    /// Also removes any `contains` edges where this collection is the parent.
+    /// Used during rollback to undo a `CollectionCreated` event.
+    pub async fn delete_collection_by_id(&self, collection_id: &str) -> Result<(), EngramError> {
+        let raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id);
+        let record = Thing::from(("collection", raw));
+        self.db
+            .query("DELETE contains WHERE in = $record; DELETE $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    // ── Collection CRUD + cycle detection (T084/T085) ──────────────────────
+
+    /// Creates a new collection. Returns `Err(CollectionAlreadyExists)` if the
+    /// name is already taken within this workspace.
+    pub async fn create_collection(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<crate::models::Collection, EngramError> {
+        use crate::errors::CollectionError;
+
+        let name_owned = name.to_string();
+        let desc_owned: Option<String> = description.map(str::to_string);
+
+        // Uniqueness guard (the UNIQUE index would also reject duplicates, but
+        // we surface a typed error so the MCP response is meaningful).
+        let existing: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM collection WHERE name = $name")
+            .bind(("name", name_owned.clone()))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        if !existing.is_empty() {
+            return Err(EngramError::Collection(CollectionError::AlreadyExists {
+                name: name_owned,
+            }));
+        }
+
+        let id_raw = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let record = Thing::from(("collection", id_raw.as_str()));
+        let now = chrono::Utc::now();
+
+        self.db
+            .query(
+                "CREATE $id SET \
+                 name = $name, \
+                 description = $desc, \
+                 created_at = $now, \
+                 updated_at = $now",
+            )
+            .bind(("id", record))
+            .bind(("name", name_owned.clone()))
+            .bind(("desc", desc_owned.clone()))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?;
+
+        Ok(crate::models::Collection {
+            id: format!("collection:{id_raw}"),
+            name: name_owned,
+            description: desc_owned,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Gets a collection by name. Returns `None` when no collection with that
+    /// name exists.
+    pub async fn get_collection_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::models::Collection>, EngramError> {
+        let name_owned = name.to_string();
+        let rows: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM collection WHERE name = $name")
+            .bind(("name", name_owned))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(CollectionRow::into_collection))
+    }
+
+    /// Gets a collection by its raw or prefixed ID (e.g. `"collection:abc"` or
+    /// just `"abc"`).
+    pub async fn get_collection_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::Collection>, EngramError> {
+        let raw_id = id.strip_prefix("collection:").unwrap_or(id).to_string();
+        let record = Thing::from(("collection", raw_id.as_str()));
+        let rows: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM $record")
+            .bind(("record", record))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(CollectionRow::into_collection))
+    }
+
+    /// Lists all collections ordered by name.
+    pub async fn list_collections(&self) -> Result<Vec<crate::models::Collection>, EngramError> {
+        let rows: Vec<CollectionRow> = self
+            .db
+            .query("SELECT * FROM collection ORDER BY name")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(CollectionRow::into_collection)
+            .collect())
+    }
+
+    /// Adds member IDs (task or collection) to a collection via `contains`
+    /// relation edges. Returns `(added_count, already_member_count)`.
+    pub async fn add_collection_members(
+        &self,
+        collection_id: &str,
+        member_ids: &[String],
+    ) -> Result<(usize, usize), EngramError> {
+        #[derive(Deserialize)]
+        struct ExistsRow {
+            #[allow(dead_code)]
+            id: Thing,
+        }
+
+        let coll_raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id)
+            .to_string();
+        let from = Thing::from(("collection", coll_raw.as_str()));
+        let mut added = 0usize;
+        let mut already = 0usize;
+
+        for member_id in member_ids {
+            let (table, raw_id): (&str, &str) = if let Some(raw) = member_id.strip_prefix("task:") {
+                ("task", raw)
+            } else if let Some(raw) = member_id.strip_prefix("collection:") {
+                ("collection", raw)
+            } else {
+                ("task", member_id.as_str())
+            };
+            let to = Thing::from((table, raw_id));
+
+            let existing: Vec<ExistsRow> = self
+                .db
+                .query("SELECT id FROM contains WHERE in = $from AND out = $to")
+                .bind(("from", from.clone()))
+                .bind(("to", to.clone()))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            if existing.is_empty() {
+                self.db
+                    .query("RELATE $from->contains->$to SET added_at = time::now()")
+                    .bind(("from", from.clone()))
+                    .bind(("to", to))
+                    .await
+                    .map_err(map_db_err)?;
+                added += 1;
+            } else {
+                already += 1;
+            }
+        }
+
+        Ok((added, already))
+    }
+
+    /// Removes members from a collection by deleting their `contains` edges.
+    /// Returns `(removed_count, not_member_count)`.
+    pub async fn remove_collection_members(
+        &self,
+        collection_id: &str,
+        member_ids: &[String],
+    ) -> Result<(usize, usize), EngramError> {
+        #[derive(Deserialize)]
+        struct EdgeRow {
+            id: Thing,
+        }
+
+        let coll_raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id)
+            .to_string();
+        let from = Thing::from(("collection", coll_raw.as_str()));
+        let mut removed = 0usize;
+        let mut not_member = 0usize;
+
+        for member_id in member_ids {
+            let (table, raw_id): (&str, &str) = if let Some(raw) = member_id.strip_prefix("task:") {
+                ("task", raw)
+            } else if let Some(raw) = member_id.strip_prefix("collection:") {
+                ("collection", raw)
+            } else {
+                ("task", member_id.as_str())
+            };
+            let to = Thing::from((table, raw_id));
+
+            let edges: Vec<EdgeRow> = self
+                .db
+                .query("SELECT id FROM contains WHERE in = $from AND out = $to")
+                .bind(("from", from.clone()))
+                .bind(("to", to))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            if edges.is_empty() {
+                not_member += 1;
+            } else {
+                for edge in edges {
+                    self.db
+                        .query("DELETE $edge")
+                        .bind(("edge", edge.id))
+                        .await
+                        .map_err(map_db_err)?;
+                    removed += 1;
+                }
+            }
+        }
+
+        Ok((removed, not_member))
+    }
+
+    /// Recursively retrieves all tasks inside a collection and its sub-collections.
+    ///
+    /// Uses BFS to avoid stack overflow on deep hierarchies. An optional
+    /// `status_filter` narrows results to tasks whose `status` matches.
+    pub async fn list_collection_members_recursive(
+        &self,
+        collection_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<crate::models::task::Task>, EngramError> {
+        use std::collections::VecDeque;
+
+        #[derive(Deserialize)]
+        struct MemberRow {
+            out: Thing,
+        }
+
+        let mut visited_collections: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        let mut tasks: Vec<crate::models::task::Task> = Vec::new();
+
+        let start_raw = collection_id
+            .strip_prefix("collection:")
+            .unwrap_or(collection_id)
+            .to_string();
+        queue.push_back(start_raw);
+
+        while let Some(coll_raw) = queue.pop_front() {
+            if !visited_collections.insert(coll_raw.clone()) {
+                continue;
+            }
+            let from = Thing::from(("collection", coll_raw.as_str()));
+
+            let members: Vec<MemberRow> = self
+                .db
+                .query("SELECT out FROM contains WHERE in = $from")
+                .bind(("from", from))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            for member in members {
+                let member_table = member.out.tb.clone();
+                let member_raw = member.out.id.to_raw();
+                match member_table.as_str() {
+                    "task" => {
+                        if let Some(task) = self.get_task(&member_raw).await? {
+                            if let Some(status) = status_filter {
+                                if task.status.as_str() != status {
+                                    continue;
+                                }
+                            }
+                            tasks.push(task);
+                        }
+                    }
+                    "collection" => queue.push_back(member_raw),
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(tasks)
+    }
+
+    /// Returns `true` if nesting `child_id` inside `parent_id` would create a
+    /// cycle in the collection graph.
+    ///
+    /// A cycle exists when `parent_id` is reachable from `child_id` via
+    /// `contains` edges (i.e. `child_id` is already an ancestor of `parent_id`).
+    pub async fn check_collection_cycle(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<bool, EngramError> {
+        use std::collections::VecDeque;
+
+        #[derive(Deserialize)]
+        struct MemberRow {
+            out: Thing,
+        }
+
+        if parent_id == child_id {
+            return Ok(true);
+        }
+
+        let parent_raw = parent_id
+            .strip_prefix("collection:")
+            .unwrap_or(parent_id)
+            .to_string();
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::from([child_id
+            .strip_prefix("collection:")
+            .unwrap_or(child_id)
+            .to_string()]);
+
+        while let Some(node) = queue.pop_front() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            if node == parent_raw {
+                return Ok(true);
+            }
+
+            let from = Thing::from(("collection", node.as_str()));
+
+            let members: Vec<MemberRow> = self
+                .db
+                .query("SELECT out FROM contains WHERE in = $from")
+                .bind(("from", from))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?;
+
+            for m in members {
+                if m.out.tb == "collection" {
+                    queue.push_back(m.out.id.to_raw());
+                }
+            }
+        }
+
+        Ok(false)
     }
 }
 

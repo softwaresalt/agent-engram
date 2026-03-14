@@ -52,7 +52,7 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
 /// be incremented when the on-disk `.engram/` file format changes in a way
 /// that is incompatible with previous readers. Tying it to `CARGO_PKG_VERSION`
 /// would invalidate every existing workspace on every release.
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "2.0";
 
 /// Result of a dehydration (flush) operation.
 #[derive(Debug, Clone)]
@@ -521,6 +521,13 @@ pub fn parse_task_blocks(content: &str) -> Vec<TaskBlock> {
 ///
 /// Creates a temporary `.tmp` file alongside the target, writes content,
 /// then renames atomically to prevent partial writes on crash.
+///
+/// # Atomic write pattern (T043)
+///
+/// Writes to `.<filename>.tmp` (same directory, so same filesystem) then
+/// calls `rename` to replace the target in a single atomic kernel operation.
+/// This prevents partial writes from corrupting workspace state during
+/// crashes or concurrent access.
 pub async fn atomic_write(path: &Path, content: &str) -> Result<(), EngramError> {
     let tmp_path = path.with_extension("tmp");
     let mut file = tokio::fs::File::create(&tmp_path)
@@ -543,6 +550,68 @@ fn flush_err(path: &Path) -> EngramError {
     EngramError::System(SystemError::FlushFailed {
         path: path.display().to_string(),
     })
+}
+
+// ── Collection dehydration (T091) ─────────────────────────────────────────────
+
+/// Dehydrate all collections to `.engram/collections.md`.
+///
+/// Writes a human-readable Markdown file with YAML-like frontmatter for each
+/// collection. Uses the same atomic temp-file-then-rename pattern as other
+/// dehydration functions. When there are no collections the file is removed if
+/// it exists, keeping the `.engram/` directory tidy.
+pub async fn dehydrate_collections(
+    queries: &Queries,
+    workspace_path: &Path,
+) -> Result<usize, EngramError> {
+    let engram_dir = workspace_path.join(".engram");
+    tokio::fs::create_dir_all(&engram_dir)
+        .await
+        .map_err(|_| flush_err(&engram_dir))?;
+
+    let collections = queries.list_collections().await?;
+    let collections_path = engram_dir.join("collections.md");
+
+    if collections.is_empty() {
+        if tokio::fs::try_exists(&collections_path)
+            .await
+            .unwrap_or(false)
+        {
+            let _ = tokio::fs::remove_file(&collections_path).await;
+        }
+        return Ok(0);
+    }
+
+    let content = serialize_collections_md(&collections);
+    atomic_write(&collections_path, &content).await?;
+    Ok(collections.len())
+}
+
+/// Serialize collections to the canonical `collections.md` format.
+pub fn serialize_collections_md(collections: &[crate::models::Collection]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "---\nversion: \"{SCHEMA_VERSION}\"\nkind: collections\n---\n# Collections\n\n"
+    ));
+
+    for collection in collections {
+        out.push_str(&format!("## {}\n\n", collection.name));
+        out.push_str(&format!("- **id**: {}\n", collection.id));
+        if let Some(desc) = &collection.description {
+            out.push_str(&format!("- **description**: {desc}\n"));
+        }
+        out.push_str(&format!(
+            "- **created_at**: {}\n",
+            collection.created_at.to_rfc3339()
+        ));
+        out.push_str(&format!(
+            "- **updated_at**: {}\n",
+            collection.updated_at.to_rfc3339()
+        ));
+        out.push('\n');
+    }
+
+    out
 }
 
 fn format_status(status: TaskStatus) -> &'static str {

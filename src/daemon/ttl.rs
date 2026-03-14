@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 /// Base check interval for the expiry loop.
 ///
@@ -84,6 +84,7 @@ impl TtlTimer {
                 *poisoned.into_inner() = Instant::now();
             }
         }
+        trace!("ttl_activity_reset");
         debug!("idle TTL timer reset");
     }
 
@@ -128,6 +129,7 @@ impl TtlTimer {
 
         loop {
             tokio::time::sleep(effective_check).await;
+            debug!("ttl_timer_wake");
 
             let elapsed = match self.last_activity.lock() {
                 Ok(guard) => guard.elapsed(),

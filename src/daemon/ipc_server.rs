@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::watch;
 use tracing::{debug, error, info, instrument, warn};
+use uuid::Uuid;
 
 use crate::daemon::protocol::{IpcError as WireError, IpcRequest, IpcResponse};
 use crate::daemon::ttl::TtlTimer;
@@ -206,6 +207,11 @@ async fn handle_connection(
     state: SharedState,
     shutdown_tx: Arc<watch::Sender<bool>>,
 ) {
+    // T042: Connection health span – log establishment and closure for every
+    // IPC connection so that long-running sessions can be traced end-to-end.
+    let connection_id = Uuid::new_v4().to_string();
+    debug!(connection_id = %connection_id, "ipc_connection_established");
+
     let (recv_half, mut send_half) = stream.split();
     // Cap reads to MAX_REQUEST_BYTES + 1 bytes before buffering so that an
     // adversarial local client cannot force unbounded allocation before the
@@ -217,6 +223,7 @@ async fn handle_connection(
 
     let response = match reader.read_line(&mut line).await {
         Ok(0) => {
+            debug!(connection_id = %connection_id, "ipc_connection_closed");
             debug!("IPC connection closed before sending a request (EOF)");
             return;
         }
@@ -226,6 +233,7 @@ async fn handle_connection(
         Ok(_) => process_request(&line, &state, &shutdown_tx).await,
         Err(e) => {
             warn!(error = %e, "failed to read IPC request line");
+            debug!(connection_id = %connection_id, "ipc_connection_closed");
             return;
         }
     };
@@ -242,6 +250,8 @@ async fn handle_connection(
             error!(error = %e, "failed to serialize IPC response");
         }
     }
+
+    debug!(connection_id = %connection_id, "ipc_connection_closed");
 }
 
 /// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].

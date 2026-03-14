@@ -133,6 +133,10 @@ fn arb_workspace_config() -> impl Strategy<Value = WorkspaceConfig> {
                 allowed_labels: vec![],
                 allowed_types: vec![],
                 code_graph: CodeGraphConfig::default(),
+                event_ledger_max: 500,
+                allow_agent_rollback: false,
+                query_timeout_ms: 5_000,
+                query_row_limit: 1_000,
             },
         )
 }

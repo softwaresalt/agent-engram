@@ -31,6 +31,7 @@ impl Drop for ConnectionGuard {
         let state = self.state.clone();
         let id = std::mem::take(&mut self.connection_id);
         tokio::spawn(async move {
+            tracing::debug!(connection_id = %id, "sse_connection_closed");
             state.unregister_connection(&id).await;
         });
     }
@@ -51,6 +52,7 @@ pub async fn sse_handler(State(state): State<SharedState>) -> Response {
     // FR-003: Assign unique connection ID
     let connection_id = Uuid::new_v4().to_string();
     state.register_connection(connection_id.clone()).await;
+    tracing::debug!(connection_id = %connection_id, "sse_connection_established");
 
     // T095: Guard cleans up on stream end / client disconnect
     let guard = ConnectionGuard {

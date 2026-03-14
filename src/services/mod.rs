@@ -11,6 +11,8 @@ pub mod config;
 pub mod connection;
 pub mod dehydration;
 pub mod embedding;
+pub mod event_ledger;
+pub mod gate;
 pub mod hydration;
 pub mod output;
 pub mod parsing;

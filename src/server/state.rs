@@ -1,6 +1,20 @@
-use std::collections::HashMap;
+// RwLock Deadlock Audit (T041, 2026-03-09):
+// - All RwLock/Mutex guards are dropped before any `.await` point.
+//   `record_tool_latency` explicitly calls `drop(latencies)` before the
+//   atomic increment; `latency_percentiles` explicitly calls `drop(latencies)`
+//   before the sort.  All other guard acquisitions are either the sole await
+//   in a method or are released via implicit drop before the next await.
+// - Rust's `!Send` bound on `MutexGuard` / `RwLockGuard` would produce a
+//   compile-time error if any guard were held across an await in a multi-
+//   threaded context, providing a mechanical safety net on top of the audit.
+// - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
+//   need no locking at all.
+// - No lock is held across I/O operations.
+// Verdict: no deadlock potential identified.
+
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -75,6 +89,14 @@ pub struct AppState {
     rate_limiter: RateLimiter,
     indexing_in_progress: AtomicBool,
     last_indexed_at: RwLock<Option<DateTime<Utc>>>,
+    /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
+    query_latencies: RwLock<VecDeque<u64>>,
+    /// Total number of tool calls recorded since startup.
+    tool_call_count: AtomicU64,
+    /// Total number of file-watcher events seen since startup.
+    watcher_event_count: AtomicU64,
+    /// Timestamp of the most recently seen file-watcher event.
+    last_watcher_event: RwLock<Option<DateTime<Utc>>>,
 }
 
 impl AppState {
@@ -104,6 +126,10 @@ impl AppState {
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
             indexing_in_progress: AtomicBool::new(false),
             last_indexed_at: RwLock::new(None),
+            query_latencies: RwLock::new(VecDeque::new()),
+            tool_call_count: AtomicU64::new(0),
+            watcher_event_count: AtomicU64::new(0),
+            last_watcher_event: RwLock::new(None),
         }
     }
 
@@ -228,6 +254,66 @@ impl AppState {
     /// Get the timestamp of the last completed indexing operation.
     pub async fn last_indexed_at(&self) -> Option<DateTime<Utc>> {
         *self.last_indexed_at.read().await
+    }
+
+    // ── Observability ─────────────────────────────────────────────────────────
+
+    /// Record a tool-call latency sample (in microseconds) and increment the
+    /// tool-call counter.
+    ///
+    /// Keeps at most 1 000 samples in a rolling window; oldest entries are
+    /// evicted when the window is full.
+    pub async fn record_tool_latency(&self, micros: u64) {
+        let mut latencies = self.query_latencies.write().await;
+        if latencies.len() >= 1_000 {
+            latencies.pop_front();
+        }
+        latencies.push_back(micros);
+        drop(latencies);
+        self.tool_call_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Compute p50, p95, and p99 latency percentiles (in microseconds) from
+    /// the rolling 1 000-sample window.
+    ///
+    /// Returns `(0, 0, 0)` when no samples have been recorded yet.
+    pub async fn latency_percentiles(&self) -> (u64, u64, u64) {
+        let latencies = self.query_latencies.read().await;
+        if latencies.is_empty() {
+            return (0, 0, 0);
+        }
+        let mut sorted: Vec<u64> = latencies.iter().copied().collect();
+        drop(latencies);
+        sorted.sort_unstable();
+        let len = sorted.len();
+        let p50 = sorted[(len * 50 / 100).min(len - 1)];
+        let p95 = sorted[(len * 95 / 100).min(len - 1)];
+        let p99 = sorted[(len * 99 / 100).min(len - 1)];
+        (p50, p95, p99)
+    }
+
+    /// Return the total number of tool calls recorded since startup.
+    pub fn tool_call_count(&self) -> u64 {
+        self.tool_call_count.load(Ordering::Relaxed)
+    }
+
+    /// Increment the watcher-event counter and record the current UTC timestamp.
+    pub async fn record_watcher_event(&self) {
+        self.watcher_event_count.fetch_add(1, Ordering::Relaxed);
+        *self.last_watcher_event.write().await = Some(Utc::now());
+    }
+
+    /// Return `(event_count, last_event_rfc3339)`.
+    ///
+    /// `last_event_rfc3339` is `None` when no events have been recorded.
+    pub async fn watcher_stats(&self) -> (u64, Option<String>) {
+        let count = self.watcher_event_count.load(Ordering::Relaxed);
+        let last = self
+            .last_watcher_event
+            .read()
+            .await
+            .map(|dt| dt.to_rfc3339());
+        (count, last)
     }
 }
 

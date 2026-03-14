@@ -5,7 +5,7 @@
 //! (IDEs, agents) get accurate schema information before the daemon is ready
 //! and without an extra round-trip.
 //!
-//! All 35 tools registered in [`crate::tools::dispatch`] must appear here.
+//! All 43 tools registered in [`crate::tools::dispatch`] must appear here.
 //! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_dispatch`
 //! unit test so that catalog and dispatch stay in sync.
 
@@ -15,7 +15,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
 /// Total number of tools registered in the dispatch table and this catalog.
-pub const TOOL_COUNT: usize = 35;
+pub const TOOL_COUNT: usize = 43;
 
 /// Build a `serde_json::Map` from a JSON object literal.
 ///
@@ -662,6 +662,145 @@ pub fn all_tools() -> Vec<Tool> {
                 "required": ["symbol_name"]
             })),
         ),
+        // ── Observability ──────────────────────────────────────────────────
+        Tool::new(
+            "get_health_report",
+            "Return runtime health metrics for the daemon including memory usage, tool call counts, event processing statistics, and query latency percentiles (p50/p95/p99).",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        // ── Event Ledger ───────────────────────────────────────────────────
+        Tool::new(
+            "get_event_history",
+            "Return recent events from the workspace event ledger, optionally filtered by event kind or entity ID.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": "Filter events by kind (e.g. task_created, task_updated, rollback_applied)"
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Filter events by the ID of the affected entity"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of events to return (default 50)",
+                        "default": 50
+                    }
+                }
+            })),
+        ),
+        Tool::new(
+            "rollback_to_event",
+            "Revert workspace state to a previous event snapshot by reversing all events recorded after the target event. Requires allow_agent_rollback to be enabled in workspace config.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "ID of the event to roll back to (all later events are reversed)"
+                    }
+                },
+                "required": ["event_id"]
+            })),
+        ),
+        // ── Sandboxed Query ────────────────────────────────────────────────
+        Tool::new(
+            "query_graph",
+            "Execute a read-only SurrealQL SELECT query against the workspace graph database. Write operations (INSERT, UPDATE, DELETE, etc.) are rejected. Results are capped at the configured row limit.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "A SurrealQL SELECT statement to execute against the workspace database"
+                    },
+                    "params": {
+                        "description": "Reserved for future parameterised query support"
+                    }
+                },
+                "required": ["query"]
+            })),
+        ),
+        // ── Collections ────────────────────────────────────────────────────
+        Tool::new(
+            "create_collection",
+            "Create a named collection to group tasks and sub-collections into a logical hierarchy.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Unique name for the collection"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional human-readable description of the collection's purpose"
+                    }
+                },
+                "required": ["name"]
+            })),
+        ),
+        Tool::new(
+            "add_to_collection",
+            "Add tasks or sub-collections as members of a collection. Cycle detection prevents circular containment hierarchies.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "collection_id": {
+                        "type": "string",
+                        "description": "ID of the parent collection to add members to"
+                    },
+                    "member_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "IDs of tasks or collections to add as members"
+                    }
+                },
+                "required": ["collection_id", "member_ids"]
+            })),
+        ),
+        Tool::new(
+            "remove_from_collection",
+            "Remove tasks or sub-collections from a collection.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "collection_id": {
+                        "type": "string",
+                        "description": "ID of the collection to remove members from"
+                    },
+                    "member_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "IDs of tasks or collections to remove"
+                    }
+                },
+                "required": ["collection_id", "member_ids"]
+            })),
+        ),
+        Tool::new(
+            "get_collection_context",
+            "Return all tasks recursively contained in a collection hierarchy, with an optional status filter for narrowing results.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "collection_id": {
+                        "type": "string",
+                        "description": "ID of the collection to expand"
+                    },
+                    "status_filter": {
+                        "type": "string",
+                        "description": "Optional task status to filter by (e.g. in_progress, todo, done)"
+                    }
+                },
+                "required": ["collection_id"]
+            })),
+        ),
     ]
 }
 
@@ -738,6 +877,15 @@ mod tests {
             "get_active_context",
             "unified_search",
             "impact_analysis",
+            // Phase 005 additions
+            "get_health_report",
+            "get_event_history",
+            "rollback_to_event",
+            "query_graph",
+            "create_collection",
+            "add_to_collection",
+            "remove_from_collection",
+            "get_collection_context",
         ];
         assert_eq!(
             required.len(),

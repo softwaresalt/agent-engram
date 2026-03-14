@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 use crate::db::connect_db;
 use crate::db::queries::{CodeGraphQueries, Queries, ReadyWorkParams, SymbolFilter};
 use crate::errors::{
-    CodeGraphError, EngramError, QueryError, SystemError, TaskError, WorkspaceError,
+    CodeGraphError, EngramError, GraphQueryError, QueryError, SystemError, TaskError,
+    WorkspaceError,
 };
 use crate::models::config::CompactionConfig;
 use crate::models::task::Task;
@@ -1115,5 +1116,294 @@ pub async fn impact_analysis(
         "no_task_links": no_task_links,
         "effective_depth": effective_depth,
         "effective_max_nodes": effective_max_nodes,
+    }))
+}
+
+// ── T034: get_health_report ───────────────────────────────────────────────────
+
+/// Return a structured health report for the running daemon.
+///
+/// Does **not** require a workspace to be bound (S060) — all metrics are
+/// sourced from [`AppState`] and the host process memory via `sysinfo`.
+///
+/// # Errors
+///
+/// This function is infallible in practice but returns `Result` to satisfy
+/// the tool-dispatch contract.
+pub async fn get_health_report(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    use sysinfo::System;
+
+    let version = env!("CARGO_PKG_VERSION");
+    let uptime_secs = state.uptime_seconds();
+    let connections = state.active_connections();
+    let workspace_id = state.snapshot_workspace().await.map(|s| s.workspace_id);
+    let tool_call_count = state.tool_call_count();
+    let (p50, p95, p99) = state.latency_percentiles().await;
+    let (watcher_events, last_watcher_event) = state.watcher_stats().await;
+
+    let mut sys = System::new();
+    let pid = sysinfo::get_current_pid().ok();
+    if let Some(pid) = pid {
+        sys.refresh_process(pid);
+    }
+    let memory_mb = pid
+        .and_then(|pid| sys.process(pid))
+        .map(|proc| proc.memory() / 1_048_576);
+
+    Ok(json!({
+        "version": version,
+        "uptime_seconds": uptime_secs,
+        "active_connections": connections,
+        "workspace_id": workspace_id,
+        "tool_call_count": tool_call_count,
+        "latency_us": {
+            "p50": p50,
+            "p95": p95,
+            "p99": p99,
+        },
+        "memory_mb": memory_mb,
+        "watcher_events": watcher_events,
+        "last_watcher_event": last_watcher_event,
+    }))
+}
+
+// ── Event history ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetEventHistoryParams {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    entity_id: Option<String>,
+    #[serde(default = "default_event_limit")]
+    limit: u64,
+}
+
+fn default_event_limit() -> u64 {
+    50
+}
+
+/// Returns a page of events from the event ledger, with optional filters.
+pub async fn get_event_history(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: GetEventHistoryParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let events = queries
+        .list_events(
+            parsed.kind.as_deref(),
+            parsed.entity_id.as_deref(),
+            parsed.limit,
+        )
+        .await?;
+
+    let total = events.len() as u64;
+    let events_json: Vec<Value> = events
+        .into_iter()
+        .map(|e| {
+            serde_json::to_value(e).map_err(|err| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("event serialization failed: {err}"),
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(json!({
+        "events": events_json,
+        "total_count": total,
+        "limit": parsed.limit,
+    }))
+}
+
+// ── query_graph (T074) ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct QueryGraphParams {
+    query: String,
+    /// Reserved for future parameterised queries; accepted but not yet used.
+    #[serde(default)]
+    #[allow(dead_code)]
+    params: Option<serde_json::Value>,
+}
+
+/// Execute a sandboxed read-only SurrealQL query against the workspace graph.
+///
+/// The query is sanitised by [`crate::services::gate::sanitize_query`] before
+/// execution; any write keyword causes an immediate `QUERY_REJECTED` (4010)
+/// error. Execution is bounded by `query_timeout_ms` from [`WorkspaceConfig`]
+/// and results are capped at `query_row_limit` rows, with a `"truncated"` flag
+/// when the cap is applied.
+#[tracing::instrument(name = "tool.query_graph", skip(state, params))]
+pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    use std::time::Instant;
+
+    use crate::services::gate::sanitize_query;
+
+    let ws_id = workspace_id(&state).await?;
+
+    let parsed: QueryGraphParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    if parsed.query.trim().is_empty() {
+        return Err(EngramError::Query(QueryError::QueryEmpty));
+    }
+
+    // Sanitize: reject write operations before touching the DB.
+    sanitize_query(&parsed.query)?;
+
+    // Pull per-workspace limits (fall back to safe defaults if no config is loaded).
+    let (timeout_ms, row_limit) = state
+        .workspace_config()
+        .await
+        .map_or((5_000_u64, 1_000_usize), |c| {
+            (c.query_timeout_ms, c.query_row_limit)
+        });
+
+    let db = connect_db(&ws_id).await?;
+    let start = Instant::now();
+
+    // Inject a LIMIT clause to cap result-set materialization at the DB level.
+    // Fetch row_limit + 1 so we can detect truncation without loading everything.
+    let fetch_limit = row_limit + 1;
+    let bounded_query = inject_limit(&parsed.query, fetch_limit);
+
+    let timed = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        db.query(&bounded_query),
+    )
+    .await;
+
+    match timed {
+        Err(_elapsed) => Err(EngramError::GraphQuery(GraphQueryError::Timeout {
+            timeout_ms,
+        })),
+        Ok(Err(e)) => Err(EngramError::GraphQuery(GraphQueryError::Invalid {
+            reason: e.to_string(),
+        })),
+        Ok(Ok(mut response)) => {
+            // Fetch row_limit + 1 to detect truncation without materializing
+            // an unbounded result set. The user's query is already sanitized
+            // (read-only) but may lack a LIMIT clause.
+            let rows: Vec<serde_json::Value> = response.take(0).map_err(|e| {
+                EngramError::GraphQuery(GraphQueryError::Invalid {
+                    reason: e.to_string(),
+                })
+            })?;
+
+            let truncated = rows.len() > row_limit;
+            let returned_rows: Vec<serde_json::Value> = rows.into_iter().take(row_limit).collect();
+            let row_count = returned_rows.len() as u64;
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            Ok(json!({
+                "rows": returned_rows,
+                "row_count": row_count,
+                "truncated": truncated,
+                "elapsed_ms": elapsed_ms,
+            }))
+        }
+    }
+}
+
+/// Appends `LIMIT <n>` to a query when the user hasn't already specified one.
+///
+/// This ensures the DB never materializes an unbounded result set. If the query
+/// already contains a top-level LIMIT clause, it is left unchanged (the
+/// configured row_limit still caps the returned rows after the fact).
+fn inject_limit(query: &str, limit: usize) -> String {
+    let upper = query.to_uppercase();
+    // Only inject when the query lacks a top-level LIMIT (outside subqueries).
+    // Simple heuristic: check if "LIMIT" appears after the last closing paren.
+    let tail = upper.rfind(')').map_or(upper.as_str(), |pos| &upper[pos..]);
+    if tail.contains("LIMIT") {
+        query.to_string()
+    } else {
+        format!("{} LIMIT {limit}", query.trim_end_matches(';'))
+    }
+}
+
+// ── get_collection_context (T089) ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GetCollectionContextParams {
+    collection_id: String,
+    #[serde(default)]
+    status_filter: Option<String>,
+}
+
+/// Retrieve all tasks within a collection hierarchy (BFS, optional status filter).
+///
+/// Traverses `contains` edges recursively from the given collection, collecting
+/// tasks at every depth. An optional `status_filter` narrows results to tasks
+/// whose status string matches exactly (e.g. `"in_progress"`).
+///
+/// Returns `COLLECTION_NOT_FOUND` (3031) when the ID does not exist.
+#[tracing::instrument(name = "tool.get_collection_context", skip(state, params))]
+pub async fn get_collection_context(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: GetCollectionContextParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let collection = queries
+        .get_collection_by_id(&parsed.collection_id)
+        .await?
+        .ok_or_else(|| {
+            EngramError::Collection(crate::errors::CollectionError::NotFound {
+                name: parsed.collection_id.clone(),
+            })
+        })?;
+
+    let tasks = queries
+        .list_collection_members_recursive(&parsed.collection_id, parsed.status_filter.as_deref())
+        .await?;
+
+    let task_count = tasks.len() as u64;
+    let task_json: Vec<Value> = tasks
+        .into_iter()
+        .map(|t| {
+            json!({
+                "id": format!("task:{}", t.id),
+                "title": t.title,
+                "status": t.status.as_str(),
+                "priority": t.priority,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "collection_id": collection.id,
+        "name": collection.name,
+        "description": collection.description,
+        "task_count": task_count,
+        "tasks": task_json,
+        "sub_collections": [],
     }))
 }

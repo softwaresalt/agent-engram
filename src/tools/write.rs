@@ -10,12 +10,15 @@ use crate::db::connect_db;
 use crate::db::queries::Queries;
 use crate::errors::{CodeGraphError, EngramError, SystemError, TaskError, WorkspaceError};
 use crate::models::context::Context;
+use crate::models::event::EventKind;
 use crate::models::graph::DependencyType;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::server::state::SharedState;
 use crate::services::compaction::truncate_at_word_boundary;
 use crate::services::connection::create_status_change_note;
 use crate::services::dehydration;
+use crate::services::event_ledger;
+use crate::services::gate;
 use crate::services::hydration;
 
 #[derive(Deserialize)]
@@ -161,9 +164,23 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     let existing = get_task_or_hydrate(&queries, &parsed.id, &workspace_path).await?;
 
+    // Capture previous state before fields are moved into `updated`.
+    let previous_snapshot = serde_json::to_value(&existing).ok();
     let previous_status = existing.status;
 
     validate_transition(previous_status, new_status)?;
+
+    // Gate enforcement: reject in_progress transitions when hard blockers are
+    // incomplete (S001–S003, S010–S012).
+    let soft_warnings = if new_status == TaskStatus::InProgress {
+        let gate_result = gate::evaluate(&parsed.id, &queries).await?;
+        if gate_result.is_blocked() {
+            return Err(gate::blocked_error(&parsed.id, gate_result));
+        }
+        gate_result.warnings
+    } else {
+        Vec::new()
+    };
 
     // Validate issue_type against allowed_types if configured (FR-048)
     let issue_type = if let Some(ref new_type) = parsed.issue_type {
@@ -210,6 +227,26 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
 
     queries.upsert_task(&updated).await?;
 
+    // Record event — fire-and-forget; event failures must not fail the mutation.
+    let event_max = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::TaskUpdated,
+        "task",
+        &format!("task:{}", parsed.id),
+        previous_snapshot,
+        serde_json::to_value(&updated).ok(),
+        "mcp-tool",
+        event_max,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, task_id = %parsed.id, "event recording failed for update_task");
+    }
+
     // FR-015: always append a context note on task update
     let context_id = create_status_change_note(
         &queries,
@@ -221,13 +258,17 @@ pub async fn update_task(state: SharedState, params: Option<Value>) -> Result<Va
     )
     .await?;
 
-    Ok(json!({
+    let mut response = json!({
         "task_id": parsed.id,
         "previous_status": previous_status.as_str(),
         "new_status": new_status.as_str(),
         "context_id": context_id,
         "updated_at": now.to_rfc3339(),
-    }))
+    });
+    if !soft_warnings.is_empty() {
+        response["warnings"] = serde_json::Value::Array(soft_warnings);
+    }
+    Ok(response)
 }
 
 pub async fn add_blocker(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
@@ -365,6 +406,26 @@ pub async fn create_task(state: SharedState, params: Option<Value>) -> Result<Va
             parsed.issue_type.as_deref(),
         )
         .await?;
+
+    // Record event — fire-and-forget; event failures must not fail the mutation.
+    let event_max = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::TaskCreated,
+        "task",
+        &format!("task:{}", task.id),
+        None,
+        serde_json::to_value(&task).ok(),
+        "mcp-tool",
+        event_max,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, task_id = %task.id, "event recording failed for create_task");
+    }
 
     let mut response = json!({
         "task_id": task.id,
@@ -551,6 +612,35 @@ pub async fn add_dependency(
     queries
         .create_dependency(from_id, to_id, parsed.dependency_type)
         .await?;
+
+    // Record event — fire-and-forget.
+    let event_max = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::EdgeCreated,
+        "depends_on",
+        &format!("depends_on:{from_id}_{to_id}"),
+        None,
+        Some(serde_json::json!({
+            "from": from_id,
+            "to": to_id,
+            "type": parsed.dependency_type,
+        })),
+        "mcp-tool",
+        event_max,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %e,
+            from = %from_id,
+            to = %to_id,
+            "event recording failed for add_dependency"
+        );
+    }
 
     Ok(json!({
         "from_task_id": from_id,
@@ -1410,4 +1500,213 @@ mod tests {
         let result = validate_transition(TaskStatus::Done, TaskStatus::Blocked);
         assert!(result.is_err());
     }
+}
+
+// ── Rollback ─────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RollbackParams {
+    event_id: String,
+}
+
+/// Revert workspace state to the point immediately after a specific event.
+///
+/// Requires `allow_agent_rollback = true` in workspace config (disabled by
+/// default for safety). Returns the count of events reversed and the ID of
+/// the new `rollback_applied` event added to the ledger.
+pub async fn rollback_to_event(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: RollbackParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: format!("invalid params: {e}"),
+            })
+        })?;
+
+    let (allow_rollback, max_events) = state
+        .workspace_config()
+        .await
+        .map_or((false, 500_usize), |c| {
+            (c.allow_agent_rollback, c.event_ledger_max)
+        });
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let events = event_ledger::prepare_rollback(&queries, &parsed.event_id, allow_rollback).await?;
+    let (reversed_count, rollback_event_id) =
+        event_ledger::apply_rollback(&queries, events, &parsed.event_id, "mcp-tool", max_events)
+            .await?;
+
+    Ok(json!({
+        "events_reversed": reversed_count,
+        "rollback_event_id": rollback_event_id,
+        "target_event_id": parsed.event_id,
+    }))
+}
+
+// ── Collection Write Tools (T086–T088) ────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateCollectionParams {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AddToCollectionParams {
+    collection_id: String,
+    member_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RemoveFromCollectionParams {
+    collection_id: String,
+    member_ids: Vec<String>,
+}
+
+/// Create a named collection for grouping tasks and sub-collections.
+///
+/// Returns `COLLECTION_EXISTS` (3030) if a collection with the same name
+/// already exists in this workspace.
+#[tracing::instrument(name = "tool.create_collection", skip(state, params))]
+pub async fn create_collection(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: CreateCollectionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    if parsed.name.trim().is_empty() {
+        return Err(EngramError::System(SystemError::InvalidParams {
+            reason: "name must not be empty".to_string(),
+        }));
+    }
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+    let collection = queries
+        .create_collection(&parsed.name, parsed.description.as_deref())
+        .await?;
+
+    let max_events = state
+        .workspace_config()
+        .await
+        .map_or(500, |c| c.event_ledger_max);
+    if let Err(e) = event_ledger::record_event(
+        &queries,
+        EventKind::CollectionCreated,
+        "collection",
+        &collection.id,
+        None,
+        serde_json::to_value(&collection).ok(),
+        "mcp-tool",
+        max_events,
+    )
+    .await
+    {
+        tracing::warn!("event recording failed: {e}");
+    }
+
+    Ok(json!({
+        "collection_id": collection.id,
+        "name": collection.name,
+        "description": collection.description,
+        "created_at": collection.created_at.to_rfc3339(),
+    }))
+}
+
+/// Add tasks or sub-collections to an existing collection.
+///
+/// Checks cycle safety before creating any `contains` edges. Returns
+/// `CYCLIC_COLLECTION` (3032) if adding would create a cycle.
+#[tracing::instrument(name = "tool.add_to_collection", skip(state, params))]
+pub async fn add_to_collection(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: AddToCollectionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    // Verify the target collection exists.
+    queries
+        .get_collection_by_id(&parsed.collection_id)
+        .await?
+        .ok_or_else(|| {
+            EngramError::Collection(crate::errors::CollectionError::NotFound {
+                name: parsed.collection_id.clone(),
+            })
+        })?;
+
+    // Guard against cyclic nesting (collection members only).
+    for member_id in &parsed.member_ids {
+        if member_id.starts_with("collection:")
+            && queries
+                .check_collection_cycle(&parsed.collection_id, member_id)
+                .await?
+        {
+            return Err(EngramError::Collection(
+                crate::errors::CollectionError::CyclicCollection {
+                    name: member_id.clone(),
+                },
+            ));
+        }
+    }
+
+    let (added, already) = queries
+        .add_collection_members(&parsed.collection_id, &parsed.member_ids)
+        .await?;
+
+    Ok(json!({
+        "collection_id": parsed.collection_id,
+        "added": added,
+        "already_members": already,
+    }))
+}
+
+/// Remove tasks or sub-collections from a collection.
+///
+/// Non-member IDs are counted in `not_members` and silently skipped.
+#[tracing::instrument(name = "tool.remove_from_collection", skip(state, params))]
+pub async fn remove_from_collection(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_id = workspace_id(&state).await?;
+    let parsed: RemoveFromCollectionParams = serde_json::from_value(params.unwrap_or_default())
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let (removed, not_member) = queries
+        .remove_collection_members(&parsed.collection_id, &parsed.member_ids)
+        .await?;
+
+    Ok(json!({
+        "collection_id": parsed.collection_id,
+        "removed": removed,
+        "not_members": not_member,
+    }))
 }

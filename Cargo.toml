@@ -29,6 +29,10 @@ serde_json = "1"
 pulldown-cmark = "0.10"
 fastembed = { version = "3", optional = true, default-features = false }
 ort-sys = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native"] }
+tracing-opentelemetry = { version = "0.26", optional = true }
+opentelemetry = { version = "0.26", optional = true }
+opentelemetry_sdk = { version = "0.26", optional = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.26", optional = true, features = ["grpc-tonic"] }
 thiserror = "1"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -51,6 +55,7 @@ ignore = "0.4"
 [features]
 default = []
 embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 # Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
 # Not required for normal operation; the daemon uses IPC transport by default.
 # See docs/adrs/0016-legacy-sse-feature-gate.md.
@@ -192,3 +197,43 @@ path = "tests/integration/security_test.rs"
 [[test]]
 name = "integration_recovery"
 path = "tests/integration/recovery_test.rs"
+
+[[test]]
+name = "contract_gate"
+path = "tests/contract/gate_test.rs"
+
+[[test]]
+name = "contract_observability"
+path = "tests/contract/observability_test.rs"
+
+[[test]]
+name = "contract_event"
+path = "tests/contract/event_test.rs"
+
+[[test]]
+name = "contract_query"
+path = "tests/contract/query_test.rs"
+
+[[test]]
+name = "contract_collection"
+path = "tests/contract/collection_test.rs"
+
+[[test]]
+name = "integration_gate"
+path = "tests/integration/gate_integration_test.rs"
+
+[[test]]
+name = "integration_rollback"
+path = "tests/integration/rollback_test.rs"
+
+[[test]]
+name = "integration_reliability"
+path = "tests/integration/reliability_test.rs"
+
+[[test]]
+name = "unit_proptest_events"
+path = "tests/unit/proptest_events.rs"
+
+[[test]]
+name = "integration_smoke"
+path = "tests/integration/smoke_test.rs"

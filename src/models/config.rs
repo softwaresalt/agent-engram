@@ -27,6 +27,27 @@ pub struct WorkspaceConfig {
     /// Code graph indexing and traversal settings.
     #[serde(default)]
     pub code_graph: CodeGraphConfig,
+    /// Maximum number of events retained in the event ledger.
+    ///
+    /// When the ledger exceeds this count, the oldest events are pruned.
+    #[serde(default = "default_event_ledger_max")]
+    pub event_ledger_max: usize,
+    /// Whether MCP clients are permitted to invoke `rollback_to_event`.
+    ///
+    /// Disabled by default for safety; enable via `.engram/config.toml`.
+    #[serde(default)]
+    pub allow_agent_rollback: bool,
+    /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).
+    ///
+    /// Queries that exceed this limit are cancelled with a `QUERY_TIMEOUT` error.
+    #[serde(default = "default_query_timeout_ms")]
+    pub query_timeout_ms: u64,
+    /// Maximum number of rows returned by a single sandboxed graph query.
+    ///
+    /// Results beyond this limit are truncated and the response sets
+    /// `"truncated": true`.
+    #[serde(default = "default_query_row_limit")]
+    pub query_row_limit: usize,
 }
 
 impl Default for WorkspaceConfig {
@@ -38,6 +59,10 @@ impl Default for WorkspaceConfig {
             allowed_labels: Vec::new(),
             allowed_types: Vec::new(),
             code_graph: CodeGraphConfig::default(),
+            event_ledger_max: default_event_ledger_max(),
+            allow_agent_rollback: false,
+            query_timeout_ms: default_query_timeout_ms(),
+            query_row_limit: default_query_row_limit(),
         }
     }
 }
@@ -84,6 +109,18 @@ impl Default for BatchConfig {
 
 fn default_priority() -> String {
     "p2".to_owned()
+}
+
+const fn default_event_ledger_max() -> usize {
+    500
+}
+
+const fn default_query_timeout_ms() -> u64 {
+    5_000
+}
+
+const fn default_query_row_limit() -> usize {
+    1_000
 }
 
 const fn default_threshold_days() -> u32 {
