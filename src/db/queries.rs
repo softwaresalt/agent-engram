@@ -540,10 +540,6 @@ impl Queries {
         let to = Thing::from(("task", blocker));
         let kind_str = format_dependency(kind).to_string();
 
-        #[derive(Deserialize)]
-        struct CountRow {
-            count: u64,
-        }
         let existing: Vec<CountRow> = self
             .db
             .query(

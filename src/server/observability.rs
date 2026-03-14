@@ -44,13 +44,8 @@ pub fn build_otlp_layer(
 
 /// No-op when the `otlp-export` feature is not compiled in.
 ///
-/// Returns `None`, signalling the caller that no OTLP layer is available.
+/// Returns `Ok(())`, signalling the caller that no OTLP layer is available.
 #[cfg(not(feature = "otlp-export"))]
-pub fn build_otlp_layer(
-    _endpoint: &str,
-) -> Result<
-    Option<Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>>,
-    Box<dyn std::error::Error + Send + Sync>,
-> {
-    Ok(None)
+pub fn build_otlp_layer(_endpoint: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Ok(())
 }
