@@ -61,6 +61,7 @@ async fn send_ok(endpoint: &str, id: i64, method: &str, params: Option<Value>) -
 /// Exercise the complete tool chain: workspace status → task CRUD → flush →
 /// health report → graceful shutdown.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn smoke_full_tool_chain_over_ipc() {
     // ── Step 0: Spawn daemon ──────────────────────────────────────────────
     let mut harness = DaemonHarness::spawn(Duration::from_secs(15))
