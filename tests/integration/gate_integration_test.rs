@@ -102,10 +102,10 @@ async fn t019_multiple_direct_blockers_all_returned() {
     }
 }
 
-/// S011: When both hard_blocker and soft_dependency edges exist, the hard failure
+/// S011: When both `hard_blocker` and `soft_dependency` edges exist, the hard failure
 /// takes precedence and soft warnings are suppressed.
 ///
-/// Graph: `target` → `hard-dep` (hard_blocker, todo), `target` → `soft-dep` (soft_dependency, todo).
+/// Graph: `target` → `hard-dep` (`hard_blocker`, todo), `target` → `soft-dep` (`soft_dependency`, todo).
 ///
 /// The gate must return blockers for `hard-dep` and an empty warnings list.
 #[tokio::test]
