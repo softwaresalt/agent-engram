@@ -25,7 +25,7 @@ call add_dependency { "from_id": "task:impl-id", "to_id": "task:review-id", "typ
 
 # Attempt to start Implementation (should fail with TASK_BLOCKED)
 call update_task { "id": "task:impl-id", "status": "in_progress" }
-# Expected: Error 3010 — TASK_BLOCKED citing Design Review
+# Expected: Error 3015 — TASK_BLOCKED citing Design Review
 
 # Complete the blocker, then retry
 call update_task { "id": "task:review-id", "status": "done" }

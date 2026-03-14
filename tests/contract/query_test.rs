@@ -142,6 +142,9 @@ fn t070b_unterminated_string_literal_rejected() {
 fn t070c_unterminated_single_quote_rejected() {
     let result =
         engram::services::gate::sanitize_query("SELECT * FROM task WHERE x = 'DELETE task:A");
-    assert!(result.is_err(), "unterminated single-quote must be rejected");
+    assert!(
+        result.is_err(),
+        "unterminated single-quote must be rejected"
+    );
     assert_eq!(result.unwrap_err().to_response().error.code, 4012);
 }

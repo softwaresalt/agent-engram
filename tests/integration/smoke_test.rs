@@ -21,7 +21,7 @@ use std::time::Duration;
 use engram::daemon::protocol::IpcRequest;
 use engram::shim::ipc_client::send_request;
 use engram::shim::lifecycle::check_health;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[path = "../helpers/mod.rs"]
 mod helpers;
@@ -98,7 +98,9 @@ async fn smoke_full_tool_chain_over_ipc() {
         task_result["task_id"].is_string(),
         "create_task must return a task_id"
     );
-    let task_id = task_result["task_id"].as_str().expect("task_id is a string");
+    let task_id = task_result["task_id"]
+        .as_str()
+        .expect("task_id is a string");
     assert!(!task_id.is_empty(), "task_id must not be empty");
     assert_eq!(
         task_result["title"], "smoke test task",

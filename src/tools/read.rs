@@ -1144,13 +1144,14 @@ pub async fn get_health_report(
     let (p50, p95, p99) = state.latency_percentiles().await;
     let (watcher_events, last_watcher_event) = state.watcher_stats().await;
 
-    let mut sys = System::new_all();
-    sys.refresh_memory();
+    let mut sys = System::new();
     let pid = sysinfo::get_current_pid().ok();
+    if let Some(pid) = pid {
+        sys.refresh_process(pid);
+    }
     let memory_mb = pid
         .and_then(|pid| sys.process(pid))
-        .map(|proc| proc.memory() / 1_048_576)
-        .unwrap_or(0);
+        .map(|proc| proc.memory() / 1_048_576);
 
     Ok(json!({
         "version": version,
@@ -1212,8 +1213,14 @@ pub async fn get_event_history(
     let total = events.len() as u64;
     let events_json: Vec<Value> = events
         .into_iter()
-        .map(|e| serde_json::to_value(e).unwrap_or_default())
-        .collect();
+        .map(|e| {
+            serde_json::to_value(e).map_err(|err| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("event serialization failed: {err}"),
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(json!({
         "events": events_json,
@@ -1273,9 +1280,14 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
     let db = connect_db(&ws_id).await?;
     let start = Instant::now();
 
+    // Inject a LIMIT clause to cap result-set materialization at the DB level.
+    // Fetch row_limit + 1 so we can detect truncation without loading everything.
+    let fetch_limit = row_limit + 1;
+    let bounded_query = inject_limit(&parsed.query, fetch_limit);
+
     let timed = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
-        db.query(&parsed.query),
+        db.query(&bounded_query),
     )
     .await;
 
@@ -1287,6 +1299,9 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
             reason: e.to_string(),
         })),
         Ok(Ok(mut response)) => {
+            // Fetch row_limit + 1 to detect truncation without materializing
+            // an unbounded result set. The user's query is already sanitized
+            // (read-only) but may lack a LIMIT clause.
             let rows: Vec<serde_json::Value> = response.take(0).map_err(|e| {
                 EngramError::GraphQuery(GraphQueryError::Invalid {
                     reason: e.to_string(),
@@ -1305,6 +1320,23 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
                 "elapsed_ms": elapsed_ms,
             }))
         }
+    }
+}
+
+/// Appends `LIMIT <n>` to a query when the user hasn't already specified one.
+///
+/// This ensures the DB never materializes an unbounded result set. If the query
+/// already contains a top-level LIMIT clause, it is left unchanged (the
+/// configured row_limit still caps the returned rows after the fact).
+fn inject_limit(query: &str, limit: usize) -> String {
+    let upper = query.to_uppercase();
+    // Only inject when the query lacks a top-level LIMIT (outside subqueries).
+    // Simple heuristic: check if "LIMIT" appears after the last closing paren.
+    let tail = upper.rfind(')').map_or(upper.as_str(), |pos| &upper[pos..]);
+    if tail.contains("LIMIT") {
+        query.to_string()
+    } else {
+        format!("{} LIMIT {limit}", query.trim_end_matches(';'))
     }
 }
 

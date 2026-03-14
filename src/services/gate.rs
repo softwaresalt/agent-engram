@@ -145,7 +145,9 @@ fn strip_string_literals(input: &str) -> Result<String, crate::errors::EngramErr
             }
             if !closed {
                 return Err(EngramError::GraphQuery(GraphQueryError::Invalid {
-                    reason: format!("unterminated string literal (opening {c} has no closing match)"),
+                    reason: format!(
+                        "unterminated string literal (opening {c} has no closing match)"
+                    ),
                 }));
             }
         } else {

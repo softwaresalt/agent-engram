@@ -20,9 +20,10 @@ Execute a sandboxed read-only query against the workspace graph.
 **Output Schema**:
 ```json
 {
-  "results": "array — query result rows",
+  "rows": "array — query result rows",
   "row_count": "integer — number of rows returned",
-  "truncated": "boolean — true if results were limited by query_row_limit"
+  "truncated": "boolean — true if results were limited by query_row_limit",
+  "elapsed_ms": "integer — query execution time in milliseconds"
 }
 ```
 
@@ -43,8 +44,7 @@ Retrieve recent events from the event ledger.
 {
   "entity_id": "string (optional) — filter by target entity ID",
   "kind": "string (optional) — filter by event kind",
-  "limit": "integer (optional, default 50) — max events to return",
-  "offset": "integer (optional, default 0) — pagination offset"
+  "limit": "integer (optional, default 50) — max events to return"
 }
 ```
 
@@ -62,7 +62,7 @@ Retrieve recent events from the event ledger.
     }
   ],
   "total_count": "integer",
-  "ledger_max": "integer — configured retention limit"
+  "limit": "integer — requested limit"
 }
 ```
 
@@ -234,18 +234,17 @@ Extended daemon health with latency percentiles, watcher status, and memory.
 {
   "version": "string",
   "uptime_seconds": "integer",
-  "memory_bytes": "integer",
   "active_connections": "integer",
-  "active_workspaces": "integer",
+  "workspace_id": "string | null",
   "tool_call_count": "integer",
-  "query_latency_p50_ms": "number",
-  "query_latency_p95_ms": "number",
-  "query_latency_p99_ms": "number",
-  "watcher_status": "string — active | degraded | disabled",
-  "watcher_event_count": "integer",
-  "watcher_last_event_ago_ms": "integer | null",
-  "event_ledger_count": "integer",
-  "event_ledger_max": "integer"
+  "latency_us": {
+    "p50": "integer",
+    "p95": "integer",
+    "p99": "integer"
+  },
+  "memory_mb": "integer | null — process RSS; null if lookup fails",
+  "watcher_events": "integer",
+  "last_watcher_event": "string | null — ISO 8601 timestamp"
 }
 ```
 
@@ -257,7 +256,7 @@ Extended daemon health with latency percentiles, watcher status, and memory.
 ### update_task (modified)
 
 **New error codes**:
-- `TASK_BLOCKED` (3010): Task has unresolved hard_blocker dependencies
+- `TASK_BLOCKED` (3015): Task has unresolved hard_blocker dependencies
 
 **New response fields** (added to existing response):
 ```json
@@ -275,4 +274,4 @@ Extended daemon health with latency percentiles, watcher status, and memory.
 ### add_dependency (modified)
 
 **New error codes**:
-- `CYCLIC_DEPENDENCY` (3011): Adding this edge would create a dependency cycle
+- `CYCLIC_DEPENDENCY` (3003): Adding this edge would create a dependency cycle

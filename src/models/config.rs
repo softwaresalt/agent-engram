@@ -30,13 +30,11 @@ pub struct WorkspaceConfig {
     /// Maximum number of events retained in the event ledger.
     ///
     /// When the ledger exceeds this count, the oldest events are pruned.
-    /// Corresponds to `ENGRAM_EVENT_LEDGER_MAX` in the global CLI config.
     #[serde(default = "default_event_ledger_max")]
     pub event_ledger_max: usize,
     /// Whether MCP clients are permitted to invoke `rollback_to_event`.
     ///
-    /// Disabled by default for safety; enable via `.engram/config.toml`
-    /// or the `ENGRAM_ALLOW_AGENT_ROLLBACK` environment variable.
+    /// Disabled by default for safety; enable via `.engram/config.toml`.
     #[serde(default)]
     pub allow_agent_rollback: bool,
     /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).

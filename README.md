@@ -93,10 +93,10 @@ These settings are per-workspace and stored in `.engram/config.toml`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `event_ledger_max` | `1000` | Maximum number of events retained in the event ledger before oldest events are pruned |
+| `event_ledger_max` | `500` | Maximum number of events retained in the event ledger before oldest events are pruned |
 | `allow_agent_rollback` | `false` | Allow agents to call `rollback_to_event` to revert workspace state |
 | `query_timeout_ms` | `5000` | Timeout in milliseconds for `query_graph` sandboxed queries |
-| `query_row_limit` | `500` | Maximum rows returned by a `query_graph` call |
+| `query_row_limit` | `1000` | Maximum rows returned by a `query_graph` call |
 
 ```bash
 # Example with custom configuration
@@ -203,9 +203,9 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 | 1xxx | Workspace | `1001` WorkspaceNotFound, `1003` WorkspaceNotSet |
 | 2xxx | Hydration | `2001` HydrationFailed, `2004` StaleWorkspace |
 | 3xxx | Task | `3001` TaskNotFound, `3003` CyclicDependency, `3015` TaskBlocked |
-| 3xxx | Event | `3020` EventNotFound, `3021` RollbackDenied, `3022` NothingToRollback |
-| 3xxx | Collection | `3030` CollectionNotFound, `3031` CollectionAlreadyExists, `3032` CollectionCycleDetected |
-| 4xxx | Query | `4001` QueryTooLong, `4002` ModelNotLoaded, `4010` QueryRejected, `4011` QueryTimeout, `4012` QueryRowLimitExceeded |
+| 3xxx | Event | `3020` RollbackDenied, `3021` EventNotFound, `3022` RollbackConflict |
+| 3xxx | Collection | `3030` CollectionAlreadyExists, `3031` CollectionNotFound, `3032` CollectionCycleDetected |
+| 4xxx | Query | `4001` QueryTooLong, `4002` ModelNotLoaded, `4010` QueryRejected, `4011` QueryTimeout, `4012` QueryInvalid |
 | 5xxx | System | `5001` DatabaseError, `5003` RateLimited |
 
 See [contracts/error-codes.md](specs/001-core-mcp-daemon/contracts/error-codes.md) for the full taxonomy.

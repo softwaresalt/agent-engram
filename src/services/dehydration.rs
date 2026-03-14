@@ -590,7 +590,9 @@ pub async fn dehydrate_collections(
 /// Serialize collections to the canonical `collections.md` format.
 pub fn serialize_collections_md(collections: &[crate::models::Collection]) -> String {
     let mut out = String::new();
-    out.push_str("---\nversion: \"2.0.0\"\nkind: collections\n---\n# Collections\n\n");
+    out.push_str(&format!(
+        "---\nversion: \"{SCHEMA_VERSION}\"\nkind: collections\n---\n# Collections\n\n"
+    ));
 
     for collection in collections {
         out.push_str(&format!("## {}\n\n", collection.name));

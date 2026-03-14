@@ -1,22 +1,29 @@
 //! OTLP trace export setup (behind the `otlp-export` Cargo feature flag).
 //!
 //! When the `ENGRAM_OTLP_ENDPOINT` environment variable is set and the
-//! `otlp-export` feature is compiled in, this module configures a
-//! `tracing-opentelemetry` layer on the global tracing subscriber that
-//! exports spans to the configured OpenTelemetry collector via gRPC.
+//! `otlp-export` feature is compiled in, this module builds a
+//! `tracing-opentelemetry` layer that the caller can attach to an
+//! existing subscriber via `tracing_subscriber::layer::SubscriberExt`.
 //!
 //! See `specs/005-lifecycle-observability/spec.md` User Story 2 for requirements.
 
-/// Configure and install an OTLP gRPC span exporter pointing at `endpoint`.
+/// Build an OTLP gRPC tracing layer pointing at `endpoint`.
 ///
-/// This is a no-op when the `otlp-export` Cargo feature is not compiled in.
+/// Returns a `Box<dyn Layer>` that the caller should attach to the global
+/// subscriber via `.with(layer)` — this function does **not** install its
+/// own global subscriber, preserving composability with existing fmt/filter
+/// layers set up by `init_tracing`.
 ///
 /// # Errors
 ///
-/// Returns an error if the exporter cannot be built or if installing the
-/// global tracing subscriber fails (e.g., one was already installed).
+/// Returns an error if the exporter cannot be built.
 #[cfg(feature = "otlp-export")]
-pub fn init_otlp_layer(endpoint: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn build_otlp_layer(
+    endpoint: &str,
+) -> Result<
+    Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::trace::SdkTracerProvider;
 
@@ -32,15 +39,18 @@ pub fn init_otlp_layer(endpoint: &str) -> Result<(), Box<dyn std::error::Error +
     let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "engram");
     let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
-    use tracing_subscriber::layer::SubscriberExt;
-    let subscriber = tracing_subscriber::registry().with(telemetry);
-    tracing::subscriber::set_global_default(subscriber)?;
-
-    Ok(())
+    Ok(Box::new(telemetry))
 }
 
 /// No-op when the `otlp-export` feature is not compiled in.
+///
+/// Returns `None`, signalling the caller that no OTLP layer is available.
 #[cfg(not(feature = "otlp-export"))]
-pub fn init_otlp_layer(_endpoint: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    Ok(())
+pub fn build_otlp_layer(
+    _endpoint: &str,
+) -> Result<
+    Option<Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    Ok(None)
 }
