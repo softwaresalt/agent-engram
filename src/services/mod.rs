@@ -16,4 +16,5 @@ pub mod gate;
 pub mod hydration;
 pub mod output;
 pub mod parsing;
+pub mod registry;
 pub mod search;

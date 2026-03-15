@@ -42,14 +42,14 @@
 
 ### Tests
 
-- [ ] T011 [P] Unit test for registry YAML parsing in tests/unit/registry_parse_test.rs — test valid YAML, invalid YAML (S008), empty sources (S005), max_file_size validation (S011, S012), batch_size validation
-- [ ] T012 [P] Unit test for proptest serialization round-trips for new models in tests/unit/proptest_content.rs — ContentSource, ContentRecord, BacklogFile, CommitNode
+- [x] T011 [P] Unit test for registry YAML parsing in tests/unit/registry_parse_test.rs — test valid YAML, invalid YAML (S008), empty sources (S005), max_file_size validation (S011, S012), batch_size validation
+- [x] T012 [P] Unit test for proptest serialization round-trips for new models in tests/unit/proptest_content.rs — ContentSource, ContentRecord, BacklogFile, CommitNode
 
 ### Implementation
 
-- [ ] T013 Implement RegistryConfig::from_yaml() parser in src/services/registry.rs — parse `.engram/registry.yaml` via serde_yaml, validate max_file_size_bytes (> 0, ≤ 100MB), validate batch_size (> 0, ≤ 500), return RegistryConfig or EngramError::RegistryParse
-- [ ] T014 Implement ContentSource path validation in src/services/registry.rs — canonicalize path, reject paths outside workspace root (S009), resolve symlinks and validate targets (S010), detect duplicate paths (S007), set ContentSourceStatus
-- [ ] T015 Add content_record and commit_node queries to src/db/queries.rs — CRUD for ContentRecord (upsert by file_path, select by content_type, select all), CRUD for CommitNode (upsert by hash, select by date range, select by file path via changes array)
+- [x] T013 Implement RegistryConfig::from_yaml() parser in src/services/registry.rs — parse `.engram/registry.yaml` via serde_yaml, validate max_file_size_bytes (> 0, ≤ 100MB), validate batch_size (> 0, ≤ 500), return RegistryConfig or EngramError::RegistryParse
+- [x] T014 Implement ContentSource path validation in src/services/registry.rs — canonicalize path, reject paths outside workspace root (S009), resolve symlinks and validate targets (S010), detect duplicate paths (S007), set ContentSourceStatus
+- [x] T015 Add content_record and commit_node queries to src/db/queries.rs — CRUD for ContentRecord (upsert by file_path, select by content_type, select all), CRUD for CommitNode (upsert by hash, select by date range, select by file path via changes array)
 
 **Checkpoint**: Foundation ready — user story implementation can now begin in parallel
 

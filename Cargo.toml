@@ -240,3 +240,11 @@ path = "tests/unit/proptest_events.rs"
 [[test]]
 name = "integration_smoke"
 path = "tests/integration/smoke_test.rs"
+
+[[test]]
+name = "unit_registry_parse"
+path = "tests/unit/registry_parse_test.rs"
+
+[[test]]
+name = "unit_proptest_content"
+path = "tests/unit/proptest_content.rs"
