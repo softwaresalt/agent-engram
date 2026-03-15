@@ -1,6 +1,8 @@
 //! Numeric error code constants for structured MCP error responses.
 //!
-//! Ranges: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system, 6xxx config.
+//! Ranges: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query,
+//! 5xxx system, 6xxx config, 7xxx code graph, 8xxx IPC/daemon,
+//! 9xxx installer, 10xxx registry, 11xxx ingestion, 12xxx git graph.
 
 /// Workspace error codes
 pub const WORKSPACE_NOT_FOUND: u16 = 1001;
@@ -90,3 +92,14 @@ pub const UPDATE_FAILED: u16 = 9002;
 pub const UNINSTALL_FAILED: u16 = 9003;
 pub const ALREADY_INSTALLED: u16 = 9004;
 pub const NOT_INSTALLED: u16 = 9005;
+
+/// Content registry error codes (10xxx)
+pub const REGISTRY_PARSE_FAILED: u16 = 10_001;
+pub const REGISTRY_VALIDATION_FAILED: u16 = 10_002;
+
+/// Content ingestion error codes (11xxx)
+pub const INGESTION_FAILED: u16 = 11_001;
+
+/// Git commit graph error codes (12xxx)
+pub const GIT_NOT_FOUND: u16 = 12_001;
+pub const GIT_ACCESS_ERROR: u16 = 12_002;

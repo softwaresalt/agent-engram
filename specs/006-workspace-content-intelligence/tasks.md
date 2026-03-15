@@ -19,16 +19,16 @@
 
 **Purpose**: New dependencies, models, error variants, and DB schema additions required by all user stories
 
-- [ ] T001 Add `serde_yaml` 0.9 dependency to Cargo.toml
-- [ ] T002 Add `git2` 0.19 dependency behind `git-graph` feature flag in Cargo.toml
-- [ ] T003 [P] Create ContentSource and RegistryConfig models in src/models/registry.rs — struct definitions with serde Serialize/Deserialize, Debug, Clone, PartialEq; ContentSourceStatus enum (Unknown, Active, Missing, Error)
-- [ ] T004 [P] Create ContentRecord model in src/models/content.rs — struct with content_type, file_path, content_hash, content, embedding, source_path, file_size_bytes, ingested_at fields
-- [ ] T005 [P] Create BacklogFile, BacklogArtifacts, BacklogItem, ProjectManifest, BacklogRef models in src/models/backlog.rs — structs with serde derives matching data-model.md schema
-- [ ] T006 [P] Create CommitNode, ChangeRecord, ChangeType models in src/models/commit.rs — CommitNode with hash, author, timestamp, message, parent_hashes, changes; ChangeType enum (Add, Modify, Delete, Rename)
-- [ ] T007 Register new model modules in src/models/mod.rs — add pub mod registry, content, backlog, commit with re-exports
-- [ ] T008 Add Registry, Ingestion, and Git error variants to EngramError in src/errors/mod.rs — RegistryParse, RegistryValidation, IngestionFailed, GitNotFound, GitAccessError with appropriate error codes
-- [ ] T009 Add error code constants for new variants in src/errors/codes.rs — 6xxx registry, 7xxx ingestion, 8xxx git
-- [ ] T010 Add content_record and commit_node table definitions to src/db/schema.rs — DEFINE TABLE, DEFINE FIELD, DEFINE INDEX statements matching data-model.md SurrealDB schema
+- [x] T001 Add `serde_yaml` 0.9 dependency to Cargo.toml
+- [x] T002 Add `git2` 0.19 dependency behind `git-graph` feature flag in Cargo.toml
+- [x] T003 [P] Create ContentSource and RegistryConfig models in src/models/registry.rs — struct definitions with serde Serialize/Deserialize, Debug, Clone, PartialEq; ContentSourceStatus enum (Unknown, Active, Missing, Error)
+- [x] T004 [P] Create ContentRecord model in src/models/content.rs — struct with content_type, file_path, content_hash, content, embedding, source_path, file_size_bytes, ingested_at fields
+- [x] T005 [P] Create BacklogFile, BacklogArtifacts, BacklogItem, ProjectManifest, BacklogRef models in src/models/backlog.rs — structs with serde derives matching data-model.md schema
+- [x] T006 [P] Create CommitNode, ChangeRecord, ChangeType models in src/models/commit.rs — CommitNode with hash, author, timestamp, message, parent_hashes, changes; ChangeType enum (Add, Modify, Delete, Rename)
+- [x] T007 Register new model modules in src/models/mod.rs — add pub mod registry, content, backlog, commit with re-exports
+- [x] T008 Add Registry, Ingestion, and Git error variants to EngramError in src/errors/mod.rs — RegistryParse, RegistryValidation, IngestionFailed, GitNotFound, GitAccessError with appropriate error codes
+- [x] T009 Add error code constants for new variants in src/errors/codes.rs — 6xxx registry, 7xxx ingestion, 8xxx git
+- [x] T010 Add content_record and commit_node table definitions to src/db/schema.rs — DEFINE TABLE, DEFINE FIELD, DEFINE INDEX statements matching data-model.md SurrealDB schema
 
 **Checkpoint**: All models, error types, and DB schema ready — implementation phases can begin
 
@@ -221,7 +221,7 @@ Phase 1 (Setup)
     │
 Phase 2 (Foundation)
     │
-    ├── Phase 3 (US1: Registry) ────────────────────┐
+    ├── Phase 3 (US1: Registry) ─────────────────────┐
     │       │                                        │
     │       ├── Phase 4 (US2: Ingestion)             │
     │       │       │                                │

@@ -51,10 +51,13 @@ toml = "0.8"
 tree-sitter = "0.24"
 tree-sitter-rust = "0.23"
 ignore = "0.4"
+serde_yaml = "0.9"
+git2 = { version = "0.19", optional = true, default-features = false }
 
 [features]
 default = []
 embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+git-graph = ["git2"]
 otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 # Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
 # Not required for normal operation; the daemon uses IPC transport by default.
