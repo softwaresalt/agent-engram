@@ -189,6 +189,12 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
                             "watcher: source file changed — pending for next sync_workspace"
                         );
                     }
+                    crate::daemon::debounce::ServiceAction::ReingestContent { path } => {
+                        tracing::debug!(
+                            path = %path.display(),
+                            "watcher: content file changed — pending for re-ingestion"
+                        );
+                    }
                     crate::daemon::debounce::ServiceAction::Skip => {}
                 }
             }

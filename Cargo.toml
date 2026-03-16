@@ -256,3 +256,11 @@ path = "tests/contract/registry_test.rs"
 [[test]]
 name = "integration_registry"
 path = "tests/integration/registry_test.rs"
+
+[[test]]
+name = "contract_content"
+path = "tests/contract/content_test.rs"
+
+[[test]]
+name = "integration_ingestion"
+path = "tests/integration/ingestion_test.rs"

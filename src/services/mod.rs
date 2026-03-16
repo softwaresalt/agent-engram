@@ -14,6 +14,7 @@ pub mod embedding;
 pub mod event_ledger;
 pub mod gate;
 pub mod hydration;
+pub mod ingestion;
 pub mod output;
 pub mod parsing;
 pub mod registry;

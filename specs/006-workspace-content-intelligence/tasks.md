@@ -84,17 +84,17 @@
 
 ### Tests for User Story 2
 
-- [ ] T021 [P] [US2] Contract test for content ingestion and type-filtered search in tests/contract/content_test.rs — verify S015 (code source routes to code graph), S016 (spec source creates ContentRecords), S028 (query_memory with content_type filter), S029 (unknown type returns empty), S030 (unified_search without filter returns all types)
-- [ ] T022 [P] [US2] Integration test for multi-source ingestion pipeline in tests/integration/ingestion_test.rs — verify S017 (docs ingestion), S018 (re-ingest changed file), S019 (skip unchanged), S020 (skip oversized), S021-S022 (1MB boundary), S023 (empty file), S024 (500 files in batches), S025 (binary file skip), S031 (overlapping paths dedup)
+- [x] T021 [P] [US2] Contract test for content ingestion and type-filtered search in tests/contract/content_test.rs — verify S015 (code source routes to code graph), S016 (spec source creates ContentRecords), S028 (query_memory with content_type filter), S029 (unknown type returns empty), S030 (unified_search without filter returns all types)
+- [x] T022 [P] [US2] Integration test for multi-source ingestion pipeline in tests/integration/ingestion_test.rs — verify S017 (docs ingestion), S018 (re-ingest changed file), S019 (skip unchanged), S020 (skip oversized), S021-S022 (1MB boundary), S023 (empty file), S024 (500 files in batches), S025 (binary file skip), S031 (overlapping paths dedup)
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Implement ingestion pipeline in src/services/ingestion.rs — walk registered source paths, compute content_hash (SHA-256), skip files > max_file_size, skip binary files, batch processing (configurable batch_size), upsert ContentRecords in SurrealDB, route type=code entries to existing code graph indexer, emit tracing spans for batch progress
-- [ ] T024 [US2] Implement change detection for incremental sync in src/services/ingestion.rs — compare content_hash of existing ContentRecords with current file hash, re-ingest only changed files (S018), handle deleted files (remove ContentRecord), handle new files (create ContentRecord)
-- [ ] T024a [US2] Integrate file watcher with ingestion pipeline in src/services/ingestion.rs — bridge the existing `notify` file watcher to trigger re-ingestion on file change events in registered source paths (FR-007), filter events to registered paths only, debounce rapid changes
-- [ ] T025 [US2] Add content_type filter parameter to query_memory in src/tools/read.rs — optional content_type parameter, when provided add WHERE content_type = $type to content_record query, backward-compatible (omitted = search all)
-- [ ] T026 [US2] Add content_type filter and source annotation to unified_search in src/tools/read.rs — optional content_type parameter, annotate results with content_type and source_path fields
-- [ ] T027 [US2] Integrate ingestion into hydration pipeline in src/services/hydration.rs — after registry validation, trigger ingestion for all Active sources, emit progress tracing
+- [x] T023 [US2] Implement ingestion pipeline in src/services/ingestion.rs — walk registered source paths, compute content_hash (SHA-256), skip files > max_file_size, skip binary files, batch processing (configurable batch_size), upsert ContentRecords in SurrealDB, route type=code entries to existing code graph indexer, emit tracing spans for batch progress
+- [x] T024 [US2] Implement change detection for incremental sync in src/services/ingestion.rs — compare content_hash of existing ContentRecords with current file hash, re-ingest only changed files (S018), handle deleted files (remove ContentRecord), handle new files (create ContentRecord)
+- [x] T024a [US2] Integrate file watcher with ingestion pipeline in src/services/ingestion.rs — bridge the existing `notify` file watcher to trigger re-ingestion on file change events in registered source paths (FR-007), filter events to registered paths only, debounce rapid changes
+- [x] T025 [US2] Add content_type filter parameter to query_memory in src/tools/read.rs — optional content_type parameter, when provided add WHERE content_type = $type to content_record query, backward-compatible (omitted = search all)
+- [x] T026 [US2] Add content_type filter and source annotation to unified_search in src/tools/read.rs — optional content_type parameter, annotate results with content_type and source_path fields
+- [x] T027 [US2] Integrate ingestion into hydration pipeline in src/services/hydration.rs — after registry validation, trigger ingestion for all Active sources, emit progress tracing
 
 **Checkpoint**: Multi-source content is ingested, partitioned, and searchable by type.
 

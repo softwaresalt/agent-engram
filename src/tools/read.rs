@@ -342,6 +342,9 @@ struct QueryMemoryParams {
     query: String,
     #[serde(default = "default_limit")]
     limit: usize,
+    /// Optional content type filter (e.g. "spec", "docs", "tests").
+    #[serde(default)]
+    content_type: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -403,6 +406,19 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
             source_type: "context".to_string(),
             content: ctx.content,
             embedding: ctx.embedding,
+        });
+    }
+
+    // Include content records, optionally filtered by content_type.
+    let content_records = queries
+        .select_content_records(parsed.content_type.as_deref())
+        .await?;
+    for cr in content_records {
+        candidates.push(SearchCandidate {
+            id: format!("content_record:{}", cr.id),
+            source_type: cr.content_type,
+            content: cr.content,
+            embedding: cr.embedding,
         });
     }
 
@@ -794,6 +810,9 @@ struct UnifiedSearchParams {
     region: String,
     #[serde(default = "default_unified_limit")]
     limit: usize,
+    /// Optional content type filter for content records.
+    #[serde(default)]
+    content_type: Option<String>,
 }
 
 fn default_unified_region() -> String {
@@ -982,6 +1001,36 @@ pub async fn unified_search(
                     line_range: None,
                     status: Some(task.status.as_str().to_string()),
                     linked_symbols: Some(linked),
+                });
+            }
+        }
+
+        // Search content records (keyword scoring, same as tasks).
+        let content_records = queries
+            .select_content_records(parsed.content_type.as_deref())
+            .await?;
+        for cr in content_records {
+            if query_words.is_empty() {
+                continue;
+            }
+            let haystack = cr.content.to_lowercase();
+            let matched = query_words
+                .iter()
+                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+                .count();
+            let score = matched as f32 / query_words.len() as f32;
+            if score > 0.0 {
+                results.push(UnifiedSearchResult {
+                    region: SearchRegion::Task,
+                    score,
+                    node_type: cr.content_type.clone(),
+                    id: format!("content_record:{}", cr.id),
+                    title: None,
+                    summary: Some(truncate_summary(&cr.content, 200)),
+                    file_path: Some(cr.file_path),
+                    line_range: None,
+                    status: None,
+                    linked_symbols: None,
                 });
             }
         }

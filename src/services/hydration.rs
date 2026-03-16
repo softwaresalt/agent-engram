@@ -225,6 +225,26 @@ pub async fn hydrate_into_db(
         }
     }
 
+    // Ingest content from registered sources (006-workspace-content-intelligence).
+    let registry_path = engram_dir.join("registry.yaml");
+    if let Ok(Some(mut config)) = load_registry(&registry_path) {
+        if validate_sources(&mut config, path).is_ok() {
+            match crate::services::ingestion::ingest_all_sources(&config, path, queries).await {
+                Ok(summary) => {
+                    info!(
+                        ingested = summary.ingested,
+                        unchanged = summary.unchanged,
+                        total = summary.total_files,
+                        "Content ingestion complete during hydration"
+                    );
+                }
+                Err(e) => {
+                    warn!("Content ingestion failed during hydration: {e}");
+                }
+            }
+        }
+    }
+
     Ok(HydrationResult {
         tasks_loaded,
         edges_loaded,
