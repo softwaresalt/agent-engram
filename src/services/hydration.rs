@@ -1268,6 +1268,200 @@ fn parse_status(raw: &str) -> Option<TaskStatus> {
     }
 }
 
+// ── SpecKit-aware rehydration (006-workspace-content-intelligence) ────────────
+
+use crate::models::backlog::{BacklogArtifacts, BacklogFile, BacklogRef, ProjectManifest};
+
+/// Scan `specs/` for SpecKit feature directories matching `NNN-feature-name`.
+///
+/// Returns a list of [`BacklogFile`] structs, one per feature directory found.
+/// Directories not matching the `NNN-` prefix pattern are ignored (S039).
+/// Returns an empty vec if `specs/` does not exist (S038 legacy fallback).
+pub fn scan_speckit_features(workspace_root: &Path) -> Vec<BacklogFile> {
+    let specs_dir = workspace_root.join("specs");
+    if !specs_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut features = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(&specs_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+
+        // Match NNN-feature-name pattern.
+        let Some((num_str, rest)) = dir_name.split_once('-') else {
+            continue;
+        };
+        if num_str.len() != 3 || !num_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let feature_dir = entry.path();
+        let artifacts = read_speckit_artifacts(&feature_dir);
+
+        // Extract title from spec.md first line if available.
+        let title = artifacts
+            .spec
+            .as_deref()
+            .and_then(|s| s.lines().next())
+            .map(|l| l.trim_start_matches('#').trim().to_owned())
+            .unwrap_or_else(|| rest.replace('-', " "));
+
+        features.push(BacklogFile {
+            id: num_str.to_owned(),
+            name: rest.to_owned(),
+            title,
+            git_branch: dir_name.clone(),
+            spec_path: format!("specs/{dir_name}"),
+            description: String::new(),
+            status: "draft".to_owned(),
+            spec_status: "draft".to_owned(),
+            artifacts,
+            items: Vec::new(),
+        });
+    }
+
+    features
+}
+
+/// Read all known SpecKit artifact files from a feature directory.
+fn read_speckit_artifacts(feature_dir: &Path) -> BacklogArtifacts {
+    let read = |filename: &str| -> Option<String> {
+        let path = feature_dir.join(filename);
+        std::fs::read_to_string(&path).ok()
+    };
+
+    BacklogArtifacts {
+        spec: read("spec.md"),
+        plan: read("plan.md"),
+        tasks: read("tasks.md"),
+        scenarios: read("SCENARIOS.md"),
+        research: read("research.md"),
+        analysis: read("ANALYSIS.md"),
+        data_model: read("data-model.md"),
+        quickstart: read("quickstart.md"),
+    }
+}
+
+/// Public accessor for `read_speckit_artifacts` used by dehydration.
+pub fn read_speckit_artifacts_pub(feature_dir: &Path) -> BacklogArtifacts {
+    read_speckit_artifacts(feature_dir)
+}
+
+/// Read existing backlog JSON files from `.engram/` and return them.
+///
+/// Malformed JSON files are logged and skipped (S040).
+pub fn read_backlog_files(engram_dir: &Path) -> Vec<BacklogFile> {
+    let mut backlogs = Vec::new();
+
+    if !engram_dir.is_dir() {
+        return backlogs;
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(engram_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.starts_with("backlog-")
+                && e.path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let path = entry.path();
+        match std::fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<BacklogFile>(&content) {
+                Ok(backlog) => backlogs.push(backlog),
+                Err(e) => {
+                    warn!(
+                        path = %path.display(),
+                        "Malformed backlog JSON, skipping: {e}"
+                    );
+                }
+            },
+            Err(e) => {
+                warn!(path = %path.display(), "Cannot read backlog file: {e}");
+            }
+        }
+    }
+
+    backlogs
+}
+
+/// Build a [`ProjectManifest`] from workspace metadata and backlog files.
+pub fn build_project_manifest(workspace_root: &Path, backlogs: &[BacklogFile]) -> ProjectManifest {
+    // Try to get project name from Cargo.toml or directory name.
+    let name = workspace_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    // Try to get git remote URL.
+    let repository_url = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(workspace_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            } else {
+                None
+            }
+        });
+
+    // Try to get default branch.
+    let default_branch = std::process::Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .current_dir(workspace_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "main".to_owned());
+
+    let backlog_refs: Vec<BacklogRef> = backlogs
+        .iter()
+        .map(|b| BacklogRef {
+            id: b.id.clone(),
+            path: format!(".engram/backlog-{}.json", b.id),
+        })
+        .collect();
+
+    ProjectManifest {
+        name,
+        description: String::new(),
+        repository_url,
+        default_branch,
+        backlogs: backlog_refs,
+    }
+}
+
+/// Check whether the workspace has SpecKit feature directories.
+///
+/// Returns `true` if `specs/` exists and contains at least one
+/// directory matching the `NNN-feature-name` pattern.
+pub fn has_speckit_features(workspace_root: &Path) -> bool {
+    !scan_speckit_features(workspace_root).is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

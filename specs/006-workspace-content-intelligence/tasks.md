@@ -108,16 +108,16 @@
 
 ### Tests for User Story 3
 
-- [ ] T028 [P] [US3] Contract test for SpecKit hydration contracts in tests/contract/content_test.rs — verify S032 (single feature dir → backlog JSON), S034 (project.json creation), S035 (partial artifacts → null fields), S038 (no specs dir → legacy fallback), S039 (non-SpecKit dir ignored)
-- [ ] T029 [P] [US3] Integration test for SpecKit rehydration/dehydration cycle in tests/integration/backlog_test.rs — verify S033 (multiple feature dirs), S036 (new artifact added), S037 (dehydrate task update), S040 (invalid JSON parse error), S041 (deleted feature dir → preserve archive), S042 (git remote URL in manifest), S043 (no git → null URL)
+- [x] T028 [P] [US3] Contract test for SpecKit hydration contracts in tests/contract/content_test.rs — verify S032 (single feature dir → backlog JSON), S034 (project.json creation), S035 (partial artifacts → null fields), S038 (no specs dir → legacy fallback), S039 (non-SpecKit dir ignored)
+- [x] T029 [P] [US3] Integration test for SpecKit rehydration/dehydration cycle in tests/integration/backlog_test.rs — verify S033 (multiple feature dirs), S036 (new artifact added), S037 (dehydrate task update), S040 (invalid JSON parse error), S041 (deleted feature dir → preserve archive), S042 (git remote URL in manifest), S043 (no git → null URL)
 
 ### Implementation for User Story 3
 
-- [ ] T030 [US3] Implement SpecKit feature directory scanner in src/services/hydration.rs — scan specs/ for NNN-feature-name directories, read each directory's artifacts (spec.md, plan.md, tasks.md, SCENARIOS.md, research.md, ANALYSIS.md, data-model.md, quickstart.md), construct BacklogFile structs
-- [ ] T031 [US3] Implement backlog JSON writer in src/services/dehydration.rs — serialize BacklogFile to `.engram/backlog-NNN.json`, serialize ProjectManifest to `.engram/project.json`, use atomic temp-file-then-rename writes per Constitution VI
-- [ ] T032 [US3] Implement backlog JSON reader in src/services/hydration.rs — on hydration, read existing `.engram/backlog-NNN.json` files, parse into BacklogFile structs, load into SurrealDB task/context records, handle malformed JSON gracefully (S040)
-- [ ] T033 [US3] Implement dehydration trigger for task updates in src/services/dehydration.rs — when task records change in SurrealDB, update the corresponding backlog JSON, preserve other artifact contents unchanged
-- [ ] T034 [US3] Implement legacy fallback detection in src/services/hydration.rs — if no SpecKit directories found, skip backlog JSON path, use legacy .engram/tasks.md hydration
+- [x] T030 [US3] Implement SpecKit feature directory scanner in src/services/hydration.rs — scan specs/ for NNN-feature-name directories, read each directory's artifacts (spec.md, plan.md, tasks.md, SCENARIOS.md, research.md, ANALYSIS.md, data-model.md, quickstart.md), construct BacklogFile structs
+- [x] T031 [US3] Implement backlog JSON writer in src/services/dehydration.rs — serialize BacklogFile to `.engram/backlog-NNN.json`, serialize ProjectManifest to `.engram/project.json`, use atomic temp-file-then-rename writes per Constitution VI
+- [x] T032 [US3] Implement backlog JSON reader in src/services/hydration.rs — on hydration, read existing `.engram/backlog-NNN.json` files, parse into BacklogFile structs, load into SurrealDB task/context records, handle malformed JSON gracefully (S040)
+- [x] T033 [US3] Implement dehydration trigger for task updates in src/services/dehydration.rs — when task records change in SurrealDB, update the corresponding backlog JSON, preserve other artifact contents unchanged
+- [x] T034 [US3] Implement legacy fallback detection in src/services/hydration.rs — if no SpecKit directories found, skip backlog JSON path, use legacy .engram/tasks.md hydration
 
 **Checkpoint**: SpecKit workspaces round-trip through hydration/dehydration with full artifact preservation.
 

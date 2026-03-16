@@ -853,6 +853,102 @@ pub fn serialize_edges_jsonl(edges: &[CodeEdge]) -> String {
     }
 }
 
+// ── SpecKit backlog dehydration (006-workspace-content-intelligence) ──────────
+
+use crate::models::backlog::{BacklogFile, ProjectManifest};
+
+/// Write all backlog JSON files and the project manifest to `.engram/`.
+///
+/// Each [`BacklogFile`] is serialized to `.engram/backlog-NNN.json`.
+/// The [`ProjectManifest`] is serialized to `.engram/project.json`.
+/// Uses atomic temp-file-then-rename writes per Constitution VI.
+pub async fn dehydrate_backlogs(
+    workspace_path: &Path,
+    backlogs: &[BacklogFile],
+    manifest: &ProjectManifest,
+) -> Result<usize, EngramError> {
+    let engram_dir = workspace_path.join(".engram");
+    tokio::fs::create_dir_all(&engram_dir)
+        .await
+        .map_err(|_| flush_err(&engram_dir))?;
+
+    let mut written = 0;
+
+    for backlog in backlogs {
+        let filename = format!("backlog-{}.json", backlog.id);
+        let path = engram_dir.join(&filename);
+        let json = serde_json::to_string_pretty(backlog).map_err(|e| {
+            EngramError::System(SystemError::FlushFailed {
+                path: format!("serialize {filename}: {e}"),
+            })
+        })?;
+        atomic_write(&path, &json).await?;
+        written += 1;
+    }
+
+    // Write project manifest.
+    let manifest_path = engram_dir.join("project.json");
+    let manifest_json = serde_json::to_string_pretty(manifest).map_err(|e| {
+        EngramError::System(SystemError::FlushFailed {
+            path: format!("serialize project.json: {e}"),
+        })
+    })?;
+    atomic_write(&manifest_path, &manifest_json).await?;
+
+    Ok(written)
+}
+
+/// Update a single backlog JSON file after a task change.
+///
+/// Reads the existing backlog, replaces the artifacts section with
+/// fresh content from the spec directory, and writes it back atomically.
+/// If the spec directory no longer exists (S041), the existing JSON
+/// is preserved unchanged.
+pub async fn update_backlog_for_feature(
+    workspace_path: &Path,
+    feature_id: &str,
+) -> Result<bool, EngramError> {
+    let engram_dir = workspace_path.join(".engram");
+    let backlog_path = engram_dir.join(format!("backlog-{feature_id}.json"));
+
+    if !backlog_path.exists() {
+        return Ok(false);
+    }
+
+    // Read existing backlog.
+    let content = tokio::fs::read_to_string(&backlog_path)
+        .await
+        .map_err(|_| flush_err(&backlog_path))?;
+    let mut backlog: BacklogFile = serde_json::from_str(&content).map_err(|e| {
+        EngramError::System(SystemError::FlushFailed {
+            path: format!("parse {}: {e}", backlog_path.display()),
+        })
+    })?;
+
+    // Check if the spec directory still exists.
+    let spec_dir = workspace_path.join(&backlog.spec_path);
+    if !spec_dir.is_dir() {
+        tracing::warn!(
+            feature_id,
+            "Spec directory no longer exists; preserving existing backlog JSON"
+        );
+        return Ok(false);
+    }
+
+    // Refresh artifacts from disk.
+    backlog.artifacts = crate::services::hydration::read_speckit_artifacts_pub(&spec_dir);
+
+    // Write back atomically.
+    let json = serde_json::to_string_pretty(&backlog).map_err(|e| {
+        EngramError::System(SystemError::FlushFailed {
+            path: format!("serialize backlog-{feature_id}.json: {e}"),
+        })
+    })?;
+    atomic_write(&backlog_path, &json).await?;
+
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;

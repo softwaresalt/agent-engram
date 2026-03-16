@@ -59,3 +59,100 @@ fn multiple_content_types_coexist() {
         .collect();
     assert_eq!(types, vec!["spec", "docs", "code"]);
 }
+
+// ── SpecKit hydration contract tests (T028) ────────────────────────
+
+/// S032: Single feature dir produces backlog with artifacts.
+#[test]
+fn single_feature_dir_produces_backlog() {
+    use engram::services::hydration::scan_speckit_features;
+    use std::fs;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path();
+    let feature = ws.join("specs").join("001-core-mcp-daemon");
+    fs::create_dir_all(&feature).unwrap();
+    fs::write(feature.join("spec.md"), "# Core MCP Daemon\nDescription").unwrap();
+    fs::write(feature.join("plan.md"), "# Plan\nArchitecture").unwrap();
+
+    let backlogs = scan_speckit_features(ws);
+    assert_eq!(backlogs.len(), 1);
+    assert_eq!(backlogs[0].id, "001");
+    assert_eq!(backlogs[0].name, "core-mcp-daemon");
+    assert!(backlogs[0].artifacts.spec.is_some());
+    assert!(backlogs[0].artifacts.plan.is_some());
+    assert!(backlogs[0].artifacts.tasks.is_none());
+}
+
+/// S034: Project manifest created with backlog references.
+#[test]
+fn project_manifest_references_backlogs() {
+    use engram::services::hydration::{build_project_manifest, scan_speckit_features};
+    use std::fs;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path();
+    fs::create_dir_all(ws.join("specs").join("001-test")).unwrap();
+    fs::write(ws.join("specs").join("001-test").join("spec.md"), "# Test").unwrap();
+
+    let backlogs = scan_speckit_features(ws);
+    let manifest = build_project_manifest(ws, &backlogs);
+    assert_eq!(manifest.backlogs.len(), 1);
+    assert_eq!(manifest.backlogs[0].id, "001");
+    assert!(manifest.backlogs[0].path.contains("backlog-001.json"));
+}
+
+/// S035: Partial artifacts produce null fields.
+#[test]
+fn partial_artifacts_produce_none() {
+    use engram::services::hydration::scan_speckit_features;
+    use std::fs;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path();
+    let feature = ws.join("specs").join("002-partial");
+    fs::create_dir_all(&feature).unwrap();
+    fs::write(feature.join("spec.md"), "# Partial").unwrap();
+    // No plan.md, no tasks.md, no SCENARIOS.md
+
+    let backlogs = scan_speckit_features(ws);
+    assert_eq!(backlogs.len(), 1);
+    assert!(backlogs[0].artifacts.spec.is_some());
+    assert!(backlogs[0].artifacts.plan.is_none());
+    assert!(backlogs[0].artifacts.tasks.is_none());
+    assert!(backlogs[0].artifacts.scenarios.is_none());
+}
+
+/// S038: No specs directory returns empty (legacy fallback).
+#[test]
+fn no_specs_dir_returns_empty() {
+    use engram::services::hydration::scan_speckit_features;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let backlogs = scan_speckit_features(dir.path());
+    assert!(backlogs.is_empty());
+}
+
+/// S039: Non-SpecKit directory in specs/ is ignored.
+#[test]
+fn non_speckit_dir_ignored() {
+    use engram::services::hydration::scan_speckit_features;
+    use std::fs;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path();
+    fs::create_dir_all(ws.join("specs").join("random-notes")).unwrap();
+    fs::write(
+        ws.join("specs").join("random-notes").join("notes.md"),
+        "random",
+    )
+    .unwrap();
+
+    let backlogs = scan_speckit_features(ws);
+    assert!(backlogs.is_empty());
+}

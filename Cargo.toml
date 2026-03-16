@@ -264,3 +264,7 @@ path = "tests/contract/content_test.rs"
 [[test]]
 name = "integration_ingestion"
 path = "tests/integration/ingestion_test.rs"
+
+[[test]]
+name = "integration_backlog"
+path = "tests/integration/backlog_test.rs"
