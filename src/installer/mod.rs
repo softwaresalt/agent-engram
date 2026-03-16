@@ -51,6 +51,48 @@ pub async fn is_daemon_running(workspace: &Path) -> bool {
     check_health(&endpoint).await
 }
 
+// ── Registry auto-detection ──────────────────────────────────────────────────
+
+/// Known directory mappings for auto-detection.
+const AUTO_DETECT_DIRS: &[(&str, &str, Option<&str>)] = &[
+    ("src", "code", Some("rust")),
+    ("tests", "tests", Some("rust")),
+    ("specs", "spec", Some("markdown")),
+    ("docs", "docs", Some("markdown")),
+    (".context", "context", Some("markdown")),
+    (".github", "instructions", Some("markdown")),
+    (".copilot-tracking", "memory", Some("markdown")),
+];
+
+/// Scan `workspace` for common directories and generate a default
+/// `.engram/registry.yaml` with auto-detected content source entries.
+fn generate_default_registry(workspace: &Path, engram_dir: &Path) -> Result<(), EngramError> {
+    let mut entries = Vec::new();
+
+    for &(dir_name, content_type, language) in AUTO_DETECT_DIRS {
+        if workspace.join(dir_name).is_dir() {
+            let mut entry = format!("  - type: {content_type}\n    path: {dir_name}\n");
+            if let Some(lang) = language {
+                entry = format!(
+                    "  - type: {content_type}\n    language: {lang}\n    path: {dir_name}\n"
+                );
+            }
+            entries.push(entry);
+        }
+    }
+
+    let yaml = if entries.is_empty() {
+        "sources: []\n".to_owned()
+    } else {
+        format!("sources:\n{}", entries.join(""))
+    };
+
+    let registry_path = engram_dir.join("registry.yaml");
+    write_file(&registry_path, &yaml)?;
+    info!(sources = entries.len(), "generated default registry.yaml");
+    Ok(())
+}
+
 // ── Private file-system helpers ───────────────────────────────────────────────
 
 /// Write `contents` to `path`, creating all parent directories first.
@@ -176,6 +218,9 @@ pub async fn install(workspace: &Path) -> Result<(), EngramError> {
             })?;
         }
     }
+
+    // Generate default registry.yaml by auto-detecting workspace structure.
+    generate_default_registry(workspace, &engram_dir)?;
 
     info!("engram plugin installed successfully");
     Ok(())

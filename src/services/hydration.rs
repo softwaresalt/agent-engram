@@ -3,6 +3,7 @@
 //! Parses human-readable Markdown (`tasks.md`) and SurrealQL (`graph.surql`)
 //! files, populating the database for runtime queries. Supports stale file
 //! detection and corruption recovery by re-hydrating from canonical files.
+//! Also loads the content registry (`registry.yaml`) when present.
 
 use std::collections::HashMap;
 use std::fs;
@@ -10,12 +11,15 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+use tracing::{info, warn};
 
 use crate::db::queries::Queries;
 use crate::errors::{EngramError, HydrationError};
 use crate::models::graph::DependencyType;
+use crate::models::registry::RegistryConfig;
 use crate::models::task::{Task, TaskStatus, compute_priority_order};
 use crate::services::dehydration::SCHEMA_VERSION;
+use crate::services::registry::{load_registry, validate_sources};
 
 #[derive(Debug, Clone, Default)]
 pub struct HydrationSummary {
@@ -24,6 +28,8 @@ pub struct HydrationSummary {
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub file_mtimes: HashMap<String, FileFingerprint>,
+    /// Loaded content registry (None if no registry.yaml found).
+    pub registry: Option<RegistryConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,12 +117,41 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
         }
     }
 
+    // Load and validate content registry if present.
+    let registry_path = engram_dir.join("registry.yaml");
+    let registry = match load_registry(&registry_path) {
+        Ok(Some(mut config)) => {
+            match validate_sources(&mut config, path) {
+                Ok(active) => {
+                    info!(
+                        active,
+                        total = config.sources.len(),
+                        "Registry loaded and validated"
+                    );
+                }
+                Err(e) => {
+                    warn!("Registry validation failed: {e}");
+                }
+            }
+            Some(config)
+        }
+        Ok(None) => {
+            info!("No registry.yaml found; using legacy hydration");
+            None
+        }
+        Err(e) => {
+            warn!("Failed to load registry.yaml: {e}");
+            None
+        }
+    };
+
     Ok(HydrationSummary {
         task_count,
         context_count,
         last_flush,
         stale_files,
         file_mtimes,
+        registry,
     })
 }
 

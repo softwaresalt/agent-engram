@@ -248,3 +248,11 @@ path = "tests/unit/registry_parse_test.rs"
 [[test]]
 name = "unit_proptest_content"
 path = "tests/unit/proptest_content.rs"
+
+[[test]]
+name = "contract_registry"
+path = "tests/contract/registry_test.rs"
+
+[[test]]
+name = "integration_registry"
+path = "tests/integration/registry_test.rs"

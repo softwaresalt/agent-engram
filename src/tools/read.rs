@@ -225,7 +225,40 @@ pub async fn get_workspace_statistics(
 
     let statistics = queries.get_workspace_statistics().await?;
 
-    Ok(json!({
+    // Build registry status from workspace state if available.
+    let registry_status = {
+        let snapshot = state.snapshot_workspace().await;
+        if let Some(ref snap) = snapshot {
+            let ws_path = std::path::Path::new(&snap.path);
+            let registry_path = ws_path.join(".engram").join("registry.yaml");
+            match crate::services::registry::load_registry(&registry_path) {
+                Ok(Some(mut config)) => {
+                    let _ = crate::services::registry::validate_sources(&mut config, ws_path);
+                    let sources: Vec<serde_json::Value> = config
+                        .sources
+                        .iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "content_type": s.content_type,
+                                "language": s.language,
+                                "path": s.path,
+                                "status": s.status.as_str(),
+                            })
+                        })
+                        .collect();
+                    Some(serde_json::json!({
+                        "sources": sources,
+                        "total_sources": config.sources.len(),
+                    }))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    let mut result = json!({
         "total_tasks": statistics.total_tasks,
         "by_status": statistics.by_status,
         "by_priority": statistics.by_priority,
@@ -235,7 +268,16 @@ pub async fn get_workspace_statistics(
         "pinned_count": statistics.pinned_count,
         "claimed_count": statistics.claimed_count,
         "compacted_count": statistics.compacted_count,
-    }))
+    });
+
+    if let Some(reg) = registry_status {
+        result
+            .as_object_mut()
+            .expect("result is always an object")
+            .insert("registry".to_owned(), reg);
+    }
+
+    Ok(result)
 }
 
 // ── Compaction candidates ────────────────────────────────────────────────

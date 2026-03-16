@@ -63,14 +63,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T016 [P] [US1] Contract test for registry loading and validation in tests/contract/registry_test.rs — verify S001 (valid 3-source registry), S004 (missing path warning), S005 (empty sources fallback), S006 (no registry file), S007 (duplicate paths), S009 (path traversal rejection), S014 (built-in type validation)
-- [ ] T017 [P] [US1] Integration test for installer registry auto-detection in tests/integration/registry_test.rs — verify S002 (auto-detect src/tests/specs/docs), S013 (no recognizable dirs → empty sources)
+- [x] T016 [P] [US1] Contract test for registry loading and validation in tests/contract/registry_test.rs — verify S001 (valid 3-source registry), S004 (missing path warning), S005 (empty sources fallback), S006 (no registry file), S007 (duplicate paths), S009 (path traversal rejection), S014 (built-in type validation)
+- [x] T017 [P] [US1] Integration test for installer registry auto-detection in tests/integration/registry_test.rs — verify S002 (auto-detect src/tests/specs/docs), S013 (no recognizable dirs → empty sources)
 
 ### Implementation for User Story 1
 
-- [ ] T018 [US1] Implement registry auto-detection in src/installer/mod.rs — scan workspace for common directories (src, tests, specs, docs, .context, .github), generate default registry.yaml entries with appropriate types and languages
-- [ ] T019 [US1] Integrate registry loading into hydration pipeline in src/services/hydration.rs — on set_workspace, attempt to load `.engram/registry.yaml`; if found, validate each source entry; if not found, fall back to legacy behavior; emit tracing spans for registry validation
-- [ ] T020 [US1] Add registry status to get_workspace_status response in src/tools/read.rs — extend status response with registry section showing sources, their statuses, and file counts
+- [x] T018 [US1] Implement registry auto-detection in src/installer/mod.rs — scan workspace for common directories (src, tests, specs, docs, .context, .github), generate default registry.yaml entries with appropriate types and languages
+- [x] T019 [US1] Integrate registry loading into hydration pipeline in src/services/hydration.rs — on set_workspace, attempt to load `.engram/registry.yaml`; if found, validate each source entry; if not found, fall back to legacy behavior; emit tracing spans for registry validation
+- [x] T020 [US1] Add registry status to get_workspace_status response in src/tools/read.rs — extend status response with registry section showing sources, their statuses, and file counts
 
 **Checkpoint**: Registry declaration works end-to-end. Installer generates, hydration loads and validates.
 
