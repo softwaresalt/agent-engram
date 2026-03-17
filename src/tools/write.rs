@@ -1710,3 +1710,52 @@ pub async fn remove_from_collection(
         "not_members": not_member,
     }))
 }
+
+// ── index_git_history (T042) ──────────────────────────────────────────────────
+
+/// Parameters for the `index_git_history` MCP tool.
+#[cfg(feature = "git-graph")]
+#[derive(serde::Deserialize)]
+struct IndexGitHistoryParams {
+    /// Number of commits to walk from HEAD (default: 500).
+    #[serde(default)]
+    depth: Option<u32>,
+    /// When true, re-index all commits even if already stored.
+    #[serde(default)]
+    force: bool,
+}
+
+/// Index the workspace's git commit history into the `commit_node` table.
+///
+/// Requires the `git-graph` feature flag and a workspace that is a valid git
+/// repository. Returns a summary of the indexing run.
+#[cfg(feature = "git-graph")]
+pub async fn index_git_history(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let ws_path = workspace_path(&state).await?;
+    let ws_id = workspace_id(&state).await?;
+
+    let parsed: IndexGitHistoryParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let depth = parsed.depth.unwrap_or(0); // 0 → service uses default 500
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    let summary =
+        crate::services::git_graph::index_git_history(&queries, &ws_path, depth, parsed.force)
+            .await?;
+
+    serde_json::to_value(&summary).map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("index_git_history serialization failed: {e}"),
+        })
+    })
+}

@@ -268,3 +268,8 @@ path = "tests/integration/ingestion_test.rs"
 [[test]]
 name = "integration_backlog"
 path = "tests/integration/backlog_test.rs"
+
+[[test]]
+name = "integration_git_graph"
+path = "tests/integration/git_graph_test.rs"
+required-features = ["git-graph"]

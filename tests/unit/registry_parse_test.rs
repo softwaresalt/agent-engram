@@ -6,7 +6,7 @@ use engram::services::registry::parse_registry_yaml;
 
 #[test]
 fn valid_three_source_registry() {
-    let yaml = r#"
+    let yaml = r"
 sources:
   - type: code
     language: rust
@@ -17,7 +17,7 @@ sources:
   - type: docs
     language: markdown
     path: docs
-"#;
+";
     let config = parse_registry_yaml(yaml).expect("valid YAML should parse");
     assert_eq!(config.sources.len(), 3);
     assert_eq!(config.sources[0].content_type, "code");
@@ -91,34 +91,34 @@ fn batch_size_at_500_accepted() {
 
 #[test]
 fn custom_content_type_accepted() {
-    let yaml = r#"
+    let yaml = r"
 sources:
   - type: tracking
     path: .copilot-tracking
-"#;
+";
     let config = parse_registry_yaml(yaml).expect("custom type should be accepted");
     assert_eq!(config.sources[0].content_type, "tracking");
 }
 
 #[test]
 fn built_in_type_accepted() {
-    let yaml = r#"
+    let yaml = r"
 sources:
   - type: code
     language: rust
     path: src
-"#;
+";
     let config = parse_registry_yaml(yaml).expect("built-in type should parse");
     assert_eq!(config.sources[0].content_type, "code");
 }
 
 #[test]
 fn defaults_applied_when_omitted() {
-    let yaml = r#"
+    let yaml = r"
 sources:
   - type: docs
     path: docs
-"#;
+";
     let config = parse_registry_yaml(yaml).expect("defaults should apply");
     assert_eq!(config.max_file_size_bytes, 1_048_576);
     assert_eq!(config.batch_size, 50);

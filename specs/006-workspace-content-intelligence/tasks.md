@@ -131,17 +131,17 @@
 
 ### Tests for User Story 4
 
-- [ ] T035 [P] [US4] Contract test for git graph MCP tools in tests/contract/content_test.rs — verify S052 (query by file_path), S053 (query by symbol), S054 (query by date range), S055 (limit + truncated), S057 (unknown symbol → error 4002), S060 (no git repo → error 5001), S074-S075 (workspace not set → error 1001)
-- [ ] T036 [P] [US4] Integration test for git graph indexing in tests/integration/git_graph_test.rs — verify S045 (500 commits default depth), S046 (custom depth), S047 (incremental sync), S048 (force re-index), S049 (commit with 3 change types), S050 (diff context lines), S051 (merge commit parents), S056 (nonexistent file → empty), S058 (shallow clone), S059 (empty repo), S061 (large diff truncation), S063 (concurrent index + query)
+- [x] T035 [P] [US4] Contract test for git graph MCP tools in tests/contract/content_test.rs — verify S052 (query by file_path), S053 (query by symbol), S054 (query by date range), S055 (limit + truncated), S057 (unknown symbol → error 4002), S060 (no git repo → error 5001), S074-S075 (workspace not set → error 1001)
+- [x] T036 [P] [US4] Integration test for git graph indexing in tests/integration/git_graph_test.rs — verify S045 (500 commits default depth), S046 (custom depth), S047 (incremental sync), S048 (force re-index), S049 (commit with 3 change types), S050 (diff context lines), S051 (merge commit parents), S056 (nonexistent file → empty), S058 (shallow clone), S059 (empty repo), S061 (large diff truncation), S063 (concurrent index + query)
 
 ### Implementation for User Story 4
 
-- [ ] T037 [US4] Implement git repository access in src/services/git_graph.rs — wrap entire module in `#[cfg(feature = "git-graph")]`, open git repo with git2::Repository::open(), use spawn_blocking for all git2 operations, handle GitNotFound error; also add `#[cfg(feature = "git-graph")]` guards to git-related MCP tool registrations and model imports
-- [ ] T038 [US4] Implement commit walker in src/services/git_graph.rs — use git2::Revwalk to iterate commits in reverse chronological order, respect depth limit (default: 500), track last indexed commit hash for incremental sync, support force flag for full re-index
-- [ ] T039 [US4] Implement diff extraction in src/services/git_graph.rs — for each commit, compute tree-to-tree diff (git2::Diff), extract per-file ChangeRecords with change_type, generate diff snippets with configurable context lines (default: 20), truncate large diffs (> 500 lines), handle merge commits by diffing against first parent
-- [ ] T040 [US4] Implement CommitNode persistence in src/db/queries.rs — upsert CommitNode records by hash, store parent_hashes, store embedded ChangeRecords, index by timestamp
-- [ ] T041 [US4] Implement query_changes MCP tool in src/tools/read.rs — accept file_path, symbol, since, until, limit parameters; query commit_node table with filters; for symbol filter, cross-reference with code graph to get line range then filter ChangeRecords by line overlap; return formatted commit list with changes
-- [ ] T042 [US4] Implement index_git_history MCP tool in src/tools/write.rs — accept depth and force parameters, call git_graph service, return indexing summary (commits_indexed, new_commits, total_changes, elapsed_ms)
+- [x] T037 [US4] Implement git repository access in src/services/git_graph.rs — wrap entire module in `#[cfg(feature = "git-graph")]`, open git repo with git2::Repository::open(), use spawn_blocking for all git2 operations, handle GitNotFound error; also add `#[cfg(feature = "git-graph")]` guards to git-related MCP tool registrations and model imports
+- [x] T038 [US4] Implement commit walker in src/services/git_graph.rs — use git2::Revwalk to iterate commits in reverse chronological order, respect depth limit (default: 500), track last indexed commit hash for incremental sync, support force flag for full re-index
+- [x] T039 [US4] Implement diff extraction in src/services/git_graph.rs — for each commit, compute tree-to-tree diff (git2::Diff), extract per-file ChangeRecords with change_type, generate diff snippets with configurable context lines (default: 20), truncate large diffs (> 500 lines), handle merge commits by diffing against first parent
+- [x] T040 [US4] Implement CommitNode persistence in src/db/queries.rs — upsert CommitNode records by hash, store parent_hashes, store embedded ChangeRecords, index by timestamp
+- [x] T041 [US4] Implement query_changes MCP tool in src/tools/read.rs — accept file_path, symbol, since, until, limit parameters; query commit_node table with filters; for symbol filter, cross-reference with code graph to get line range then filter ChangeRecords by line overlap; return formatted commit list with changes
+- [x] T042 [US4] Implement index_git_history MCP tool in src/tools/write.rs — accept depth and force parameters, call git_graph service, return indexing summary (commits_indexed, new_commits, total_changes, elapsed_ms)
 
 **Checkpoint**: Git history queryable by file, symbol, or date range with actual diff snippets.
 

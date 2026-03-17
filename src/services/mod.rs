@@ -13,6 +13,8 @@ pub mod dehydration;
 pub mod embedding;
 pub mod event_ledger;
 pub mod gate;
+#[cfg(feature = "git-graph")]
+pub mod git_graph;
 pub mod hydration;
 pub mod ingestion;
 pub mod output;

@@ -1,4 +1,4 @@
-//! Integration tests for SpecKit rehydration/dehydration cycle (T029).
+//! Integration tests for `SpecKit` rehydration/dehydration cycle (T029).
 //!
 //! Validates scenarios: S033, S036, S040, S041, S043.
 
@@ -101,7 +101,7 @@ fn valid_backlog_json_read() {
     assert_eq!(backlogs[0].artifacts.spec.as_deref(), Some("# Spec"));
 }
 
-/// S043: No git produces null repository_url in manifest.
+/// S043: No git produces null `repository_url` in manifest.
 #[test]
 fn no_git_produces_null_url() {
     let dir = TempDir::new().unwrap();

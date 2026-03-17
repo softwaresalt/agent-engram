@@ -2337,6 +2337,25 @@ impl Queries {
             .map_err(map_db_err)?;
         Ok(rows.into_iter().map(CommitNodeRow::into_model).collect())
     }
+
+    /// Return the hash of the most recently indexed commit, if any.
+    ///
+    /// Used by the git graph service to resume incremental indexing without
+    /// re-walking commits that are already stored.
+    pub async fn latest_indexed_commit_hash(&self) -> Result<Option<String>, EngramError> {
+        #[derive(serde::Deserialize)]
+        struct HashRow {
+            hash: String,
+        }
+        let rows: Vec<HashRow> = self
+            .db
+            .query("SELECT hash FROM commit_node ORDER BY timestamp DESC LIMIT 1")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(|r| r.hash))
+    }
 }
 
 fn format_dependency(kind: DependencyType) -> &'static str {

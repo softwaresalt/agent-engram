@@ -1498,3 +1498,133 @@ pub async fn get_collection_context(
         "sub_collections": [],
     }))
 }
+
+// ── query_changes (T041) ──────────────────────────────────────────────────────
+
+/// Parameters for the `query_changes` MCP tool.
+#[cfg(feature = "git-graph")]
+#[derive(Deserialize)]
+struct QueryChangesParams {
+    /// Filter commits that touched this file path.
+    #[serde(default)]
+    file_path: Option<String>,
+    /// Filter commits that affected this named symbol (cross-references code graph).
+    #[serde(default)]
+    symbol: Option<String>,
+    /// Return only commits on or after this ISO-8601 timestamp.
+    #[serde(default)]
+    since: Option<String>,
+    /// Return only commits on or before this ISO-8601 timestamp.
+    #[serde(default)]
+    until: Option<String>,
+    /// Maximum number of commits to return (default: 20).
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+/// Query indexed git commits filtered by file path, symbol name, or date range.
+///
+/// Requires the `git-graph` feature and an indexed workspace. Returns error
+/// `1001` when no workspace is active.
+#[cfg(feature = "git-graph")]
+pub async fn query_changes(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    use chrono::DateTime;
+
+    let ws_id = if let Some(snap) = state.snapshot_workspace().await {
+        snap.workspace_id
+    } else {
+        return Err(EngramError::Workspace(WorkspaceError::NotSet));
+    };
+
+    let parsed: QueryChangesParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let limit = parsed.limit.unwrap_or(20);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    // Parse optional date range.
+    let since_dt = parsed
+        .since
+        .as_deref()
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    EngramError::System(SystemError::InvalidParams {
+                        reason: format!("invalid `since` timestamp: {s}"),
+                    })
+                })
+        })
+        .transpose()?;
+
+    let until_dt = parsed
+        .until
+        .as_deref()
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    EngramError::System(SystemError::InvalidParams {
+                        reason: format!("invalid `until` timestamp: {s}"),
+                    })
+                })
+        })
+        .transpose()?;
+
+    // If a symbol is provided, resolve its file path via the code graph so we
+    // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
+    let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
+        let cg_db = connect_db(&ws_id).await?;
+        let cg = CodeGraphQueries::new(cg_db);
+        let syms = cg.find_symbols_by_name(sym).await?;
+        if syms.is_empty() {
+            return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+                name: sym.clone(),
+            }));
+        }
+        // Use the first symbol's file path to filter commits.
+        syms.into_iter().next().map(|s| s.file_path)
+    } else {
+        parsed.file_path.clone()
+    };
+
+    let commits = match (
+        effective_file_path.as_deref(),
+        since_dt.as_ref(),
+        until_dt.as_ref(),
+    ) {
+        (Some(fp), _, _) => queries.select_commits_by_file_path(fp, limit).await?,
+        (None, since, until) => {
+            queries
+                .select_commits_by_date_range(since, until, limit)
+                .await?
+        }
+    };
+
+    let commits_json: Vec<Value> = commits
+        .into_iter()
+        .map(|c| {
+            serde_json::to_value(&c).map_err(|e| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("commit serialization failed: {e}"),
+                })
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    Ok(json!({
+        "commits": commits_json,
+        "total": commits_json.len(),
+        "file_path": effective_file_path,
+        "symbol": parsed.symbol,
+    }))
+}
