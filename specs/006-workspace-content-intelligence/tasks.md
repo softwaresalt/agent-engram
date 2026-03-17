@@ -176,11 +176,11 @@
 
 ### Implementation for User Story 6
 
-- [ ] T048 [P] [US6] Write quickstart guide in docs/quickstart.md — installation steps, workspace setup, daemon startup, agent connection verification, first search query
-- [ ] T049 [P] [US6] Write MCP tool reference in docs/mcp-tool-reference.md — every registered tool with purpose, required parameters, optional parameters, return schema, error codes, usage example; organized by category (lifecycle, read, write, graph)
-- [ ] T050 [P] [US6] Write configuration reference in docs/configuration.md — all CLI flags (--port, --timeout, --data-dir, --log-format, --workspace), all environment variables (ENGRAM_PORT, ENGRAM_TIMEOUT, etc.), defaults, constraints, examples
-- [ ] T051 [P] [US6] Write architecture overview in docs/architecture.md — component diagram (binary entrypoint, IPC transport, MCP dispatch, SurrealDB, code graph, content registry, git graph), data flow, workspace lifecycle, module responsibilities
-- [ ] T052 [P] [US6] Write troubleshooting guide in docs/troubleshooting.md — common issues (daemon won't start, workspace binding fails, search returns no results, registry validation errors), diagnostic steps, expected log output, resolution actions
+- [x] T048 [P] [US6] Write quickstart guide in docs/quickstart.md — installation steps, workspace setup, daemon startup, agent connection verification, first search query
+- [x] T049 [P] [US6] Write MCP tool reference in docs/mcp-tool-reference.md — every registered tool with purpose, required parameters, optional parameters, return schema, error codes, usage example; organized by category (lifecycle, read, write, graph)
+- [x] T050 [P] [US6] Write configuration reference in docs/configuration.md — all CLI flags (--port, --timeout, --data-dir, --log-format, --workspace), all environment variables (ENGRAM_PORT, ENGRAM_TIMEOUT, etc.), defaults, constraints, examples
+- [x] T051 [P] [US6] Write architecture overview in docs/architecture.md — component diagram (binary entrypoint, IPC transport, MCP dispatch, SurrealDB, code graph, content registry, git graph), data flow, workspace lifecycle, module responsibilities
+- [x] T052 [P] [US6] Write troubleshooting guide in docs/troubleshooting.md — common issues (daemon won't start, workspace binding fails, search returns no results, registry validation errors), diagnostic steps, expected log output, resolution actions
 
 **Checkpoint**: All documentation deliverables complete.
 
