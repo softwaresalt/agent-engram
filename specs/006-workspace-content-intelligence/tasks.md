@@ -190,13 +190,13 @@
 
 **Purpose**: Integration testing, security hardening, and final validation across all user stories
 
-- [ ] T053 [P] Integration test for full workspace lifecycle with all features in tests/integration/smoke_test.rs — verify S071 (full status response), S072 (status without git feature), S073 (status before workspace set), S078 (all subsystems active together)
-- [ ] T054 [P] Security integration test in tests/integration/security_test.rs — verify S009 (path traversal), S010 (symlink escape), workspace isolation with registry paths
-- [ ] T055 [P] Concurrent access integration test in tests/integration/concurrency_test.rs — verify S026 (concurrent ingestion), S027 (file deleted after scan), S044 (concurrent hydrate/dehydrate), S062 (git broken objects error handling), S070 (read-only hook dir), S076 (concurrent search), S077 (concurrent ingestion dedup)
-- [ ] T056 Performance validation against constitution targets — registry ops < 50ms, ingestion < 5s for 10 files, search < 50ms, git query < 3s
-- [ ] T057 Run quickstart.md validation — follow docs/quickstart.md end-to-end in a fresh workspace
-- [ ] T058 Code cleanup and clippy pedantic pass — ensure all new code passes `cargo clippy -- -D warnings`
-- [ ] T059 Version migration detection in src/installer/mod.rs — check `.engram/.version` file during install, warn if existing version differs from current dehydration::SCHEMA_VERSION, offer migration path or skip data file creation to prevent data loss
+- [x] T053 [P] Integration test for full workspace lifecycle with all features in tests/integration/smoke_test.rs — verify S071 (full status response), S072 (status without git feature), S073 (status before workspace set), S078 (all subsystems active together)
+- [x] T054 [P] Security integration test in tests/integration/security_test.rs — verify S009 (path traversal), S010 (symlink escape), workspace isolation with registry paths
+- [x] T055 [P] Concurrent access integration test in tests/integration/concurrency_test.rs — verify S026 (concurrent ingestion), S027 (file deleted after scan), S044 (concurrent hydrate/dehydrate), S062 (git broken objects error handling), S070 (read-only hook dir), S076 (concurrent search), S077 (concurrent ingestion dedup)
+- [x] T056 Performance validation against constitution targets — registry ops < 50ms, ingestion < 5s for 10 files, search < 50ms, git query < 3s
+- [x] T057 Run quickstart.md validation — follow docs/quickstart.md end-to-end in a fresh workspace
+- [x] T058 Code cleanup and clippy pedantic pass — ensure all new code passes `cargo clippy -- -D warnings`
+- [x] T059 Version migration detection in src/installer/mod.rs — check `.engram/.version` file during install, warn if existing version differs from current dehydration::SCHEMA_VERSION, offer migration path or skip data file creation to prevent data loss
 
 ---
 

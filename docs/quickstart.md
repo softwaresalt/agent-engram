@@ -19,7 +19,7 @@ Get from zero to a running Engram daemon with an AI agent connected in under 10 
 
 | Requirement | Version | Notes |
 |---|---|---|
-| **Rust** | 1.78+ | Install via [rustup.rs](https://rustup.rs) |
+| **Rust** | 1.85+ | Install via [rustup.rs](https://rustup.rs) |
 | **Git** | 2.25+ | Required for workspace detection and git graph features |
 | **Operating System** | Linux, macOS, Windows | All major platforms supported |
 

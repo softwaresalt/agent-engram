@@ -929,3 +929,75 @@ fn cursor_hook_merges_existing_servers() {
         "engram server URL must be correct"
     );
 }
+
+// ── T059: Version migration detection ────────────────────────────────────────
+
+/// T059: `update` writes the current schema version to `.engram/.version`.
+///
+/// After a fresh install (which writes the current version), a second
+/// `update` call should overwrite `.version` with the same schema version.
+/// This ensures version stamping is idempotent.
+#[tokio::test]
+async fn t059_update_writes_schema_version() {
+    use engram::services::dehydration::SCHEMA_VERSION;
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install should succeed");
+
+    let version = fs::read_to_string(workspace.join(".engram/.version")).expect("read .version");
+    assert_eq!(
+        version.trim(),
+        SCHEMA_VERSION,
+        ".version must be SCHEMA_VERSION after install"
+    );
+
+    // Simulate a stale version from an older schema.
+    fs::write(workspace.join(".engram/.version"), "0.0.0-old").expect("write old version");
+
+    installer::update(workspace)
+        .await
+        .expect("update should succeed");
+
+    let updated = fs::read_to_string(workspace.join(".engram/.version")).expect("read .version");
+    assert_eq!(
+        updated.trim(),
+        SCHEMA_VERSION,
+        "update must overwrite stale .version with current SCHEMA_VERSION"
+    );
+}
+
+/// T059: `update` on a workspace with no `.version` file writes the current
+/// schema version (handles workspaces created before version stamping was added).
+#[tokio::test]
+async fn t059_update_creates_version_if_missing() {
+    use engram::services::dehydration::SCHEMA_VERSION;
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install should succeed");
+
+    // Remove the .version file to simulate a pre-versioning workspace.
+    fs::remove_file(workspace.join(".engram/.version")).expect("remove .version");
+    assert!(
+        !workspace.join(".engram/.version").is_file(),
+        ".version should not exist before update"
+    );
+
+    installer::update(workspace)
+        .await
+        .expect("update should succeed even without .version");
+
+    let version = fs::read_to_string(workspace.join(".engram/.version")).expect("read .version");
+    assert_eq!(
+        version.trim(),
+        SCHEMA_VERSION,
+        "update must create .version with SCHEMA_VERSION"
+    );
+}

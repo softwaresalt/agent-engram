@@ -20,6 +20,55 @@ use crate::shim::lifecycle::check_health;
 
 use crate::services::dehydration::SCHEMA_VERSION;
 
+/// Outcome of checking `.engram/.version` against the current schema version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionCheckOutcome {
+    /// The `.version` file matches the current schema version.
+    UpToDate,
+    /// No `.version` file was found — fresh or pre-versioned installation.
+    NotPresent,
+    /// The `.version` file contains a different schema version (migration may be needed).
+    Mismatch {
+        /// The version string found in the `.version` file.
+        found: String,
+        /// The current schema version this binary expects.
+        expected: String,
+    },
+}
+
+/// Check whether `.engram/.version` in `workspace` matches [`SCHEMA_VERSION`].
+///
+/// Returns:
+/// - [`VersionCheckOutcome::NotPresent`] — `.version` does not exist.
+/// - [`VersionCheckOutcome::UpToDate`] — `.version` matches [`SCHEMA_VERSION`].
+/// - [`VersionCheckOutcome::Mismatch`] — `.version` exists but differs.
+///
+/// Call this in [`update`] and [`reinstall`] to detect data-format changes that
+/// may require migration before overwriting existing data files.
+pub fn detect_version_mismatch(workspace: &Path) -> Result<VersionCheckOutcome, EngramError> {
+    let version_file = workspace.join(".engram").join(".version");
+
+    if !version_file.exists() {
+        return Ok(VersionCheckOutcome::NotPresent);
+    }
+
+    let found = std::fs::read_to_string(&version_file).map_err(|e| {
+        EngramError::Install(InstallError::UpdateFailed {
+            reason: format!("cannot read .version: {e}"),
+        })
+    })?;
+    let found = found.trim().to_string();
+
+    if found == SCHEMA_VERSION {
+        Ok(VersionCheckOutcome::UpToDate)
+    } else {
+        Ok(VersionCheckOutcome::Mismatch {
+            found,
+            expected: SCHEMA_VERSION.to_string(),
+        })
+    }
+}
+
 /// Section marker inserted before engram-managed content in hook files.
 pub const ENGRAM_MARKER_START: &str = "<!-- engram:start -->";
 
@@ -461,6 +510,26 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
 
     info!(workspace = %workspace.display(), "updating engram plugin");
 
+    // Check for schema version mismatch before regenerating artifacts.
+    match detect_version_mismatch(workspace)? {
+        VersionCheckOutcome::Mismatch {
+            ref found,
+            ref expected,
+        } => {
+            warn!(
+                found = %found,
+                expected = %expected,
+                "schema version mismatch — data files may need migration before update"
+            );
+        }
+        VersionCheckOutcome::NotPresent => {
+            debug!("no .version file found; assuming legacy installation");
+        }
+        VersionCheckOutcome::UpToDate => {
+            debug!("schema version is up to date");
+        }
+    }
+
     let engram_dir = workspace.join(".engram");
 
     std::fs::write(engram_dir.join(".version"), SCHEMA_VERSION).map_err(|e| {
@@ -504,6 +573,26 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
     }
 
     info!(workspace = %workspace.display(), "reinstalling engram plugin");
+
+    // Check for schema version mismatch before recreating artifacts.
+    match detect_version_mismatch(workspace)? {
+        VersionCheckOutcome::Mismatch {
+            ref found,
+            ref expected,
+        } => {
+            warn!(
+                found = %found,
+                expected = %expected,
+                "schema version mismatch — data files may need migration before reinstall"
+            );
+        }
+        VersionCheckOutcome::NotPresent => {
+            debug!("no .version file found; assuming legacy installation");
+        }
+        VersionCheckOutcome::UpToDate => {
+            debug!("schema version is up to date");
+        }
+    }
 
     let engram_dir = workspace.join(".engram");
 
