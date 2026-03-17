@@ -155,14 +155,14 @@
 
 ### Tests for User Story 5
 
-- [ ] T043 [P] [US5] Integration test for hook file generation in tests/integration/installer_test.rs — verify S064 (fresh install creates 3 platform files), S065 (existing file → append with markers), S066 (re-install → replace marker content), S067 (--hooks-only flag), S068 (custom port in URLs), S069 (--no-hooks flag)
+- [x] T043 [P] [US5] Integration test for hook file generation in tests/integration/installer_test.rs — verify S064 (fresh install creates 3 platform files), S065 (existing file → append with markers), S066 (re-install → replace marker content), S067 (--hooks-only flag), S068 (custom port in URLs), S069 (--no-hooks flag)
 
 ### Implementation for User Story 5
 
-- [ ] T044 [US5] Implement hook file templates in src/installer/mod.rs — define template content for GitHub Copilot (.github/copilot-instructions.md), Claude Code (.claude/settings.json + .claude/instructions.md), Cursor (.cursor/mcp.json) with MCP endpoint URL, tool listing, and recommended workflows
-- [ ] T045 [US5] Implement section-marker insertion logic in src/installer/mod.rs — detect existing files, find `<!-- engram:start -->` / `<!-- engram:end -->` markers, replace content between markers (or append if no markers), preserve all user content outside markers
-- [ ] T046 [US5] Implement --hooks-only and --no-hooks CLI flags in src/config/mod.rs and src/installer/mod.rs — add flags to clap config, when --hooks-only: skip data file creation, when --no-hooks: skip hook generation
-- [ ] T047 [US5] Implement port-aware URL generation in src/installer/mod.rs — read configured port from Config, substitute into MCP endpoint URLs in hook templates
+- [x] T044 [US5] Implement hook file templates in src/installer/mod.rs — define template content for GitHub Copilot (.github/copilot-instructions.md), Claude Code (.claude/settings.json + .claude/instructions.md), Cursor (.cursor/mcp.json) with MCP endpoint URL, tool listing, and recommended workflows
+- [x] T045 [US5] Implement section-marker insertion logic in src/installer/mod.rs — detect existing files, find `<!-- engram:start -->` / `<!-- engram:end -->` markers, replace content between markers (or append if no markers), preserve all user content outside markers
+- [x] T046 [US5] Implement --hooks-only and --no-hooks CLI flags in src/config/mod.rs and src/installer/mod.rs — add flags to clap config, when --hooks-only: skip data file creation, when --no-hooks: skip hook generation
+- [x] T047 [US5] Implement port-aware URL generation in src/installer/mod.rs — read configured port from Config, substitute into MCP endpoint URLs in hook templates
 
 **Checkpoint**: Agent hooks auto-generated for 3 platforms with idempotent marker-based updates.
 
