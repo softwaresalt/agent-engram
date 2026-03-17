@@ -44,7 +44,7 @@ async fn s067_install_clean_workspace() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace)
+    installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect("install should succeed");
 
@@ -84,7 +84,7 @@ async fn s067_version_file_content() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace)
+    installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect("install should succeed");
 
@@ -101,7 +101,7 @@ async fn s067_tasks_md_stub_content() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace)
+    installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect("install should succeed");
 
@@ -124,11 +124,11 @@ async fn s068_install_already_installed() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace)
+    installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect("first install should succeed");
 
-    let err = installer::install(workspace)
+    let err = installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect_err("second install must fail");
     assert_already_installed(&err);
@@ -142,7 +142,7 @@ async fn s069_update_preserves_tasks_md() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace)
+    installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect("install should succeed");
 
@@ -177,7 +177,9 @@ async fn s069_update_refreshes_artifacts() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     // Clobber version and mcp.json to verify update rewrites them.
     fs::write(workspace.join(".engram/.version"), "0.0.0").expect("write stale version");
@@ -209,7 +211,9 @@ async fn s070_reinstall_preserves_tasks_md() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     // Place a sentinel file in run/ to verify it gets cleaned.
     let sentinel = workspace.join(".engram/run/daemon.pid");
@@ -262,7 +266,9 @@ async fn s071_uninstall_keep_data_preserves_tasks_md() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     let custom = "# Important tasks\n- my task\n";
     fs::write(workspace.join(".engram/tasks.md"), custom).expect("write tasks.md");
@@ -310,7 +316,9 @@ async fn s072_uninstall_full_removal() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     installer::uninstall(workspace, false)
         .await
@@ -374,7 +382,9 @@ async fn s075_mcp_json_structure() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     let raw = fs::read_to_string(workspace.join(".vscode/mcp.json")).expect("read mcp.json");
     let parsed: serde_json::Value =
@@ -445,7 +455,7 @@ async fn s076_install_path_with_spaces() {
     let workspace = base.path().join("my workspace with spaces");
     fs::create_dir_all(&workspace).expect("create workspace dir");
 
-    installer::install(&workspace)
+    installer::install(&workspace, &installer::InstallOptions::default())
         .await
         .expect("install in path with spaces should succeed");
 
@@ -475,7 +485,7 @@ async fn s078_install_read_only_filesystem() {
     // Make the workspace directory read-only so create_dir_all fails.
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o555)).expect("set read-only");
 
-    let result = installer::install(&workspace).await;
+    let result = installer::install(&workspace, &installer::InstallOptions::default()).await;
 
     // Restore permissions so tempdir cleanup works.
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o755)).ok();
@@ -500,7 +510,9 @@ async fn is_installed_before_and_after() {
         "must not be installed initially"
     );
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     assert!(
         installer::is_installed(workspace),
@@ -519,7 +531,9 @@ async fn install_appends_gitignore_entries() {
     let gitignore_path = workspace.join(".gitignore");
     fs::write(&gitignore_path, "node_modules/\ntarget/\n").expect("write .gitignore");
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
     assert!(
@@ -545,10 +559,373 @@ async fn install_no_duplicate_gitignore_entries() {
     let gitignore_path = workspace.join(".gitignore");
     fs::write(&gitignore_path, "node_modules/\n.engram/\n").expect("write .gitignore");
 
-    installer::install(workspace).await.expect("install");
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install");
 
     let content = fs::read_to_string(&gitignore_path).expect("read .gitignore");
     // The guard prevents double-appending.
     let count = content.matches(".engram/").count();
     assert_eq!(count, 1, ".engram/ must appear exactly once");
+}
+
+// ── US5 Agent Hook Tests (T043) ───────────────────────────────────────────────
+//
+// Covers hook file generation scenarios S064-S069:
+// - S064: fresh install creates 3 platform hook files
+// - S065: existing file without markers → appended with markers
+// - S066: re-install → replaces only marker content, preserves surrounding
+// - S067: --hooks-only skips .engram/ data file creation
+// - S068: custom port substituted into hook file URLs
+// - S069: --no-hooks skips hook generation entirely
+
+/// S064: A fresh install creates hook files for all 3 supported platforms.
+#[tokio::test]
+async fn s064_fresh_install_creates_hook_files() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install should succeed");
+
+    // GitHub Copilot hook
+    let copilot = workspace.join(".github").join("copilot-instructions.md");
+    assert!(
+        copilot.is_file(),
+        ".github/copilot-instructions.md must exist"
+    );
+    let copilot_content = fs::read_to_string(&copilot).expect("read copilot hook");
+    assert!(
+        copilot_content.contains("<!-- engram:start -->"),
+        "copilot hook must contain engram start marker"
+    );
+    assert!(
+        copilot_content.contains("<!-- engram:end -->"),
+        "copilot hook must contain engram end marker"
+    );
+    assert!(
+        copilot_content.contains("query_memory"),
+        "copilot hook must mention query_memory tool"
+    );
+    assert!(
+        copilot_content.contains("http://127.0.0.1:7437/mcp"),
+        "copilot hook must contain default MCP endpoint URL"
+    );
+
+    // Claude Code hook
+    let claude = workspace.join(".claude").join("instructions.md");
+    assert!(claude.is_file(), ".claude/instructions.md must exist");
+    let claude_content = fs::read_to_string(&claude).expect("read claude hook");
+    assert!(
+        claude_content.contains("<!-- engram:start -->"),
+        "claude hook must contain engram start marker"
+    );
+    assert!(
+        claude_content.contains("set_workspace"),
+        "claude hook must mention set_workspace tool"
+    );
+
+    // Cursor hook
+    let cursor = workspace.join(".cursor").join("mcp.json");
+    assert!(cursor.is_file(), ".cursor/mcp.json must exist");
+    let cursor_content = fs::read_to_string(&cursor).expect("read cursor hook");
+    assert!(
+        cursor_content.contains("mcpServers"),
+        "cursor hook must contain mcpServers key"
+    );
+    assert!(
+        cursor_content.contains("http://127.0.0.1:7437/mcp"),
+        "cursor hook must contain default MCP endpoint URL"
+    );
+}
+
+/// S065: Existing hook file without markers has engram section appended with markers.
+#[tokio::test]
+async fn s065_existing_file_appended_with_markers() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    // Pre-create a copilot instructions file without engram markers.
+    let copilot_dir = workspace.join(".github");
+    fs::create_dir_all(&copilot_dir).expect("create .github dir");
+    let copilot_path = copilot_dir.join("copilot-instructions.md");
+    let user_content = "# My Project\n\nExisting project instructions.\n";
+    fs::write(&copilot_path, user_content).expect("write copilot hook");
+
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install should succeed");
+
+    let content = fs::read_to_string(&copilot_path).expect("read copilot hook");
+
+    // Original user content must be preserved.
+    assert!(
+        content.contains("# My Project"),
+        "original user content must be preserved"
+    );
+    assert!(
+        content.contains("Existing project instructions."),
+        "original instructions must be preserved"
+    );
+
+    // Engram section appended with markers.
+    assert!(
+        content.contains("<!-- engram:start -->"),
+        "engram start marker must be present after append"
+    );
+    assert!(
+        content.contains("<!-- engram:end -->"),
+        "engram end marker must be present after append"
+    );
+    assert!(
+        content.contains("query_memory"),
+        "engram section must contain tool reference"
+    );
+}
+
+/// S066: Re-running install replaces only the content between existing markers,
+/// preserving all user content outside the markers.
+#[tokio::test]
+async fn s066_reinstall_replaces_marker_content_only() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    // Pre-create file with existing markers + old engram content + user content after.
+    let copilot_dir = workspace.join(".github");
+    fs::create_dir_all(&copilot_dir).expect("create .github dir");
+    let copilot_path = copilot_dir.join("copilot-instructions.md");
+    let pre_existing = concat!(
+        "# My Project\n\n",
+        "<!-- engram:start -->\n",
+        "Old engram content that should be replaced.\n",
+        "<!-- engram:end -->\n",
+        "\nUser content after the markers.\n"
+    );
+    fs::write(&copilot_path, pre_existing).expect("write copilot hook");
+
+    // We call generate_hooks directly (simulating a reinstall / update of hooks).
+    engram::installer::generate_hooks(workspace, 7437).expect("generate hooks");
+
+    let content = fs::read_to_string(&copilot_path).expect("read copilot hook");
+
+    // Old engram content between markers must be gone.
+    assert!(
+        !content.contains("Old engram content that should be replaced."),
+        "old marker content must be replaced"
+    );
+    // New engram content must be present.
+    assert!(
+        content.contains("query_memory"),
+        "new engram content must be present between markers"
+    );
+    // User content outside markers must be preserved.
+    assert!(
+        content.contains("# My Project"),
+        "user content before markers must be preserved"
+    );
+    assert!(
+        content.contains("User content after the markers."),
+        "user content after markers must be preserved"
+    );
+}
+
+/// S067: `--hooks-only` creates hook files without creating `.engram/` data files.
+#[tokio::test]
+async fn s067_hooks_only_skips_data_files() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    let opts = installer::InstallOptions {
+        hooks_only: true,
+        no_hooks: false,
+        port: 7437,
+    };
+
+    installer::install(workspace, &opts)
+        .await
+        .expect("hooks-only install should succeed");
+
+    // Hook files must exist.
+    assert!(
+        workspace
+            .join(".github")
+            .join("copilot-instructions.md")
+            .is_file(),
+        "copilot hook must be created by hooks-only install"
+    );
+    assert!(
+        workspace.join(".claude").join("instructions.md").is_file(),
+        "claude hook must be created by hooks-only install"
+    );
+    assert!(
+        workspace.join(".cursor").join("mcp.json").is_file(),
+        "cursor hook must be created by hooks-only install"
+    );
+
+    // .engram/ data files must NOT exist.
+    assert!(
+        !workspace.join(".engram").is_dir(),
+        ".engram/ directory must NOT be created by hooks-only install"
+    );
+}
+
+/// S068: Custom port is substituted into hook file MCP endpoint URLs.
+#[tokio::test]
+async fn s068_custom_port_in_hook_urls() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    let opts = installer::InstallOptions {
+        hooks_only: false,
+        no_hooks: false,
+        port: 8090,
+    };
+
+    installer::install(workspace, &opts)
+        .await
+        .expect("install with custom port should succeed");
+
+    // Copilot hook must use custom port.
+    let copilot_content =
+        fs::read_to_string(workspace.join(".github").join("copilot-instructions.md"))
+            .expect("read copilot hook");
+    assert!(
+        copilot_content.contains("http://127.0.0.1:8090/mcp"),
+        "copilot hook must use custom port 8090"
+    );
+    assert!(
+        !copilot_content.contains("http://127.0.0.1:7437/mcp"),
+        "copilot hook must NOT contain default port when custom port is set"
+    );
+
+    // Claude hook must use custom port.
+    let claude_content = fs::read_to_string(workspace.join(".claude").join("instructions.md"))
+        .expect("read claude hook");
+    assert!(
+        claude_content.contains("http://127.0.0.1:8090/mcp"),
+        "claude hook must use custom port 8090"
+    );
+
+    // Cursor hook must use custom port.
+    let cursor_content =
+        fs::read_to_string(workspace.join(".cursor").join("mcp.json")).expect("read cursor hook");
+    assert!(
+        cursor_content.contains("http://127.0.0.1:8090/mcp"),
+        "cursor hook must use custom port 8090"
+    );
+}
+
+/// S069: `--no-hooks` skips all agent hook file generation.
+#[tokio::test]
+async fn s069_no_hooks_skips_hook_generation() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    let opts = installer::InstallOptions {
+        hooks_only: false,
+        no_hooks: true,
+        port: 7437,
+    };
+
+    installer::install(workspace, &opts)
+        .await
+        .expect("install with --no-hooks should succeed");
+
+    // .engram/ data files must exist (normal install).
+    assert!(
+        workspace.join(".engram").is_dir(),
+        ".engram/ must be created by --no-hooks install"
+    );
+
+    // Hook files must NOT exist.
+    assert!(
+        !workspace
+            .join(".github")
+            .join("copilot-instructions.md")
+            .is_file(),
+        "copilot hook must NOT be created when --no-hooks is set"
+    );
+    assert!(
+        !workspace.join(".claude").join("instructions.md").is_file(),
+        "claude hook must NOT be created when --no-hooks is set"
+    );
+    assert!(
+        !workspace.join(".cursor").join("mcp.json").is_file(),
+        "cursor hook must NOT be created when --no-hooks is set"
+    );
+}
+
+/// Marker replacement logic: content between markers is replaced, surrounding preserved.
+#[test]
+fn marker_replace_content_between_markers() {
+    use engram::installer::{ENGRAM_MARKER_END, ENGRAM_MARKER_START};
+
+    let existing =
+        format!("# Header\n{ENGRAM_MARKER_START}\nold content\n{ENGRAM_MARKER_END}\n# Footer\n");
+    let new_content = "new content here";
+    let path = std::path::PathBuf::from("/tmp/test-marker.md");
+
+    // We test the public apply_markdown_hook via a tempdir.
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let file_path = tmp.path().join("test.md");
+    std::fs::write(&file_path, &existing).expect("write test file");
+
+    engram::installer::apply_markdown_hook(&file_path, new_content)
+        .expect("apply_markdown_hook must succeed");
+
+    let result = std::fs::read_to_string(&file_path).expect("read result");
+    assert!(
+        result.contains("# Header"),
+        "content before markers preserved"
+    );
+    assert!(
+        result.contains("# Footer"),
+        "content after markers preserved"
+    );
+    assert!(result.contains("new content here"), "new content inserted");
+    assert!(!result.contains("old content"), "old content replaced");
+    drop(path); // suppress unused warning
+}
+
+/// Cursor JSON merge: existing mcpServers entry preserved when engram is added.
+#[test]
+fn cursor_hook_merges_existing_servers() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let cursor_dir = tmp.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).expect("create .cursor dir");
+    let cursor_path = cursor_dir.join("mcp.json");
+
+    // Pre-existing cursor config with another server.
+    let existing_json = r#"{
+  "mcpServers": {
+    "other-server": {
+      "url": "http://localhost:9000/mcp"
+    }
+  }
+}"#;
+    std::fs::write(&cursor_path, existing_json).expect("write existing cursor json");
+
+    engram::installer::apply_cursor_hook(
+        &cursor_path,
+        &engram::installer::templates::cursor_mcp_json(7437),
+    )
+    .expect("apply_cursor_hook must succeed");
+
+    let result = std::fs::read_to_string(&cursor_path).expect("read cursor json");
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    // Both servers must be present.
+    assert!(
+        parsed["mcpServers"]["other-server"].is_object(),
+        "pre-existing server must be preserved"
+    );
+    assert!(
+        parsed["mcpServers"]["engram"].is_object(),
+        "engram server must be added"
+    );
+    assert_eq!(
+        parsed["mcpServers"]["engram"]["url"], "http://127.0.0.1:7437/mcp",
+        "engram server URL must be correct"
+    );
 }
