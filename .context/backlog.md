@@ -6,52 +6,183 @@
 - Create engram specific SDD agents, skills, instructions, prompts, and tools; enable them to support loop driven dev (LDD)
 - Create loop driven development workflows that leverage the engram specific SDD.
 
-## Feature: 006-workspace-content-intelligence
+---
 
-1. Need the ability to also track git commit numbers to changes in the repo through a graph representation with actual code and text snippets to enable faster change detection and search during agentic adversarial code reviews.
-2. Need to include hooks with engram and instructions to ensure the agent uses engram for tasks and code memory.
-3. Need proper documentation for this solution.
-4. **SpecKit-aware rehydration via structured backlog JSON files.**
-   Engram should not assume a single `tasks.md` at a fixed path. Workspaces using SpecKit have multiple feature folders (e.g., `specs/001-core-mcp-daemon/`, `specs/002-enhanced-task-management/`) each containing their own `spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`, `quickstart.md`, `ANALYSIS.md`, `SCENARIOS.md`, checklists, and contracts. Engram must capture ALL of this content as part of task and context management. Requirements:
-   - **`project.json`** in `.engram/` — describes the overall project and links to each backlog file. Contains project-level metadata (name, description, repository URL, default branch).
-   - **`backlog-00X.json`** files in `.engram/` — one per SpecKit feature, numbered to match the feature directory (e.g., `backlog-001.json` for `specs/001-core-mcp-daemon/`). Each backlog JSON contains:
-     - Feature metadata: `id`, `name`, `title`, `git_branch`, `spec_path`, `description`, `status`, `spec_status`
-     - Full contents of all SpecKit artifacts: analysis, research, scenarios, spec, plan, tasks
-     - Sub-nodes for each feature item, each with at minimum: `id`, `name`, `description`
-   - Hydration reads these JSON files (not raw markdown) to reconstruct workspace state in SurrealDB.
-   - Dehydration writes back to these JSON files, preserving the SpecKit folder structure linkage.
-   - The existing `.engram/tasks.md` format should be treated as a legacy/fallback for workspaces that don't use SpecKit.
-5. **Content registry and multi-source ingestion pipeline (`registry.yaml`).**
-   Engram currently has no awareness of workspace content outside `.engram/`. It does not ingest specs, docs, tests, tracking files, context files, or README. A developer-configurable content registry is needed.
-   - **`.engram/registry.yaml`** — a registry file where the developer declares content sources, their types, languages, and paths. Engram reads this at hydration time to know what to monitor, ingest, and how to partition data in SurrealDB. Example entries:
-     ```yaml
-     sources:
-       - type: code
-         language: rust
-         path: src
-       - type: tests
-         language: rust
-         path: tests
-       - type: spec
-         language: markdown
-         path: specs
-       - type: docs
-         language: markdown
-         path: docs
-       - type: memory
-         language: markdown
-         path: .copilot-tracking
-       - type: context
-         language: markdown
-         path: .context
-       - type: instructions
-         language: markdown
-         path: .github
-     ```
-   - Each registered source drives:
-     - **File watcher scope**: the watcher monitors registered paths instead of relying on hardcoded exclude patterns.
-     - **Ingestion pipeline**: on hydration and on file-change events, engram reads content from registered paths and loads it into SurrealDB, partitioned by `type` (e.g., separate tables or namespaces for code, specs, docs, memory, context).
-     - **Search partitioning**: `query_memory`, `unified_search`, and future search tools can filter by content type, enabling queries like "search specs only" or "search code and tests".
-     - **Code graph integration**: registered `type: code` sources feed into `index_workspace` / `sync_workspace` with the declared language, replacing the current Rust-only default.
-   - The installer (`engram install`) should generate a default `registry.yaml` with sensible entries detected from the workspace structure (e.g., if `specs/` exists, add a spec source; if `src/` exists, add a code source).
-   - The registry is additive — developers can add custom content types and paths as needed for their project structure.
+## Optimize SurrealDB Usage: Native Graph Traversal & Vector Search
+
+**Priority**: High — directly impacts core functionality performance and scalability  
+**Discovered**: 2026-03-18 during code review of code graph tools  
+
+### Problem Statement
+
+Agent-engram uses SurrealDB 2 as its persistence layer, which natively supports both graph traversal (via `RELATE` edges and `->edge->` syntax) and vector/KNN search (via `MTREE` indexes with cosine distance). However, the current implementation treats SurrealDB as a flat key-value store — all graph traversal and vector similarity scoring happen in application-level Rust code, bypassing the database's purpose-built query engine.
+
+This means:
+- **Graph queries** (`map_code`, `impact_analysis`) use a manual BFS with one `SELECT out FROM {edge_table} WHERE in = $node` per hop per edge type, resulting in N×5 round-trips for an N-hop traversal across 5 edge types.
+- **Vector search** (`unified_search`, `vector_search_symbols`) loads **all rows** from symbol tables into memory, then computes cosine similarity in Rust. This is O(n) in the total symbol count and ignores the existing `MTREE DIMENSION 384 DIST COSINE` indexes entirely.
+- **Embedding generation** requires the `embeddings` Cargo feature flag to be enabled at build time. When disabled, symbols store zero vectors and all semantic search silently returns empty results with no user-facing indication that the capability is degraded.
+
+### Current Architecture (What Exists)
+
+#### Graph Storage (correctly implemented)
+- 4 node tables: `code_file`, `function`, `class`, `interface` (all `SCHEMAFULL`)
+- 5 edge tables: `calls`, `imports`, `defines`, `inherits_from`, `concerns` (all `TYPE RELATION`)
+- Edges created via `RELATE $from->calls->$to` etc. in `src/db/queries.rs`
+
+#### Vector Storage (correctly defined, never queried)
+- All symbol tables have `embedding` fields (`array<float>`, 384 dimensions)
+- MTREE indexes defined: `DEFINE INDEX function_embedding ON TABLE function COLUMNS embedding MTREE DIMENSION 384 DIST COSINE`
+- Equivalent indexes on `class`, `interface`, `spec`, `context`, `content_record`
+- Embeddings generated by `fastembed` (bge-small-en-v1.5) during `index_workspace`
+
+#### Query Layer (the problem)
+- `bfs_neighborhood()` in `queries.rs:3472` — manual `VecDeque`-based BFS, flat SELECTs per hop
+- `get_outbound_edges()` in `queries.rs:3550` — iterates over each edge table with separate queries
+- `vector_search_symbols()` in `queries.rs:3897` — `SELECT * FROM function` (loads all), then Rust-side `cosine_similarity()`
+- `cosine_similarity()` in `services/search.rs:110` — manual dot product / magnitude calculation
+
+### Proposed Changes
+
+#### 1. Native Graph Traversal (SurrealQL)
+
+Replace the application-level BFS in `bfs_neighborhood()` and `get_outbound_edges()` with SurrealQL graph traversal queries.
+
+**Before** (current — multiple round-trips per hop):
+```rust
+// 5 queries per node, per hop
+let query = format!("SELECT out FROM {edge_table} WHERE in = $node");
+```
+
+**After** (single query, multi-hop):
+```surql
+-- 1 query for full neighborhood, all edge types, configurable depth
+SELECT
+  ->calls->function AS called_functions,
+  ->defines->function AS defined_functions,
+  ->imports->code_file AS imported_files,
+  <-calls<-function AS callers
+FROM $root_symbol
+FETCH called_functions, defined_functions, imported_files, callers;
+```
+
+For variable-depth traversal, use SurrealDB's recursive graph syntax or a server-side function:
+```surql
+-- Recursive multi-hop traversal
+SELECT ->calls[WHERE depth <= $max_depth]->function FROM $root;
+```
+
+**Files to modify**:
+- `src/db/queries.rs` — Replace `bfs_neighborhood()`, `get_outbound_edges()`, `get_inbound_edges()` with native SurrealQL graph queries
+- `src/tools/read.rs` — Update `map_code` and `impact_analysis` tool handlers to use new query results format
+
+**Expected impact**: Reduce N×5 round-trips per traversal to 1-2 queries regardless of depth. Eliminates application-level BFS entirely.
+
+#### 2. Native Vector KNN Search (MTREE Index)
+
+Replace the "load all, score in Rust" pattern with SurrealDB's built-in KNN operator that leverages the existing MTREE indexes.
+
+**Before** (current — O(n) full table scan in Rust):
+```rust
+let func_rows: Vec<FunctionRow> = db.query("SELECT * FROM function").await?;
+for f in func_rows {
+    let score = cosine_similarity(query_embedding, &f.embedding);
+    // ...
+}
+```
+
+**After** (single query, index-accelerated):
+```surql
+-- KNN search using existing MTREE index, returns top K nearest
+SELECT *, vector::similarity::cosine(embedding, $query_vec) AS score
+FROM function
+WHERE embedding <|$limit, COSINE|> $query_vec
+ORDER BY score DESC;
+```
+
+**Files to modify**:
+- `src/db/queries.rs` — Replace `vector_search_symbols()` with native KNN queries for each symbol table
+- `src/services/search.rs` — Remove or deprecate application-level `cosine_similarity()` function
+- `src/tools/read.rs` — Update `unified_search` handler to use DB-returned scores
+
+**Expected impact**: O(log n) index lookup instead of O(n) full scan. Eliminates loading all symbols into memory. Critical for scaling beyond the current ~900 functions.
+
+#### 3. Hybrid Graph + Vector Queries
+
+SurrealDB uniquely enables combining graph traversal with vector search in a single query — this is the real power for agent-engram's use case.
+
+**Example**: "Find functions semantically similar to X that are within 2 hops of Y in the call graph":
+```surql
+-- Hybrid: graph neighborhood filtered by semantic similarity
+LET $neighbors = SELECT VALUE ->calls[..2]->function FROM $root_symbol;
+SELECT *, vector::similarity::cosine(embedding, $query_vec) AS score
+FROM function
+WHERE id IN $neighbors
+  AND embedding <|10, COSINE|> $query_vec
+ORDER BY score DESC;
+```
+
+This would power a much more effective `impact_analysis` that considers both structural relationships AND semantic meaning.
+
+**Files to modify**:
+- `src/db/queries.rs` — Add hybrid query methods
+- `src/tools/read.rs` — Update `impact_analysis` and `unified_search` to support combined mode
+- Consider adding a `relevance_search` tool that explicitly combines graph + vector
+
+#### 4. Embedding Feature Flag Hardening
+
+Currently, when the `embeddings` feature is disabled:
+- Symbols store zero vectors (`vec![0.0; 384]`)
+- `embed_text()` returns `QueryError::ModelNotLoaded`
+- `vector_search_symbols()` silently returns empty results (zero vectors fail `has_meaningful_embedding()`)
+- Users get no indication that semantic search is degraded
+
+**Proposed changes**:
+- `unified_search` should return a clear message when embeddings are unavailable, not empty results
+- `get_health_report` / `get_workspace_statistics` should report embedding status (enabled/disabled, model loaded, % of symbols with real embeddings vs zero vectors)
+- Consider making `embeddings` a default feature so the common case works out of the box
+- Add a `--no-embeddings` CLI flag as the opt-out rather than requiring opt-in
+
+**Files to modify**:
+- `src/services/embedding.rs` — Add `is_available()` and `status()` functions
+- `src/tools/read.rs` — Return informative error in `unified_search` when embeddings unavailable
+- `src/tools/lifecycle.rs` — Include embedding status in workspace statistics
+- `Cargo.toml` — Consider `default = ["embeddings"]`
+
+#### 5. Query Performance Observability
+
+Add tracing spans around database queries to measure the actual impact of these optimizations.
+
+**Proposed changes**:
+- Wrap all SurrealDB queries in `tracing::instrument` spans with query type, table, and result count
+- Log slow queries (>100ms) at WARN level
+- Include query timing in `get_health_report` response
+
+**Files to modify**:
+- `src/db/queries.rs` — Add `#[instrument]` to all public query methods
+- `src/tools/lifecycle.rs` — Aggregate query timing stats
+
+### Verification Criteria
+
+- [ ] `map_code` with depth=3 completes in <100ms (currently: multiple round-trips)
+- [ ] `impact_analysis` uses single SurrealQL graph query, not BFS loop
+- [ ] `unified_search` uses MTREE index (verify via SurrealDB EXPLAIN)
+- [ ] Hybrid graph+vector query works for combined structural/semantic search
+- [ ] Embedding status is visible in health report and workspace statistics
+- [ ] All existing tool contracts (input/output schemas) remain backward compatible
+- [ ] Performance improvement measurable via tracing spans (before/after)
+
+### Dependencies
+
+- SurrealDB 2.x recursive graph traversal syntax — verify current SDK support
+- `surrealdb` Rust crate version may need updating for KNN operator support
+- `fastembed` feature flag decision (default on vs opt-in) affects build time and binary size
+
+### References
+
+- Current graph queries: `src/db/queries.rs:3472-3598` (BFS), `3319-3373` (RELATE)
+- Current vector queries: `src/db/queries.rs:3897-3999` (full scan)
+- MTREE index definitions: `src/db/schema.rs:122, 140, 158, 235`
+- Embedding service: `src/services/embedding.rs:1-167`
+- Code graph indexer: `src/services/code_graph.rs:70-398`
+- SurrealDB graph docs: https://surrealdb.com/docs/surrealql/statements/relate
+- SurrealDB vector docs: https://surrealdb.com/docs/surrealql/functions/vector
