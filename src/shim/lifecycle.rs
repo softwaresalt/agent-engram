@@ -25,7 +25,7 @@ const INITIAL_BACKOFF_MS: u64 = 10;
 /// Maximum delay cap per backoff step (milliseconds).
 const MAX_BACKOFF_MS: u64 = 500;
 /// Default total wall-clock budget allowed for the ready-wait loop (milliseconds).
-const DEFAULT_READY_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_READY_TIMEOUT_MS: u64 = 30_000;
 
 /// Parse a ready-timeout value from an optional raw string.
 ///
@@ -188,11 +188,11 @@ async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
 mod tests {
     use super::*;
 
-    /// Default timeout is 10 000 ms when no env var value is provided.
+    /// Default timeout is 30 000 ms when no env var value is provided.
     #[test]
-    fn ready_timeout_default_is_10_seconds() {
+    fn ready_timeout_default_is_30_seconds() {
         assert_eq!(parse_timeout_ms(None), DEFAULT_READY_TIMEOUT_MS);
-        assert_eq!(parse_timeout_ms(None), 10_000);
+        assert_eq!(parse_timeout_ms(None), 30_000);
     }
 
     /// A valid numeric string overrides the default.

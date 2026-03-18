@@ -273,15 +273,22 @@ async fn process_request(
     let id = request.id.clone().unwrap_or(Value::Null);
 
     match request.method.as_str() {
-        "_health" => IpcResponse::success(
-            id,
-            json!({
-                "status": "ready",
-                "uptime_seconds": state.uptime_seconds(),
-                "workspace": state.snapshot_workspace().await.map(|s| s.path),
-                "active_connections": state.active_connections(),
-            }),
-        ),
+        "_health" => {
+            // Return "starting" while workspace hydration is in progress so
+            // the shim keeps polling rather than treating the daemon as healthy
+            // before it can serve real tool calls.
+            let snapshot = state.snapshot_workspace().await;
+            let status = if snapshot.is_some() { "ready" } else { "starting" };
+            IpcResponse::success(
+                id,
+                json!({
+                    "status": status,
+                    "uptime_seconds": state.uptime_seconds(),
+                    "workspace": snapshot.map(|s| s.path),
+                    "active_connections": state.active_connections(),
+                }),
+            )
+        }
         // T052: `_shutdown` triggers the shared shutdown channel so the accept
         // loop exits after returning this response (S022, S037).
         "_shutdown" => {
@@ -352,9 +359,14 @@ pub async fn run_with_shutdown(
 
     let state: SharedState = Arc::new(AppState::new(1));
 
-    // Hydrate the workspace into the shared state.
-    crate::tools::lifecycle::set_workspace(state.as_ref(), workspace.to_owned()).await?;
-
+    // ── Bind the IPC endpoint BEFORE hydrating the workspace ─────────────────
+    //
+    // Workspace hydration (connect_db, hydrate_into_db, hydrate_code_graph)
+    // can take several seconds on large workspaces. If we hydrate first and
+    // bind after, the shim's health-check poll times out before the pipe even
+    // exists. By binding first we let the shim connect immediately; the
+    // `_health` handler returns `"starting"` until hydration completes, then
+    // switches to `"ready"`.
     let endpoint = ipc_endpoint(&workspace_path)?;
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
@@ -386,22 +398,41 @@ pub async fn run_with_shutdown(
         }
     }
 
-    // T049 / S046: Reset the idle deadline so the TTL window starts from when
-    // the daemon is ready to serve requests, not from when it started.  On a
-    // slow machine SurrealDB init may consume several hundred milliseconds;
-    // without this reset a short idle timeout (e.g. 500 ms in tests) would
-    // fire before the readiness probe even connects.
-    ttl.reset();
-
-    // T045: Spawn the TTL expiry task now that the daemon is ready to serve.
-    // Spawning here (after bind) rather than at process startup ensures the
-    // idle window begins from "daemon ready", preventing false expiry during
-    // slow SurrealDB initialization.
+    // ── Hydrate workspace in a background task ────────────────────────────────
+    //
+    // Running set_workspace asynchronously unblocks the accept loop so health
+    // probes from the shim are answered immediately (with "starting") rather
+    // than timing out waiting for SurrealDB init + file hydration.
+    //
+    // On success: reset the TTL idle deadline and spawn the TTL expiry task
+    //   (T049/S046, T045) so the idle window begins from "daemon ready".
+    // On failure: send the shutdown signal so the daemon exits cleanly and the
+    //   shim's poll eventually gives up with NotReady.
     {
-        let ttl_task = Arc::clone(&ttl);
-        let tx_for_ttl = Arc::clone(&shutdown_tx);
+        let state_init = Arc::clone(&state);
+        let workspace_str = workspace.to_owned();
+        let ttl_init = Arc::clone(&ttl);
+        let tx_init = Arc::clone(&shutdown_tx);
         tokio::spawn(async move {
-            ttl_task.run_until_expired(tx_for_ttl).await;
+            match crate::tools::lifecycle::set_workspace(state_init.as_ref(), workspace_str).await
+            {
+                Ok(_) => {
+                    info!("workspace hydration complete — daemon ready to serve");
+                    // T049 / S046: Reset idle deadline from "daemon ready", not
+                    // "daemon starting", to avoid false TTL expiry during slow init.
+                    ttl_init.reset();
+                    // T045: Start TTL expiry task after the socket is bound and
+                    // workspace is hydrated so idle counting begins at readiness.
+                    let ttl_task = Arc::clone(&ttl_init);
+                    tokio::spawn(async move {
+                        ttl_task.run_until_expired(tx_init).await;
+                    });
+                }
+                Err(e) => {
+                    error!(error = %e, "workspace hydration failed — initiating shutdown");
+                    let _ = tx_init.send(true);
+                }
+            }
         });
     }
 
