@@ -186,3 +186,298 @@ Add tracing spans around database queries to measure the actual impact of these 
 - Code graph indexer: `src/services/code_graph.rs:70-398`
 - SurrealDB graph docs: https://surrealdb.com/docs/surrealql/statements/relate
 - SurrealDB vector docs: https://surrealdb.com/docs/surrealql/functions/vector
+
+---
+
+## Phased Startup: Return "Ready" Before Code Graph Indexing
+
+**Priority**: High — directly impacts MCP client connection reliability and user experience  
+**Discovered**: 2026-03-18 during investigation of daemon startup timeout  
+**Related**: "Optimize SurrealDB Usage" backlog item (code graph tools depend on this)
+
+### Problem Statement
+
+The daemon's `set_workspace()` function performs **all** initialization sequentially before the server reports `"ready"` to the MCP client. This includes heavyweight operations (code graph hydration, embedding backfill) that are not required for the core task management tools to function. On large workspaces, this delays the MCP client connection by 10-30+ seconds, during which the agent has no engram tools available.
+
+The previous fix (commit `fb064ca`) moved `set_workspace` into a `tokio::spawn` background task and made the IPC listener bind first, so the shim can connect and receive `"starting"` status. However, the shim's `poll_until_ready()` still waits for `"ready"` — which only fires after the **entire** `set_workspace` completes — before returning control to the MCP client. The agent cannot use any engram tools until the full hydration pipeline finishes.
+
+### Current Startup Sequence (All-or-Nothing)
+
+**File**: `src/tools/lifecycle.rs:57-117` (`set_workspace`)
+
+```
+set_workspace() — ALL of this must complete before "ready":
+  ├── validate_workspace_path()           ~instant
+  ├── canonicalize_workspace()            ~instant
+  ├── workspace_hash()                    ~instant
+  ├── hydrate_workspace()                 ~100-500ms    ← reads .engram/ files
+  ├── connect_db()                        ~500-2000ms   ← SurrealDB embedded init
+  ├── hydrate_into_db()                   ~200-1000ms   ← loads tasks/specs/contexts
+  ├── hydrate_code_graph()                ~1-5s         ← loads code graph from JSONL
+  ├── backfill_embeddings()               ~5-30s        ← computes missing vectors
+  ├── parse_config()                      ~instant
+  └── state.set_workspace(snapshot)       ~instant      ← triggers "ready"
+```
+
+**Consequence**: The `_health` handler in `src/daemon/ipc_server.rs:276-290` checks `state.snapshot_workspace().await.is_some()` — it returns `"starting"` until `set_workspace` calls `state.set_workspace(snapshot)` on line 108. The shim's `check_health()` in `src/shim/lifecycle.rs:56-82` only returns `true` when `status == "ready"`. So the MCP client blocks for the entire pipeline.
+
+### Proposed Solution: Two-Phase Initialization
+
+Split `set_workspace` into two phases, with "ready" reported between them.
+
+#### Phase 1 — Core State (blocks "ready")
+
+These steps are required for the core MCP tools (task CRUD, context, flush, query) to function:
+
+```
+Phase 1 — set_workspace_core():
+  ├── validate_workspace_path()
+  ├── canonicalize_workspace()
+  ├── workspace_hash()
+  ├── hydrate_workspace()          ← reads .engram/ markdown files
+  ├── connect_db()                 ← SurrealDB embedded init
+  ├── hydrate_into_db()            ← loads tasks, specs, contexts into DB
+  ├── parse_config()
+  └── state.set_workspace(snapshot) ← "ready" fires HERE
+```
+
+**Estimated time**: 1-3 seconds on typical workspaces.
+
+After Phase 1, the following 27 tools become immediately available:
+- Task management: `create_task`, `update_task`, `batch_update_tasks`, `claim_task`, `release_task`, `defer_task`, `undefer_task`, `pin_task`, `unpin_task`
+- Blockers/dependencies: `add_blocker`, `add_dependency`
+- Query/read: `get_task_graph`, `check_status`, `query_memory`, `get_ready_work`, `get_compaction_candidates`, `get_workspace_statistics`, `get_active_context`, `get_health_report`, `get_event_history`
+- Write: `register_decision`, `flush_state`, `apply_compaction`, `add_label`, `remove_label`, `add_comment`, `rollback_to_event`
+- Status: `get_daemon_status`, `get_workspace_status`
+
+#### Phase 2 — Enhancement Layer (background, non-blocking)
+
+These steps enrich the workspace with code intelligence but are not needed for core operation:
+
+```
+Phase 2 — spawn as tokio::spawn after "ready":
+  ├── hydrate_code_graph()         ← loads code graph from JSONL
+  ├── backfill_embeddings()        ← computes missing embedding vectors
+  └── state.update_phase2_status() ← marks enhancement layer as available
+```
+
+**Estimated time**: 5-30+ seconds depending on workspace size and embedding feature flag.
+
+After Phase 2, the remaining 11 code-intelligence tools become available:
+- Code graph: `map_code`, `list_symbols`, `impact_analysis`, `index_workspace`, `sync_workspace`
+- Search: `unified_search`, `query_graph`
+- Task-code linking: `link_task_to_code`, `unlink_task_from_code`
+- Collections: `create_collection`, `add_to_collection`, `remove_from_collection`, `get_collection_context`
+
+### Implementation Details
+
+#### 1. Split `set_workspace` in `src/tools/lifecycle.rs`
+
+Refactor `set_workspace()` (lines 57-117) into two functions:
+
+```rust
+/// Phase 1: Core hydration — enough to serve task management tools.
+/// Returns the WorkspaceBinding and DB handle for Phase 2.
+pub async fn set_workspace_core(
+    state: &AppState,
+    path: String,
+) -> Result<(WorkspaceBinding, surrealdb::Surreal<surrealdb::engine::local::Db>), EngramError> {
+    validate_workspace_path(&path)?;
+    let canonical = canonicalize_workspace(&path)?;
+    let workspace_id = workspace_hash(&canonical);
+    // ... capacity check ...
+    let hydration = hydrate_workspace(&canonical).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+    let db_result = hydrate_into_db(&canonical, &queries).await?;
+    let ws_config = parse_config(&canonical)?;
+    // Build snapshot and set workspace — triggers "ready"
+    state.set_workspace(snapshot).await?;
+    state.set_workspace_config(Some(ws_config)).await;
+    Ok((binding, db))
+}
+
+/// Phase 2: Enhancement hydration — code graph + embeddings.
+/// Runs in background after "ready" is reported.
+pub async fn set_workspace_enhancements(
+    state: &AppState,
+    db: surrealdb::Surreal<surrealdb::engine::local::Db>,
+    canonical: &Path,
+) -> Result<(), EngramError> {
+    let cg_queries = CodeGraphQueries::new(db.clone());
+    hydrate_code_graph(canonical, &cg_queries).await?;
+    let queries = Queries::new(db);
+    backfill_embeddings(&queries).await;
+    // Update state to mark enhancements as available
+    state.set_enhancements_ready(true).await;
+    Ok(())
+}
+```
+
+#### 2. Update `run_with_shutdown` in `src/daemon/ipc_server.rs`
+
+The background `tokio::spawn` block (lines 411-437) currently calls `set_workspace` as one unit. Change it to:
+
+```rust
+tokio::spawn(async move {
+    // Phase 1: Core state — triggers "ready"
+    match lifecycle::set_workspace_core(state_init.as_ref(), workspace_str).await {
+        Ok((binding, db)) => {
+            info!("Phase 1 complete — daemon ready for core tools");
+            ttl_init.reset();
+            tokio::spawn(async move {
+                ttl_task.run_until_expired(tx_init).await;
+            });
+
+            // Phase 2: Enhancements — non-blocking background
+            let canonical = PathBuf::from(&binding.path);
+            if let Err(e) = lifecycle::set_workspace_enhancements(
+                state_init.as_ref(), db, &canonical
+            ).await {
+                warn!(error = %e, "Phase 2 enhancement hydration failed (non-fatal)");
+            } else {
+                info!("Phase 2 complete — code intelligence tools available");
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Phase 1 hydration failed — initiating shutdown");
+            let _ = tx_init.send(true);
+        }
+    }
+});
+```
+
+Key difference: Phase 2 failure is **non-fatal** — logged as a warning but the daemon stays running with core tools available.
+
+#### 3. Add Enhancement Readiness State to `AppState`
+
+**File**: `src/server/state.rs`
+
+Add a flag to `AppState` tracking whether Phase 2 is complete:
+
+```rust
+pub struct AppState {
+    // ... existing fields ...
+    enhancements_ready: AtomicBool,  // false until Phase 2 completes
+}
+
+impl AppState {
+    pub fn enhancements_ready(&self) -> bool {
+        self.enhancements_ready.load(Ordering::Relaxed)
+    }
+
+    pub async fn set_enhancements_ready(&self, ready: bool) {
+        self.enhancements_ready.store(ready, Ordering::Relaxed);
+    }
+}
+```
+
+#### 4. Guard Code Graph Tools During Phase 2
+
+**File**: `src/tools/read.rs`, `src/tools/write.rs`
+
+Tools that depend on code graph data should check `enhancements_ready()` and return a descriptive message:
+
+```rust
+// At the top of map_code, list_symbols, impact_analysis, unified_search, etc.
+if !state.enhancements_ready() {
+    return Ok(json!({
+        "status": "indexing",
+        "message": "Code intelligence is still initializing. Core task management tools are available. Try again in a few seconds."
+    }));
+}
+```
+
+This is preferable to returning an error because:
+- The agent can proceed with non-code-graph work
+- The agent can retry the code tool after a short delay
+- No error propagation or retry logic needed in the MCP client
+
+#### 5. Update `_health` Response
+
+**File**: `src/daemon/ipc_server.rs:276-290`
+
+Enrich the health response to include phase information:
+
+```rust
+"_health" => {
+    let snapshot = state.snapshot_workspace().await;
+    let status = if snapshot.is_some() { "ready" } else { "starting" };
+    let enhancements = state.enhancements_ready();
+    IpcResponse::success(
+        id,
+        json!({
+            "status": status,
+            "enhancements_ready": enhancements,
+            "uptime_seconds": state.uptime_seconds(),
+            "workspace": snapshot.map(|s| s.path),
+            "active_connections": state.active_connections(),
+        }),
+    )
+}
+```
+
+The shim continues to check `status == "ready"` and ignores `enhancements_ready` — no shim changes needed. Diagnostic tools can use the richer response.
+
+#### 6. Update `get_workspace_status`
+
+**File**: `src/tools/lifecycle.rs`
+
+Add enhancement status to the workspace status response:
+
+```rust
+pub struct WorkspaceStatus {
+    // ... existing fields ...
+    pub enhancements_ready: bool,    // Phase 2 complete?
+    pub code_graph: CodeGraphStats,  // populated after Phase 2
+}
+```
+
+### Edge Cases and Considerations
+
+1. **Tool calls during Phase 2**: If an agent calls `map_code` during Phase 2 indexing, it gets a clear `"indexing"` status message rather than an error or empty results. The agent can retry or proceed with other work.
+
+2. **`flush_state` during Phase 2**: The `flush_state` tool dehydrates the code graph to `.engram/code-graph/`. If called during Phase 2, it should either skip code graph dehydration (not yet loaded) or wait. Recommend: skip with a note in the response.
+
+3. **`index_workspace` during Phase 2**: If Phase 2 is still loading the existing graph, a concurrent `index_workspace` call could conflict. Guard with `enhancements_ready()` check.
+
+4. **Phase 2 failure modes**: If `hydrate_code_graph` fails (corrupt JSONL), the daemon stays running without code intelligence. If `backfill_embeddings` fails (model not available), same — core tools unaffected. Both are logged at WARN level.
+
+5. **TTL timer placement**: The TTL idle timer should still start after Phase 1 (when "ready" fires), not after Phase 2. The daemon is usable after Phase 1; waiting for Phase 2 would delay the idle countdown unnecessarily on workspaces where code graph loading is slow.
+
+6. **Backward compatibility**: The `_health` response adds `enhancements_ready` as a new optional field. Existing shims and MCP clients ignore unknown fields. The `"ready"` status semantics are unchanged — it still means "daemon can serve tool calls."
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/tools/lifecycle.rs` | Split `set_workspace` into `set_workspace_core` + `set_workspace_enhancements` |
+| `src/daemon/ipc_server.rs` | Update background `tokio::spawn` to call phases sequentially; update `_health` response |
+| `src/server/state.rs` | Add `enhancements_ready: AtomicBool` to `AppState` |
+| `src/tools/read.rs` | Guard `map_code`, `list_symbols`, `impact_analysis`, `unified_search`, `query_graph`, `get_collection_context` with `enhancements_ready()` check |
+| `src/tools/write.rs` | Guard `index_workspace`, `sync_workspace`, `link_task_to_code`, `unlink_task_from_code` with `enhancements_ready()` check |
+| `src/tools/mod.rs` | No changes needed (dispatch is unchanged) |
+| `tests/integration/smoke_test.rs` | Update to verify Phase 1 returns "ready" before Phase 2 completes |
+
+### Verification Criteria
+
+- [ ] Daemon reports `"ready"` within 3 seconds of startup on a workspace with 100+ code files
+- [ ] Core task management tools (`create_task`, `get_task_graph`, `flush_state`) work immediately after "ready"
+- [ ] Code graph tools (`map_code`, `list_symbols`) return `"indexing"` status during Phase 2
+- [ ] Code graph tools return full results after Phase 2 completes
+- [ ] `get_workspace_status` includes `enhancements_ready` field
+- [ ] Phase 2 failure does not crash the daemon or affect core tools
+- [ ] TTL idle timer starts after Phase 1, not Phase 2
+- [ ] All existing smoke/integration tests pass
+- [ ] No regression in `_health` / `check_health` / `poll_until_ready` behavior
+
+### References
+
+- Current `set_workspace`: `src/tools/lifecycle.rs:57-117`
+- Background spawn: `src/daemon/ipc_server.rs:401-437`
+- `_health` handler: `src/daemon/ipc_server.rs:276-290`
+- Shim polling: `src/shim/lifecycle.rs:56-82` (`check_health`), `156-183` (`poll_until_ready`)
+- `AppState`: `src/server/state.rs:30-39` (`WorkspaceSnapshot`), `151-170` (`snapshot_workspace`, `set_workspace`)
+- Tool dispatch: `src/tools/mod.rs:60-115`
+- Code graph tools: `src/tools/read.rs:474-530` (`map_code`), `620-680` (`list_symbols`), `1130-1170` (`impact_analysis`), `838-950` (`unified_search`)
+- Previous fix: commit `fb064ca` (bind IPC before hydration)
