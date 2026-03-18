@@ -161,8 +161,24 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
                     // The holding process is dead; remove both stale files and
                     // retry once. On most OSes the OS lock is already released when
                     // the holding process died, so the retry should succeed.
-                    let _ = std::fs::remove_file(&lock_path);
-                    let _ = std::fs::remove_file(&pid_path);
+                    if let Err(e) = std::fs::remove_file(&lock_path) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            warn!(
+                                path = %lock_path.display(),
+                                error = %e,
+                                "failed to remove stale lock file"
+                            );
+                        }
+                    }
+                    if let Err(e) = std::fs::remove_file(&pid_path) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            warn!(
+                                path = %pid_path.display(),
+                                error = %e,
+                                "failed to remove stale PID file"
+                            );
+                        }
+                    }
                     acquire_inner(workspace, false)
                 }
                 Some(pid) => {
