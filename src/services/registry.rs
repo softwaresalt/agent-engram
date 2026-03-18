@@ -118,32 +118,42 @@ pub fn validate_sources(
         let resolved = canonical_root.join(&source.path);
 
         // Check for path traversal — resolved path must be within workspace root.
-        if let Ok(canonical) = resolved.canonicalize() {
-            if !canonical.starts_with(&canonical_root) {
+        match resolved.canonicalize() {
+            Ok(canonical) => {
+                if !canonical.starts_with(&canonical_root) {
+                    warn!(
+                        path = %source.path,
+                        "Registry source path resolves outside workspace root — rejected"
+                    );
+                    source.status = ContentSourceStatus::Error;
+                    continue;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if resolved
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+                {
+                    warn!(
+                        path = %source.path,
+                        "Registry source path contains '..' traversal — rejected"
+                    );
+                    source.status = ContentSourceStatus::Error;
+                    continue;
+                }
+                warn!(path = %source.path, "Registry source path does not exist");
+                source.status = ContentSourceStatus::Missing;
+                continue;
+            }
+            Err(e) => {
                 warn!(
                     path = %source.path,
-                    "Registry source path resolves outside workspace root — rejected"
+                    error = %e,
+                    "Registry source path could not be canonicalized"
                 );
                 source.status = ContentSourceStatus::Error;
                 continue;
             }
-        } else {
-            // Path doesn't exist on disk.
-            if resolved
-                .components()
-                .any(|c| c == std::path::Component::ParentDir)
-            {
-                warn!(
-                    path = %source.path,
-                    "Registry source path contains '..' traversal — rejected"
-                );
-                source.status = ContentSourceStatus::Error;
-                continue;
-            }
-            // Path simply doesn't exist yet — mark as Missing.
-            warn!(path = %source.path, "Registry source path does not exist");
-            source.status = ContentSourceStatus::Missing;
-            continue;
         }
 
         // Check for duplicate paths.

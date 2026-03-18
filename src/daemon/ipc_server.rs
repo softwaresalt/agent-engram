@@ -278,7 +278,11 @@ async fn process_request(
             // the shim keeps polling rather than treating the daemon as healthy
             // before it can serve real tool calls.
             let snapshot = state.snapshot_workspace().await;
-            let status = if snapshot.is_some() { "ready" } else { "starting" };
+            let status = if snapshot.is_some() {
+                "ready"
+            } else {
+                "starting"
+            };
             IpcResponse::success(
                 id,
                 json!({
@@ -414,8 +418,7 @@ pub async fn run_with_shutdown(
         let ttl_init = Arc::clone(&ttl);
         let tx_init = Arc::clone(&shutdown_tx);
         tokio::spawn(async move {
-            match crate::tools::lifecycle::set_workspace(state_init.as_ref(), workspace_str).await
-            {
+            match crate::tools::lifecycle::set_workspace(state_init.as_ref(), workspace_str).await {
                 Ok(_) => {
                     info!("workspace hydration complete — daemon ready to serve");
                     // T049 / S046: Reset idle deadline from "daemon ready", not

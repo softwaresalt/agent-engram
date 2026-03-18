@@ -42,7 +42,11 @@ fn s027_acquire_on_fresh_workspace_succeeds_and_writes_pid() {
         .trim()
         .parse()
         .expect("engram.pid must contain a numeric PID");
-    assert_eq!(written, std::process::id(), "engram.pid must match current PID");
+    assert_eq!(
+        written,
+        std::process::id(),
+        "engram.pid must match current PID"
+    );
 }
 
 // ── S029: stale lock (dead PID, no OS lock) ───────────────────────────────────

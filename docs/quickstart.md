@@ -26,7 +26,7 @@ Get from zero to a running Engram daemon with an AI agent connected in under 10 
 Verify your environment:
 
 ```bash
-rustc --version   # rustc 1.78.0 or later
+rustc --version   # rustc 1.85.0 or later
 git --version     # git version 2.25.0 or later
 ```
 
@@ -89,13 +89,13 @@ your-project/
 In a separate terminal, start the Engram daemon:
 
 ```bash
-engram daemon
+engram daemon --workspace /path/to/your/project
 ```
 
 The daemon starts on port **7437** by default and outputs structured logs:
 
 ```
-INFO engram: daemon listening addr=0.0.0.0:7437
+INFO engram: daemon listening addr=127.0.0.1:7437
 INFO engram: embedding model loaded model=nomic-embed-text
 INFO engram: ready
 ```
@@ -104,7 +104,7 @@ To start in the background with custom settings:
 
 ```bash
 # Custom port and JSON logging for production
-ENGRAM_PORT=8080 ENGRAM_LOG_FORMAT=json engram daemon &
+ENGRAM_PORT=8080 ENGRAM_LOG_FORMAT=json engram daemon --workspace /path/to/your/project &
 ```
 
 ---

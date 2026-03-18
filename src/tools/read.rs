@@ -77,6 +77,47 @@ async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
     Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
+async fn load_registry_status(state: &SharedState) -> Result<Option<Value>, EngramError> {
+    let Some(snapshot) = state.snapshot_workspace().await else {
+        return Ok(None);
+    };
+
+    let workspace_path = std::path::PathBuf::from(snapshot.path);
+    let registry_path = workspace_path.join(".engram").join("registry.yaml");
+
+    tokio::task::spawn_blocking(move || {
+        match crate::services::registry::load_registry(&registry_path) {
+            Ok(Some(mut config)) => {
+                let _ = crate::services::registry::validate_sources(&mut config, &workspace_path);
+                let sources: Vec<Value> = config
+                    .sources
+                    .iter()
+                    .map(|source| {
+                        json!({
+                            "content_type": source.content_type,
+                            "language": source.language,
+                            "path": source.path,
+                            "status": source.status.as_str(),
+                        })
+                    })
+                    .collect();
+
+                Ok(Some(json!({
+                    "sources": sources,
+                    "total_sources": config.sources.len(),
+                })))
+            }
+            Ok(None) | Err(_) => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("registry status worker failed: {e}"),
+        })
+    })?
+}
+
 pub async fn get_task_graph(
     state: SharedState,
     params: Option<Value>,
@@ -225,59 +266,31 @@ pub async fn get_workspace_statistics(
 
     let statistics = queries.get_workspace_statistics().await?;
 
-    // Build registry status from workspace state if available.
-    let registry_status = {
-        let snapshot = state.snapshot_workspace().await;
-        if let Some(ref snap) = snapshot {
-            let ws_path = std::path::Path::new(&snap.path);
-            let registry_path = ws_path.join(".engram").join("registry.yaml");
-            match crate::services::registry::load_registry(&registry_path) {
-                Ok(Some(mut config)) => {
-                    let _ = crate::services::registry::validate_sources(&mut config, ws_path);
-                    let sources: Vec<serde_json::Value> = config
-                        .sources
-                        .iter()
-                        .map(|s| {
-                            serde_json::json!({
-                                "content_type": s.content_type,
-                                "language": s.language,
-                                "path": s.path,
-                                "status": s.status.as_str(),
-                            })
-                        })
-                        .collect();
-                    Some(serde_json::json!({
-                        "sources": sources,
-                        "total_sources": config.sources.len(),
-                    }))
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    };
+    let registry_status = load_registry_status(&state).await?;
 
-    let mut result = json!({
-        "total_tasks": statistics.total_tasks,
-        "by_status": statistics.by_status,
-        "by_priority": statistics.by_priority,
-        "by_type": statistics.by_type,
-        "by_label": statistics.by_label,
-        "deferred_count": statistics.deferred_count,
-        "pinned_count": statistics.pinned_count,
-        "claimed_count": statistics.claimed_count,
-        "compacted_count": statistics.compacted_count,
-    });
+    let mut result = serde_json::Map::from_iter([
+        ("total_tasks".to_owned(), json!(statistics.total_tasks)),
+        ("by_status".to_owned(), json!(statistics.by_status)),
+        ("by_priority".to_owned(), json!(statistics.by_priority)),
+        ("by_type".to_owned(), json!(statistics.by_type)),
+        ("by_label".to_owned(), json!(statistics.by_label)),
+        (
+            "deferred_count".to_owned(),
+            json!(statistics.deferred_count),
+        ),
+        ("pinned_count".to_owned(), json!(statistics.pinned_count)),
+        ("claimed_count".to_owned(), json!(statistics.claimed_count)),
+        (
+            "compacted_count".to_owned(),
+            json!(statistics.compacted_count),
+        ),
+    ]);
 
     if let Some(reg) = registry_status {
-        result
-            .as_object_mut()
-            .expect("result is always an object")
-            .insert("registry".to_owned(), reg);
+        result.insert("registry".to_owned(), reg);
     }
 
-    Ok(result)
+    Ok(Value::Object(result))
 }
 
 // ── Compaction candidates ────────────────────────────────────────────────

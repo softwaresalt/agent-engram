@@ -1744,7 +1744,13 @@ pub async fn index_git_history(
             })
         })?;
 
-    let depth = parsed.depth.unwrap_or(0); // 0 → service uses default 500
+    if parsed.depth == Some(0) {
+        return Err(EngramError::System(SystemError::InvalidParams {
+            reason: "depth must be greater than 0 when provided".to_owned(),
+        }));
+    }
+
+    let depth = parsed.depth.unwrap_or(0); // None → service uses default 500
 
     let db = connect_db(&ws_id).await?;
     let queries = Queries::new(db);
