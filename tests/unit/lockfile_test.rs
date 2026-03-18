@@ -21,18 +21,28 @@ fn s027_acquire_on_fresh_workspace_succeeds_and_writes_pid() {
 
     let lock = DaemonLock::acquire(workspace).expect("should acquire lock");
 
-    // PID file must exist at the expected path
+    // PID file must exist at the expected path (engram.pid — plain, unlocked)
     let pid_path = workspace.join(".engram").join("run").join("engram.pid");
     assert!(pid_path.exists(), "PID file must be created");
     assert_eq!(lock.path(), pid_path);
 
-    // PID must be the current process ID (read via the accessor; on Windows
-    // reading the locked file from a second handle raises ERROR_LOCK_VIOLATION)
+    // Lock file must also exist (engram.lock — fd-lock target)
+    let lock_path = workspace.join(".engram").join("run").join("engram.lock");
+    assert!(lock_path.exists(), "lock file must be created");
+
+    // PID must be the current process ID.  Because engram.pid is a plain
+    // unlocked file on all platforms we can also verify the written value.
     assert_eq!(
         lock.pid(),
         std::process::id(),
         "lock must report current process PID"
     );
+    let written: u32 = fs::read_to_string(&pid_path)
+        .expect("engram.pid must be readable")
+        .trim()
+        .parse()
+        .expect("engram.pid must contain a numeric PID");
+    assert_eq!(written, std::process::id(), "engram.pid must match current PID");
 }
 
 // ── S029: stale lock (dead PID, no OS lock) ───────────────────────────────────
@@ -48,11 +58,11 @@ fn s029_acquire_with_stale_pid_file_succeeds() {
     fs::create_dir_all(&run_dir).expect("create run dir");
     let pid_path = run_dir.join("engram.pid");
     let mut f = fs::File::create(&pid_path).expect("create pid file");
-    // Write a PID with no OS lock on it (no fd-lock held)
+    // Write a PID with no OS lock on it (no fd-lock held on engram.lock)
     writeln!(f, "99999999").expect("write fake pid");
     drop(f); // close the file — no lock held
 
-    // Now acquire should succeed because no fd-lock is held on the file
+    // Now acquire should succeed because no fd-lock is held on engram.lock
     let lock = DaemonLock::acquire(workspace).expect("should acquire stale lock");
     assert_eq!(
         lock.pid(),
