@@ -48,3 +48,7 @@ temp/
 
 # engram plugin (workspace-local state)
 .engram/
+
+# UE
+*.prj
+*.pui

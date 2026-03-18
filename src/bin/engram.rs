@@ -26,8 +26,19 @@ enum Command {
         workspace: String,
     },
     /// Install the engram plugin into the current workspace.
-    /// Creates `.engram/` directory structure and generates MCP configuration.
-    Install,
+    /// Creates `.engram/` directory structure, generates MCP configuration,
+    /// and writes agent hook files for GitHub Copilot, Claude Code, and Cursor.
+    Install {
+        /// Generate only agent hook files; skip `.engram/` data file creation.
+        #[arg(long)]
+        hooks_only: bool,
+        /// Skip agent hook file generation.
+        #[arg(long)]
+        no_hooks: bool,
+        /// MCP HTTP endpoint port to embed in hook file URLs.
+        #[arg(long, default_value_t = engram::installer::DEFAULT_PORT)]
+        port: u16,
+    },
     /// Update the engram plugin runtime artifacts (binary references, config templates).
     /// Preserves existing workspace data files.
     Update,
@@ -53,9 +64,18 @@ async fn main() -> Result<()> {
         Command::Daemon { workspace } => {
             engram::daemon::run(&workspace).await?;
         }
-        Command::Install => {
+        Command::Install {
+            hooks_only,
+            no_hooks,
+            port,
+        } => {
             let workspace = std::env::current_dir()?;
-            engram::installer::install(&workspace).await?;
+            let opts = engram::installer::InstallOptions {
+                hooks_only,
+                no_hooks,
+                port,
+            };
+            engram::installer::install(&workspace, &opts).await?;
         }
         Command::Update => {
             let workspace = std::env::current_dir()?;

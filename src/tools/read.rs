@@ -77,6 +77,47 @@ async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
     Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
+async fn load_registry_status(state: &SharedState) -> Result<Option<Value>, EngramError> {
+    let Some(snapshot) = state.snapshot_workspace().await else {
+        return Ok(None);
+    };
+
+    let workspace_path = std::path::PathBuf::from(snapshot.path);
+    let registry_path = workspace_path.join(".engram").join("registry.yaml");
+
+    tokio::task::spawn_blocking(move || {
+        match crate::services::registry::load_registry(&registry_path) {
+            Ok(Some(mut config)) => {
+                let _ = crate::services::registry::validate_sources(&mut config, &workspace_path);
+                let sources: Vec<Value> = config
+                    .sources
+                    .iter()
+                    .map(|source| {
+                        json!({
+                            "content_type": source.content_type,
+                            "language": source.language,
+                            "path": source.path,
+                            "status": source.status.as_str(),
+                        })
+                    })
+                    .collect();
+
+                Ok(Some(json!({
+                    "sources": sources,
+                    "total_sources": config.sources.len(),
+                })))
+            }
+            Ok(None) | Err(_) => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("registry status worker failed: {e}"),
+        })
+    })?
+}
+
 pub async fn get_task_graph(
     state: SharedState,
     params: Option<Value>,
@@ -225,17 +266,31 @@ pub async fn get_workspace_statistics(
 
     let statistics = queries.get_workspace_statistics().await?;
 
-    Ok(json!({
-        "total_tasks": statistics.total_tasks,
-        "by_status": statistics.by_status,
-        "by_priority": statistics.by_priority,
-        "by_type": statistics.by_type,
-        "by_label": statistics.by_label,
-        "deferred_count": statistics.deferred_count,
-        "pinned_count": statistics.pinned_count,
-        "claimed_count": statistics.claimed_count,
-        "compacted_count": statistics.compacted_count,
-    }))
+    let registry_status = load_registry_status(&state).await?;
+
+    let mut result = serde_json::Map::from_iter([
+        ("total_tasks".to_owned(), json!(statistics.total_tasks)),
+        ("by_status".to_owned(), json!(statistics.by_status)),
+        ("by_priority".to_owned(), json!(statistics.by_priority)),
+        ("by_type".to_owned(), json!(statistics.by_type)),
+        ("by_label".to_owned(), json!(statistics.by_label)),
+        (
+            "deferred_count".to_owned(),
+            json!(statistics.deferred_count),
+        ),
+        ("pinned_count".to_owned(), json!(statistics.pinned_count)),
+        ("claimed_count".to_owned(), json!(statistics.claimed_count)),
+        (
+            "compacted_count".to_owned(),
+            json!(statistics.compacted_count),
+        ),
+    ]);
+
+    if let Some(reg) = registry_status {
+        result.insert("registry".to_owned(), reg);
+    }
+
+    Ok(Value::Object(result))
 }
 
 // ── Compaction candidates ────────────────────────────────────────────────
@@ -300,6 +355,9 @@ struct QueryMemoryParams {
     query: String,
     #[serde(default = "default_limit")]
     limit: usize,
+    /// Optional content type filter (e.g. "spec", "docs", "tests").
+    #[serde(default)]
+    content_type: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -361,6 +419,19 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
             source_type: "context".to_string(),
             content: ctx.content,
             embedding: ctx.embedding,
+        });
+    }
+
+    // Include content records, optionally filtered by content_type.
+    let content_records = queries
+        .select_content_records(parsed.content_type.as_deref())
+        .await?;
+    for cr in content_records {
+        candidates.push(SearchCandidate {
+            id: format!("content_record:{}", cr.id),
+            source_type: cr.content_type,
+            content: cr.content,
+            embedding: cr.embedding,
         });
     }
 
@@ -752,6 +823,9 @@ struct UnifiedSearchParams {
     region: String,
     #[serde(default = "default_unified_limit")]
     limit: usize,
+    /// Optional content type filter for content records.
+    #[serde(default)]
+    content_type: Option<String>,
 }
 
 fn default_unified_region() -> String {
@@ -940,6 +1014,36 @@ pub async fn unified_search(
                     line_range: None,
                     status: Some(task.status.as_str().to_string()),
                     linked_symbols: Some(linked),
+                });
+            }
+        }
+
+        // Search content records (keyword scoring, same as tasks).
+        let content_records = queries
+            .select_content_records(parsed.content_type.as_deref())
+            .await?;
+        for cr in content_records {
+            if query_words.is_empty() {
+                continue;
+            }
+            let haystack = cr.content.to_lowercase();
+            let matched = query_words
+                .iter()
+                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+                .count();
+            let score = matched as f32 / query_words.len() as f32;
+            if score > 0.0 {
+                results.push(UnifiedSearchResult {
+                    region: SearchRegion::Task,
+                    score,
+                    node_type: cr.content_type.clone(),
+                    id: format!("content_record:{}", cr.id),
+                    title: None,
+                    summary: Some(truncate_summary(&cr.content, 200)),
+                    file_path: Some(cr.file_path),
+                    line_range: None,
+                    status: None,
+                    linked_symbols: None,
                 });
             }
         }
@@ -1405,5 +1509,135 @@ pub async fn get_collection_context(
         "task_count": task_count,
         "tasks": task_json,
         "sub_collections": [],
+    }))
+}
+
+// ── query_changes (T041) ──────────────────────────────────────────────────────
+
+/// Parameters for the `query_changes` MCP tool.
+#[cfg(feature = "git-graph")]
+#[derive(Deserialize)]
+struct QueryChangesParams {
+    /// Filter commits that touched this file path.
+    #[serde(default)]
+    file_path: Option<String>,
+    /// Filter commits that affected this named symbol (cross-references code graph).
+    #[serde(default)]
+    symbol: Option<String>,
+    /// Return only commits on or after this ISO-8601 timestamp.
+    #[serde(default)]
+    since: Option<String>,
+    /// Return only commits on or before this ISO-8601 timestamp.
+    #[serde(default)]
+    until: Option<String>,
+    /// Maximum number of commits to return (default: 20).
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+/// Query indexed git commits filtered by file path, symbol name, or date range.
+///
+/// Requires the `git-graph` feature and an indexed workspace. Returns error
+/// `1001` when no workspace is active.
+#[cfg(feature = "git-graph")]
+pub async fn query_changes(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    use chrono::DateTime;
+
+    let ws_id = if let Some(snap) = state.snapshot_workspace().await {
+        snap.workspace_id
+    } else {
+        return Err(EngramError::Workspace(WorkspaceError::NotSet));
+    };
+
+    let parsed: QueryChangesParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    let limit = parsed.limit.unwrap_or(20);
+
+    let db = connect_db(&ws_id).await?;
+    let queries = Queries::new(db);
+
+    // Parse optional date range.
+    let since_dt = parsed
+        .since
+        .as_deref()
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    EngramError::System(SystemError::InvalidParams {
+                        reason: format!("invalid `since` timestamp: {s}"),
+                    })
+                })
+        })
+        .transpose()?;
+
+    let until_dt = parsed
+        .until
+        .as_deref()
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    EngramError::System(SystemError::InvalidParams {
+                        reason: format!("invalid `until` timestamp: {s}"),
+                    })
+                })
+        })
+        .transpose()?;
+
+    // If a symbol is provided, resolve its file path via the code graph so we
+    // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
+    let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
+        let cg_db = connect_db(&ws_id).await?;
+        let cg = CodeGraphQueries::new(cg_db);
+        let syms = cg.find_symbols_by_name(sym).await?;
+        if syms.is_empty() {
+            return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+                name: sym.clone(),
+            }));
+        }
+        // Use the first symbol's file path to filter commits.
+        syms.into_iter().next().map(|s| s.file_path)
+    } else {
+        parsed.file_path.clone()
+    };
+
+    let commits = match (
+        effective_file_path.as_deref(),
+        since_dt.as_ref(),
+        until_dt.as_ref(),
+    ) {
+        (Some(fp), _, _) => queries.select_commits_by_file_path(fp, limit).await?,
+        (None, since, until) => {
+            queries
+                .select_commits_by_date_range(since, until, limit)
+                .await?
+        }
+    };
+
+    let commits_json: Vec<Value> = commits
+        .into_iter()
+        .map(|c| {
+            serde_json::to_value(&c).map_err(|e| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("commit serialization failed: {e}"),
+                })
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    Ok(json!({
+        "commits": commits_json,
+        "total": commits_json.len(),
+        "file_path": effective_file_path,
+        "symbol": parsed.symbol,
     }))
 }

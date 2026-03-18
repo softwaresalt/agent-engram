@@ -230,6 +230,36 @@ pub enum InstallError {
     NotInstalled,
 }
 
+/// Errors for content registry operations (10xxx).
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    /// Failed to parse `.engram/registry.yaml`.
+    #[error("Failed to parse registry YAML: {reason}")]
+    ParseFailed { reason: String },
+    /// A registry entry failed validation.
+    #[error("Registry validation failed: {reason}")]
+    ValidationFailed { reason: String },
+}
+
+/// Errors for content ingestion operations (11xxx).
+#[derive(Debug, Error)]
+pub enum IngestionError {
+    /// Content ingestion failed for a source path.
+    #[error("Ingestion failed for '{path}': {reason}")]
+    Failed { path: String, reason: String },
+}
+
+/// Errors for git commit graph operations (12xxx).
+#[derive(Debug, Error)]
+pub enum GitGraphError {
+    /// Git repository not found at workspace root.
+    #[error("Git repository not found at '{path}'")]
+    NotFound { path: String },
+    /// Git access error during commit graph operations.
+    #[error("Git access error: {reason}")]
+    AccessError { reason: String },
+}
+
 #[derive(Debug, Error)]
 pub enum EngramError {
     #[error(transparent)]
@@ -262,6 +292,12 @@ pub enum EngramError {
     Collection(#[from] CollectionError),
     #[error(transparent)]
     GraphQuery(#[from] GraphQueryError),
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
+    #[error(transparent)]
+    Ingestion(#[from] IngestionError),
+    #[error(transparent)]
+    GitGraph(#[from] GitGraphError),
 }
 
 #[derive(Debug, Serialize)]
@@ -702,6 +738,42 @@ impl EngramError {
                 GraphQueryError::Invalid { reason } => (
                     QUERY_INVALID,
                     "QueryInvalid",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+            },
+            EngramError::Registry(inner) => match inner {
+                RegistryError::ParseFailed { reason } => (
+                    REGISTRY_PARSE_FAILED,
+                    "RegistryParseFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                RegistryError::ValidationFailed { reason } => (
+                    REGISTRY_VALIDATION_FAILED,
+                    "RegistryValidationFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+            },
+            EngramError::Ingestion(inner) => match inner {
+                IngestionError::Failed { path, reason } => (
+                    INGESTION_FAILED,
+                    "IngestionFailed",
+                    inner.to_string(),
+                    Some(json!({ "path": path, "reason": reason })),
+                ),
+            },
+            EngramError::GitGraph(inner) => match inner {
+                GitGraphError::NotFound { path } => (
+                    GIT_NOT_FOUND,
+                    "GitNotFound",
+                    inner.to_string(),
+                    Some(json!({ "path": path })),
+                ),
+                GitGraphError::AccessError { reason } => (
+                    GIT_ACCESS_ERROR,
+                    "GitAccessError",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
                 ),

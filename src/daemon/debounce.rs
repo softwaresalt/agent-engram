@@ -45,6 +45,12 @@ pub enum ServiceAction {
         /// Workspace-relative path of the affected file.
         path: std::path::PathBuf,
     },
+    /// The affected file is in a registered content source and should be
+    /// re-ingested into the content record table.
+    ReingestContent {
+        /// Workspace-relative path of the affected file.
+        path: std::path::PathBuf,
+    },
     /// No code-graph or embedding action required for this event.
     ///
     /// The idle TTL is still reset by the caller; only service updates are skipped.
@@ -177,7 +183,9 @@ mod tests {
             ServiceAction::ReindexFile { path } => {
                 assert_eq!(path, PathBuf::from("src/services/mod.rs"));
             }
-            ServiceAction::Skip => panic!("expected ReindexFile, got Skip"),
+            ServiceAction::Skip | ServiceAction::ReingestContent { .. } => {
+                panic!("expected ReindexFile, got {:?}", adapt_event(&event))
+            }
         }
     }
 

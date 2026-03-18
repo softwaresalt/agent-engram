@@ -76,7 +76,7 @@ curl -X POST http://127.0.0.1:7437/mcp \
 ## Configuration
 
 | Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
+| ------ | --------------------- | --------- | ------------- |
 | `--port` | `ENGRAM_PORT` | `7437` | Listening port on `127.0.0.1` |
 | `--max-workspaces` | `ENGRAM_MAX_WORKSPACES` | `10` | Maximum concurrent active workspaces |
 | `--request-timeout-ms` | `ENGRAM_REQUEST_TIMEOUT_MS` | `60000` | Request timeout in milliseconds |

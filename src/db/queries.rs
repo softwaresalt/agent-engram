@@ -2144,6 +2144,218 @@ impl Queries {
 
         Ok(false)
     }
+
+    // ── Content Record queries (006-workspace-content-intelligence) ──
+
+    /// Upsert a content record by file path, creating or replacing
+    /// the existing record for that file.
+    pub async fn upsert_content_record(
+        &self,
+        record: &crate::models::ContentRecord,
+    ) -> Result<(), EngramError> {
+        let thing = Thing::from(("content_record", record.id.as_str()));
+        let ingested = record.ingested_at.to_rfc3339();
+        self.db
+            .query(
+                "UPSERT $record SET \
+                    content_type = $content_type, \
+                    file_path = $file_path, \
+                    content_hash = $content_hash, \
+                    content = $content, \
+                    embedding = $embedding, \
+                    source_path = $source_path, \
+                    file_size_bytes = $file_size_bytes, \
+                    ingested_at = <datetime>$ingested",
+            )
+            .bind(("record", thing))
+            .bind(("content_type", record.content_type.clone()))
+            .bind(("file_path", record.file_path.clone()))
+            .bind(("content_hash", record.content_hash.clone()))
+            .bind(("content", record.content.clone()))
+            .bind(("embedding", record.embedding.clone()))
+            .bind(("source_path", record.source_path.clone()))
+            .bind((
+                "file_size_bytes",
+                i64::try_from(record.file_size_bytes).unwrap_or(i64::MAX),
+            ))
+            .bind(("ingested", ingested))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Select all content records, optionally filtered by content type.
+    pub async fn select_content_records(
+        &self,
+        content_type: Option<&str>,
+    ) -> Result<Vec<crate::models::ContentRecord>, EngramError> {
+        let rows: Vec<ContentRecordRow> = if let Some(ct) = content_type {
+            self.db
+                .query("SELECT * FROM content_record WHERE content_type = $ct ORDER BY file_path")
+                .bind(("ct", ct.to_owned()))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?
+        } else {
+            self.db
+                .query("SELECT * FROM content_record ORDER BY file_path")
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?
+        };
+        Ok(rows.into_iter().map(ContentRecordRow::into_model).collect())
+    }
+
+    /// Delete a content record by file path.
+    pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM content_record WHERE file_path = $fp")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    // ── Commit Node queries (006-workspace-content-intelligence) ──
+
+    /// Upsert a commit node by hash.
+    pub async fn upsert_commit_node(
+        &self,
+        node: &crate::models::CommitNode,
+    ) -> Result<(), EngramError> {
+        let thing = Thing::from(("commit_node", node.id.as_str()));
+        let ts = node.timestamp.to_rfc3339();
+        let changes_json = serde_json::to_value(&node.changes).unwrap_or_default();
+        self.db
+            .query(
+                "UPSERT $record SET \
+                    hash = $hash, \
+                    short_hash = $short_hash, \
+                    author_name = $author_name, \
+                    author_email = $author_email, \
+                    timestamp = <datetime>$ts, \
+                    message = $message, \
+                    parent_hashes = $parent_hashes, \
+                    changes = $changes",
+            )
+            .bind(("record", thing))
+            .bind(("hash", node.hash.clone()))
+            .bind(("short_hash", node.short_hash.clone()))
+            .bind(("author_name", node.author_name.clone()))
+            .bind(("author_email", node.author_email.clone()))
+            .bind(("ts", ts))
+            .bind(("message", node.message.clone()))
+            .bind(("parent_hashes", node.parent_hashes.clone()))
+            .bind(("changes", changes_json))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Select commit nodes within a date range, ordered by timestamp descending.
+    pub async fn select_commits_by_date_range(
+        &self,
+        since: Option<&DateTime<Utc>>,
+        until: Option<&DateTime<Utc>>,
+        limit: u32,
+    ) -> Result<Vec<crate::models::CommitNode>, EngramError> {
+        let effective_limit = if limit == 0 { 20 } else { limit };
+        let rows: Vec<CommitNodeRow> = match (since, until) {
+            (Some(s), Some(u)) => self
+                .db
+                .query(
+                    "SELECT * FROM commit_node \
+                         WHERE timestamp >= <datetime>$since AND timestamp <= <datetime>$until \
+                         ORDER BY timestamp DESC LIMIT $lim",
+                )
+                .bind(("since", s.to_rfc3339()))
+                .bind(("until", u.to_rfc3339()))
+                .bind(("lim", effective_limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (Some(s), None) => self
+                .db
+                .query(
+                    "SELECT * FROM commit_node \
+                         WHERE timestamp >= <datetime>$since \
+                         ORDER BY timestamp DESC LIMIT $lim",
+                )
+                .bind(("since", s.to_rfc3339()))
+                .bind(("lim", effective_limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (None, Some(u)) => self
+                .db
+                .query(
+                    "SELECT * FROM commit_node \
+                         WHERE timestamp <= <datetime>$until \
+                         ORDER BY timestamp DESC LIMIT $lim",
+                )
+                .bind(("until", u.to_rfc3339()))
+                .bind(("lim", effective_limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+            (None, None) => self
+                .db
+                .query("SELECT * FROM commit_node ORDER BY timestamp DESC LIMIT $lim")
+                .bind(("lim", effective_limit))
+                .await
+                .map_err(map_db_err)?
+                .take(0)
+                .map_err(map_db_err)?,
+        };
+        Ok(rows.into_iter().map(CommitNodeRow::into_model).collect())
+    }
+
+    /// Select commit nodes that have a change record for a given file path.
+    pub async fn select_commits_by_file_path(
+        &self,
+        file_path: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::models::CommitNode>, EngramError> {
+        let effective_limit = if limit == 0 { 20 } else { limit };
+        let rows: Vec<CommitNodeRow> = self
+            .db
+            .query(
+                "SELECT * FROM commit_node \
+                 WHERE changes[WHERE file_path = $fp] != [] \
+                 ORDER BY timestamp DESC LIMIT $lim",
+            )
+            .bind(("fp", file_path.to_owned()))
+            .bind(("lim", effective_limit))
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().map(CommitNodeRow::into_model).collect())
+    }
+
+    /// Return the hash of the most recently indexed commit, if any.
+    ///
+    /// Used by the git graph service to resume incremental indexing without
+    /// re-walking commits that are already stored.
+    pub async fn latest_indexed_commit_hash(&self) -> Result<Option<String>, EngramError> {
+        #[derive(serde::Deserialize)]
+        struct HashRow {
+            hash: String,
+        }
+        let rows: Vec<HashRow> = self
+            .db
+            .query("SELECT hash FROM commit_node ORDER BY timestamp DESC LIMIT 1")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        Ok(rows.into_iter().next().map(|r| r.hash))
+    }
 }
 
 fn format_dependency(kind: DependencyType) -> &'static str {
@@ -4075,6 +4287,87 @@ struct OutEdgeRow {
 #[derive(Deserialize)]
 struct InEdgeRow {
     r#in: Thing,
+}
+
+/// Internal row for deserializing content records from SurrealDB.
+#[derive(Deserialize)]
+struct ContentRecordRow {
+    id: Thing,
+    content_type: String,
+    file_path: String,
+    content_hash: String,
+    content: String,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    #[serde(default)]
+    source_path: String,
+    #[serde(default)]
+    file_size_bytes: i64,
+    #[serde(default)]
+    ingested_at: Option<String>,
+}
+
+impl ContentRecordRow {
+    fn into_model(self) -> crate::models::ContentRecord {
+        crate::models::ContentRecord {
+            id: self.id.id.to_raw(),
+            content_type: self.content_type,
+            file_path: self.file_path,
+            content_hash: self.content_hash,
+            content: self.content,
+            embedding: self.embedding,
+            source_path: self.source_path,
+            file_size_bytes: u64::try_from(self.file_size_bytes).unwrap_or(0),
+            ingested_at: self
+                .ingested_at
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now),
+        }
+    }
+}
+
+/// Internal row for deserializing commit nodes from SurrealDB.
+#[derive(Deserialize)]
+struct CommitNodeRow {
+    id: Thing,
+    hash: String,
+    #[serde(default)]
+    short_hash: String,
+    #[serde(default)]
+    author_name: String,
+    #[serde(default)]
+    author_email: String,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    parent_hashes: Vec<String>,
+    #[serde(default)]
+    changes: serde_json::Value,
+}
+
+impl CommitNodeRow {
+    fn into_model(self) -> crate::models::CommitNode {
+        let changes: Vec<crate::models::ChangeRecord> =
+            serde_json::from_value(self.changes).unwrap_or_default();
+        crate::models::CommitNode {
+            id: self.id.id.to_raw(),
+            hash: self.hash,
+            short_hash: self.short_hash,
+            author_name: self.author_name,
+            author_email: self.author_email,
+            timestamp: self
+                .timestamp
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now),
+            message: self.message,
+            parent_hashes: self.parent_hashes,
+            changes,
+        }
+    }
 }
 
 /// Parse a node ID like `function:abc123` into `("function", "abc123")`.

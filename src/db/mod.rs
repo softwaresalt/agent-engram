@@ -95,6 +95,12 @@ async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
     db.query(schema::DEFINE_CONTAINS)
         .await
         .map_err(map_db_err)?;
+    db.query(schema::DEFINE_CONTENT_RECORD)
+        .await
+        .map_err(map_db_err)?;
+    db.query(schema::DEFINE_COMMIT_NODE)
+        .await
+        .map_err(map_db_err)?;
     Ok(())
 }
 

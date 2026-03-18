@@ -221,3 +221,39 @@ pub const DEFINE_CONTAINS: &str = r#"
 DEFINE TABLE IF NOT EXISTS contains SCHEMALESS TYPE RELATION;
 DEFINE FIELD OVERWRITE added_at ON TABLE contains TYPE datetime DEFAULT time::now();
 "#;
+
+/// Content record table — ingested workspace content partitioned by type.
+///
+/// Each record represents a single file's content from a registered source.
+/// Records are unique by `file_path` within a workspace database.
+pub const DEFINE_CONTENT_RECORD: &str = r#"
+DEFINE TABLE IF NOT EXISTS content_record SCHEMAFULL;
+DEFINE FIELD OVERWRITE content_type ON TABLE content_record TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE file_path ON TABLE content_record TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE content_hash ON TABLE content_record TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE content ON TABLE content_record TYPE string;
+DEFINE FIELD OVERWRITE embedding ON TABLE content_record TYPE option<array<float>>;
+DEFINE FIELD OVERWRITE source_path ON TABLE content_record TYPE string;
+DEFINE FIELD OVERWRITE file_size_bytes ON TABLE content_record TYPE int DEFAULT 0;
+DEFINE FIELD OVERWRITE ingested_at ON TABLE content_record TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS content_type_idx ON TABLE content_record COLUMNS content_type;
+DEFINE INDEX IF NOT EXISTS content_file_idx ON TABLE content_record COLUMNS file_path UNIQUE;
+"#;
+
+/// Commit node table — git commits in the change graph.
+///
+/// Each record represents a git commit with its metadata, parent
+/// references, and per-file change records embedded as an array.
+pub const DEFINE_COMMIT_NODE: &str = r#"
+DEFINE TABLE IF NOT EXISTS commit_node SCHEMAFULL;
+DEFINE FIELD OVERWRITE hash ON TABLE commit_node TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE short_hash ON TABLE commit_node TYPE string;
+DEFINE FIELD OVERWRITE author_name ON TABLE commit_node TYPE string;
+DEFINE FIELD OVERWRITE author_email ON TABLE commit_node TYPE string;
+DEFINE FIELD OVERWRITE timestamp ON TABLE commit_node TYPE datetime;
+DEFINE FIELD OVERWRITE message ON TABLE commit_node TYPE string;
+DEFINE FIELD OVERWRITE parent_hashes ON TABLE commit_node TYPE array DEFAULT [];
+DEFINE FIELD OVERWRITE changes ON TABLE commit_node TYPE array DEFAULT [];
+DEFINE INDEX IF NOT EXISTS commit_hash_idx ON TABLE commit_node COLUMNS hash UNIQUE;
+DEFINE INDEX IF NOT EXISTS commit_time_idx ON TABLE commit_node COLUMNS timestamp;
+"#;

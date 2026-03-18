@@ -1,10 +1,22 @@
 //! Daemon lockfile: PID file management via `fd-lock`.
 //!
-//! Acquires an exclusive OS-level write lock on `.engram/run/engram.pid` to
-//! prevent multiple daemon instances from serving the same workspace
-//! simultaneously. When the holding process exits (normally or via crash) the
-//! OS automatically releases the lock, allowing a subsequent `acquire()` to
-//! succeed even if the PID file still contains the old process ID.
+//! Uses two files in `.engram/run/`:
+//!
+//! | File | Purpose |
+//! |------|---------|
+//! | `engram.lock` | Exclusive OS-level write lock target (via `fd-lock`) |
+//! | `engram.pid`  | Plain text file containing the daemon's PID (never locked) |
+//!
+//! Separating the lock target from the PID record is required on Windows where
+//! `fd-lock` uses `LockFileEx`, which creates a **mandatory** byte-range lock.
+//! A mandatory lock prevents even *read* operations by other processes, so
+//! `read_pid()` would fail with `ERROR_LOCK_VIOLATION` if both were the same
+//! file. By keeping `engram.pid` unlocked, any process (including the shim's
+//! stale-PID check) can always read the holder's PID.
+//!
+//! When the holding process exits (normally or via crash) the OS automatically
+//! releases the lock on `engram.lock`, allowing a subsequent `acquire()` to
+//! succeed. `engram.pid` is overwritten on each successful acquisition.
 //!
 //! # Memory model
 //!
@@ -15,7 +27,6 @@
 //! the file handle on process exit.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fd_lock::RwLock;
@@ -24,31 +35,32 @@ use tracing::warn;
 
 use crate::errors::{EngramError, LockError};
 
-/// An acquired exclusive lock on the daemon PID file.
+/// An acquired exclusive lock on the daemon lock file.
 ///
-/// Dropping this value releases the OS-level file lock so that another daemon
-/// instance can acquire it. The PID file itself is not deleted on drop; the
-/// next successful `acquire()` overwrites the PID.
+/// Dropping this value releases the OS-level file lock on `engram.lock` so
+/// that another daemon instance can acquire it. `engram.pid` is not deleted on
+/// drop; the next successful `acquire()` overwrites the PID.
 pub struct DaemonLock {
-    /// Holds the OS-level write lock for its lifetime.
+    /// Holds the OS-level write lock on `engram.lock` for its lifetime.
     _guard: fd_lock::RwLockWriteGuard<'static, File>,
-    /// Path to the `.engram/run/engram.pid` file.
+    /// Path to the `.engram/run/engram.pid` file (plain, never locked).
     path: PathBuf,
     /// The process ID written into the PID file on successful acquisition.
     pid: u32,
 }
 
 impl DaemonLock {
-    /// Acquire an exclusive lock on `.engram/run/engram.pid` inside `workspace`.
+    /// Acquire an exclusive lock on `.engram/run/engram.lock` inside `workspace`.
     ///
     /// Creates `.engram/run/` if it does not exist. On success the current
-    /// process ID is written to the PID file.
+    /// process ID is written to `.engram/run/engram.pid` (a plain, unlocked
+    /// file that any process can read).
     ///
-    /// If `try_write()` fails with `WouldBlock` and the recorded PID belongs
-    /// to a dead process (stale lockfile), the stale file is removed and
-    /// acquisition is retried once. If the second attempt also fails, or if
-    /// the recorded process is still alive, [`LockError::AlreadyHeld`] is
-    /// returned without a retry.
+    /// If `try_write()` fails with `WouldBlock` and the recorded PID in
+    /// `engram.pid` belongs to a dead process (stale lockfile), both
+    /// `engram.lock` and `engram.pid` are removed and acquisition is retried
+    /// once. If the second attempt also fails, or if the recorded process is
+    /// still alive, [`LockError::AlreadyHeld`] is returned without a retry.
     ///
     /// # Errors
     ///
@@ -73,8 +85,9 @@ impl DaemonLock {
 /// Inner lock acquisition implementation.
 ///
 /// When `allow_retry` is `true` and a `WouldBlock` result is found alongside
-/// a stale (dead) PID, the stale file is removed and `acquire_inner` is called
-/// once more with `allow_retry = false` to prevent unbounded recursion.
+/// a stale (dead) PID, both `engram.lock` and `engram.pid` are removed and
+/// `acquire_inner` is called once more with `allow_retry = false` to prevent
+/// unbounded recursion.
 fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, EngramError> {
     let run_dir = workspace.join(".engram").join("run");
 
@@ -85,6 +98,11 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
         })
     })?;
 
+    // Lock target: engram.lock (exclusively locked by fd-lock).
+    // PID record:  engram.pid (plain file, never locked — always readable).
+    // Keeping them separate avoids Windows ERROR_LOCK_VIOLATION when other
+    // processes try to read the PID from the locked file.
+    let lock_path = run_dir.join("engram.lock");
     let pid_path = run_dir.join("engram.pid");
 
     let file = OpenOptions::new()
@@ -92,10 +110,10 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&pid_path)
+        .open(&lock_path)
         .map_err(|e| {
             EngramError::Lock(LockError::AcquisitionFailed {
-                path: pid_path.display().to_string(),
+                path: lock_path.display().to_string(),
                 reason: e.to_string(),
             })
         })?;
@@ -106,36 +124,16 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
     let rw_lock: &'static mut RwLock<File> = Box::leak(Box::new(RwLock::new(file)));
 
     match rw_lock.try_write() {
-        Ok(mut guard) => {
-            // Truncate to zero before writing our PID so that stale bytes
-            // from a longer previous PID (e.g. "12345678" → "99") do not
-            // survive and produce a corrupted PID on the next read.
-            guard.set_len(0).map_err(|e| {
-                EngramError::Lock(LockError::AcquisitionFailed {
-                    path: pid_path.display().to_string(),
-                    reason: format!("truncate PID file failed: {e}"),
-                })
-            })?;
-            guard.seek(SeekFrom::Start(0)).map_err(|e| {
-                EngramError::Lock(LockError::AcquisitionFailed {
-                    path: pid_path.display().to_string(),
-                    reason: e.to_string(),
-                })
-            })?;
-
+        Ok(guard) => {
+            // Write PID to the plain engram.pid file.  std::fs::write truncates
+            // before writing so stale bytes from a longer previous PID cannot
+            // survive and produce a corrupted read on the next acquire.
             let pid = std::process::id();
             let pid_str = pid.to_string();
-            guard.write_all(pid_str.as_bytes()).map_err(|e| {
+            std::fs::write(&pid_path, pid_str.as_bytes()).map_err(|e| {
                 EngramError::Lock(LockError::AcquisitionFailed {
                     path: pid_path.display().to_string(),
-                    reason: e.to_string(),
-                })
-            })?;
-
-            guard.flush().map_err(|e| {
-                EngramError::Lock(LockError::AcquisitionFailed {
-                    path: pid_path.display().to_string(),
-                    reason: e.to_string(),
+                    reason: format!("write PID file failed: {e}"),
                 })
             })?;
 
@@ -151,6 +149,8 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // engram.pid is a plain unlocked file — read_pid always succeeds
+            // on all platforms, including Windows.
             match read_pid(&pid_path) {
                 Some(pid) if is_process_alive(pid) => {
                     warn!(pid, "daemon lock held by live process, cannot start");
@@ -158,10 +158,27 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
                 }
                 Some(pid) if allow_retry => {
                     warn!(pid, "found stale lockfile, cleaning up");
-                    // The holding process is dead; remove the stale PID file and
+                    // The holding process is dead; remove both stale files and
                     // retry once. On most OSes the OS lock is already released when
                     // the holding process died, so the retry should succeed.
-                    let _ = std::fs::remove_file(&pid_path);
+                    if let Err(e) = std::fs::remove_file(&lock_path) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            warn!(
+                                path = %lock_path.display(),
+                                error = %e,
+                                "failed to remove stale lock file"
+                            );
+                        }
+                    }
+                    if let Err(e) = std::fs::remove_file(&pid_path) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            warn!(
+                                path = %pid_path.display(),
+                                error = %e,
+                                "failed to remove stale PID file"
+                            );
+                        }
+                    }
                     acquire_inner(workspace, false)
                 }
                 Some(pid) => {
@@ -176,7 +193,7 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
             }
         }
         Err(e) => Err(EngramError::Lock(LockError::AcquisitionFailed {
-            path: pid_path.display().to_string(),
+            path: lock_path.display().to_string(),
             reason: e.to_string(),
         })),
     }

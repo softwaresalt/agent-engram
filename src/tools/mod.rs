@@ -108,6 +108,10 @@ pub async fn dispatch(
         "add_to_collection" => write::add_to_collection(state.clone(), params).await,
         "remove_from_collection" => write::remove_from_collection(state.clone(), params).await,
         "get_collection_context" => read::get_collection_context(state.clone(), params).await,
+        #[cfg(feature = "git-graph")]
+        "query_changes" => read::query_changes(state.clone(), params).await,
+        #[cfg(feature = "git-graph")]
+        "index_git_history" => write::index_git_history(state.clone(), params).await,
         _ => Err(not_implemented(method)),
     };
 

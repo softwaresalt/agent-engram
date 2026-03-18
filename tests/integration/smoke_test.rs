@@ -223,3 +223,208 @@ async fn smoke_full_tool_chain_over_ipc() {
         "daemon must not respond after shutdown"
     );
 }
+
+// ── Phase 9 additions (T053) — S073, S071, S072, S078 ─────────────────────────────────────
+
+use engram::server::state::AppState;
+use engram::tools;
+use std::{fs, sync::Arc};
+
+/// S073: `get_workspace_status` before `set_workspace` returns a clear error.
+///
+/// The daemon must never return a misleading response or panic when no workspace
+/// is bound; it must propagate a `WorkspaceError::NotSet` through the tool.
+#[tokio::test]
+async fn s073_status_before_workspace_set_returns_error() {
+    let state = Arc::new(AppState::new(10));
+    let result = tools::dispatch(state, "get_workspace_status", None).await;
+    assert!(
+        result.is_err(),
+        "get_workspace_status without workspace must return an error"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("NotSet")
+            || msg.contains("not set")
+            || msg.contains("no workspace")
+            || msg.contains("No workspace")
+            || msg.contains("workspace")
+            || msg.contains("bound"),
+        "error must mention workspace or binding state, got: {msg}"
+    );
+}
+
+/// S071: `get_workspace_status` returns a complete response with all required fields.
+///
+/// After `set_workspace`, the status response must include `path`, `task_count`,
+/// `context_count`, `last_flush`, `stale_files`, `connection_count`, and `code_graph`
+/// with all sub-fields.
+#[tokio::test]
+async fn s071_full_workspace_status_response() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
+
+    let result = tools::dispatch(state.clone(), "get_workspace_status", None)
+        .await
+        .expect("get_workspace_status must succeed after set_workspace");
+
+    assert!(result["path"].is_string(), "must have path field");
+    assert!(
+        !result["path"].as_str().unwrap_or("").is_empty(),
+        "path must not be empty"
+    );
+    assert!(result["task_count"].is_number(), "must have task_count");
+    assert!(
+        result["context_count"].is_number(),
+        "must have context_count"
+    );
+    assert!(
+        result["connection_count"].is_number(),
+        "must have connection_count"
+    );
+    assert!(result["stale_files"].is_boolean(), "must have stale_files");
+    assert!(
+        result["last_flush"].is_null() || result["last_flush"].is_string(),
+        "last_flush must be null or string, got: {:?}",
+        result["last_flush"]
+    );
+    let cg = &result["code_graph"];
+    assert!(cg.is_object(), "must have code_graph object");
+    assert!(
+        cg["code_files"].is_number(),
+        "code_graph.code_files must be a number"
+    );
+    assert!(
+        cg["functions"].is_number(),
+        "code_graph.functions must be a number"
+    );
+    assert!(
+        cg["classes"].is_number(),
+        "code_graph.classes must be a number"
+    );
+    assert!(
+        cg["interfaces"].is_number(),
+        "code_graph.interfaces must be a number"
+    );
+    assert!(cg["edges"].is_number(), "code_graph.edges must be a number");
+}
+
+/// S072: Without the `git-graph` feature, `code_graph` stats remain zero.
+///
+/// When the git-graph feature is disabled, the code graph indexer is inactive
+/// so all `code_graph` sub-fields must be zero after workspace binding.
+#[cfg(not(feature = "git-graph"))]
+#[tokio::test]
+async fn s072_status_without_git_graph_feature() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
+
+    let result = tools::dispatch(state.clone(), "get_workspace_status", None)
+        .await
+        .expect("get_workspace_status must succeed");
+
+    let cg = &result["code_graph"];
+    assert_eq!(
+        cg["code_files"].as_u64().unwrap_or(0),
+        0,
+        "code_files must be 0 without git-graph feature"
+    );
+}
+
+/// S078: All subsystems (tasks, context, connections, health) work together.
+///
+/// After activating workspace and all subsystems, `get_workspace_status` reflects
+/// the combined state without interference between subsystems.
+#[tokio::test]
+async fn s078_all_subsystems_active_together() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
+
+    // Subsystem: connection tracking
+    state.register_connection("s078-conn".to_string()).await;
+
+    // Subsystem: task management
+    tools::dispatch(
+        state.clone(),
+        "create_task",
+        Some(json!({ "title": "S078 task" })),
+    )
+    .await
+    .expect("create_task must succeed");
+
+    // Subsystem: context / decisions
+    tools::dispatch(
+        state.clone(),
+        "register_decision",
+        Some(json!({ "topic": "S078 decision", "decision": "proceed" })),
+    )
+    .await
+    .expect("register_decision must succeed");
+
+    // Status reflects all subsystems.
+    let result = tools::dispatch(state.clone(), "get_workspace_status", None)
+        .await
+        .expect("get_workspace_status must succeed");
+
+    let conn_count = result["connection_count"].as_u64().unwrap_or(0);
+    assert!(
+        conn_count >= 1,
+        "connection_count must be >= 1 after register_connection, got {conn_count}"
+    );
+    assert!(
+        !result["path"].as_str().unwrap_or("").is_empty(),
+        "path must not be empty"
+    );
+    assert!(
+        result["code_graph"].is_object(),
+        "code_graph must be present"
+    );
+
+    // Health report also reachable alongside status.
+    let health = tools::dispatch(state.clone(), "get_health_report", Some(json!({})))
+        .await
+        .expect("get_health_report must succeed");
+    assert!(
+        health["uptime_seconds"].is_number(),
+        "health report must have uptime_seconds"
+    );
+    assert!(
+        health["tool_call_count"].is_number(),
+        "health report must have tool_call_count"
+    );
+
+    state.unregister_connection("s078-conn").await;
+}

@@ -2,138 +2,482 @@
 
 ## Feature Requests (unassigned)
 
-- Enable engram database to be capable of supporting agent loop memory and search.
-- Consider that engram will be useful for the outer loop memory needed for more advanced agent frameworks.
-- Need the ability to also track git commit numbers to changes in the repo through a graph representation with actual code and text snippets to enable faster change detection and search during agentic adversarial code reviews.
-- Need to include hooks with engram and instructions to ensure the agent uses engram for tasks and code memory.
-- Need proper documentation for this solution.
+- I think I misunderstood the value of deeply engraining the spec process into the engram server.
+- Create engram specific SDD agents, skills, instructions, prompts, and tools; enable them to support loop driven dev (LDD)
+- Create loop driven development workflows that leverage the engram specific SDD.
 
-### Feature: 005-lifecycle-observability
+---
 
-Lifecycle Observability & Advanced Workflow Enforcement for Agent-Engram
+## Optimize SurrealDB Usage: Native Graph Traversal & Vector Search
 
-1. Overview
+**Priority**: High — directly impacts core functionality performance and scalability  
+**Discovered**: 2026-03-18 during code review of code graph tools  
 
-This specification defines feature enhancements for agent-engram that introduce advanced lifecycle management, comprehensive workspace synchronization, state versioning, structured graph querying, hierarchical workflow groupings, and daemon observability. These capabilities extend the existing SurrealDB-backed daemon architecture, the hook-enforced shim, and the real-time file-syncing engine to provide robust state lifecycle control, deep observability, and strict workflow enforcement.
+### Problem Statement
 
-2. Feature Matrix
+Agent-engram uses SurrealDB 2 as its persistence layer, which natively supports both graph traversal (via `RELATE` edges and `->edge->` syntax) and vector/KNN search (via `MTREE` indexes with cosine distance). However, the current implementation treats SurrealDB as a flat key-value store — all graph traversal and vector similarity scoring happen in application-level Rust code, bypassing the database's purpose-built query engine.
 
-| Feature Category | Current State | Target Enhancement |
-| --- | --- | --- |
-| State Primitives | Tasks, Specs, Comments | Expand graph model to support hierarchical groupings (Epics/Collections) |
-| Context Management | Hydration/Dehydration, Embeddings | Integrate selective routing via recursive graph traversals |
-| Integrations | File-watcher sync | Add bi-directional tracker sync directly into the background daemon |
-| Workflow Logic | Basic Lifecycle | Implement `->blocks->` edge gates enforced strictly by shim hooks |
-| Search/Retrieval | Embedding / Semantic | Expose sandboxed read-only SurrealQL queries via the shim |
-| Telemetry | Standard Logs | Implement tracing/OTLP in the daemon to monitor file-sync and wake latency |
-| Concurrency | Static flush locks (ADR-0002) | Use daemon as the single source of truth alongside SurrealDB graph locks |
+This means:
+- **Graph queries** (`map_code`, `impact_analysis`) use a manual BFS with one `SELECT out FROM {edge_table} WHERE in = $node` per hop per edge type, resulting in N×5 round-trips for an N-hop traversal across 5 edge types.
+- **Vector search** (`unified_search`, `vector_search_symbols`) loads **all rows** from symbol tables into memory, then computes cosine similarity in Rust. This is O(n) in the total symbol count and ignores the existing `MTREE DIMENSION 384 DIST COSINE` indexes entirely.
+- **Embedding generation** requires the `embeddings` Cargo feature flag to be enabled at build time. When disabled, symbols store zero vectors and all semantic search silently returns empty results with no user-facing indication that the capability is degraded.
 
-The overarching theme is pushing heavy validation and synchronization logic into the background daemon while keeping the shim fast and restrictive. Agent-engram leverages the inherent strengths of Rust (speed, safety) and SurrealDB (native relations, event streaming) to minimize polling and custom parsing overhead.
+### Current Architecture (What Exists)
 
-3. Detailed Feature Specifications
+#### Graph Storage (correctly implemented)
+- 4 node tables: `code_file`, `function`, `class`, `interface` (all `SCHEMAFULL`)
+- 5 edge tables: `calls`, `imports`, `defines`, `inherits_from`, `concerns` (all `TYPE RELATION`)
+- Edges created via `RELATE $from->calls->$to` etc. in `src/db/queries.rs`
 
-3.1 Advanced Lifecycle Management (Gates & Blocking)
+#### Vector Storage (correctly defined, never queried)
+- All symbol tables have `embedding` fields (`array<float>`, 384 dimensions)
+- MTREE indexes defined: `DEFINE INDEX function_embedding ON TABLE function COLUMNS embedding MTREE DIMENSION 384 DIST COSINE`
+- Equivalent indexes on `class`, `interface`, `spec`, `context`, `content_record`
+- Embeddings generated by `fastembed` (bge-small-en-v1.5) during `index_workspace`
 
-Problem: Agent-engram currently handles basic state transitions but lacks strict dependency blocking. Without gates, agents can thrash, hallucinate on tasks that are not ready, or execute operations out of order.
+#### Query Layer (the problem)
+- `bfs_neighborhood()` in `queries.rs:3472` — manual `VecDeque`-based BFS, flat SELECTs per hop
+- `get_outbound_edges()` in `queries.rs:3550` — iterates over each edge table with separate queries
+- `vector_search_symbols()` in `queries.rs:3897` — `SELECT * FROM function` (loads all), then Rust-side `cosine_similarity()`
+- `cosine_similarity()` in `services/search.rs:110` — manual dot product / magnitude calculation
 
-Specification: Implement Hook-Enforced Graph Blocking Semantics.
+### Proposed Changes
 
-- Introduce a standard directional edge type within the SurrealDB schema: `RELATE task:A->blocks->task:B`.
-- When an autonomous agent attempts to modify, execute, or deeply hydrate a blocked task via the shim, registered agent hooks must immediately intercept the action.
-- Hooks rapidly query the local daemon to evaluate the entire upstream dependency chain.
-- If blocking constraints are detected, the hook forcefully rejects the operation with a highly specific contextual error.
-- Example: If an agent tries to initiate implementation on a feature branch while the prerequisite "Design Review" node remains marked as incomplete, the hook intercepts the call, halts execution, and feeds a corrective prompt back to the agent. This forces the agent to redirect attention to the blocking task.
-- Benefits: Drastically reduces wasted LLM tokens, prevents hallucinated out-of-order execution, and eliminates broken downstream workflows.
+#### 1. Native Graph Traversal (SurrealQL)
 
-3.2 Comprehensive Workspace Synchronization
+Replace the application-level BFS in `bfs_neighborhood()` and `get_outbound_edges()` with SurrealQL graph traversal queries.
 
-Problem: Agent-engram needs a unified real-time view of both local file system state and external project tracker state.
+**Before** (current — multiple round-trips per hop):
+```rust
+// 5 queries per node, per hop
+let query = format!("SELECT out FROM {edge_table} WHERE in = $node");
+```
 
-Specification: Unify File Sync and External Tracker Sync in the Daemon.
+**After** (single query, multi-hop):
+```surql
+-- 1 query for full neighborhood, all edge types, configurable depth
+SELECT
+  ->calls->function AS called_functions,
+  ->defines->function AS defined_functions,
+  ->imports->code_file AS imported_files,
+  <-calls<-function AS callers
+FROM $root_symbol
+FETCH called_functions, defined_functions, imported_files, callers;
+```
 
-- The long-running daemon must be positioned as the authoritative central nervous system for the workspace.
-- While it actively watches file system events to update internal graph nodes, it should simultaneously orchestrate background tasks or listen to incoming webhooks to continuously sync with external trackers (e.g., Jira, Linear).
-- Leverage SurrealDB Live Queries to instantly stream external state changes directly to the active shim, eliminating the need for inefficient polling loops.
-- When the shim queries the daemon, it accesses a heavily-indexed, multi-dimensional graph that is guaranteed to be a precise, real-time, and unified reflection of both the local codebase state and the remote project board.
+For variable-depth traversal, use SurrealDB's recursive graph syntax or a server-side function:
+```surql
+-- Recursive multi-hop traversal
+SELECT ->calls[WHERE depth <= $max_depth]->function FROM $root;
+```
 
-3.3 State Versioning and Time Travel
+**Files to modify**:
+- `src/db/queries.rs` — Replace `bfs_neighborhood()`, `get_outbound_edges()`, `get_inbound_edges()` with native SurrealQL graph queries
+- `src/tools/read.rs` — Update `map_code` and `impact_analysis` tool handlers to use new query results format
 
-Problem: SurrealDB does not have Git-like branching out of the box, but agent-engram needs the ability to recover from corrupted or hallucinated state changes.
+**Expected impact**: Reduce N×5 round-trips per traversal to 1-2 queries regardless of depth. Eliminates application-level BFS entirely.
 
-Specification: Implement Graph Event Sourcing and Snapshots.
+#### 2. Native Vector KNN Search (MTREE Index)
 
-- Instead of destructive updates that overwrite historical fields, the daemon should maintain an immutable, append-only ledger of intent within SurrealDB.
-- Log every discrete state change to a dedicated event table (e.g., `FileModified`, `TaskCreated`, `GraphEdgeAdded`, `StatusTransitioned`), permanently preserving the entire narrative and context of the agent's actions over time.
-- Expose a dedicated shim command (e.g., `engram rollback`) that empowers the user or an automated oversight agent to systematically replay events in reverse, un-applying edges and restoring previous property values.
-- This cleanly reverts a corrupted or hallucinated subgraph back to a stable point in time without the overhead of running a full version-control database server.
+Replace the "load all, score in Rust" pattern with SurrealDB's built-in KNN operator that leverages the existing MTREE indexes.
 
-3.4 Sandboxed SurrealQL Query Interface
+**Before** (current — O(n) full table scan in Rust):
+```rust
+let func_rows: Vec<FunctionRow> = db.query("SELECT * FROM function").await?;
+for f in func_rows {
+    let score = cosine_similarity(query_embedding, &f.embedding);
+    // ...
+}
+```
 
-Problem: Agent-engram has semantic search via vector embeddings but lacks a way for an agent to perform complex, exact-match graph querying across its memory.
+**After** (single query, index-accelerated):
+```surql
+-- KNN search using existing MTREE index, returns top K nearest
+SELECT *, vector::similarity::cosine(embedding, $query_vec) AS score
+FROM function
+WHERE embedding <|$limit, COSINE|> $query_vec
+ORDER BY score DESC;
+```
 
-Specification: Expose Sandboxed SurrealQL via the Shim.
+**Files to modify**:
+- `src/db/queries.rs` — Replace `vector_search_symbols()` with native KNN queries for each symbol table
+- `src/services/search.rs` — Remove or deprecate application-level `cosine_similarity()` function
+- `src/tools/read.rs` — Update `unified_search` handler to use DB-returned scores
 
-- Agent-engram does not need a custom DSL parser. SurrealQL is inherently built for traversing complex graph networks.
-- Create a strict shim interface (e.g., `engram.query()`) that allows the agent to execute heavily sanitized, read-only SurrealQL queries.
-- Example: `SELECT * FROM task WHERE status = 'InProgress' FETCH ->blocks->task`.
-- The daemon parses and executes queries safely against the `.engram` database, giving the agent analytical power over its own memory without risking injection or unauthorized data manipulation.
+**Expected impact**: O(log n) index lookup instead of O(n) full scan. Eliminates loading all symbols into memory. Critical for scaling beyond the current ~900 functions.
 
-3.5 Workflow Groupings (Epics / Collections)
+#### 3. Hybrid Graph + Vector Queries
 
-Problem: Agent-engram currently treats nodes mostly individually, which can lead to context fragmentation when dealing with large features that span planning, implementation, and testing.
+SurrealDB uniquely enables combining graph traversal with vector search in a single query — this is the real power for agent-engram's use case.
 
-Specification: Implement Sub-graphs / Epic Nodes.
+**Example**: "Find functions semantically similar to X that are within 2 hops of Y in the call graph":
+```surql
+-- Hybrid: graph neighborhood filtered by semantic similarity
+LET $neighbors = SELECT VALUE ->calls[..2]->function FROM $root_symbol;
+SELECT *, vector::similarity::cosine(embedding, $query_vec) AS score
+FROM function
+WHERE id IN $neighbors
+  AND embedding <|10, COSINE|> $query_vec
+ORDER BY score DESC;
+```
 
-- Introduce an `Epic` or `Collection` node type in `src/models/`.
-- Allow the shim's hydration request to target this macro-node.
-- The daemon uses a SurrealDB recursive traversal (e.g., `SELECT ->contains->task FROM epic:feature_x`) to intelligently fetch all active sub-tasks.
-- Cross-reference these tasks with the file-watcher's latest file states, assembling a surgical, highly cohesive prompt payload.
-- Solves the "context stuffing" problem by ensuring the LLM only sees the exact cluster of information it needs for the current objective.
+This would power a much more effective `impact_analysis` that considers both structural relationships AND semantic meaning.
 
-3.6 Daemon Lifecycle Observability
+**Files to modify**:
+- `src/db/queries.rs` — Add hybrid query methods
+- `src/tools/read.rs` — Update `impact_analysis` and `unified_search` to support combined mode
+- Consider adding a `relevance_search` tool that explicitly combines graph + vector
 
-Problem: Agent-engram introduces a TTL for its daemon (wake-on-demand, sleep when idle), but lacks visibility into daemon performance, file-watcher latency, and query bottlenecks.
+#### 4. Embedding Feature Flag Hardening
 
-Specification: Add Tracing with TTL-Aware OTLP Exports.
+Currently, when the `embeddings` feature is disabled:
+- Symbols store zero vectors (`vec![0.0; 384]`)
+- `embed_text()` returns `QueryError::ModelNotLoaded`
+- `vector_search_symbols()` silently returns empty results (zero vectors fail `has_meaningful_embedding()`)
+- Users get no indication that semantic search is degraded
 
-- Integrate the `tracing` and `tracing-opentelemetry` Rust crates inside the daemon.
-- Log precisely when the daemon wakes up, how long the initial file-sync sweep takes to reconcile diffs, and the exact latency of shim queries hitting SurrealDB.
-- Dump trace spans to a local log in `.engram/logs` or export them to an APM tool.
-- This observability is critical for identifying whether performance bottlenecks are caused by the LLM provider, the file-watcher, or the local daemon's startup penalty.
+**Proposed changes**:
+- `unified_search` should return a clear message when embeddings are unavailable, not empty results
+- `get_health_report` / `get_workspace_statistics` should report embedding status (enabled/disabled, model loaded, % of symbols with real embeddings vs zero vectors)
+- Consider making `embeddings` a default feature so the common case works out of the box
+- Add a `--no-embeddings` CLI flag as the opt-out rather than requiring opt-in
 
-4. Agent-Engram Architectural Advantages
+**Files to modify**:
+- `src/services/embedding.rs` — Add `is_available()` and `status()` functions
+- `src/tools/read.rs` — Return informative error in `unified_search` when embeddings unavailable
+- `src/tools/lifecycle.rs` — Include embedding status in workspace statistics
+- `Cargo.toml` — Consider `default = ["embeddings"]`
 
-These enhancements preserve and amplify agent-engram's distinct architectural strengths:
+#### 5. Query Performance Observability
 
-- **Continuous File-System Graphing**: The background daemon constantly watches file diffs and ties them directly into the SurrealDB graph. A file is not just text — it is a living node automatically connected to the tasks that modified it, providing real-time semantic understanding of the codebase.
-- **Native Graph Traversal**: SurrealDB natively supports deep, recursive dependency queries between files, tasks, and documentation — vastly faster and requiring significantly less code than building relational joins on top of a traditional SQL database.
-- **Hook-Based Enforcement**: The agent-specific plugin with dedicated intercept hooks proactively and securely sandboxes the agent. It analyzes intent and blocks destructive or out-of-bounds actions before the request is fully processed. This shifts the agent's error-correction loop from a slow, token-heavy reactive process to an instantaneous, preventative safety barrier.
+Add tracing spans around database queries to measure the actual impact of these optimizations.
 
-5. Phased Implementation Roadmap
+**Proposed changes**:
+- Wrap all SurrealDB queries in `tracing::instrument` spans with query type, table, and result count
+- Log slow queries (>100ms) at WARN level
+- Include query timing in `get_health_report` response
 
-**Phase 1: Daemon Foundation & Semantic Parity**
+**Files to modify**:
+- `src/db/queries.rs` — Add `#[instrument]` to all public query methods
+- `src/tools/lifecycle.rs` — Aggregate query timing stats
 
-- Establish the `.engram` directory structure, ensuring the local graph travels with the repository.
-- Finalize the background file-watching daemon logic and the TTL lifecycle management.
-- Add `blocks` / `blocked_by` relational edges to the SurrealDB schema to support dependency tracking.
-- Create the secure shim interface to execute read-only SurrealQL for exact-match filtering by the agent.
+### Verification Criteria
 
-**Phase 2: Hooks & Strict Enforcement**
+- [ ] `map_code` with depth=3 completes in <100ms (currently: multiple round-trips)
+- [ ] `impact_analysis` uses single SurrealQL graph query, not BFS loop
+- [ ] `unified_search` uses MTREE index (verify via SurrealDB EXPLAIN)
+- [ ] Hybrid graph+vector query works for combined structural/semantic search
+- [ ] Embedding status is visible in health report and workspace statistics
+- [ ] All existing tool contracts (input/output schemas) remain backward compatible
+- [ ] Performance improvement measurable via tracing spans (before/after)
 
-- Implement the agent hooks within the shim to intercept state transitions and memory modifications.
-- Enforce blocking logic via these hooks, actively querying the daemon to validate if an action is permitted before letting the agent proceed.
-- Implement event-sourcing logging in SurrealDB to allow primitive state rollback and historical reconstruction.
+### Dependencies
 
-**Phase 3: Macro-Workflows & Live Tracker Sync**
+- SurrealDB 2.x recursive graph traversal syntax — verify current SDK support
+- `surrealdb` Rust crate version may need updating for KNN operator support
+- `fastembed` feature flag decision (default on vs opt-in) affects build time and binary size
 
-- Expand the daemon to poll or subscribe to external trackers (Jira/Linear) in the background, working alongside the active file watcher.
-- Create the `Collection`/`Epic` model to group tasks, updating the hydration service to recursively fetch related files and tasks as a single optimized context block.
-- Integrate OpenTelemetry tracing into the daemon to monitor file-watcher latency, query performance, and TTL wake times.
+### References
 
-6. Reliability Gate
+- Current graph queries: `src/db/queries.rs:3472-3598` (BFS), `3319-3373` (RELATE)
+- Current vector queries: `src/db/queries.rs:3897-3999` (full scan)
+- MTREE index definitions: `src/db/schema.rs:122, 140, 158, 235`
+- Embedding service: `src/services/embedding.rs:1-167`
+- Code graph indexer: `src/services/code_graph.rs:70-398`
+- SurrealDB graph docs: https://surrealdb.com/docs/surrealql/statements/relate
+- SurrealDB vector docs: https://surrealdb.com/docs/surrealql/functions/vector
 
-- Current implementation of server is not demonstrating reliable availability and connection.
-- Must prove reliable function within an active code workspace.
-- Must include tool selection to ensure engram is used as part of code development and task management by the agent.
-- Must include skill template to include or link/reference within agents and/or skills for maximum effectiveness.
-- Observability must demonstrate actual usage of engram by agent in place of file search and markdown ingestion into agent context window.
+---
+
+## Phased Startup: Return "Ready" Before Code Graph Indexing
+
+**Priority**: High — directly impacts MCP client connection reliability and user experience  
+**Discovered**: 2026-03-18 during investigation of daemon startup timeout  
+**Related**: "Optimize SurrealDB Usage" backlog item (code graph tools depend on this)
+
+### Problem Statement
+
+The daemon's `set_workspace()` function performs **all** initialization sequentially before the server reports `"ready"` to the MCP client. This includes heavyweight operations (code graph hydration, embedding backfill) that are not required for the core task management tools to function. On large workspaces, this delays the MCP client connection by 10-30+ seconds, during which the agent has no engram tools available.
+
+The previous fix (commit `fb064ca`) moved `set_workspace` into a `tokio::spawn` background task and made the IPC listener bind first, so the shim can connect and receive `"starting"` status. However, the shim's `poll_until_ready()` still waits for `"ready"` — which only fires after the **entire** `set_workspace` completes — before returning control to the MCP client. The agent cannot use any engram tools until the full hydration pipeline finishes.
+
+### Current Startup Sequence (All-or-Nothing)
+
+**File**: `src/tools/lifecycle.rs:57-117` (`set_workspace`)
+
+```
+set_workspace() — ALL of this must complete before "ready":
+  ├── validate_workspace_path()           ~instant
+  ├── canonicalize_workspace()            ~instant
+  ├── workspace_hash()                    ~instant
+  ├── hydrate_workspace()                 ~100-500ms    ← reads .engram/ files
+  ├── connect_db()                        ~500-2000ms   ← SurrealDB embedded init
+  ├── hydrate_into_db()                   ~200-1000ms   ← loads tasks/specs/contexts
+  ├── hydrate_code_graph()                ~1-5s         ← loads code graph from JSONL
+  ├── backfill_embeddings()               ~5-30s        ← computes missing vectors
+  ├── parse_config()                      ~instant
+  └── state.set_workspace(snapshot)       ~instant      ← triggers "ready"
+```
+
+**Consequence**: The `_health` handler in `src/daemon/ipc_server.rs:276-290` checks `state.snapshot_workspace().await.is_some()` — it returns `"starting"` until `set_workspace` calls `state.set_workspace(snapshot)` on line 108. The shim's `check_health()` in `src/shim/lifecycle.rs:56-82` only returns `true` when `status == "ready"`. So the MCP client blocks for the entire pipeline.
+
+### Proposed Solution: Two-Phase Initialization
+
+Split `set_workspace` into two phases, with "ready" reported between them.
+
+#### Phase 1 — Core State (blocks "ready")
+
+These steps are required for the core MCP tools (task CRUD, context, flush, query) to function:
+
+```
+Phase 1 — set_workspace_core():
+  ├── validate_workspace_path()
+  ├── canonicalize_workspace()
+  ├── workspace_hash()
+  ├── hydrate_workspace()          ← reads .engram/ markdown files
+  ├── connect_db()                 ← SurrealDB embedded init
+  ├── hydrate_into_db()            ← loads tasks, specs, contexts into DB
+  ├── parse_config()
+  └── state.set_workspace(snapshot) ← "ready" fires HERE
+```
+
+**Estimated time**: 1-3 seconds on typical workspaces.
+
+After Phase 1, the following 27 tools become immediately available:
+- Task management: `create_task`, `update_task`, `batch_update_tasks`, `claim_task`, `release_task`, `defer_task`, `undefer_task`, `pin_task`, `unpin_task`
+- Blockers/dependencies: `add_blocker`, `add_dependency`
+- Query/read: `get_task_graph`, `check_status`, `query_memory`, `get_ready_work`, `get_compaction_candidates`, `get_workspace_statistics`, `get_active_context`, `get_health_report`, `get_event_history`
+- Write: `register_decision`, `flush_state`, `apply_compaction`, `add_label`, `remove_label`, `add_comment`, `rollback_to_event`
+- Status: `get_daemon_status`, `get_workspace_status`
+
+#### Phase 2 — Enhancement Layer (background, non-blocking)
+
+These steps enrich the workspace with code intelligence but are not needed for core operation:
+
+```
+Phase 2 — spawn as tokio::spawn after "ready":
+  ├── hydrate_code_graph()         ← loads code graph from JSONL
+  ├── backfill_embeddings()        ← computes missing embedding vectors
+  └── state.update_phase2_status() ← marks enhancement layer as available
+```
+
+**Estimated time**: 5-30+ seconds depending on workspace size and embedding feature flag.
+
+After Phase 2, the remaining 11 code-intelligence tools become available:
+- Code graph: `map_code`, `list_symbols`, `impact_analysis`, `index_workspace`, `sync_workspace`
+- Search: `unified_search`, `query_graph`
+- Task-code linking: `link_task_to_code`, `unlink_task_from_code`
+- Collections: `create_collection`, `add_to_collection`, `remove_from_collection`, `get_collection_context`
+
+### Implementation Details
+
+#### 1. Split `set_workspace` in `src/tools/lifecycle.rs`
+
+Refactor `set_workspace()` (lines 57-117) into two functions:
+
+```rust
+/// Phase 1: Core hydration — enough to serve task management tools.
+/// Returns the WorkspaceBinding and DB handle for Phase 2.
+pub async fn set_workspace_core(
+    state: &AppState,
+    path: String,
+) -> Result<(WorkspaceBinding, surrealdb::Surreal<surrealdb::engine::local::Db>), EngramError> {
+    validate_workspace_path(&path)?;
+    let canonical = canonicalize_workspace(&path)?;
+    let workspace_id = workspace_hash(&canonical);
+    // ... capacity check ...
+    let hydration = hydrate_workspace(&canonical).await?;
+    let db = connect_db(&workspace_id).await?;
+    let queries = Queries::new(db.clone());
+    let db_result = hydrate_into_db(&canonical, &queries).await?;
+    let ws_config = parse_config(&canonical)?;
+    // Build snapshot and set workspace — triggers "ready"
+    state.set_workspace(snapshot).await?;
+    state.set_workspace_config(Some(ws_config)).await;
+    Ok((binding, db))
+}
+
+/// Phase 2: Enhancement hydration — code graph + embeddings.
+/// Runs in background after "ready" is reported.
+pub async fn set_workspace_enhancements(
+    state: &AppState,
+    db: surrealdb::Surreal<surrealdb::engine::local::Db>,
+    canonical: &Path,
+) -> Result<(), EngramError> {
+    let cg_queries = CodeGraphQueries::new(db.clone());
+    hydrate_code_graph(canonical, &cg_queries).await?;
+    let queries = Queries::new(db);
+    backfill_embeddings(&queries).await;
+    // Update state to mark enhancements as available
+    state.set_enhancements_ready(true).await;
+    Ok(())
+}
+```
+
+#### 2. Update `run_with_shutdown` in `src/daemon/ipc_server.rs`
+
+The background `tokio::spawn` block (lines 411-437) currently calls `set_workspace` as one unit. Change it to:
+
+```rust
+tokio::spawn(async move {
+    // Phase 1: Core state — triggers "ready"
+    match lifecycle::set_workspace_core(state_init.as_ref(), workspace_str).await {
+        Ok((binding, db)) => {
+            info!("Phase 1 complete — daemon ready for core tools");
+            ttl_init.reset();
+            tokio::spawn(async move {
+                ttl_task.run_until_expired(tx_init).await;
+            });
+
+            // Phase 2: Enhancements — non-blocking background
+            let canonical = PathBuf::from(&binding.path);
+            if let Err(e) = lifecycle::set_workspace_enhancements(
+                state_init.as_ref(), db, &canonical
+            ).await {
+                warn!(error = %e, "Phase 2 enhancement hydration failed (non-fatal)");
+            } else {
+                info!("Phase 2 complete — code intelligence tools available");
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Phase 1 hydration failed — initiating shutdown");
+            let _ = tx_init.send(true);
+        }
+    }
+});
+```
+
+Key difference: Phase 2 failure is **non-fatal** — logged as a warning but the daemon stays running with core tools available.
+
+#### 3. Add Enhancement Readiness State to `AppState`
+
+**File**: `src/server/state.rs`
+
+Add a flag to `AppState` tracking whether Phase 2 is complete:
+
+```rust
+pub struct AppState {
+    // ... existing fields ...
+    enhancements_ready: AtomicBool,  // false until Phase 2 completes
+}
+
+impl AppState {
+    pub fn enhancements_ready(&self) -> bool {
+        self.enhancements_ready.load(Ordering::Relaxed)
+    }
+
+    pub async fn set_enhancements_ready(&self, ready: bool) {
+        self.enhancements_ready.store(ready, Ordering::Relaxed);
+    }
+}
+```
+
+#### 4. Guard Code Graph Tools During Phase 2
+
+**File**: `src/tools/read.rs`, `src/tools/write.rs`
+
+Tools that depend on code graph data should check `enhancements_ready()` and return a descriptive message:
+
+```rust
+// At the top of map_code, list_symbols, impact_analysis, unified_search, etc.
+if !state.enhancements_ready() {
+    return Ok(json!({
+        "status": "indexing",
+        "message": "Code intelligence is still initializing. Core task management tools are available. Try again in a few seconds."
+    }));
+}
+```
+
+This is preferable to returning an error because:
+- The agent can proceed with non-code-graph work
+- The agent can retry the code tool after a short delay
+- No error propagation or retry logic needed in the MCP client
+
+#### 5. Update `_health` Response
+
+**File**: `src/daemon/ipc_server.rs:276-290`
+
+Enrich the health response to include phase information:
+
+```rust
+"_health" => {
+    let snapshot = state.snapshot_workspace().await;
+    let status = if snapshot.is_some() { "ready" } else { "starting" };
+    let enhancements = state.enhancements_ready();
+    IpcResponse::success(
+        id,
+        json!({
+            "status": status,
+            "enhancements_ready": enhancements,
+            "uptime_seconds": state.uptime_seconds(),
+            "workspace": snapshot.map(|s| s.path),
+            "active_connections": state.active_connections(),
+        }),
+    )
+}
+```
+
+The shim continues to check `status == "ready"` and ignores `enhancements_ready` — no shim changes needed. Diagnostic tools can use the richer response.
+
+#### 6. Update `get_workspace_status`
+
+**File**: `src/tools/lifecycle.rs`
+
+Add enhancement status to the workspace status response:
+
+```rust
+pub struct WorkspaceStatus {
+    // ... existing fields ...
+    pub enhancements_ready: bool,    // Phase 2 complete?
+    pub code_graph: CodeGraphStats,  // populated after Phase 2
+}
+```
+
+### Edge Cases and Considerations
+
+1. **Tool calls during Phase 2**: If an agent calls `map_code` during Phase 2 indexing, it gets a clear `"indexing"` status message rather than an error or empty results. The agent can retry or proceed with other work.
+
+2. **`flush_state` during Phase 2**: The `flush_state` tool dehydrates the code graph to `.engram/code-graph/`. If called during Phase 2, it should either skip code graph dehydration (not yet loaded) or wait. Recommend: skip with a note in the response.
+
+3. **`index_workspace` during Phase 2**: If Phase 2 is still loading the existing graph, a concurrent `index_workspace` call could conflict. Guard with `enhancements_ready()` check.
+
+4. **Phase 2 failure modes**: If `hydrate_code_graph` fails (corrupt JSONL), the daemon stays running without code intelligence. If `backfill_embeddings` fails (model not available), same — core tools unaffected. Both are logged at WARN level.
+
+5. **TTL timer placement**: The TTL idle timer should still start after Phase 1 (when "ready" fires), not after Phase 2. The daemon is usable after Phase 1; waiting for Phase 2 would delay the idle countdown unnecessarily on workspaces where code graph loading is slow.
+
+6. **Backward compatibility**: The `_health` response adds `enhancements_ready` as a new optional field. Existing shims and MCP clients ignore unknown fields. The `"ready"` status semantics are unchanged — it still means "daemon can serve tool calls."
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/tools/lifecycle.rs` | Split `set_workspace` into `set_workspace_core` + `set_workspace_enhancements` |
+| `src/daemon/ipc_server.rs` | Update background `tokio::spawn` to call phases sequentially; update `_health` response |
+| `src/server/state.rs` | Add `enhancements_ready: AtomicBool` to `AppState` |
+| `src/tools/read.rs` | Guard `map_code`, `list_symbols`, `impact_analysis`, `unified_search`, `query_graph`, `get_collection_context` with `enhancements_ready()` check |
+| `src/tools/write.rs` | Guard `index_workspace`, `sync_workspace`, `link_task_to_code`, `unlink_task_from_code` with `enhancements_ready()` check |
+| `src/tools/mod.rs` | No changes needed (dispatch is unchanged) |
+| `tests/integration/smoke_test.rs` | Update to verify Phase 1 returns "ready" before Phase 2 completes |
+
+### Verification Criteria
+
+- [ ] Daemon reports `"ready"` within 3 seconds of startup on a workspace with 100+ code files
+- [ ] Core task management tools (`create_task`, `get_task_graph`, `flush_state`) work immediately after "ready"
+- [ ] Code graph tools (`map_code`, `list_symbols`) return `"indexing"` status during Phase 2
+- [ ] Code graph tools return full results after Phase 2 completes
+- [ ] `get_workspace_status` includes `enhancements_ready` field
+- [ ] Phase 2 failure does not crash the daemon or affect core tools
+- [ ] TTL idle timer starts after Phase 1, not Phase 2
+- [ ] All existing smoke/integration tests pass
+- [ ] No regression in `_health` / `check_health` / `poll_until_ready` behavior
+
+### References
+
+- Current `set_workspace`: `src/tools/lifecycle.rs:57-117`
+- Background spawn: `src/daemon/ipc_server.rs:401-437`
+- `_health` handler: `src/daemon/ipc_server.rs:276-290`
+- Shim polling: `src/shim/lifecycle.rs:56-82` (`check_health`), `156-183` (`poll_until_ready`)
+- `AppState`: `src/server/state.rs:30-39` (`WorkspaceSnapshot`), `151-170` (`snapshot_workspace`, `set_workspace`)
+- Tool dispatch: `src/tools/mod.rs:60-115`
+- Code graph tools: `src/tools/read.rs:474-530` (`map_code`), `620-680` (`list_symbols`), `1130-1170` (`impact_analysis`), `838-950` (`unified_search`)
+- Previous fix: commit `fb064ca` (bind IPC before hydration)

@@ -290,3 +290,154 @@ async fn s102_tasks_md_contains_no_secret_patterns() {
         "tasks.md must contain the task title"
     );
 }
+
+// ── Phase 9 additions (T054) — S009, S010, workspace isolation ─────────────────
+
+/// S009: `validate_sources` rejects registry source paths that escape the workspace
+/// root via `..` traversal — they must never become Active.
+#[test]
+fn s009_registry_path_traversal_rejected_by_validate_sources() {
+    use engram::models::registry::{ContentSource, ContentSourceStatus, RegistryConfig};
+    use engram::services::registry::validate_sources;
+
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let mut config = RegistryConfig {
+        sources: vec![
+            ContentSource {
+                content_type: "docs".to_string(),
+                language: None,
+                path: "../../etc".to_string(),
+                status: ContentSourceStatus::Unknown,
+            },
+            ContentSource {
+                content_type: "docs".to_string(),
+                language: None,
+                path: "../../../tmp".to_string(),
+                status: ContentSourceStatus::Unknown,
+            },
+        ],
+        max_file_size_bytes: 1_048_576,
+        batch_size: 50,
+    };
+
+    let _ = validate_sources(&mut config, workspace.path());
+
+    for source in &config.sources {
+        assert_ne!(
+            source.status,
+            ContentSourceStatus::Active,
+            "traversal path '{}' must not be Active, got {:?}",
+            source.path,
+            source.status
+        );
+    }
+}
+
+/// S009: Multiple path traversal variants are all rejected as non-Active.
+#[test]
+fn s009_registry_multiple_traversal_variants_all_rejected() {
+    use engram::models::registry::{ContentSource, ContentSourceStatus, RegistryConfig};
+    use engram::services::registry::validate_sources;
+
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+
+    let traversal_variants = [
+        "../../secret",
+        "../passwd",
+        "safe/../../../etc",
+        "docs/../../../root",
+    ];
+
+    for variant in traversal_variants {
+        let mut config = RegistryConfig {
+            sources: vec![ContentSource {
+                content_type: "docs".to_string(),
+                language: None,
+                path: variant.to_string(),
+                status: ContentSourceStatus::Unknown,
+            }],
+            max_file_size_bytes: 1_048_576,
+            batch_size: 50,
+        };
+
+        let _ = validate_sources(&mut config, workspace.path());
+
+        assert_ne!(
+            config.sources[0].status,
+            ContentSourceStatus::Active,
+            "traversal variant '{variant}' must not be Active, got {:?}",
+            config.sources[0].status
+        );
+    }
+}
+
+/// S010: Symlink escaping the workspace root is rejected by `validate_sources`.
+///
+/// Unix-only: symlink creation requires elevated privileges on Windows.
+#[cfg(unix)]
+#[test]
+fn s010_symlink_escape_rejected_by_validate_sources() {
+    use std::os::unix::fs::symlink;
+
+    use engram::models::registry::{ContentSource, ContentSourceStatus, RegistryConfig};
+    use engram::services::registry::validate_sources;
+
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+
+    // Create a symlink inside the workspace pointing to an outside directory.
+    let link_path = workspace.path().join("escaped");
+    symlink(outside.path(), &link_path).expect("create symlink");
+
+    let mut config = RegistryConfig {
+        sources: vec![ContentSource {
+            content_type: "docs".to_string(),
+            language: None,
+            path: "escaped".to_string(),
+            status: ContentSourceStatus::Unknown,
+        }],
+        max_file_size_bytes: 1_048_576,
+        batch_size: 50,
+    };
+
+    let _ = validate_sources(&mut config, workspace.path());
+
+    assert_ne!(
+        config.sources[0].status,
+        ContentSourceStatus::Active,
+        "symlink escaping workspace must not be Active, got {:?}",
+        config.sources[0].status
+    );
+}
+
+/// Workspace isolation: valid paths inside the workspace root are accepted as Active.
+#[test]
+fn workspace_isolation_registry_paths_confined_to_root() {
+    use std::fs as stdfs;
+
+    use engram::models::registry::{ContentSource, ContentSourceStatus, RegistryConfig};
+    use engram::services::registry::validate_sources;
+
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let docs_dir = workspace.path().join("docs");
+    stdfs::create_dir_all(&docs_dir).expect("create docs dir");
+
+    let mut config = RegistryConfig {
+        sources: vec![ContentSource {
+            content_type: "docs".to_string(),
+            language: None,
+            path: "docs".to_string(),
+            status: ContentSourceStatus::Unknown,
+        }],
+        max_file_size_bytes: 1_048_576,
+        batch_size: 50,
+    };
+
+    validate_sources(&mut config, workspace.path()).expect("validate_sources must succeed");
+
+    assert_eq!(
+        config.sources[0].status,
+        ContentSourceStatus::Active,
+        "valid workspace-confined path must be Active"
+    );
+}
