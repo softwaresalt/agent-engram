@@ -52,3 +52,7 @@ temp/
 # UE
 *.prj
 *.pui
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
