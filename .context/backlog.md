@@ -1,8 +1,8 @@
 # Backlog
 
-## Feature Requests (unassigned)
+## Feature Requests
 
-- I think I misunderstood the value of deeply engraining the spec process into the engram server.
+- **Strategic pivot decided 2026-03-19**: Strip all task management. Specialize on code intelligence only. See "Strip Task Management" spec below.
 
 ---
 
@@ -15,7 +15,8 @@
 
 Agent-engram uses SurrealDB 2 as its persistence layer, which natively supports both graph traversal (via `RELATE` edges and `->edge->` syntax) and vector/KNN search (via `MTREE` indexes with cosine distance). However, the current implementation treats SurrealDB as a flat key-value store — all graph traversal and vector similarity scoring happen in application-level Rust code, bypassing the database's purpose-built query engine.
 
-This means:
+This means:  
+
 - **Graph queries** (`map_code`, `impact_analysis`) use a manual BFS with one `SELECT out FROM {edge_table} WHERE in = $node` per hop per edge type, resulting in N×5 round-trips for an N-hop traversal across 5 edge types.
 - **Vector search** (`unified_search`, `vector_search_symbols`) loads **all rows** from symbol tables into memory, then computes cosine similarity in Rust. This is O(n) in the total symbol count and ignores the existing `MTREE DIMENSION 384 DIST COSINE` indexes entirely.
 - **Embedding generation** requires the `embeddings` Cargo feature flag to be enabled at build time. When disabled, symbols store zero vectors and all semantic search silently returns empty results with no user-facing indication that the capability is degraded.
@@ -369,6 +370,394 @@ impl AppState {
     }
 }
 ```
+
+---
+
+## Strip Task Management: Specialize Engram as a Code Intelligence Server
+
+**Priority**: Critical — architectural pivot that redefines the project's scope and purpose
+**Discovered**: 2026-03-19 during strategic review of project direction
+**Supersedes**: All task management feature requests; partially supersedes "Phased Startup" (task-related phasing becomes irrelevant)
+**Related**: "Optimize SurrealDB Usage" (retained and elevated — code graph queries become the entire product)
+
+### Motivation
+
+Agent-engram was originally conceived as a dual-purpose MCP daemon: persistent task memory *and* code intelligence for AI coding assistants. External tools like Beads (`bd`) now handle task tracking with superior Git-native workflows, dependency-aware scheduling, and multi-agent coordination. Maintaining a parallel task management system inside engram creates redundancy, inflates the binary, bloats the MCP tool surface (24 of 45 tools are task-related), and — most critically — wastes context window tokens when agents discover and reason about tools they will never use because Beads already covers that domain.
+
+The strategic pivot: strip all task management functionality and focus engram exclusively on **code mapping, code graph synchronization, semantic search, and workspace content intelligence**. This aligns with the original insight in the first backlog entry: the spec/task process was never the right fit for an MCP daemon. The value of engram is in providing agents with a persistent, queryable model of the codebase structure — call graphs, import trees, symbol relationships, semantic similarity — that survives across context window resets and agent sessions.
+
+### Goals
+
+1. Eliminate all task management MCP tools, models, database tables, services, and persistence files
+2. Reduce the MCP tool surface from 45 tools to approximately 15-18 focused code intelligence tools
+3. Shrink binary size and startup time by removing task-related dependencies, hydration/dehydration of task files, and event ledger overhead
+4. Simplify the `.engram/` directory to contain only code graph state, workspace config, and content records
+5. Reduce context window consumption by presenting agents with a smaller, coherent tool surface focused on a single domain
+6. Preserve and elevate all code graph, search, embedding, and workspace content intelligence capabilities
+
+### Scope of Removal
+
+This section inventories every component that must be removed, organized by layer.
+
+#### MCP Tools to Remove (24 tools)
+
+| Tool | Module | Category |
+|------|--------|----------|
+| `create_task` | write.rs | Task CRUD |
+| `update_task` | write.rs | Task CRUD |
+| `claim_task` | write.rs | Task CRUD |
+| `release_task` | write.rs | Task CRUD |
+| `batch_update_tasks` | write.rs | Task CRUD |
+| `defer_task` | write.rs | Task deferral |
+| `undefer_task` | write.rs | Task deferral |
+| `pin_task` | write.rs | Task pinning |
+| `unpin_task` | write.rs | Task pinning |
+| `add_blocker` | write.rs | Dependencies |
+| `add_dependency` | write.rs | Dependencies |
+| `get_task_graph` | read.rs | Dependencies |
+| `add_label` | write.rs | Labels |
+| `remove_label` | write.rs | Labels |
+| `add_comment` | write.rs | Comments |
+| `check_status` | read.rs | Query |
+| `get_ready_work` | read.rs | Query |
+| `get_compaction_candidates` | read.rs | Query |
+| `get_active_context` | read.rs | Query |
+| `get_event_history` | read.rs | Query |
+| `register_decision` | write.rs | Event/recovery |
+| `rollback_to_event` | write.rs | Event/recovery |
+| `apply_compaction` | write.rs | Compaction |
+| `create_collection` | write.rs | Collections |
+| `add_to_collection` | write.rs | Collections |
+| `remove_from_collection` | write.rs | Collections |
+| `get_collection_context` | read.rs | Collections |
+
+#### MCP Tools to Modify (remove task-specific branches)
+
+| Tool | Change |
+|------|--------|
+| `unified_search` | Remove task/spec/context/comment search domains; retain code symbol and content record search |
+| `query_memory` | Either remove entirely (it was a stub/alias for unified_search) or repurpose as pure code-semantic search |
+| `impact_analysis` | Remove "affected tasks" output; retain pure code impact (callers, callees, importers of changed symbols) |
+| `get_workspace_status` | Remove task/context counts; report code graph stats, content record counts, embedding coverage |
+| `get_workspace_statistics` | Remove task metrics; report code graph metrics only |
+| `flush_state` | Remove task/comment/collection/graph.surql serialization; retain code graph JSONL + config + content flush |
+| `get_health_report` | Remove task-related health checks; retain code graph staleness, parse error counts, embedding coverage |
+
+#### MCP Tools to Remove (task-code bridge)
+
+| Tool | Reason |
+|------|--------|
+| `link_task_to_code` | No tasks to link |
+| `unlink_task_from_code` | No tasks to unlink |
+
+#### MCP Tools to Retain (unchanged, ~15 tools)
+
+| Tool | Module | Purpose |
+|------|--------|---------|
+| `set_workspace` | lifecycle.rs | Bind to workspace, trigger hydration |
+| `get_daemon_status` | lifecycle.rs | Report uptime, connections |
+| `get_workspace_status` | lifecycle.rs | Report code graph and content stats (modified) |
+| `index_workspace` | write.rs | Full AST parse + embedding |
+| `sync_workspace` | write.rs | Incremental index of modified files |
+| `map_code` | read.rs | List code nodes with filters |
+| `list_symbols` | read.rs | Search symbols by name/type/language |
+| `query_graph` | read.rs | Custom graph traversal (callers, callees, imports) |
+| `impact_analysis` | read.rs | Code-only impact of changes (modified) |
+| `unified_search` | read.rs | Vector + lexical search across code and content (modified) |
+| `get_health_report` | read.rs | Code graph health (modified) |
+| `flush_state` | write.rs | Serialize code graph to `.engram/` (modified) |
+| `index_git_history` | write.rs | Git commit ingestion (feature-gated) |
+| `query_changes` | read.rs | Git change tracing (feature-gated) |
+
+#### Models to Remove
+
+| File | Structs |
+|------|---------|
+| `src/models/task.rs` | `Task`, `TaskStatus`, `TaskRow` |
+| `src/models/graph.rs` | `DependencyType` (task dependency edges) |
+| `src/models/context.rs` | `Context`, `ContextRow` (task audit notes) |
+| `src/models/label.rs` | `Label`, `LabelRow` |
+| `src/models/comment.rs` | `Comment`, `CommentRow` |
+| `src/models/event.rs` | `Event`, `EventKind`, `EventRow` |
+| `src/models/spec.rs` | `Spec`, `SpecRow` |
+| `src/models/collection.rs` | `Collection`, `CollectionRow` |
+| `src/models/backlog.rs` | `BacklogFile`, `ProjectManifest` |
+
+#### Models to Retain
+
+| File | Structs |
+|------|---------|
+| `src/models/code_file.rs` | `CodeFile` |
+| `src/models/function.rs` | `Function` |
+| `src/models/class.rs` | `Class` |
+| `src/models/interface.rs` | `Interface` |
+| `src/models/code_edge.rs` | `CodeEdge`, `CodeEdgeType` |
+| `src/models/content.rs` | `ContentRecord` |
+| `src/models/commit.rs` | `CommitNode`, `ChangeRecord`, `ChangeType` |
+| `src/models/config.rs` | `WorkspaceConfig` (remove `CompactionConfig`, retain `CodeGraphConfig`, `EmbeddingConfig`) |
+| `src/models/registry.rs` | `RegistryConfig`, `ContentSource` |
+| `src/models/watcher.rs` | `WatcherEvent`, `WatchEventKind` |
+
+#### Database Tables to Remove
+
+| Table | Type | Purpose |
+|-------|------|---------|
+| `task` | SCHEMAFULL | Task records |
+| `label` | SCHEMAFULL | Task labels |
+| `comment` | SCHEMAFULL | Task comments |
+| `context` | SCHEMAFULL | Audit notes/decision records |
+| `spec` | SCHEMAFULL | Feature specifications |
+| `collection` | SCHEMAFULL | Named task groupings |
+| `event` | SCHEMAFULL | Immutable audit log |
+| `depends_on` | RELATION | Task dependency edges |
+| `implements` | RELATION | Task-to-spec edges |
+| `relates_to` | RELATION | General task relationships |
+| `concerns` | RELATION | Task-to-code linkage edges |
+| `contains` | RELATION | Collection membership edges |
+
+#### Database Tables to Retain
+
+| Table | Type | Purpose |
+|-------|------|---------|
+| `code_file` | SCHEMAFULL | Source file nodes |
+| `function` | SCHEMAFULL | Function/method nodes (with MTREE embedding index) |
+| `class` | SCHEMAFULL | Struct/type nodes (with MTREE embedding index) |
+| `interface` | SCHEMAFULL | Trait/protocol nodes (with MTREE embedding index) |
+| `calls` | RELATION | Function call edges |
+| `imports` | RELATION | File/module import edges |
+| `defines` | RELATION | File-defines-symbol edges |
+| `inherits_from` | RELATION | Class inheritance edges |
+| `content_record` | SCHEMAFULL | Ingested workspace content (with MTREE embedding index) |
+| `commit_node` | SCHEMAFULL | Git commit nodes (feature-gated) |
+
+#### Services to Remove
+
+| File | Purpose |
+|------|---------|
+| `src/services/hydration.rs` | Task hydration from `.engram/tasks.md`, `graph.surql` |
+| `src/services/dehydration.rs` | Task dehydration to `.engram/tasks.md`, `graph.surql`, `comments.md`, `collections.md` |
+| `src/services/event_ledger.rs` | Append-only event log with pruning |
+| `src/services/compaction.rs` | Task text truncation for archival |
+| `src/services/connection.rs` | Task-related workspace binding, status change audit note creation |
+
+#### Services to Retain
+
+| File | Purpose |
+|------|---------|
+| `src/services/code_graph.rs` | AST parsing, indexing, edge creation, embedding |
+| `src/services/parsing.rs` | Tree-sitter AST parsing |
+| `src/services/embedding.rs` | fastembed wrapper |
+| `src/services/search.rs` | Vector/hybrid search (remove task search domains) |
+| `src/services/ingestion.rs` | Registry-driven content ingestion |
+| `src/services/registry.rs` | `.engram/registry.yaml` loading |
+| `src/services/git_graph.rs` | Git history indexing (feature-gated) |
+| `src/services/config.rs` | `.engram/config.toml` loading |
+| `src/services/output.rs` | Response filtering/projection |
+| `src/services/gate.rs` | Rate limiting |
+
+#### `.engram/` Files to Remove
+
+| File | Format |
+|------|--------|
+| `.engram/tasks.md` | Markdown with YAML frontmatter (task definitions) |
+| `.engram/graph.surql` | SurrealQL RELATE statements (task dependency edges) |
+| `.engram/comments.md` | Markdown (task comments) |
+| `.engram/collections.md` | Markdown (task groupings) |
+| `.engram/backlogs/*.md` | Markdown (work item backlogs) |
+
+#### `.engram/` Files to Retain
+
+| File | Format |
+|------|--------|
+| `.engram/code-graph/nodes.jsonl` | JSONL (code nodes) |
+| `.engram/code-graph/edges.jsonl` | JSONL (code edges) |
+| `.engram/registry.yaml` | YAML (content sources) |
+| `.engram/config.toml` | TOML (workspace config — remove task-related sections) |
+| `.engram/.version` | Plain text (schema version — bump to 3.0.0) |
+| `.engram/.lastflush` | RFC 3339 timestamp |
+
+#### `src/db/queries.rs` — Methods to Remove
+
+All task CRUD methods, task graph traversal, task search, context CRUD, spec CRUD, label CRUD, comment CRUD, collection CRUD, event ledger methods, and `concerns` edge management. Retain: code graph node/edge CRUD (`upsert_code_file`, `upsert_function`, `create_edge`, `bfs_neighborhood`, `get_outbound_edges`, `get_inbound_edges`), vector search (`vector_search_symbols`), content record CRUD, commit node CRUD.
+
+#### Tests to Remove or Rewrite
+
+**Contract tests to remove:**
+
+| File | Reason |
+|------|--------|
+| `tests/contract/write_test.rs` | Tests task CRUD contracts — rewrite for code-only write tools |
+| `tests/contract/read_test.rs` | Tests task query contracts — rewrite for code-only read tools |
+| `tests/contract/event_test.rs` | Tests event ledger — remove entirely |
+| `tests/contract/collection_test.rs` | Tests collection CRUD — remove entirely |
+
+**Contract tests to retain/modify:**
+
+| File | Change |
+|------|--------|
+| `tests/contract/lifecycle_test.rs` | Remove task counts from workspace status assertions |
+| `tests/contract/content_test.rs` | Retain — tests content ingestion |
+| `tests/contract/ipc_protocol_test.rs` | Update tool list assertions |
+| `tests/contract/error_codes_test.rs` | Remove task error code assertions |
+| `tests/contract/gate_test.rs` | Retain |
+| `tests/contract/registry_test.rs` | Retain |
+| `tests/contract/observability_test.rs` | Retain |
+
+**Integration tests to remove:**
+
+| File | Reason |
+|------|--------|
+| `tests/integration/hydration_test.rs` | Tests task hydration from `.engram/tasks.md` |
+| `tests/integration/backlog_test.rs` | Tests backlog artifact management |
+| `tests/integration/enhanced_features_test.rs` | Tests compaction, batch ops, collections |
+| `tests/integration/rollback_test.rs` | Tests event rollback |
+
+**Integration tests to modify:**
+
+| File | Change |
+|------|--------|
+| `tests/integration/daemon_lifecycle_test.rs` | Remove task-related assertions from startup/shutdown |
+| `tests/integration/smoke_test.rs` | Replace task tool calls with code graph tool calls |
+| `tests/integration/concurrency_test.rs` | Remove task concurrency tests; retain code graph concurrency |
+| `tests/integration/multi_workspace_test.rs` | Remove task isolation tests; retain code graph per-workspace isolation |
+| `tests/integration/security_test.rs` | Remove task path traversal tests; retain code graph security |
+| `tests/integration/reliability_test.rs` | Remove task error recovery; retain code graph resilience |
+| `tests/integration/recovery_test.rs` | Remove task recovery; retain graceful shutdown for code graph state |
+
+**Unit tests to modify:**
+
+| File | Change |
+|------|--------|
+| `tests/unit/proptest_models.rs` | Remove Task, Context, Event, Spec, Label, Comment, Collection proptest strategies |
+| `tests/unit/proptest_serialization.rs` | Remove task model serialization invariants |
+| `tests/unit/proptest_events.rs` | Remove entirely |
+
+### Implementation Strategy
+
+This is a large-scale removal. Phased execution prevents breakage and keeps `cargo test` passing at every step.
+
+#### Phase 1 — Remove tool dispatch and tool functions (leaf removal)
+
+1. Remove all 24 task management tool names from the `dispatch` match in `src/tools/mod.rs`
+2. Remove the `link_task_to_code` and `unlink_task_from_code` dispatch entries
+3. Delete the corresponding handler functions from `src/tools/write.rs` and `src/tools/read.rs`
+4. Remove the `create_collection`, `add_to_collection`, `remove_from_collection`, `get_collection_context` functions
+5. Remove `query_memory` if it was only a task-search alias (or repurpose)
+6. Update tool registration in the MCP tool list (ensure `list_tools` response reflects the new surface)
+7. Update `get_workspace_status`, `get_workspace_statistics`, `unified_search`, `impact_analysis`, `flush_state`, `get_health_report` to remove task-related branches
+
+#### Phase 2 — Remove task services
+
+1. Delete `src/services/hydration.rs` (task hydration)
+2. Delete `src/services/dehydration.rs` (task dehydration)
+3. Delete `src/services/event_ledger.rs`
+4. Delete `src/services/compaction.rs`
+5. Simplify `src/services/connection.rs` to remove task audit note creation; retain workspace path validation if needed by code graph tools, otherwise merge remaining logic into lifecycle
+6. Update `src/services/mod.rs` to remove deleted module declarations
+7. Update `set_workspace` in lifecycle.rs to skip task hydration — only hydrate code graph and content
+
+#### Phase 3 — Remove task models and database schema
+
+1. Delete `src/models/task.rs`, `context.rs`, `label.rs`, `comment.rs`, `event.rs`, `spec.rs`, `collection.rs`, `backlog.rs`, `graph.rs` (the dependency-type graph, not code_edge graph)
+2. Update `src/models/mod.rs` to remove deleted module declarations and re-exports
+3. Remove task-related `DEFINE TABLE` statements from `src/db/schema.rs`
+4. Remove task-related query methods from `src/db/queries.rs`
+5. Remove task error code constants from `src/errors/codes.rs` (2xxx hydration codes that reference tasks, 3xxx task codes)
+6. Simplify `EngramError` variants if any are task-only
+
+#### Phase 4 — Remove and rewrite tests
+
+1. Delete test files that are entirely task-focused (event_test, collection_test, hydration_test, backlog_test, enhanced_features_test, rollback_test, proptest_events)
+2. Rewrite contract tests for the new tool surface (write_test, read_test)
+3. Update integration tests to remove task assertions
+4. Update proptest strategies to remove task models
+5. Verify `cargo test` passes with the reduced test suite
+
+#### Phase 5 — Clean up persistence and configuration
+
+1. Remove task-related sections from `.engram/config.toml` schema (compaction thresholds, task limits)
+2. Update the installer (`src/installer/mod.rs`) to stop creating `tasks.md`, `graph.surql`, `comments.md`, `collections.md`
+3. Bump schema version from `2.0.0` to `3.0.0` in `src/services/dehydration.rs` (or whatever module owns it now)
+4. Update hydration to reject `< 3.0.0` schemas with a migration message
+5. Clean up `Cargo.toml` if any dependencies become unused after removal (e.g., `similar` crate used only for task dehydration diff-merge)
+
+#### Phase 6 — Update documentation and project metadata
+
+1. Rewrite `README.md` to reflect code-intelligence-only scope
+2. Update `AGENTS.md` to remove task management tool references
+3. Update `.github/copilot-instructions.md` to remove task management sections
+4. Update `docs/mcp-tool-reference.md` with the reduced tool surface
+5. Update `docs/quickstart.md` to focus on code graph setup
+6. Update `docs/architecture.md` to remove task management architecture
+7. Update constitution if needed (some principles reference task management specifically)
+
+### Risk Assessment
+
+| Risk | Mitigation |
+|------|------------|
+| Breaking changes for existing users relying on task tools | Semantic version bump to 3.0.0; document migration to Beads |
+| `unified_search` regression (currently searches tasks + code) | Explicit test coverage for code-only search before and after |
+| `flush_state` incomplete after task removal | Verify code graph JSONL round-trip survives; property tests |
+| Orphaned database entries if user upgrades in-place | Hydration v3 ignores `tasks.md` if present; schema migration drops task tables |
+| `concerns` edge table removal breaks `impact_analysis` | Redesign `impact_analysis` to report pure code impact without task linkage |
+| `.engram/` directory contains stale task files after upgrade | `set_workspace` v3 logs a warning for legacy files but does not delete them (user responsibility) |
+| Binary size reduction may be minimal if task code was small | Primary goal is tool surface reduction, not binary size; binary savings are a bonus |
+
+### Verification Criteria
+
+- [ ] MCP `list_tools` returns exactly the retained tool set (15-18 tools)
+- [ ] No task-related words (`task`, `blocker`, `dependency`, `compaction`, `collection`, `event_ledger`) appear in `src/tools/`, `src/services/`, `src/models/` except in removal-related comments or migration warnings
+- [ ] `cargo test` passes with zero task-related test files
+- [ ] `cargo clippy -- -D warnings` passes (no dead code warnings from orphaned imports or unused functions)
+- [ ] `index_workspace` → `map_code` → `list_symbols` → `query_graph` → `unified_search` round-trip works end-to-end
+- [ ] `flush_state` serializes code graph to `.engram/code-graph/` JSONL and round-trips correctly
+- [ ] Schema version in `.engram/.version` is `3.0.0`
+- [ ] `set_workspace` on a v2 `.engram/` directory logs a migration warning but does not crash
+- [ ] Binary size is reduced compared to pre-stripping build
+- [ ] MCP tool discovery (`list_tools`) response fits comfortably in agent context (target: under 2,000 tokens for the full tool listing)
+
+### Dependencies
+
+- This work should be done **before** "Optimize SurrealDB Usage" (the SurrealDB optimization applies only to code graph queries, which this spec retains — doing the strip first reduces the surface area for the optimization work)
+- This work **supersedes** "Phased Startup" for the task-related phasing (Phase 1 core = task hydration becomes irrelevant; Phase 2 enhancements = code graph loading remains relevant but the phasing logic simplifies dramatically since there is only one phase now)
+- Beads (`bd`) must be the established task tracking system before this work begins (already true as of 2026-03-19)
+
+### Impact on Constitution
+
+Several constitution principles reference task management explicitly. These updates are clarifications, not principle changes, so they require a PATCH version bump (not MINOR):
+
+| Principle | Current Language | Change |
+|-----------|-----------------|--------|
+| I. Safety-First Rust | "The daemon manages an embedded database, file-system writes for dehydration" | Update rationale to reference code graph dehydration only |
+| III. Test-First Development | References "task management, hydration/dehydration cycles" | Update to reference "code graph indexing, search, hydration/dehydration cycles" |
+| IV. Workspace Isolation | References workspace state generically | No change needed — applies equally to code graph state |
+| VIII. Git-Friendly Persistence | References "Markdown with YAML frontmatter as the canonical format for task files" | Update to reflect JSONL as the primary persistence format, with config.toml and registry.yaml as secondary |
+
+### Context Window Impact Analysis
+
+The primary motivation for this change is reducing context window consumption. Current impact:
+
+| Component | Token Estimate (current) | Token Estimate (after) | Savings |
+|-----------|-------------------------|------------------------|---------|
+| `list_tools` response (45 tools with schemas) | ~4,500 tokens | ~1,800 tokens | ~2,700 tokens |
+| Tool descriptions in system prompt / instructions | ~3,000 tokens | ~1,200 tokens | ~1,800 tokens |
+| Workspace status response (task + code stats) | ~800 tokens | ~400 tokens | ~400 tokens |
+| Total tool-discovery overhead per session | ~8,300 tokens | ~3,400 tokens | **~4,900 tokens saved** |
+
+For a 128K context window, this saves approximately 3.8% of total capacity. For a 32K window, it saves approximately 15.3%. Over a multi-hour agent session with periodic tool re-discovery, the cumulative savings are significant.
+
+### References
+
+- Current tool dispatch: `src/tools/mod.rs:38-97`
+- Task tools: `src/tools/write.rs:149-1731` (write), `src/tools/read.rs:121-1541` (read)
+- Code graph tools: `src/tools/write.rs:1268-1515` (write), `src/tools/read.rs:466-1235` (read)
+- Task models: `src/models/task.rs`, `context.rs`, `label.rs`, `comment.rs`, `event.rs`, `spec.rs`, `collection.rs`
+- Code graph models: `src/models/code_file.rs`, `function.rs`, `class.rs`, `interface.rs`, `code_edge.rs`
+- Task services: `src/services/hydration.rs`, `dehydration.rs`, `event_ledger.rs`, `compaction.rs`
+- Code graph services: `src/services/code_graph.rs`, `parsing.rs`, `embedding.rs`, `search.rs`
+- Database schema: `src/db/schema.rs`
+- Installer: `src/installer/mod.rs`
+- Constitution: `.github/instructions/constitution.instructions.md`
 
 #### 4. Guard Code Graph Tools During Phase 2
 
