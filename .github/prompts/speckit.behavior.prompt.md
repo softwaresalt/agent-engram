@@ -1,6 +1,0 @@
-```prompt
----
-agent: speckit.behavior
----
-
-```

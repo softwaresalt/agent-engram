@@ -127,6 +127,8 @@ Every `update_task` call MUST create a context note recording the transition (FR
 * `#![warn(clippy::pedantic)]` — pedantic lints enabled
 * `#![allow(clippy::missing_errors_doc)]`, `clippy::missing_panics_doc`, `clippy::module_name_repetitions` — suppressed for ergonomics
 * `.cargo/config.toml` sets `rustflags = ["-Dwarnings"]` globally
+* `[workspace.lints.rust]`: `unsafe_code = "deny"`, `missing_docs = "warn"`
+* `[workspace.lints.clippy]`: `pedantic = "deny"`, `unwrap_used = "deny"`, `expect_used = "deny"`
 
 ### Error Handling
 
@@ -142,6 +144,9 @@ Every `update_task` call MUST create a context note recording the transition (FR
 * Status values: snake_case (`todo`, `in_progress`, `done`, `blocked`)
 * Error codes: UPPER_SNAKE_CASE constants in `errors::codes`
 
+### Documentation
+* All public items require `///` doc comments
+* Module-level `//!` doc comments on every `mod.rs` or standalone module file
 ### Database
 
 * One `Db` handle per workspace via `connect_db(workspace_hash)`
@@ -163,10 +168,12 @@ Every tool follows this pattern:
 ### Testing
 
 * TDD required: write tests first, verify they fail, then implement
-* Contract tests: verify error codes when workspace not set
-* Integration tests: end-to-end flows with real SSE/DB
-* Property tests: `proptest` for serialization round-trips
-* Test files live in `tests/` directory, not inline
+* Three test tiers in `tests/` directory (not inline):
+  * `unit/` — isolated logic tests (25 modules)
+  * `contract/` — MCP tool response contract verification (17 modules)
+  * `integration/` — end-to-end flows with real SSE/DB (33 modules)
+* Test DB: always use in-memory SQLite (`":memory:"`)
+* Use `serial_test` crate for tests requiring sequential execution
 
 ### State Management
 
@@ -387,6 +394,8 @@ cargo check; cargo clippy -- -D warnings; cargo test
 # Bad: cmd /c wrapper with echo suffix
 cmd /c "cargo test > logs\test-results.txt 2>&1"; echo "EXIT: $LASTEXITCODE"
 
+# Bad: output redirect to target/ instead of logs/
+cargo test 2>&1 | Out-File target\test-results.txt
 # Bad: AND-chained
 cargo fmt && cargo clippy && cargo test
 
@@ -395,9 +404,9 @@ cargo test | Select-String "FAILED" | Remove-Item foo.txt
 ```
 ### Full List of Auto-Approve Commands with RegEx
 
+```json
 "chat.tools.terminal.autoApprove": {
-    ".specify/scripts/bash/": true,
-    ".specify/scripts/powershell/": true,
+    ".engram/": true,
     "/^cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
         "approve": true,
         "matchCommandLine": true
@@ -432,26 +441,12 @@ cargo test | Select-String "FAILED" | Remove-Item foo.txt
     },
     "New-Item": true,
     "Out-Null": true,
-    "cargo build": true,
-    "cargo check": true,
-    "cargo doc": true,
-    "cargo test": true,
-    "git commit": true,
-    "ForEach-Object": true,
-    "cargo clippy": true,
-    "cargo fmt": true,
-    "git add": true,
-    "git push": true
+    "ForEach-Object": true
 }
 
 ## MCP Server Registry
 
 The workspace uses multiple MCP servers with distinct responsibilities. Never call a tool on the wrong server — VS Code pre-registers them, but the agent must know which tool lives where.
-
-| Server ID | URL | Purpose |
-|-----------|-----|---------|
-| `agent-engram` | `http://127.0.0.1:3000/sse?channel=…` | Remote operator relay — Slack approval, prompts, heartbeat |
-| engram daemon | `http://127.0.0.1:7437/sse` | Task memory, context tracking, workspace state |
 
 ### `agent-engram` tools (Slack relay)
 
@@ -467,17 +462,4 @@ The workspace uses multiple MCP servers with distinct responsibilities. Never ca
 | `wait_for_instruction` | Place the agent in standby, polling for a resume signal from the operator |
 | `heartbeat` | Liveness signal; resets stall detection timer with optional progress snapshot |
 
-### Engram daemon tools (task memory)
-
-See **MCP Tools Registry** table above for the full list (`set_workspace`, `get_daemon_status`, `update_task`, etc.).
-
-### Startup verification
-
-If `get_daemon_status` or any engram tool returns a connection error, the engram daemon is not running. Start it with:
-
-```bash
-cargo run --bin engram
-```
-
-The relay server (`agent-engram`) is a separate process managed outside this repo and runs on port 3000.
 <!-- MANUAL ADDITIONS END -->

@@ -3,8 +3,6 @@
 ## Feature Requests (unassigned)
 
 - I think I misunderstood the value of deeply engraining the spec process into the engram server.
-- Create engram specific SDD agents, skills, instructions, prompts, and tools; enable them to support loop driven dev (LDD)
-- Create loop driven development workflows that leverage the engram specific SDD.
 
 ---
 
