@@ -74,6 +74,10 @@ name = "engram"
 path = "src/bin/engram.rs"
 
 [[test]]
+name = "contract_task_removal"
+path = "tests/contract/task_removal_test.rs"
+
+[[test]]
 name = "contract_lifecycle"
 path = "tests/contract/lifecycle_test.rs"
 
