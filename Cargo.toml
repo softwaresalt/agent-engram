@@ -249,3 +249,19 @@ path = "tests/integration/backlog_test.rs"
 name = "integration_git_graph"
 path = "tests/integration/git_graph_test.rs"
 required-features = ["git-graph"]
+
+[[test]]
+name = "integration_embedding_status"
+path = "tests/integration/embedding_status_test.rs"
+
+[[test]]
+name = "integration_native_knn_search"
+path = "tests/integration/native_knn_search_test.rs"
+
+[[test]]
+name = "integration_native_graph_traversal"
+path = "tests/integration/native_graph_traversal_test.rs"
+
+[[test]]
+name = "integration_query_tracing"
+path = "tests/integration/query_tracing_test.rs"

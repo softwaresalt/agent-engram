@@ -13,6 +13,37 @@ use surrealdb::sql::Thing;
 use crate::db::{Db, map_db_err};
 use crate::errors::EngramError;
 
+// ── Query performance observability (dxo.5.1) ──────────────────────────
+
+/// Threshold in milliseconds above which a query is logged at WARN level.
+pub const SLOW_QUERY_THRESHOLD_MS: u128 = 100;
+
+/// Records query timing metadata and emits a warning for slow queries.
+///
+/// Intended to be called at the end of each public query method to:
+/// 1. Record `result_count` in the current tracing span.
+/// 2. Log a warning if elapsed time exceeds [`SLOW_QUERY_THRESHOLD_MS`].
+///
+/// # Arguments
+///
+/// * `query_type` — Category label (e.g., `"graph_traversal"`, `"knn_search"`, `"crud"`).
+/// * `table` — Primary table being queried (e.g., `"function"`, `"class"`).
+/// * `result_count` — Number of rows/items returned by the query.
+/// * `elapsed` — Wall-clock duration of the query execution.
+pub fn record_query_metrics(
+    _query_type: &str,
+    _table: &str,
+    _result_count: usize,
+    _elapsed: std::time::Duration,
+) {
+    unimplemented!(
+        "Worker: Use tracing::Span::current() to record query_type, table, and \
+         result_count as span fields. If elapsed > SLOW_QUERY_THRESHOLD_MS, emit \
+         tracing::warn!(query_type, table, result_count, elapsed_ms = elapsed.as_millis(), \
+         \"slow query detected\"). This function is called from instrumented query methods."
+    )
+}
+
 // ── Shared Row Types ───────────────────────────────────────────────────
 
 /// Internal row type for COUNT() aggregate queries.
@@ -1647,6 +1678,163 @@ impl CodeGraphQueries {
         let matches: Vec<SymbolMatch> = results.into_iter().take(limit).map(|(_, m)| m).collect();
 
         Ok(matches)
+    }
+
+    // ── Native KNN vector search (dxo.2.1) ────────────────────────
+
+    /// Vector search using SurrealDB's native KNN operator with MTREE indexes.
+    ///
+    /// Replaces the O(n) full-table-scan approach in [`vector_search_symbols`]
+    /// with O(log n) index-backed queries using `<|K,COSINE|>`.
+    ///
+    /// Returns up to `limit` nearest matches with cosine similarity scores.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if any database query fails.
+    pub async fn vector_search_symbols_native(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
+        let query_vec = query_embedding.to_vec();
+
+        // ── Functions — KNN via MTREE index ──
+        let func_sql =
+            format!("SELECT * FROM `function` WHERE embedding <|{limit},COSINE|> $query");
+        let mut resp = self
+            .db
+            .query(&func_sql)
+            .bind(("query", query_vec.clone()))
+            .await
+            .map_err(map_db_err)?;
+        let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+        for row in func_rows {
+            let f = row.into_function();
+            let score = cosine_similarity(query_embedding, &f.embedding);
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "function".to_owned(),
+                    id: f.id,
+                    name: f.name,
+                    file_path: f.file_path,
+                    line_start: Some(f.line_start),
+                    line_end: Some(f.line_end),
+                    signature: Some(f.signature),
+                    body: f.body,
+                    embed_type: Some(f.embed_type),
+                    summary: Some(f.summary),
+                    embedding: f.embedding,
+                },
+            ));
+        }
+
+        // ── Classes — KNN via MTREE index ──
+        let class_sql = format!("SELECT * FROM class WHERE embedding <|{limit},COSINE|> $query");
+        let mut resp = self
+            .db
+            .query(&class_sql)
+            .bind(("query", query_vec.clone()))
+            .await
+            .map_err(map_db_err)?;
+        let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+        for row in class_rows {
+            let c = row.into_class();
+            let score = cosine_similarity(query_embedding, &c.embedding);
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "class".to_owned(),
+                    id: c.id,
+                    name: c.name,
+                    file_path: c.file_path,
+                    line_start: Some(c.line_start),
+                    line_end: Some(c.line_end),
+                    signature: None,
+                    body: c.body,
+                    embed_type: Some(c.embed_type),
+                    summary: Some(c.summary),
+                    embedding: c.embedding,
+                },
+            ));
+        }
+
+        // ── Interfaces — KNN via MTREE index ──
+        let iface_sql =
+            format!("SELECT * FROM interface WHERE embedding <|{limit},COSINE|> $query");
+        let mut resp = self
+            .db
+            .query(&iface_sql)
+            .bind(("query", query_vec))
+            .await
+            .map_err(map_db_err)?;
+        let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+        for row in iface_rows {
+            let i = row.into_interface();
+            let score = cosine_similarity(query_embedding, &i.embedding);
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "interface".to_owned(),
+                    id: i.id,
+                    name: i.name,
+                    file_path: i.file_path,
+                    line_start: Some(i.line_start),
+                    line_end: Some(i.line_end),
+                    signature: None,
+                    body: i.body,
+                    embed_type: Some(i.embed_type),
+                    summary: Some(i.summary),
+                    embedding: i.embedding,
+                },
+            ));
+        }
+
+        // Merge results across tables, sort by score descending, take top limit
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+
+        Ok(results)
+    }
+
+    // ── Native graph traversal (dxo.1.1) ─────────────────────────
+
+    /// Traverse the code graph using native SurrealQL `->edge->` / `<-edge<-`
+    /// syntax instead of the manual BFS in [`bfs_neighborhood`].
+    ///
+    /// Issues a single SurrealQL query covering all edge types (calls, imports,
+    /// defines, `inherits_from`) up to `max_depth` hops, replacing the N×5
+    /// round-trip pattern.
+    ///
+    /// Returns the same [`BfsResult`] shape for backward compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if the database query fails.
+    #[allow(clippy::unused_async)]
+    pub async fn graph_neighborhood(
+        &self,
+        _root_id: &str,
+        _max_depth: usize,
+        _max_nodes: usize,
+    ) -> Result<BfsResult, EngramError> {
+        unimplemented!(
+            "Worker: Use SurrealQL graph traversal syntax to replace the manual BFS. \
+             Single query covering all edge types: \
+             SELECT ->calls->function, ->defines->function, ->imports->code_file, \
+             <-calls<-function, <-defines<-code_file, <-imports<-code_file, \
+             ->inherits_from->class, <-inherits_from<-class \
+             FROM $root_id FETCH all nested fields. \
+             For variable-depth use recursive graph queries or iterate up to max_depth. \
+             Assemble results into BfsResult {{ neighbors, edges, truncated }} \
+             truncating at max_nodes. Preserve backward compatibility with bfs_neighborhood."
+        )
     }
 
     // ── Embedding write-back (T076/T077) ────────────────────────────
