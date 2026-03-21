@@ -98,9 +98,4 @@ max_size = 20
         .await
         .expect("config with defaults");
     assert_eq!(cfg3.batch.max_size, 100, "defaults: batch max_size=100");
-    assert_eq!(
-        cfg3.compaction.threshold_days, 7,
-        "defaults: threshold_days=7"
-    );
-    assert_eq!(cfg3.default_priority, "p2", "defaults: priority=p2");
 }

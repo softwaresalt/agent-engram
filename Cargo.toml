@@ -202,28 +202,12 @@ name = "contract_observability"
 path = "tests/contract/observability_test.rs"
 
 [[test]]
-name = "contract_event"
-path = "tests/contract/event_test.rs"
-
-[[test]]
 name = "contract_query"
 path = "tests/contract/query_test.rs"
 
 [[test]]
-name = "contract_collection"
-path = "tests/contract/collection_test.rs"
-
-[[test]]
-name = "integration_gate"
-path = "tests/integration/gate_integration_test.rs"
-
-[[test]]
 name = "integration_reliability"
 path = "tests/integration/reliability_test.rs"
-
-[[test]]
-name = "unit_proptest_events"
-path = "tests/unit/proptest_events.rs"
 
 [[test]]
 name = "integration_smoke"

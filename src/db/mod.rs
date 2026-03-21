@@ -67,14 +67,6 @@ pub async fn connect_db(workspace_hash: &str) -> Result<Db, EngramError> {
 }
 
 async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
-    db.query(schema::DEFINE_SPEC).await.map_err(map_db_err)?;
-    db.query(schema::DEFINE_TASK).await.map_err(map_db_err)?;
-    db.query(schema::DEFINE_CONTEXT).await.map_err(map_db_err)?;
-    db.query(schema::DEFINE_LABEL).await.map_err(map_db_err)?;
-    db.query(schema::DEFINE_COMMENT).await.map_err(map_db_err)?;
-    db.query(schema::DEFINE_RELATIONSHIPS)
-        .await
-        .map_err(map_db_err)?;
     db.query(schema::DEFINE_CODE_FILE)
         .await
         .map_err(map_db_err)?;
@@ -86,13 +78,6 @@ async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
         .await
         .map_err(map_db_err)?;
     db.query(schema::DEFINE_CODE_EDGES)
-        .await
-        .map_err(map_db_err)?;
-    db.query(schema::DEFINE_EVENT).await.map_err(map_db_err)?;
-    db.query(schema::DEFINE_COLLECTION)
-        .await
-        .map_err(map_db_err)?;
-    db.query(schema::DEFINE_CONTAINS)
         .await
         .map_err(map_db_err)?;
     db.query(schema::DEFINE_CONTENT_RECORD)

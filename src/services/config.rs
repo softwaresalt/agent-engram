@@ -51,29 +51,8 @@ pub fn parse_config(workspace_root: &Path) -> Result<WorkspaceConfig, EngramErro
 /// Validate semantic constraints on a parsed [`WorkspaceConfig`].
 ///
 /// Returns `Err(EngramError::Config(ConfigError::InvalidValue))` for:
-/// * `threshold_days == 0`
-/// * `max_candidates == 0`
-/// * `truncation_length < 50`
 /// * `batch.max_size == 0` or `> 1000`
 pub fn validate_config(config: &WorkspaceConfig) -> Result<(), EngramError> {
-    if config.compaction.threshold_days == 0 {
-        return Err(EngramError::Config(ConfigError::InvalidValue {
-            key: "compaction.threshold_days".to_owned(),
-            reason: "must be at least 1".to_owned(),
-        }));
-    }
-    if config.compaction.max_candidates == 0 {
-        return Err(EngramError::Config(ConfigError::InvalidValue {
-            key: "compaction.max_candidates".to_owned(),
-            reason: "must be at least 1".to_owned(),
-        }));
-    }
-    if config.compaction.truncation_length < 50 {
-        return Err(EngramError::Config(ConfigError::InvalidValue {
-            key: "compaction.truncation_length".to_owned(),
-            reason: "must be at least 50".to_owned(),
-        }));
-    }
     if config.batch.max_size == 0 || config.batch.max_size > 1000 {
         return Err(EngramError::Config(ConfigError::InvalidValue {
             key: "batch.max_size".to_owned(),

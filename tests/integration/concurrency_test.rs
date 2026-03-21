@@ -72,7 +72,7 @@ async fn s026_concurrent_ingestion_serialized_or_rejected() {
 /// The ingestion pipeline skips deleted files gracefully.
 #[tokio::test]
 async fn s027_file_deleted_after_scan_handled_gracefully() {
-    use engram::db::queries::Queries;
+    use engram::db::queries::CodeGraphQueries;
     use engram::db::schema;
     use engram::services::ingestion::ingest_single_file;
 
@@ -89,9 +89,7 @@ async fn s027_file_deleted_after_scan_handled_gracefully() {
     db.query(schema::DEFINE_CONTENT_RECORD)
         .await
         .expect("content schema");
-    let queries = Queries::new(db);
-
-    // Target a file that does not exist on disk (simulates post-scan deletion).
+    let queries = CodeGraphQueries::new(db);
     let phantom_file = workspace.join("vanished.md");
 
     let result = ingest_single_file(
@@ -110,7 +108,7 @@ async fn s027_file_deleted_after_scan_handled_gracefully() {
     );
 
     // No ContentRecord should exist for the phantom file.
-    let records = queries
+    let records: Vec<engram::models::ContentRecord> = queries
         .select_content_records(None)
         .await
         .expect("select records");
@@ -276,7 +274,7 @@ async fn s076_concurrent_query_memory_no_cross_interference() {
 /// must upsert the same record — `SurrealDB` `UPSERT` semantics prevent duplication.
 #[tokio::test]
 async fn s077_concurrent_ingestion_no_duplicate_records() {
-    use engram::db::queries::Queries;
+    use engram::db::queries::CodeGraphQueries;
     use engram::db::schema;
     use engram::models::registry::{ContentSource, ContentSourceStatus, RegistryConfig};
     use engram::services::ingestion::ingest_all_sources;
@@ -302,7 +300,7 @@ async fn s077_concurrent_ingestion_no_duplicate_records() {
     db.query(schema::DEFINE_CONTENT_RECORD)
         .await
         .expect("content schema");
-    let queries = Queries::new(db);
+    let queries = CodeGraphQueries::new(db);
 
     let config = Arc::new(RegistryConfig {
         sources: vec![ContentSource {
@@ -333,7 +331,7 @@ async fn s077_concurrent_ingestion_no_duplicate_records() {
     assert!(r2.is_ok(), "second ingestion must succeed: {r2:?}");
 
     // Only one ContentRecord must exist (UPSERT deduplication).
-    let records = queries
+    let records: Vec<engram::models::ContentRecord> = queries
         .select_content_records(None)
         .await
         .expect("select records");

@@ -1,42 +1,20 @@
 //! Workspace configuration models.
 //!
-//! Defines [`WorkspaceConfig`], [`CompactionConfig`], [`BatchConfig`], and
-//! [`PluginConfig`] for user-customizable workspace and daemon behavior read
-//! from `.engram/config.toml`.
+//! Defines [`WorkspaceConfig`], [`BatchConfig`], and [`PluginConfig`] for
+//! user-customizable workspace and daemon behavior read from
+//! `.engram/config.toml`.
 
 use serde::{Deserialize, Serialize};
 
 /// Top-level workspace configuration read from `.engram/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
-    /// Compaction settings.
-    #[serde(default)]
-    pub compaction: CompactionConfig,
     /// Batch operation settings.
     #[serde(default)]
     pub batch: BatchConfig,
-    /// Default priority for new tasks.
-    #[serde(default = "default_priority")]
-    pub default_priority: String,
-    /// Allowed label names (empty means any label is allowed).
-    #[serde(default)]
-    pub allowed_labels: Vec<String>,
-    /// Allowed issue type names (empty means any type is allowed).
-    #[serde(default)]
-    pub allowed_types: Vec<String>,
     /// Code graph indexing and traversal settings.
     #[serde(default)]
     pub code_graph: CodeGraphConfig,
-    /// Maximum number of events retained in the event ledger.
-    ///
-    /// When the ledger exceeds this count, the oldest events are pruned.
-    #[serde(default = "default_event_ledger_max")]
-    pub event_ledger_max: usize,
-    /// Whether MCP clients are permitted to invoke `rollback_to_event`.
-    ///
-    /// Disabled by default for safety; enable via `.engram/config.toml`.
-    #[serde(default)]
-    pub allow_agent_rollback: bool,
     /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).
     ///
     /// Queries that exceed this limit are cancelled with a `QUERY_TIMEOUT` error.
@@ -53,40 +31,10 @@ pub struct WorkspaceConfig {
 impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
-            compaction: CompactionConfig::default(),
             batch: BatchConfig::default(),
-            default_priority: default_priority(),
-            allowed_labels: Vec::new(),
-            allowed_types: Vec::new(),
             code_graph: CodeGraphConfig::default(),
-            event_ledger_max: default_event_ledger_max(),
-            allow_agent_rollback: false,
             query_timeout_ms: default_query_timeout_ms(),
             query_row_limit: default_query_row_limit(),
-        }
-    }
-}
-
-/// Compaction tuning knobs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CompactionConfig {
-    /// Minimum age in days before a done task is eligible for compaction.
-    #[serde(default = "default_threshold_days")]
-    pub threshold_days: u32,
-    /// Maximum candidates returned per `get_compaction_candidates` call.
-    #[serde(default = "default_max_candidates")]
-    pub max_candidates: u32,
-    /// Maximum character length for rule-based truncation fallback.
-    #[serde(default = "default_truncation_length")]
-    pub truncation_length: u32,
-}
-
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            threshold_days: default_threshold_days(),
-            max_candidates: default_max_candidates(),
-            truncation_length: default_truncation_length(),
         }
     }
 }
@@ -107,32 +55,12 @@ impl Default for BatchConfig {
     }
 }
 
-fn default_priority() -> String {
-    "p2".to_owned()
-}
-
-const fn default_event_ledger_max() -> usize {
-    500
-}
-
 const fn default_query_timeout_ms() -> u64 {
     5_000
 }
 
 const fn default_query_row_limit() -> usize {
     1_000
-}
-
-const fn default_threshold_days() -> u32 {
-    7
-}
-
-const fn default_max_candidates() -> u32 {
-    50
-}
-
-const fn default_truncation_length() -> u32 {
-    500
 }
 
 const fn default_max_size() -> u32 {

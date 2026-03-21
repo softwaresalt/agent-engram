@@ -1,9 +1,9 @@
 //! Typed error hierarchy for Engram domain operations.
 //!
 //! Errors are organized by domain: workspace (1xxx), hydration (2xxx),
-//! task (3xxx), query (4xxx), system (5xxx), config (6xxx),
-//! code graph (7xxx), IPC/daemon (8xxx), and installer (9xxx). Each variant
-//! maps to a numeric error code defined in [codes].
+//! query (4xxx), system (5xxx), config (6xxx), code graph (7xxx),
+//! IPC/daemon (8xxx), and installer (9xxx). Each variant maps to a
+//! numeric error code defined in [codes].
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -39,68 +39,13 @@ pub enum HydrationError {
 }
 
 #[derive(Debug, Error)]
-pub enum TaskError {
-    #[error("Task '{id}' not found")]
-    NotFound { id: String },
-    #[error("Invalid status '{status}'")]
-    InvalidStatus { status: String },
-    #[error("Cyclic dependency detected")]
-    CyclicDependency,
-    #[error("Blocker already exists for task '{id}'")]
-    BlockerExists { id: String },
-    #[error("Task '{id}' is already claimed by '{assignee}'")]
-    AlreadyClaimed { id: String, assignee: String },
-    #[error("Label validation failed: {reason}")]
-    LabelValidation { reason: String },
-    #[error("Batch operation partially failed: {succeeded} succeeded, {failed} failed")]
-    BatchPartialFailure {
-        succeeded: u64,
-        failed: u64,
-        results: serde_json::Value,
-    },
-    #[error("Compaction failed for task '{id}': {reason}")]
-    CompactionFailed { id: String, reason: String },
-    #[error("Invalid priority '{priority}'")]
-    InvalidPriority { priority: String },
-    #[error("Invalid issue type '{issue_type}'")]
-    InvalidIssueType { issue_type: String },
-    #[error("Duplicate label '{label}' on task '{task_id}'")]
-    DuplicateLabel { task_id: String, label: String },
-    #[error("Task '{id}' is not claimable in status '{status}'")]
-    NotClaimable { id: String, status: String },
-    #[error("Task title is empty")]
-    TitleEmpty,
-    #[error("Task title exceeds maximum length of 200 characters")]
-    TitleTooLong,
-    /// Gate enforcement: task blocked by incomplete hard_blocker prerequisites
-    #[error("Task '{id}' is blocked by {blocker_count} unresolved hard_blocker prerequisite(s)")]
-    Blocked {
-        id: String,
-        blocker_count: usize,
-        blockers: Vec<serde_json::Value>,
-    },
-}
-
-/// Errors for the event ledger and rollback operations (3020–3022).
-#[derive(Debug, Error)]
-pub enum EventError {
-    #[error("Rollback denied: allow_agent_rollback is disabled")]
-    RollbackDenied,
-    #[error("Event '{event_id}' not found")]
-    EventNotFound { event_id: String },
-    #[error("Rollback conflict: entity '{entity_id}' was deleted after event '{event_id}'")]
-    RollbackConflict { entity_id: String, event_id: String },
-}
-
-/// Errors for collection operations (3030–3032).
-#[derive(Debug, Error)]
-pub enum CollectionError {
-    #[error("Collection '{name}' already exists")]
-    AlreadyExists { name: String },
-    #[error("Collection '{name}' not found")]
-    NotFound { name: String },
-    #[error("Adding this nesting would create a cycle in collection '{name}'")]
-    CyclicCollection { name: String },
+pub enum ConfigError {
+    #[error("Failed to parse config: {reason}")]
+    ParseError { reason: String },
+    #[error("Invalid config value for '{key}': {reason}")]
+    InvalidValue { key: String, reason: String },
+    #[error("Unknown config key '{key}'")]
+    UnknownKey { key: String },
 }
 
 /// Errors for sandboxed graph queries (4010–4012).
@@ -112,16 +57,6 @@ pub enum GraphQueryError {
     Timeout { timeout_ms: u64 },
     #[error("Query syntax is invalid: {reason}")]
     Invalid { reason: String },
-}
-
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    #[error("Failed to parse config: {reason}")]
-    ParseError { reason: String },
-    #[error("Invalid config value for '{key}': {reason}")]
-    InvalidValue { key: String, reason: String },
-    #[error("Unknown config key '{key}'")]
-    UnknownKey { key: String },
 }
 
 #[derive(Debug, Error)]
@@ -267,8 +202,6 @@ pub enum EngramError {
     #[error(transparent)]
     Hydration(#[from] HydrationError),
     #[error(transparent)]
-    Task(#[from] TaskError),
-    #[error(transparent)]
     Query(#[from] QueryError),
     #[error(transparent)]
     System(#[from] SystemError),
@@ -286,10 +219,6 @@ pub enum EngramError {
     Watcher(#[from] WatcherError),
     #[error(transparent)]
     Install(#[from] InstallError),
-    #[error(transparent)]
-    Event(#[from] EventError),
-    #[error(transparent)]
-    Collection(#[from] CollectionError),
     #[error(transparent)]
     GraphQuery(#[from] GraphQueryError),
     #[error(transparent)]
@@ -371,99 +300,6 @@ impl EngramError {
                 HydrationError::StaleWorkspace => {
                     (STALE_WORKSPACE, "StaleWorkspace", inner.to_string(), None)
                 }
-            },
-            EngramError::Task(inner) => match inner {
-                TaskError::NotFound { id } => (
-                    TASK_NOT_FOUND,
-                    "TaskNotFound",
-                    inner.to_string(),
-                    Some(json!({ "task_id": id })),
-                ),
-                TaskError::InvalidStatus { status } => (
-                    INVALID_STATUS,
-                    "InvalidStatus",
-                    inner.to_string(),
-                    Some(json!({ "status": status })),
-                ),
-                TaskError::CyclicDependency => (
-                    CYCLIC_DEPENDENCY,
-                    "CyclicDependency",
-                    inner.to_string(),
-                    None,
-                ),
-                TaskError::BlockerExists { id } => (
-                    BLOCKER_EXISTS,
-                    "BlockerExists",
-                    inner.to_string(),
-                    Some(json!({ "task_id": id })),
-                ),
-                TaskError::AlreadyClaimed { id, assignee } => (
-                    TASK_ALREADY_CLAIMED,
-                    "TaskAlreadyClaimed",
-                    inner.to_string(),
-                    Some(json!({ "task_id": id, "assignee": assignee })),
-                ),
-                TaskError::LabelValidation { reason } => (
-                    LABEL_VALIDATION,
-                    "LabelValidation",
-                    inner.to_string(),
-                    Some(json!({ "reason": reason })),
-                ),
-                TaskError::BatchPartialFailure {
-                    succeeded,
-                    failed,
-                    results,
-                } => (
-                    BATCH_PARTIAL_FAILURE,
-                    "BatchPartialFailure",
-                    inner.to_string(),
-                    Some(json!({ "succeeded": succeeded, "failed": failed, "results": results })),
-                ),
-                TaskError::CompactionFailed { id, reason } => (
-                    COMPACTION_FAILED,
-                    "CompactionFailed",
-                    inner.to_string(),
-                    Some(json!({ "task_id": id, "reason": reason })),
-                ),
-                TaskError::InvalidPriority { priority } => (
-                    INVALID_PRIORITY,
-                    "InvalidPriority",
-                    inner.to_string(),
-                    Some(json!({ "priority": priority })),
-                ),
-                TaskError::InvalidIssueType { issue_type } => (
-                    INVALID_ISSUE_TYPE,
-                    "InvalidIssueType",
-                    inner.to_string(),
-                    Some(json!({ "issue_type": issue_type })),
-                ),
-                TaskError::DuplicateLabel { task_id, label } => (
-                    DUPLICATE_LABEL,
-                    "DuplicateLabel",
-                    inner.to_string(),
-                    Some(json!({ "task_id": task_id, "label": label })),
-                ),
-                TaskError::NotClaimable { id, status } => (
-                    TASK_NOT_CLAIMABLE,
-                    "TaskNotClaimable",
-                    inner.to_string(),
-                    Some(json!({ "task_id": id, "status": status })),
-                ),
-                TaskError::TitleEmpty => {
-                    (TASK_TITLE_EMPTY, "TaskTitleEmpty", inner.to_string(), None)
-                }
-                TaskError::TitleTooLong => (
-                    TASK_TITLE_TOO_LONG,
-                    "TaskTitleTooLong",
-                    inner.to_string(),
-                    None,
-                ),
-                TaskError::Blocked { id, blockers, .. } => (
-                    TASK_BLOCKED,
-                    "TaskBlocked",
-                    inner.to_string(),
-                    Some(json!({ "task_id": id, "blockers": blockers })),
-                ),
             },
             EngramError::Query(inner) => match inner {
                 QueryError::QueryEmpty => (QUERY_EMPTY, "QueryEmpty", inner.to_string(), None),
@@ -680,46 +516,6 @@ impl EngramError {
                     Some(
                         json!({ "file_path": file_path, "suggestion": "Re-run sync_workspace to resolve the conflict" }),
                     ),
-                ),
-            },
-            EngramError::Event(inner) => match inner {
-                EventError::RollbackDenied => {
-                    (ROLLBACK_DENIED, "RollbackDenied", inner.to_string(), None)
-                }
-                EventError::EventNotFound { event_id } => (
-                    EVENT_NOT_FOUND,
-                    "EventNotFound",
-                    inner.to_string(),
-                    Some(json!({ "event_id": event_id })),
-                ),
-                EventError::RollbackConflict {
-                    entity_id,
-                    event_id,
-                } => (
-                    ROLLBACK_CONFLICT,
-                    "RollbackConflict",
-                    inner.to_string(),
-                    Some(json!({ "entity_id": entity_id, "event_id": event_id })),
-                ),
-            },
-            EngramError::Collection(inner) => match inner {
-                CollectionError::AlreadyExists { name } => (
-                    COLLECTION_EXISTS,
-                    "CollectionAlreadyExists",
-                    inner.to_string(),
-                    Some(json!({ "name": name })),
-                ),
-                CollectionError::NotFound { name } => (
-                    COLLECTION_NOT_FOUND,
-                    "CollectionNotFound",
-                    inner.to_string(),
-                    Some(json!({ "name": name })),
-                ),
-                CollectionError::CyclicCollection { name } => (
-                    CYCLIC_COLLECTION,
-                    "CyclicCollection",
-                    inner.to_string(),
-                    Some(json!({ "name": name })),
                 ),
             },
             EngramError::GraphQuery(inner) => match inner {

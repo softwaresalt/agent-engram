@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, Queries};
+use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
@@ -473,7 +473,6 @@ pub async fn sync_workspace(
     let start = std::time::Instant::now();
 
     let db = connect_db(ws_id).await?;
-    let task_queries = Queries::new(db.clone());
     let queries = CodeGraphQueries::new(db);
 
     // Discover current files on disk.
@@ -860,21 +859,11 @@ pub async fn sync_workspace(
         debug!(path = %rel_path, "code graph sync: re-indexed file");
     }
 
-    // ── Record sync context note (FR-125) ───────────────────────────
+    // ── Record sync summary ──────────────────────────────────────────
     let sync_summary = format!(
         "Code graph sync: {} modified, {} added, {} deleted, {} unchanged",
         result.files_modified, result.files_added, result.files_deleted, result.files_unchanged,
     );
-    let ctx = crate::models::context::Context {
-        id: Uuid::new_v4().to_string(),
-        content: sync_summary.clone(),
-        embedding: None,
-        source_client: "engram-sync".to_owned(),
-        created_at: chrono::Utc::now(),
-    };
-    if let Err(e) = task_queries.insert_context(&ctx).await {
-        debug!(error = %e, "code graph sync: failed to record context note");
-    }
     info!("{sync_summary}");
 
     #[allow(clippy::cast_possible_truncation)]

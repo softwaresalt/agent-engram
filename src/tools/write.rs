@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::config::StaleStrategy;
 use crate::db::connect_db;
 #[cfg(feature = "git-graph")]
-use crate::db::queries::Queries;
+use crate::db::queries::CodeGraphQueries;
 use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::server::state::SharedState;
 use crate::services::dehydration;
@@ -247,7 +247,7 @@ pub async fn index_git_history(
     let depth = parsed.depth.unwrap_or(0); // None → service uses default 500
 
     let db = connect_db(&ws_id).await?;
-    let queries = Queries::new(db);
+    let queries = CodeGraphQueries::new(db);
 
     let summary =
         crate::services::git_graph::index_git_history(&queries, &ws_path, depth, parsed.force)

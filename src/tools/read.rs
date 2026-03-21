@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, Queries, SymbolFilter};
+use crate::db::queries::{CodeGraphQueries, SymbolFilter};
 use crate::errors::{
     CodeGraphError, EngramError, GraphQueryError, QueryError, SystemError, WorkspaceError,
 };
@@ -133,9 +133,7 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
 
     let workspace_id = workspace_id(&state).await?;
     let db = connect_db(&workspace_id).await?;
-    let queries = Queries::new(db);
-
-    // Search content records only, optionally filtered by content_type.
+    let queries = CodeGraphQueries::new(db);
     let mut candidates: Vec<SearchCandidate> = Vec::new();
     let content_records = queries
         .select_content_records(parsed.content_type.as_deref())
@@ -451,12 +449,11 @@ pub async fn unified_search(
 
     let workspace_id = workspace_id(&state).await?;
     let db = connect_db(&workspace_id).await?;
-    let cg_queries = CodeGraphQueries::new(db.clone());
-    let queries = Queries::new(db);
+    let queries = CodeGraphQueries::new(db);
 
     // ── Code region: vector search on code symbols ───────────────────
     let code_results = {
-        let symbols = cg_queries
+        let symbols = queries
             .vector_search_symbols(&query_embedding, limit)
             .await?;
         symbols
@@ -848,9 +845,7 @@ pub async fn query_changes(
     let limit = parsed.limit.unwrap_or(20);
 
     let db = connect_db(&ws_id).await?;
-    let queries = Queries::new(db);
-
-    // Parse optional date range.
+    let queries = CodeGraphQueries::new(db);
     let since_dt = parsed
         .since
         .as_deref()

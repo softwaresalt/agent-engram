@@ -6,36 +6,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use engram::db::queries::Queries;
-use engram::models::task::{Task, TaskStatus};
 use engram::server::state::AppState;
 
 fn fresh_state() -> Arc<AppState> {
     Arc::new(AppState::new(10))
-}
-
-fn make_task(id: &str) -> Task {
-    let now = chrono::Utc::now();
-    Task {
-        id: id.to_string(),
-        title: format!("Benchmark task {id}"),
-        status: TaskStatus::Todo,
-        work_item_id: None,
-        description: "Benchmark task description".to_string(),
-        context_summary: None,
-        priority: "p2".to_owned(),
-        priority_order: 2,
-        issue_type: "task".to_owned(),
-        assignee: None,
-        defer_until: None,
-        pinned: false,
-        compaction_level: 0,
-        compacted_at: None,
-        workflow_state: None,
-        workflow_id: None,
-        created_at: now,
-        updated_at: now,
-    }
 }
 
 /// T097: Benchmark cold start time (target: < 200ms).
@@ -59,46 +33,6 @@ fn t097_cold_start_under_200ms() {
     );
 }
 
-
-/// T100: Benchmark `update_task` latency (target: < 10ms).
-///
-/// Measures time for a single task upsert operation against embedded `SurrealDB`.
-#[tokio::test]
-async fn t100_update_task_under_10ms() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(
-        dir.path().to_str().unwrap(),
-    )
-    .await
-    .expect("db");
-    db.use_ns("engram")
-        .use_db("bench_update")
-        .await
-        .expect("ns");
-    db.query(engram::db::schema::DEFINE_TASK)
-        .await
-        .expect("schema");
-    let queries = Queries::new(db);
-
-    // Warm up with an initial insert
-    let task = make_task("warmup");
-    queries.upsert_task(&task).await.expect("warmup");
-
-    // Benchmark
-    let task = make_task("bench1");
-    let start = Instant::now();
-    queries.upsert_task(&task).await.expect("upsert");
-    let elapsed = start.elapsed();
-
-    // Debug builds are significantly slower on Windows due to SurrealDB overhead
-    let threshold: u128 = if cfg!(debug_assertions) { 50 } else { 10 };
-    println!("T100 update_task: {elapsed:?} (target: <{threshold}ms)");
-    assert!(
-        elapsed.as_millis() < threshold,
-        "update_task took {}ms, target <{threshold}ms",
-        elapsed.as_millis()
-    );
-}
 
 /// T101: Profile memory usage idle (target: < 100MB RSS).
 ///

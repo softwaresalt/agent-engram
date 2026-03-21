@@ -1,4 +1,4 @@
-//! Content ingestion pipeline for multi-source workspace content.
+﻿//! Content ingestion pipeline for multi-source workspace content.
 //!
 //! Walks registered content sources, reads files, computes content hashes,
 //! and upserts [`ContentRecord`](crate::models::ContentRecord) entries into
@@ -12,7 +12,7 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
-use crate::db::queries::Queries;
+use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, IngestionError};
 use crate::models::content::ContentRecord;
 use crate::models::registry::{ContentSourceStatus, RegistryConfig};
@@ -42,7 +42,7 @@ pub struct IngestionSummary {
 pub async fn ingest_all_sources(
     config: &RegistryConfig,
     workspace_root: &Path,
-    queries: &Queries,
+    queries: &CodeGraphQueries,
 ) -> Result<IngestionSummary, EngramError> {
     let mut total_summary = IngestionSummary::default();
 
@@ -97,7 +97,7 @@ async fn ingest_directory(
     source_path: &str,
     max_file_size: u64,
     batch_size: usize,
-    queries: &Queries,
+    queries: &CodeGraphQueries,
 ) -> Result<IngestionSummary, EngramError> {
     let mut summary = IngestionSummary::default();
 
@@ -110,7 +110,7 @@ async fn ingest_directory(
     summary.total_files = files.len();
 
     // Get existing records to detect changes.
-    let existing = queries.select_content_records(Some(content_type)).await?;
+    let existing: Vec<crate::models::ContentRecord> = queries.select_content_records(Some(content_type)).await?;
     let existing_by_path: std::collections::HashMap<String, String> = existing
         .iter()
         .map(|r| (r.file_path.clone(), r.content_hash.clone()))
@@ -243,7 +243,7 @@ pub async fn ingest_single_file(
     content_type: &str,
     source_path: &str,
     max_file_size: u64,
-    queries: &Queries,
+    queries: &CodeGraphQueries,
 ) -> Result<bool, EngramError> {
     let rel_path = file_path
         .strip_prefix(workspace_root)
@@ -279,7 +279,7 @@ pub async fn ingest_single_file(
     let content_hash = compute_hash(&content);
 
     // Check existing record for change detection.
-    let existing = queries.select_content_records(Some(content_type)).await?;
+    let existing: Vec<crate::models::ContentRecord> = queries.select_content_records(Some(content_type)).await?;
     let already_current = existing
         .iter()
         .any(|r| r.file_path == rel_path && r.content_hash == content_hash);
