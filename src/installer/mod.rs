@@ -101,7 +101,6 @@ impl Default for InstallOptions {
     }
 }
 
-const TASKS_MD_STUB: &str = "# Tasks\n\n<!-- Managed by engram. Do not edit manually. -->\n";
 
 const CONFIG_TOML_STUB: &str = r#"# Engram plugin configuration
 # See documentation for all available options.
@@ -416,8 +415,8 @@ async fn stop_daemon(workspace: &Path) {
 /// Install the engram plugin into `workspace`.
 ///
 /// Creates the `.engram/` directory structure, writes stub configuration files
-/// (`tasks.md`, `.version`, `config.toml`), generates `.vscode/mcp.json`, and
-/// appends `.gitignore` entries if a `.gitignore` file already exists.
+/// (`.version`, `config.toml`), generates `.vscode/mcp.json`, and appends
+/// `.gitignore` entries if a `.gitignore` file already exists.
 ///
 /// Behaviour is controlled by `opts`:
 /// - `opts.hooks_only = true`: skips `.engram/` data file creation and generates
@@ -454,7 +453,6 @@ pub async fn install(workspace: &Path, opts: &InstallOptions) -> Result<(), Engr
         create_dir(&engram_dir.join("logs"))?;
 
         // Write stub data files.
-        write_file(&engram_dir.join("tasks.md"), TASKS_MD_STUB)?;
         write_file(&engram_dir.join(".version"), SCHEMA_VERSION)?;
         write_file(&engram_dir.join("config.toml"), CONFIG_TOML_STUB)?;
 
@@ -498,7 +496,7 @@ pub async fn install(workspace: &Path, opts: &InstallOptions) -> Result<(), Engr
 /// Update the engram plugin runtime artifacts in `workspace`.
 ///
 /// Regenerates `.vscode/mcp.json` and updates `.engram/.version`. Does **not**
-/// modify user data files (`tasks.md`, `config.toml`).
+/// modify user data files (`config.toml`).
 ///
 /// # Errors
 ///
@@ -562,7 +560,7 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
 ///
 /// Removes and recreates runtime directories (`.engram/run/`, `.engram/logs/`),
 /// regenerates `.vscode/mcp.json`, and updates `.engram/.version`. User data
-/// files (`tasks.md`, `config.toml`) are preserved.
+/// files (`config.toml`) are preserved.
 ///
 /// # Errors
 ///
@@ -641,7 +639,7 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
 ///
 /// - `keep_data = true`: removes runtime artifacts (`.engram/run/`,
 ///   `.engram/logs/`, `.engram/.version`, `.vscode/mcp.json`) while preserving
-///   `tasks.md` and `config.toml`.
+///   `config.toml`.
 /// - `keep_data = false`: removes the entire `.engram/` directory and
 ///   `.vscode/mcp.json`.
 ///

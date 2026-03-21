@@ -46,7 +46,7 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
 /// be incremented when the on-disk `.engram/` file format changes in a way
 /// that is incompatible with previous readers. Tying it to `CARGO_PKG_VERSION`
 /// would invalidate every existing workspace on every release.
-pub const SCHEMA_VERSION: &str = "2.0";
+pub const SCHEMA_VERSION: &str = "3.0.0";
 
 /// Result of a code graph dehydration operation.
 #[derive(Debug, Clone)]

@@ -3,9 +3,9 @@
 //! Covers US5 scenarios:
 //! - S067: clean install creates all expected paths
 //! - S068: second install returns `AlreadyInstalled`
-//! - S069: update preserves tasks.md content
-//! - S070: reinstall after corruption preserves tasks.md
-//! - S071: uninstall --keep-data preserves tasks.md
+//! - S069: update preserves config.toml content
+//! - S070: reinstall after corruption preserves config.toml
+//! - S071: uninstall --keep-data preserves config.toml
 //! - S072: full uninstall removes entire .engram/
 //! - S075: generated mcp.json contains correct structure
 //! - S076: install into a workspace path that contains spaces
@@ -61,10 +61,6 @@ async fn s067_install_clean_workspace() {
 
     // Files
     assert!(
-        workspace.join(".engram/tasks.md").is_file(),
-        ".engram/tasks.md must exist"
-    );
-    assert!(
         workspace.join(".engram/.version").is_file(),
         ".engram/.version must exist"
     );
@@ -95,27 +91,6 @@ async fn s067_version_file_content() {
     );
 }
 
-/// S067 – tasks.md has the expected stub content.
-#[tokio::test]
-async fn s067_tasks_md_stub_content() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let workspace = tmp.path();
-
-    installer::install(workspace, &installer::InstallOptions::default())
-        .await
-        .expect("install should succeed");
-
-    let content = fs::read_to_string(workspace.join(".engram/tasks.md")).expect("read tasks.md");
-    assert!(
-        content.contains("# Tasks"),
-        "tasks.md must contain '# Tasks'"
-    );
-    assert!(
-        content.contains("Managed by engram"),
-        "tasks.md must contain the managed-by comment"
-    );
-}
-
 // ── S068: already installed ───────────────────────────────────────────────────
 
 /// S068: A second install on an already-installed workspace returns `AlreadyInstalled`.
@@ -136,9 +111,9 @@ async fn s068_install_already_installed() {
 
 // ── S069: update preserves data ───────────────────────────────────────────────
 
-/// S069: `update` regenerates runtime artefacts but does not touch `tasks.md`.
+/// S069: `update` does not touch `config.toml`.
 #[tokio::test]
-async fn s069_update_preserves_tasks_md() {
+async fn s069_update_preserves_config_toml() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
@@ -146,17 +121,17 @@ async fn s069_update_preserves_tasks_md() {
         .await
         .expect("install should succeed");
 
-    // Write custom content to tasks.md.
-    let custom = "# My Custom Tasks\n- [x] something\n";
-    fs::write(workspace.join(".engram/tasks.md"), custom).expect("write tasks.md");
+    // Write custom config.toml content.
+    let custom = "[batch]\nmax_size = 99\n";
+    fs::write(workspace.join(".engram/config.toml"), custom).expect("write config.toml");
 
     installer::update(workspace)
         .await
         .expect("update should succeed");
 
-    let after =
-        fs::read_to_string(workspace.join(".engram/tasks.md")).expect("read tasks.md after update");
-    assert_eq!(after, custom, "tasks.md must be unchanged after update");
+    let after = fs::read_to_string(workspace.join(".engram/config.toml"))
+        .expect("read config.toml after update");
+    assert_eq!(after, custom, "config.toml must be unchanged after update");
 }
 
 /// S069: `update` on a non-installed workspace returns `NotInstalled`.
@@ -205,9 +180,9 @@ async fn s069_update_refreshes_artifacts() {
 
 // ── S070: reinstall after corruption ─────────────────────────────────────────
 
-/// S070: `reinstall` clears runtime dirs but preserves `tasks.md`.
+/// S070: `reinstall` clears runtime dirs but preserves `config.toml`.
 #[tokio::test]
-async fn s070_reinstall_preserves_tasks_md() {
+async fn s070_reinstall_preserves_config_toml() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
@@ -219,9 +194,9 @@ async fn s070_reinstall_preserves_tasks_md() {
     let sentinel = workspace.join(".engram/run/daemon.pid");
     fs::write(&sentinel, "12345").expect("write sentinel");
 
-    // Write custom tasks.md.
-    let custom = "# Recovered tasks\n";
-    fs::write(workspace.join(".engram/tasks.md"), custom).expect("write tasks.md");
+    // Write custom config.toml.
+    let custom = "[batch]\nmax_size = 42\n";
+    fs::write(workspace.join(".engram/config.toml"), custom).expect("write config.toml");
 
     installer::reinstall(workspace)
         .await
@@ -240,9 +215,10 @@ async fn s070_reinstall_preserves_tasks_md() {
         "logs/ must be recreated"
     );
 
-    // tasks.md must be preserved.
-    let after = fs::read_to_string(workspace.join(".engram/tasks.md")).expect("read tasks.md");
-    assert_eq!(after, custom, "tasks.md must be preserved after reinstall");
+    // config.toml must be preserved.
+    let after = fs::read_to_string(workspace.join(".engram/config.toml"))
+        .expect("read config.toml");
+    assert_eq!(after, custom, "config.toml must be preserved after reinstall");
 }
 
 /// S070: `reinstall` on non-installed workspace returns `NotInstalled`.
@@ -260,9 +236,9 @@ async fn s070_reinstall_not_installed() {
 // ── S071: uninstall --keep-data ───────────────────────────────────────────────
 
 /// S071: Uninstall with `keep_data = true` removes runtime artefacts but
-/// preserves `tasks.md` and `config.toml`.
+/// preserves `config.toml`.
 #[tokio::test]
-async fn s071_uninstall_keep_data_preserves_tasks_md() {
+async fn s071_uninstall_keep_data_preserves_config_toml() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 
@@ -270,8 +246,8 @@ async fn s071_uninstall_keep_data_preserves_tasks_md() {
         .await
         .expect("install");
 
-    let custom = "# Important tasks\n- my task\n";
-    fs::write(workspace.join(".engram/tasks.md"), custom).expect("write tasks.md");
+    let custom = "[batch]\nmax_size = 5\n";
+    fs::write(workspace.join(".engram/config.toml"), custom).expect("write config.toml");
 
     installer::uninstall(workspace, true)
         .await
@@ -300,12 +276,9 @@ async fn s071_uninstall_keep_data_preserves_tasks_md() {
         workspace.join(".engram").is_dir(),
         ".engram/ must still exist"
     );
-    let after = fs::read_to_string(workspace.join(".engram/tasks.md")).expect("read tasks.md");
-    assert_eq!(after, custom, "tasks.md must survive uninstall --keep-data");
-    assert!(
-        workspace.join(".engram/config.toml").is_file(),
-        "config.toml must survive uninstall --keep-data"
-    );
+    let after = fs::read_to_string(workspace.join(".engram/config.toml"))
+        .expect("read config.toml");
+    assert_eq!(after, custom, "config.toml must survive uninstall --keep-data");
 }
 
 // ── S072: full uninstall ──────────────────────────────────────────────────────
