@@ -31,17 +31,41 @@ pub const SLOW_QUERY_THRESHOLD_MS: u128 = 100;
 /// * `result_count` — Number of rows/items returned by the query.
 /// * `elapsed` — Wall-clock duration of the query execution.
 pub fn record_query_metrics(
-    _query_type: &str,
-    _table: &str,
-    _result_count: usize,
-    _elapsed: std::time::Duration,
+    query_type: &str,
+    table: &str,
+    result_count: usize,
+    elapsed: std::time::Duration,
 ) {
-    unimplemented!(
-        "Worker: Use tracing::Span::current() to record query_type, table, and \
-         result_count as span fields. If elapsed > SLOW_QUERY_THRESHOLD_MS, emit \
-         tracing::warn!(query_type, table, result_count, elapsed_ms = elapsed.as_millis(), \
-         \"slow query detected\"). This function is called from instrumented query methods."
-    )
+    let elapsed_ms = elapsed.as_millis();
+
+    // Record fields on the current tracing span (silently ignored when no
+    // matching pre-declared fields exist on the span).
+    let span = tracing::Span::current();
+    span.record("query_type", query_type);
+    span.record("table", table);
+    span.record("result_count", result_count);
+
+    // Downcast to u64 for tracing event fields (`u128` does not implement
+    // `tracing::Value`).
+    let elapsed_ms_u64 = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
+
+    tracing::info!(
+        query_type,
+        table,
+        result_count,
+        elapsed_ms = elapsed_ms_u64,
+        "query completed"
+    );
+
+    if elapsed_ms > SLOW_QUERY_THRESHOLD_MS {
+        tracing::warn!(
+            query_type,
+            table,
+            result_count,
+            elapsed_ms = elapsed_ms_u64,
+            "slow query detected"
+        );
+    }
 }
 
 // ── Shared Row Types ───────────────────────────────────────────────────
