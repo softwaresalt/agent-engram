@@ -122,4 +122,3 @@ async fn t089_sc015_statistics_performance() {
         elapsed.as_millis()
     );
 }
-
