@@ -542,7 +542,6 @@ pub fn detect_stale_since(recorded: &HashMap<String, FileFingerprint>, engram_di
     false
 }
 
-
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
 pub fn last_flush_state(

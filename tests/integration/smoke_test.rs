@@ -90,19 +90,24 @@ async fn smoke_full_tool_chain_over_ipc() {
         flush_result["files_written"].is_array(),
         "flush_state must return files_written array"
     );
-    let files = flush_result["files_written"]
-        .as_array()
-        .expect("files_written is array");
     assert!(
-        !files.is_empty(),
-        "flush_state must write at least one file"
+        flush_result["code_graph"].is_object(),
+        "flush_state must return code_graph object"
+    );
+    assert!(
+        flush_result["code_graph"]["nodes_written"].is_number(),
+        "flush_state code_graph must have nodes_written"
+    );
+    assert!(
+        flush_result["flush_timestamp"].is_string(),
+        "flush_state must return flush_timestamp"
     );
 
-    // Verify .engram/tasks.md was actually written to disk.
-    let tasks_md = harness.workspace.path().join(".engram").join("tasks.md");
+    // Verify .engram/code-graph/ directory was created.
+    let code_graph_dir = harness.workspace.path().join(".engram").join("code-graph");
     assert!(
-        tasks_md.exists(),
-        "flush_state must create .engram/tasks.md on disk"
+        code_graph_dir.exists(),
+        "flush_state must create .engram/code-graph/ directory"
     );
 
     // ── Step 3: get_health_report ─────────────────────────────────────────

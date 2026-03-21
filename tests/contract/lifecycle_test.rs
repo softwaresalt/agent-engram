@@ -250,10 +250,10 @@ async fn contract_valid_config_populates_workspace_config() {
     fs::create_dir_all(&engram_dir).expect("create .engram dir");
     fs::write(
         engram_dir.join("config.toml"),
-        r#"
+        r"
 [batch]
 max_size = 50
-"#,
+",
     )
     .expect("write config.toml");
 

@@ -109,7 +109,6 @@ pub async fn dehydrate_code_graph(
     })
 }
 
-
 /// Write content atomically using temp file + rename pattern.
 ///
 /// Creates a temporary `.tmp` file alongside the target, writes content,
@@ -470,7 +469,6 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.expect("read");
         assert_eq!(content, "hello");
     }
-
 
     #[test]
     fn serialize_nodes_jsonl_empty() {

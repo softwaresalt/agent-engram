@@ -216,9 +216,12 @@ async fn s070_reinstall_preserves_config_toml() {
     );
 
     // config.toml must be preserved.
-    let after = fs::read_to_string(workspace.join(".engram/config.toml"))
-        .expect("read config.toml");
-    assert_eq!(after, custom, "config.toml must be preserved after reinstall");
+    let after =
+        fs::read_to_string(workspace.join(".engram/config.toml")).expect("read config.toml");
+    assert_eq!(
+        after, custom,
+        "config.toml must be preserved after reinstall"
+    );
 }
 
 /// S070: `reinstall` on non-installed workspace returns `NotInstalled`.
@@ -276,9 +279,12 @@ async fn s071_uninstall_keep_data_preserves_config_toml() {
         workspace.join(".engram").is_dir(),
         ".engram/ must still exist"
     );
-    let after = fs::read_to_string(workspace.join(".engram/config.toml"))
-        .expect("read config.toml");
-    assert_eq!(after, custom, "config.toml must survive uninstall --keep-data");
+    let after =
+        fs::read_to_string(workspace.join(".engram/config.toml")).expect("read config.toml");
+    assert_eq!(
+        after, custom,
+        "config.toml must survive uninstall --keep-data"
+    );
 }
 
 // ── S072: full uninstall ──────────────────────────────────────────────────────

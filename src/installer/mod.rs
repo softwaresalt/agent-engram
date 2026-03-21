@@ -101,7 +101,6 @@ impl Default for InstallOptions {
     }
 }
 
-
 const CONFIG_TOML_STUB: &str = r#"# Engram plugin configuration
 # See documentation for all available options.
 #

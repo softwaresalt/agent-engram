@@ -430,10 +430,7 @@ pub async fn unified_search(
     // Validate region parameter — only "code" and "all" are supported.
     if parsed.region != "code" && parsed.region != "all" {
         return Err(EngramError::System(SystemError::InvalidParams {
-            reason: format!(
-                "invalid region '{}': expected code or all",
-                parsed.region
-            ),
+            reason: format!("invalid region '{}': expected code or all", parsed.region),
         }));
     }
 

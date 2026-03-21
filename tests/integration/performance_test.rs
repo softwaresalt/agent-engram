@@ -54,10 +54,7 @@ async fn t089_sc015_statistics_performance() {
         result.get("code_files").is_some(),
         "should return code_files"
     );
-    assert!(
-        result.get("functions").is_some(),
-        "should return functions"
-    );
+    assert!(result.get("functions").is_some(), "should return functions");
     assert!(
         elapsed.as_millis() < 30_000,
         "SC-015: statistics should complete in <30s (debug build, \
@@ -65,4 +62,3 @@ async fn t089_sc015_statistics_performance() {
         elapsed.as_millis()
     );
 }
-

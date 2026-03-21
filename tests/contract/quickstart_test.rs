@@ -166,8 +166,8 @@ async fn t075_model_load_failed_json_shape() {
 
     let error_obj = json.get("error").expect("should have 'error' key");
     assert!(error_obj.get("code").and_then(Value::as_u64).is_some());
-    assert!(error_obj.get("name").and_then(|v| v.as_str()).is_some());
-    assert!(error_obj.get("message").and_then(|v| v.as_str()).is_some());
+    assert!(error_obj.get("name").and_then(Value::as_str).is_some());
+    assert!(error_obj.get("message").and_then(Value::as_str).is_some());
     assert!(error_obj.get("details").is_some());
 
     let details = error_obj.get("details").unwrap();

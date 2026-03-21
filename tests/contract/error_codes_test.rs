@@ -1,4 +1,4 @@
-﻿//! Verify error codes in code match contracts/error-codes.md (T107).
+//! Verify error codes in code match contracts/error-codes.md (T107).
 
 use engram::errors::codes::*;
 use engram::errors::*;
@@ -200,20 +200,32 @@ fn t094_error_response_json_shape() {
         let error_obj = json.get("error").expect("should have 'error' key");
         assert!(error_obj.is_object(), "error should be an object");
         assert!(
-            error_obj.get("code").and_then(|v| v.as_u64()).is_some(),
+            error_obj
+                .get("code")
+                .and_then(serde_json::Value::as_u64)
+                .is_some(),
             "error.code should be a number: {json}"
         );
         assert!(
-            error_obj.get("name").and_then(|v| v.as_str()).is_some(),
+            error_obj
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
             "error.name should be a string: {json}"
         );
         assert!(
-            error_obj.get("message").and_then(|v| v.as_str()).is_some(),
+            error_obj
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
             "error.message should be a string: {json}"
         );
 
         // Verify message is non-empty
-        let msg = error_obj.get("message").and_then(|v| v.as_str()).unwrap();
+        let msg = error_obj
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
         assert!(!msg.is_empty(), "error.message should not be empty: {json}");
 
         // Verify details presence/absence

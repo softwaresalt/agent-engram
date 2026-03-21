@@ -30,7 +30,9 @@ pub enum WorkspaceError {
 pub enum HydrationError {
     #[error("Failed to parse workspace files: {reason}")]
     Failed { reason: String },
-    #[error("Workspace schema version mismatch: found '{found}', expected '{expected}'. Migrate by deleting `.engram/` and running `engram install` again.")]
+    #[error(
+        "Workspace schema version mismatch: found '{found}', expected '{expected}'. Migrate by deleting `.engram/` and running `engram install` again."
+    )]
     SchemaMismatch { expected: String, found: String },
     #[error("Workspace state corrupted: {reason}")]
     CorruptedState { reason: String },

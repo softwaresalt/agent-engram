@@ -33,7 +33,6 @@ fn t097_cold_start_under_200ms() {
     );
 }
 
-
 /// T101: Profile memory usage idle (target: < 100MB RSS).
 ///
 /// Validates that creating the daemon state does not allocate excessive

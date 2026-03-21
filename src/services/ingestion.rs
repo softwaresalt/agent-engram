@@ -1,4 +1,4 @@
-﻿//! Content ingestion pipeline for multi-source workspace content.
+//! Content ingestion pipeline for multi-source workspace content.
 //!
 //! Walks registered content sources, reads files, computes content hashes,
 //! and upserts [`ContentRecord`](crate::models::ContentRecord) entries into
@@ -110,7 +110,8 @@ async fn ingest_directory(
     summary.total_files = files.len();
 
     // Get existing records to detect changes.
-    let existing: Vec<crate::models::ContentRecord> = queries.select_content_records(Some(content_type)).await?;
+    let existing: Vec<crate::models::ContentRecord> =
+        queries.select_content_records(Some(content_type)).await?;
     let existing_by_path: std::collections::HashMap<String, String> = existing
         .iter()
         .map(|r| (r.file_path.clone(), r.content_hash.clone()))
@@ -279,7 +280,8 @@ pub async fn ingest_single_file(
     let content_hash = compute_hash(&content);
 
     // Check existing record for change detection.
-    let existing: Vec<crate::models::ContentRecord> = queries.select_content_records(Some(content_type)).await?;
+    let existing: Vec<crate::models::ContentRecord> =
+        queries.select_content_records(Some(content_type)).await?;
     let already_current = existing
         .iter()
         .any(|r| r.file_path == rel_path && r.content_hash == content_hash);

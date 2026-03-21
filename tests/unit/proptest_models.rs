@@ -1,4 +1,4 @@
-﻿use chrono::Utc;
+use chrono::Utc;
 use proptest::prelude::*;
 
 use engram::models::class::Class;
