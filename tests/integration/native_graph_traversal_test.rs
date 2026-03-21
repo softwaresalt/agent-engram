@@ -25,11 +25,11 @@ async fn insert_function(queries: &CodeGraphQueries, name: &str, file: &str) {
         signature: format!("fn {name}()"),
         docstring: None,
         body: String::new(),
-        body_hash: String::new(),
+        body_hash: "test_hash".to_string(),
         token_count: 0,
         embed_type: "explicit_code".to_string(),
         summary: format!("{name} summary"),
-        embedding: vec![],
+        embedding: vec![0.0_f32; 384],
     };
     queries
         .upsert_function(&func)
@@ -178,14 +178,18 @@ async fn all_five_edge_types_are_traversed() {
     q.create_calls_edge("function:fn_root", "function:fn_called")
         .await
         .expect("calls edge");
+    // defines edge (code_file -> fn_root, so inbound traversal finds the file)
+    q.create_defines_edge("code_file:src_root.rs", "function", "function:fn_root")
+        .await
+        .expect("defines edge for fn_root");
     // defines edge (code_file -> symbol)
-    q.create_defines_edge("code_file:src_root_rs", "function", "function:fn_defined")
+    q.create_defines_edge("code_file:src_root.rs", "function", "function:fn_defined")
         .await
         .expect("defines edge");
     // imports edge (code_file -> code_file)
     q.create_imports_edge(
-        "code_file:src_root_rs",
-        "code_file:src_imported_rs",
+        "code_file:src_root.rs",
+        "code_file:src_imported.rs",
         "src/imported.rs",
     )
     .await

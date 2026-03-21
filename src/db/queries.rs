@@ -1808,33 +1808,179 @@ impl CodeGraphQueries {
     /// Traverse the code graph using native SurrealQL `->edge->` / `<-edge<-`
     /// syntax instead of the manual BFS in [`bfs_neighborhood`].
     ///
-    /// Issues a single SurrealQL query covering all edge types (calls, imports,
-    /// defines, `inherits_from`) up to `max_depth` hops, replacing the N×5
-    /// round-trip pattern.
+    /// Issues a single batched SurrealQL query per hop covering all edge types
+    /// (calls, imports, defines, `inherits_from`, concerns) in both directions,
+    /// replacing the N×5 round-trip pattern of the original BFS.
     ///
     /// Returns the same [`BfsResult`] shape for backward compatibility.
     ///
     /// # Errors
     ///
     /// Returns `EngramError` if the database query fails.
-    #[allow(clippy::unused_async)]
     pub async fn graph_neighborhood(
         &self,
-        _root_id: &str,
-        _max_depth: usize,
-        _max_nodes: usize,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
-        unimplemented!(
-            "Worker: Use SurrealQL graph traversal syntax to replace the manual BFS. \
-             Single query covering all edge types: \
-             SELECT ->calls->function, ->defines->function, ->imports->code_file, \
-             <-calls<-function, <-defines<-code_file, <-imports<-code_file, \
-             ->inherits_from->class, <-inherits_from<-class \
-             FROM $root_id FETCH all nested fields. \
-             For variable-depth use recursive graph queries or iterate up to max_depth. \
-             Assemble results into BfsResult {{ neighbors, edges, truncated }} \
-             truncating at max_nodes. Preserve backward compatibility with bfs_neighborhood."
-        )
+        // Edge types traversed in both directions per hop.
+        const EDGE_TABLES: [&str; 5] = ["calls", "imports", "defines", "inherits_from", "concerns"];
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = Vec::new();
+        let mut neighbors: Vec<SymbolMatch> = Vec::new();
+        let mut edges: Vec<BfsEdge> = Vec::new();
+        let mut truncated = false;
+
+        visited.insert(root_id.to_owned());
+        frontier.push(root_id.to_owned());
+
+        for _depth in 0..max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+
+            let mut next_frontier: Vec<String> = Vec::new();
+
+            for current_id in &frontier {
+                if truncated {
+                    break;
+                }
+
+                let record = parse_thing(current_id);
+
+                // Single batched query: 10 statements (5 outbound + 5 inbound)
+                // covering all edge types in one database round-trip.
+                let mut resp = self
+                    .db
+                    .query(
+                        "SELECT out FROM calls WHERE in = $node;\
+                         SELECT out FROM imports WHERE in = $node;\
+                         SELECT out FROM defines WHERE in = $node;\
+                         SELECT out FROM inherits_from WHERE in = $node;\
+                         SELECT out FROM concerns WHERE in = $node;\
+                         SELECT in FROM calls WHERE out = $node;\
+                         SELECT in FROM imports WHERE out = $node;\
+                         SELECT in FROM defines WHERE out = $node;\
+                         SELECT in FROM inherits_from WHERE out = $node;\
+                         SELECT in FROM concerns WHERE out = $node;",
+                    )
+                    .bind(("node", record))
+                    .await
+                    .map_err(map_db_err)?;
+
+                // Process outbound edges (statements 0..5).
+                for (idx, edge_type) in EDGE_TABLES.iter().enumerate() {
+                    let rows: Vec<OutEdgeRow> = resp.take(idx).map_err(map_db_err)?;
+                    for row in rows {
+                        let target_id = format!("{}:{}", row.out.tb, row.out.id.to_raw());
+                        truncated = !self
+                            .try_add_neighbor(
+                                current_id,
+                                &target_id,
+                                edge_type,
+                                true,
+                                max_nodes,
+                                &mut visited,
+                                &mut neighbors,
+                                &mut edges,
+                                &mut next_frontier,
+                            )
+                            .await?;
+                        if truncated {
+                            break;
+                        }
+                    }
+                    if truncated {
+                        break;
+                    }
+                }
+
+                // Process inbound edges (statements 5..10).
+                if !truncated {
+                    for (idx, edge_type) in EDGE_TABLES.iter().enumerate() {
+                        let rows: Vec<InEdgeRow> = resp.take(5 + idx).map_err(map_db_err)?;
+                        for row in rows {
+                            let source_id = format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw());
+                            truncated = !self
+                                .try_add_neighbor(
+                                    current_id,
+                                    &source_id,
+                                    edge_type,
+                                    false,
+                                    max_nodes,
+                                    &mut visited,
+                                    &mut neighbors,
+                                    &mut edges,
+                                    &mut next_frontier,
+                                )
+                                .await?;
+                            if truncated {
+                                break;
+                            }
+                        }
+                        if truncated {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            frontier = next_frontier;
+        }
+
+        Ok(BfsResult {
+            neighbors,
+            edges,
+            truncated,
+        })
+    }
+
+    /// Try to add a neighbor discovered during [`graph_neighborhood`] traversal.
+    ///
+    /// Returns `Ok(true)` if the neighbor was added (or already visited),
+    /// `Ok(false)` if `max_nodes` was reached and traversal should stop.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_add_neighbor(
+        &self,
+        current_id: &str,
+        neighbor_id: &str,
+        edge_type: &str,
+        is_outbound: bool,
+        max_nodes: usize,
+        visited: &mut HashSet<String>,
+        neighbors: &mut Vec<SymbolMatch>,
+        edges: &mut Vec<BfsEdge>,
+        next_frontier: &mut Vec<String>,
+    ) -> Result<bool, EngramError> {
+        if visited.contains(neighbor_id) {
+            return Ok(true);
+        }
+        if neighbors.len() >= max_nodes {
+            return Ok(false);
+        }
+
+        visited.insert(neighbor_id.to_owned());
+
+        if let Some(sym) = self.resolve_symbol(neighbor_id).await? {
+            neighbors.push(sym);
+
+            let (from, to) = if is_outbound {
+                (current_id.to_owned(), neighbor_id.to_owned())
+            } else {
+                (neighbor_id.to_owned(), current_id.to_owned())
+            };
+
+            edges.push(BfsEdge {
+                edge_type: edge_type.to_owned(),
+                from,
+                to,
+            });
+
+            next_frontier.push(neighbor_id.to_owned());
+        }
+
+        Ok(true)
     }
 
     // ── Embedding write-back (T076/T077) ────────────────────────────
