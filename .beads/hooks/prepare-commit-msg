@@ -4,8 +4,14 @@
 if command -v bd >/dev/null 2>&1; then
   export BD_GIT_HOOK=1
   _bd_timeout=${BEADS_HOOK_TIMEOUT:-30}
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$_bd_timeout" bd hooks run prepare-commit-msg "$@"
+  _bd_timeout_cmd=
+  if [ -x /usr/bin/timeout ]; then
+    _bd_timeout_cmd=/usr/bin/timeout
+  elif command -v timeout >/dev/null 2>&1 && timeout --version >/dev/null 2>&1; then
+    _bd_timeout_cmd=$(command -v timeout)
+  fi
+  if [ -n "$_bd_timeout_cmd" ]; then
+    "$_bd_timeout_cmd" "$_bd_timeout" bd hooks run prepare-commit-msg "$@"
     _bd_exit=$?
     if [ $_bd_exit -eq 124 ]; then
       echo >&2 "beads: hook 'prepare-commit-msg' timed out after ${_bd_timeout}s — continuing without beads"
