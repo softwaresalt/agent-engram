@@ -270,6 +270,10 @@ name = "integration_ingestion"
 path = "tests/integration/ingestion_test.rs"
 
 [[test]]
+name = "contract_tools_catalog"
+path = "tests/contract/tools_catalog_test.rs"
+
+[[test]]
 name = "integration_backlog"
 path = "tests/integration/backlog_test.rs"
 
