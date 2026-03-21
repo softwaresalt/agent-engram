@@ -50,19 +50,6 @@ async fn contract_flush_state_response_shape() {
     // Verify contract response shape
     let files = result.get("files_written").expect("files_written field");
     assert!(files.is_array(), "files_written should be array");
-    let files_arr = files.as_array().unwrap();
-    assert!(
-        files_arr
-            .iter()
-            .any(|f| f.as_str() == Some(".engram/tasks.md")),
-        "should write tasks.md"
-    );
-    assert!(
-        files_arr
-            .iter()
-            .any(|f| f.as_str() == Some(".engram/.lastflush")),
-        "should write .lastflush"
-    );
 
     let warnings = result.get("warnings").expect("warnings field");
     assert!(warnings.is_array(), "warnings should be array");
@@ -72,15 +59,17 @@ async fn contract_flush_state_response_shape() {
         .expect("flush_timestamp field");
     assert!(ts.is_string(), "flush_timestamp should be string");
 
-    // Verify files exist on disk
-    let engram_dir = workspace.path().join(".engram");
-    assert!(engram_dir.join("tasks.md").exists(), "tasks.md on disk");
+    // Phase 2: flush_state writes code-graph JSONL files only (tasks.md removed).
+    // Verify code_graph summary fields are present.
+    let cg = result.get("code_graph").expect("code_graph field");
     assert!(
-        engram_dir.join("graph.surql").exists(),
-        "graph.surql on disk"
+        cg.get("nodes_written").is_some(),
+        "code_graph.nodes_written present"
     );
-    assert!(engram_dir.join(".version").exists(), ".version on disk");
-    assert!(engram_dir.join(".lastflush").exists(), ".lastflush on disk");
+    assert!(
+        cg.get("edges_written").is_some(),
+        "code_graph.edges_written present"
+    );
 }
 
 // ── index_workspace contract tests ──────────────────────────────────

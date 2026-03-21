@@ -4,15 +4,13 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, Queries};
+use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
-use crate::services::hydration::{
-    backfill_embeddings, detect_stale_since, hydrate_code_graph, hydrate_into_db, hydrate_workspace,
-};
+use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
@@ -68,17 +66,10 @@ pub async fn set_workspace(
 
     let hydration = hydrate_workspace(&canonical).await?;
 
-    // Connect to DB and load .engram/ data into SurrealDB (T072)
+    // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
     let db = connect_db(&workspace_id).await?;
-    let queries = Queries::new(db.clone());
-    hydrate_into_db(&canonical, &queries).await?;
-
-    // Hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
-    let cg_queries = CodeGraphQueries::new(db.clone());
+    let cg_queries = CodeGraphQueries::new(db);
     let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
-
-    // Backfill embeddings for specs/contexts that lack them (T086)
-    backfill_embeddings(&queries).await;
 
     // Load and validate workspace config BEFORE committing the snapshot.
     // If config validation fails, we must not leave the workspace partially bound.

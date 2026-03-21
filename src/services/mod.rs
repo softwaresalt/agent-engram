@@ -6,12 +6,10 @@
 //! tree-sitter AST parsing, and code graph orchestration.
 
 pub mod code_graph;
-pub mod compaction;
 pub mod config;
 pub mod connection;
 pub mod dehydration;
 pub mod embedding;
-pub mod event_ledger;
 pub mod gate;
 #[cfg(feature = "git-graph")]
 pub mod git_graph;

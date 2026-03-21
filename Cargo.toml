@@ -99,16 +99,8 @@ name = "unit_proptest"
 path = "tests/unit/proptest_models.rs"
 
 [[test]]
-name = "integration_hydration"
-path = "tests/integration/hydration_test.rs"
-
-[[test]]
 name = "integration_embedding"
 path = "tests/integration/embedding_test.rs"
-
-[[test]]
-name = "unit_proptest_serialization"
-path = "tests/unit/proptest_serialization.rs"
 
 [[test]]
 name = "integration_concurrency"
@@ -202,10 +194,6 @@ name = "integration_security"
 path = "tests/integration/security_test.rs"
 
 [[test]]
-name = "integration_recovery"
-path = "tests/integration/recovery_test.rs"
-
-[[test]]
 name = "contract_gate"
 path = "tests/contract/gate_test.rs"
 
@@ -228,10 +216,6 @@ path = "tests/contract/collection_test.rs"
 [[test]]
 name = "integration_gate"
 path = "tests/integration/gate_integration_test.rs"
-
-[[test]]
-name = "integration_rollback"
-path = "tests/integration/rollback_test.rs"
 
 [[test]]
 name = "integration_reliability"

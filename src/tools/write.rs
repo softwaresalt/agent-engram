@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::config::StaleStrategy;
 use crate::db::connect_db;
+#[cfg(feature = "git-graph")]
 use crate::db::queries::Queries;
 use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::server::state::SharedState;
@@ -49,7 +50,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     let _ = params;
 
     let db = connect_db(&workspace_id).await?;
-    let queries = Queries::new(db.clone());
+    let cg_queries = crate::db::queries::CodeGraphQueries::new(db.clone());
 
     // Determine staleness action from strategy before touching the DB
     match (is_stale, stale_strategy) {
@@ -62,25 +63,22 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
             warnings.push("2004 StaleWorkspace: .engram files modified externally".to_string());
         }
         (true, StaleStrategy::Rehydrate) => {
-            hydration::hydrate_into_db(&path, &queries).await?;
+            hydration::hydrate_code_graph(&path, &cg_queries).await?;
         }
         (false, _) => {}
     }
 
-    let result = dehydration::dehydrate_workspace(&queries, &path).await?;
-
     // Code graph serialization (FR-132, FR-133, FR-134)
-    let cg_queries = crate::db::queries::CodeGraphQueries::new(db);
     let cg_result = dehydration::dehydrate_code_graph(&cg_queries, &path).await?;
+    let flush_timestamp = chrono::Utc::now().to_rfc3339();
 
-    let mut all_files = result.files_written.clone();
-    all_files.extend(cg_result.files_written);
+    let all_files = cg_result.files_written.clone();
 
     let new_mtimes = hydration::collect_file_mtimes(&engram_dir);
 
     let _ = state
         .update_workspace(|ws| {
-            ws.last_flush = Some(result.flush_timestamp.clone());
+            ws.last_flush = Some(flush_timestamp.clone());
             ws.stale_files = false;
             ws.file_mtimes = new_mtimes;
         })
@@ -89,7 +87,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
     Ok(json!({
         "files_written": all_files,
         "warnings": warnings,
-        "flush_timestamp": result.flush_timestamp,
+        "flush_timestamp": flush_timestamp,
         "code_graph": {
             "nodes_written": cg_result.nodes_written,
             "edges_written": cg_result.edges_written,
