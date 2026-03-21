@@ -1,4 +1,9 @@
-# Engram Quickstart Guide
+---
+title: Engram Quickstart Guide
+description: Get from zero to a running Engram daemon with an AI agent connected and your first code graph indexed in under 10 minutes.
+---
+
+## Overview
 
 Get from zero to a running Engram daemon with an AI agent connected in under 10 minutes.
 
@@ -10,8 +15,10 @@ Get from zero to a running Engram daemon with an AI agent connected in under 10 
 2. [Installation](#installation)
 3. [First Run](#first-run)
 4. [Connecting an Agent](#connecting-an-agent)
-5. [First Workspace Operation](#first-workspace-operation)
-6. [First Search Query](#first-search-query)
+5. [Bind a Workspace](#bind-a-workspace)
+6. [Index Your Code Graph](#index-your-code-graph)
+7. [Navigate Symbols](#navigate-symbols)
+8. [Search Across Your Codebase](#search-across-your-codebase)
 
 ---
 
@@ -75,13 +82,12 @@ engram install
 
 The installer creates the `.engram/` directory structure and generates MCP configuration files for your AI agent:
 
-```
+```text
 your-project/
 └── .engram/
     ├── config.toml          # Workspace configuration
-    ├── tasks.md             # Task ledger (managed by engram)
-    ├── context.md           # Spec/context files
-    └── mcp-config.json      # MCP endpoint configuration
+    ├── registry.yaml        # Content registry manifest
+    └── .version             # Schema version (3.0.0)
 ```
 
 ### Step 2: Start the daemon
@@ -174,11 +180,9 @@ Expected response:
 
 ---
 
-## First Workspace Operation
+## Bind a Workspace
 
-### Bind a workspace
-
-Before querying tasks or code, bind the daemon to your workspace directory:
+Before querying the code graph, bind the daemon to your workspace directory:
 
 ```json
 {
@@ -194,7 +198,8 @@ Before querying tasks or code, bind the daemon to your workspace directory:
 }
 ```
 
-> **Note**: `path` must be an absolute path to the git repository root. Relative paths are rejected with error code `1002` (`NOT_A_GIT_ROOT`).
+> [!NOTE]
+> `path` must be an absolute path to the git repository root. Relative paths are rejected with error code `1002` (`NOT_A_GIT_ROOT`).
 
 Expected response:
 
@@ -202,7 +207,6 @@ Expected response:
 {
   "workspace_id": "a1b2c3d4e5f6...",
   "path": "/path/to/your/project",
-  "task_count": 12,
   "hydrated": true
 }
 ```
@@ -226,26 +230,26 @@ Expected response:
 ```json
 {
   "path": "/path/to/your/project",
-  "task_count": 12,
-  "context_count": 3,
   "last_flush": "2024-01-15T10:30:00Z",
   "stale_files": false,
   "connection_count": 1,
   "code_graph": {
-    "code_files": 45,
-    "functions": 312,
-    "classes": 28,
-    "interfaces": 14,
-    "edges": 891
+    "code_files": 0,
+    "functions": 0,
+    "classes": 0,
+    "interfaces": 0,
+    "edges": 0
   }
 }
 ```
 
+The code graph counts start at zero until you run `index_workspace`.
+
 ---
 
-## First Search Query
+## Index Your Code Graph
 
-With the workspace bound, run a semantic search across tasks, context, and code:
+Parse source files into the code graph with tree-sitter:
 
 ```json
 {
@@ -253,40 +257,117 @@ With the workspace bound, run a semantic search across tasks, context, and code:
   "id": 4,
   "method": "tools/call",
   "params": {
+    "name": "index_workspace",
+    "arguments": {}
+  }
+}
+```
+
+Indexing scans all source files in the workspace, extracts functions, classes, and interfaces, and builds edge relationships between them. For incremental updates after code changes, use `sync_workspace` instead.
+
+---
+
+## Navigate Symbols
+
+### List symbols in a file
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "tools/call",
+  "params": {
+    "name": "list_symbols",
+    "arguments": {
+      "file_path": "src/auth/mod.rs",
+      "symbol_type": "function",
+      "limit": 20
+    }
+  }
+}
+```
+
+### Map the call graph for a symbol
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "tools/call",
+  "params": {
+    "name": "map_code",
+    "arguments": {
+      "symbol_name": "handle_auth_error",
+      "depth": 2
+    }
+  }
+}
+```
+
+`map_code` returns all callers, callees, and references for the named symbol up to the configured depth.
+
+### Analyze change impact
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "impact_analysis",
+    "arguments": {
+      "symbol_name": "AuthService",
+      "depth": 3
+    }
+  }
+}
+```
+
+`impact_analysis` traverses the call graph outward from a symbol to show which files and symbols would be affected by changes to it.
+
+---
+
+## Search Across Your Codebase
+
+Run a semantic search across code symbols, content records, and commit history:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "tools/call",
+  "params": {
     "name": "unified_search",
     "arguments": {
       "query": "authentication error handling",
-      "region": "all",
       "limit": 10
     }
   }
 }
 ```
 
-The `region` parameter controls what is searched:
+The `regions` parameter limits what is searched:
 
 | Value | Searches |
 |---|---|
-| `"all"` | Tasks, context/specs, code symbols |
-| `"tasks"` | Task ledger only |
-| `"context"` | Spec and context files only |
-| `"code"` | Code graph symbols only |
+| `["tasks","context","code"]` | All sources (default) |
+| `["code"]` | Code graph symbols only |
+| `["context"]` | Content records and specs only |
 
 Example response:
 
 ```json
 [
   {
-    "kind": "task",
-    "id": "task:abc123",
-    "title": "Implement OAuth error recovery",
-    "score": 0.94,
-    "status": "in-progress"
-  },
-  {
     "kind": "code",
     "id": "fn:handle_auth_error",
     "file": "src/auth/handlers.rs",
+    "score": 0.94
+  },
+  {
+    "kind": "context",
+    "id": "content:abc123",
+    "title": "Auth module design spec",
     "score": 0.87
   }
 ]
@@ -300,3 +381,4 @@ Example response:
 - Read the [Configuration Reference](configuration.md) to tune the daemon for your environment.
 - Read the [Architecture Overview](architecture.md) to understand how components interact.
 - If something goes wrong, consult the [Troubleshooting Guide](troubleshooting.md).
+

@@ -1,16 +1,22 @@
-# Agent Engram MCP Server
+---
+title: Agent Engram MCP Server
+description: A local-first MCP daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants.
+---
 
-A high-performance, local-first Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. Engram runs as a localhost HTTP server, accepting MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace.
+## Overview
+
+Agent Engram is a high-performance, local-first Model Context Protocol (MCP) daemon for code intelligence. It indexes your codebase with tree-sitter, exposes a queryable code graph, and provides semantic search over symbols, content records, and commit history. Engram runs as a localhost HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace.
 
 ## Features
 
-- **Workspace Isolation** — Each Git repository gets its own isolated database via SHA-256 path hashing
-- **Task Graph** — Create, update, and query tasks with dependency tracking and cycle detection
-- **Git-Backed Persistence** — Flush workspace state to human-readable `.engram/` markdown files that travel with your codebase
-- **Semantic Search** — Hybrid vector + keyword search (optional `fastembed` feature) for natural language queries
-- **Multi-Client** — 10+ concurrent SSE connections with connection registry, rate limiting, and last-write-wins semantics
-- **Comment Preservation** — User comments in `.engram/tasks.md` are preserved across flushes via structured diff merge
-- **Offline-Capable** — Embedding model cached locally; operates fully offline after first download
+- Workspace isolation: each Git repository gets its own database via SHA-256 path hashing.
+- Code graph indexing: parse source files with tree-sitter to index functions, classes, and interfaces.
+- Symbol navigation: traverse call graphs and reference graphs for any named symbol at configurable depth.
+- Impact analysis: identify symbols and files affected by changes to a given symbol.
+- Semantic search: hybrid vector + keyword search (optional `fastembed` feature) for natural-language queries across code, content records, and commit history.
+- Sandboxed queries: execute read-only SurrealQL SELECT statements directly against the code graph database.
+- Multi-client: 10+ concurrent SSE connections with connection registry and rate limiting.
+- Offline capable: embedding model cached locally; operates fully offline after first download.
 
 ## Prerequisites
 
@@ -54,23 +60,23 @@ curl -X POST http://127.0.0.1:7437/mcp \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"set_workspace","arguments":{"path":"/path/to/git/repo"}},"id":2}'
 ```
 
-### Create and update tasks
+### Index and query code
 
 ```bash
-# Create a task
+# Index the workspace code graph
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"create_task","arguments":{"title":"Implement auth","description":"Add OAuth2 support"}},"id":3}'
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"index_workspace","arguments":{}},"id":3}'
 
-# Update task status
+# List all functions in a source file
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"update_task","arguments":{"id":"<task-id>","status":"in_progress","notes":"Starting implementation"}},"id":4}'
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_symbols","arguments":{"file_path":"src/auth/mod.rs","symbol_type":"function"}},"id":4}'
 
-# Flush state to .engram/ files
+# Map the call graph for a named symbol
 curl -X POST http://127.0.0.1:7437/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"flush_state","arguments":{}},"id":5}'
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"map_code","arguments":{"symbol_name":"handle_auth_error","depth":2}},"id":5}'
 ```
 
 ## Configuration
@@ -93,8 +99,8 @@ These settings are per-workspace and stored in `.engram/config.toml`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `event_ledger_max` | `500` | Maximum number of events retained in the event ledger before oldest events are pruned |
-| `allow_agent_rollback` | `false` | Allow agents to call `rollback_to_event` to revert workspace state |
+| `batch.max_size` | `100` | Maximum batch size for bulk indexing operations |
+| `code_graph.*` | | Code graph parsing and indexing settings |
 | `query_timeout_ms` | `5000` | Timeout in milliseconds for `query_graph` sandboxed queries |
 | `query_row_limit` | `1000` | Maximum rows returned by a `query_graph` call |
 
@@ -111,82 +117,32 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 |------|-------------|
 | `set_workspace` | Bind connection to a Git repository workspace |
 | `get_daemon_status` | Get daemon health, uptime, and memory metrics |
-| `get_workspace_status` | Get workspace task/context counts and stale-file status |
-
-### Task Management
-
-| Tool | Description |
-|------|-------------|
-| `create_task` | Create a new task (defaults to `todo` status) |
-| `update_task` | Update task status with optional progress notes |
-| `add_blocker` | Block a task with a reason |
-| `register_decision` | Record an architectural decision |
-| `get_task_graph` | Get task dependency tree from a root task |
-| `check_status` | Look up task status by external work item IDs |
-| `claim_task` | Claim a task for the current agent session (→ `in_progress`) |
-| `release_task` | Release a claimed task (→ `todo`) |
-| `defer_task` | Defer a task until a future condition |
-| `undefer_task` | Move a deferred task back to `todo` |
-| `pin_task` | Pin a task so it appears first in ready-work queries |
-| `unpin_task` | Remove pin from a task |
-| `add_label` | Add a label to a task |
-| `remove_label` | Remove a label from a task |
-| `add_dependency` | Add a directed dependency edge between two tasks |
-| `add_comment` | Append a timestamped comment to a task's notes |
-| `batch_update_tasks` | Apply the same status update to multiple tasks atomically |
-| `get_ready_work` | List tasks with no unresolved blockers |
-| `get_workspace_statistics` | Aggregate task counts by status, label distribution, and more |
-
-### Persistence & Search
-
-| Tool | Description |
-|------|-------------|
-| `flush_state` | Serialize workspace state to `.engram/` files |
-| `query_memory` | Hybrid semantic + keyword search across workspace content |
-| `get_active_context` | Tasks in progress and recently modified context records |
-| `unified_search` | Search across tasks, context, and code symbols |
-| `get_compaction_candidates` | Tasks eligible for notes compaction |
-| `apply_compaction` | Compact notes on a completed or cancelled task |
+| `get_workspace_status` | Get workspace health, file mtimes, and stale-file status |
 
 ### Code Graph
 
 | Tool | Description |
 |------|-------------|
-| `index_workspace` | Parse and index workspace source files into the code graph |
-| `sync_workspace` | Incrementally sync changed source files since last index |
-| `map_code` | Return call graph and usages for a named symbol |
-| `list_symbols` | List symbols indexed in the code graph |
-| `link_task_to_code` | Associate a task with a source symbol |
-| `unlink_task_from_code` | Remove task–symbol association |
-| `impact_analysis` | Identify tasks affected by changes to a code symbol |
+| `index_workspace` | Parse source files into the code graph with tree-sitter |
+| `sync_workspace` | Incrementally re-index changed files since last index |
+| `map_code` | Return call graph and usages for a named symbol (depth configurable) |
+| `list_symbols` | List indexed symbols with filters for name, file, and type |
+| `impact_analysis` | Identify code affected by changes to a symbol |
+| `get_workspace_statistics` | Aggregate stats: file count, symbol count, indexed coverage |
 
-### Observability
-
-| Tool | Description |
-|------|-------------|
-| `get_health_report` | Runtime health metrics: memory, tool call counts, query latency percentiles (p50/p95/p99), watcher event statistics |
-
-### Event Ledger
+### Search and Query
 
 | Tool | Description |
 |------|-------------|
-| `get_event_history` | List recent workspace events from the ledger, optionally filtered by kind or entity ID |
-| `rollback_to_event` | Revert workspace state to a previous event snapshot (requires `allow_agent_rollback: true` in workspace config) |
+| `query_memory` | Semantic search over content records and commit history |
+| `unified_search` | Combined code graph + semantic search across all sources |
+| `query_graph` | Execute a read-only SurrealQL SELECT against the code graph database |
 
-### Sandboxed Query
-
-| Tool | Description |
-|------|-------------|
-| `query_graph` | Execute a read-only SurrealQL SELECT query against the workspace graph database. Write operations are rejected. |
-
-### Collections
+### Persistence
 
 | Tool | Description |
 |------|-------------|
-| `create_collection` | Create a named collection to group tasks and sub-collections hierarchically |
-| `add_to_collection` | Add tasks or sub-collections to a collection (with cycle detection) |
-| `remove_from_collection` | Remove members from a collection |
-| `get_collection_context` | Return all tasks recursively in a collection, with optional status filter |
+| `flush_state` | Serialize workspace state to `.engram/` files |
 
 ## HTTP Endpoints
 
@@ -202,11 +158,9 @@ ENGRAM_PORT=8080 ENGRAM_MAX_WORKSPACES=5 cargo run --release
 | ------- | ---------- | --------- |
 | 1xxx | Workspace | `1001` WorkspaceNotFound, `1003` WorkspaceNotSet |
 | 2xxx | Hydration | `2001` HydrationFailed, `2004` StaleWorkspace |
-| 3xxx | Task | `3001` TaskNotFound, `3003` CyclicDependency, `3015` TaskBlocked |
-| 3xxx | Event | `3020` RollbackDenied, `3021` EventNotFound, `3022` RollbackConflict |
-| 3xxx | Collection | `3030` CollectionAlreadyExists, `3031` CollectionNotFound, `3032` CollectionCycleDetected |
 | 4xxx | Query | `4001` QueryTooLong, `4002` ModelNotLoaded, `4010` QueryRejected, `4011` QueryTimeout, `4012` QueryInvalid |
 | 5xxx | System | `5001` DatabaseError, `5003` RateLimited |
+| 7xxx | Code Graph | `7001` ParseError, `7002` UnsupportedLanguage, `7003` IndexInProgress, `7004` SymbolNotFound |
 
 See [contracts/error-codes.md](specs/001-core-mcp-daemon/contracts/error-codes.md) for the full taxonomy.
 
@@ -228,9 +182,10 @@ engram shim          ← lightweight, spawns on each tool call
 engram daemon        ← long-lived per-workspace background process
     │
     ├── SurrealDB (embedded SurrealKv)
+    ├── Code graph (tree-sitter indexed symbols)
     ├── File watcher (notify)
     ├── TTL idle timer
-    └── .engram/ files (tasks.md, graph.surql, ...)
+    └── .engram/ files (config.toml, .version, registry.yaml, code-graph/)
 ```
 
 **Key design decisions:**
@@ -249,14 +204,13 @@ src/
 ├── bin/engram.rs        # Binary: clap subcommands (shim, daemon, install, …)
 ├── config/              # CLI/env configuration via clap
 ├── daemon/              # Daemon: IPC server, lockfile, watcher, TTL, protocol
-├── shim/                # Shim: IPC client, lifecycle (spawn + health), transport
 ├── installer/           # Install/update/reinstall/uninstall commands
 ├── db/                  # SurrealDB embedded (SurrealKv) with schema bootstrap
 ├── errors/              # EngramError enum with typed error codes
-├── models/              # Domain entities: Task, Spec, Context, DependencyType
-├── server/              # axum HTTP/SSE layer (legacy; retained for direct access)
-├── services/            # Stateless business logic (connection, hydration, search)
-└── tools/               # MCP tool implementations (lifecycle, read, write)
+├── models/              # Domain entities: CodeFile, Function, Class, Interface, ContentRecord
+├── server/              # axum HTTP/SSE layer
+├── services/            # Stateless business logic (code graph, hydration, search, git graph)
+└── tools/               # MCP tool implementations (lifecycle, read, write, daemon)
 `
 
 ## Development

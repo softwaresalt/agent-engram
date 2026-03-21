@@ -7,7 +7,7 @@ maturity: stable
 
 Last updated: 2026-02-07
 
-Agent Engram is a Model Context Protocol (MCP) daemon that provides persistent task memory, context tracking, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists state to an embedded SurrealDB backed by `.engram/` files in the workspace. 
+Agent Engram is a Model Context Protocol (MCP) daemon that provides code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a local HTTP server, accepts MCP JSON-RPC calls over SSE, and persists the indexed code graph to an embedded SurrealDB backed by `.engram/` files in the workspace.
 
 ## Technology Stack
 
@@ -27,37 +27,54 @@ Agent Engram is a Model Context Protocol (MCP) daemon that provides persistent t
 ```text
 src/
   lib.rs              # Crate root: forbid(unsafe_code), warn(clippy::pedantic), tracing init
-  bin/engram.rs         # Binary entrypoint: Config, Router, graceful shutdown
-  config/mod.rs        # Config struct (port, timeout, data_dir, log_format) via clap
+  bin/engram.rs       # Binary entrypoint: Config, Router, graceful shutdown
+  config/mod.rs       # Config struct (port, timeout, data_dir, log_format) via clap
   db/
-    mod.rs             # connect_db(workspace_hash) -> Db, schema bootstrap
-    schema.rs          # DEFINE TABLE statements (spec, task, context, edges)
-    queries.rs         # Queries struct: task CRUD, graph edges, cyclic detection, contexts
-    workspace.rs       # SHA-256 workspace path hashing, canonicalization
+    mod.rs            # connect_db(workspace_hash) -> Db, schema bootstrap
+    schema.rs         # DEFINE TABLE statements for code graph (code_file, function, class, interface, edges, content_record, commit_node)
+    queries.rs        # CodeGraphQueries struct: symbol lookup, edge traversal, impact analysis
+    workspace.rs      # SHA-256 workspace path hashing, canonicalization
   errors/
-    mod.rs             # EngramError enum (Workspace|Hydration|Task|Query|System), JSON response
-    codes.rs           # u16 error code constants: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query, 5xxx system
+    mod.rs            # EngramError enum (Workspace|Hydration|Query|System|CodeGraph|…), JSON response
+    codes.rs          # u16 error code constants: 1xxx workspace, 2xxx hydration, 4xxx query, 5xxx system, 7xxx code graph
   models/
-    mod.rs             # Re-exports: Task, TaskStatus, Spec, Context, DependencyType
-    task.rs            # Task { id, title, status, work_item_id, description, context_summary, timestamps }
-    spec.rs            # Spec { id, title, content, embedding, file_path, timestamps }
-    context.rs         # Context { id, content, embedding, source_client, created_at }
-    graph.rs           # DependencyType { HardBlocker, SoftDependency }
+    mod.rs            # Re-exports: CodeFile, Function, Class, Interface, ContentRecord, BacklogArtifacts
+    backlog.rs        # BacklogFile, BacklogArtifacts (speckit feature directory scanning)
+    class.rs          # Class symbol model
+    code_edge.rs      # Edge relationship model (calls, references, implements)
+    code_file.rs      # CodeFile node model
+    config.rs         # WorkspaceConfig (batch, code_graph, query_timeout_ms, query_row_limit)
+    content_record.rs # ContentRecord for semantic search (specs, docs, commit notes)
+    function.rs       # Function symbol model
+    interface.rs      # Interface symbol model
   server/
-    mod.rs             # Module re-exports
-    router.rs          # build_router(SharedState) -> Router with /sse GET, /mcp POST
-    sse.rs             # SSE handler: keepalive, timeout, connection ID
-    mcp.rs             # MCP JSON-RPC handler: deserialize RpcRequest, dispatch, serialize response
-    state.rs           # AppState { uptime, connections, workspace snapshot }, SharedState = Arc<AppState>
+    mod.rs            # Module re-exports
+    router.rs         # build_router(SharedState) -> Router with /sse GET, /mcp POST
+    sse.rs            # SSE handler: keepalive, timeout, connection ID
+    mcp.rs            # MCP JSON-RPC handler: deserialize RpcRequest, dispatch, serialize response
+    state.rs          # AppState { uptime, connections, workspace snapshot }, SharedState = Arc<AppState>
   services/
-    mod.rs             # Module re-exports
-    connection.rs      # ConnectionLifecycle, validate_workspace_path, create_status_change_note
-    hydration.rs       # Hydrate workspace from .engram/ files on set_workspace
+    code_graph.rs     # Code graph operations: indexing, sync, symbol queries, impact analysis
+    config.rs         # Workspace config loading and validation
+    gate.rs           # Query gate: reject non-SELECT statements, timeout enforcement
+    git_graph.rs      # Walk git commit history, index as graph nodes
+    hydration.rs      # Hydrate workspace from .engram/ files on set_workspace
+    ingestion.rs      # Content ingestion pipeline for embedding generation
+    output.rs         # Serialization helpers for MCP responses
+    dehydration.rs    # Serialize workspace state to .engram/ files (SCHEMA_VERSION = "3.0.0")
   tools/
-    mod.rs             # dispatch(state, method, params) -> Result<Value, EngramError>
-    lifecycle.rs       # set_workspace, get_daemon_status, get_workspace_status
-    read.rs            # get_task_graph, check_status, query_memory (stub)
-    write.rs           # update_task, add_blocker, register_decision, flush_state
+    mod.rs            # dispatch(state, method, params) -> Result<Value, EngramError>
+    lifecycle.rs      # set_workspace, get_daemon_status, get_workspace_status
+    read.rs           # query_memory, unified_search, map_code, list_symbols, impact_analysis, get_workspace_statistics, query_graph
+    write.rs          # flush_state, index_workspace, sync_workspace
+    daemon.rs         # Daemon-specific tool implementations
+  installer/
+    mod.rs            # Install/update/uninstall commands
+    templates.rs      # .engram/ scaffold templates and agent hook file generation
+  daemon/
+    ipc_server.rs     # Unix socket / named pipe IPC server
+    lockfile.rs       # Daemon lockfile management
+    shim.rs           # Shim client: IPC connection, daemon spawn/health
 tests/
   contract/            # MCP tool contract tests (workspace-not-set assertions)
     lifecycle_test.rs
@@ -67,7 +84,7 @@ tests/
     connection_test.rs
   unit/                # Property-based tests
     proptest_models.rs
-specs/                 # Feature specs, plans, data models, task checklists
+specs/                 # Feature specs, plans, data models
   001-core-mcp-daemon/
 ```
 
@@ -91,33 +108,21 @@ cargo test --test contract_lifecycle contract_set_workspace_returns_hydrated_fla
 
 ## Hydration/Dehydration Lifecycle
 
-engram persists workspace state as human-readable, Git-committable files in `.engram/` at the workspace root. The lifecycle has two phases:
+Engram persists workspace configuration and the code graph as files in `.engram/` at the workspace root. The lifecycle has two phases:
 
-1. **Hydration** (`services/hydration.rs`): On `set_workspace`, the daemon reads `.engram/tasks.md` and `.engram/graph.surql`, parsing them into domain models, then loads them into the embedded SurrealDB. Stale file detection uses file modification times captured at hydration.
+1. **Hydration** (`services/hydration.rs`): On `set_workspace`, the daemon reads `.engram/config.toml` and `.engram/registry.yaml`, parses them into domain models, and loads the indexed code graph from `.engram/code-graph/` JSONL files into the embedded SurrealDB.
 
-2. **Dehydration** (`services/dehydration.rs`): On `flush_state` or graceful shutdown (FR-006), the daemon serializes DB state back to `.engram/` files. User-added HTML comments in `tasks.md` are preserved across flushes via diff-based merging (`similar` crate, FR-012). Writes use atomic temp-file-then-rename to prevent corruption.
+2. **Dehydration** (`services/dehydration.rs`): On `flush_state` or graceful shutdown, the daemon serializes the current code graph state back to `.engram/` files. Schema version `3.0.0` is written to `.engram/.version`. Writes use atomic temp-file-then-rename to prevent corruption.
 
 `.engram/` directory contents:
 
 | File | Purpose |
 |------|---------|
-| `tasks.md` | Markdown with YAML frontmatter per task (`## task:{id}`) |
-| `graph.surql` | SurrealQL `RELATE` statements for dependency/implements/relates_to edges |
-| `.version` | Schema version string (currently `1.0.0`) |
+| `config.toml` | Workspace configuration (batch, code_graph, query settings) |
+| `registry.yaml` | Content registry manifest for speckit feature scanning |
+| `.version` | Schema version string (currently `3.0.0`) |
 | `.lastflush` | RFC 3339 timestamp of most recent flush |
-
-### Task Status Transitions
-
-Status changes are validated in `tools/write.rs::validate_transition`. Not all transitions are allowed:
-
-| From | Allowed To |
-|------|-----------|
-| `todo` | `in_progress`, `done` |
-| `in_progress` | `done`, `blocked`, `todo` |
-| `blocked` | `in_progress`, `todo`, `done` |
-| `done` | `todo` |
-
-Every `update_task` call MUST create a context note recording the transition (FR-015). This is enforced in `services/connection.rs::create_status_change_note`.
+| `code-graph/` | JSONL files for indexed code files, symbols, and edges |
 
 ## Code Style and Conventions
 
@@ -152,8 +157,8 @@ Every `update_task` call MUST create a context note recording the transition (FR
 * One `Db` handle per workspace via `connect_db(workspace_hash)`
 * Namespace: `engram`, database: SHA-256 hash of canonical workspace path
 * Schema bootstrapped on every connection via `ensure_schema`
-* All queries go through the `Queries` struct — never raw `db.query()` in tool handlers
-* SurrealDB v2 returns `id` as `Thing` (not `String`), so internal `TaskRow`/`ContextRow`/`SpecRow` structs deserialize raw DB rows then convert to public domain models via `into_task()`/`into_context()`/`into_spec()`
+* All queries go through the `CodeGraphQueries` struct — never raw `db.query()` in tool handlers
+* SurrealDB v2 returns `id` as `Thing` (not `String`), so internal row structs deserialize raw DB rows then convert to public domain models
 
 ### MCP Tool Pattern
 
@@ -185,17 +190,20 @@ Every tool follows this pattern:
 ## MCP Tools Registry
 
 | Tool | Module | Purpose |
-| -------------------- | ------------- | ----------------------------------------------- |
-| `set_workspace`      | lifecycle     | Bind connection to a Git repo, trigger hydration |
-| `get_daemon_status`  | lifecycle     | Report uptime, connections, workspaces          |
-| `get_workspace_status` | lifecycle   | Report task/context counts, flush state, staleness |
-| `update_task`        | write         | Change task status, always creates context note |
-| `add_blocker`        | write         | Block a task with reason context                |
-| `register_decision`  | write         | Record architectural decision as context        |
-| `flush_state`        | write         | Serialize DB state to `.engram/` files            |
-| `get_task_graph`     | read          | Recursive dependency graph traversal            |
-| `check_status`       | read          | Batch work item status lookup                   |
-| `query_memory`       | read          | Semantic search (not yet implemented)           |
+| ----------------------- | ----------- | ---------------------------------------------------- |
+| `set_workspace`         | lifecycle   | Bind connection to a Git repo, trigger hydration |
+| `get_daemon_status`     | lifecycle   | Report uptime, connections, workspaces |
+| `get_workspace_status`  | lifecycle   | Report file mtimes, staleness, code graph stats |
+| `flush_state`           | write       | Serialize workspace state to `.engram/` files |
+| `index_workspace`       | write       | Parse source files into code graph (tree-sitter) |
+| `sync_workspace`        | write       | Incrementally re-index changed files |
+| `map_code`              | read        | Call graph and usages for a named symbol |
+| `list_symbols`          | read        | List indexed symbols with name/file/type filters |
+| `get_workspace_statistics` | read     | Aggregate stats: file count, symbol count, coverage |
+| `query_memory`          | read        | Semantic search over content records and commit history |
+| `unified_search`        | read        | Combined code graph + semantic search |
+| `impact_analysis`       | read        | Identify code affected by changes to a symbol |
+| `query_graph`           | read        | Read-only SurrealQL SELECT against code graph |
 
 ## Configuration
 
@@ -206,15 +214,9 @@ Every tool follows this pattern:
 | `ENGRAM_DATA_DIR`            | `--data-dir`           | OS data dir | SurrealDB and model storage       |
 | `ENGRAM_LOG_FORMAT`          | `--log-format`         | `pretty`    | `json` or `pretty`               |
 
-## Implementation Progress
+## Implementation Status
 
-* Phase 1–4 complete (setup, foundation, US1 connection/workspace, US2 task management)
-* Phase 5 next (US3: Git-backed persistence — flush/hydrate round-trip with comment preservation)
-* Phase 6 planned (US4: Semantic memory — embeddings via fastembed, vector search)
-
-## Known Issues
-
-* `fastembed = "3"` requires a TLS feature flag on `ort-sys`; blocks `cargo check`/`cargo test` until resolved
+Phases 1–5 complete: workspace lifecycle, code graph indexing (tree-sitter), semantic search, git graph integration, SSE/MCP transport, and shim/daemon model. Schema version `3.0.0`.
 
 ## Session Memory Requirements
 

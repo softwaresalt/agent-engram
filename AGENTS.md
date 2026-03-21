@@ -149,14 +149,13 @@ cargo test 2>&1 | Out-File logs\test-results.txt
 
 - All fallible operations return `Result<T, EngramError>`
 - `EngramError` wraps domain-specific sub-errors via `#[from]`; each variant maps to a u16 error code
-- Error codes: 1xxx (Workspace), 2xxx (Hydration), 3xxx (Task), 4xxx (Query), 5xxx (System)
+- Error codes: 1xxx (Workspace), 2xxx (Hydration), 4xxx (Query), 5xxx (System), 7xxx (Code Graph)
 - Map external errors via `From` impls or `.map_err()` — never `unwrap()` or `expect()`
 
 ### Naming
 
 - Module files: `src/{module}/mod.rs` pattern for directories
-- Struct IDs: prefixed strings (`task:uuid`, `context:uuid`, `spec:uuid`)
-- Status values: `snake_case` (`todo`, `in_progress`, `done`, `blocked`)
+- Struct IDs: prefixed strings (`fn:uuid`, `class:uuid`, `file:uuid`)
 - Default visibility: `pub(crate)` unless the item needs to be public API
 
 ### Documentation
@@ -166,8 +165,8 @@ cargo test 2>&1 | Out-File logs\test-results.txt
 
 ### Database (SurrealDB)
 
-- All DB access goes through `Queries` struct methods — no raw `db.query()` in tool handlers
-- IDs use `Thing` type with table prefixes (`task:uuid`, `context:uuid`)
+- All DB access goes through `CodeGraphQueries` struct methods — no raw `db.query()` in tool handlers
+- IDs use `Thing` type with table prefixes (`fn:uuid`, `class:uuid`, `file:uuid`)
 - Use `*Row` structs for DB read/write; convert `Thing` to `String` for public models
 - Namespace: `engram`, database: SHA-256 hash of canonical workspace path
 
