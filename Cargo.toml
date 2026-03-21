@@ -74,6 +74,10 @@ name = "engram"
 path = "src/bin/engram.rs"
 
 [[test]]
+name = "contract_task_removal"
+path = "tests/contract/task_removal_test.rs"
+
+[[test]]
 name = "contract_lifecycle"
 path = "tests/contract/lifecycle_test.rs"
 
@@ -95,16 +99,8 @@ name = "unit_proptest"
 path = "tests/unit/proptest_models.rs"
 
 [[test]]
-name = "integration_hydration"
-path = "tests/integration/hydration_test.rs"
-
-[[test]]
 name = "integration_embedding"
 path = "tests/integration/embedding_test.rs"
-
-[[test]]
-name = "unit_proptest_serialization"
-path = "tests/unit/proptest_serialization.rs"
 
 [[test]]
 name = "integration_concurrency"
@@ -198,10 +194,6 @@ name = "integration_security"
 path = "tests/integration/security_test.rs"
 
 [[test]]
-name = "integration_recovery"
-path = "tests/integration/recovery_test.rs"
-
-[[test]]
 name = "contract_gate"
 path = "tests/contract/gate_test.rs"
 
@@ -210,32 +202,12 @@ name = "contract_observability"
 path = "tests/contract/observability_test.rs"
 
 [[test]]
-name = "contract_event"
-path = "tests/contract/event_test.rs"
-
-[[test]]
 name = "contract_query"
 path = "tests/contract/query_test.rs"
 
 [[test]]
-name = "contract_collection"
-path = "tests/contract/collection_test.rs"
-
-[[test]]
-name = "integration_gate"
-path = "tests/integration/gate_integration_test.rs"
-
-[[test]]
-name = "integration_rollback"
-path = "tests/integration/rollback_test.rs"
-
-[[test]]
 name = "integration_reliability"
 path = "tests/integration/reliability_test.rs"
-
-[[test]]
-name = "unit_proptest_events"
-path = "tests/unit/proptest_events.rs"
 
 [[test]]
 name = "integration_smoke"
@@ -264,6 +236,10 @@ path = "tests/contract/content_test.rs"
 [[test]]
 name = "integration_ingestion"
 path = "tests/integration/ingestion_test.rs"
+
+[[test]]
+name = "contract_tools_catalog"
+path = "tests/contract/tools_catalog_test.rs"
 
 [[test]]
 name = "integration_backlog"

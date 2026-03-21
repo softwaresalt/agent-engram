@@ -90,8 +90,6 @@ async fn contract_get_workspace_status_reports_state() {
         status.get("path").and_then(Value::as_str),
         Some(canonical_path.as_str())
     );
-    assert_eq!(status.get("task_count").and_then(Value::as_u64), Some(0));
-    assert_eq!(status.get("context_count").and_then(Value::as_u64), Some(0));
     assert_eq!(
         status.get("stale_files").and_then(Value::as_bool),
         Some(false)
@@ -240,12 +238,6 @@ async fn contract_no_config_toml_uses_defaults() {
     assert!(config.is_some(), "should have config (defaults)");
     let cfg = config.unwrap();
     assert_eq!(cfg.batch.max_size, 100);
-    assert_eq!(cfg.compaction.threshold_days, 7);
-    assert_eq!(cfg.compaction.max_candidates, 50);
-    assert_eq!(cfg.compaction.truncation_length, 500);
-    assert_eq!(cfg.default_priority, "p2");
-    assert!(cfg.allowed_labels.is_empty());
-    assert!(cfg.allowed_types.is_empty());
 }
 
 #[test]
@@ -258,19 +250,10 @@ async fn contract_valid_config_populates_workspace_config() {
     fs::create_dir_all(&engram_dir).expect("create .engram dir");
     fs::write(
         engram_dir.join("config.toml"),
-        r#"
-default_priority = "p1"
-allowed_labels = ["urgent", "bug"]
-allowed_types = ["task", "bug"]
-
-[compaction]
-threshold_days = 14
-max_candidates = 25
-truncation_length = 200
-
+        r"
 [batch]
 max_size = 50
-"#,
+",
     )
     .expect("write config.toml");
 
@@ -286,12 +269,6 @@ max_size = 50
     .expect("set_workspace should succeed with valid config");
 
     let config = state.workspace_config().await.expect("config should exist");
-    assert_eq!(config.default_priority, "p1");
-    assert_eq!(config.allowed_labels, vec!["urgent", "bug"]);
-    assert_eq!(config.allowed_types, vec!["task", "bug"]);
-    assert_eq!(config.compaction.threshold_days, 14);
-    assert_eq!(config.compaction.max_candidates, 25);
-    assert_eq!(config.compaction.truncation_length, 200);
     assert_eq!(config.batch.max_size, 50);
 }
 
@@ -325,7 +302,6 @@ async fn contract_toml_parse_error_uses_defaults_with_warning() {
         .await
         .expect("config should fallback to defaults");
     assert_eq!(config.batch.max_size, 100);
-    assert_eq!(config.compaction.threshold_days, 7);
 }
 
 #[test]
@@ -333,17 +309,17 @@ async fn contract_invalid_config_value_returns_error() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    // Write config.toml with invalid value: threshold_days=0
+    // Write config.toml with invalid value: batch.max_size=0
     let engram_dir = workspace.path().join(".engram");
     fs::create_dir_all(&engram_dir).expect("create .engram dir");
     fs::write(
         engram_dir.join("config.toml"),
         r"
-[compaction]
-threshold_days = 0
+[batch]
+max_size = 0
 ",
     )
-    .expect("write config with invalid threshold");
+    .expect("write config with invalid batch size");
 
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();

@@ -11,7 +11,7 @@ use chrono::{TimeZone, Utc};
 use git2::{Delta, DiffOptions, Repository, Sort};
 
 use crate::{
-    db::queries::Queries,
+    db::queries::CodeGraphQueries,
     errors::{EngramError, GitGraphError},
     models::{ChangeRecord, ChangeType, CommitNode},
 };
@@ -46,7 +46,7 @@ pub struct IndexSummary {
 /// `workspace_path` is not inside a git repository, and
 /// [`GitGraphError::AccessError`] for any other `git2` failure.
 pub async fn index_git_history(
-    db: &Queries,
+    db: &CodeGraphQueries,
     workspace_path: &Path,
     depth: u32,
     force: bool,

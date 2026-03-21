@@ -4,21 +4,18 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, Queries};
+use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{canonicalize_workspace, workspace_hash};
 use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
-use crate::services::hydration::{
-    backfill_embeddings, detect_stale_since, hydrate_code_graph, hydrate_into_db, hydrate_workspace,
-};
+use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
     pub workspace_id: String,
     pub path: String,
-    pub task_count: u64,
     pub hydrated: bool,
 }
 
@@ -36,8 +33,6 @@ pub struct DaemonStatus {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceStatus {
     pub path: String,
-    pub task_count: u64,
-    pub context_count: u64,
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,
@@ -71,34 +66,18 @@ pub async fn set_workspace(
 
     let hydration = hydrate_workspace(&canonical).await?;
 
-    // Connect to DB and load .engram/ data into SurrealDB (T072)
+    // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
     let db = connect_db(&workspace_id).await?;
-    let queries = Queries::new(db.clone());
-    let db_result = hydrate_into_db(&canonical, &queries).await?;
-
-    // Hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
-    let cg_queries = CodeGraphQueries::new(db.clone());
+    let cg_queries = CodeGraphQueries::new(db);
     let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
-
-    // Backfill embeddings for specs/contexts that lack them (T086)
-    backfill_embeddings(&queries).await;
-
-    let task_count = if db_result.tasks_loaded > 0 {
-        db_result.tasks_loaded as u64
-    } else {
-        hydration.task_count
-    };
 
     // Load and validate workspace config BEFORE committing the snapshot.
     // If config validation fails, we must not leave the workspace partially bound.
     let ws_config = parse_config(&canonical)?;
-    // validate_config is now called inside parse_config (RI-11)
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
         path: canonical.display().to_string(),
-        task_count,
-        context_count: hydration.context_count,
         last_flush: hydration.last_flush.clone(),
         stale_files: hydration.stale_files,
         connection_count: state.active_connections(),
@@ -111,7 +90,6 @@ pub async fn set_workspace(
     Ok(WorkspaceBinding {
         workspace_id,
         path: canonical.display().to_string(),
-        task_count,
         hydrated: true,
     })
 }
@@ -165,8 +143,6 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
 
         return Ok(WorkspaceStatus {
             path: snapshot.path,
-            task_count: snapshot.task_count,
-            context_count: snapshot.context_count,
             last_flush: snapshot.last_flush,
             stale_files: stale_now,
             connection_count: state.active_connections(),

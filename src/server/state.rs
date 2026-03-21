@@ -30,8 +30,6 @@ use crate::services::hydration::FileFingerprint;
 pub struct WorkspaceSnapshot {
     pub workspace_id: String,
     pub path: String,
-    pub task_count: u64,
-    pub context_count: u64,
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,

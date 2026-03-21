@@ -79,82 +79,39 @@ async fn smoke_full_tool_chain_over_ipc() {
         "get_workspace_status must return a path"
     );
     assert!(
-        ws_result["task_count"].is_number(),
-        "get_workspace_status must return task_count"
+        ws_result["code_graph"].is_object(),
+        "get_workspace_status must return code_graph"
     );
 
-    // ── Step 2: create_task ───────────────────────────────────────────────
-    let task_result = send_ok(
-        &endpoint,
-        2,
-        "create_task",
-        Some(json!({
-            "title": "smoke test task",
-            "status": "todo"
-        })),
-    )
-    .await;
-
-    assert!(
-        task_result["task_id"].is_string(),
-        "create_task must return a task_id"
-    );
-    let task_id = task_result["task_id"]
-        .as_str()
-        .expect("task_id is a string");
-    assert!(!task_id.is_empty(), "task_id must not be empty");
-    assert_eq!(
-        task_result["title"], "smoke test task",
-        "task title must echo back"
-    );
-
-    // ── Step 3: get_ready_work ────────────────────────────────────────────
-    let ready_result = send_ok(&endpoint, 3, "get_ready_work", Some(json!({}))).await;
-
-    assert!(
-        ready_result["tasks"].is_array(),
-        "get_ready_work must return a tasks array"
-    );
-    let tasks = ready_result["tasks"].as_array().expect("tasks is array");
-    assert!(
-        !tasks.is_empty(),
-        "get_ready_work must return at least one task"
-    );
-
-    let found = tasks
-        .iter()
-        .any(|t| t["title"].as_str() == Some("smoke test task"));
-    assert!(found, "created task must appear in get_ready_work results");
-
-    // ── Step 4: flush_state ───────────────────────────────────────────────
-    let flush_result = send_ok(&endpoint, 4, "flush_state", Some(json!({}))).await;
+    // ── Step 2: flush_state ───────────────────────────────────────────────
+    let flush_result = send_ok(&endpoint, 2, "flush_state", Some(json!({}))).await;
 
     assert!(
         flush_result["files_written"].is_array(),
         "flush_state must return files_written array"
     );
-    let files = flush_result["files_written"]
-        .as_array()
-        .expect("files_written is array");
     assert!(
-        !files.is_empty(),
-        "flush_state must write at least one file"
+        flush_result["code_graph"].is_object(),
+        "flush_state must return code_graph object"
+    );
+    assert!(
+        flush_result["code_graph"]["nodes_written"].is_number(),
+        "flush_state code_graph must have nodes_written"
+    );
+    assert!(
+        flush_result["flush_timestamp"].is_string(),
+        "flush_state must return flush_timestamp"
     );
 
-    // Verify .engram/tasks.md was actually written to disk.
-    let tasks_md = harness.workspace.path().join(".engram").join("tasks.md");
+    // Verify .engram/code-graph/ directory was created.
+    let code_graph_dir = harness.workspace.path().join(".engram").join("code-graph");
     assert!(
-        tasks_md.exists(),
-        "flush_state must create .engram/tasks.md on disk"
-    );
-    let tasks_md_content = std::fs::read_to_string(&tasks_md).expect("read tasks.md");
-    assert!(
-        tasks_md_content.contains("smoke test task"),
-        "tasks.md must contain the created task title"
+        code_graph_dir.exists(),
+        "flush_state must create .engram/code-graph/ directory"
     );
 
-    // ── Step 5: get_health_report ─────────────────────────────────────────
-    let health_result = send_ok(&endpoint, 5, "get_health_report", Some(json!({}))).await;
+    // ── Step 3: get_health_report ─────────────────────────────────────────
+    let health_result = send_ok(&endpoint, 3, "get_health_report", Some(json!({}))).await;
 
     assert!(
         health_result["uptime_seconds"].is_number(),
@@ -168,8 +125,8 @@ async fn smoke_full_tool_chain_over_ipc() {
         .as_u64()
         .expect("tool_call_count is u64");
     assert!(
-        tool_count >= 4,
-        "tool_call_count must be >= 4 after our calls, got {tool_count}"
+        tool_count >= 2,
+        "tool_call_count must be >= 2 after our calls (excludes current call), got {tool_count}"
     );
     assert!(
         health_result["latency_us"].is_object(),
@@ -188,8 +145,8 @@ async fn smoke_full_tool_chain_over_ipc() {
         "latency_us must have p99"
     );
 
-    // ── Step 6: _shutdown ─────────────────────────────────────────────────
-    let shutdown_request = make_request(6, "_shutdown", None);
+    // ── Step 4: _shutdown ─────────────────────────────────────────────────
+    let shutdown_request = make_request(4, "_shutdown", None);
     let shutdown_response = send_request(&endpoint, &shutdown_request, Duration::from_secs(5))
         .await
         .expect("_shutdown IPC must succeed");
@@ -256,9 +213,8 @@ async fn s073_status_before_workspace_set_returns_error() {
 
 /// S071: `get_workspace_status` returns a complete response with all required fields.
 ///
-/// After `set_workspace`, the status response must include `path`, `task_count`,
-/// `context_count`, `last_flush`, `stale_files`, `connection_count`, and `code_graph`
-/// with all sub-fields.
+/// After `set_workspace`, the status response must include `path`, `last_flush`,
+/// `stale_files`, `connection_count`, and `code_graph` with all sub-fields.
 #[tokio::test]
 async fn s071_full_workspace_status_response() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -283,11 +239,6 @@ async fn s071_full_workspace_status_response() {
     assert!(
         !result["path"].as_str().unwrap_or("").is_empty(),
         "path must not be empty"
-    );
-    assert!(result["task_count"].is_number(), "must have task_count");
-    assert!(
-        result["context_count"].is_number(),
-        "must have context_count"
     );
     assert!(
         result["connection_count"].is_number(),
@@ -375,24 +326,6 @@ async fn s078_all_subsystems_active_together() {
 
     // Subsystem: connection tracking
     state.register_connection("s078-conn".to_string()).await;
-
-    // Subsystem: task management
-    tools::dispatch(
-        state.clone(),
-        "create_task",
-        Some(json!({ "title": "S078 task" })),
-    )
-    .await
-    .expect("create_task must succeed");
-
-    // Subsystem: context / decisions
-    tools::dispatch(
-        state.clone(),
-        "register_decision",
-        Some(json!({ "topic": "S078 decision", "decision": "proceed" })),
-    )
-    .await
-    .expect("register_decision must succeed");
 
     // Status reflects all subsystems.
     let result = tools::dispatch(state.clone(), "get_workspace_status", None)

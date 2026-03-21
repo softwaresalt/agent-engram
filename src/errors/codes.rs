@@ -1,6 +1,6 @@
 //! Numeric error code constants for structured MCP error responses.
 //!
-//! Ranges: 1xxx workspace, 2xxx hydration, 3xxx task, 4xxx query,
+//! Ranges: 1xxx workspace, 2xxx hydration, 4xxx query,
 //! 5xxx system, 6xxx config, 7xxx code graph, 8xxx IPC/daemon,
 //! 9xxx installer, 10xxx registry, 11xxx ingestion, 12xxx git graph.
 
@@ -16,32 +16,6 @@ pub const HYDRATION_FAILED: u16 = 2001;
 pub const SCHEMA_MISMATCH: u16 = 2002;
 pub const CORRUPTED_STATE: u16 = 2003;
 pub const STALE_WORKSPACE: u16 = 2004;
-
-/// Task error codes
-pub const TASK_NOT_FOUND: u16 = 3001;
-pub const INVALID_STATUS: u16 = 3002;
-pub const CYCLIC_DEPENDENCY: u16 = 3003;
-pub const BLOCKER_EXISTS: u16 = 3004;
-pub const TASK_ALREADY_CLAIMED: u16 = 3005;
-pub const LABEL_VALIDATION: u16 = 3006;
-pub const BATCH_PARTIAL_FAILURE: u16 = 3007;
-pub const COMPACTION_FAILED: u16 = 3008;
-pub const INVALID_PRIORITY: u16 = 3009;
-pub const INVALID_ISSUE_TYPE: u16 = 3010;
-pub const DUPLICATE_LABEL: u16 = 3011;
-pub const TASK_NOT_CLAIMABLE: u16 = 3012;
-pub const TASK_TITLE_EMPTY: u16 = 3013;
-pub const TASK_TITLE_TOO_LONG: u16 = 3014;
-/// Gate enforcement: task blocked by incomplete hard_blocker prerequisites
-pub const TASK_BLOCKED: u16 = 3015;
-/// Rollback operation codes (3020–3029)
-pub const ROLLBACK_DENIED: u16 = 3020;
-pub const EVENT_NOT_FOUND: u16 = 3021;
-pub const ROLLBACK_CONFLICT: u16 = 3022;
-/// Collection error codes (3030–3039)
-pub const COLLECTION_EXISTS: u16 = 3030;
-pub const COLLECTION_NOT_FOUND: u16 = 3031;
-pub const CYCLIC_COLLECTION: u16 = 3032;
 
 /// Query error codes
 pub const QUERY_TOO_LONG: u16 = 4001;

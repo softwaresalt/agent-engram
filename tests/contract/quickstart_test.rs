@@ -64,25 +64,6 @@ async fn t071_all_quickstart_tools_exist_in_dispatch() {
     // US2: List Symbols
     assert_tool_exists(state.clone(), "list_symbols", Some(json!({}))).await;
 
-    // US4: Link Task to Code
-    assert_tool_exists(
-        state.clone(),
-        "link_task_to_code",
-        Some(json!({ "task_id": "task:abc", "symbol_name": "dispatch" })),
-    )
-    .await;
-
-    // US4: Unlink Task from Code
-    assert_tool_exists(
-        state.clone(),
-        "unlink_task_from_code",
-        Some(json!({ "task_id": "task:abc", "symbol_name": "dispatch" })),
-    )
-    .await;
-
-    // US4: Get Active Context
-    assert_tool_exists(state.clone(), "get_active_context", None).await;
-
     // US5: Unified Search
     assert_tool_exists(
         state.clone(),
@@ -114,13 +95,6 @@ async fn t071_core_tools_also_registered() {
         "daemon status should include uptime_seconds"
     );
 
-    // Task tools require workspace
-    assert_tool_exists(
-        state.clone(),
-        "create_task",
-        Some(json!({ "title": "test" })),
-    )
-    .await;
     assert_tool_exists(state.clone(), "flush_state", Some(json!({}))).await;
 }
 
@@ -192,8 +166,8 @@ async fn t075_model_load_failed_json_shape() {
 
     let error_obj = json.get("error").expect("should have 'error' key");
     assert!(error_obj.get("code").and_then(Value::as_u64).is_some());
-    assert!(error_obj.get("name").and_then(|v| v.as_str()).is_some());
-    assert!(error_obj.get("message").and_then(|v| v.as_str()).is_some());
+    assert!(error_obj.get("name").and_then(Value::as_str).is_some());
+    assert!(error_obj.get("message").and_then(Value::as_str).is_some());
     assert!(error_obj.get("details").is_some());
 
     let details = error_obj.get("details").unwrap();

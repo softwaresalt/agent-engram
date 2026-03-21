@@ -22,24 +22,6 @@ fn hydration_error_codes_match_contract() {
     assert_eq!(STALE_WORKSPACE, 2004);
 }
 
-/// Verify all task error codes match the contract.
-#[test]
-fn task_error_codes_match_contract() {
-    assert_eq!(TASK_NOT_FOUND, 3001);
-    assert_eq!(INVALID_STATUS, 3002);
-    assert_eq!(CYCLIC_DEPENDENCY, 3003);
-    assert_eq!(BLOCKER_EXISTS, 3004);
-    assert_eq!(TASK_ALREADY_CLAIMED, 3005);
-    assert_eq!(LABEL_VALIDATION, 3006);
-    assert_eq!(BATCH_PARTIAL_FAILURE, 3007);
-    assert_eq!(COMPACTION_FAILED, 3008);
-    assert_eq!(INVALID_PRIORITY, 3009);
-    assert_eq!(INVALID_ISSUE_TYPE, 3010);
-    assert_eq!(DUPLICATE_LABEL, 3011);
-    assert_eq!(TASK_NOT_CLAIMABLE, 3012);
-    assert_eq!(TASK_TITLE_EMPTY, 3013);
-}
-
 /// Verify all query error codes match the contract.
 #[test]
 fn query_error_codes_match_contract() {
@@ -117,90 +99,6 @@ fn error_response_codes_are_consistent() {
             HydrationError::StaleWorkspace.into(),
             2004,
             "StaleWorkspace",
-        ),
-        (
-            TaskError::NotFound { id: "x".into() }.into(),
-            3001,
-            "TaskNotFound",
-        ),
-        (
-            TaskError::InvalidStatus { status: "x".into() }.into(),
-            3002,
-            "InvalidStatus",
-        ),
-        (TaskError::CyclicDependency.into(), 3003, "CyclicDependency"),
-        (
-            TaskError::BlockerExists { id: "x".into() }.into(),
-            3004,
-            "BlockerExists",
-        ),
-        (TaskError::TitleEmpty.into(), 3013, "TaskTitleEmpty"),
-        (
-            TaskError::AlreadyClaimed {
-                id: "x".into(),
-                assignee: "a".into(),
-            }
-            .into(),
-            3005,
-            "TaskAlreadyClaimed",
-        ),
-        (
-            TaskError::LabelValidation { reason: "x".into() }.into(),
-            3006,
-            "LabelValidation",
-        ),
-        (
-            TaskError::BatchPartialFailure {
-                succeeded: 1,
-                failed: 1,
-                results: serde_json::json!([]),
-            }
-            .into(),
-            3007,
-            "BatchPartialFailure",
-        ),
-        (
-            TaskError::CompactionFailed {
-                id: "x".into(),
-                reason: "x".into(),
-            }
-            .into(),
-            3008,
-            "CompactionFailed",
-        ),
-        (
-            TaskError::InvalidPriority {
-                priority: "x".into(),
-            }
-            .into(),
-            3009,
-            "InvalidPriority",
-        ),
-        (
-            TaskError::InvalidIssueType {
-                issue_type: "x".into(),
-            }
-            .into(),
-            3010,
-            "InvalidIssueType",
-        ),
-        (
-            TaskError::DuplicateLabel {
-                task_id: "x".into(),
-                label: "x".into(),
-            }
-            .into(),
-            3011,
-            "DuplicateLabel",
-        ),
-        (
-            TaskError::NotClaimable {
-                id: "x".into(),
-                status: "done".into(),
-            }
-            .into(),
-            3012,
-            "TaskNotClaimable",
         ),
         (QueryError::QueryTooLong.into(), 4001, "QueryTooLong"),
         (QueryError::QueryEmpty.into(), 4004, "QueryEmpty"),
@@ -282,21 +180,6 @@ fn t094_error_response_json_shape() {
             true,
         ),
         (
-            TaskError::AlreadyClaimed {
-                id: "t1".into(),
-                assignee: "a".into(),
-            }
-            .into(),
-            true,
-        ),
-        (
-            TaskError::InvalidPriority {
-                priority: "p9".into(),
-            }
-            .into(),
-            true,
-        ),
-        (
             ConfigError::InvalidValue {
                 key: "k".into(),
                 reason: "r".into(),
@@ -306,8 +189,6 @@ fn t094_error_response_json_shape() {
         ),
         // Errors WITHOUT details
         (WorkspaceError::NotSet.into(), false),
-        (TaskError::CyclicDependency.into(), false),
-        (TaskError::TitleEmpty.into(), false),
         (SystemError::RateLimited.into(), false),
     ];
 
@@ -318,8 +199,6 @@ fn t094_error_response_json_shape() {
         // Verify top-level structure
         let error_obj = json.get("error").expect("should have 'error' key");
         assert!(error_obj.is_object(), "error should be an object");
-
-        // Verify required fields exist with correct types
         assert!(
             error_obj
                 .get("code")
@@ -328,16 +207,25 @@ fn t094_error_response_json_shape() {
             "error.code should be a number: {json}"
         );
         assert!(
-            error_obj.get("name").and_then(|v| v.as_str()).is_some(),
+            error_obj
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
             "error.name should be a string: {json}"
         );
         assert!(
-            error_obj.get("message").and_then(|v| v.as_str()).is_some(),
+            error_obj
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
             "error.message should be a string: {json}"
         );
 
         // Verify message is non-empty
-        let msg = error_obj.get("message").and_then(|v| v.as_str()).unwrap();
+        let msg = error_obj
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
         assert!(!msg.is_empty(), "error.message should not be empty: {json}");
 
         // Verify details presence/absence
