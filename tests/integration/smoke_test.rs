@@ -79,8 +79,8 @@ async fn smoke_full_tool_chain_over_ipc() {
         "get_workspace_status must return a path"
     );
     assert!(
-        ws_result["task_count"].is_number(),
-        "get_workspace_status must return task_count"
+        ws_result["code_graph"].is_object(),
+        "get_workspace_status must return code_graph"
     );
 
     // ── Step 2: flush_state ───────────────────────────────────────────────
@@ -120,8 +120,8 @@ async fn smoke_full_tool_chain_over_ipc() {
         .as_u64()
         .expect("tool_call_count is u64");
     assert!(
-        tool_count >= 3,
-        "tool_call_count must be >= 3 after our calls, got {tool_count}"
+        tool_count >= 2,
+        "tool_call_count must be >= 2 after our calls (excludes current call), got {tool_count}"
     );
     assert!(
         health_result["latency_us"].is_object(),
@@ -208,9 +208,8 @@ async fn s073_status_before_workspace_set_returns_error() {
 
 /// S071: `get_workspace_status` returns a complete response with all required fields.
 ///
-/// After `set_workspace`, the status response must include `path`, `task_count`,
-/// `context_count`, `last_flush`, `stale_files`, `connection_count`, and `code_graph`
-/// with all sub-fields.
+/// After `set_workspace`, the status response must include `path`, `last_flush`,
+/// `stale_files`, `connection_count`, and `code_graph` with all sub-fields.
 #[tokio::test]
 async fn s071_full_workspace_status_response() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -235,11 +234,6 @@ async fn s071_full_workspace_status_response() {
     assert!(
         !result["path"].as_str().unwrap_or("").is_empty(),
         "path must not be empty"
-    );
-    assert!(result["task_count"].is_number(), "must have task_count");
-    assert!(
-        result["context_count"].is_number(),
-        "must have context_count"
     );
     assert!(
         result["connection_count"].is_number(),

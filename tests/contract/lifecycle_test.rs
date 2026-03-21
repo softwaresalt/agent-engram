@@ -90,8 +90,6 @@ async fn contract_get_workspace_status_reports_state() {
         status.get("path").and_then(Value::as_str),
         Some(canonical_path.as_str())
     );
-    assert_eq!(status.get("task_count").and_then(Value::as_u64), Some(0));
-    assert_eq!(status.get("context_count").and_then(Value::as_u64), Some(0));
     assert_eq!(
         status.get("stale_files").and_then(Value::as_bool),
         Some(false)

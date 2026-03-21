@@ -70,7 +70,7 @@ async fn load_registry_status(state: &SharedState) -> Result<Option<Value>, Engr
 
 // ── Workspace statistics ─────────────────────────────────────────────────
 
-/// Return aggregate counts by status, priority, type, and label.
+/// Return aggregate code graph statistics for the current workspace.
 pub async fn get_workspace_statistics(
     state: SharedState,
     _params: Option<Value>,
@@ -79,28 +79,22 @@ pub async fn get_workspace_statistics(
 
     let ws_id = workspace_id(&state).await?;
     let db = connect_db(&ws_id).await?;
-    let queries = Queries::new(db.clone());
+    let cg_queries = CodeGraphQueries::new(db);
 
-    let statistics = queries.get_workspace_statistics().await?;
+    let code_files = cg_queries.count_code_files().await.unwrap_or(0);
+    let functions = cg_queries.count_functions().await.unwrap_or(0);
+    let classes = cg_queries.count_classes().await.unwrap_or(0);
+    let interfaces = cg_queries.count_interfaces().await.unwrap_or(0);
+    let edges = cg_queries.count_code_edges().await.unwrap_or(0);
 
     let registry_status = load_registry_status(&state).await?;
 
     let mut result = serde_json::Map::from_iter([
-        ("total_tasks".to_owned(), json!(statistics.total_tasks)),
-        ("by_status".to_owned(), json!(statistics.by_status)),
-        ("by_priority".to_owned(), json!(statistics.by_priority)),
-        ("by_type".to_owned(), json!(statistics.by_type)),
-        ("by_label".to_owned(), json!(statistics.by_label)),
-        (
-            "deferred_count".to_owned(),
-            json!(statistics.deferred_count),
-        ),
-        ("pinned_count".to_owned(), json!(statistics.pinned_count)),
-        ("claimed_count".to_owned(), json!(statistics.claimed_count)),
-        (
-            "compacted_count".to_owned(),
-            json!(statistics.compacted_count),
-        ),
+        ("code_files".to_owned(), json!(code_files)),
+        ("functions".to_owned(), json!(functions)),
+        ("classes".to_owned(), json!(classes)),
+        ("interfaces".to_owned(), json!(interfaces)),
+        ("edges".to_owned(), json!(edges)),
     ]);
 
     if let Some(reg) = registry_status {
@@ -139,50 +133,10 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
 
     let workspace_id = workspace_id(&state).await?;
     let db = connect_db(&workspace_id).await?;
-    let queries = Queries::new(db.clone());
+    let queries = Queries::new(db);
 
-    // Gather candidates from specs, tasks, and contexts.
+    // Search content records only, optionally filtered by content_type.
     let mut candidates: Vec<SearchCandidate> = Vec::new();
-
-    let specs = queries.all_specs().await?;
-    for spec in specs {
-        candidates.push(SearchCandidate {
-            id: format!("spec:{}", spec.id),
-            source_type: "spec".to_string(),
-            content: format!("{}\n{}", spec.title, spec.content),
-            embedding: spec.embedding,
-        });
-    }
-
-    let tasks = queries.all_tasks().await?;
-    for task in tasks {
-        let text = format!(
-            "{}\n{}{}",
-            task.title,
-            task.description,
-            task.context_summary
-                .as_deref()
-                .map_or_else(String::new, |s| format!("\n{s}"))
-        );
-        candidates.push(SearchCandidate {
-            id: format!("task:{}", task.id),
-            source_type: "task".to_string(),
-            content: text,
-            embedding: None,
-        });
-    }
-
-    let contexts = queries.all_contexts().await?;
-    for ctx in contexts {
-        candidates.push(SearchCandidate {
-            id: format!("context:{}", ctx.id),
-            source_type: "context".to_string(),
-            content: ctx.content,
-            embedding: ctx.embedding,
-        });
-    }
-
-    // Include content records, optionally filtered by content_type.
     let content_records = queries
         .select_content_records(parsed.content_type.as_deref())
         .await?;
@@ -441,11 +395,11 @@ const fn default_unified_limit() -> usize {
     10
 }
 
-/// Unified semantic search across code and task regions (FR-128/FR-131).
+/// Unified semantic search across the code graph and content records (FR-128/FR-131).
 ///
-/// Scoring: raw cosine similarity on embedding vectors. Results from code
-/// and task regions are merged into a single list sorted by descending score.
-/// No cross-region normalization or boosting in v0.
+/// Scoring: raw cosine similarity on embedding vectors for code symbols;
+/// keyword scoring for content records. Results are merged into a single
+/// list sorted by descending score.
 ///
 /// Returns summary text only, not full bodies (FR-148 exemption).
 ///
@@ -475,13 +429,11 @@ pub async fn unified_search(
     // Validate query length.
     embedding::validate_query_length(trimmed)?;
 
-    // Validate region parameter.
-    let search_code = parsed.region == "code" || parsed.region == "all";
-    let search_task = parsed.region == "task" || parsed.region == "all";
-    if !search_code && !search_task {
+    // Validate region parameter — only "code" and "all" are supported.
+    if parsed.region != "code" && parsed.region != "all" {
         return Err(EngramError::System(SystemError::InvalidParams {
             reason: format!(
-                "invalid region '{}': expected code, task, or all",
+                "invalid region '{}': expected code or all",
                 parsed.region
             ),
         }));
@@ -502,8 +454,8 @@ pub async fn unified_search(
     let cg_queries = CodeGraphQueries::new(db.clone());
     let queries = Queries::new(db);
 
-    // ── Code region search ──────────────────────────────────────────
-    let code_results = if search_code {
+    // ── Code region: vector search on code symbols ───────────────────
+    let code_results = {
         let symbols = cg_queries
             .vector_search_symbols(&query_embedding, limit)
             .await?;
@@ -530,106 +482,18 @@ pub async fn unified_search(
                 }
             })
             .collect::<Vec<_>>()
-    } else {
-        Vec::new()
     };
 
-    // ── Task region search ──────────────────────────────────────────
-    let task_results = if search_task {
-        let mut results: Vec<UnifiedSearchResult> = Vec::new();
-
-        // Search specs (have embeddings).
-        let specs = queries.all_specs().await?;
-        for spec in specs {
-            if let Some(ref emb) = spec.embedding {
-                let score = cosine_similarity(&query_embedding, emb);
-                if score > 0.0 {
-                    results.push(UnifiedSearchResult {
-                        region: SearchRegion::Task,
-                        score,
-                        node_type: "spec".to_string(),
-                        id: format!("spec:{}", spec.id),
-                        title: Some(spec.title),
-                        summary: Some(truncate_summary(&spec.content, 200)),
-                        file_path: Some(spec.file_path),
-                        line_range: None,
-                        status: None,
-                        linked_symbols: None,
-                    });
-                }
-            }
-        }
-
-        // Search contexts (have embeddings).
-        let contexts = queries.all_contexts().await?;
-        for ctx in contexts {
-            if let Some(ref emb) = ctx.embedding {
-                let score = cosine_similarity(&query_embedding, emb);
-                if score > 0.0 {
-                    results.push(UnifiedSearchResult {
-                        region: SearchRegion::Task,
-                        score,
-                        node_type: "context".to_string(),
-                        id: format!("context:{}", ctx.id),
-                        title: None,
-                        summary: Some(truncate_summary(&ctx.content, 200)),
-                        file_path: None,
-                        line_range: None,
-                        status: None,
-                        linked_symbols: None,
-                    });
-                }
-            }
-        }
-
-        // Search tasks via keyword scoring (tasks lack embedding vectors).
-        // Score = fraction of query words found in title+description (case-insensitive).
-        let tasks = queries.all_tasks().await?;
-        let query_words: Vec<&str> = trimmed.split_whitespace().collect();
-        for task in tasks {
+    // ── Content records: keyword scoring ────────────────────────────
+    let query_words: Vec<&str> = trimmed.split_whitespace().collect();
+    let content_records = queries
+        .select_content_records(parsed.content_type.as_deref())
+        .await?;
+    let content_results: Vec<UnifiedSearchResult> = content_records
+        .into_iter()
+        .filter_map(|cr| {
             if query_words.is_empty() {
-                continue;
-            }
-            let haystack = format!(
-                "{} {}",
-                task.title.to_lowercase(),
-                task.description.to_lowercase()
-            );
-            let matched = query_words
-                .iter()
-                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
-                .count();
-            let score = matched as f32 / query_words.len() as f32;
-            if score > 0.0 {
-                let linked = cg_queries
-                    .list_concerns_for_task(&task.id)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|l| l.symbol_name)
-                    .collect::<Vec<_>>();
-                results.push(UnifiedSearchResult {
-                    region: SearchRegion::Task,
-                    score,
-                    node_type: "task".to_string(),
-                    id: format!("task:{}", task.id),
-                    title: Some(task.title),
-                    summary: Some(truncate_summary(&task.description, 200)),
-                    file_path: None,
-                    line_range: None,
-                    status: Some(task.status.as_str().to_string()),
-                    linked_symbols: Some(linked),
-                });
-            }
-        }
-
-        // Search content records (keyword scoring, same as tasks).
-        let content_records = queries
-            .select_content_records(parsed.content_type.as_deref())
-            .await?;
-        for cr in content_records {
-            if query_words.is_empty() {
-                continue;
+                return None;
             }
             let haystack = cr.content.to_lowercase();
             let matched = query_words
@@ -638,8 +502,8 @@ pub async fn unified_search(
                 .count();
             let score = matched as f32 / query_words.len() as f32;
             if score > 0.0 {
-                results.push(UnifiedSearchResult {
-                    region: SearchRegion::Task,
+                Some(UnifiedSearchResult {
+                    region: SearchRegion::Code,
                     score,
                     node_type: cr.content_type.clone(),
                     id: format!("content_record:{}", cr.id),
@@ -649,17 +513,15 @@ pub async fn unified_search(
                     line_range: None,
                     status: None,
                     linked_symbols: None,
-                });
+                })
+            } else {
+                None
             }
-        }
+        })
+        .collect();
 
-        results
-    } else {
-        Vec::new()
-    };
-
-    // ── Merge and rank ──────────────────────────────────────────────
-    let merged = merge_unified_results(code_results, task_results, limit);
+    // ── Merge and rank ───────────────────────────────────────────────
+    let merged = merge_unified_results(code_results, content_results, limit);
     let total_matches = merged.len();
 
     Ok(json!({
@@ -693,8 +555,6 @@ struct ImpactAnalysisParams {
     symbol_name: String,
     #[serde(default = "default_impact_depth")]
     depth: usize,
-    #[serde(default)]
-    status_filter: Option<String>,
     #[serde(default = "default_impact_max_nodes")]
     max_nodes: usize,
 }
@@ -707,15 +567,12 @@ const fn default_impact_max_nodes() -> usize {
     50
 }
 
-/// Impact analysis: traverse code dependencies and cross-region concerns edges
-/// to find all tasks affected by changes to a specific code symbol (FR-129).
+/// Impact analysis: traverse the code graph to find symbols affected by
+/// changes to a specific code symbol (FR-129).
 ///
 /// 1. Resolve `symbol_name` via exact-name lookup.
 /// 2. BFS traverse code graph to `depth` hops (clamped by FR-149).
-/// 3. Collect all visited node IDs (root + neighbors).
-/// 4. Reverse-lookup `concerns` edges to find linked tasks.
-/// 5. Optionally filter tasks by `status_filter`.
-/// 6. Return full source bodies for code nodes (FR-148).
+/// 3. Return the root symbol and its code neighborhood with full source bodies (FR-148).
 ///
 /// # Errors
 /// - `WorkspaceError::NotSet` (1003) if workspace not bound.
@@ -747,8 +604,7 @@ pub async fn impact_analysis(
 
     let workspace_id = workspace_id(&state).await?;
     let db = connect_db(&workspace_id).await?;
-    let cg_queries = CodeGraphQueries::new(db.clone());
-    let queries = Queries::new(db);
+    let cg_queries = CodeGraphQueries::new(db);
 
     // Step 1: Resolve symbol name to code node(s).
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
@@ -765,54 +621,8 @@ pub async fn impact_analysis(
         .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
         .await?;
 
-    // Step 3: Collect all visited node IDs (root + neighbors).
-    let mut all_node_ids: Vec<String> = vec![root.id.clone()];
-    for neighbor in &bfs.neighbors {
-        all_node_ids.push(neighbor.id.clone());
-    }
-    all_node_ids.dedup();
-
-    // Step 4: Reverse-lookup concerns edges to find linked tasks.
-    let task_symbol_pairs = cg_queries.find_tasks_for_symbols(&all_node_ids).await?;
-
-    // Deduplicate task IDs and collect dependency paths.
-    let mut task_map: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for (task_id, symbol_id) in &task_symbol_pairs {
-        task_map
-            .entry(task_id.clone())
-            .or_default()
-            .push(symbol_id.clone());
-    }
-
-    // Step 5: Fetch tasks and apply status filter.
-    let mut affected_tasks: Vec<Value> = Vec::new();
-    for (task_id, dependency_path) in &task_map {
-        let raw_id = task_id.strip_prefix("task:").unwrap_or(task_id);
-        if let Some(task) = queries.get_task(raw_id).await? {
-            // Apply status filter if provided.
-            if let Some(ref filter) = parsed.status_filter {
-                if task.status.as_str() != filter.as_str() {
-                    continue;
-                }
-            }
-            affected_tasks.push(json!({
-                "task": {
-                    "id": task.id,
-                    "title": task.title,
-                    "status": task.status.as_str(),
-                    "priority": task.priority,
-                    "work_item_id": task.work_item_id,
-                },
-                "dependency_path": dependency_path,
-            }));
-        }
-    }
-
     // Build code neighborhood JSON (FR-148: full source bodies).
     let code_neighborhood: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
-
-    let no_task_links = affected_tasks.is_empty();
 
     Ok(json!({
         "symbol": {
@@ -821,8 +631,6 @@ pub async fn impact_analysis(
             "file_path": root.file_path,
         },
         "code_neighborhood": code_neighborhood,
-        "affected_tasks": affected_tasks,
-        "no_task_links": no_task_links,
         "effective_depth": effective_depth,
         "effective_max_nodes": effective_max_nodes,
     }))

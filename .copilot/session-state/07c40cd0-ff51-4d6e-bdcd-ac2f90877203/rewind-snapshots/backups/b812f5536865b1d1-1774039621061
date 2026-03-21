@@ -1,0 +1,22 @@
+id: 8baa78ec-b203-4c7f-b1d3-c1170ae84b7d
+cwd: D:\Source\GitHub\agent-engram
+git_root: D:\Source\GitHub\agent-engram
+repository: softwaresalt/agent-engram
+host_type: github
+branch: 007-agent-engineering-refactor
+summary_count: 0
+created_at: 2026-03-20T19:08:04.310Z
+updated_at: 2026-03-20T19:09:29.011Z
+summary: |-
+  I'm getting the following errors on load of the MCP servers. I need to understand what is the correct format for this configuration file and fix if you can: Failed to start MCP Servers: Error: Failed to read configuration from .copilot\mcp-config.json: [
+    {
+      "code": "invalid_union",
+      "unionErrors": [
+        {
+          "issues": [
+            {
+              "code": "invalid_type",
+              "expected": "array",
+              "received": "undefined",
+              "path": [
+                "mcpServe...

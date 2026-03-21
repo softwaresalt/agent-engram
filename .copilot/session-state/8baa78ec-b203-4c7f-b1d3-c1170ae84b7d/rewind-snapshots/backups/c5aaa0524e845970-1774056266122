@@ -1,0 +1,43 @@
+{
+  "mcpServers": {
+    "engram": {
+      "type": "stdio",
+      "command": "D:/Source/GitHub/agent-engram/target/release/engram.exe",
+      "args": ["shim"],
+      "env": {
+        "ENGRAM_WORKSPACE": "D:\\Source\\GitHub\\agent-engram"
+      }
+    },
+    "beads": {
+      "command": "beads-mcp",
+      "args": []
+    },
+		"context7": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@upstash/context7-mcp"
+			]
+		},
+		"microsoft-docs": {
+			"type": "http",
+			"url": "https://learn.microsoft.com/api/mcp"
+		},
+		"agent-intercom": {
+			"type": "http",
+			"url": "http://127.0.0.1:3000/mcp?workspace_id=agent-engram"
+		},
+		"tavily": {
+			"url": "https://mcp.tavily.com/mcp/?tavilyApiKey=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",
+			"type": "http"
+		},
+		"github": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token) npx -y @modelcontextprotocol/server-github"
+      ]
+    }
+  }
+}

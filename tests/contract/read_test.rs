@@ -11,8 +11,6 @@ fn test_snapshot(id: &str) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         workspace_id: id.to_string(),
         path: format!("/tmp/{id}"),
-        task_count: 0,
-        context_count: 0,
         last_flush: None,
         stale_files: false,
         connection_count: 1,
@@ -44,8 +42,6 @@ async fn contract_query_memory_rejects_long_query() {
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws".to_string(),
         path: "/tmp/test-repo".to_string(),
-        task_count: 0,
-        context_count: 0,
         last_flush: None,
         stale_files: false,
         connection_count: 1,
@@ -75,8 +71,6 @@ async fn contract_query_memory_returns_results_array() {
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws_results".to_string(),
         path: "/tmp/test-repo-results".to_string(),
-        task_count: 0,
-        context_count: 0,
         last_flush: None,
         stale_files: false,
         connection_count: 1,

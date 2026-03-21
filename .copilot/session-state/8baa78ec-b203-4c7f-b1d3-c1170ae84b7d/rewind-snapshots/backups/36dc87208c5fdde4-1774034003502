@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "snapshots": [
+    {
+      "snapshotId": "e276875d-0da2-4e6e-ab38-f2ffdc24b02e",
+      "eventId": "28564e5e-c891-4c2f-8bd9-bd5196a8e90b",
+      "userMessage": "I'm getting the following errors on load of the MCP servers. I need to understand what is the correct format for this configuration file and fix if you can: Failed to start MCP Servers: Error: Failed to read configuration from .copilot\\mcp-config.json: [\n  {\n    \"code\": \"invalid_union\",\n    \"unionErrors\": [\n      {\n        \"issues\": [\n          {\n            \"code\": \"invalid_type\",\n            \"expected\": \"array\",\n            \"received\": \"undefined\",\n            \"path\": [\n              \"mcpServers\",\n              \"beads\",\n              \"args\"\n            ],\n            \"message\": \"Required\"\n          }\n        ],\n        \"name\": \"ZodError\"\n      },\n      {\n        \"issues\": [\n          {\n            \"code\": \"invalid_union\",\n            \"unionErrors\": [\n              {\n                \"issues\": [\n                  {\n                    \"code\": \"invalid_literal\",\n                    \"expected\": \"http\",\n                    \"path\": [\n                      \"mcpServers\",\n                      \"beads\",\n                      \"type\"\n                    ],\n                    \"message\": \"Invalid literal value, expected \\\"http\\\"\"\n                  }\n                ],\n                \"name\": \"ZodError\"\n              },\n              {\n                \"issues\": [\n                  {\n                    \"code\": \"invalid_literal\",\n                    \"expected\": \"sse\",\n                    \"path\": [\n                      \"mcpServers\",\n                      \"beads\",\n                      \"type\"\n                    ],\n                    \"message\": \"Invalid literal value, expected \\\"sse\\\"\"\n                  }\n                ],\n                \"name\": \"ZodError\"\n              }\n            ],\n            \"path\": [\n              \"mcpServers\",\n              \"beads\",\n              \"type\"\n            ],\n            \"message\": \"Invalid input\"\n          },\n          {\n            \"code\": \"invalid_type\",\n            \"expected\": \"string\",\n            \"received\": \"undefined\",\n            \"path\": [\n              \"mcpServers\",\n              \"beads\",\n              \"url\"\n            ],\n            \"message\": \"Required\"\n          }\n        ],\n        \"name\": \"ZodError\"\n      }\n    ],\n    \"path\": [\n      \"mcpServers\",\n      \"beads\"\n    ],\n    \"message\": \"Invalid input\"\n  }\n]",
+      "timestamp": "2026-03-20T19:09:29.326Z",
+      "fileCount": 7,
+      "gitCommit": "8f29996c702c5312afd4a2be93c06ede2f0552c5",
+      "gitBranch": "007-agent-engineering-refactor",
+      "backupHashes": [
+        "fb4dc358cdc2cd5b-1774033769288",
+        "5465d362e9160aeb-1774033769291",
+        "3f0b6ffc45e2aceb-1774033769294",
+        "8ffee117bb3a7971-1774033769297",
+        "e923875ed3e1767f-1774033769300",
+        "d149857c43563080-1774033769322",
+        "b812f5536865b1d1-1774033769325"
+      ],
+      "files": {
+        "2e30890e455535339dbab81d28cde2cb": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:fb4dc358cdc2cd5bb07de30bcba246bbb7833e30",
+          "backupFile": "fb4dc358cdc2cd5b-1774033769288",
+          "size": 10327,
+          "mtime": "2026-03-19T06:44:42.519Z",
+          "mode": 33206
+        },
+        "9add29537760c779de0b4fbce0828417": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:5465d362e9160aebedec092f3b0eb438a6499cd2",
+          "backupFile": "5465d362e9160aeb-1774033769291",
+          "size": 2559,
+          "mtime": "2026-03-20T19:09:26.210Z",
+          "mode": 33206
+        },
+        "672c135707df3354e0b0874aaf876efc": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:3f0b6ffc45e2acebd3c51bd5ed95182528bf2050",
+          "backupFile": "3f0b6ffc45e2aceb-1774033769294",
+          "size": 271,
+          "mtime": "2026-03-20T19:08:10.148Z",
+          "mode": 33206
+        },
+        "2490e705543ef10b2827889ee4d6a72f": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:8ffee117bb3a79713d77cf13480ebd1487ada228",
+          "backupFile": "8ffee117bb3a7971-1774033769297",
+          "size": 883,
+          "mtime": "2026-03-20T19:05:39.385Z",
+          "mode": 33206
+        },
+        "5627bbc45df133ccf35a31aa1cd40977": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:e923875ed3e1767f8b939b86c643d02bd5d5f40a",
+          "backupFile": "e923875ed3e1767f-1774033769300",
+          "size": 172,
+          "mtime": "2026-03-20T19:08:04.320Z",
+          "mode": 33206
+        },
+        "b96c3211ba535e0af7123b2db0dfa3c5": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:d149857c43563080d628e95c8cdbc54089b12948",
+          "backupFile": "d149857c43563080-1774033769322",
+          "size": 6,
+          "mtime": "2026-03-20T19:08:04.601Z",
+          "mode": 33206
+        },
+        "a89171bc7e95e1dcb4d85fa3d865e000": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:b812f5536865b1d1496850b137795958be58d00a",
+          "backupFile": "b812f5536865b1d1-1774033769325",
+          "size": 842,
+          "mtime": "2026-03-20T19:09:29.147Z",
+          "mode": 33206
+        }
+      }
+    },
+    {
+      "snapshotId": "9ffd7634-44e4-42be-b3cc-9043d402b324",
+      "eventId": "b5ed582e-1417-47a9-8c7e-91c34baaf237",
+      "userMessage": "How can I tell if the engram server has started up yet?",
+      "timestamp": "2026-03-20T19:12:56.909Z",
+      "fileCount": 16,
+      "gitCommit": "8f29996c702c5312afd4a2be93c06ede2f0552c5",
+      "gitBranch": "007-agent-engineering-refactor",
+      "backupHashes": [
+        "fb4dc358cdc2cd5b-1774033769288",
+        "6bab6387e3a10a35-1774033976779",
+        "3f0b6ffc45e2aceb-1774033769294",
+        "2600cdf9972f0984-1774033976783",
+        "e923875ed3e1767f-1774033769300",
+        "4c9e8e241076751a-1774033976786",
+        "d149857c43563080-1774033769322",
+        "3f0b6ffc45e2aceb-1774033769294",
+        "5465d362e9160aeb-1774033769291",
+        "8ffee117bb3a7971-1774033769297",
+        "b812f5536865b1d1-1774033769325",
+        "d149857c43563080-1774033769322",
+        "e923875ed3e1767f-1774033769300",
+        "fb4dc358cdc2cd5b-1774033769288",
+        "b683a5b8092d3087-1774033976790",
+        "bf0e65282dff9d23-1774033976893"
+      ],
+      "files": {
+        "2e30890e455535339dbab81d28cde2cb": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:fb4dc358cdc2cd5bb07de30bcba246bbb7833e30",
+          "backupFile": "fb4dc358cdc2cd5b-1774033769288",
+          "size": 10327,
+          "mtime": "2026-03-19T06:44:42.519Z",
+          "mode": 33206
+        },
+        "9add29537760c779de0b4fbce0828417": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:6bab6387e3a10a35b77eee9658439ea4a2e9950e",
+          "backupFile": "6bab6387e3a10a35-1774033976779",
+          "size": 2682,
+          "mtime": "2026-03-20T19:12:55.163Z",
+          "mode": 33206
+        },
+        "672c135707df3354e0b0874aaf876efc": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:3f0b6ffc45e2acebd3c51bd5ed95182528bf2050",
+          "backupFile": "3f0b6ffc45e2aceb-1774033769294",
+          "size": 271,
+          "mtime": "2026-03-20T19:08:10.148Z",
+          "mode": 33206
+        },
+        "2490e705543ef10b2827889ee4d6a72f": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:2600cdf9972f0984afa3f7d67904b7d9b9bc5474",
+          "backupFile": "2600cdf9972f0984-1774033976783",
+          "size": 902,
+          "mtime": "2026-03-20T19:09:39.304Z",
+          "mode": 33206
+        },
+        "5627bbc45df133ccf35a31aa1cd40977": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:e923875ed3e1767f8b939b86c643d02bd5d5f40a",
+          "backupFile": "e923875ed3e1767f-1774033769300",
+          "size": 172,
+          "mtime": "2026-03-20T19:08:04.320Z",
+          "mode": 33206
+        },
+        "01c0222c527d87e50c9266545728a422": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:4c9e8e241076751a2e610e54b4906bca85db1bf2",
+          "backupFile": "4c9e8e241076751a-1774033976786",
+          "size": 26035,
+          "mtime": "2026-03-20T19:12:56.460Z",
+          "mode": 33206
+        },
+        "b96c3211ba535e0af7123b2db0dfa3c5": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:d149857c43563080d628e95c8cdbc54089b12948",
+          "backupFile": "d149857c43563080-1774033769322",
+          "size": 6,
+          "mtime": "2026-03-20T19:08:04.601Z",
+          "mode": 33206
+        },
+        "c9915bfc84780e7d05948eed46a95648": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:3f0b6ffc45e2acebd3c51bd5ed95182528bf2050",
+          "backupFile": "3f0b6ffc45e2aceb-1774033769294",
+          "size": 271,
+          "mtime": "2026-03-20T19:08:10.148Z",
+          "mode": 33206
+        },
+        "6029554c99f65c6a1830c19b05c373f3": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:5465d362e9160aebedec092f3b0eb438a6499cd2",
+          "backupFile": "5465d362e9160aeb-1774033769291",
+          "size": 2559,
+          "mtime": "2026-03-20T19:09:26.210Z",
+          "mode": 33206
+        },
+        "c495d92d5e0e53488c02e58698f0d442": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:8ffee117bb3a79713d77cf13480ebd1487ada228",
+          "backupFile": "8ffee117bb3a7971-1774033769297",
+          "size": 883,
+          "mtime": "2026-03-20T19:05:39.385Z",
+          "mode": 33206
+        },
+        "a5e2772968e5fe43870d607a0f8684d2": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:b812f5536865b1d1496850b137795958be58d00a",
+          "backupFile": "b812f5536865b1d1-1774033769325",
+          "size": 842,
+          "mtime": "2026-03-20T19:09:29.147Z",
+          "mode": 33206
+        },
+        "38762e11fde5d7f985899f2c2bf06334": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:d149857c43563080d628e95c8cdbc54089b12948",
+          "backupFile": "d149857c43563080-1774033769322",
+          "size": 6,
+          "mtime": "2026-03-20T19:08:04.601Z",
+          "mode": 33206
+        },
+        "3bd3eca4613cd32c106152ef2573a4f9": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:e923875ed3e1767f8b939b86c643d02bd5d5f40a",
+          "backupFile": "e923875ed3e1767f-1774033769300",
+          "size": 172,
+          "mtime": "2026-03-20T19:08:04.320Z",
+          "mode": 33206
+        },
+        "1f7a052763d00b231fc5214386201107": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:fb4dc358cdc2cd5bb07de30bcba246bbb7833e30",
+          "backupFile": "fb4dc358cdc2cd5b-1774033769288",
+          "size": 10327,
+          "mtime": "2026-03-19T06:44:42.519Z",
+          "mode": 33206
+        },
+        "f55e5469aa3b912d072d333031a74c6b": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:b683a5b8092d3087eb207719109274233097d528",
+          "backupFile": "b683a5b8092d3087-1774033976790",
+          "size": 6395,
+          "mtime": "2026-03-20T19:09:29.324Z",
+          "mode": 33206
+        },
+        "a89171bc7e95e1dcb4d85fa3d865e000": {
+          "gitStatus": "??",
+          "contentHash": "git-sha1:bf0e65282dff9d2389a010eea4398077665f84e7",
+          "backupFile": "bf0e65282dff9d23-1774033976893",
+          "size": 331,
+          "mtime": "2026-03-20T19:09:34.773Z",
+          "mode": 33206
+        }
+      }
+    }
+  ],
+  "filePathMap": {
+    "2e30890e455535339dbab81d28cde2cb": "D:\\Source\\GitHub\\agent-engram\\.context\\Agent-Harness-ExecutionPlan.md",
+    "9add29537760c779de0b4fbce0828417": "D:\\Source\\GitHub\\agent-engram\\.copilot\\command-history-state.json",
+    "672c135707df3354e0b0874aaf876efc": "D:\\Source\\GitHub\\agent-engram\\.copilot\\config.json",
+    "2490e705543ef10b2827889ee4d6a72f": "D:\\Source\\GitHub\\agent-engram\\.copilot\\mcp-config.json",
+    "5627bbc45df133ccf35a31aa1cd40977": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\checkpoints\\index.md",
+    "b96c3211ba535e0af7123b2db0dfa3c5": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\inuse.13384.lock",
+    "a89171bc7e95e1dcb4d85fa3d865e000": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\workspace.yaml",
+    "01c0222c527d87e50c9266545728a422": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\events.jsonl",
+    "c9915bfc84780e7d05948eed46a95648": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\3f0b6ffc45e2aceb-1774033769294",
+    "6029554c99f65c6a1830c19b05c373f3": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\5465d362e9160aeb-1774033769291",
+    "c495d92d5e0e53488c02e58698f0d442": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\8ffee117bb3a7971-1774033769297",
+    "a5e2772968e5fe43870d607a0f8684d2": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\b812f5536865b1d1-1774033769325",
+    "38762e11fde5d7f985899f2c2bf06334": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\d149857c43563080-1774033769322",
+    "3bd3eca4613cd32c106152ef2573a4f9": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\e923875ed3e1767f-1774033769300",
+    "1f7a052763d00b231fc5214386201107": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\backups\\fb4dc358cdc2cd5b-1774033769288",
+    "f55e5469aa3b912d072d333031a74c6b": "D:\\Source\\GitHub\\agent-engram\\.copilot\\session-state\\8baa78ec-b203-4c7f-b1d3-c1170ae84b7d\\rewind-snapshots\\index.json"
+  }
+}

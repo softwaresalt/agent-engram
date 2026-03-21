@@ -93,7 +93,7 @@ async fn perf_setup(task_count: usize) -> (Arc<AppState>, Queries) {
     (state, queries)
 }
 
-// ── SC-015: statistics <100ms (5000 tasks) ──────────────────────
+// ── SC-015: statistics <100ms ────────────────────────────────────────────────
 
 #[tokio::test]
 async fn t089_sc015_statistics_performance() {
@@ -106,14 +106,12 @@ async fn t089_sc015_statistics_performance() {
     let elapsed = start.elapsed();
 
     assert!(
-        result.get("total_tasks").is_some(),
-        "should return total_tasks"
+        result.get("code_files").is_some(),
+        "should return code_files"
     );
-    assert_eq!(
-        result
-            .get("total_tasks")
-            .and_then(serde_json::Value::as_u64),
-        Some(5000)
+    assert!(
+        result.get("functions").is_some(),
+        "should return functions"
     );
     assert!(
         elapsed.as_millis() < 30_000,

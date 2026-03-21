@@ -83,7 +83,6 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
             ws.last_flush = Some(result.flush_timestamp.clone());
             ws.stale_files = false;
             ws.file_mtimes = new_mtimes;
-            ws.task_count = result.tasks_written as u64;
         })
         .await;
 

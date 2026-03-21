@@ -1,0 +1,17 @@
+{
+  "locations": {
+    "D:\\Source\\GitHub\\agent-engram": {
+      "tool_approvals": [
+        {
+          "kind": "write"
+        },
+        {
+          "kind": "commands",
+          "commandIdentifiers": [
+            "cargo check"
+          ]
+        }
+      ]
+    }
+  }
+}
