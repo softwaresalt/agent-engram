@@ -186,6 +186,10 @@ name = "unit_plugin_config"
 path = "tests/unit/plugin_config_test.rs"
 
 [[test]]
+name = "unit_embedding_status"
+path = "tests/unit/embedding_status_unit_test.rs"
+
+[[test]]
 name = "integration_config"
 path = "tests/integration/config_test.rs"
 

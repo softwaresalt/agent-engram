@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::errors::{EngramError, QueryError};
 
 /// Embedding vector dimension for `bge-small-en-v1.5`.
@@ -118,7 +120,7 @@ pub fn embed_texts(_texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
 // ── Embedding status API (dxo.4.1) ──────────────────────────────────
 
 /// Runtime status of the embedding subsystem.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingStatus {
     /// Whether the `embeddings` Cargo feature flag is enabled.
     pub enabled: bool,
@@ -236,13 +238,13 @@ async fn count_symbol_embeddings(
 }
 
 /// An embedding is "meaningful" when at least one element is non-zero.
-fn has_meaningful_embedding(embedding: &[f32]) -> bool {
+pub fn has_meaningful_embedding(embedding: &[f32]) -> bool {
     embedding.iter().any(|v| v.abs() > f32::EPSILON)
 }
 
 /// Compute coverage percentage, returning 0.0 when `total` is zero.
 #[allow(clippy::cast_precision_loss)]
-fn compute_coverage(with_embeddings: usize, total: usize) -> f64 {
+pub fn compute_coverage(with_embeddings: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
     } else {
