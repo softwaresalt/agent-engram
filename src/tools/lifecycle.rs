@@ -99,14 +99,21 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
     sys.refresh_memory();
     let memory_bytes = sys.used_memory(); // sysinfo 0.30+ returns bytes
 
+    let model_loaded = crate::services::embedding::is_available();
+    let model_name = if model_loaded {
+        Some("bge-small-en-v1.5".to_string())
+    } else {
+        None
+    };
+
     Ok(DaemonStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.uptime_seconds(),
         active_workspaces: state.active_workspaces().await,
         active_connections: state.active_connections(),
         memory_bytes,
-        model_loaded: false,
-        model_name: None,
+        model_loaded,
+        model_name,
     })
 }
 

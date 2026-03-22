@@ -194,6 +194,10 @@ name = "integration_unified_search_embedding_guard"
 path = "tests/integration/unified_search_embedding_guard_test.rs"
 
 [[test]]
+name = "integration_embedding_health_report"
+path = "tests/integration/embedding_health_report_test.rs"
+
+[[test]]
 name = "integration_config"
 path = "tests/integration/config_test.rs"
 

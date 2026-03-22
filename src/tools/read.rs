@@ -87,6 +87,7 @@ pub async fn get_workspace_statistics(
     let interfaces = cg_queries.count_interfaces().await.unwrap_or(0);
     let edges = cg_queries.count_code_edges().await.unwrap_or(0);
 
+    let embedding_status = embedding::status(Some(&cg_queries)).await?;
     let registry_status = load_registry_status(&state).await?;
 
     let mut result = serde_json::Map::from_iter([
@@ -95,6 +96,10 @@ pub async fn get_workspace_statistics(
         ("classes".to_owned(), json!(classes)),
         ("interfaces".to_owned(), json!(interfaces)),
         ("edges".to_owned(), json!(edges)),
+        (
+            "embedding_status".to_owned(),
+            serde_json::to_value(&embedding_status).unwrap_or(Value::Null),
+        ),
     ]);
 
     if let Some(reg) = registry_status {
@@ -677,6 +682,9 @@ pub async fn get_health_report(
         .and_then(|pid| sys.process(pid))
         .map(|proc| proc.memory() / 1_048_576);
 
+    // Collect embedding status — no workspace needed for the basic availability check.
+    let embedding_status = embedding::status(None).await?;
+
     Ok(json!({
         "version": version,
         "uptime_seconds": uptime_secs,
@@ -691,6 +699,7 @@ pub async fn get_health_report(
         "memory_mb": memory_mb,
         "watcher_events": watcher_events,
         "last_watcher_event": last_watcher_event,
+        "embedding_status": embedding_status,
     }))
 }
 
