@@ -106,6 +106,10 @@ name = "integration_hybrid_graph_vector"
 path = "tests/integration/hybrid_graph_vector_search_test.rs"
 
 [[test]]
+name = "unit_query_tracing"
+path = "tests/unit/query_tracing_test.rs"
+
+[[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
 

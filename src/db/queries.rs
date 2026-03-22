@@ -264,10 +264,12 @@ impl CodeGraphQueries {
     // ── code_file CRUD ──────────────────────────────────────────────
 
     /// Insert or update a code file record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_code_file(
         &self,
         file: &crate::models::CodeFile,
     ) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = file.id.strip_prefix("code_file:").unwrap_or(&file.id);
         let record = Thing::from(("code_file", id_raw));
         #[allow(clippy::cast_possible_wrap)]
@@ -281,10 +283,12 @@ impl CodeGraphQueries {
             .bind(("hash", file.content_hash.clone()))
             .await
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "code_file", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up a code file by its workspace-relative path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_code_file_by_path(
         &self,
         path: &str,
@@ -300,6 +304,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete a code file record and all its `defines` edges.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_code_file(&self, path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM code_file WHERE path = $path")
@@ -310,6 +315,7 @@ impl CodeGraphQueries {
     }
 
     /// List all indexed code files.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_code_files(&self) -> Result<Vec<crate::models::CodeFile>, EngramError> {
         let mut response = self
             .db
@@ -321,6 +327,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all functions in the code graph.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_functions(&self) -> Result<Vec<crate::models::Function>, EngramError> {
         let mut resp = self
             .db
@@ -332,6 +339,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all classes in the code graph.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_classes(&self) -> Result<Vec<crate::models::Class>, EngramError> {
         let mut resp = self
             .db
@@ -343,6 +351,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all interfaces in the code graph.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_interfaces(&self) -> Result<Vec<crate::models::Interface>, EngramError> {
         let mut resp = self
             .db
@@ -354,6 +363,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all code edges across every edge type.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_code_edges(&self) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
         use crate::models::code_edge::{CodeEdge, CodeEdgeType};
 
@@ -474,7 +484,9 @@ impl CodeGraphQueries {
     // ── function CRUD ───────────────────────────────────────────────
 
     /// Insert or update a function record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_function(&self, func: &crate::models::Function) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = func.id.strip_prefix("function:").unwrap_or(&func.id);
         let record = Thing::from(("function", id_raw));
         self.db
@@ -495,10 +507,12 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?
             .check()
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "function", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up a function by name.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_function_by_name(
         &self,
         name: &str,
@@ -514,6 +528,7 @@ impl CodeGraphQueries {
     }
 
     /// List all functions in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_functions_by_file(
         &self,
         file_path: &str,
@@ -529,6 +544,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all functions in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_functions_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM `function` WHERE file_path = $fp")
@@ -541,7 +557,9 @@ impl CodeGraphQueries {
     // ── class CRUD ──────────────────────────────────────────────────
 
     /// Insert or update a class record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_class(&self, class: &crate::models::Class) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = class.id.strip_prefix("class:").unwrap_or(&class.id);
         let record = Thing::from(("class", id_raw));
         self.db
@@ -561,10 +579,12 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?
             .check()
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "class", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up a class by name.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_class_by_name(
         &self,
         name: &str,
@@ -580,6 +600,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all classes in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_classes_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM class WHERE file_path = $fp")
@@ -592,10 +613,12 @@ impl CodeGraphQueries {
     // ── interface CRUD ──────────────────────────────────────────────
 
     /// Insert or update an interface record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_interface(
         &self,
         iface: &crate::models::Interface,
     ) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = iface.id.strip_prefix("interface:").unwrap_or(&iface.id);
         let record = Thing::from(("interface", id_raw));
         self.db
@@ -615,10 +638,12 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?
             .check()
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "interface", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up an interface by name.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_interface_by_name(
         &self,
         name: &str,
@@ -634,6 +659,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all interfaces in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_interfaces_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM interface WHERE file_path = $fp")
@@ -647,6 +673,7 @@ impl CodeGraphQueries {
 
     /// Create a `calls` edge between two functions.
     #[allow(clippy::similar_names)]
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_calls_edge(
         &self,
         caller_id: &str,
@@ -671,6 +698,7 @@ impl CodeGraphQueries {
 
     /// Create an `imports` edge between two code files.
     #[allow(clippy::similar_names)]
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_imports_edge(
         &self,
         importer_id: &str,
@@ -700,6 +728,7 @@ impl CodeGraphQueries {
     }
 
     /// Create a `defines` edge from a code file to a symbol.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_defines_edge(
         &self,
         file_id: &str,
@@ -725,6 +754,7 @@ impl CodeGraphQueries {
     }
 
     /// Create an `inherits_from` edge from class to class/interface.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_inherits_edge(
         &self,
         child_table: &str,
@@ -752,6 +782,7 @@ impl CodeGraphQueries {
     }
 
     /// Create a `concerns` edge from a task to a code symbol.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_concerns_edge(
         &self,
         task_id: &str,
@@ -776,6 +807,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all edges of a given type originating from a code file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_edges_from_file(
         &self,
         edge_table: &str,
@@ -795,6 +827,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all symbols and edges for a file (used during re-indexing).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn clear_file_graph(&self, file_path: &str) -> Result<(), EngramError> {
         self.delete_functions_by_file(file_path).await?;
         self.delete_classes_by_file(file_path).await?;
@@ -807,6 +840,7 @@ impl CodeGraphQueries {
     /// Retrieve all `concerns` edges whose target (`out`) is a symbol in the
     /// given file path. Returns `(task_id, symbol_table, symbol_id, linked_by)`
     /// tuples for every matching edge.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_concerns_edges_for_file(
         &self,
         file_path: &str,
@@ -856,6 +890,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all `concerns` edges targeting a specific symbol node.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_concerns_edges_for_symbol(
         &self,
         symbol_table: &str,
@@ -886,6 +921,7 @@ impl CodeGraphQueries {
 
     /// Look up all symbols with a given `(name, body_hash)` across all symbol
     /// tables. Used for hash-resilient concerns edge relinking (FR-124).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn find_symbols_by_name_and_hash(
         &self,
         name: &str,
@@ -926,6 +962,7 @@ impl CodeGraphQueries {
 
     /// Get all symbols (name + body_hash) in a given file, for pre-sync
     /// snapshot used by hash-resilient concerns relinking.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_symbol_identities_for_file(
         &self,
         file_path: &str,
@@ -965,6 +1002,7 @@ impl CodeGraphQueries {
     // ── Concerns Edge CRUD for link/unlink (T049) ───────────────────
 
     /// Check if a `concerns` edge already exists between task and symbol (FR-152 idempotency).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn concerns_edge_exists(
         &self,
         task_id: &str,
@@ -991,6 +1029,7 @@ impl CodeGraphQueries {
     /// Delete all `concerns` edges from a task to symbols with the given name.
     ///
     /// Returns the number of edges deleted.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_concerns_by_task_and_symbol_name(
         &self,
         task_id: &str,
@@ -1029,6 +1068,7 @@ impl CodeGraphQueries {
     }
 
     /// List all `concerns` edges for a given task, returning symbol info.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_concerns_for_task(
         &self,
         task_id: &str,
@@ -1069,6 +1109,7 @@ impl CodeGraphQueries {
     /// `concerns` edges (task → symbol direction, queried in reverse).
     ///
     /// Returns `(task_id, symbol_id)` pairs so callers can build dependency paths.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn find_tasks_for_symbols(
         &self,
         symbol_ids: &[String],
@@ -1100,7 +1141,9 @@ impl CodeGraphQueries {
     /// Look up all symbols (functions, classes, interfaces) whose name matches exactly.
     ///
     /// Returns a vec of `(table, id, name, file_path)` tuples across all symbol tables.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
+        let start = std::time::Instant::now();
         let mut results = Vec::new();
 
         // Query functions
@@ -1178,6 +1221,12 @@ impl CodeGraphQueries {
             });
         }
 
+        record_query_metrics(
+            "symbol_lookup",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
         Ok(results)
     }
 
@@ -1185,6 +1234,7 @@ impl CodeGraphQueries {
     /// hops and capping at `max_nodes` total results.
     ///
     /// Returns the list of neighbor nodes (excluding the root) and edges.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn bfs_neighborhood(
         &self,
         root_id: &str,
@@ -1314,6 +1364,7 @@ impl CodeGraphQueries {
     }
 
     /// Resolve any symbol ID to its full metadata.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn resolve_symbol(&self, node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
         let (table, _raw_id) = parse_node_id(node_id);
 
@@ -1428,6 +1479,7 @@ impl CodeGraphQueries {
     ///
     /// Filters by `file_path`, `node_type` (function/class/interface),
     /// and `name_prefix`. Returns paginated results with total count.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_symbols(
         &self,
         filter: &SymbolFilter,
@@ -1612,15 +1664,24 @@ impl CodeGraphQueries {
     /// matches by cosine similarity.
     ///
     /// Delegates to [`vector_search_symbols_native`] and strips scores.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn vector_search_symbols(
         &self,
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<SymbolMatch>, EngramError> {
+        let start = std::time::Instant::now();
         let with_scores = self
             .vector_search_symbols_native(query_embedding, limit)
             .await?;
-        Ok(with_scores.into_iter().map(|(_, m)| m).collect())
+        let results: Vec<SymbolMatch> = with_scores.into_iter().map(|(_, m)| m).collect();
+        record_query_metrics(
+            "knn_search",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
+        Ok(results)
     }
 
     // ── Native KNN vector search (dxo.2.1 / dxo.2.3) ─────────────
@@ -1638,6 +1699,7 @@ impl CodeGraphQueries {
     /// # Errors
     ///
     /// Returns `EngramError` if any database query fails.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn vector_search_symbols_native(
         &self,
         query_embedding: &[f32],
@@ -1647,6 +1709,7 @@ impl CodeGraphQueries {
             return Ok(Vec::new());
         }
 
+        let start = std::time::Instant::now();
         let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
         let query_vec = query_embedding.to_vec();
 
@@ -1753,6 +1816,12 @@ impl CodeGraphQueries {
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(limit);
 
+        record_query_metrics(
+            "knn_search",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
         Ok(results)
     }
 
@@ -1773,6 +1842,7 @@ impl CodeGraphQueries {
     /// # Errors
     ///
     /// Returns [`EngramError`] if the database query fails.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn hybrid_graph_vector_search(
         &self,
         root_id: &str,
@@ -1788,6 +1858,8 @@ impl CodeGraphQueries {
         if limit == 0 || max_depth == 0 {
             return Ok(Vec::new());
         }
+
+        let start = std::time::Instant::now();
 
         let effective_depth = max_depth.min(MAX_DEPTH_CAP);
         let edges: &[&str] = if edge_types.is_empty() {
@@ -1935,6 +2007,12 @@ impl CodeGraphQueries {
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(limit);
 
+        record_query_metrics(
+            "hybrid_search",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
         Ok(results)
     }
 
@@ -1952,12 +2030,14 @@ impl CodeGraphQueries {
     /// # Errors
     ///
     /// Returns `EngramError` if the database query fails.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn graph_neighborhood(
         &self,
         root_id: &str,
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
+        let start = std::time::Instant::now();
         // Edge types traversed in both directions per hop.
         const EDGE_TABLES: [&str; 5] = ["calls", "imports", "defines", "inherits_from", "concerns"];
 
@@ -2064,11 +2144,18 @@ impl CodeGraphQueries {
             frontier = next_frontier;
         }
 
-        Ok(BfsResult {
+        let result = BfsResult {
             neighbors,
             edges,
             truncated,
-        })
+        };
+        record_query_metrics(
+            "graph_traversal",
+            "all",
+            result.neighbors.len(),
+            start.elapsed(),
+        );
+        Ok(result)
     }
 
     /// Try to add a neighbor discovered during [`graph_neighborhood`] traversal.
@@ -2121,6 +2208,7 @@ impl CodeGraphQueries {
     // ── Embedding write-back (T076/T077) ────────────────────────────
 
     /// Update the embedding vector for any symbol node by its full ID (e.g., `"function:abc"`).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn update_symbol_embedding(
         &self,
         sym_id: &str,
@@ -2140,6 +2228,7 @@ impl CodeGraphQueries {
     // ── COUNT queries (T094) ─────────────────────────────────────────
 
     /// Return the total count of indexed code files.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_code_files(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -2151,6 +2240,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of indexed functions.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_functions(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -2162,6 +2252,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of indexed classes.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_classes(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -2173,6 +2264,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of indexed interfaces.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_interfaces(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -2184,6 +2276,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of code edges across all edge types.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_code_edges(&self) -> Result<u64, EngramError> {
         let mut total = 0u64;
         for table in &["calls", "imports", "defines", "inherits_from", "concerns"] {
@@ -2200,6 +2293,7 @@ impl CodeGraphQueries {
     /// List all `concerns` edges for multiple tasks in a single query.
     ///
     /// Returns a map of `task_id` → `Vec<ConcernsLink>`.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_concerns_for_tasks(
         &self,
         task_ids: &[String],
@@ -2221,6 +2315,7 @@ impl CodeGraphQueries {
 
     /// Upsert a content record by file path, creating or replacing
     /// the existing record for that file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_content_record(
         &self,
         record: &crate::models::ContentRecord,
@@ -2257,10 +2352,12 @@ impl CodeGraphQueries {
     }
 
     /// Select all content records, optionally filtered by content type.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn select_content_records(
         &self,
         content_type: Option<&str>,
     ) -> Result<Vec<crate::models::ContentRecord>, EngramError> {
+        let start = std::time::Instant::now();
         let rows: Vec<ContentRecordRow> = if let Some(ct) = content_type {
             self.db
                 .query("SELECT * FROM content_record WHERE content_type = $ct ORDER BY file_path")
@@ -2277,10 +2374,18 @@ impl CodeGraphQueries {
                 .take(0)
                 .map_err(map_db_err)?
         };
-        Ok(rows.into_iter().map(ContentRecordRow::into_model).collect())
+        let records: Vec<_> = rows.into_iter().map(ContentRecordRow::into_model).collect();
+        record_query_metrics(
+            "content_search",
+            "content_record",
+            records.len(),
+            start.elapsed(),
+        );
+        Ok(records)
     }
 
     /// Delete a content record by file path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM content_record WHERE file_path = $fp")
@@ -2293,6 +2398,7 @@ impl CodeGraphQueries {
     // ── Commit Node queries ─────────────────────────────────────────
 
     /// Upsert a commit node by hash.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_commit_node(
         &self,
         node: &crate::models::CommitNode,
@@ -2327,6 +2433,7 @@ impl CodeGraphQueries {
     }
 
     /// Select commit nodes within a date range, ordered by timestamp descending.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn select_commits_by_date_range(
         &self,
         since: Option<&DateTime<Utc>>,
@@ -2388,6 +2495,7 @@ impl CodeGraphQueries {
     }
 
     /// Select commit nodes that have a change record for a given file path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn select_commits_by_file_path(
         &self,
         file_path: &str,
@@ -2414,6 +2522,7 @@ impl CodeGraphQueries {
     ///
     /// Used by the git graph service to resume incremental indexing without
     /// re-walking commits that are already stored.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn latest_indexed_commit_hash(&self) -> Result<Option<String>, EngramError> {
         #[derive(serde::Deserialize)]
         struct HashRow {
