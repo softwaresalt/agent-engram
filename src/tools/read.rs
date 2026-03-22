@@ -239,10 +239,10 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
     }
 
     if matches.len() == 1 {
-        // Single match: return root + BFS neighborhood
+        // Single match: return root + native graph neighborhood
         let root = &matches[0];
         let bfs = cg_queries
-            .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
+            .graph_neighborhood(&root.id, effective_depth, effective_max_nodes)
             .await?;
 
         let root_json = symbol_match_to_json(root);
@@ -580,7 +580,7 @@ const fn default_impact_max_nodes() -> usize {
 /// changes to a specific code symbol (FR-129).
 ///
 /// 1. Resolve `symbol_name` via exact-name lookup.
-/// 2. BFS traverse code graph to `depth` hops (clamped by FR-149).
+/// 2. Native graph traversal to `depth` hops via [`CodeGraphQueries::graph_neighborhood`].
 /// 3. Return the root symbol and its code neighborhood with full source bodies (FR-148).
 ///
 /// # Errors
@@ -625,9 +625,9 @@ pub async fn impact_analysis(
 
     let root = &matches[0];
 
-    // Step 2: BFS traverse code graph.
+    // Step 2: Native graph traversal.
     let bfs = cg_queries
-        .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
+        .graph_neighborhood(&root.id, effective_depth, effective_max_nodes)
         .await?;
 
     // Build code neighborhood JSON (FR-148: full source bodies).
