@@ -94,6 +94,10 @@ name = "contract_graph_traversal"
 path = "tests/contract/graph_traversal_knn_test.rs"
 
 [[test]]
+name = "unit_hybrid_graph_vector"
+path = "tests/unit/hybrid_graph_vector_test.rs"
+
+[[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
 

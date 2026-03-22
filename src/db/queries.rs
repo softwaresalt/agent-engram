@@ -1756,6 +1756,188 @@ impl CodeGraphQueries {
         Ok(results)
     }
 
+    // ── Hybrid graph + vector search (dxo.3.1) ───────────────────────
+
+    /// Combines SurrealQL graph traversal with vector KNN search in a single
+    /// database round-trip.
+    ///
+    /// Traverses `edge_types` outbound from `root_id` up to `max_depth` hops,
+    /// then filters those neighbors by cosine similarity to `query_embedding`,
+    /// returning up to `limit` results ordered by similarity score descending.
+    ///
+    /// When `edge_types` is empty, all five default edge types (`calls`,
+    /// `imports`, `defines`, `inherits_from`, `concerns`) are traversed.
+    ///
+    /// `max_depth` is capped at 5 to bound query complexity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngramError`] if the database query fails.
+    pub async fn hybrid_graph_vector_search(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        query_embedding: &[f32],
+        limit: usize,
+        edge_types: &[&str],
+    ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
+        const DEFAULT_EDGES: [&str; 5] =
+            ["calls", "imports", "defines", "inherits_from", "concerns"];
+        const MAX_DEPTH_CAP: usize = 5;
+
+        if limit == 0 || max_depth == 0 {
+            return Ok(Vec::new());
+        }
+
+        let effective_depth = max_depth.min(MAX_DEPTH_CAP);
+        let edges: &[&str] = if edge_types.is_empty() {
+            &DEFAULT_EDGES
+        } else {
+            edge_types
+        };
+
+        let root_thing = parse_thing(root_id);
+        let mut sql = String::new();
+
+        // Build one LET variable per BFS depth level (outbound traversal only).
+        for depth in 1..=effective_depth {
+            let where_clause: String = if depth == 1 {
+                "= $root".to_owned()
+            } else {
+                format!("IN $d{}", depth - 1)
+            };
+
+            let edge_union = edges
+                .iter()
+                .map(|e| format!("(SELECT VALUE out FROM {e} WHERE in {where_clause})"))
+                .reduce(|acc, p| format!("array::union({acc}, {p})"))
+                .unwrap_or_else(|| "[]".to_owned());
+
+            sql.push_str(&format!("LET $d{depth} = array::distinct({edge_union});"));
+        }
+
+        // Union all per-depth neighbor sets into $all_neighbors.
+        let all_union = (1..=effective_depth)
+            .map(|d| format!("$d{d}"))
+            .reduce(|acc, d| format!("array::union({acc}, {d})"))
+            .unwrap_or_else(|| "[]".to_owned());
+        sql.push_str(&format!(
+            "LET $all_neighbors = array::distinct({all_union});"
+        ));
+
+        // KNN queries per table, each filtered to the neighbor set.
+        // Statement indices: LET $d1..N = indices 0..N-1,
+        // LET $all_neighbors = index N, then SELECTs at N+1, N+2, N+3.
+        sql.push_str(&format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM `function` WHERE id IN $all_neighbors \
+             AND embedding <|{limit},COSINE|> $query \
+             ORDER BY knn_score DESC LIMIT {limit};"
+        ));
+        sql.push_str(&format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM class WHERE id IN $all_neighbors \
+             AND embedding <|{limit},COSINE|> $query \
+             ORDER BY knn_score DESC LIMIT {limit};"
+        ));
+        sql.push_str(&format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM interface WHERE id IN $all_neighbors \
+             AND embedding <|{limit},COSINE|> $query \
+             ORDER BY knn_score DESC LIMIT {limit};"
+        ));
+
+        let func_idx = effective_depth + 1;
+        let class_idx = effective_depth + 2;
+        let iface_idx = effective_depth + 3;
+
+        let query_vec = query_embedding.to_vec();
+        let mut resp = self
+            .db
+            .query(&sql)
+            .bind(("root", root_thing))
+            .bind(("query", query_vec))
+            .await
+            .map_err(map_db_err)?;
+
+        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
+
+        // ── Functions ──
+        let func_rows: Vec<FunctionRow> = resp.take(func_idx).map_err(map_db_err)?;
+        for row in func_rows {
+            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let f = row.into_function();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "function".to_owned(),
+                    id: f.id,
+                    name: f.name,
+                    file_path: f.file_path,
+                    line_start: Some(f.line_start),
+                    line_end: Some(f.line_end),
+                    signature: Some(f.signature),
+                    body: f.body,
+                    embed_type: Some(f.embed_type),
+                    summary: Some(f.summary),
+                    embedding: f.embedding,
+                },
+            ));
+        }
+
+        // ── Classes ──
+        let class_rows: Vec<ClassRow> = resp.take(class_idx).map_err(map_db_err)?;
+        for row in class_rows {
+            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let c = row.into_class();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "class".to_owned(),
+                    id: c.id,
+                    name: c.name,
+                    file_path: c.file_path,
+                    line_start: Some(c.line_start),
+                    line_end: Some(c.line_end),
+                    signature: None,
+                    body: c.body,
+                    embed_type: Some(c.embed_type),
+                    summary: Some(c.summary),
+                    embedding: c.embedding,
+                },
+            ));
+        }
+
+        // ── Interfaces ──
+        let iface_rows: Vec<InterfaceRow> = resp.take(iface_idx).map_err(map_db_err)?;
+        for row in iface_rows {
+            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let i = row.into_interface();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "interface".to_owned(),
+                    id: i.id,
+                    name: i.name,
+                    file_path: i.file_path,
+                    line_start: Some(i.line_start),
+                    line_end: Some(i.line_end),
+                    signature: None,
+                    body: i.body,
+                    embed_type: Some(i.embed_type),
+                    summary: Some(i.summary),
+                    embedding: i.embedding,
+                },
+            ));
+        }
+
+        // Merge results across tables, sort by score descending, take top limit.
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+
+        Ok(results)
+    }
+
     // ── Native graph traversal (dxo.1.1) ─────────────────────────
 
     /// Traverse the code graph using native SurrealQL `->edge->` / `<-edge<-`
