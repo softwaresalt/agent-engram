@@ -66,6 +66,9 @@ pub fn record_query_metrics(
             "slow query detected"
         );
     }
+
+    // Update in-memory timing stats for health report aggregation.
+    crate::services::query_stats::record_timing(query_type, elapsed_ms_u64);
 }
 
 // ── Shared Row Types ───────────────────────────────────────────────────

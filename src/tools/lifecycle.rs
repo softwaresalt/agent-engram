@@ -86,6 +86,7 @@ pub async fn set_workspace(
 
     state.set_workspace(snapshot).await?;
     state.set_workspace_config(Some(ws_config)).await;
+    crate::services::query_stats::reset_timing();
 
     Ok(WorkspaceBinding {
         workspace_id,

@@ -17,5 +17,6 @@ pub mod hydration;
 pub mod ingestion;
 pub mod output;
 pub mod parsing;
+pub mod query_stats;
 pub mod registry;
 pub mod search;

@@ -110,6 +110,10 @@ name = "unit_query_tracing"
 path = "tests/unit/query_tracing_test.rs"
 
 [[test]]
+name = "unit_query_stats"
+path = "tests/unit/query_stats_test.rs"
+
+[[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
 

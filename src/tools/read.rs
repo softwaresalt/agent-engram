@@ -761,6 +761,7 @@ pub async fn get_health_report(
         "watcher_events": watcher_events,
         "last_watcher_event": last_watcher_event,
         "embedding_status": embedding_status,
+        "query_timing": crate::services::query_stats::timing_snapshot(),
     }))
 }
 
