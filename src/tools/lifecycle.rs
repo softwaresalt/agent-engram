@@ -5,7 +5,9 @@ use sysinfo::System;
 
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
-use crate::db::workspace::{canonicalize_workspace, workspace_hash};
+use crate::db::workspace::{
+    canonicalize_workspace, resolve_data_dir, resolve_git_branch, workspace_hash,
+};
 use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
@@ -57,6 +59,9 @@ pub async fn set_workspace(
 
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
+    let branch =
+        resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
+    let data_dir = resolve_data_dir(&canonical);
 
     if !state.has_workspace_capacity().await {
         return Err(EngramError::Workspace(WorkspaceError::LimitReached {
@@ -67,7 +72,7 @@ pub async fn set_workspace(
     let hydration = hydrate_workspace(&canonical).await?;
 
     // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
-    let db = connect_db(&workspace_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
     let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
 
@@ -77,6 +82,8 @@ pub async fn set_workspace(
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
+        branch: branch.clone(),
+        data_dir: data_dir.clone(),
         path: canonical.display().to_string(),
         last_flush: hydration.last_flush.clone(),
         stale_files: hydration.stale_files,
@@ -131,7 +138,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         }
 
         // Gather code graph stats from the database
-        let code_graph = if let Ok(db) = connect_db(&snapshot.workspace_id).await {
+        let code_graph = if let Ok(db) = connect_db(&snapshot.data_dir, &snapshot.branch).await {
             let cg_queries = CodeGraphQueries::new(db);
             let code_files = cg_queries.count_code_files().await.unwrap_or(0);
             let functions = cg_queries.count_functions().await.unwrap_or(0);

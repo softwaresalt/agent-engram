@@ -10,8 +10,9 @@ use engram::models::{Class, Function, Interface};
 
 /// Create a test DB and return a `CodeGraphQueries` handle.
 async fn test_queries(label: &str) -> CodeGraphQueries {
-    let hash = format!("test_knn_{label}_{}", std::process::id());
-    let db = connect_db(&hash).await.expect("connect_db");
+    let branch = format!("test_knn_{label}_{}", std::process::id());
+    let data_dir = std::env::temp_dir().join("engram-test");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
     CodeGraphQueries::new(db)
 }
 

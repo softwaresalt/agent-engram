@@ -10,6 +10,8 @@ use engram::tools;
 fn ws(id: &str) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         workspace_id: id.to_string(),
+        branch: id.to_string(),
+        data_dir: std::env::temp_dir().join("engram-test"),
         path: format!("/tmp/{id}"),
         last_flush: None,
         stale_files: false,

@@ -45,19 +45,21 @@ pub fn mcp_json(engram_exe: &Path) -> String {
 
 /// Return the `.gitignore` entries that should be appended for engram.
 ///
-/// Only excludes runtime artifacts (Unix socket, lock files) from version
-/// control. State files (`tasks.md`, `graph.surql`, `.version`, `.lastflush`)
-/// are Git-friendly and intentionally committed per the constitution.
+/// Excludes runtime artifacts (Unix socket, lock files) and the embedded
+/// database directory from version control. State files (`tasks.md`,
+/// `graph.surql`, `.version`, `.lastflush`) are Git-friendly and
+/// intentionally committed per the constitution.
 ///
 /// # Examples
 ///
 /// ```
 /// let entries = engram::installer::templates::gitignore_entries();
 /// assert!(entries.contains(".engram/run/"));
+/// assert!(entries.contains(".engram/db/"));
 /// assert!(!entries.contains(".engram/\n"));
 /// ```
 pub fn gitignore_entries() -> &'static str {
-    "\n# engram plugin (runtime artifacts — state files are intentionally tracked)\n.engram/run/\n"
+    "\n# engram plugin (runtime artifacts — state files are intentionally tracked)\n.engram/run/\n.engram/db/\n"
 }
 
 /// Generate the GitHub Copilot instructions markdown for `.github/copilot-instructions.md`.

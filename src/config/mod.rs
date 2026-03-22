@@ -3,7 +3,7 @@
 //! Uses `clap` derive for parsing. All fields support both `--flag`-style
 //! CLI arguments and `ENGRAM_`-prefixed environment variables.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -120,11 +120,7 @@ impl Config {
 }
 
 fn default_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| Path::new(".").to_path_buf())
-        .join(".local")
-        .join("share")
-        .join("engram")
+    PathBuf::from(".engram")
 }
 
 #[cfg(test)]

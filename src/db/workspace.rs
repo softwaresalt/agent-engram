@@ -35,3 +35,49 @@ pub fn workspace_hash(path: &Path) -> String {
     let digest = hasher.finalize();
     hex::encode(digest)
 }
+
+/// Resolve the current git branch name for the workspace.
+///
+/// Reads `.git/HEAD` directly (no subprocess) and extracts the branch name.
+/// Returns a truncated commit SHA when HEAD is detached.
+pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
+    let head_path = workspace.join(".git").join("HEAD");
+    let head_content = std::fs::read_to_string(&head_path).map_err(|_| {
+        WorkspaceError::NotGitRoot {
+            path: workspace.display().to_string(),
+        }
+    })?;
+
+    let head = head_content.trim();
+    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
+        Ok(sanitize_branch_for_path(branch))
+    } else {
+        // Detached HEAD: use first 12 chars of the commit SHA
+        Ok(head.chars().take(12).collect())
+    }
+}
+
+/// Sanitize a git branch name for use as a filesystem directory name.
+///
+/// Replaces `/` with `__` so branches like `feature/foo` become `feature__foo`.
+fn sanitize_branch_for_path(branch: &str) -> String {
+    branch.replace('/', "__")
+}
+
+/// Resolve the data directory for database storage.
+///
+/// Priority:
+/// 1. `ENGRAM_DATA_DIR` env var (resolved relative to workspace if not absolute)
+/// 2. Default: `{workspace}/.engram`
+pub fn resolve_data_dir(workspace: &Path) -> PathBuf {
+    if let Ok(env_dir) = std::env::var("ENGRAM_DATA_DIR") {
+        let p = PathBuf::from(&env_dir);
+        if p.is_absolute() {
+            p
+        } else {
+            workspace.join(p)
+        }
+    } else {
+        workspace.join(".engram")
+    }
+}

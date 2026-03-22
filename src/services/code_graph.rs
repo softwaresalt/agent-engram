@@ -69,13 +69,14 @@ pub struct FileError {
 /// Per-file parse errors are collected in `IndexResult::errors` (non-fatal).
 pub async fn index_workspace(
     ws_path: &Path,
-    ws_id: &str,
+    data_dir: &Path,
+    branch: &str,
     config: &CodeGraphConfig,
     force: bool,
 ) -> Result<IndexResult, EngramError> {
     let start = std::time::Instant::now();
 
-    let db = connect_db(ws_id).await?;
+    let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
     // ── Step 1: Discover files ──────────────────────────────────────
@@ -467,12 +468,13 @@ pub struct SyncResult {
 /// Per-file parse errors are collected in `SyncResult::errors` (non-fatal).
 pub async fn sync_workspace(
     ws_path: &Path,
-    ws_id: &str,
+    data_dir: &Path,
+    branch: &str,
     config: &CodeGraphConfig,
 ) -> Result<SyncResult, EngramError> {
     let start = std::time::Instant::now();
 
-    let db = connect_db(ws_id).await?;
+    let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
     // Discover current files on disk.

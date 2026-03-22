@@ -80,7 +80,8 @@ async fn status_returns_correct_coverage_for_known_counts() {
     // This test creates an in-memory DB, inserts known symbol counts,
     // and verifies the percentage calculation.
     let ws_hash = format!("test_embed_status_{}", std::process::id());
-    let db = engram::db::connect_db(&ws_hash).await.expect("connect_db");
+    let data_dir = std::env::temp_dir().join("engram-test");
+    let db = engram::db::connect_db(&data_dir, &ws_hash).await.expect("connect_db");
     let queries = engram::db::queries::CodeGraphQueries::new(db);
 
     // Insert 2 functions: one with a real embedding, one with a zero vector

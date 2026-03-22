@@ -33,7 +33,7 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
     };
 
     let workspace_path = Path::new(&snapshot.path);
-    let db = db::connect_db(&snapshot.workspace_id).await?;
+    let db = db::connect_db(&snapshot.data_dir, &snapshot.branch).await?;
     let cg_queries = crate::db::queries::CodeGraphQueries::new(db);
 
     dehydrate_code_graph(&cg_queries, workspace_path).await?;

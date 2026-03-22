@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -18,9 +20,9 @@ async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
     Ok(())
 }
 
-async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
+async fn workspace_db(state: &SharedState) -> Result<(PathBuf, String), EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
-        return Ok(snapshot.workspace_id);
+        return Ok((snapshot.data_dir.clone(), snapshot.branch.clone()));
     }
     Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
@@ -75,8 +77,8 @@ pub async fn get_workspace_statistics(
 ) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    let ws_id = workspace_id(&state).await?;
-    let db = connect_db(&ws_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
@@ -134,8 +136,8 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     // Validate query length before any DB or model work.
     embedding::validate_query_length(&parsed.query)?;
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
     let mut candidates: Vec<SearchCandidate> = Vec::new();
     let content_records = queries
@@ -197,8 +199,8 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
     let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
     let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
     // Exact-name lookup across all symbol tables
@@ -344,8 +346,8 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
     // Clamp limit
     let limit = parsed.limit.clamp(1, 500);
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
     let filter = SymbolFilter {
@@ -463,11 +465,9 @@ pub async fn unified_search(
         })
     })?;
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
-
-    // ── Code region: vector search on code symbols ───────────────────
     let code_results = {
         let symbols = if let Some(scope) = parsed
             .scope_to_symbol
@@ -635,11 +635,9 @@ pub async fn impact_analysis(
         .clamp(1, 100)
         .min(config.code_graph.max_traversal_nodes);
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
-
-    // Step 1: Resolve symbol name to code node(s).
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
     if matches.is_empty() {
         return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
@@ -789,7 +787,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
 
     use crate::services::gate::sanitize_query;
 
-    let ws_id = workspace_id(&state).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
 
     let parsed: QueryGraphParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -813,7 +811,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
             (c.query_timeout_ms, c.query_row_limit)
         });
 
-    let db = connect_db(&ws_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let start = Instant::now();
 
     // Inject a LIMIT clause to cap result-set materialization at the DB level.
@@ -910,8 +908,8 @@ pub async fn query_changes(
 ) -> Result<Value, EngramError> {
     use chrono::DateTime;
 
-    let ws_id = if let Some(snap) = state.snapshot_workspace().await {
-        snap.workspace_id
+    let (data_dir, branch) = if let Some(snap) = state.snapshot_workspace().await {
+        (snap.data_dir.clone(), snap.branch.clone())
     } else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
@@ -925,7 +923,7 @@ pub async fn query_changes(
 
     let limit = parsed.limit.unwrap_or(20);
 
-    let db = connect_db(&ws_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
     let since_dt = parsed
         .since
@@ -958,7 +956,7 @@ pub async fn query_changes(
     // If a symbol is provided, resolve its file path via the code graph so we
     // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
     let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
-        let cg_db = connect_db(&ws_id).await?;
+        let cg_db = connect_db(&data_dir, &branch).await?;
         let cg = CodeGraphQueries::new(cg_db);
         let syms = cg.find_symbols_by_name(sym).await?;
         if syms.is_empty() {

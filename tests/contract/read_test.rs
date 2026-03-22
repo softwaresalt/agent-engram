@@ -10,6 +10,8 @@ use engram::tools;
 fn test_snapshot(id: &str) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         workspace_id: id.to_string(),
+        branch: id.to_string(),
+        data_dir: std::env::temp_dir().join("engram-test"),
         path: format!("/tmp/{id}"),
         last_flush: None,
         stale_files: false,
@@ -41,6 +43,8 @@ async fn contract_query_memory_rejects_long_query() {
     let state = Arc::new(AppState::new(10));
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws".to_string(),
+        branch: "test_ws".to_string(),
+        data_dir: std::env::temp_dir().join("engram-test"),
         path: "/tmp/test-repo".to_string(),
         last_flush: None,
         stale_files: false,
@@ -70,6 +74,8 @@ async fn contract_query_memory_returns_results_array() {
     let state = Arc::new(AppState::new(10));
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws_results".to_string(),
+        branch: "test_ws_results".to_string(),
+        data_dir: std::env::temp_dir().join("engram-test"),
         path: "/tmp/test-repo-results".to_string(),
         last_flush: None,
         stale_files: false,

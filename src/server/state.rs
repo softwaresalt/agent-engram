@@ -13,6 +13,7 @@
 // Verdict: no deadlock potential identified.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -29,6 +30,8 @@ use crate::services::hydration::FileFingerprint;
 #[derive(Clone, Debug)]
 pub struct WorkspaceSnapshot {
     pub workspace_id: String,
+    pub branch: String,
+    pub data_dir: PathBuf,
     pub path: String,
     pub last_flush: Option<String>,
     pub stale_files: bool,
