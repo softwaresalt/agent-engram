@@ -86,6 +86,10 @@ name = "contract_read"
 path = "tests/contract/read_test.rs"
 
 [[test]]
+name = "contract_unified_search_knn"
+path = "tests/contract/unified_search_knn_test.rs"
+
+[[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
 

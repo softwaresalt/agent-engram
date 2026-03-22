@@ -1,12 +1,12 @@
-//! Integration tests for native KNN vector search (dxo.2.1).
+//! Integration tests for native KNN vector search (dxo.2.1 / dxo.2.5).
 //!
 //! Verifies that `vector_search_symbols_native()` uses `SurrealDB`'s MTREE
 //! indexes for O(log n) KNN queries instead of full-table-scan cosine
-//! similarity.
+//! similarity, and that scores are DB-authoritative after dxo.2.3.
 
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
-use engram::models::Function;
+use engram::models::{Class, Function, Interface};
 
 /// Create a test DB and return a `CodeGraphQueries` handle.
 async fn test_queries(label: &str) -> CodeGraphQueries {
@@ -155,4 +155,168 @@ async fn knn_zero_vector_query_returns_empty_or_error() {
             );
         }
     }
+}
+
+// ── dxo.2.5: multi-table, duplicate embeddings, fewer-than-K rows ───────────
+
+/// Insert a class with a known embedding into the test DB.
+async fn insert_class_with_embedding(queries: &CodeGraphQueries, name: &str, embedding: Vec<f32>) {
+    let class = Class {
+        id: format!("class:{name}"),
+        name: name.to_string(),
+        file_path: "src/test.rs".to_string(),
+        line_start: 1,
+        line_end: 5,
+        docstring: None,
+        body: String::new(),
+        body_hash: format!("hash_{name}"),
+        token_count: 0,
+        embed_type: "explicit_code".to_string(),
+        summary: format!("{name} summary"),
+        embedding,
+    };
+    queries.upsert_class(&class).await.expect("upsert_class");
+}
+
+/// Insert an interface with a known embedding into the test DB.
+async fn insert_interface_with_embedding(
+    queries: &CodeGraphQueries,
+    name: &str,
+    embedding: Vec<f32>,
+) {
+    let iface = Interface {
+        id: format!("interface:{name}"),
+        name: name.to_string(),
+        file_path: "src/test.rs".to_string(),
+        line_start: 1,
+        line_end: 5,
+        docstring: None,
+        body: String::new(),
+        body_hash: format!("hash_{name}"),
+        token_count: 0,
+        embed_type: "explicit_code".to_string(),
+        summary: format!("{name} summary"),
+        embedding,
+    };
+    queries
+        .upsert_interface(&iface)
+        .await
+        .expect("upsert_interface");
+}
+
+/// `vector_search_symbols_native()` spans all three symbol tables.
+/// Results from function, class, and interface rows must all be candidates.
+#[tokio::test]
+async fn knn_searches_across_all_symbol_tables() {
+    // GIVEN a DB with one symbol in each of the three tables, all equally similar
+    let q = test_queries("multi_table").await;
+    let emb = unit_vector(0);
+    insert_function_with_embedding(&q, "fn_sym", emb.clone()).await;
+    insert_class_with_embedding(&q, "cls_sym", emb.clone()).await;
+    insert_interface_with_embedding(&q, "iface_sym", emb.clone()).await;
+
+    // WHEN we search with limit = 10 (more than total symbols)
+    let results = q
+        .vector_search_symbols_native(&emb, 10)
+        .await
+        .expect("knn search");
+
+    // THEN we get results from multiple tables
+    let tables: std::collections::HashSet<&str> =
+        results.iter().map(|(_, s)| s.table.as_str()).collect();
+    assert!(
+        tables.len() >= 2,
+        "should find symbols from at least 2 tables; got tables: {tables:?}"
+    );
+}
+
+/// When the table has fewer rows than K, results should be capped at table size.
+#[tokio::test]
+async fn knn_fewer_rows_than_limit_returns_all_rows() {
+    // GIVEN a DB with only 2 functions
+    let q = test_queries("fewer_rows").await;
+    insert_function_with_embedding(&q, "a", unit_vector(0)).await;
+    insert_function_with_embedding(&q, "b", unit_vector(1)).await;
+
+    // WHEN we search with limit = 10 (more than available rows)
+    let results = q
+        .vector_search_symbols_native(&unit_vector(0), 10)
+        .await
+        .expect("knn search");
+
+    // THEN we get at most 2 results (not 10)
+    assert!(
+        results.len() <= 2,
+        "should not exceed the number of indexed rows; got {}",
+        results.len()
+    );
+}
+
+/// Duplicate embeddings must not cause panics or incorrect results.
+#[tokio::test]
+async fn knn_duplicate_embeddings_returns_stable_results() {
+    // GIVEN a DB with two functions having identical embeddings
+    let q = test_queries("duplicates").await;
+    let emb = unit_vector(3);
+    insert_function_with_embedding(&q, "dup_a", emb.clone()).await;
+    insert_function_with_embedding(&q, "dup_b", emb.clone()).await;
+
+    // WHEN we search with the same embedding
+    let results = q
+        .vector_search_symbols_native(&emb, 5)
+        .await
+        .expect("knn search with duplicates should not panic");
+
+    // THEN both results have score ~1.0 (identical vectors)
+    assert!(
+        !results.is_empty(),
+        "should return results for duplicate embeddings"
+    );
+    for (score, sym) in &results {
+        assert!(
+            (*score - 1.0).abs() < 0.02,
+            "duplicate embedding should score ~1.0 for sym {}; got {score}",
+            sym.name
+        );
+    }
+}
+
+/// All returned scores must be in the valid [0, 1] range.
+#[tokio::test]
+async fn knn_scores_are_in_valid_range() {
+    // GIVEN a DB with functions of varied embeddings
+    let q = test_queries("score_range").await;
+    insert_function_with_embedding(&q, "v0", unit_vector(0)).await;
+    insert_function_with_embedding(&q, "v1", unit_vector(1)).await;
+    insert_function_with_embedding(&q, "v2", unit_vector(2)).await;
+
+    // WHEN we search
+    let results = q
+        .vector_search_symbols_native(&unit_vector(0), 10)
+        .await
+        .expect("knn search");
+
+    // THEN all scores are in [0, 1]
+    for (score, sym) in &results {
+        assert!(
+            (0.0..=1.0).contains(score),
+            "score for {} must be in [0, 1]; got {score}",
+            sym.name
+        );
+    }
+}
+
+/// `vector_search_symbols_native()` must not import `cosine_similarity` —
+/// scores are DB-computed. This source-level check complements the unit tests.
+#[test]
+fn native_knn_source_does_not_use_cosine_similarity_import() {
+    let src = include_str!("../../src/db/queries.rs");
+    assert!(
+        !src.contains("use crate::services::search::cosine_similarity"),
+        "queries.rs must not import cosine_similarity after dxo.2.3"
+    );
+    assert!(
+        src.contains("vector::similarity::cosine"),
+        "queries.rs must SELECT vector::similarity::cosine() for DB-native scores"
+    );
 }

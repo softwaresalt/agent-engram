@@ -102,20 +102,6 @@ impl CodeFileRow {
     }
 }
 
-/// Wrapper that pairs a `SurrealDB`-computed KNN similarity score with a deserialized row.
-///
-/// Used by [`CodeGraphQueries::vector_search_symbols_native`] to capture the
-/// `vector::similarity::cosine(embedding, $query) AS knn_score` column returned
-/// alongside each matched record.
-#[derive(Deserialize)]
-struct Scored<T> {
-    /// Similarity score from `vector::similarity::cosine()`. `None` when the
-    /// DB cannot compute a score (e.g. zero-vector placeholder).
-    knn_score: Option<f32>,
-    #[serde(flatten)]
-    inner: T,
-}
-
 /// Internal row type for deserializing function records from SurrealDB.
 #[derive(Deserialize)]
 struct FunctionRow {
@@ -135,6 +121,10 @@ struct FunctionRow {
     embedding: Vec<f32>,
     #[serde(default)]
     summary: String,
+    /// `SurrealDB`-computed KNN similarity score (present when queried via
+    /// `vector::similarity::cosine(embedding, $query) AS knn_score`).
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl FunctionRow {
@@ -174,6 +164,9 @@ struct ClassRow {
     embedding: Vec<f32>,
     #[serde(default)]
     summary: String,
+    /// `SurrealDB`-computed KNN similarity score.
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl ClassRow {
@@ -212,6 +205,9 @@ struct InterfaceRow {
     embedding: Vec<f32>,
     #[serde(default)]
     summary: String,
+    /// `SurrealDB`-computed KNN similarity score.
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl InterfaceRow {
@@ -1665,10 +1661,10 @@ impl CodeGraphQueries {
             .bind(("query", query_vec.clone()))
             .await
             .map_err(map_db_err)?;
-        let func_rows: Vec<Scored<FunctionRow>> = resp.take(0).map_err(map_db_err)?;
+        let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
         for row in func_rows {
             let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            let f = row.inner.into_function();
+            let f = row.into_function();
             results.push((
                 score,
                 SymbolMatch {
@@ -1698,10 +1694,10 @@ impl CodeGraphQueries {
             .bind(("query", query_vec.clone()))
             .await
             .map_err(map_db_err)?;
-        let class_rows: Vec<Scored<ClassRow>> = resp.take(0).map_err(map_db_err)?;
+        let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
         for row in class_rows {
             let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            let c = row.inner.into_class();
+            let c = row.into_class();
             results.push((
                 score,
                 SymbolMatch {
@@ -1731,10 +1727,10 @@ impl CodeGraphQueries {
             .bind(("query", query_vec))
             .await
             .map_err(map_db_err)?;
-        let iface_rows: Vec<Scored<InterfaceRow>> = resp.take(0).map_err(map_db_err)?;
+        let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
         for row in iface_rows {
             let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            let i = row.inner.into_interface();
+            let i = row.into_interface();
             results.push((
                 score,
                 SymbolMatch {
