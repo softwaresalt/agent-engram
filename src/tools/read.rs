@@ -403,7 +403,8 @@ const fn default_unified_limit() -> usize {
 ///
 /// # Errors
 /// - `QueryEmpty` (4001) for empty or whitespace-only queries (FR-157).
-/// - `SystemError::DatabaseError` (5001) if embedding generation fails.
+/// - `SearchFailed` (4004) if the embedding model is not loaded/enabled.
+/// - `SystemError::DatabaseError` (5001) if embedding generation fails after model load.
 /// - `WorkspaceError::NotSet` (1003) if workspace not bound.
 pub async fn unified_search(
     state: SharedState,
@@ -436,6 +437,18 @@ pub async fn unified_search(
 
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
+
+    // Guard: reject semantic search early when the embedding model is not
+    // available. This produces a clear, actionable 4xxx error rather than
+    // a confusing DatabaseError from the embed_text call below.
+    if !embedding::is_available() {
+        return Err(EngramError::Query(QueryError::SearchFailed {
+            reason: "Semantic search requires the embeddings feature. \
+                     Enable it with `cargo build --features embeddings`. \
+                     Text-based search via keyword queries is unaffected."
+                .to_owned(),
+        }));
+    }
 
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {

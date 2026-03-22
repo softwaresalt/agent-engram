@@ -190,6 +190,10 @@ name = "unit_embedding_status"
 path = "tests/unit/embedding_status_unit_test.rs"
 
 [[test]]
+name = "integration_unified_search_embedding_guard"
+path = "tests/integration/unified_search_embedding_guard_test.rs"
+
+[[test]]
 name = "integration_config"
 path = "tests/integration/config_test.rs"
 
