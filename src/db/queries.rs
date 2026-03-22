@@ -12,6 +12,8 @@ use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
 use crate::errors::EngramError;
+#[allow(deprecated)]
+use crate::services::search::cosine_similarity;
 
 // ── Query performance observability (dxo.5.1) ──────────────────────────
 
@@ -1600,108 +1602,17 @@ impl CodeGraphQueries {
 
     /// Vector search across all symbol embeddings. Returns up to `limit` nearest
     /// matches by cosine similarity.
+    ///
+    /// Delegates to [`vector_search_symbols_native`] and strips scores.
     pub async fn vector_search_symbols(
         &self,
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<SymbolMatch>, EngramError> {
-        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
-
-        // Search functions
-        let mut resp = self
-            .db
-            .query("SELECT * FROM `function`")
-            .await
-            .map_err(map_db_err)?;
-        let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
-        for row in func_rows {
-            let f = row.into_function();
-            if has_meaningful_embedding(&f.embedding) {
-                let score = cosine_similarity(query_embedding, &f.embedding);
-                results.push((
-                    score,
-                    SymbolMatch {
-                        table: "function".to_owned(),
-                        id: f.id,
-                        name: f.name,
-                        file_path: f.file_path,
-                        line_start: Some(f.line_start),
-                        line_end: Some(f.line_end),
-                        signature: Some(f.signature),
-                        body: f.body,
-                        embed_type: Some(f.embed_type),
-                        summary: Some(f.summary),
-                        embedding: f.embedding,
-                    },
-                ));
-            }
-        }
-
-        // Search classes
-        let mut resp = self
-            .db
-            .query("SELECT * FROM class")
-            .await
-            .map_err(map_db_err)?;
-        let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
-        for row in class_rows {
-            let c = row.into_class();
-            if has_meaningful_embedding(&c.embedding) {
-                let score = cosine_similarity(query_embedding, &c.embedding);
-                results.push((
-                    score,
-                    SymbolMatch {
-                        table: "class".to_owned(),
-                        id: c.id,
-                        name: c.name,
-                        file_path: c.file_path,
-                        line_start: Some(c.line_start),
-                        line_end: Some(c.line_end),
-                        signature: None,
-                        body: c.body,
-                        embed_type: Some(c.embed_type),
-                        summary: Some(c.summary),
-                        embedding: c.embedding,
-                    },
-                ));
-            }
-        }
-
-        // Search interfaces
-        let mut resp = self
-            .db
-            .query("SELECT * FROM interface")
-            .await
-            .map_err(map_db_err)?;
-        let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
-        for row in iface_rows {
-            let i = row.into_interface();
-            if has_meaningful_embedding(&i.embedding) {
-                let score = cosine_similarity(query_embedding, &i.embedding);
-                results.push((
-                    score,
-                    SymbolMatch {
-                        table: "interface".to_owned(),
-                        id: i.id,
-                        name: i.name,
-                        file_path: i.file_path,
-                        line_start: Some(i.line_start),
-                        line_end: Some(i.line_end),
-                        signature: None,
-                        body: i.body,
-                        embed_type: Some(i.embed_type),
-                        summary: Some(i.summary),
-                        embedding: i.embedding,
-                    },
-                ));
-            }
-        }
-
-        // Sort by score descending and take top `limit`
-        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        let matches: Vec<SymbolMatch> = results.into_iter().take(limit).map(|(_, m)| m).collect();
-
-        Ok(matches)
+        let with_scores = self
+            .vector_search_symbols_native(query_embedding, limit)
+            .await?;
+        Ok(with_scores.into_iter().map(|(_, m)| m).collect())
     }
 
     // ── Native KNN vector search (dxo.2.1) ────────────────────────
@@ -1716,6 +1627,8 @@ impl CodeGraphQueries {
     /// # Errors
     ///
     /// Returns `EngramError` if any database query fails.
+    // cosine_similarity: interim use until dxo.2.3 migrates to DB-native SELECT score
+    #[allow(deprecated)]
     pub async fn vector_search_symbols_native(
         &self,
         query_embedding: &[f32],
@@ -2604,34 +2517,12 @@ fn parse_thing(node_id: &str) -> Thing {
     Thing::from((table.as_str(), raw_id.as_str()))
 }
 
-/// Compute cosine similarity between two vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
-
-/// Returns `true` if `e` is a non-empty vector with at least one non-zero component.
-///
-/// Excludes the zero-vector placeholder used when embeddings are unavailable.
-/// A zero embedding cannot be meaningfully ranked by cosine similarity — its
-/// denominator is zero, so every query matches at score 0.0 uniformly.
-fn has_meaningful_embedding(e: &[f32]) -> bool {
-    !e.is_empty() && e.iter().any(|&v| v != 0.0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::services::embedding::has_meaningful_embedding;
 
     // ── GAP-002: has_meaningful_embedding unit tests ─────────────────
+    // Tests are against the canonical `services::embedding::has_meaningful_embedding`.
 
     #[test]
     fn meaningful_embedding_excludes_empty_vec() {
@@ -2652,6 +2543,7 @@ mod tests {
 
     #[test]
     fn meaningful_embedding_accepts_small_nonzero() {
-        assert!(has_meaningful_embedding(&[0.0, 0.0, f32::MIN_POSITIVE]));
+        // f32::MIN_POSITIVE < f32::EPSILON, so use a value above EPSILON threshold
+        assert!(has_meaningful_embedding(&[0.0, 0.0, 2.0 * f32::EPSILON]));
     }
 }

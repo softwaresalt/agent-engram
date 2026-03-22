@@ -40,6 +40,7 @@ During Step 1, call `ping` with `status_message: "Harness architect starting"`. 
 | Compilation passed          | `broadcast` | `success` | `[📐 ARCHITECT] Harness compiles — {test_count} test(s) in {test_file_path}`                   |
 | Compilation failed          | `broadcast` | `error`   | `[📐 ARCHITECT] Compilation failed — {error_summary}`                                          |
 | Red phase confirmed         | `broadcast` | `success` | `[📐 ARCHITECT] Red phase confirmed — {test_count} test(s) fail with unimplemented!`           |
+| Feature branch ready        | `broadcast` | `info`    | `[📐 ARCHITECT] Feature branch ready: {branch_name}`                                          |
 | Approval requested          | `transmit`  | `info`    | `[📐 ARCHITECT] Harness ready for review — awaiting operator approval`                         |
 | Approval granted            | `broadcast` | `success` | `[📐 ARCHITECT] Harness approved — proceeding to Beads registration`                           |
 | Approval rejected           | `broadcast` | `info`    | `[📐 ARCHITECT] Harness rejected — {reason}`                                                   |
@@ -73,7 +74,19 @@ Read `.engram/templates/build-harness.prompt.md` to internalize the harness gene
 5. Use `agent-engram` tools (e.g., `map_code`) to visualize the code structure and dependencies relevant to the task. This will inform the exact signatures needed in the stubs and the scenarios to cover in the tests.
 6. Determine the integration test file path (`tests/integration/{feature}_test.rs`) and the source stub path (`src/{feature}.rs` or appropriate module).
 
-### Step 4: Generate the Harness
+### Step 4: Create Feature Branch
+
+Before writing any code, ensure the work happens on a dedicated feature branch. This prevents harness files and stubs from landing directly on `main`.
+
+1. Derive the branch name from the Beads task context using the pattern `feat/{feature_slug}` (e.g., `feat/native-graph-traversal`). Use the epic or parent epic title when available; fall back to the task title. Convert to lowercase kebab-case, stripping special characters.
+2. Check whether the branch already exists locally (`git branch --list {branch_name}`) or on the remote (`git ls-remote --heads origin {branch_name}`).
+   * If the branch exists locally, check it out: `git checkout {branch_name}`.
+   * If the branch exists only on the remote, fetch and track it: `git checkout -b {branch_name} origin/{branch_name}`.
+   * If the branch does not exist, create it from `main`: `git checkout -b {branch_name} origin/main`.
+3. Confirm the active branch with `git branch --show-current` and verify a clean working tree with `git status --short`. If the tree is dirty, halt and report — do not write harness files onto uncommitted changes.
+4. `broadcast` at `info` level: `[📐 ARCHITECT] Feature branch ready: {branch_name}`.
+
+### Step 5: Generate the Harness
 
 Following the build-harness prompt rules:
 1. **Write the test file** to the appropriate tier based on the feature scope:
@@ -92,7 +105,7 @@ Following the build-harness prompt rules:
 3. **Verify compilation**: Run `cargo check` to confirm the harness compiles. Fix any compilation errors.
 
 4. **Verify red phase**: Run `cargo test --test {feature}_test` and confirm all tests fail with `unimplemented!()` panics — not compilation errors.
-### Step 5: Operator Approval Gate
+### Step 6: Operator Approval Gate
 
 Before registering tasks in Beads, the operator must approve the generated harness. This prevents the build-orchestrator from claiming tasks before the harness has been reviewed.
 
@@ -103,12 +116,12 @@ Before registering tasks in Beads, the operator must approve the generated harne
    * Compilation status (PASS/FAIL)
    * Red phase status (confirmed/not confirmed)
 3. Wait for the operator's response:
-   * **Approved**: Proceed to Step 6 (Register in Beads).
+   * **Approved**: Proceed to Step 7 (Register in Beads).
    * **Rejected with feedback**: Revise the harness per the operator's notes, re-run compilation and red phase checks, then re-submit for approval.
    * **Rejected outright**: `broadcast` at `info` level that the harness was rejected, skip registration, and move to the next task (batch mode) or exit (single mode).
 4. If agent-intercom is not active, present the harness summary in the CLI output and ask the user for confirmation before proceeding.
 
-### Step 6: Register in Beads
+### Step 7: Register in Beads
 
 For each test function in the harness, output and execute the `bd create` command:
 
@@ -116,7 +129,7 @@ For each test function in the harness, output and execute the `bd create` comman
 bd create --title "Implement {Feature}: {Test}" --description "Implement the underlying logic to make the harness pass" -t task -p 2 --json
 ```
 
-### Step 7: Report
+### Step 8: Report
 
 1. Confirm `cargo check --tests` passes (structural compilation).
 2. Confirm `cargo test --test {feature}_test` fails with `unimplemented!` panics (red phase).

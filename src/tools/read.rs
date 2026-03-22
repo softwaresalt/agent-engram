@@ -9,9 +9,7 @@ use crate::errors::{
 use crate::server::state::SharedState;
 use crate::services::embedding;
 use crate::services::search::{SearchCandidate, hybrid_search};
-use crate::services::search::{
-    SearchRegion, UnifiedSearchResult, cosine_similarity, merge_unified_results,
-};
+use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
 async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
     if state.snapshot_workspace().await.is_none() {
@@ -469,12 +467,11 @@ pub async fn unified_search(
     // ── Code region: vector search on code symbols ───────────────────
     let code_results = {
         let symbols = queries
-            .vector_search_symbols(&query_embedding, limit)
+            .vector_search_symbols_native(&query_embedding, limit)
             .await?;
         symbols
             .into_iter()
-            .map(|s| {
-                let score = cosine_similarity(&query_embedding, &s.embedding);
+            .map(|(score, s)| {
                 let line_range = match (s.line_start, s.line_end) {
                     (Some(start), Some(end)) => Some(format!("L{start}-L{end}")),
                     (Some(start), None) => Some(format!("L{start}")),
