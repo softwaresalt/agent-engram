@@ -12,8 +12,6 @@ use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
 use crate::errors::EngramError;
-#[allow(deprecated)]
-use crate::services::search::cosine_similarity;
 
 // ── Query performance observability (dxo.5.1) ──────────────────────────
 
@@ -102,6 +100,20 @@ impl CodeFileRow {
             last_indexed_at: self.last_indexed_at.to_rfc3339(),
         }
     }
+}
+
+/// Wrapper that pairs a `SurrealDB`-computed KNN similarity score with a deserialized row.
+///
+/// Used by [`CodeGraphQueries::vector_search_symbols_native`] to capture the
+/// `vector::similarity::cosine(embedding, $query) AS knn_score` column returned
+/// alongside each matched record.
+#[derive(Deserialize)]
+struct Scored<T> {
+    /// Similarity score from `vector::similarity::cosine()`. `None` when the
+    /// DB cannot compute a score (e.g. zero-vector placeholder).
+    knn_score: Option<f32>,
+    #[serde(flatten)]
+    inner: T,
 }
 
 /// Internal row type for deserializing function records from SurrealDB.
@@ -1615,20 +1627,21 @@ impl CodeGraphQueries {
         Ok(with_scores.into_iter().map(|(_, m)| m).collect())
     }
 
-    // ── Native KNN vector search (dxo.2.1) ────────────────────────
+    // ── Native KNN vector search (dxo.2.1 / dxo.2.3) ─────────────
 
-    /// Vector search using SurrealDB's native KNN operator with MTREE indexes.
+    /// Vector search using `SurrealDB`'s native KNN operator with MTREE indexes.
     ///
     /// Replaces the O(n) full-table-scan approach in [`vector_search_symbols`]
     /// with O(log n) index-backed queries using `<|K,COSINE|>`.
+    ///
+    /// Scores are `SurrealDB`-authoritative: computed via
+    /// `vector::similarity::cosine(embedding, $query)` in the SELECT clause.
     ///
     /// Returns up to `limit` nearest matches with cosine similarity scores.
     ///
     /// # Errors
     ///
     /// Returns `EngramError` if any database query fails.
-    // cosine_similarity: interim use until dxo.2.3 migrates to DB-native SELECT score
-    #[allow(deprecated)]
     pub async fn vector_search_symbols_native(
         &self,
         query_embedding: &[f32],
@@ -1641,19 +1654,21 @@ impl CodeGraphQueries {
         let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
         let query_vec = query_embedding.to_vec();
 
-        // ── Functions — KNN via MTREE index ──
-        let func_sql =
-            format!("SELECT * FROM `function` WHERE embedding <|{limit},COSINE|> $query");
+        // ── Functions — KNN + DB-computed score ──
+        let func_sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM `function` WHERE embedding <|{limit},COSINE|> $query"
+        );
         let mut resp = self
             .db
             .query(&func_sql)
             .bind(("query", query_vec.clone()))
             .await
             .map_err(map_db_err)?;
-        let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+        let func_rows: Vec<Scored<FunctionRow>> = resp.take(0).map_err(map_db_err)?;
         for row in func_rows {
-            let f = row.into_function();
-            let score = cosine_similarity(query_embedding, &f.embedding);
+            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let f = row.inner.into_function();
             results.push((
                 score,
                 SymbolMatch {
@@ -1672,18 +1687,21 @@ impl CodeGraphQueries {
             ));
         }
 
-        // ── Classes — KNN via MTREE index ──
-        let class_sql = format!("SELECT * FROM class WHERE embedding <|{limit},COSINE|> $query");
+        // ── Classes — KNN + DB-computed score ──
+        let class_sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM class WHERE embedding <|{limit},COSINE|> $query"
+        );
         let mut resp = self
             .db
             .query(&class_sql)
             .bind(("query", query_vec.clone()))
             .await
             .map_err(map_db_err)?;
-        let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+        let class_rows: Vec<Scored<ClassRow>> = resp.take(0).map_err(map_db_err)?;
         for row in class_rows {
-            let c = row.into_class();
-            let score = cosine_similarity(query_embedding, &c.embedding);
+            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let c = row.inner.into_class();
             results.push((
                 score,
                 SymbolMatch {
@@ -1702,19 +1720,21 @@ impl CodeGraphQueries {
             ));
         }
 
-        // ── Interfaces — KNN via MTREE index ──
-        let iface_sql =
-            format!("SELECT * FROM interface WHERE embedding <|{limit},COSINE|> $query");
+        // ── Interfaces — KNN + DB-computed score ──
+        let iface_sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM interface WHERE embedding <|{limit},COSINE|> $query"
+        );
         let mut resp = self
             .db
             .query(&iface_sql)
             .bind(("query", query_vec))
             .await
             .map_err(map_db_err)?;
-        let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+        let iface_rows: Vec<Scored<InterfaceRow>> = resp.take(0).map_err(map_db_err)?;
         for row in iface_rows {
-            let i = row.into_interface();
-            let score = cosine_similarity(query_embedding, &i.embedding);
+            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let i = row.inner.into_interface();
             results.push((
                 score,
                 SymbolMatch {
