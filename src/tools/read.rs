@@ -386,6 +386,9 @@ struct UnifiedSearchParams {
     /// Optional content type filter for content records.
     #[serde(default)]
     content_type: Option<String>,
+    /// Restrict code symbol results to the graph neighborhood of this symbol.
+    #[serde(default)]
+    scope_to_symbol: Option<String>,
 }
 
 fn default_unified_region() -> String {
@@ -466,9 +469,27 @@ pub async fn unified_search(
 
     // ── Code region: vector search on code symbols ───────────────────
     let code_results = {
-        let symbols = queries
-            .vector_search_symbols_native(&query_embedding, limit)
-            .await?;
+        let symbols = if let Some(scope) = parsed
+            .scope_to_symbol
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            // Scoped mode: restrict to graph neighborhood of given symbol.
+            let scope_matches = queries.find_symbols_by_name(scope).await?;
+            if let Some(root) = scope_matches.first() {
+                queries
+                    .hybrid_graph_vector_search(&root.id, 2, &query_embedding, limit, &[])
+                    .await?
+            } else {
+                queries
+                    .vector_search_symbols_native(&query_embedding, limit)
+                    .await?
+            }
+        } else {
+            queries
+                .vector_search_symbols_native(&query_embedding, limit)
+                .await?
+        };
         symbols
             .into_iter()
             .map(|(score, s)| {
@@ -566,6 +587,9 @@ struct ImpactAnalysisParams {
     depth: usize,
     #[serde(default = "default_impact_max_nodes")]
     max_nodes: usize,
+    /// Optional semantic concept for combined structural+semantic results.
+    #[serde(default)]
+    concept: Option<String>,
 }
 
 const fn default_impact_depth() -> usize {
@@ -633,7 +657,41 @@ pub async fn impact_analysis(
     // Build code neighborhood JSON (FR-148: full source bodies).
     let code_neighborhood: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
 
-    Ok(json!({
+    // When a semantic concept is provided and embeddings are available,
+    // run a combined structural+semantic query for additional relevance.
+    let hybrid_results: Vec<Value> =
+        if let Some(concept) = parsed.concept.as_deref().filter(|c| !c.trim().is_empty()) {
+            if embedding::is_available() {
+                let emb = embedding::embed_text(concept.trim()).map_err(|e| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: format!("embedding generation failed: {e}"),
+                    })
+                })?;
+                let scored = cg_queries
+                    .hybrid_graph_vector_search(
+                        &root.id,
+                        effective_depth,
+                        &emb,
+                        effective_max_nodes,
+                        &[],
+                    )
+                    .await?;
+                scored
+                    .into_iter()
+                    .map(|(score, s)| {
+                        let mut v = symbol_match_to_json(&s);
+                        v["relevance_score"] = json!(score);
+                        v
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+    let mut response = json!({
         "symbol": {
             "name": root.name,
             "type": root.table,
@@ -642,7 +700,13 @@ pub async fn impact_analysis(
         "code_neighborhood": code_neighborhood,
         "effective_depth": effective_depth,
         "effective_max_nodes": effective_max_nodes,
-    }))
+    });
+
+    if !hybrid_results.is_empty() {
+        response["hybrid_results"] = json!(hybrid_results);
+    }
+
+    Ok(response)
 }
 
 // ── T034: get_health_report ───────────────────────────────────────────────────
