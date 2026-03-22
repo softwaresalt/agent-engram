@@ -90,6 +90,10 @@ name = "contract_unified_search_knn"
 path = "tests/contract/unified_search_knn_test.rs"
 
 [[test]]
+name = "contract_graph_traversal"
+path = "tests/contract/graph_traversal_knn_test.rs"
+
+[[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
 
