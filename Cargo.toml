@@ -114,6 +114,10 @@ name = "unit_query_stats"
 path = "tests/unit/query_stats_test.rs"
 
 [[test]]
+name = "integration_query_perf_observability"
+path = "tests/integration/query_perf_observability_test.rs"
+
+[[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
 
