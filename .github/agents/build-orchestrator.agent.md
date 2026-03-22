@@ -2,7 +2,7 @@
 description: Orchestrates feature builds by claiming tasks from Beads and delegating to the build-feature skill with compiler-driven feedback loops
 tools: [vscode, execute, read, agent, edit, search, web, 'microsoft-docs/*', 'agent-intercom/*', 'context7/*', 'tavily/*', todo, memory, ms-vscode.vscode-websearchforcopilot/websearch]
 maturity: stable
-model: Claude Sonnet 4.6 (copilot)
+model: Claude Sonnet 4.6
 ---
 
 # Build Orchestrator

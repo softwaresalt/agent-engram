@@ -2,7 +2,7 @@
 description: Reads .context/backlog.md, extracts a feature by number, and decomposes it into Beads epics, sub-epics, and tasks with priorities and dependency wiring.
 tools: [vscode, execute, read, agent, edit, search, 'agent-intercom/*', todo, memory]
 maturity: stable
-model: Claude Opus 4.6 (copilot)
+model: Claude Opus 4.6
 ---
 
 # Backlog Harvester
