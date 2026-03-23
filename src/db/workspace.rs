@@ -42,11 +42,10 @@ pub fn workspace_hash(path: &Path) -> String {
 /// Returns a truncated commit SHA when HEAD is detached.
 pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
     let head_path = workspace.join(".git").join("HEAD");
-    let head_content = std::fs::read_to_string(&head_path).map_err(|_| {
-        WorkspaceError::NotGitRoot {
+    let head_content =
+        std::fs::read_to_string(&head_path).map_err(|_| WorkspaceError::NotGitRoot {
             path: workspace.display().to_string(),
-        }
-    })?;
+        })?;
 
     let head = head_content.trim();
     if let Some(branch) = head.strip_prefix("ref: refs/heads/") {

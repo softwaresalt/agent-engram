@@ -146,8 +146,14 @@ async fn index_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result =
-        crate::services::code_graph::index_workspace(ws_path, data_dir, branch, &config, parsed.force).await?;
+    let result = crate::services::code_graph::index_workspace(
+        ws_path,
+        data_dir,
+        branch,
+        &config,
+        parsed.force,
+    )
+    .await?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -203,7 +209,8 @@ async fn sync_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result = crate::services::code_graph::sync_workspace(ws_path, data_dir, branch, &config).await?;
+    let result =
+        crate::services::code_graph::sync_workspace(ws_path, data_dir, branch, &config).await?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {

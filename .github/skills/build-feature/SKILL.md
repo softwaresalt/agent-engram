@@ -25,31 +25,42 @@ Implements a requested feature by continuously looping a fast worker agent again
 * The test harness defined by `${input:harness-cmd}` compiles (green compilation, red tests)
 * The structural stubs in `src/` exist with `unimplemented!()` markers
 * The project compiles before starting (`cargo check` passes)
+* All `[[test]]` entries for new test files are registered in `Cargo.toml`
+
+## Compile Time Warning
+
+> âš ï¸ **embeddings feature is enabled by default.** The `ort-sys` and `fastembed` crates compile native ONNX binaries. First-time `cargo test` on a changed source tree takes **20-40 minutes** in debug profile. Release builds (`cargo build --release`) take 5-10 minutes and cache separately.
+>
+> **Mitigation strategy**: Always use `--test {specific_test}` for the feedback loop. Run `cargo test` (full suite) only once before the final commit.
+
+## Shell Session Hygiene
+
+Before starting any test run, verify no previous cargo or rustc processes are still running from prior iterations. On Windows: `Get-Process -Name cargo,rustc -ErrorAction SilentlyContinue`. Stale processes hold the cargo lock file and cause silent hangs. Stop them before proceeding.
 
 ## Remote Operator Integration (agent-intercom)
 When the agent-intercom MCP server is reachable, status updates and file modifications route through it so the remote operator can follow progress via Slack.
 ### Availability Detection
-At the start of execution, call `ping` with a brief status message. If the call succeeds, agent-intercom is active — follow all remote workflow rules below. If it fails or times out, fall back to local-only operation.
+At the start of execution, call `ping` with a brief status message. If the call succeeds, agent-intercom is active ï¿½ follow all remote workflow rules below. If it fails or times out, fall back to local-only operation.
 ### Status Broadcasting
 Use `broadcast` (non-blocking) throughout execution to keep the operator informed.
 | When | Tool | Level | Message Pattern |
 |---|---|---|---|
 | Skill start | `broadcast` | `info` | `[BUILD] Starting task {task-id}: {harness-cmd}` |
-| Each iteration start | `broadcast` | `info` | `[LOOP] Attempt {N}/5 — running harness` |
-| File created | `broadcast` | `info` | `[FILE] created: {file_path}` — include full content in body |
-| File modified | `broadcast` | `info` | `[FILE] modified: {file_path}` — include unified diff in body |
+| Each iteration start | `broadcast` | `info` | `[LOOP] Attempt {N}/5 ï¿½ running harness` |
+| File created | `broadcast` | `info` | `[FILE] created: {file_path}` ï¿½ include full content in body |
+| File modified | `broadcast` | `info` | `[FILE] modified: {file_path}` ï¿½ include unified diff in body |
 | Harness passes | `broadcast` | `success` | `[BUILD] Harness passed on attempt {N}` |
-| Harness fails | `broadcast` | `warning` | `[LOOP] Attempt {N} failed — {error_summary}` |
-| Circuit breaker hit | `broadcast` | `error` | `[BUILD] Circuit breaker — 5 attempts exhausted, task blocked` |
-| Workspace test pass | `broadcast` | `success` | `[BUILD] Workspace tests pass — task {task-id} complete` |
-| Task complete | `broadcast` | `success` | `[BUILD] Task {task-id} complete — commit {short_hash}` |
+| Harness fails | `broadcast` | `warning` | `[LOOP] Attempt {N} failed ï¿½ {error_summary}` |
+| Circuit breaker hit | `broadcast` | `error` | `[BUILD] Circuit breaker ï¿½ 5 attempts exhausted, task blocked` |
+| Workspace test pass | `broadcast` | `success` | `[BUILD] Workspace tests pass ï¿½ task {task-id} complete` |
+| Task complete | `broadcast` | `success` | `[BUILD] Task {task-id} complete ï¿½ commit {short_hash}` |
 Post the first `broadcast` as a new top-level message and capture the returned `ts`. Use that `ts` as `thread_ts` for all subsequent messages.
 ### File Change Workflow
 File creation and modification proceed with direct writes. After each file write, call `broadcast` at `info` level with the change details.
 For **destructive operations** (file deletion, directory removal), route through the approval workflow:
-1. `auto_check` — Check if workspace policy allows the operation.
-2. `check_clearance` — Submit proposal and block until operator responds.
-3. `check_diff` — Execute only after `status: "approved"`.
+1. `auto_check` ï¿½ Check if workspace policy allows the operation.
+2. `check_clearance` ï¿½ Submit proposal and block until operator responds.
+3. `check_diff` ï¿½ Execute only after `status: "approved"`.
 ## Execution Steps
 
 ### Step 1: Context Isolation
@@ -72,7 +83,7 @@ Execute the following loop with a **hard limit of 5 attempts**:
       * **Panic traces** (`unimplemented!()` or assertion failures): Implement the underlying logic inside the `src/` stubs to make the harness pass. Replace the `unimplemented!()` macros with real logic.
       * **Test assertion failures**: Fix the implementation logic (not the test itself, unless the test setup has a compilation error).
    d. Apply all project coding standards:
-      * All fallible operations return `Result<T, AppError>` — never `unwrap()` or `expect()`.
+      * All fallible operations return `Result<T, AppError>` ï¿½ never `unwrap()` or `expect()`.
       * Default visibility `pub(crate)` unless wider access is needed.
       * `///` doc comments on public items, `//!` on modules.
       * Run `cargo check` after each fix to verify compilation before re-running the harness.
@@ -81,20 +92,23 @@ Execute the following loop with a **hard limit of 5 attempts**:
    g. Return to step 1 of this loop.
 
 4. **Circuit breaker**: If 5 attempts are exhausted without the harness passing:
-   * `broadcast` at `error` level: `[BUILD] Circuit breaker — 5 attempts exhausted, task blocked`.
+   * `broadcast` at `error` level: `[BUILD] Circuit breaker ï¿½ 5 attempts exhausted, task blocked`.
    * Run `bd update ${input:task-id} --status blocked` to mark the task as blocked for human review.
    * Halt execution. Do not retry automatically.
 ### Step 3: Verification & State Update
 
 Once the isolated harness passes:
-1. **Workspace verification**: Run `cargo test` to verify no existing peripheral tests were broken.
-   * If new failures appear, diagnose and fix them. Re-run until the full workspace test suite passes.
-   * `broadcast` at `success` level: `[BUILD] Workspace tests pass — task {task-id} complete`.
+1. **Workspace verification â€” tiered strategy**: Do NOT run `cargo test` (full suite) after every harness pass in the feedback loop. Use this order:
+   a. Run `cargo test --test {harness_test_name}` â€” confirms the harness still passes after any cleanup changes.
+   b. Run `cargo test --lib` â€” fast check for library unit test regressions.
+   c. Run `cargo test` (full suite) exactly once before committing. If ort/fastembed have not been compiled for the current source state, this takes 20-40 minutes â€” broadcast a warning and wait.
+   * If new failures appear in the full suite, diagnose and fix them before committing.
+   * `broadcast` at `success` level: `[BUILD] Workspace tests pass â€” task {task-id} complete`.
 2. **Lint verification**: Run `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`. Fix any violations.
 3. **Commit**: Stage and commit validated changes:
    * `git add -A`
    * `git commit -m "feat: implement passing harness for ${input:task-id}"`
-   * `broadcast` at `success` level: `[BUILD] Task {task-id} complete — commit {short_hash}`.
+   * `broadcast` at `success` level: `[BUILD] Task {task-id} complete â€” commit {short_hash}`.
 4. **State update**: Mark the task complete in Beads:
    * `bd close ${input:task-id} --reason "Harness passes, workspace tests green"`
 
@@ -102,15 +116,42 @@ Once the isolated harness passes:
 
 ### Build fails on fastembed/ort-sys
 
-The `fastembed` crate is gated behind the `embeddings` feature flag. Default builds exclude it. If the task requires it, configure the TLS feature flag first.
+The `fastembed` crate is enabled **by default** (`default = ["embeddings"]` in `Cargo.toml`). Every `cargo test` run after a source change recompiles ort-sys native binaries in debug profile â€” this takes 20-40 minutes on first compile and is normal. Do not assume a hang; check `Get-Process -Name rustc` to confirm compilation is active.
+
+If you need to run tests without ort compilation overhead, use `cargo test --no-default-features` to skip the embeddings feature, but note that embedding-gated tests will be excluded.
+
+### Feature guards: compile-time vs runtime
+
+Two patterns exist for embedding availability checks:
+
+* **Compile-time** (`#[cfg(feature = "embeddings")]`): Use in tool handlers and test files to gate code that should not compile without the feature. This is the correct pattern for blocking tool execution paths.
+* **Runtime** (`embedding::is_available()`): Returns `false` until the model has been lazily loaded on the **first call**. Do NOT use this as a guard in tool request handlers â€” it fires on every cold start, including when the feature is compiled in. It is only appropriate for status/health reporting.
+
+### Cargo.toml `[[test]]` registration missing
+
+Every new external test file in `tests/` requires a `[[test]]` block in `Cargo.toml`. Without it, `cargo test` silently ignores the file â€” no error, no output. Always verify:
+
+```toml
+[[test]]
+name = "{feature}_test"
+path = "tests/integration/{feature}_test.rs"
+```
 
 ### SurrealDB v2 SDK behavioral differences
 
 Refer to the session memory at `.copilot-tracking/memory/` for documented workarounds including `Thing` deserialization, `<datetime>` casts, and raw SurrealQL over SDK methods.
 
+Known test data requirements:
+* `embed_type` must be `"explicit_code"` (not `"code"`) â€” the DB schema validates this field
+* `embedding` must be `vec![0.0_f32; 384]` â€” SurrealDB enforces 384-dimensional vectors even for test fixtures that do not exercise vector search
+
+### Global state in integration tests
+
+`OnceLock`-backed singletons (e.g., `query_stats`) persist across parallel test threads. Use `tokio::sync::Mutex::const_new(())` as a test-level serialization lock when tests share global state. `std::sync::Mutex` cannot be held across `.await` points â€” clippy will deny this with `await_holding_lock`.
+
 ### Tests pass locally but fail in CI
 
-Verify `rust-toolchain.toml` matches the CI configuration in `.github/workflows/ci.yml`. Check that the `[[test]]` entries in `Cargo.toml` include all external test files.
+Verify `rust-toolchain.toml` matches the CI configuration in `.github/workflows/ci.yml`. Check that all `[[test]]` entries in `Cargo.toml` include the new test files.
 
 ### Circuit breaker triggered (5 failed attempts)
 

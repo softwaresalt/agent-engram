@@ -122,28 +122,22 @@ fn cosine_similarity_identical_vectors() {
 #[test]
 fn embed_text_produces_correct_dimension() {
     let result = embedding::embed_text("test sentence for embedding");
-    match result {
-        Ok(vec) => assert_eq!(vec.len(), EMBEDDING_DIM),
-        Err(_) => {
-            // Model download may fail in CI without network; acceptable
-        }
+    if let Ok(vec) = result {
+        assert_eq!(vec.len(), EMBEDDING_DIM);
     }
+    // Err(_): model download may fail in CI without network; acceptable
 }
 
 #[cfg(feature = "embeddings")]
 #[test]
 fn embed_texts_batch_matches_single() {
     let texts = vec!["hello world".to_string()];
-    match (
+    if let (Ok(single), Ok(batch)) = (
         embedding::embed_text("hello world"),
         embedding::embed_texts(&texts),
     ) {
-        (Ok(single), Ok(batch)) => {
-            assert_eq!(batch.len(), 1);
-            assert_eq!(single.len(), batch[0].len());
-        }
-        _ => {
-            // Model unavailable; skip comparison
-        }
+        assert_eq!(batch.len(), 1);
+        assert_eq!(single.len(), batch[0].len());
     }
+    // Either unavailable: model not loaded; skip comparison
 }

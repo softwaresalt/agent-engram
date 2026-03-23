@@ -51,12 +51,29 @@ During Step 1, call `ping` with `status_message: "Harness architect starting"`. 
 Capture the `ts` from the first `broadcast` and thread all subsequent messages under it. In `batch` mode, start a new thread per feature harness.
 
 ## Execution Steps
-### Step 1: Check the Beads Queue
+
+### Step 1: Feature Branch Gate (NON-NEGOTIABLE — must run before all other steps)
+
+**Do not write any file until this gate passes.** Work on `main` is forbidden.
+
+1. Run `git branch --show-current` and `git status --short`.
+2. If currently on `main` or any protected branch:
+   a. Derive the branch name from the task context using pattern `{epic_id}-{feature_slug}` (e.g., `008-optimize-surrealdb-usage`). Use the top-level epic ID and title when available; fall back to task title in lowercase kebab-case.
+   b. Check if branch exists: `git branch --list {branch_name}` and `git ls-remote --heads origin {branch_name}`.
+      * Exists locally → `git checkout {branch_name}`
+      * Exists on remote only → `git checkout -b {branch_name} origin/{branch_name}`
+      * Does not exist → `git checkout -b {branch_name} origin/main`
+3. If the working tree is dirty (uncommitted changes), halt and report the dirty files. Do not proceed until the tree is clean or the user explicitly directs otherwise.
+4. `broadcast` at `info` level: `[📐 ARCHITECT] Feature branch ready: {branch_name}`
+
+### Step 2: Check the Beads Queue
+
 1. **Agent-intercom detection**: Call `ping` with `status_message: "Harness architect starting"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
 2. Run `bd ready --json`. Parse the JSON array of unblocked tasks.
 3. `broadcast` the queue status (count and mode). If the queue is empty, `broadcast` at `success` level and exit.
-* Translate architectural constraints and requirements into compiling-but-failing BDD integration tests.
-### Step 2: Load the Build-Harness Prompt
+
+### Step 3: Load the Build-Harness Prompt
+
 Read `.engram/templates/build-harness.prompt.md` to internalize the harness generation rules:
 1. **The Contract (Tests)**: Generate `tests/integration/{feature}_test.rs` with BDD-style `// GIVEN`, `// WHEN`, `// THEN` comments inside each test function.
 2. **The Boundary (Stubs)**: Generate corresponding `src/{feature}.rs` stubs with exact `struct`, `enum`, and `trait` signatures required for the test to compile.
@@ -65,7 +82,7 @@ Read `.engram/templates/build-harness.prompt.md` to internalize the harness gene
 
 ## Required Steps
 
-### Step 3: Backlog Analysis
+### Step 4: Backlog Analysis
 
 1. Run `bd ready --json` to identify unblocked work items.
 2. Extract the task title, description, and any spec anchor references from the Beads payload.
@@ -73,18 +90,10 @@ Read `.engram/templates/build-harness.prompt.md` to internalize the harness gene
 4. Map the feature's blast radius using `grep_search` or `semantic_search` to find existing related code.
 5. Use `agent-engram` tools (e.g., `map_code`) to visualize the code structure and dependencies relevant to the task. This will inform the exact signatures needed in the stubs and the scenarios to cover in the tests.
 6. Determine the integration test file path (`tests/integration/{feature}_test.rs`) and the source stub path (`src/{feature}.rs` or appropriate module).
-
-### Step 4: Create Feature Branch
-
-Before writing any code, ensure the work happens on a dedicated feature branch. This prevents harness files and stubs from landing directly on `main`.
-
-1. Derive the branch name from the Beads task context using the pattern `feat/{feature_slug}` (e.g., `feat/native-graph-traversal`). Use the epic or parent epic title when available; fall back to the task title. Convert to lowercase kebab-case, stripping special characters.
-2. Check whether the branch already exists locally (`git branch --list {branch_name}`) or on the remote (`git ls-remote --heads origin {branch_name}`).
-   * If the branch exists locally, check it out: `git checkout {branch_name}`.
-   * If the branch exists only on the remote, fetch and track it: `git checkout -b {branch_name} origin/{branch_name}`.
-   * If the branch does not exist, create it from `main`: `git checkout -b {branch_name} origin/main`.
-3. Confirm the active branch with `git branch --show-current` and verify a clean working tree with `git status --short`. If the tree is dirty, halt and report — do not write harness files onto uncommitted changes.
-4. `broadcast` at `info` level: `[📐 ARCHITECT] Feature branch ready: {branch_name}`.
+7. **Compile-time flag check**: If the task touches `src/services/embedding.rs`, `src/tools/read.rs` unified_search, or any `#[cfg(feature = "embeddings")]` code, note in the harness description that:
+   * The `embeddings` feature is **enabled by default** — `cargo test` compiles ort-sys/fastembed native binaries taking 20-40 minutes on first run.
+   * Use `#[cfg(feature = "embeddings")]` / `#[cfg(not(feature = "embeddings"))]` for compile-time guards in tests.
+   * Do NOT use `embedding::is_available()` as a runtime guard in tool handlers — it returns `false` until the model has been lazily loaded on first call, which would fire the guard incorrectly on every cold start. Use compile-time `#[cfg(not(feature = "embeddings"))]` blocks instead.
 
 ### Step 5: Generate the Harness
 
@@ -102,9 +111,20 @@ Following the build-harness prompt rules:
    * Function bodies contain `unimplemented!("Worker: {specific implementation instruction}")`.
    * All fallible operations must return `Result<T, AppError>`.
    * Wire the module into the appropriate `mod.rs` or `src/lib.rs` as needed.
-3. **Verify compilation**: Run `cargo check` to confirm the harness compiles. Fix any compilation errors.
+3. **Register in `Cargo.toml`**: Every new external test file MUST have a `[[test]]` entry in `Cargo.toml`. Without it, `cargo test` silently ignores the file.
 
-4. **Verify red phase**: Run `cargo test --test {feature}_test` and confirm all tests fail with `unimplemented!()` panics — not compilation errors.
+   ```toml
+   [[test]]
+   name = "{feature}_test"
+   path = "tests/integration/{feature}_test.rs"
+   ```
+
+   Check that the `[[test]]` block does not already exist before adding. After adding, run `cargo check` — a missing block causes compile-not-found errors that are confusing to diagnose.
+
+4. **Verify compilation**: Run `cargo check` to confirm the harness compiles. Fix any compilation errors.
+
+5. **Verify red phase**: Run `cargo test --test {feature}_test` and confirm all tests fail with `unimplemented!()` panics — not compilation errors.
+
 ### Step 6: Operator Approval Gate
 
 Before registering tasks in Beads, the operator must approve the generated harness. This prevents the build-orchestrator from claiming tasks before the harness has been reviewed.

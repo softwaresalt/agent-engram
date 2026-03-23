@@ -27,8 +27,7 @@ surrealdb = { version = "2", features = ["kv-surrealkv"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pulldown-cmark = "0.10"
-fastembed = { version = "3", optional = true, default-features = false }
-ort-sys = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native"] }
+fastembed = { version = "5", optional = true, default-features = false }
 tracing-opentelemetry = { version = "0.26", optional = true }
 opentelemetry = { version = "0.26", optional = true }
 opentelemetry_sdk = { version = "0.26", optional = true, features = ["rt-tokio"] }
@@ -55,8 +54,8 @@ serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
 
 [features]
-default = []
-embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
+default = ["embeddings"]
+embeddings = ["fastembed", "fastembed/ort-download-binaries-native-tls", "fastembed/hf-hub-native-tls"]
 git-graph = ["git2"]
 otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 # Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).

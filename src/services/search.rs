@@ -182,7 +182,12 @@ pub fn hybrid_search(
 ) -> Result<Vec<SearchResult>, EngramError> {
     embedding::validate_query_length(query)?;
 
-    let query_embedding: Option<Vec<f32>> = embedding::embed_text(query).ok();
+    // Only load the embedding model when at least one candidate has a vector.
+    let query_embedding: Option<Vec<f32>> = if candidates.iter().any(|c| c.embedding.is_some()) {
+        embedding::embed_text(query).ok()
+    } else {
+        None
+    };
 
     let mut scored: Vec<SearchResult> = candidates
         .iter()

@@ -59,8 +59,7 @@ pub async fn set_workspace(
 
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
-    let branch =
-        resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
+    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
     let data_dir = resolve_data_dir(&canonical);
 
     if !state.has_workspace_capacity().await {

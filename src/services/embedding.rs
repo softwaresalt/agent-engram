@@ -27,10 +27,10 @@ pub fn model_cache_dir() -> PathBuf {
 
 /// Global, lazily-initialised embedding model.
 ///
-/// `OnceLock` guarantees the model is loaded exactly once; subsequent calls
-/// return the cached handle.
+/// `OnceLock` + `Mutex` guarantees the model is loaded exactly once;
+/// subsequent calls share the handle via the mutex.
 #[cfg(feature = "embeddings")]
-static MODEL: std::sync::OnceLock<Result<fastembed::TextEmbedding, String>> =
+static MODEL: std::sync::OnceLock<Result<std::sync::Mutex<fastembed::TextEmbedding>, String>> =
     std::sync::OnceLock::new();
 
 /// Initialise (or return) the cached embedding model.
@@ -40,7 +40,7 @@ static MODEL: std::sync::OnceLock<Result<fastembed::TextEmbedding, String>> =
 /// - The `embeddings` feature is disabled.
 /// - The ONNX model fails to download or load.
 #[cfg(feature = "embeddings")]
-fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
+fn get_model() -> Result<std::sync::MutexGuard<'static, fastembed::TextEmbedding>, EngramError> {
     let result = MODEL.get_or_init(|| {
         let cache = model_cache_dir();
         std::fs::create_dir_all(&cache).ok();
@@ -49,11 +49,17 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
             .with_cache_dir(cache)
             .with_show_download_progress(true);
 
-        fastembed::TextEmbedding::try_new(options).map_err(|e| e.to_string())
+        fastembed::TextEmbedding::try_new(options)
+            .map(std::sync::Mutex::new)
+            .map_err(|e| e.to_string())
     });
 
     match result {
-        Ok(model) => Ok(model),
+        Ok(mutex) => mutex.lock().map_err(|e| {
+            EngramError::System(crate::errors::SystemError::ModelLoadFailed {
+                reason: format!("model mutex poisoned: {e}"),
+            })
+        }),
         Err(reason) => {
             tracing::error!(reason = %reason, "embedding model initialisation failed");
             Err(EngramError::System(
@@ -72,7 +78,7 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
 /// - `QueryError::SearchFailed` when generation itself fails.
 #[cfg(feature = "embeddings")]
 pub fn embed_text(text: &str) -> Result<Vec<f32>, EngramError> {
-    let model = get_model()?;
+    let mut model = get_model()?;
     let embeddings = model.embed(vec![text.to_string()], None).map_err(|e| {
         EngramError::Query(QueryError::SearchFailed {
             reason: e.to_string(),
@@ -95,8 +101,8 @@ pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    let model = get_model()?;
-    model.embed(texts.to_vec(), None).map_err(|e| {
+    let mut model = get_model()?;
+    model.embed(texts, None).map_err(|e| {
         EngramError::Query(QueryError::SearchFailed {
             reason: e.to_string(),
         })

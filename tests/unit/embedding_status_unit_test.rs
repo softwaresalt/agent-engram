@@ -3,9 +3,9 @@
 //! Tests `is_available()`, `status()`, `compute_coverage()`, and
 //! `has_meaningful_embedding()` in isolation without a live database.
 
-use engram::services::embedding::{
-    EmbeddingStatus, compute_coverage, has_meaningful_embedding, is_available,
-};
+#[cfg(not(feature = "embeddings"))]
+use engram::services::embedding::is_available;
+use engram::services::embedding::{EmbeddingStatus, compute_coverage, has_meaningful_embedding};
 
 // ── is_available() ────────────────────────────────────────────────────
 

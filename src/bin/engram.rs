@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
             engram::shim::run().await?;
         }
         Command::Daemon { workspace } => {
+            engram::init_tracing(engram::config::LogFormat::Pretty);
             engram::daemon::run(&workspace).await?;
         }
         Command::Install {

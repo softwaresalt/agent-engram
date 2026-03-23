@@ -446,17 +446,16 @@ pub async fn unified_search(
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
 
-    // Guard: reject semantic search early when the embedding model is not
-    // available. This produces a clear, actionable 4xxx error rather than
-    // a confusing DatabaseError from the embed_text call below.
-    if !embedding::is_available() {
-        return Err(EngramError::Query(QueryError::SearchFailed {
-            reason: "Semantic search requires the embeddings feature. \
-                     Enable it with `cargo build --features embeddings`. \
-                     Text-based search via keyword queries is unaffected."
-                .to_owned(),
-        }));
-    }
+    // Guard: reject semantic search at compile time when the embeddings feature
+    // is not compiled in. When it IS enabled, embed_text lazily loads the model
+    // on the first call — do not gate on is_available() here.
+    #[cfg(not(feature = "embeddings"))]
+    return Err(EngramError::Query(QueryError::SearchFailed {
+        reason: "Semantic search requires the embeddings feature. \
+                 Enable it with `cargo build --features embeddings`. \
+                 Text-based search via keyword queries is unaffected."
+            .to_owned(),
+    }));
 
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
