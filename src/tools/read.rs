@@ -551,11 +551,12 @@ pub async fn unified_search(
 
     // ── Merge and rank ───────────────────────────────────────────────
     let merged = merge_unified_results(code_results, content_results, limit);
-    let total_matches = merged.len();
+    let total_count = merged.len();
 
     Ok(json!({
         "results": merged,
-        "total_matches": total_matches,
+        "total_count": total_count,
+        "total_matches": total_count,
     }))
 }
 

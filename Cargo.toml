@@ -213,6 +213,10 @@ name = "integration_daemon_lifecycle"
 path = "tests/integration/daemon_lifecycle_test.rs"
 
 [[test]]
+name = "integration_graph_vector_rehydration"
+path = "tests/integration/graph_vector_rehydration_test.rs"
+
+[[test]]
 name = "unit_plugin_config"
 path = "tests/unit/plugin_config_test.rs"
 
