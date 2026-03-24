@@ -145,11 +145,23 @@ async fn index_flush_and_seed_embedding(workspace_path: &std::path::Path) {
         .expect("daemon 1 must spawn");
     let endpoint1 = harness1.ipc_path().to_str().expect("UTF-8").to_owned();
 
-    let index_result = send_ok(&endpoint1, 1, "index_workspace", Some(json!({}))).await;
-    assert!(
-        index_result["files_parsed"].as_u64().unwrap_or(0) >= 1,
-        "index_workspace must parse at least one Rust file: {index_result}"
-    );
+    // Startup auto-index runs in the background immediately after workspace binding.
+    // Wait for it to fully complete before flushing — a stable function count of 2
+    // (matching the two functions in lib.rs) confirms the indexer has finished and
+    // released its lock. This avoids racing against the "indexing in progress" guard.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = send_ok(&endpoint1, 1, "get_workspace_status", None).await;
+        let funcs = status["code_graph"]["functions"].as_u64().unwrap_or(0);
+        if funcs >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for startup auto-index to index all symbols (got {funcs})"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 
     let status_before = send_ok(&endpoint1, 2, "get_workspace_status", None).await;
     assert!(
@@ -160,7 +172,32 @@ async fn index_flush_and_seed_embedding(workspace_path: &std::path::Path) {
         "indexed workspace must report function count before restart: {status_before}"
     );
 
-    let flush_result = send_ok(&endpoint1, 3, "flush_state", Some(json!({}))).await;
+    // Retry flush_state until it succeeds — the embedding backfill that runs after
+    // indexing may still hold the indexing lock for a short time after symbols appear.
+    let flush_deadline = Instant::now() + Duration::from_secs(30);
+    let flush_result = loop {
+        let request = make_request(3, "flush_state", Some(json!({})));
+        let response = send_request(&endpoint1, &request, Duration::from_secs(20))
+            .await
+            .expect("flush_state IPC call failed");
+        if let Some(ref err) = response.error {
+            let code = err
+                .data
+                .as_ref()
+                .and_then(|d| d.get("engram_code"))
+                .and_then(|c| c.as_u64());
+            if code == Some(7003) {
+                assert!(
+                    Instant::now() < flush_deadline,
+                    "timed out waiting for startup tasks to finish before flush_state"
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            panic!("flush_state returned unexpected error: {err:?}");
+        }
+        break response.result.expect("flush_state missing result");
+    };
     assert!(
         flush_result["files_written"]
             .as_array()
