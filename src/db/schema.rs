@@ -119,6 +119,7 @@ DEFINE FIELD OVERWRITE file_size_bytes ON TABLE content_record TYPE int DEFAULT 
 DEFINE FIELD OVERWRITE ingested_at ON TABLE content_record TYPE datetime DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS content_type_idx ON TABLE content_record COLUMNS content_type;
 DEFINE INDEX IF NOT EXISTS content_file_idx ON TABLE content_record COLUMNS file_path UNIQUE;
+DEFINE INDEX IF NOT EXISTS content_record_embedding_idx ON TABLE content_record COLUMNS embedding MTREE DIMENSION 384 DIST COSINE;
 "#;
 
 /// Commit node table — git commits in the change graph.

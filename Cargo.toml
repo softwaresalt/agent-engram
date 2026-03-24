@@ -325,3 +325,7 @@ path = "tests/integration/native_graph_traversal_test.rs"
 [[test]]
 name = "integration_query_tracing"
 path = "tests/integration/query_tracing_test.rs"
+
+[[test]]
+name = "integration_content_knn_search"
+path = "tests/integration/content_knn_search_test.rs"

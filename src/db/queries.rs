@@ -2418,6 +2418,78 @@ impl CodeGraphQueries {
         Ok(())
     }
 
+    /// Search content records by vector similarity using the database-native MTREE KNN operator.
+    ///
+    /// Returns up to `limit` records ranked by cosine similarity to `query_embedding`.
+    /// Optionally restricted to a single `content_type`. Records without embeddings are
+    /// excluded automatically by the KNN operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if the database query fails.
+    #[tracing::instrument(skip(self, query_embedding), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn vector_search_content_native(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        content_type: Option<&str>,
+    ) -> Result<Vec<(f32, crate::models::ContentRecord)>, EngramError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let start = std::time::Instant::now();
+        let query_vec = query_embedding.to_vec();
+
+        // Fetch more candidates than needed so that post-filtering by content_type
+        // still yields `limit` results. SurrealDB's MTREE KNN operator does not
+        // reliably combine with additional WHERE predicates, so filtering is done
+        // in Rust after the KNN scan.
+        let fetch_limit = if content_type.is_some() {
+            limit.saturating_mul(4).max(50)
+        } else {
+            limit
+        };
+
+        let sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM content_record WHERE embedding <|{fetch_limit},COSINE|> $query"
+        );
+
+        let mut resp = self
+            .db
+            .query(&sql)
+            .bind(("query", query_vec))
+            .await
+            .map_err(map_db_err)?;
+
+        let rows: Vec<ContentRecordRow> = resp.take(0).map_err(map_db_err)?;
+        let mut results: Vec<(f32, crate::models::ContentRecord)> = rows
+            .into_iter()
+            .filter_map(|row| {
+                // Apply content_type filter in Rust to avoid MTREE+WHERE interaction issues.
+                if let Some(ct) = content_type {
+                    if row.content_type != ct {
+                        return None;
+                    }
+                }
+                let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+                Some((score, row.into_model()))
+            })
+            .collect();
+
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+
+        record_query_metrics(
+            "knn_content_search",
+            "content_record",
+            results.len(),
+            start.elapsed(),
+        );
+        Ok(results)
+    }
+
     // ── Commit Node queries ─────────────────────────────────────────
 
     /// Upsert a commit node by hash.
@@ -2767,6 +2839,9 @@ struct ContentRecordRow {
     file_size_bytes: i64,
     #[serde(default)]
     ingested_at: Option<String>,
+    /// Populated only by KNN queries via `vector::similarity::cosine(...) AS knn_score`.
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl ContentRecordRow {

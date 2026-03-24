@@ -513,41 +513,73 @@ pub async fn unified_search(
             .collect::<Vec<_>>()
     };
 
-    // ── Content records: keyword scoring ────────────────────────────
-    let query_words: Vec<&str> = trimmed.split_whitespace().collect();
-    let content_records = queries
-        .select_content_records(parsed.content_type.as_deref())
-        .await?;
-    let content_results: Vec<UnifiedSearchResult> = content_records
-        .into_iter()
-        .filter_map(|cr| {
-            if query_words.is_empty() {
-                return None;
-            }
-            let haystack = cr.content.to_lowercase();
-            let matched = query_words
-                .iter()
-                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
-                .count();
-            let score = matched as f32 / query_words.len() as f32;
-            if score > 0.0 {
-                Some(UnifiedSearchResult {
-                    region: SearchRegion::Code,
+    // ── Content records: KNN vector search ──────────────────────────
+    // Requires embeddings feature; the cfg guard at the top of this
+    // function already returned an error for non-embeddings builds, so
+    // we are guaranteed to have a valid query_embedding here.
+    let content_results: Vec<UnifiedSearchResult> = {
+        let knn = queries
+            .vector_search_content_native(
+                &query_embedding,
+                limit,
+                parsed.content_type.as_deref(),
+            )
+            .await?;
+
+        // If no embedded records exist yet (backfill still in progress),
+        // fall back to keyword scoring so the tool stays useful.
+        if knn.is_empty() {
+            let query_words: Vec<&str> = trimmed.split_whitespace().collect();
+            let all_records = queries
+                .select_content_records(parsed.content_type.as_deref())
+                .await?;
+            all_records
+                .into_iter()
+                .filter_map(|cr| {
+                    if query_words.is_empty() {
+                        return None;
+                    }
+                    let haystack = cr.content.to_lowercase();
+                    let matched = query_words
+                        .iter()
+                        .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+                        .count();
+                    let score = matched as f32 / query_words.len() as f32;
+                    if score > 0.0 {
+                        Some(UnifiedSearchResult {
+                            region: SearchRegion::Task,
+                            score,
+                            node_type: cr.content_type.clone(),
+                            id: format!("content_record:{}", cr.id),
+                            title: Some(cr.file_path.clone()),
+                            summary: Some(truncate_summary(&cr.content, 200)),
+                            file_path: Some(cr.file_path),
+                            line_range: None,
+                            status: None,
+                            linked_symbols: None,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            knn.into_iter()
+                .map(|(score, cr)| UnifiedSearchResult {
+                    region: SearchRegion::Task,
                     score,
                     node_type: cr.content_type.clone(),
                     id: format!("content_record:{}", cr.id),
-                    title: None,
+                    title: Some(cr.file_path.clone()),
                     summary: Some(truncate_summary(&cr.content, 200)),
                     file_path: Some(cr.file_path),
                     line_range: None,
                     status: None,
                     linked_symbols: None,
                 })
-            } else {
-                None
-            }
-        })
-        .collect();
+                .collect()
+        }
+    };
 
     // ── Merge and rank ───────────────────────────────────────────────
     let merged = merge_unified_results(code_results, content_results, limit);
