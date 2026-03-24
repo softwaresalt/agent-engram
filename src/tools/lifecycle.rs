@@ -35,6 +35,10 @@ pub struct DaemonStatus {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceStatus {
     pub path: String,
+    /// Active git branch name (used as the DB storage subdirectory).
+    pub branch: String,
+    /// Absolute path to the SurrealDB storage directory for this workspace and branch.
+    pub db_path: String,
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,
@@ -155,8 +159,17 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             CodeGraphStats::default()
         };
 
+        let db_path = snapshot
+            .data_dir
+            .join("db")
+            .join(&snapshot.branch)
+            .display()
+            .to_string();
+
         return Ok(WorkspaceStatus {
             path: snapshot.path,
+            branch: snapshot.branch,
+            db_path,
             last_flush: snapshot.last_flush,
             stale_files: stale_now,
             connection_count: state.active_connections(),

@@ -4,6 +4,25 @@ use sha2::{Digest, Sha256};
 
 use crate::errors::WorkspaceError;
 
+/// Strip the Windows extended-length path prefix (`\\?\`) from a canonicalized path.
+///
+/// `std::fs::canonicalize` on Windows returns paths prefixed with `\\?\` for
+/// extended-length path support. This prefix causes hash instability (the same
+/// workspace produces a different SHA-256 depending on how the path was derived)
+/// and can cause compatibility issues with crates that do not handle UNC paths.
+/// Stripping it gives a regular absolute path while preserving full path fidelity
+/// for paths under 260 characters, which all workspace roots in practice are.
+fn normalize_canonical(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped.to_string());
+        }
+    }
+    path
+}
+
 /// Canonicalize and validate a workspace path; ensures .git exists at root.
 pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
     let candidate = Path::new(path);
@@ -13,11 +32,13 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
         });
     }
 
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|_| WorkspaceError::NotFound {
-            path: path.to_string(),
-        })?;
+    let canonical = normalize_canonical(
+        candidate
+            .canonicalize()
+            .map_err(|_| WorkspaceError::NotFound {
+                path: path.to_string(),
+            })?,
+    );
 
     if !canonical.join(".git").is_dir() {
         return Err(WorkspaceError::NotGitRoot {
