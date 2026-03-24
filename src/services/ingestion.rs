@@ -12,6 +12,12 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
+/// Maximum characters of content passed to the embedding model per record.
+///
+/// Content is truncated to this limit before embedding to stay within
+/// model token budgets and prevent excessive memory usage during backfill.
+const MAX_EMBED_CHARS: usize = 4_096;
+
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, IngestionError};
 use crate::models::content::ContentRecord;
@@ -304,4 +310,76 @@ pub async fn ingest_single_file(
 
     queries.upsert_content_record(&record).await?;
     Ok(true)
+}
+
+/// Generate and store embeddings for content records that currently have none.
+///
+/// Queries all content records, filters those lacking an embedding vector,
+/// truncates content to [`MAX_EMBED_CHARS`] characters, batch-embeds via
+/// [`crate::services::embedding::embed_texts`], and writes each vector back
+/// using [`CodeGraphQueries::update_content_record_embedding`].
+///
+/// Non-fatal: if the `embeddings` feature is disabled or the ONNX model
+/// cannot be loaded, the function returns `Ok(0)` immediately after a
+/// debug-level trace event.
+///
+/// Returns the number of records that received a new embedding.
+///
+/// # Errors
+///
+/// Returns `EngramError` only on database query failures.
+pub async fn backfill_content_embeddings(
+    queries: &CodeGraphQueries,
+) -> Result<usize, EngramError> {
+    let records = queries.select_content_records(None).await?;
+
+    let pending: Vec<_> = records
+        .into_iter()
+        .filter(|r| r.embedding.as_ref().map_or(true, Vec::is_empty))
+        .collect();
+
+    if pending.is_empty() {
+        debug!("content embedding backfill: all records already have embeddings");
+        return Ok(0);
+    }
+
+    info!(
+        count = pending.len(),
+        "content embedding backfill: generating embeddings for content records"
+    );
+
+    let texts: Vec<String> = pending
+        .iter()
+        .map(|r| r.content.chars().take(MAX_EMBED_CHARS).collect())
+        .collect();
+
+    let vectors = match crate::services::embedding::embed_texts(&texts) {
+        Ok(vecs) => vecs,
+        Err(e) => {
+            debug!(
+                error = %e,
+                "content embedding model unavailable — backfill skipped"
+            );
+            return Ok(0);
+        }
+    };
+
+    let mut updated = 0usize;
+    for (record, vector) in pending.iter().zip(vectors.into_iter()) {
+        if let Err(e) = queries
+            .update_content_record_embedding(&record.id, vector)
+            .await
+        {
+            debug!(
+                error = %e,
+                record_id = %record.id,
+                "content embedding write-back failed"
+            );
+        } else {
+            updated += 1;
+        }
+    }
+
+    info!(updated, "content embedding backfill complete");
+    Ok(updated)
 }

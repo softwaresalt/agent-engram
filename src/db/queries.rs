@@ -2387,6 +2387,26 @@ impl CodeGraphQueries {
         Ok(records)
     }
 
+    /// Update the embedding vector for a content record by its ID.
+    ///
+    /// Used by the content embedding backfill pass to store vectors generated
+    /// by the embedding service after initial ingestion.
+    #[tracing::instrument(skip(self, embedding), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn update_content_record_embedding(
+        &self,
+        record_id: &str,
+        embedding: Vec<f32>,
+    ) -> Result<(), EngramError> {
+        let record = Thing::from(("content_record", record_id));
+        self.db
+            .query("UPDATE $id SET embedding = $emb")
+            .bind(("id", record))
+            .bind(("emb", embedding))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
     /// Delete a content record by file path.
     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
