@@ -98,6 +98,7 @@ async fn s027_file_deleted_after_scan_handled_gracefully() {
         "docs",
         "docs",
         1_048_576,
+        None,
         &queries,
     )
     .await;
@@ -307,6 +308,7 @@ async fn s077_concurrent_ingestion_no_duplicate_records() {
             content_type: "docs".to_string(),
             language: None,
             path: "docs".to_string(),
+            pattern: None,
             status: ContentSourceStatus::Active,
         }],
         max_file_size_bytes: 1_048_576,

@@ -113,6 +113,28 @@ sources:
 }
 
 #[test]
+fn pattern_field_parsed_correctly() {
+    let yaml = r"
+sources:
+  - type: spec
+    path: .backlog/documents
+    pattern: '*-research.md'
+  - type: backlog
+    path: .backlog/tasks
+  - type: memory
+    path: .backlog/archive
+";
+    let config = parse_registry_yaml(yaml).expect("pattern should parse");
+    assert_eq!(config.sources.len(), 3);
+    assert_eq!(
+        config.sources[0].pattern.as_deref(),
+        Some("*-research.md")
+    );
+    assert!(config.sources[1].pattern.is_none());
+    assert!(config.sources[2].pattern.is_none());
+}
+
+#[test]
 fn defaults_applied_when_omitted() {
     let yaml = r"
 sources:

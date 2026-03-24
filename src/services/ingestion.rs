@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::Utc;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
@@ -45,6 +46,7 @@ pub struct IngestionSummary {
 /// For each source with [`ContentSourceStatus::Active`], walks the directory,
 /// reads eligible files, computes SHA-256 hashes, and upserts content records.
 /// Files exceeding `max_file_size_bytes` or detected as binary are skipped.
+/// When a source declares a `pattern`, only files matching that glob are ingested.
 pub async fn ingest_all_sources(
     config: &RegistryConfig,
     workspace_root: &Path,
@@ -63,6 +65,9 @@ pub async fn ingest_all_sources(
             continue;
         }
 
+        // Build a glob filter from the optional pattern field.
+        let glob_filter = build_glob_filter(source.pattern.as_deref());
+
         let source_path = workspace_root.join(&source.path);
         let summary = ingest_directory(
             &source_path,
@@ -71,6 +76,7 @@ pub async fn ingest_all_sources(
             &source.path,
             config.max_file_size_bytes,
             config.batch_size,
+            glob_filter.as_ref(),
             queries,
         )
         .await?;
@@ -95,6 +101,31 @@ pub async fn ingest_all_sources(
     Ok(total_summary)
 }
 
+/// Build a [`GlobSet`] from an optional pattern string.
+///
+/// Returns `None` when no pattern is provided or when the pattern is invalid
+/// (a warning is logged for invalid patterns so the source is ingested in full
+/// rather than silently dropped).
+fn build_glob_filter(pattern: Option<&str>) -> Option<GlobSet> {
+    let pat = pattern?;
+    let glob = match Glob::new(pat) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(pattern = %pat, error = %e, "invalid glob pattern in registry source — pattern filter disabled for this source");
+            return None;
+        }
+    };
+    let mut builder = GlobSetBuilder::new();
+    builder.add(glob);
+    match builder.build() {
+        Ok(gs) => Some(gs),
+        Err(e) => {
+            warn!(pattern = %pat, error = %e, "failed to build glob set — pattern filter disabled for this source");
+            None
+        }
+    }
+}
+
 /// Ingest all eligible files from a single directory.
 async fn ingest_directory(
     dir_path: &Path,
@@ -103,6 +134,7 @@ async fn ingest_directory(
     source_path: &str,
     max_file_size: u64,
     batch_size: usize,
+    glob_filter: Option<&GlobSet>,
     queries: &CodeGraphQueries,
 ) -> Result<IngestionSummary, EngramError> {
     let mut summary = IngestionSummary::default();
@@ -111,8 +143,22 @@ async fn ingest_directory(
         return Ok(summary);
     }
 
-    // Collect all files recursively.
-    let files = collect_files(dir_path);
+    // Collect all files recursively then apply the glob filter.
+    let files: Vec<_> = collect_files(dir_path)
+        .into_iter()
+        .filter(|p| {
+            if let Some(gs) = glob_filter {
+                let rel = p
+                    .strip_prefix(dir_path)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                gs.is_match(rel.as_str())
+            } else {
+                true
+            }
+        })
+        .collect();
     summary.total_files = files.len();
 
     // Get existing records to detect changes.
@@ -243,13 +289,15 @@ fn is_binary(content: &[u8]) -> bool {
 /// Ingest a single file that changed (for file watcher integration).
 ///
 /// Computes the hash, checks against the existing record, and upserts
-/// if changed. Returns `true` if the record was updated.
+/// if changed. When `glob_filter` is `Some`, the file is only ingested if its
+/// name matches the pattern. Returns `true` if the record was updated.
 pub async fn ingest_single_file(
     file_path: &Path,
     workspace_root: &Path,
     content_type: &str,
     source_path: &str,
     max_file_size: u64,
+    glob_filter: Option<&GlobSet>,
     queries: &CodeGraphQueries,
 ) -> Result<bool, EngramError> {
     let rel_path = file_path
@@ -257,6 +305,17 @@ pub async fn ingest_single_file(
         .unwrap_or(file_path)
         .to_string_lossy()
         .replace('\\', "/");
+
+    // Apply glob pattern filter if configured.
+    if let Some(gs) = glob_filter {
+        let filename = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !gs.is_match(filename.as_str()) && !gs.is_match(rel_path.as_str()) {
+            return Ok(false);
+        }
+    }
 
     // Check if file still exists (may have been deleted).
     if !file_path.exists() {

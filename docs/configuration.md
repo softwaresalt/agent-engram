@@ -290,8 +290,9 @@ Each entry under `sources` is a content source with these fields:
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Content type. See [Content Types](#content-types) below. |
-| `path` | Yes | Directory path relative to the workspace root. Must be a directory. |
+| `path` | Yes | Directory path relative to the workspace root. Must be a directory. Subdirectory paths are valid — each entry indexes only its declared subtree. |
 | `language` | No | Language hint used when indexing `code` type sources. Ignored by the content ingestion pipeline. |
+| `pattern` | No | Glob pattern for filtering files within the source directory. See [File Pattern Filtering](#file-pattern-filtering). |
 
 ### Content Types
 
@@ -395,6 +396,72 @@ You can use any string as a content type. Custom types go through the same conte
 - type: runbooks
   path: ops/runbooks
 ```
+
+### Subdirectory Classification
+
+Because `path` can point to any subdirectory, a single root directory can be split across multiple entries with different types. Each entry ingests only its declared subtree — there is no overlap unless two entries point to overlapping paths.
+
+This is the recommended approach for the `.backlog/` directory managed by Backlog.md, where different subdirectories hold content with distinct purposes:
+
+```yaml
+sources:
+  # Active planning artifacts — searchable as 'backlog'
+  - type: backlog
+    path: .backlog/tasks
+    language: markdown
+
+  - type: backlog
+    path: .backlog/milestones
+    language: markdown
+
+  # Research and design documents — searchable as 'spec'
+  - type: spec
+    path: .backlog/documents
+    language: markdown
+
+  # Historical record — searchable as 'memory', excluded from 'backlog' queries
+  - type: memory
+    path: .backlog/completed
+    language: markdown
+
+  - type: memory
+    path: .backlog/archive
+    language: markdown
+```
+
+With this configuration, `query_memory` with `content_type = "backlog"` returns only active tasks and milestones, while `content_type = "memory"` covers historical completed and archived items.
+
+### File Pattern Filtering
+
+The optional `pattern` field limits ingestion to files matching a glob expression. The pattern is matched against each file's path **relative to the source directory** (not the workspace root), using standard glob syntax:
+
+| Syntax | Matches |
+|---|---|
+| `*` | Any sequence of characters within a single path segment |
+| `**` | Any sequence of characters across path separators |
+| `?` | Any single character |
+| `[abc]` | A character class |
+
+```yaml
+sources:
+  # Only ingest files ending with '-research.md' from the documents folder
+  - type: spec
+    path: .backlog/documents
+    pattern: '*-research.md'
+    language: markdown
+
+  # Only Markdown files anywhere under the docs tree
+  - type: docs
+    path: docs
+    pattern: '**/*.md'
+
+  # Everything — same as omitting the pattern field
+  - type: backlog
+    path: .backlog/tasks
+```
+
+> [!NOTE]
+> When a `pattern` is invalid, Engram logs a warning and ingests the entire directory rather than skipping the source silently.
 
 ### Language Hints
 

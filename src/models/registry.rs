@@ -59,6 +59,21 @@ pub struct ContentSource {
     /// Relative path from workspace root to the content directory.
     pub path: String,
 
+    /// Optional glob pattern for filtering files within the source directory.
+    ///
+    /// When set, only files whose path relative to the source directory matches
+    /// the pattern are ingested. Standard glob syntax applies: `*` matches any
+    /// sequence of non-separator characters, `**` matches across directory
+    /// separators, `?` matches a single character, and `[abc]` matches a
+    /// character class. Patterns are matched case-sensitively.
+    ///
+    /// Examples:
+    /// - `"*-research.md"` — files whose name ends with `-research.md`
+    /// - `"**/*.md"` — all Markdown files anywhere in the directory tree
+    /// - `"tasks/**"` — everything under a `tasks/` subdirectory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+
     /// Validation status set at hydration time (not serialized in YAML).
     #[serde(skip)]
     pub status: ContentSourceStatus,
