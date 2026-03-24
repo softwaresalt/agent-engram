@@ -939,7 +939,7 @@ impl CodeGraphQueries {
                 *table
             };
             let query = format!(
-                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE name = $name AND body_hash = $bh"
+                "SELECT id, name, file_path, body_hash, embedding FROM {table_name} WHERE name = $name AND body_hash = $bh"
             );
             let mut resp = self
                 .db
@@ -956,6 +956,7 @@ impl CodeGraphQueries {
                     name: row.name,
                     file_path: row.file_path,
                     body_hash: row.body_hash,
+                    embedding: row.embedding,
                 });
             }
         }
@@ -979,7 +980,7 @@ impl CodeGraphQueries {
                 *table
             };
             let query = format!(
-                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE file_path = $fp"
+                "SELECT id, name, file_path, body_hash, embedding FROM {table_name} WHERE file_path = $fp"
             );
             let mut resp = self
                 .db
@@ -995,6 +996,7 @@ impl CodeGraphQueries {
                     name: row.name,
                     file_path: row.file_path,
                     body_hash: row.body_hash,
+                    embedding: row.embedding,
                 });
             }
         }
@@ -1729,7 +1731,11 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?;
         let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
         for row in func_rows {
-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue; // skip zero-vector records (NaN cosine distance)
+            }
+            let score = raw_score.clamp(0.0, 1.0);
             let f = row.into_function();
             results.push((
                 score,
@@ -1762,7 +1768,11 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?;
         let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
         for row in class_rows {
-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
             let c = row.into_class();
             results.push((
                 score,
@@ -1795,7 +1805,11 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?;
         let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
         for row in iface_rows {
-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
             let i = row.into_interface();
             results.push((
                 score,
@@ -1940,7 +1954,11 @@ impl CodeGraphQueries {
         // ── Functions ──
         let func_rows: Vec<FunctionRow> = resp.take(func_idx).map_err(map_db_err)?;
         for row in func_rows {
-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
             let f = row.into_function();
             results.push((
                 score,
@@ -1963,7 +1981,11 @@ impl CodeGraphQueries {
         // ── Classes ──
         let class_rows: Vec<ClassRow> = resp.take(class_idx).map_err(map_db_err)?;
         for row in class_rows {
-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
             let c = row.into_class();
             results.push((
                 score,
@@ -1986,7 +2008,11 @@ impl CodeGraphQueries {
         // ── Interfaces ──
         let iface_rows: Vec<InterfaceRow> = resp.take(iface_idx).map_err(map_db_err)?;
         for row in iface_rows {
-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
             let i = row.into_interface();
             results.push((
                 score,
@@ -2473,7 +2499,11 @@ impl CodeGraphQueries {
                         return None;
                     }
                 }
-                let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
+                let raw_score = row.knn_score.unwrap_or(0.0);
+                if !raw_score.is_finite() {
+                    return None; // skip zero-vector records (NaN cosine distance)
+                }
+                let score = raw_score.clamp(0.0, 1.0);
                 Some((score, row.into_model()))
             })
             .collect();
@@ -2664,6 +2694,8 @@ pub struct SymbolIdentity {
     pub file_path: String,
     /// Body hash for identity matching.
     pub body_hash: String,
+    /// Embedding vector — carried forward to avoid zero-vector writes on re-sync.
+    pub embedding: Vec<f32>,
 }
 
 /// Internal row for ID-only queries.
@@ -2714,6 +2746,8 @@ struct SymbolIdentityRow {
     name: String,
     file_path: String,
     body_hash: String,
+    #[serde(default)]
+    embedding: Vec<f32>,
 }
 
 // ── Supporting Types for BFS / Symbol Listing ──────────────────────────

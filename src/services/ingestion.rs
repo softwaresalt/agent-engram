@@ -127,6 +127,7 @@ fn build_glob_filter(pattern: Option<&str>) -> Option<GlobSet> {
 }
 
 /// Ingest all eligible files from a single directory.
+#[allow(clippy::too_many_arguments)]
 async fn ingest_directory(
     dir_path: &Path,
     workspace_root: &Path,
@@ -387,14 +388,12 @@ pub async fn ingest_single_file(
 /// # Errors
 ///
 /// Returns `EngramError` only on database query failures.
-pub async fn backfill_content_embeddings(
-    queries: &CodeGraphQueries,
-) -> Result<usize, EngramError> {
+pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<usize, EngramError> {
     let records = queries.select_content_records(None).await?;
 
     let pending: Vec<_> = records
         .into_iter()
-        .filter(|r| r.embedding.as_ref().map_or(true, Vec::is_empty))
+        .filter(|r| r.embedding.as_ref().is_none_or(Vec::is_empty))
         .collect();
 
     if pending.is_empty() {

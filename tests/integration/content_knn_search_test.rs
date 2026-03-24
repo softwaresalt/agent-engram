@@ -1,6 +1,6 @@
 //! Integration tests for native KNN vector search on `content_record` (TASK-008.06).
 //!
-//! Verifies that `vector_search_content_native()` uses SurrealDB's MTREE index
+//! Verifies that `vector_search_content_native()` uses `SurrealDB`'s MTREE index
 //! on the `content_record` table to rank docs, specs, backlog entries, and other
 //! content by cosine similarity, matching the behaviour of `vector_search_symbols_native`.
 
@@ -102,8 +102,7 @@ async fn content_knn_score_matches_cosine_similarity() {
     };
     insert_content_record_with_embedding(&q, "exact", "docs", "exact match", emb_exact.clone())
         .await;
-    insert_content_record_with_embedding(&q, "partial", "docs", "partial match", emb_partial)
-        .await;
+    insert_content_record_with_embedding(&q, "partial", "docs", "partial match", emb_partial).await;
 
     // WHEN we search with query = emb_exact
     let results = q
@@ -141,14 +140,8 @@ async fn content_knn_content_type_filter_excludes_other_types() {
     // GIVEN records of two different content_types
     let q = test_queries("filter").await;
     insert_content_record_with_embedding(&q, "spec_a", "spec", "spec a", unit_vector(0)).await;
-    insert_content_record_with_embedding(
-        &q,
-        "backlog_a",
-        "backlog",
-        "backlog a",
-        unit_vector(0),
-    )
-    .await;
+    insert_content_record_with_embedding(&q, "backlog_a", "backlog", "backlog a", unit_vector(0))
+        .await;
 
     // WHEN we search restricted to "spec"
     let results = q
@@ -157,10 +150,7 @@ async fn content_knn_content_type_filter_excludes_other_types() {
         .expect("filtered content knn");
 
     // THEN only spec records are returned
-    assert!(
-        !results.is_empty(),
-        "should return the spec record"
-    );
+    assert!(!results.is_empty(), "should return the spec record");
     for (_, rec) in &results {
         assert_eq!(
             rec.content_type, "spec",

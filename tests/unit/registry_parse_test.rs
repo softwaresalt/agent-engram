@@ -126,10 +126,7 @@ sources:
 ";
     let config = parse_registry_yaml(yaml).expect("pattern should parse");
     assert_eq!(config.sources.len(), 3);
-    assert_eq!(
-        config.sources[0].pattern.as_deref(),
-        Some("*-research.md")
-    );
+    assert_eq!(config.sources[0].pattern.as_deref(), Some("*-research.md"));
     assert!(config.sources[1].pattern.is_none());
     assert!(config.sources[2].pattern.is_none());
 }

@@ -519,11 +519,7 @@ pub async fn unified_search(
     // we are guaranteed to have a valid query_embedding here.
     let content_results: Vec<UnifiedSearchResult> = {
         let knn = queries
-            .vector_search_content_native(
-                &query_embedding,
-                limit,
-                parsed.content_type.as_deref(),
-            )
+            .vector_search_content_native(&query_embedding, limit, parsed.content_type.as_deref())
             .await?;
 
         // If no embedded records exist yet (backfill still in progress),

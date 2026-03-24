@@ -490,32 +490,22 @@ pub async fn run_with_shutdown(
                         // records persisted in previous daemon runs.
                         if let Some(snapshot) = state_auto.snapshot_workspace().await {
                             let ws_path = std::path::PathBuf::from(&snapshot.path);
-                            match crate::db::connect_db(
-                                &snapshot.data_dir,
-                                &snapshot.branch,
-                            )
-                            .await
+                            match crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await
                             {
                                 Ok(db) => {
-                                    let queries =
-                                        crate::db::queries::CodeGraphQueries::new(db);
+                                    let queries = crate::db::queries::CodeGraphQueries::new(db);
 
                                     // Run registry ingestion.
                                     let registry_path =
                                         ws_path.join(".engram").join("registry.yaml");
-                                    match crate::services::registry::load_registry(
-                                        &registry_path,
-                                    ) {
+                                    match crate::services::registry::load_registry(&registry_path) {
                                         Ok(Some(mut config)) => {
-                                            let _ =
-                                                crate::services::registry::validate_sources(
-                                                    &mut config,
-                                                    &ws_path,
-                                                );
-                                            match crate::services::ingestion::ingest_all_sources(
-                                                &config,
+                                            let _ = crate::services::registry::validate_sources(
+                                                &mut config,
                                                 &ws_path,
-                                                &queries,
+                                            );
+                                            match crate::services::ingestion::ingest_all_sources(
+                                                &config, &ws_path, &queries,
                                             )
                                             .await
                                             {
@@ -573,11 +563,9 @@ pub async fn run_with_shutdown(
                         // flush_state rejects calls while indexing is in progress.
                         state_auto.finish_indexing().await;
                         if should_flush {
-                            if let Err(e) = crate::tools::write::flush_state(
-                                Arc::clone(&state_auto),
-                                None,
-                            )
-                            .await
+                            if let Err(e) =
+                                crate::tools::write::flush_state(Arc::clone(&state_auto), None)
+                                    .await
                             {
                                 warn!(error = %e, "startup auto-flush failed");
                             }
@@ -610,23 +598,15 @@ pub async fn run_with_shutdown(
                 );
 
                 // Drain all events within the 2-second debounce window.
-                loop {
-                    match tokio::time::timeout(
-                        Duration::from_secs(2),
-                        event_rx.recv(),
-                    )
-                    .await
-                    {
-                        Ok(Some(ev)) => {
-                            ttl_watcher.reset();
-                            if matches!(
-                                crate::daemon::debounce::adapt_event(&ev),
-                                crate::daemon::debounce::ServiceAction::ReindexFile { .. }
-                            ) {
-                                pending_reindex = true;
-                            }
-                        }
-                        _ => break,
+                while let Ok(Some(ev)) =
+                    tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await
+                {
+                    ttl_watcher.reset();
+                    if matches!(
+                        crate::daemon::debounce::adapt_event(&ev),
+                        crate::daemon::debounce::ServiceAction::ReindexFile { .. }
+                    ) {
+                        pending_reindex = true;
                     }
                 }
 
@@ -664,11 +644,8 @@ pub async fn run_with_shutdown(
                     // finish_indexing MUST come before flush_state.
                     state_watcher.finish_indexing().await;
                     if should_flush {
-                        if let Err(e) = crate::tools::write::flush_state(
-                            Arc::clone(&state_watcher),
-                            None,
-                        )
-                        .await
+                        if let Err(e) =
+                            crate::tools::write::flush_state(Arc::clone(&state_watcher), None).await
                         {
                             warn!(error = %e, "file-change auto-flush failed");
                         }
@@ -696,8 +673,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     let (tx, rx) = watch::channel(false);
     // Legacy callers have no file watcher; pass a channel that is immediately
     // closed so the auto-sync loop in run_with_shutdown exits cleanly.
-    let (_event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
-    drop(_event_tx);
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
+    drop(event_tx);
     run_with_shutdown(workspace, ttl, Arc::new(tx), rx, event_rx).await
 }
 

@@ -185,7 +185,7 @@ async fn index_flush_and_seed_embedding(workspace_path: &std::path::Path) {
                 .data
                 .as_ref()
                 .and_then(|d| d.get("engram_code"))
-                .and_then(|c| c.as_u64());
+                .and_then(serde_json::Value::as_u64);
             if code == Some(7003) {
                 assert!(
                     Instant::now() < flush_deadline,

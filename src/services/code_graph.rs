@@ -668,9 +668,15 @@ pub async fn sync_workspace(
                         f.docstring.as_deref(),
                     );
 
-                    // Check if body_hash matches an old symbol (reuse embedding).
-                    let reused = old_sym_map.contains_key(&(f.name.clone(), f.body_hash.clone()));
+                    // Check if body_hash matches an old symbol and carry its embedding forward.
+                    // Without this, reused symbols would be written with a zero-vector, causing
+                    // NaN cosine scores on the next KNN search.
+                    let old_embedding = old_sym_map
+                        .get(&(f.name.clone(), f.body_hash.clone()))
+                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
+                        .map(|s| s.embedding.clone());
 
+                    let reused = old_embedding.is_some();
                     if reused {
                         result.symbols_reused += 1;
                     } else {
@@ -691,7 +697,8 @@ pub async fn sync_workspace(
                         body_hash: f.body_hash.clone(),
                         token_count: f.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
+                        embedding: old_embedding
+                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                         summary,
                     };
                     queries.upsert_function(&func).await?;
@@ -710,8 +717,12 @@ pub async fn sync_workspace(
                         c.docstring.as_deref(),
                     );
 
-                    let reused = old_sym_map.contains_key(&(c.name.clone(), c.body_hash.clone()));
+                    let old_embedding = old_sym_map
+                        .get(&(c.name.clone(), c.body_hash.clone()))
+                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
+                        .map(|s| s.embedding.clone());
 
+                    let reused = old_embedding.is_some();
                     if reused {
                         result.symbols_reused += 1;
                     } else {
@@ -731,7 +742,8 @@ pub async fn sync_workspace(
                         body_hash: c.body_hash.clone(),
                         token_count: c.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
+                        embedding: old_embedding
+                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                         summary,
                     };
                     queries.upsert_class(&class).await?;
@@ -750,8 +762,12 @@ pub async fn sync_workspace(
                         i.docstring.as_deref(),
                     );
 
-                    let reused = old_sym_map.contains_key(&(i.name.clone(), i.body_hash.clone()));
+                    let old_embedding = old_sym_map
+                        .get(&(i.name.clone(), i.body_hash.clone()))
+                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
+                        .map(|s| s.embedding.clone());
 
+                    let reused = old_embedding.is_some();
                     if reused {
                         result.symbols_reused += 1;
                     } else {
@@ -771,7 +787,8 @@ pub async fn sync_workspace(
                         body_hash: i.body_hash.clone(),
                         token_count: i.token_count,
                         embed_type: embed_type.to_owned(),
-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
+                        embedding: old_embedding
+                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                         summary,
                     };
                     queries.upsert_interface(&iface).await?;
