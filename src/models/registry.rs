@@ -42,6 +42,7 @@ pub const BUILT_IN_TYPES: &[&str] = &[
     "memory",
     "context",
     "instructions",
+    "backlog",
 ];
 
 /// A single declared content source from `.engram/registry.yaml`.

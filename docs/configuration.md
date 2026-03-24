@@ -297,6 +297,19 @@ Each entry under `sources` is a content source with these fields:
 
 Engram recognizes seven built-in content types. Custom type strings are also accepted (see [Custom Types](#custom-types)).
 
+#### `backlog`
+
+Structured project backlog content managed by a backlog tool (such as Backlog.md): feature definitions, user stories, tasks, ADRs, decisions, and research documents. Ingested as content records searchable via `query_memory`. Using a dedicated `backlog` type (rather than `docs`, `spec`, or `memory`) lets agents filter specifically for planning artifacts without pulling in unrelated documentation.
+
+```yaml
+- type: backlog
+  path: .backlog
+  language: markdown
+```
+
+> [!NOTE]
+> If your backlog tool stores completed and archived items under subdirectories (`.backlog/completed/`, `.backlog/archive/`), they are included automatically — Engram traverses the whole directory tree for each source entry.
+
 #### `docs`
 
 Documentation files: `docs/`, `README` files, architecture guides, changelogs. Ingested as searchable content records accessible via `query_memory`. Use this type for any directory whose purpose is explaining the project to humans or agents.
@@ -401,7 +414,7 @@ The `language` field is optional on all source entries. For non-`code` types the
 | `.context/` | `context` | `markdown` |
 | `.github/` | `instructions` | `markdown` |
 | `.copilot-tracking/` | `memory` | `markdown` |
-| `.backlog/` | `memory` | `markdown` |
+| `.backlog/` | `backlog` | `markdown` |
 
 Any directory not in this list requires a manual entry. Re-running `engram install` overwrites the generated entries; the `engram install --hooks-only` flag regenerates hook files without touching `registry.yaml`.
 

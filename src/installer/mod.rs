@@ -143,7 +143,7 @@ const AUTO_DETECT_DIRS: &[(&str, &str, Option<&str>)] = &[
     (".context", "context", Some("markdown")),
     (".github", "instructions", Some("markdown")),
     (".copilot-tracking", "memory", Some("markdown")),
-    (".backlog", "memory", Some("markdown")),
+    (".backlog", "backlog", Some("markdown")),
 ];
 
 /// Scan `workspace` for common directories and generate a default
@@ -551,6 +551,12 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
         })
     })?;
 
+    // Generate registry.yaml only if it does not already exist, to avoid
+    // overwriting user-edited source entries on update.
+    if !engram_dir.join("registry.yaml").exists() {
+        generate_default_registry(workspace, &engram_dir)?;
+    }
+
     info!("engram plugin updated successfully");
     Ok(())
 }
@@ -627,6 +633,9 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
             reason: format!("cannot write .vscode/mcp.json: {e}"),
         })
     })?;
+
+    // Always regenerate registry.yaml on reinstall.
+    generate_default_registry(workspace, &engram_dir)?;
 
     info!("engram plugin reinstalled successfully");
     Ok(())
