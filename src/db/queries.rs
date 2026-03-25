@@ -2958,23 +2958,14 @@ fn parse_thing(node_id: &str) -> Thing {
 
 // ── File Hash Record ───────────────────────────────────────────────────────────
 
-/// A stored file hash record from the `file_hash` table.
-///
-/// Maps a workspace-relative file path to its last-known SHA-256 content hash
-/// and size, enabling offline change detection on daemon restart.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FileHashRecord {
-    /// Workspace-relative file path (e.g., `src/main.rs`).
-    pub file_path: String,
-    /// SHA-256 hex digest of the file contents at record time.
-    pub content_hash: String,
-    /// File size in bytes at record time.
-    pub size_bytes: u64,
-    /// Timestamp when the hash was last recorded.
-    pub recorded_at: DateTime<Utc>,
-}
+// The public `FileHashRecord` type lives in `crate::models::file_hash`; re-export
+// it here so existing code inside this module compiles unchanged.
+pub use crate::models::FileHashRecord;
 
 /// Internal row type for deserializing `file_hash` records from SurrealDB.
+///
+/// SurrealDB returns `int` fields as `i64`; `FileHashRow` absorbs this and
+/// converts to the `u64` exposed by the public model type.
 #[derive(Deserialize)]
 struct FileHashRow {
     file_path: String,
@@ -3013,6 +3004,7 @@ impl CodeGraphQueries {
         let id = hex::encode(Sha256::digest(file_path.as_bytes()));
         let thing = Thing::from(("file_hash", id.as_str()));
         let now = chrono::Utc::now().to_rfc3339();
+        let start = std::time::Instant::now();
         self.db
             .query(
                 "UPSERT $record SET \
@@ -3028,7 +3020,7 @@ impl CodeGraphQueries {
             .bind(("now", now))
             .await
             .map_err(map_db_err)?;
-        record_query_metrics("crud", "file_hash", 1, std::time::Duration::ZERO);
+        record_query_metrics("crud", "file_hash", 1, start.elapsed());
         Ok(())
     }
 

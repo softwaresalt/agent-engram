@@ -14,18 +14,15 @@
 //! 3. The file watcher calls [`record_file_hash`] after processing each
 //!    [`WatcherEvent`](crate::models::WatcherEvent) to keep hashes current.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
+use crate::daemon::watcher::DEFAULT_EXCLUDE_PREFIXES;
 use crate::db::queries::CodeGraphQueries;
-use crate::errors::{EngramError, SystemError};
-
-// ── Default exclusion patterns (mirrors watcher defaults) ─────────────────────
-
-/// Directory prefixes excluded from file tracking (forward-slash normalised).
-const EXCLUDED_PREFIXES: &[&str] = &[".engram/", ".git/", "node_modules/", "target/", ".env"];
+use crate::errors::{EngramError, IngestionError, SystemError};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -62,8 +59,9 @@ pub struct FileChange {
 /// Returns `EngramError` if the file cannot be read.
 pub fn compute_file_hash(path: &Path) -> Result<String, EngramError> {
     let content = std::fs::read(path).map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("cannot read file for hashing ({}): {e}", path.display()),
+        EngramError::Ingestion(IngestionError::Failed {
+            path: path.display().to_string(),
+            reason: format!("cannot read file for hashing: {e}"),
         })
     })?;
     let mut hasher = Sha256::new();
@@ -90,8 +88,9 @@ pub async fn record_file_hash(
     queries: &CodeGraphQueries,
 ) -> Result<(), EngramError> {
     let metadata = std::fs::metadata(abs_path).map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("cannot stat file ({}): {e}", abs_path.display()),
+        EngramError::Ingestion(IngestionError::Failed {
+            path: abs_path.display().to_string(),
+            reason: format!("cannot stat file for hash recording: {e}"),
         })
     })?;
 
@@ -122,6 +121,13 @@ pub async fn record_file_hash(
 /// Paths inside `.engram/`, `.git/`, `target/`, `node_modules/`, and `.env*`
 /// are excluded (mirroring [`crate::daemon::watcher::WatcherConfig`] defaults).
 ///
+/// A two-level fast-path avoids redundant SHA-256 computation: when the
+/// stored `size_bytes` differs from the current file size, the file is
+/// immediately classified as Modified without re-hashing.
+///
+/// All file system I/O runs inside [`tokio::task::spawn_blocking`] so the
+/// Tokio event loop is never blocked by directory walks or file reads.
+///
 /// # Errors
 ///
 /// Returns `EngramError` if the database query fails.  File I/O errors for
@@ -132,81 +138,37 @@ pub async fn detect_offline_changes(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<Vec<FileChange>, EngramError> {
-    // Load all stored hashes into a map for O(1) lookup.
+    // Load all stored hashes into a map keyed by relative path.
     let stored = queries.get_all_file_hashes().await?;
-    let mut stored_map: std::collections::HashMap<String, String> = stored
+    let stored_map: HashMap<String, (String, u64)> = stored
         .into_iter()
-        .map(|r| (r.file_path, r.content_hash))
+        .map(|r| (r.file_path, (r.content_hash, r.size_bytes)))
         .collect();
 
-    let mut changes = Vec::new();
+    let root = workspace_root.to_path_buf();
 
-    // Walk the workspace, skipping excluded paths.
-    let disk_files = collect_workspace_files(workspace_root);
+    // All blocking I/O runs in a dedicated thread so the event loop is free.
+    let changes =
+        tokio::task::spawn_blocking(move || compare_disk_to_stored(&root, stored_map))
+            .await
+            .map_err(|e| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("file tracker scan task panicked: {e}"),
+                })
+            })?;
 
-    for abs_path in disk_files {
-        let rel = match abs_path.strip_prefix(workspace_root) {
-            Ok(r) => r.to_string_lossy().replace('\\', "/"),
-            Err(_) => continue,
-        };
-
-        let current_hash = match compute_file_hash(&abs_path) {
-            Ok(h) => h,
-            Err(e) => {
-                warn!(path = %rel, error = %e, "file_tracker: cannot hash file — skipping");
-                continue;
-            }
-        };
-
-        match stored_map.remove(&rel) {
-            None => {
-                // File on disk but no stored hash → Added.
-                changes.push(FileChange {
-                    path: rel,
-                    kind: FileChangeKind::Added,
-                    previous_hash: None,
-                    current_hash: Some(current_hash),
-                });
-            }
-            Some(stored_hash) if stored_hash != current_hash => {
-                // Hash mismatch → Modified.
-                changes.push(FileChange {
-                    path: rel,
-                    kind: FileChangeKind::Modified,
-                    previous_hash: Some(stored_hash),
-                    current_hash: Some(current_hash),
-                });
-            }
-            Some(_) => {
-                // Hashes match → no change.
-                debug!(path = %rel, "file_tracker: unchanged");
-            }
+    let (added, modified, deleted) = changes.iter().fold((0usize, 0, 0), |(a, m, d), c| {
+        match c.kind {
+            FileChangeKind::Added => (a + 1, m, d),
+            FileChangeKind::Modified => (a, m + 1, d),
+            FileChangeKind::Deleted => (a, m, d + 1),
         }
-    }
-
-    // Any entries remaining in stored_map have no matching disk file → Deleted.
-    for (path, stored_hash) in stored_map {
-        changes.push(FileChange {
-            path,
-            kind: FileChangeKind::Deleted,
-            previous_hash: Some(stored_hash),
-            current_hash: None,
-        });
-    }
+    });
 
     tracing::info!(
-        added = changes
-            .iter()
-            .filter(|c| c.kind == FileChangeKind::Added)
-            .count(),
-        modified = changes
-            .iter()
-            .filter(|c| c.kind == FileChangeKind::Modified)
-            .count(),
-        deleted = changes
-            .iter()
-            .filter(|c| c.kind == FileChangeKind::Deleted)
-            .count(),
+        added,
+        modified,
+        deleted,
         "file_tracker: offline change detection complete"
     );
 
@@ -215,15 +177,110 @@ pub async fn detect_offline_changes(
 
 // ── Internals ─────────────────────────────────────────────────────────────────
 
+/// Compare all non-excluded workspace files against `stored_map`, returning
+/// the full set of `FileChange` entries.  Intended for use inside
+/// `spawn_blocking`.
+fn compare_disk_to_stored(
+    root: &Path,
+    mut stored_map: HashMap<String, (String, u64)>,
+) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+    let disk_files = collect_workspace_files(root);
+
+    for abs_path in disk_files {
+        let rel = match abs_path.strip_prefix(root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+
+        // Read size first; if it differs from stored we know the file changed
+        // without paying for a full SHA-256 pass.
+        let current_size = match std::fs::metadata(&abs_path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                warn!(path = %rel, error = %e, "file_tracker: cannot stat file — skipping");
+                continue;
+            }
+        };
+
+        match stored_map.remove(&rel) {
+            None => {
+                // No stored hash → file was Added since last run.
+                let current_hash = hash_or_skip(&abs_path, &rel);
+                changes.push(FileChange {
+                    path: rel,
+                    kind: FileChangeKind::Added,
+                    previous_hash: None,
+                    current_hash,
+                });
+            }
+            Some((stored_hash, stored_size)) => {
+                if current_size == stored_size {
+                    // Same size — verify via hash.
+                    match compute_file_hash(&abs_path) {
+                        Ok(current_hash) if current_hash != stored_hash => {
+                            changes.push(FileChange {
+                                path: rel,
+                                kind: FileChangeKind::Modified,
+                                previous_hash: Some(stored_hash),
+                                current_hash: Some(current_hash),
+                            });
+                        }
+                        Ok(_) => {
+                            debug!(path = %rel, "file_tracker: unchanged");
+                        }
+                        Err(e) => {
+                            warn!(path = %rel, error = %e, "file_tracker: cannot hash file — skipping");
+                        }
+                    }
+                } else {
+                    // Size differs — skip hashing, immediately Modified.
+                    let current_hash = hash_or_skip(&abs_path, &rel);
+                    changes.push(FileChange {
+                        path: rel,
+                        kind: FileChangeKind::Modified,
+                        previous_hash: Some(stored_hash),
+                        current_hash,
+                    });
+                }
+            }
+        }
+    }
+
+    // Remaining entries in stored_map have no disk counterpart → Deleted.
+    for (path, (stored_hash, _)) in stored_map {
+        changes.push(FileChange {
+            path,
+            kind: FileChangeKind::Deleted,
+            previous_hash: Some(stored_hash),
+            current_hash: None,
+        });
+    }
+
+    changes
+}
+
+/// Hash a file, returning `Some(hex)` on success or `None` (with a warning)
+/// on I/O error.
+fn hash_or_skip(path: &Path, rel: &str) -> Option<String> {
+    match compute_file_hash(path) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            warn!(path = %rel, error = %e, "file_tracker: cannot hash file — hash unavailable");
+            None
+        }
+    }
+}
+
 /// Recursively collect all non-excluded files under `workspace_root`.
-fn collect_workspace_files(root: &Path) -> Vec<std::path::PathBuf> {
+fn collect_workspace_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_recursive(root, root, &mut files);
     files.sort();
     files
 }
 
-fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -255,8 +312,8 @@ fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<std::path::PathBuf
 }
 
 /// Return `true` when a workspace-relative path falls under an excluded prefix.
-fn is_excluded(rel: &str) -> bool {
-    EXCLUDED_PREFIXES.iter().any(|prefix| {
+pub(crate) fn is_excluded(rel: &str) -> bool {
+    DEFAULT_EXCLUDE_PREFIXES.iter().any(|prefix| {
         let stem = prefix.trim_end_matches('/');
         rel == stem || rel.starts_with(&format!("{stem}/"))
     })

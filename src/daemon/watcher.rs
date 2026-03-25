@@ -57,17 +57,22 @@ pub struct WatcherConfig {
     pub watch_patterns: Vec<String>,
 }
 
+/// Canonical exclusion prefixes shared between the file watcher and the file
+/// tracker.  Both components must exclude the same paths so that offline change
+/// detection and live event filtering stay in sync.
+///
+/// Paths are workspace-relative and forward-slash separated.
+pub const DEFAULT_EXCLUDE_PREFIXES: &[&str] =
+    &[".engram/", ".git/", "node_modules/", "target/", ".env"];
+
 impl Default for WatcherConfig {
     fn default() -> Self {
         Self {
             debounce_ms: 500,
-            exclude_patterns: vec![
-                ".engram/".to_string(),
-                ".git/".to_string(),
-                "node_modules/".to_string(),
-                "target/".to_string(),
-                ".env".to_string(),
-            ],
+            exclude_patterns: DEFAULT_EXCLUDE_PREFIXES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             watch_patterns: vec!["**/*".to_string()],
         }
     }

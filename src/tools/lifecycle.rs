@@ -12,6 +12,7 @@ use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
+use crate::services::file_tracker::detect_offline_changes;
 use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +79,25 @@ pub async fn set_workspace(
     let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
     let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
+
+    // Detect files changed while the daemon was offline and emit a summary.
+    // This is best-effort: I/O failures for individual files are already logged
+    // inside `detect_offline_changes` as warnings, so we only surface a
+    // tracing event here rather than aborting workspace binding.
+    match detect_offline_changes(&canonical, &cg_queries).await {
+        Ok(changes) if !changes.is_empty() => {
+            tracing::info!(
+                count = changes.len(),
+                "set_workspace: offline changes detected — re-indexing recommended"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!("set_workspace: no offline changes detected");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "set_workspace: offline change detection failed");
+        }
+    }
 
     // Load and validate workspace config BEFORE committing the snapshot.
     // If config validation fails, we must not leave the workspace partially bound.
