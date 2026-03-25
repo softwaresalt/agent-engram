@@ -7,7 +7,7 @@ input:
   properties:
     task-id:
       type: string
-      description: "The unique Beads task ID."
+      description: "The unique Backlog.md task ID."
     harness-cmd:
       type: string
       description: "The cargo test command defining the strict compiler harness boundary."
@@ -66,7 +66,11 @@ For **destructive operations** (file deletion, directory removal), route through
 ### Step 1: Context Isolation
 
 1. Read the test file targeted by the `${input:harness-cmd}`. Carefully read the embedded `// GIVEN`, `// WHEN`, `// THEN` BDD comments to fully internalize the human intent behind the test.
-2. Call the `agent-engram` MCP tool (e.g., `map_code`) using the domain structs and functions found in the test. This maps the exact source files in `src/` containing the `unimplemented!()` stubs that require attention.
+2. Use `engram` MCP tools to understand the codebase context before reading raw files:
+   * Call `map_code` for each domain struct and function found in the test. This maps the exact source files in `src/` containing the `unimplemented!()` stubs that require attention, including their call graphs and relationships.
+   * Call `unified_search` with the feature's key concepts to find related code, context records, and prior decisions that inform the implementation.
+   * Call `list_symbols` filtered by file path if you need to discover available symbols in specific modules.
+   * Fall back to grep/glob **only** when engram results are insufficient or you need exact text pattern matching.
 3. Read `.github/copilot-instructions.md` and `.github/agents/rust-engineer.agent.md` for project coding standards and Rust-specific conventions.
 4. `broadcast` at `info` level: `[BUILD] Starting task {task-id}: {harness-cmd}` with a summary of the test scenarios and stub files.
 
@@ -93,7 +97,7 @@ Execute the following loop with a **hard limit of 5 attempts**:
 
 4. **Circuit breaker**: If 5 attempts are exhausted without the harness passing:
    * `broadcast` at `error` level: `[BUILD] Circuit breaker � 5 attempts exhausted, task blocked`.
-   * Run `bd update ${input:task-id} --status blocked` to mark the task as blocked for human review.
+   * Call `backlog-task_edit` with `id: ${input:task-id}` and add a note in the task description indicating it is blocked pending human review.
    * Halt execution. Do not retry automatically.
 ### Step 3: Verification & State Update
 
@@ -109,8 +113,8 @@ Once the isolated harness passes:
    * `git add -A`
    * `git commit -m "feat: implement passing harness for ${input:task-id}"`
    * `broadcast` at `success` level: `[BUILD] Task {task-id} complete — commit {short_hash}`.
-4. **State update**: Mark the task complete in Beads:
-   * `bd close ${input:task-id} --reason "Harness passes, workspace tests green"`
+4. **State update**: Mark the task complete in the backlog board:
+   * Call `backlog-task_complete` with `id: ${input:task-id}`
 
 ## Troubleshooting
 
@@ -155,8 +159,10 @@ Verify `rust-toolchain.toml` matches the CI configuration in `.github/workflows/
 
 ### Circuit breaker triggered (5 failed attempts)
 
-When the 5-attempt hard limit is reached, the task is marked as blocked in Beads. Review the `stderr` output from each attempt to identify the root cause. Common issues include missing trait implementations, incorrect type signatures in stubs, or test assumptions that conflict with the codebase architecture.
+When the 5-attempt hard limit is reached, the task is marked as blocked in the backlog board. Review the `stderr` output from each attempt to identify the root cause. Common issues include missing trait implementations, incorrect type signatures in stubs, or test assumptions that conflict with the codebase architecture.
 
 ---
 
 Proceed by reading the harness test file and isolating context for the given task.
+
+

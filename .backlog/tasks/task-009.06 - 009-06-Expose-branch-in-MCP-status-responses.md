@@ -1,12 +1,13 @@
 ---
 id: TASK-009.06
 title: '009-06: Expose branch in MCP status responses'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-22 21:52'
+updated_date: '2026-03-25 22:40'
 labels:
   - feature
-  - '009'
+  - 009
   - mcp
 dependencies: []
 references:
@@ -33,6 +34,12 @@ Expected response shape:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 get_workspace_status response includes branch field
-- [ ] #2 get_health_report response includes branch field
+- [x] #1 get_workspace_status response includes branch field
+- [x] #2 get_health_report response includes branch field
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Already implemented. `get_workspace_status` in `src/tools/read.rs` includes `branch` in its `WorkspaceStatus` response struct (line 191). `connect_db` is called with `&snapshot.branch` throughout `read.rs` (11 calls). The `WorkspaceStatus` struct at line 37-47 includes `pub branch: String` with doc comment "Active git branch name (used as the DB storage subdirectory)."
+<!-- SECTION:FINAL_SUMMARY:END -->

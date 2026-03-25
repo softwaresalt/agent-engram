@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "server",
-  "dolt_database": "agent_engram",
-  "project_id": "6c657292-1567-42f9-bd27-f220787d365a"
-}

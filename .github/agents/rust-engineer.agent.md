@@ -22,7 +22,7 @@ Consider the user input before proceeding (if not empty).
 
 This agent provides Rust-specific engineering standards for the engram codebase. It is referenced by the `build-feature` skill (`.github/skills/build-feature/SKILL.md`) during phase builds for language-specific coding standards. It can also be invoked directly for Rust code review, generation, or refactoring tasks.
 
-When invoked directly, read the relevant source files, specs, and tests before changing anything. State what will change, which files are affected, and what tests cover the change.
+When invoked directly, use `engram` MCP tools (`map_code`, `unified_search`, `list_symbols`, `impact_analysis`) to understand the code before changing anything. Only fall back to grep/glob if engram results are insufficient. State what will change, which files are affected, and what tests cover the change.
 
 ## Foundational Conventions
 

@@ -112,12 +112,17 @@ Analyze each failing check's error output, apply targeted fixes, and verify the 
 For each failing check, working in CI pipeline order:
 
 1. Parse the error output to identify root causes — specific file paths, line numbers, error codes, and error messages.
-2. Read the affected source files to understand the context around each error.
-3. Apply the minimal fix that resolves the error while following the project's coding standards from `.github/copilot-instructions.md`.
-4. After applying fixes for a specific check, re-run that check locally to verify the fix.
-5. If the re-run reveals new failures introduced by the fix, diagnose and fix those as well.
-6. Continue iterating on the specific check until it passes locally.
-7. Move to the next failing check in pipeline order and repeat.
+2. Use `engram` MCP tools to understand the affected code before reading raw files:
+   * Call `map_code` for each failing symbol to understand its call graph, callers, and dependencies.
+   * Call `unified_search` with error-related concepts to find related code and context.
+   * Call `impact_analysis` to understand what other code may be affected by the fix.
+   * Fall back to grep/glob only when engram results are insufficient or you need exact text pattern matching.
+3. Read the affected source files to understand the context around each error.
+4. Apply the minimal fix that resolves the error while following the project's coding standards from `.github/copilot-instructions.md`.
+5. After applying fixes for a specific check, re-run that check locally to verify the fix.
+6. If the re-run reveals new failures introduced by the fix, diagnose and fix those as well.
+7. Continue iterating on the specific check until it passes locally.
+8. Move to the next failing check in pipeline order and repeat.
 
 Common fix patterns by check type:
 

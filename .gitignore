@@ -30,7 +30,6 @@ Thumbs.db
 .env.*
 *.env
 .copilot/
-.beads/.beads-credential-key
 
 # Logs and temp files
 *.log
@@ -48,6 +47,3 @@ temp/
 # engram plugin (workspace-local state)
 .engram/
 
-# Dolt database files (added by bd init)
-.dolt/
-*.db

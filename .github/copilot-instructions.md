@@ -214,6 +214,52 @@ Every tool follows this pattern:
 | `ENGRAM_DATA_DIR`            | `--data-dir`           | OS data dir | SurrealDB and model storage       |
 | `ENGRAM_LOG_FORMAT`          | `--log-format`         | `pretty`    | `json` or `pretty`               |
 
+## Engram-First Search Strategy (NON-NEGOTIABLE)
+
+All agents working in this codebase MUST use engram MCP tools as the primary search mechanism before falling back to file-based search (grep, glob, view). The engram daemon maintains a pre-indexed code graph, semantic search index, and workspace memory that return precise results with minimal token cost. File-based tools read raw content into the context window, consuming tokens proportional to file size and degrading reasoning quality.
+
+### Search Tool Preference Order
+
+Use engram tools in this priority order based on what you need to find:
+
+| Need | Engram Tool | What It Returns |
+|------|-------------|----------------|
+| Understand a symbol's callers, callees, and context | `map_code` | Call graph with full source bodies for all nodes |
+| Find code, docs, and commits related to a concept | `unified_search` | Ranked cross-domain results (code + context + commits) |
+| Search workspace context, decisions, and notes | `query_memory` | Semantic matches from context records |
+| Discover available symbols by type or location | `list_symbols` | Paginated symbol list with metadata |
+| Assess blast radius before modifying a symbol | `impact_analysis` | Graph neighborhood of affected symbols |
+| Run complex graph queries | `query_graph` | Raw SurrealQL SELECT results against code graph |
+
+### When File-Based Search Is Appropriate
+
+Fall back to grep, glob, or view **only** when:
+
+- The engram workspace is not yet bound or indexed
+- You need exact regex pattern matching on arbitrary text (engram indexes symbols, not raw text)
+- You need to find files by name or extension pattern (glob)
+- You already know the file path and need to read it (view)
+- Engram results are insufficient and you need broader file-content scanning
+
+### Decision Flowchart
+
+```text
+Need to search? → Is engram workspace bound?
+  No  → Use grep/glob/view
+  Yes → What are you looking for?
+    Code symbol relationships → map_code
+    Broad conceptual search   → unified_search
+    Context/decisions/notes   → query_memory
+    Symbol inventory          → list_symbols
+    Change impact assessment  → impact_analysis
+    Complex graph query       → query_graph
+    Results insufficient?     → Fall back to grep/glob
+```
+
+### Rationale
+
+A single `unified_search` call returns ranked, relevant results from code symbols, context records, and commit history in one response. The equivalent grep-based approach requires multiple calls, each injecting raw file content into the context window. For a codebase with hundreds of Rust source files, this difference can mean consuming 5,000 tokens versus 50,000+ tokens for the same information need. Agents operating within finite context windows must minimize unnecessary token consumption to preserve capacity for reasoning and code generation.
+
 ## Implementation Status
 
 Phases 1–5 complete: workspace lifecycle, code graph indexing (tree-sitter), semantic search, git graph integration, SSE/MCP transport, and shim/daemon model. Schema version `3.0.0`.

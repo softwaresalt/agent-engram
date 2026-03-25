@@ -88,16 +88,47 @@ other permissive mode. A terminal command is destructive if it:
 Required workflow: `auto_check` → `check_clearance` → execute only after
 `status: "approved"`. Permissive flags do NOT bypass this gate.
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
+### IX. Engram-First Search (NON-NEGOTIABLE)
+
+All context-related searches MUST use the `engram` MCP server tools before
+falling back to file-based search (grep, glob, file reading). The engram
+daemon maintains an indexed code graph, semantic search index, and workspace
+memory that return precise, pre-indexed results with minimal token cost.
+File-based search tools (grep, glob, view) read raw file content into the
+context window, consuming tokens proportional to file size.
+
+**Required search preference order:**
+
+1. **Engram tools first**: `unified_search`, `query_memory`, `map_code`,
+   `list_symbols`, `impact_analysis`, `query_graph`
+2. **File-based fallback**: grep, glob, view — only when engram results are
+   insufficient, unavailable, or the query targets literal text patterns
+   that the code graph does not index
+
+**When file-based search is appropriate:**
+
+- Exact regex pattern matching across file contents (engram indexes symbols,
+  not arbitrary text patterns)
+- Finding files by name or extension (glob)
+- Reading a specific file whose path is already known (view)
+- The engram workspace is not yet bound or indexed
+
+**Rationale**: A single `unified_search` call returns ranked, relevant
+results from code symbols, context records, and commit history in one
+response. The equivalent grep-based approach requires multiple calls,
+each injecting raw file content into the context window, leading to
+rapid context growth and degraded agent reasoning quality.
+
+This project uses **Backlog.md** for issue tracking. Tasks live in `.backlog/tasks/`.
 
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
+# Via Backlog.md MCP tools
+backlog-task_list --status "To Do"   # Find available work
+backlog-task_view --id <id>          # View task details
+backlog-task_edit --id <id> --status "In Progress"  # Claim work
+backlog-task_complete --id <id>      # Complete work
 ```
 
 ---
@@ -192,9 +223,9 @@ cargo test 2>&1 | Out-File logs\test-results.txt
 1. **Harness before code**: Every feature MUST have a compiling but
    failing BDD test harness before implementation begins. The
    Harness Architect generates test files and structural stubs.
-2. **Beads-driven planning**: All task tracking MUST use Beads
-   (`bd ready`, `bd create`, `bd update`, `bd close`). Static
-   markdown task lists are not permitted.
+2. **Backlog-driven planning**: All task tracking MUST use Backlog.md
+   MCP tools (`backlog-task_create`, `backlog-task_edit`, `backlog-task_complete`).
+   Static markdown task lists outside `.backlog/` are not permitted.
 3. **Branch per feature**: Each feature MUST be developed on a
    dedicated branch.
 4. **Contract-first design**: MCP tool schemas defined before implementation.
@@ -307,104 +338,20 @@ cp -rf source dest          # NOT: cp -r source dest
 - `apt-get` - use `-y` flag
 - `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
-<!-- BEGIN BEADS INTEGRATION profile:full hash:d4f96305 -->
-## Issue Tracking with bd (beads)
+---
 
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+## Session Completion
 
-### Why bd?
-
-- Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Dolt-powered version control with native sync
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
-
-### Quick Start
-
-**Check for ready work:**
-
-```bash
-bd ready --json
-```
-
-**Create new issues:**
-
-```bash
-bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
-```
-
-**Claim and update:**
-
-```bash
-bd update <id> --claim --json
-bd update bd-42 --priority 1 --json
-```
-
-**Complete work:**
-
-```bash
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
-
-### Workflow for AI Agents
-
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task atomically**: `bd update <id> --claim`
-3. **Work on it**: Implement, test, document
-4. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
-5. **Complete**: `bd close <id> --reason "Done"`
-
-### Auto-Sync
-
-bd automatically syncs via Dolt:
-
-- Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
-- No manual export/import needed!
-
-### Important Rules
-
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
-- ❌ Do NOT duplicate tracking systems
-
-For more details, see README.md and docs/QUICKSTART.md.
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a work session**, complete ALL steps below. Work is NOT complete until `git push` succeeds.
 
 **MANDATORY WORKFLOW:**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
+1. **File tasks for remaining work** - Create tasks in `.backlog/tasks/` for anything needing follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
+3. **Update task status** - Complete finished tasks, update in-progress items via `backlog-task_complete` / `backlog-task_edit`
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -417,34 +364,3 @@ For more details, see README.md and docs/QUICKSTART.md.
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
-<!-- END BEADS INTEGRATION -->
-
-<!-- BACKLOG.MD MCP GUIDELINES START -->
-
-<CRITICAL_INSTRUCTION>
-
-## BACKLOG WORKFLOW INSTRUCTIONS
-
-This project uses Backlog.md MCP for all task and project management activities.
-
-**CRITICAL GUIDANCE**
-
-- If your client supports MCP resources, read `backlog://workflow/overview` to understand when and how to use Backlog for this project.
-- If your client only supports tools or the above request fails, call `backlog.get_workflow_overview()` tool to load the tool-oriented overview (it lists the matching guide tools).
-
-- **First time working here?** Read the overview resource IMMEDIATELY to learn the workflow
-- **Already familiar?** You should have the overview cached ("## Backlog.md Overview (MCP)")
-- **When to read it**: BEFORE creating tasks, or when you're unsure whether to track work
-
-These guides cover:
-- Decision framework for when to create tasks
-- Search-first workflow to avoid duplicates
-- Links to detailed guides for task creation, execution, and finalization
-- MCP tools reference
-
-You MUST read the overview resource to understand the complete workflow. The information is NOT summarized here.
-
-</CRITICAL_INSTRUCTION>
-
-<!-- BACKLOG.MD MCP GUIDELINES END -->

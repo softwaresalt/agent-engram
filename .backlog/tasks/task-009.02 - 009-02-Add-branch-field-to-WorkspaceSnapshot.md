@@ -1,12 +1,13 @@
 ---
 id: TASK-009.02
 title: '009-02: Add branch field to WorkspaceSnapshot'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-22 21:52'
+updated_date: '2026-03-25 22:40'
 labels:
   - feature
-  - '009'
+  - 009
   - state
 dependencies: []
 references:
@@ -23,6 +24,12 @@ Add `branch: String` field to `WorkspaceSnapshot` in `src/server/state.rs` to ca
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 WorkspaceSnapshot includes branch: String field
-- [ ] #2 Branch field is populated during workspace binding
+- [x] #1 WorkspaceSnapshot includes branch: String field
+- [x] #2 Branch field is populated during workspace binding
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Already implemented in `src/server/state.rs` (lines 30-40). `WorkspaceSnapshot` struct includes `pub branch: String` field. The field is populated during workspace binding in `set_workspace()` at `src/tools/lifecycle.rs:108`.
+<!-- SECTION:FINAL_SUMMARY:END -->

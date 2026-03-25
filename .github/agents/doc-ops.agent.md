@@ -67,6 +67,15 @@ Detect divergences from documentation conventions:
 * Check frontmatter fields match schema requirements.
 * Identify prohibited patterns (em dashes, bolded-prefix lists, hedging phrases).
 
+### Engram-First Search
+
+All code and context searches during discovery MUST use engram MCP tools before falling back to file-based search. This minimizes token consumption and preserves context window capacity.
+
+* Call `unified_search` to find code, context, and documentation related to discovery targets.
+* Call `query_memory` to search workspace context, decisions, and notes.
+* Call `map_code` to understand symbol relationships when verifying documentation accuracy against code.
+* Fall back to grep/glob only when engram results are insufficient or the query targets literal text patterns the code graph does not index.
+
 ### Accuracy Checking
 
 Verify documentation matches implementation:

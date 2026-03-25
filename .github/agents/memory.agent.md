@@ -87,6 +87,7 @@ Proceed to Phase 2 (save) or Phase 3 (continue) based on the operation mode.
 * Review important discoveries including failed approaches to avoid
 * Identify user preferences, commitments, and custom agents used previously
 * Load companion files when additional context is needed
+* When restoring context about code changes, use `engram` MCP tools (`map_code`, `unified_search`) to re-establish understanding of the current codebase state rather than re-reading source files directly
 
 #### State Summary
 

@@ -72,7 +72,11 @@ Subagent instructions:
 * Assign the research output folder using the naming convention from the Sandbox Environment section with a `-research` suffix.
 * Create a *research-log.md* file in the research folder to document findings.
 * Include the list of research targets and research questions to investigate.
-* Locate relevant files using semantic_search and grep_search.
+* Use `engram` MCP tools as the primary search mechanism before falling back to file-based search:
+  * Call `unified_search` to find code, context records, and commits related to research targets.
+  * Call `map_code` to understand symbol relationships and call graphs for referenced functions or structs.
+  * Call `query_memory` to search workspace context, decisions, and notes.
+  * Fall back to grep/glob **only** when engram results are insufficient or the query targets literal text patterns the code graph does not index.
 * Retrieve official documentation using microsoft-docs tools.
 * Search official repositories for patterns using github_repo.
 * Fetch external resources when needed.

@@ -241,9 +241,15 @@ Update `in-progress-review.md` after each discovery so the document remains auth
 
 ### Phase 3: Collaborative Review
 
-Key tools: `in-progress-review.md`, conversation, diff viewers, instruction files matched in Phase 2
+Key tools: `in-progress-review.md`, conversation, diff viewers, instruction files matched in Phase 2, engram MCP tools
 
 Phase 3 is the first point where re-engagement with the user occurs. Arrive prepared with prioritized findings and clear recommended actions.
+
+When investigating code during review, use engram MCP tools as the primary search mechanism:
+* Call `map_code` to understand a symbol's callers, callees, and context before commenting on it.
+* Call `unified_search` to find related code, context records, and decisions that inform review comments.
+* Call `impact_analysis` to assess blast radius when evaluating whether a change is safe.
+* Fall back to grep/glob only when engram results are insufficient or the query targets literal text patterns.
 
 Review item lifecycle:
 

@@ -123,7 +123,33 @@ configuration, or destroy data in sibling directories. Strict
 cwd containment is the last line of defense when no human is
 watching.
 
-### VIII. Git-Friendly Persistence
+### VIII. Engram-First Search (NON-NEGOTIABLE)
+
+All context-related searches MUST use the `engram` MCP server tools
+before falling back to file-based search (grep, glob, file reading).
+The engram daemon maintains an indexed code graph, semantic search
+index, and workspace memory that return precise, pre-indexed results
+with minimal token cost. File-based search reads raw content into
+the context window, consuming tokens proportional to file size.
+
+**Required search preference order:**
+
+1. Engram tools first: `unified_search`, `query_memory`, `map_code`,
+   `list_symbols`, `impact_analysis`, `query_graph`
+2. File-based fallback: grep, glob, view — only when engram results
+   are insufficient, unavailable, or the query targets literal text
+   patterns that the code graph does not index
+
+**Rationale**: A single `unified_search` call returns ranked,
+relevant results from code symbols, context records, and commit
+history. The equivalent grep-based approach requires multiple calls
+that inject raw file content into the context window, leading to
+rapid context growth and degraded agent reasoning quality. Agents
+operating within finite context windows must minimize unnecessary
+token consumption to preserve capacity for reasoning and code
+generation.
+
+### IX. Git-Friendly Persistence
 
 All workspace state MUST be serializable to human-readable,
 Git-mergeable files in the `.engram/` directory. Markdown with
