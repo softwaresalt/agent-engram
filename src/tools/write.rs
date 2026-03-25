@@ -12,16 +12,10 @@ use crate::server::state::SharedState;
 use crate::services::dehydration;
 use crate::services::hydration;
 
+#[cfg(feature = "git-graph")]
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
         return Ok(PathBuf::from(snapshot.path));
-    }
-    Err(EngramError::Workspace(WorkspaceError::NotSet))
-}
-
-async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
-    if let Some(snapshot) = state.snapshot_workspace().await {
-        return Ok(snapshot.workspace_id);
     }
     Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
@@ -40,7 +34,8 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
 
     let path = PathBuf::from(&snapshot.path);
-    let workspace_id = snapshot.workspace_id.clone();
+    let data_dir = snapshot.data_dir.clone();
+    let branch = snapshot.branch.clone();
     let engram_dir = path.join(".engram");
     let stale_strategy = state.stale_strategy();
     let mut warnings: Vec<String> = Vec::new();
@@ -49,7 +44,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
 
     let _ = params;
 
-    let db = connect_db(&workspace_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = crate::db::queries::CodeGraphQueries::new(db.clone());
 
     // Determine staleness action from strategy before touching the DB
@@ -111,8 +106,13 @@ pub async fn index_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let ws_path = workspace_path(&state).await?;
-    let ws_id = workspace_id(&state).await?;
+    let snapshot = state
+        .snapshot_workspace()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let ws_path = PathBuf::from(&snapshot.path);
+    let data_dir = snapshot.data_dir.clone();
+    let branch = snapshot.branch.clone();
 
     // Reject if indexing is already running.
     if !state.try_start_indexing() {
@@ -120,7 +120,7 @@ pub async fn index_workspace(
     }
 
     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
-    let result = index_workspace_inner(&state, &ws_path, &ws_id, params).await;
+    let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
     state.finish_indexing().await;
     result
 }
@@ -129,7 +129,8 @@ pub async fn index_workspace(
 async fn index_workspace_inner(
     state: &SharedState,
     ws_path: &std::path::Path,
-    ws_id: &str,
+    data_dir: &std::path::Path,
+    branch: &str,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let parsed: IndexWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
@@ -145,8 +146,14 @@ async fn index_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result =
-        crate::services::code_graph::index_workspace(ws_path, ws_id, &config, parsed.force).await?;
+    let result = crate::services::code_graph::index_workspace(
+        ws_path,
+        data_dir,
+        branch,
+        &config,
+        parsed.force,
+    )
+    .await?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -167,8 +174,13 @@ pub async fn sync_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let ws_path = workspace_path(&state).await?;
-    let ws_id = workspace_id(&state).await?;
+    let snapshot = state
+        .snapshot_workspace()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let ws_path = PathBuf::from(&snapshot.path);
+    let data_dir = snapshot.data_dir.clone();
+    let branch = snapshot.branch.clone();
 
     // Reject if indexing is already running (FR-121 / 7003).
     if !state.try_start_indexing() {
@@ -176,7 +188,7 @@ pub async fn sync_workspace(
     }
 
     // Run the sync logic, ensuring the flag is cleared on all exit paths.
-    let result = sync_workspace_inner(&state, &ws_path, &ws_id, params).await;
+    let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
     state.finish_indexing().await;
     result
 }
@@ -185,7 +197,8 @@ pub async fn sync_workspace(
 async fn sync_workspace_inner(
     state: &SharedState,
     ws_path: &std::path::Path,
-    ws_id: &str,
+    data_dir: &std::path::Path,
+    branch: &str,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let _ = params; // no params for sync_workspace currently
@@ -196,7 +209,8 @@ async fn sync_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result = crate::services::code_graph::sync_workspace(ws_path, ws_id, &config).await?;
+    let result =
+        crate::services::code_graph::sync_workspace(ws_path, data_dir, branch, &config).await?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -229,7 +243,13 @@ pub async fn index_git_history(
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let ws_path = workspace_path(&state).await?;
-    let ws_id = workspace_id(&state).await?;
+    let (data_dir, branch) = {
+        let snap = state
+            .snapshot_workspace()
+            .await
+            .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+        (snap.data_dir.clone(), snap.branch.clone())
+    };
 
     let parsed: IndexGitHistoryParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
         .map_err(|e| {
@@ -246,7 +266,7 @@ pub async fn index_git_history(
 
     let depth = parsed.depth.unwrap_or(0); // None → service uses default 500
 
-    let db = connect_db(&ws_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
 
     let summary =

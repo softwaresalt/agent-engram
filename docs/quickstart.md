@@ -1,156 +1,213 @@
 ---
 title: Engram Quickstart Guide
-description: Get from zero to a running Engram daemon with an AI agent connected and your first code graph indexed in under 10 minutes.
+description: Build the binary, install engram into a Git workspace, connect an MCP client, and index your first code graph.
+ms.date: 2026-03-24
 ---
 
 ## Overview
 
-Get from zero to a running Engram daemon with an AI agent connected in under 10 minutes.
+Engram is a local MCP stdio server that provides code graph indexing, symbol navigation, and semantic search for AI coding assistants. It uses a shim/daemon architecture: the lightweight `engram shim` process is the stdio endpoint that MCP clients invoke, and it transparently spawns and communicates with a long-lived per-workspace daemon over a local IPC socket.
 
----
-
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Installation](#installation)
-3. [First Run](#first-run)
-4. [Connecting an Agent](#connecting-an-agent)
-5. [Bind a Workspace](#bind-a-workspace)
-6. [Index Your Code Graph](#index-your-code-graph)
-7. [Navigate Symbols](#navigate-symbols)
-8. [Search Across Your Codebase](#search-across-your-codebase)
+This guide walks from building the binary through connecting an MCP client and indexing your first code graph.
 
 ---
 
 ## Prerequisites
 
 | Requirement | Version | Notes |
-|---|---|---|
-| **Rust** | 1.85+ | Install via [rustup.rs](https://rustup.rs) |
-| **Git** | 2.25+ | Required for workspace detection and git graph features |
-| **Operating System** | Linux, macOS, Windows | All major platforms supported |
+|-------------|---------|-------|
+| Rust | 1.85+ | Install via [rustup.rs](https://rustup.rs) |
+| Git | 2.25+ | Workspaces must be Git repositories |
+| Operating System | Linux, macOS, Windows | All major platforms supported |
 
-Verify your environment:
+Verify your toolchain:
 
 ```bash
-rustc --version   # rustc 1.85.0 or later
-git --version     # git version 2.25.0 or later
+rustc --version   # 1.85.0 or later
+cargo --version
+git --version
 ```
 
 ---
 
-## Installation
+## Build
 
-### Option A: Install from source (recommended)
-
-```bash
-# Clone the repository
-git clone https://github.com/your-org/agent-engram.git
-cd agent-engram
-
-# Build and install the binary
-cargo install --path .
-```
-
-### Option B: Build without installing
+Clone the repository and build in release mode. Semantic search (vector embeddings) is enabled by default:
 
 ```bash
-git clone https://github.com/your-org/agent-engram.git
+git clone https://github.com/softwaresalt/agent-engram.git
 cd agent-engram
 cargo build --release
-# Binary is at: ./target/release/engram
 ```
 
-After installation, verify the binary is available:
+The binary is at `target/release/engram` (or `target\release\engram.exe` on Windows).
+
+To build without the embedding model (smaller binary, no semantic search):
 
 ```bash
-engram --version
+cargo build --release --no-default-features
+```
+
+Optionally place the binary on your `PATH`:
+
+```bash
+# Linux / macOS
+cp target/release/engram ~/.local/bin/
+
+# Windows (PowerShell)
+Copy-Item target\release\engram.exe $env:LOCALAPPDATA\Programs\engram\engram.exe
 ```
 
 ---
 
-## First Run
+## Workspace Setup
 
-### Step 1: Initialize a workspace
-
-Navigate to a git repository you want to use as a workspace and run the installer:
+Every Git repository that engram manages needs a one-time initialization. Navigate to the repository root and run:
 
 ```bash
-cd /path/to/your/project   # must be a git repository root
+cd /path/to/your/project   # must contain a .git/ directory
 engram install
 ```
 
-The installer creates the `.engram/` directory structure and generates MCP configuration files for your AI agent:
+The installer creates the following structure and configuration files:
 
 ```text
 your-project/
-└── .engram/
-    ├── config.toml          # Workspace configuration
-    ├── registry.yaml        # Content registry manifest
-    └── .version             # Schema version (3.0.0)
+├── .engram/
+│   ├── config.toml        # Workspace configuration (optional overrides)
+│   ├── registry.yaml      # Content source registry (directory-scanned at install time)
+│   └── .version           # Schema version
+├── .vscode/
+│   └── mcp.json           # VS Code MCP server entry (stdio)
+├── .github/
+│   └── copilot-instructions.md   # GitHub Copilot hook (marker-based)
+├── .claude/
+│   └── instructions.md    # Claude Code hook (marker-based)
+└── .cursor/
+    └── mcp.json           # Cursor MCP configuration
 ```
 
-### Step 2: Start the daemon
-
-In a separate terminal, start the Engram daemon:
-
-```bash
-engram daemon --workspace /path/to/your/project
-```
-
-The daemon starts on port **7437** by default and outputs structured logs:
+The installer also updates `.gitignore` with:
 
 ```
-INFO engram: daemon listening addr=127.0.0.1:7437
-INFO engram: embedding model loaded model=nomic-embed-text
-INFO engram: ready
+.engram/run/
+.engram/db/
 ```
 
-To start in the background with custom settings:
+These runtime directories are machine-local and should not be committed.
 
-```bash
-# Custom port and JSON logging for production
-ENGRAM_PORT=8080 ENGRAM_LOG_FORMAT=json engram daemon --workspace /path/to/your/project &
+> [!NOTE]
+> `engram install` must be run from a directory that contains `.git/`. The installer will refuse to run outside a Git repository.
+
+---
+
+## Connect an MCP Client
+
+Engram uses the stdio MCP transport. The `engram shim` command is the stdio endpoint: MCP clients invoke it as a subprocess, it starts the daemon automatically if one is not running, and it relays tool calls over a local Unix socket (Linux/macOS) or named pipe (Windows).
+
+The `engram install` command generates the client configuration files automatically. The sections below show each config format for reference or manual setup.
+
+### VS Code
+
+`engram install` writes `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "engram": {
+      "type": "stdio",
+      "command": "engram",
+      "args": ["shim"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
+```
+
+### GitHub Copilot CLI
+
+Add to `.mcp.json` at the repository root (or your global MCP config):
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "type": "stdio",
+      "command": "engram",
+      "args": ["shim"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
+```
+
+### Claude Code
+
+`engram install` writes `.claude/instructions.md` with engram context. For the MCP server entry, add to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "engram",
+      "args": ["shim"]
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or the equivalent Windows path:
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "/path/to/engram",
+      "args": ["shim"],
+      "cwd": "/path/to/your/project"
+    }
+  }
+}
+```
+
+### Cursor
+
+`engram install` writes `.cursor/mcp.json`. For manual setup:
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "engram",
+      "args": ["shim"]
+    }
+  }
+}
 ```
 
 ---
 
-## Connecting an Agent
+## How the Shim/Daemon Architecture Works
 
-The Engram daemon exposes an MCP-over-HTTP/SSE endpoint. Point your AI agent at:
+Understanding this prevents confusion when troubleshooting.
 
-```
-http://localhost:7437/sse
-```
+When an MCP client invokes `engram shim`:
 
-### GitHub Copilot (`.github/copilot-config.json`)
+1. The shim resolves the workspace path from the `ENGRAM_WORKSPACE` environment variable, or falls back to the current working directory.
+2. It checks whether a daemon is already running by sending a health probe to the IPC socket at `.engram/run/engram.sock` (Unix) or the named pipe (Windows).
+3. If no daemon is running, the shim spawns `engram daemon --workspace <path>` as a detached background process and waits up to 10 seconds for it to become ready (configurable via `ENGRAM_READY_TIMEOUT_MS`).
+4. Once the daemon is ready, the shim forwards the MCP tool call over IPC and writes the response to stdout.
+5. The daemon continues running in the background. It shuts down automatically after 4 hours of inactivity (configurable via `ENGRAM_IDLE_TIMEOUT_MS`).
 
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "url": "http://localhost:7437/sse"
-    }
-  }
-}
-```
+On the next tool call, the shim reconnects to the existing daemon without spawning a new one. Startup latency after the first call is typically under 50 ms.
 
-### Claude Desktop (`claude_desktop_config.json`)
+---
 
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "command": "curl",
-      "args": ["-N", "http://localhost:7437/sse"]
-    }
-  }
-}
-```
+## First Tool Call
 
-### Verify the connection
-
-Call the `get_daemon_status` tool from your agent to confirm connectivity:
+After your MCP client is configured, call `get_daemon_status` to verify the connection:
 
 ```json
 {
@@ -168,21 +225,23 @@ Expected response:
 
 ```json
 {
-  "version": "0.1.0",
-  "uptime_seconds": 42,
+  "version": "0.0.1",
+  "uptime_seconds": 3,
   "active_workspaces": 0,
   "active_connections": 1,
-  "memory_bytes": 104857600,
+  "memory_bytes": 52428800,
   "model_loaded": true,
-  "model_name": "nomic-embed-text"
+  "model_name": "bge-small-en-v1.5"
 }
 ```
+
+If `model_loaded` is `false`, the embedding model is still loading in the background. It becomes available within a few seconds of the daemon's first start.
 
 ---
 
 ## Bind a Workspace
 
-Before querying the code graph, bind the daemon to your workspace directory:
+The daemon starts without a bound workspace. Before using any code graph or search tools, call `set_workspace` with the absolute path to the Git repository:
 
 ```json
 {
@@ -199,19 +258,11 @@ Before querying the code graph, bind the daemon to your workspace directory:
 ```
 
 > [!NOTE]
-> `path` must be an absolute path to the git repository root. Relative paths are rejected with error code `1002` (`NOT_A_GIT_ROOT`).
+> The path must be absolute and must point to a Git repository root (contains `.git/`). Relative paths are rejected with error code `1002`.
 
-Expected response:
+The daemon validates the path, initializes the embedded SurrealDB for that workspace, and hydrates any existing state from the `.engram/` directory. The binding is complete when `set_workspace` returns.
 
-```json
-{
-  "workspace_id": "a1b2c3d4e5f6...",
-  "path": "/path/to/your/project",
-  "hydrated": true
-}
-```
-
-### Verify workspace status
+Verify the workspace is active:
 
 ```json
 {
@@ -230,7 +281,8 @@ Expected response:
 ```json
 {
   "path": "/path/to/your/project",
-  "last_flush": "2024-01-15T10:30:00Z",
+  "branch": "main",
+  "last_flush": null,
   "stale_files": false,
   "connection_count": 1,
   "code_graph": {
@@ -243,13 +295,13 @@ Expected response:
 }
 ```
 
-The code graph counts start at zero until you run `index_workspace`.
+Code graph counts start at zero until you run `index_workspace`.
 
 ---
 
 ## Index Your Code Graph
 
-Parse source files into the code graph with tree-sitter:
+Parse all source files in the workspace into the code graph:
 
 ```json
 {
@@ -263,7 +315,9 @@ Parse source files into the code graph with tree-sitter:
 }
 ```
 
-Indexing scans all source files in the workspace, extracts functions, classes, and interfaces, and builds edge relationships between them. For incremental updates after code changes, use `sync_workspace` instead.
+Indexing uses tree-sitter to extract functions, classes, interfaces, and the call/import/inheritance edges between them. For large workspaces, this may take several seconds. After indexing, call `get_workspace_status` again to see populated code graph counts.
+
+For incremental updates after code changes, use `sync_workspace` instead. It re-parses only files whose content has changed since the last index.
 
 ---
 
@@ -304,7 +358,7 @@ Indexing scans all source files in the workspace, extracts functions, classes, a
 }
 ```
 
-`map_code` returns all callers, callees, and references for the named symbol up to the configured depth.
+`map_code` returns all callers, callees, and references for the named symbol up to the configured depth, using native SurrealQL graph traversal.
 
 ### Analyze change impact
 
@@ -323,13 +377,13 @@ Indexing scans all source files in the workspace, extracts functions, classes, a
 }
 ```
 
-`impact_analysis` traverses the call graph outward from a symbol to show which files and symbols would be affected by changes to it.
+`impact_analysis` traverses the call graph outward from a symbol to show which files and symbols would be affected by changes.
 
 ---
 
 ## Search Across Your Codebase
 
-Run a semantic search across code symbols, content records, and commit history:
+Run a semantic search across code symbols and content records:
 
 ```json
 {
@@ -346,39 +400,97 @@ Run a semantic search across code symbols, content records, and commit history:
 }
 ```
 
-The `regions` parameter limits what is searched:
+The optional `regions` array restricts which sources are searched:
 
 | Value | Searches |
-|---|---|
-| `["tasks","context","code"]` | All sources (default) |
+|-------|----------|
+| `["code", "context"]` | All sources (default) |
 | `["code"]` | Code graph symbols only |
 | `["context"]` | Content records and specs only |
 
-Example response:
+> [!NOTE]
+> Semantic search requires the `embeddings` feature (enabled by default). If `model_loaded` is `false` in `get_daemon_status`, results fall back to keyword matching until the model finishes loading.
 
-```json
-[
-  {
-    "kind": "code",
-    "id": "fn:handle_auth_error",
-    "file": "src/auth/handlers.rs",
-    "score": 0.94
-  },
-  {
-    "kind": "context",
-    "id": "content:abc123",
-    "title": "Auth module design spec",
-    "score": 0.87
-  }
+---
+
+## Optional: Workspace Configuration
+
+The installer generates a stub `.engram/config.toml`. Most settings have sensible defaults and the file can be left as-is. Common overrides:
+
+```toml
+# .engram/config.toml
+
+# Shut down daemon sooner (default: 240 minutes)
+idle_timeout_minutes = 60
+
+# Debounce file events more aggressively (default: 500ms)
+debounce_ms = 1000
+
+# Additional exclusion patterns
+exclude_patterns = [
+  ".engram/",
+  ".git/",
+  "node_modules/",
+  "target/",
+  "dist/",
 ]
+
+# Log level for daemon output (default: info)
+log_level = "debug"
 ```
+
+Environment variables override all config file values. The full list is in the [Configuration Reference](configuration.md).
+
+---
+
+## Workspace Management
+
+```bash
+engram install               # Initialize workspace, generate config files
+engram update                # Refresh config templates, preserve data
+engram reinstall             # Clean install: wipe runtime dirs, rehydrate data
+engram uninstall             # Remove all plugin files
+engram uninstall --keep-data # Remove runtime files, preserve .engram/ data
+```
+
+---
+
+## Available MCP Tools
+
+| Category | Tool | Purpose |
+|----------|------|---------|
+| Lifecycle | `set_workspace` | Bind daemon to a Git repository |
+| Lifecycle | `get_daemon_status` | Runtime metrics: version, uptime, model status |
+| Lifecycle | `get_workspace_status` | Workspace health: branch, stale files, graph counts |
+| Code graph | `index_workspace` | Parse all source files into the code graph |
+| Code graph | `sync_workspace` | Re-index only changed files |
+| Code graph | `map_code` | Call graph and usages for a symbol |
+| Code graph | `list_symbols` | List indexed symbols with optional filters |
+| Code graph | `impact_analysis` | Code affected by changes to a symbol |
+| Search | `unified_search` | Combined code graph and semantic search |
+| Search | `query_memory` | Semantic search over content records |
+| Search | `query_graph` | Read-only SurrealQL SELECT against workspace database |
+| Search | `get_workspace_statistics` | Aggregate counts: files, symbols, coverage |
+| Observability | `get_health_report` | Memory, latency percentiles, query timing stats |
+| Persistence | `flush_state` | Write workspace state to `.engram/` files |
+
+---
+
+## Troubleshooting
+
+**Daemon does not start**: Check `.engram/logs/daemon.log` for error details. Common causes: the workspace path does not contain `.git/`, the `.engram/run/` directory lacks write permissions, or a stale lockfile from a crashed daemon.
+
+**Stale lockfile**: If the daemon process was killed without cleanup, the socket and PID file may remain. The shim detects and removes stale locks automatically on the next invocation. If it does not, delete `.engram/run/daemon.pid` and `.engram/run/engram.sock` manually.
+
+**Data appears corrupt**: Run `engram reinstall` to rebuild the runtime directories. User-edited state files (`config.toml`, any `.engram/*.md` files) are preserved.
+
+**Embeddings not available**: Build with `--features embeddings` (the default) and ensure the binary was not built with `--no-default-features`. The embedding model downloads on first use and is cached locally; the download requires an internet connection once.
 
 ---
 
 ## Next Steps
 
-- Read the [MCP Tool Reference](mcp-tool-reference.md) to explore all available tools.
-- Read the [Configuration Reference](configuration.md) to tune the daemon for your environment.
-- Read the [Architecture Overview](architecture.md) to understand how components interact.
-- If something goes wrong, consult the [Troubleshooting Guide](troubleshooting.md).
+- Read the [MCP Tool Reference](mcp-tool-reference.md) for full parameter documentation on all 14 tools.
+- Read the [Configuration Reference](configuration.md) for the complete list of CLI flags and environment variables.
+- Read the [Architecture Overview](architecture.md) to understand the shim/daemon/installer components in depth.
 

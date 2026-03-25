@@ -5,11 +5,14 @@ use sysinfo::System;
 
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
-use crate::db::workspace::{canonicalize_workspace, workspace_hash};
+use crate::db::workspace::{
+    canonicalize_workspace, resolve_data_dir, resolve_git_branch, workspace_hash,
+};
 use crate::errors::{EngramError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
+use crate::services::file_tracker::detect_offline_changes;
 use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,6 +36,10 @@ pub struct DaemonStatus {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceStatus {
     pub path: String,
+    /// Active git branch name (used as the DB storage subdirectory).
+    pub branch: String,
+    /// Absolute path to the SurrealDB storage directory for this workspace and branch.
+    pub db_path: String,
     pub last_flush: Option<String>,
     pub stale_files: bool,
     pub connection_count: usize,
@@ -57,6 +64,8 @@ pub async fn set_workspace(
 
     let canonical = canonicalize_workspace(&path)?;
     let workspace_id = workspace_hash(&canonical);
+    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
+    let data_dir = resolve_data_dir(&canonical);
 
     if !state.has_workspace_capacity().await {
         return Err(EngramError::Workspace(WorkspaceError::LimitReached {
@@ -67,9 +76,28 @@ pub async fn set_workspace(
     let hydration = hydrate_workspace(&canonical).await?;
 
     // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
-    let db = connect_db(&workspace_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
     let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
+
+    // Detect files changed while the daemon was offline and emit a summary.
+    // This is best-effort: I/O failures for individual files are already logged
+    // inside `detect_offline_changes` as warnings, so we only surface a
+    // tracing event here rather than aborting workspace binding.
+    match detect_offline_changes(&canonical, &cg_queries).await {
+        Ok(changes) if !changes.is_empty() => {
+            tracing::info!(
+                count = changes.len(),
+                "set_workspace: offline changes detected — re-indexing recommended"
+            );
+        }
+        Ok(_) => {
+            tracing::debug!("set_workspace: no offline changes detected");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "set_workspace: offline change detection failed");
+        }
+    }
 
     // Load and validate workspace config BEFORE committing the snapshot.
     // If config validation fails, we must not leave the workspace partially bound.
@@ -77,6 +105,8 @@ pub async fn set_workspace(
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
+        branch: branch.clone(),
+        data_dir: data_dir.clone(),
         path: canonical.display().to_string(),
         last_flush: hydration.last_flush.clone(),
         stale_files: hydration.stale_files,
@@ -86,6 +116,7 @@ pub async fn set_workspace(
 
     state.set_workspace(snapshot).await?;
     state.set_workspace_config(Some(ws_config)).await;
+    crate::services::query_stats::reset_timing();
 
     Ok(WorkspaceBinding {
         workspace_id,
@@ -99,14 +130,21 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
     sys.refresh_memory();
     let memory_bytes = sys.used_memory(); // sysinfo 0.30+ returns bytes
 
+    let model_loaded = crate::services::embedding::is_available();
+    let model_name = if model_loaded {
+        Some("bge-small-en-v1.5".to_string())
+    } else {
+        None
+    };
+
     Ok(DaemonStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.uptime_seconds(),
         active_workspaces: state.active_workspaces().await,
         active_connections: state.active_connections(),
         memory_bytes,
-        model_loaded: false,
-        model_name: None,
+        model_loaded,
+        model_name,
     })
 }
 
@@ -123,7 +161,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         }
 
         // Gather code graph stats from the database
-        let code_graph = if let Ok(db) = connect_db(&snapshot.workspace_id).await {
+        let code_graph = if let Ok(db) = connect_db(&snapshot.data_dir, &snapshot.branch).await {
             let cg_queries = CodeGraphQueries::new(db);
             let code_files = cg_queries.count_code_files().await.unwrap_or(0);
             let functions = cg_queries.count_functions().await.unwrap_or(0);
@@ -141,8 +179,17 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             CodeGraphStats::default()
         };
 
+        let db_path = snapshot
+            .data_dir
+            .join("db")
+            .join(&snapshot.branch)
+            .display()
+            .to_string();
+
         return Ok(WorkspaceStatus {
             path: snapshot.path,
+            branch: snapshot.branch,
+            db_path,
             last_flush: snapshot.last_flush,
             stale_files: stale_now,
             connection_count: state.active_connections(),

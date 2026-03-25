@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -9,9 +11,7 @@ use crate::errors::{
 use crate::server::state::SharedState;
 use crate::services::embedding;
 use crate::services::search::{SearchCandidate, hybrid_search};
-use crate::services::search::{
-    SearchRegion, UnifiedSearchResult, cosine_similarity, merge_unified_results,
-};
+use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
 async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
     if state.snapshot_workspace().await.is_none() {
@@ -20,9 +20,9 @@ async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
     Ok(())
 }
 
-async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
+async fn workspace_db(state: &SharedState) -> Result<(PathBuf, String), EngramError> {
     if let Some(snapshot) = state.snapshot_workspace().await {
-        return Ok(snapshot.workspace_id);
+        return Ok((snapshot.data_dir.clone(), snapshot.branch.clone()));
     }
     Err(EngramError::Workspace(WorkspaceError::NotSet))
 }
@@ -77,8 +77,8 @@ pub async fn get_workspace_statistics(
 ) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    let ws_id = workspace_id(&state).await?;
-    let db = connect_db(&ws_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
@@ -87,6 +87,7 @@ pub async fn get_workspace_statistics(
     let interfaces = cg_queries.count_interfaces().await.unwrap_or(0);
     let edges = cg_queries.count_code_edges().await.unwrap_or(0);
 
+    let embedding_status = embedding::status(Some(&cg_queries)).await?;
     let registry_status = load_registry_status(&state).await?;
 
     let mut result = serde_json::Map::from_iter([
@@ -95,6 +96,10 @@ pub async fn get_workspace_statistics(
         ("classes".to_owned(), json!(classes)),
         ("interfaces".to_owned(), json!(interfaces)),
         ("edges".to_owned(), json!(edges)),
+        (
+            "embedding_status".to_owned(),
+            serde_json::to_value(&embedding_status).unwrap_or(Value::Null),
+        ),
     ]);
 
     if let Some(reg) = registry_status {
@@ -131,8 +136,8 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     // Validate query length before any DB or model work.
     embedding::validate_query_length(&parsed.query)?;
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
     let mut candidates: Vec<SearchCandidate> = Vec::new();
     let content_records = queries
@@ -194,8 +199,8 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
     let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
     let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
     // Exact-name lookup across all symbol tables
@@ -236,10 +241,10 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
     }
 
     if matches.len() == 1 {
-        // Single match: return root + BFS neighborhood
+        // Single match: return root + native graph neighborhood
         let root = &matches[0];
         let bfs = cg_queries
-            .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
+            .graph_neighborhood(&root.id, effective_depth, effective_max_nodes)
             .await?;
 
         let root_json = symbol_match_to_json(root);
@@ -341,8 +346,8 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
     // Clamp limit
     let limit = parsed.limit.clamp(1, 500);
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
     let filter = SymbolFilter {
@@ -383,6 +388,9 @@ struct UnifiedSearchParams {
     /// Optional content type filter for content records.
     #[serde(default)]
     content_type: Option<String>,
+    /// Restrict code symbol results to the graph neighborhood of this symbol.
+    #[serde(default)]
+    scope_to_symbol: Option<String>,
 }
 
 fn default_unified_region() -> String {
@@ -403,7 +411,8 @@ const fn default_unified_limit() -> usize {
 ///
 /// # Errors
 /// - `QueryEmpty` (4001) for empty or whitespace-only queries (FR-157).
-/// - `SystemError::DatabaseError` (5001) if embedding generation fails.
+/// - `SearchFailed` (4004) if the embedding model is not loaded/enabled.
+/// - `SystemError::DatabaseError` (5001) if embedding generation fails after model load.
 /// - `WorkspaceError::NotSet` (1003) if workspace not bound.
 pub async fn unified_search(
     state: SharedState,
@@ -437,6 +446,17 @@ pub async fn unified_search(
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
 
+    // Guard: reject semantic search at compile time when the embeddings feature
+    // is not compiled in. When it IS enabled, embed_text lazily loads the model
+    // on the first call — do not gate on is_available() here.
+    #[cfg(not(feature = "embeddings"))]
+    return Err(EngramError::Query(QueryError::SearchFailed {
+        reason: "Semantic search requires the embeddings feature. \
+                 Enable it with `cargo build --features embeddings`. \
+                 Text-based search via keyword queries is unaffected."
+            .to_owned(),
+    }));
+
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -444,19 +464,34 @@ pub async fn unified_search(
         })
     })?;
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
-
-    // ── Code region: vector search on code symbols ───────────────────
     let code_results = {
-        let symbols = queries
-            .vector_search_symbols(&query_embedding, limit)
-            .await?;
+        let symbols = if let Some(scope) = parsed
+            .scope_to_symbol
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            // Scoped mode: restrict to graph neighborhood of given symbol.
+            let scope_matches = queries.find_symbols_by_name(scope).await?;
+            if let Some(root) = scope_matches.first() {
+                queries
+                    .hybrid_graph_vector_search(&root.id, 2, &query_embedding, limit, &[])
+                    .await?
+            } else {
+                queries
+                    .vector_search_symbols_native(&query_embedding, limit)
+                    .await?
+            }
+        } else {
+            queries
+                .vector_search_symbols_native(&query_embedding, limit)
+                .await?
+        };
         symbols
             .into_iter()
-            .map(|s| {
-                let score = cosine_similarity(&query_embedding, &s.embedding);
+            .map(|(score, s)| {
                 let line_range = match (s.line_start, s.line_end) {
                     (Some(start), Some(end)) => Some(format!("L{start}-L{end}")),
                     (Some(start), None) => Some(format!("L{start}")),
@@ -478,49 +513,78 @@ pub async fn unified_search(
             .collect::<Vec<_>>()
     };
 
-    // ── Content records: keyword scoring ────────────────────────────
-    let query_words: Vec<&str> = trimmed.split_whitespace().collect();
-    let content_records = queries
-        .select_content_records(parsed.content_type.as_deref())
-        .await?;
-    let content_results: Vec<UnifiedSearchResult> = content_records
-        .into_iter()
-        .filter_map(|cr| {
-            if query_words.is_empty() {
-                return None;
-            }
-            let haystack = cr.content.to_lowercase();
-            let matched = query_words
-                .iter()
-                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
-                .count();
-            let score = matched as f32 / query_words.len() as f32;
-            if score > 0.0 {
-                Some(UnifiedSearchResult {
-                    region: SearchRegion::Code,
+    // ── Content records: KNN vector search ──────────────────────────
+    // Requires embeddings feature; the cfg guard at the top of this
+    // function already returned an error for non-embeddings builds, so
+    // we are guaranteed to have a valid query_embedding here.
+    let content_results: Vec<UnifiedSearchResult> = {
+        let knn = queries
+            .vector_search_content_native(&query_embedding, limit, parsed.content_type.as_deref())
+            .await?;
+
+        // If no embedded records exist yet (backfill still in progress),
+        // fall back to keyword scoring so the tool stays useful.
+        if knn.is_empty() {
+            let query_words: Vec<&str> = trimmed.split_whitespace().collect();
+            let all_records = queries
+                .select_content_records(parsed.content_type.as_deref())
+                .await?;
+            all_records
+                .into_iter()
+                .filter_map(|cr| {
+                    if query_words.is_empty() {
+                        return None;
+                    }
+                    let haystack = cr.content.to_lowercase();
+                    let matched = query_words
+                        .iter()
+                        .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+                        .count();
+                    let score = matched as f32 / query_words.len() as f32;
+                    if score > 0.0 {
+                        Some(UnifiedSearchResult {
+                            region: SearchRegion::Task,
+                            score,
+                            node_type: cr.content_type.clone(),
+                            id: format!("content_record:{}", cr.id),
+                            title: Some(cr.file_path.clone()),
+                            summary: Some(truncate_summary(&cr.content, 200)),
+                            file_path: Some(cr.file_path),
+                            line_range: None,
+                            status: None,
+                            linked_symbols: None,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            knn.into_iter()
+                .map(|(score, cr)| UnifiedSearchResult {
+                    region: SearchRegion::Task,
                     score,
                     node_type: cr.content_type.clone(),
                     id: format!("content_record:{}", cr.id),
-                    title: None,
+                    title: Some(cr.file_path.clone()),
                     summary: Some(truncate_summary(&cr.content, 200)),
                     file_path: Some(cr.file_path),
                     line_range: None,
                     status: None,
                     linked_symbols: None,
                 })
-            } else {
-                None
-            }
-        })
-        .collect();
+                .collect()
+        }
+    };
 
     // ── Merge and rank ───────────────────────────────────────────────
     let merged = merge_unified_results(code_results, content_results, limit);
-    let total_matches = merged.len();
+    let total_count = merged.len();
 
     Ok(json!({
         "results": merged,
-        "total_matches": total_matches,
+        "total_count": total_count,
+        "total_matches": total_count,
     }))
 }
 
@@ -551,6 +615,9 @@ struct ImpactAnalysisParams {
     depth: usize,
     #[serde(default = "default_impact_max_nodes")]
     max_nodes: usize,
+    /// Optional semantic concept for combined structural+semantic results.
+    #[serde(default)]
+    concept: Option<String>,
 }
 
 const fn default_impact_depth() -> usize {
@@ -565,7 +632,7 @@ const fn default_impact_max_nodes() -> usize {
 /// changes to a specific code symbol (FR-129).
 ///
 /// 1. Resolve `symbol_name` via exact-name lookup.
-/// 2. BFS traverse code graph to `depth` hops (clamped by FR-149).
+/// 2. Native graph traversal to `depth` hops via [`CodeGraphQueries::graph_neighborhood`].
 /// 3. Return the root symbol and its code neighborhood with full source bodies (FR-148).
 ///
 /// # Errors
@@ -596,11 +663,9 @@ pub async fn impact_analysis(
         .clamp(1, 100)
         .min(config.code_graph.max_traversal_nodes);
 
-    let workspace_id = workspace_id(&state).await?;
-    let db = connect_db(&workspace_id).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
-
-    // Step 1: Resolve symbol name to code node(s).
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
     if matches.is_empty() {
         return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
@@ -610,15 +675,49 @@ pub async fn impact_analysis(
 
     let root = &matches[0];
 
-    // Step 2: BFS traverse code graph.
+    // Step 2: Native graph traversal.
     let bfs = cg_queries
-        .bfs_neighborhood(&root.id, effective_depth, effective_max_nodes)
+        .graph_neighborhood(&root.id, effective_depth, effective_max_nodes)
         .await?;
 
     // Build code neighborhood JSON (FR-148: full source bodies).
     let code_neighborhood: Vec<Value> = bfs.neighbors.iter().map(symbol_match_to_json).collect();
 
-    Ok(json!({
+    // When a semantic concept is provided and embeddings are available,
+    // run a combined structural+semantic query for additional relevance.
+    let hybrid_results: Vec<Value> =
+        if let Some(concept) = parsed.concept.as_deref().filter(|c| !c.trim().is_empty()) {
+            if embedding::is_available() {
+                let emb = embedding::embed_text(concept.trim()).map_err(|e| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: format!("embedding generation failed: {e}"),
+                    })
+                })?;
+                let scored = cg_queries
+                    .hybrid_graph_vector_search(
+                        &root.id,
+                        effective_depth,
+                        &emb,
+                        effective_max_nodes,
+                        &[],
+                    )
+                    .await?;
+                scored
+                    .into_iter()
+                    .map(|(score, s)| {
+                        let mut v = symbol_match_to_json(&s);
+                        v["relevance_score"] = json!(score);
+                        v
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+    let mut response = json!({
         "symbol": {
             "name": root.name,
             "type": root.table,
@@ -627,7 +726,13 @@ pub async fn impact_analysis(
         "code_neighborhood": code_neighborhood,
         "effective_depth": effective_depth,
         "effective_max_nodes": effective_max_nodes,
-    }))
+    });
+
+    if !hybrid_results.is_empty() {
+        response["hybrid_results"] = json!(hybrid_results);
+    }
+
+    Ok(response)
 }
 
 // ── T034: get_health_report ───────────────────────────────────────────────────
@@ -664,6 +769,9 @@ pub async fn get_health_report(
         .and_then(|pid| sys.process(pid))
         .map(|proc| proc.memory() / 1_048_576);
 
+    // Collect embedding status — no workspace needed for the basic availability check.
+    let embedding_status = embedding::status(None).await?;
+
     Ok(json!({
         "version": version,
         "uptime_seconds": uptime_secs,
@@ -678,6 +786,8 @@ pub async fn get_health_report(
         "memory_mb": memory_mb,
         "watcher_events": watcher_events,
         "last_watcher_event": last_watcher_event,
+        "embedding_status": embedding_status,
+        "query_timing": crate::services::query_stats::timing_snapshot(),
     }))
 }
 
@@ -705,7 +815,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
 
     use crate::services::gate::sanitize_query;
 
-    let ws_id = workspace_id(&state).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
 
     let parsed: QueryGraphParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -729,7 +839,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
             (c.query_timeout_ms, c.query_row_limit)
         });
 
-    let db = connect_db(&ws_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let start = Instant::now();
 
     // Inject a LIMIT clause to cap result-set materialization at the DB level.
@@ -826,8 +936,8 @@ pub async fn query_changes(
 ) -> Result<Value, EngramError> {
     use chrono::DateTime;
 
-    let ws_id = if let Some(snap) = state.snapshot_workspace().await {
-        snap.workspace_id
+    let (data_dir, branch) = if let Some(snap) = state.snapshot_workspace().await {
+        (snap.data_dir.clone(), snap.branch.clone())
     } else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
@@ -841,7 +951,7 @@ pub async fn query_changes(
 
     let limit = parsed.limit.unwrap_or(20);
 
-    let db = connect_db(&ws_id).await?;
+    let db = connect_db(&data_dir, &branch).await?;
     let queries = CodeGraphQueries::new(db);
     let since_dt = parsed
         .since
@@ -874,7 +984,7 @@ pub async fn query_changes(
     // If a symbol is provided, resolve its file path via the code graph so we
     // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
     let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
-        let cg_db = connect_db(&ws_id).await?;
+        let cg_db = connect_db(&data_dir, &branch).await?;
         let cg = CodeGraphQueries::new(cg_db);
         let syms = cg.find_symbols_by_name(sym).await?;
         if syms.is_empty() {

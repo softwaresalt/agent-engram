@@ -13,6 +13,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use interprocess::local_socket::{
     ListenerOptions,
@@ -20,13 +21,14 @@ use interprocess::local_socket::{
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::daemon::protocol::{IpcError as WireError, IpcRequest, IpcResponse};
 use crate::daemon::ttl::TtlTimer;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
+use crate::models::WatcherEvent;
 use crate::server::state::{AppState, SharedState};
 use crate::tools;
 
@@ -327,10 +329,16 @@ async fn process_request(
 /// Steps:
 /// 1. Canonicalize and validate the workspace path.
 /// 2. Create `.engram/run/` if needed.
-/// 3. Acquire the daemon lockfile.
-/// 4. Build [`AppState`] and set the active workspace.
-/// 5. Compute and bind the IPC endpoint.
-/// 6. Enter the accept loop; exit when `shutdown_rx` becomes `true`.
+/// 3. Build [`AppState`] and set the active workspace.
+/// 4. Compute and bind the IPC endpoint.
+/// 5. Hydrate workspace state asynchronously, then auto-sync the code graph.
+/// 6. Run the watcher event loop for file-change auto-sync.
+/// 7. Enter the accept loop; exit when `shutdown_rx` becomes `true`.
+///
+/// `event_rx` receives debounced file-change events from the workspace watcher
+/// started in [`crate::daemon::run`]. The auto-sync loop in this function
+/// batches events and triggers [`crate::services::code_graph::sync_workspace`]
+/// after a 2-second quiet window.
 ///
 /// # Errors
 ///
@@ -341,6 +349,7 @@ pub async fn run_with_shutdown(
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
+    mut event_rx: mpsc::UnboundedReceiver<WatcherEvent>,
 ) -> Result<(), EngramError> {
     let workspace_path = std::fs::canonicalize(workspace).map_err(|e| {
         EngramError::Ipc(DomainIpcError::ConnectionFailed {
@@ -430,10 +439,217 @@ pub async fn run_with_shutdown(
                     tokio::spawn(async move {
                         ttl_task.run_until_expired(tx_init).await;
                     });
+                    // Auto-sync on startup: picks up any changes since the last
+                    // flush, or performs a full index if the code graph is empty.
+                    let state_auto = Arc::clone(&state_init);
+                    tokio::spawn(async move {
+                        if !state_auto.try_start_indexing() {
+                            return;
+                        }
+                        let should_flush = 'sync: {
+                            let Some(snapshot) = state_auto.snapshot_workspace().await else {
+                                break 'sync false;
+                            };
+                            let Some(ws_config) = state_auto.workspace_config().await else {
+                                break 'sync false;
+                            };
+                            let ws_path = std::path::PathBuf::from(&snapshot.path);
+                            match crate::services::code_graph::sync_workspace(
+                                &ws_path,
+                                &snapshot.data_dir,
+                                &snapshot.branch,
+                                &ws_config.code_graph,
+                            )
+                            .await
+                            {
+                                Ok(result) => {
+                                    info!(
+                                        files_added = result.files_added,
+                                        files_modified = result.files_modified,
+                                        files_unchanged = result.files_unchanged,
+                                        "startup auto-sync complete"
+                                    );
+                                    true
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "startup auto-sync failed");
+                                    false
+                                }
+                            }
+                        };
+
+                        // ── Registry content ingestion ────────────────────────────
+                        //
+                        // Load the content registry from disk and ingest all active
+                        // sources. Runs after the code-graph sync so the DB connection
+                        // is warm. Non-fatal: failures are logged and do not prevent
+                        // the daemon serving tool calls.
+                        //
+                        // After ingestion, backfill any content records that lack an
+                        // embedding vector — covering both newly ingested files and
+                        // records persisted in previous daemon runs.
+                        if let Some(snapshot) = state_auto.snapshot_workspace().await {
+                            let ws_path = std::path::PathBuf::from(&snapshot.path);
+                            match crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await
+                            {
+                                Ok(db) => {
+                                    let queries = crate::db::queries::CodeGraphQueries::new(db);
+
+                                    // Run registry ingestion.
+                                    let registry_path =
+                                        ws_path.join(".engram").join("registry.yaml");
+                                    match crate::services::registry::load_registry(&registry_path) {
+                                        Ok(Some(mut config)) => {
+                                            let _ = crate::services::registry::validate_sources(
+                                                &mut config,
+                                                &ws_path,
+                                            );
+                                            match crate::services::ingestion::ingest_all_sources(
+                                                &config, &ws_path, &queries,
+                                            )
+                                            .await
+                                            {
+                                                Ok(summary) => {
+                                                    info!(
+                                                        ingested = summary.ingested,
+                                                        unchanged = summary.unchanged,
+                                                        total = summary.total_files,
+                                                        "startup registry ingestion complete"
+                                                    );
+                                                }
+                                                Err(e) => warn!(
+                                                    error = %e,
+                                                    "startup registry ingestion failed"
+                                                ),
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            debug!("no registry.yaml — skipping content ingestion");
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "startup registry load failed");
+                                        }
+                                    }
+
+                                    // Backfill embeddings for content records with no vector.
+                                    match crate::services::ingestion::backfill_content_embeddings(
+                                        &queries,
+                                    )
+                                    .await
+                                    {
+                                        Ok(0) => {}
+                                        Ok(n) => {
+                                            info!(
+                                                updated = n,
+                                                "startup content embedding backfill complete"
+                                            );
+                                        }
+                                        Err(e) => warn!(
+                                            error = %e,
+                                            "startup content embedding backfill failed"
+                                        ),
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        error = %e,
+                                        "startup ingestion: failed to connect to database"
+                                    );
+                                }
+                            }
+                        }
+
+                        // finish_indexing MUST come before flush_state —
+                        // flush_state rejects calls while indexing is in progress.
+                        state_auto.finish_indexing().await;
+                        if should_flush {
+                            if let Err(e) =
+                                crate::tools::write::flush_state(Arc::clone(&state_auto), None)
+                                    .await
+                            {
+                                warn!(error = %e, "startup auto-flush failed");
+                            }
+                        }
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "workspace hydration failed — initiating shutdown");
                     let _ = tx_init.send(true);
+                }
+            }
+        });
+    }
+
+    // ── File-change auto-sync loop ────────────────────────────────────────────
+    //
+    // Receives debounced file events from the workspace watcher (started in
+    // daemon::run). Batches events for a 2-second quiet window, then triggers
+    // sync_workspace so the code graph stays current without explicit MCP calls.
+    // Follows each sync with a flush_state to persist updated graph to disk.
+    {
+        let state_watcher = Arc::clone(&state);
+        let ttl_watcher = Arc::clone(&ttl);
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                ttl_watcher.reset();
+                let mut pending_reindex = matches!(
+                    crate::daemon::debounce::adapt_event(&event),
+                    crate::daemon::debounce::ServiceAction::ReindexFile { .. }
+                );
+
+                // Drain all events within the 2-second debounce window.
+                while let Ok(Some(ev)) =
+                    tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await
+                {
+                    ttl_watcher.reset();
+                    if matches!(
+                        crate::daemon::debounce::adapt_event(&ev),
+                        crate::daemon::debounce::ServiceAction::ReindexFile { .. }
+                    ) {
+                        pending_reindex = true;
+                    }
+                }
+
+                if pending_reindex && state_watcher.try_start_indexing() {
+                    let should_flush = 'sync: {
+                        let Some(snapshot) = state_watcher.snapshot_workspace().await else {
+                            break 'sync false;
+                        };
+                        let Some(ws_config) = state_watcher.workspace_config().await else {
+                            break 'sync false;
+                        };
+                        let ws_path = std::path::PathBuf::from(&snapshot.path);
+                        match crate::services::code_graph::sync_workspace(
+                            &ws_path,
+                            &snapshot.data_dir,
+                            &snapshot.branch,
+                            &ws_config.code_graph,
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                info!(
+                                    files_added = result.files_added,
+                                    files_modified = result.files_modified,
+                                    "file-change auto-sync complete"
+                                );
+                                true
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "file-change auto-sync failed");
+                                false
+                            }
+                        }
+                    };
+                    // finish_indexing MUST come before flush_state.
+                    state_watcher.finish_indexing().await;
+                    if should_flush {
+                        if let Err(e) =
+                            crate::tools::write::flush_state(Arc::clone(&state_watcher), None).await
+                        {
+                            warn!(error = %e, "file-change auto-flush failed");
+                        }
+                    }
                 }
             }
         });
@@ -455,7 +671,11 @@ pub async fn run_with_shutdown(
 pub async fn run(workspace: &str) -> Result<(), EngramError> {
     let ttl = TtlTimer::new(std::time::Duration::ZERO); // no auto-shutdown
     let (tx, rx) = watch::channel(false);
-    run_with_shutdown(workspace, ttl, Arc::new(tx), rx).await
+    // Legacy callers have no file watcher; pass a channel that is immediately
+    // closed so the auto-sync loop in run_with_shutdown exits cleanly.
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
+    drop(event_tx);
+    run_with_shutdown(workspace, ttl, Arc::new(tx), rx, event_rx).await
 }
 
 // ── Accept loop ──────────────────────────────────────────────────────────────

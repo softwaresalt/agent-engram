@@ -106,6 +106,18 @@ pub fn merge_unified_results(
 /// Compute cosine similarity between two vectors.
 ///
 /// Returns `0.0` when either vector is zero-length or dimensions mismatch.
+///
+/// # Deprecation
+///
+/// Code symbol search should use
+/// [`CodeGraphQueries::vector_search_symbols_native`] which delegates to
+/// SurrealDB's native `<|K,COSINE|>` KNN operator. This function is retained
+/// only for content-record scoring in [`hybrid_search`], which applies
+/// application-level scoring rather than DB-native KNN.
+#[deprecated(
+    note = "Use SurrealDB native KNN via CodeGraphQueries::vector_search_symbols_native() \
+            for code symbol similarity. Only hybrid_search content scoring may use this."
+)]
 #[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
@@ -162,6 +174,7 @@ pub fn keyword_score(query: &str, document: &str) -> f32 {
 ///
 /// # Errors
 /// Returns `QueryError::QueryTooLong` if the query exceeds the token budget.
+#[allow(deprecated)] // cosine_similarity: content records lack MTREE index, app-level scoring required
 pub fn hybrid_search(
     query: &str,
     candidates: &[SearchCandidate],
@@ -169,7 +182,12 @@ pub fn hybrid_search(
 ) -> Result<Vec<SearchResult>, EngramError> {
     embedding::validate_query_length(query)?;
 
-    let query_embedding: Option<Vec<f32>> = embedding::embed_text(query).ok();
+    // Only load the embedding model when at least one candidate has a vector.
+    let query_embedding: Option<Vec<f32>> = if candidates.iter().any(|c| c.embedding.is_some()) {
+        embedding::embed_text(query).ok()
+    } else {
+        None
+    };
 
     let mut scored: Vec<SearchResult> = candidates
         .iter()
@@ -200,6 +218,7 @@ pub fn hybrid_search(
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // tests exercise cosine_similarity directly to verify its correctness
 mod tests {
     use super::*;
 

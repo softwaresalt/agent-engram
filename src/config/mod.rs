@@ -3,8 +3,6 @@
 //! Uses `clap` derive for parsing. All fields support both `--flag`-style
 //! CLI arguments and `ENGRAM_`-prefixed environment variables.
 
-use std::path::{Path, PathBuf};
-
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 
@@ -46,10 +44,6 @@ pub struct Config {
     /// Maximum number of active workspaces
     #[arg(long, env = "ENGRAM_MAX_WORKSPACES", default_value_t = 10)]
     pub max_workspaces: usize,
-
-    /// Data directory for embedded database and models
-    #[arg(long, env = "ENGRAM_DATA_DIR", default_value_os_t = default_data_dir())]
-    pub data_dir: PathBuf,
 
     /// Behavior when workspace files are stale
     #[arg(long, env = "ENGRAM_STALE_STRATEGY", value_enum, default_value_t = StaleStrategy::Warn)]
@@ -99,9 +93,6 @@ impl Config {
         if self.max_workspaces == 0 {
             return Err("max_workspaces must be > 0".into());
         }
-        if self.data_dir.as_os_str().is_empty() {
-            return Err("data_dir must not be empty".into());
-        }
         if self.event_ledger_max == 0 {
             return Err("event_ledger_max must be > 0".into());
         }
@@ -113,18 +104,6 @@ impl Config {
         }
         Ok(())
     }
-
-    pub fn ensure_data_dir(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.data_dir)
-    }
-}
-
-fn default_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| Path::new(".").to_path_buf())
-        .join(".local")
-        .join("share")
-        .join("engram")
 }
 
 #[cfg(test)]

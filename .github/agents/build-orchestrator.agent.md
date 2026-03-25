@@ -2,7 +2,7 @@
 description: Orchestrates feature builds by claiming tasks from Beads and delegating to the build-feature skill with compiler-driven feedback loops
 tools: [vscode, execute, read, agent, edit, search, web, 'microsoft-docs/*', 'agent-intercom/*', 'context7/*', 'tavily/*', todo, memory, ms-vscode.vscode-websearchforcopilot/websearch]
 maturity: stable
-model: Claude Sonnet 4.6 (copilot)
+model: Claude Sonnet 4.6
 ---
 
 # Build Orchestrator
@@ -57,10 +57,15 @@ Run `bd ready --json`. Parse the JSON array of unblocked tasks.
 * Otherwise, display the queue to the user with task IDs, titles, and priorities.
 
 ### Step 2: Pre-Flight Validation
-* Run `cargo check` to confirm the project compiles before starting.
-* **Agent-intercom detection**: Call `ping` with `status_message: "Build orchestrator pre-flight"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
-* If the pre-flight check fails, `broadcast` the failure at `error` level (if active) and halt.
-* If all checks pass, `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Pre-flight passed — project compiles, environment ready`.
+
+1. Run `cargo check` to confirm the project compiles.
+2. **Agent-intercom detection**: Call `ping` with `status_message: "Build orchestrator pre-flight"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
+3. **Feature branch check**: Run `git branch --show-current`. If the result is `main` or a protected branch, halt immediately. `broadcast` at `error` level and instruct the user to create or check out the appropriate feature branch before proceeding. All implementation work must happen on a feature branch.
+4. **Shell hygiene**: Before starting any test run, stop all tracked async shell sessions that may still be running from prior activity. Dangling shells holding cargo lock files or stale rustc processes will cause silent hangs.
+5. **Compile-time estimation**: Check `Cargo.toml` for `default = ["embeddings"]`. If present, warn the operator:
+   > ⚠️ The `embeddings` feature is enabled by default. The first `cargo test` run compiles ort-sys/fastembed native binaries — expect **20-40 minutes** for the initial debug compile. Subsequent incremental builds are fast. Use targeted `--test {name}` commands during development to avoid repeated full recompiles.
+6. If pre-flight fails, `broadcast` the failure at `error` level (if active) and halt.
+7. If all checks pass, `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Pre-flight passed — project compiles, environment ready`.
 ### Step 3: Claim & Delegate
 
 1. Select the top task from the `bd ready` output based on priority.
@@ -70,10 +75,18 @@ Run `bd ready --json`. Parse the JSON array of unblocked tasks.
 5. Delegate execution to `.github/skills/build-feature/SKILL.md`, passing the `task-id` and `harness-cmd`.
 
 ### Step 4: Verify Completion Gates
+
 After the build-feature skill finishes, verify that all mandatory gates were satisfied:
+
 1. **Lint and format gate**: Run `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`. Both commands must exit 0. If either fails, fix the violations, re-run both checks, and do not proceed until both pass.
-2. **Test gate**: Run `cargo test` to confirm all tests pass (not just the harness test).
+
+2. **Test gate — tiered strategy**: Do NOT run `cargo test` (full suite) blindly after every task. Use this tiered approach to avoid repeated 20-40 minute ort-sys recompiles:
+   a. **Targeted first**: Run `cargo test --test {harness_test_name}` for the specific test file this task implements.
+   b. **Peripheral check**: Run `cargo test --lib` to verify the library unit tests haven't regressed.
+   c. **Full suite**: Run `cargo test` only before the final commit that closes the task. If ort/fastembed compilation has not been cached yet (first run since source change), broadcast a warning with the expected 20-40 minute wait time and proceed asynchronously.
+
 3. **Commit gate**: Confirm that `git status` shows a clean working tree (all changes committed).
+
 All gates are mandatory. Do not advance to the next task until all gates pass.
 `broadcast` the aggregate gate result when all pass: `[🛠️ ORCHESTRATOR] Task {task_id} gates verified — lint, test, commit all PASS` at `success` level. If any gate fails after remediation, `broadcast` at `error` level with the failing gate name and details.
 ### Step 5: Loop or Exit

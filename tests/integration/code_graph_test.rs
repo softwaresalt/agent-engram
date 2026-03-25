@@ -23,15 +23,16 @@ fn write_sample_file(dir: &Path, rel_path: &str, content: &str) {
     fs::write(full, content).expect("write file");
 }
 
-/// Helper: hash a workspace path the same way the service does.
-fn workspace_hash(path: &Path) -> String {
+/// Helper: derive test DB parameters from a workspace path.
+fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
     use sha2::{Digest, Sha256};
     let canon = path
         .canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .to_lowercase();
-    format!("{:x}", Sha256::digest(canon.as_bytes()))
+    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
+    (std::env::temp_dir().join("engram-test"), branch)
 }
 
 #[test]
@@ -56,9 +57,9 @@ pub struct Config {
     );
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 
@@ -86,16 +87,16 @@ async fn index_workspace_skips_unchanged_files() {
     );
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
     // First run: should parse the file.
-    let r1 = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let r1 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("first index");
     assert_eq!(r1.files_parsed, 1);
 
     // Second run without changes: should skip.
-    let r2 = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let r2 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("second index");
     assert_eq!(r2.files_parsed, 0);
@@ -114,15 +115,15 @@ async fn index_workspace_force_reindexes_unchanged_files() {
     );
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
     // Index once.
-    code_graph::index_workspace(ws, &ws_id, &config, false)
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("first index");
 
     // Force re-index should reparse.
-    let r2 = code_graph::index_workspace(ws, &ws_id, &config, true)
+    let r2 = code_graph::index_workspace(ws, &data_dir, &branch, &config, true)
         .await
         .expect("force index");
     assert_eq!(r2.files_parsed, 1, "force should re-parse the file");
@@ -143,9 +144,9 @@ pub fn beta() {}
     );
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 
@@ -175,9 +176,9 @@ async fn index_workspace_applies_tiering() {
     write_sample_file(ws, "src/lib.rs", &format!("{small_fn}\n{large_fn}"));
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 
@@ -201,9 +202,9 @@ async fn index_workspace_skips_non_rust_files() {
     write_sample_file(ws, "src/script.py", "def hello(): pass\n");
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 
@@ -227,9 +228,9 @@ pub trait Greeter {
     );
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 
@@ -247,14 +248,14 @@ async fn index_workspace_persists_to_db() {
     write_sample_file(ws, "src/lib.rs", "pub fn persisted() { let x = 1; }\n");
 
     let config = CodeGraphConfig::default();
-    let ws_id = workspace_hash(ws);
+    let (data_dir, branch) = test_db_params(ws);
 
-    code_graph::index_workspace(ws, &ws_id, &config, false)
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 
     // Verify DB records.
-    let db = connect_db(&ws_id).await.expect("db connect");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
     let q = CodeGraphQueries::new(db);
     let files = q.list_code_files().await.expect("list files");
     assert!(
@@ -280,8 +281,8 @@ async fn index_workspace_skips_oversized_files() {
         "pub fn this_is_definitely_longer_than_20_bytes() {}\n",
     );
 
-    let ws_id = workspace_hash(ws);
-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
+    let (data_dir, branch) = test_db_params(ws);
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("indexing should succeed");
 

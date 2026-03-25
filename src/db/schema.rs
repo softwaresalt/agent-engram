@@ -100,6 +100,21 @@ DEFINE FIELD OVERWRITE linked_by ON TABLE concerns TYPE string;
 DEFINE FIELD OVERWRITE created_at ON TABLE concerns TYPE datetime DEFAULT time::now();
 "#;
 
+/// File hash table — stores SHA-256 content hashes for tracked workspace files.
+///
+/// Each record maps a workspace-relative file path to its last-known content
+/// hash and size. Used to detect offline changes (files modified while the
+/// daemon was not running) by comparing stored hashes against current on-disk
+/// state at startup or hydration time.
+pub const DEFINE_FILE_HASH: &str = r#"
+DEFINE TABLE IF NOT EXISTS file_hash SCHEMAFULL;
+DEFINE FIELD OVERWRITE file_path ON TABLE file_hash TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE content_hash ON TABLE file_hash TYPE string ASSERT $value != '';
+DEFINE FIELD OVERWRITE size_bytes ON TABLE file_hash TYPE int ASSERT $value >= 0;
+DEFINE FIELD OVERWRITE recorded_at ON TABLE file_hash TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS file_hash_path ON TABLE file_hash COLUMNS file_path UNIQUE;
+"#;
+
 /// Schema version constant for `.engram/.version` file.
 pub const SCHEMA_VERSION: &str = "2.0.0";
 
@@ -119,6 +134,7 @@ DEFINE FIELD OVERWRITE file_size_bytes ON TABLE content_record TYPE int DEFAULT 
 DEFINE FIELD OVERWRITE ingested_at ON TABLE content_record TYPE datetime DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS content_type_idx ON TABLE content_record COLUMNS content_type;
 DEFINE INDEX IF NOT EXISTS content_file_idx ON TABLE content_record COLUMNS file_path UNIQUE;
+DEFINE INDEX IF NOT EXISTS content_record_embedding_idx ON TABLE content_record COLUMNS embedding MTREE DIMENSION 384 DIST COSINE;
 "#;
 
 /// Commit node table — git commits in the change graph.

@@ -100,6 +100,7 @@ fn hybrid_search_returns_empty_for_no_candidates() {
 // ── Cosine similarity ────────────────────────────────────────────
 
 #[test]
+#[allow(deprecated)] // test exercises cosine_similarity directly to verify its contract
 fn cosine_similarity_unit_vectors() {
     let a = vec![1.0, 0.0, 0.0];
     let b = vec![0.0, 1.0, 0.0];
@@ -108,6 +109,7 @@ fn cosine_similarity_unit_vectors() {
 }
 
 #[test]
+#[allow(deprecated)] // test exercises cosine_similarity directly to verify its contract
 fn cosine_similarity_identical_vectors() {
     let v = vec![0.5, 0.5, 0.5];
     let sim = search::cosine_similarity(&v, &v);
@@ -120,28 +122,22 @@ fn cosine_similarity_identical_vectors() {
 #[test]
 fn embed_text_produces_correct_dimension() {
     let result = embedding::embed_text("test sentence for embedding");
-    match result {
-        Ok(vec) => assert_eq!(vec.len(), EMBEDDING_DIM),
-        Err(_) => {
-            // Model download may fail in CI without network; acceptable
-        }
+    if let Ok(vec) = result {
+        assert_eq!(vec.len(), EMBEDDING_DIM);
     }
+    // Err(_): model download may fail in CI without network; acceptable
 }
 
 #[cfg(feature = "embeddings")]
 #[test]
 fn embed_texts_batch_matches_single() {
     let texts = vec!["hello world".to_string()];
-    match (
+    if let (Ok(single), Ok(batch)) = (
         embedding::embed_text("hello world"),
         embedding::embed_texts(&texts),
     ) {
-        (Ok(single), Ok(batch)) => {
-            assert_eq!(batch.len(), 1);
-            assert_eq!(single.len(), batch[0].len());
-        }
-        _ => {
-            // Model unavailable; skip comparison
-        }
+        assert_eq!(batch.len(), 1);
+        assert_eq!(single.len(), batch[0].len());
     }
+    // Either unavailable: model not loaded; skip comparison
 }

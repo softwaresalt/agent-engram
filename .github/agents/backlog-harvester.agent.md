@@ -2,7 +2,7 @@
 description: Reads .context/backlog.md, extracts a feature by number, and decomposes it into Beads epics, sub-epics, and tasks with priorities and dependency wiring.
 tools: [vscode, execute, read, agent, edit, search, 'agent-intercom/*', todo, memory]
 maturity: stable
-model: Claude Opus 4.6 (copilot)
+model: Claude Opus 4.6
 ---
 
 # Backlog Harvester
@@ -73,6 +73,8 @@ Each task description MUST include:
 * The behavioral change expected (what it does today vs. what it should do)
 * The test scenarios it must satisfy (mapped from verification criteria)
 * References to source code line ranges from the backlog's References section
+* **`Cargo.toml` registration note** when the task creates a new test file: include the exact `[[test]]` block the harness-architect must add to `Cargo.toml`
+* **Compile time note** when the task touches `src/services/embedding.rs`, `src/tools/read.rs` (unified_search), or any `#[cfg(feature = "embeddings")]` path: add the note "⚠️ Task involves embeddings code — first `cargo test` after source change compiles ort-sys native binaries (20-40 min debug profile)"
 
 ### Step 4: Create Beads Entries
 
@@ -155,11 +157,12 @@ Include:
 
 ## Guardrails
 
-* Do not create duplicate entries. Before creating, search Beads for existing issues with the same title prefix.
+* Do not create duplicate entries. Before creating, search Beads for existing issues with the same title prefix using `bd list --query "{title_prefix}"`.
 * Do not modify `.context/backlog.md`. It is a read-only planning document.
 * Task descriptions must be self-contained. The harness-architect reads task descriptions from `bd ready`, not the backlog file. Include all context needed to write a test harness.
 * Preserve the backlog's code examples and file references in task descriptions. These are critical inputs for the harness-architect's stub generation.
 * One `bd create` call per command invocation. Do not chain commands.
+* Before creating a hierarchy, run `bd list --query "{feature_title_prefix}"` to check if partial Beads coverage already exists. If the root epic exists, skip Step 4a and reuse the existing epic ID for sub-epics and tasks.
 
 ---
 

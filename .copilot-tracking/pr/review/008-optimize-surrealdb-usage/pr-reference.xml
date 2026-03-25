@@ -1,0 +1,3658 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 1cca757..b9e91d0 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -27,8 +27,7 @@ surrealdb = { version = "2", features = ["kv-surrealkv"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ pulldown-cmark = "0.10"
+-fastembed = { version = "3", optional = true, default-features = false }
+-ort-sys = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native"] }
++fastembed = { version = "5", optional = true, default-features = false }
+ tracing-opentelemetry = { version = "0.26", optional = true }
+ opentelemetry = { version = "0.26", optional = true }
+ opentelemetry_sdk = { version = "0.26", optional = true, features = ["rt-tokio"] }
+@@ -51,12 +50,13 @@ toml = "0.8"
+ tree-sitter = "0.24"
+ tree-sitter-rust = "0.23"
+ ignore = "0.4"
++globset = "0.4"
+ serde_yaml = "0.9"
+ git2 = { version = "0.19", optional = true, default-features = false }
+ 
+ [features]
+-default = []
+-embeddings = ["fastembed", "fastembed/ort-download-binaries", "fastembed/online"]
++default = ["embeddings"]
++embeddings = ["fastembed", "fastembed/ort-download-binaries-native-tls", "fastembed/hf-hub-native-tls"]
+ git-graph = ["git2"]
+ otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
+ # Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
+@@ -213,6 +213,10 @@ path = "tests/integration/installer_test.rs"
+ name = "integration_daemon_lifecycle"
+ path = "tests/integration/daemon_lifecycle_test.rs"
+ 
++[[test]]
++name = "integration_graph_vector_rehydration"
++path = "tests/integration/graph_vector_rehydration_test.rs"
++
+ [[test]]
+ name = "unit_plugin_config"
+ path = "tests/unit/plugin_config_test.rs"
+@@ -321,3 +325,11 @@ path = "tests/integration/native_graph_traversal_test.rs"
+ [[test]]
+ name = "integration_query_tracing"
+ path = "tests/integration/query_tracing_test.rs"
++
++[[test]]
++name = "integration_content_knn_search"
++path = "tests/integration/content_knn_search_test.rs"
++
++[[test]]
++name = "integration_file_tracker"
++path = "tests/integration/file_tracker_test.rs"
+diff --git a/src/bin/engram.rs b/src/bin/engram.rs
+index 3f4e008..85fbd40 100644
+--- a/src/bin/engram.rs
++++ b/src/bin/engram.rs
+@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
+             engram::shim::run().await?;
+         }
+         Command::Daemon { workspace } => {
++            engram::init_tracing(engram::config::LogFormat::Pretty);
+             engram::daemon::run(&workspace).await?;
+         }
+         Command::Install {
+diff --git a/src/config/mod.rs b/src/config/mod.rs
+index 507c75d..5df6ec3 100644
+--- a/src/config/mod.rs
++++ b/src/config/mod.rs
+@@ -3,8 +3,6 @@
+ //! Uses `clap` derive for parsing. All fields support both `--flag`-style
+ //! CLI arguments and `ENGRAM_`-prefixed environment variables.
+ 
+-use std::path::{Path, PathBuf};
+-
+ use clap::{Parser, ValueEnum};
+ use serde::{Deserialize, Serialize};
+ 
+@@ -47,10 +45,6 @@ pub struct Config {
+     #[arg(long, env = "ENGRAM_MAX_WORKSPACES", default_value_t = 10)]
+     pub max_workspaces: usize,
+ 
+-    /// Data directory for embedded database and models
+-    #[arg(long, env = "ENGRAM_DATA_DIR", default_value_os_t = default_data_dir())]
+-    pub data_dir: PathBuf,
+-
+     /// Behavior when workspace files are stale
+     #[arg(long, env = "ENGRAM_STALE_STRATEGY", value_enum, default_value_t = StaleStrategy::Warn)]
+     pub stale_strategy: StaleStrategy,
+@@ -99,9 +93,6 @@ impl Config {
+         if self.max_workspaces == 0 {
+             return Err("max_workspaces must be > 0".into());
+         }
+-        if self.data_dir.as_os_str().is_empty() {
+-            return Err("data_dir must not be empty".into());
+-        }
+         if self.event_ledger_max == 0 {
+             return Err("event_ledger_max must be > 0".into());
+         }
+@@ -113,18 +104,6 @@ impl Config {
+         }
+         Ok(())
+     }
+-
+-    pub fn ensure_data_dir(&self) -> std::io::Result<()> {
+-        std::fs::create_dir_all(&self.data_dir)
+-    }
+-}
+-
+-fn default_data_dir() -> PathBuf {
+-    dirs::home_dir()
+-        .unwrap_or_else(|| Path::new(".").to_path_buf())
+-        .join(".local")
+-        .join("share")
+-        .join("engram")
+ }
+ 
+ #[cfg(test)]
+diff --git a/src/daemon/ipc_server.rs b/src/daemon/ipc_server.rs
+index dc70771..1b816ec 100644
+--- a/src/daemon/ipc_server.rs
++++ b/src/daemon/ipc_server.rs
+@@ -13,6 +13,7 @@
+ 
+ use std::path::Path;
+ use std::sync::Arc;
++use std::time::Duration;
+ 
+ use interprocess::local_socket::{
+     ListenerOptions,
+@@ -20,13 +21,14 @@ use interprocess::local_socket::{
+ };
+ use serde_json::{Value, json};
+ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+-use tokio::sync::watch;
++use tokio::sync::{mpsc, watch};
+ use tracing::{debug, error, info, instrument, warn};
+ use uuid::Uuid;
+ 
+ use crate::daemon::protocol::{IpcError as WireError, IpcRequest, IpcResponse};
+ use crate::daemon::ttl::TtlTimer;
+ use crate::errors::{EngramError, IpcError as DomainIpcError};
++use crate::models::WatcherEvent;
+ use crate::server::state::{AppState, SharedState};
+ use crate::tools;
+ 
+@@ -327,10 +329,16 @@ async fn process_request(
+ /// Steps:
+ /// 1. Canonicalize and validate the workspace path.
+ /// 2. Create `.engram/run/` if needed.
+-/// 3. Acquire the daemon lockfile.
+-/// 4. Build [`AppState`] and set the active workspace.
+-/// 5. Compute and bind the IPC endpoint.
+-/// 6. Enter the accept loop; exit when `shutdown_rx` becomes `true`.
++/// 3. Build [`AppState`] and set the active workspace.
++/// 4. Compute and bind the IPC endpoint.
++/// 5. Hydrate workspace state asynchronously, then auto-sync the code graph.
++/// 6. Run the watcher event loop for file-change auto-sync.
++/// 7. Enter the accept loop; exit when `shutdown_rx` becomes `true`.
++///
++/// `event_rx` receives debounced file-change events from the workspace watcher
++/// started in [`crate::daemon::run`]. The auto-sync loop in this function
++/// batches events and triggers [`crate::services::code_graph::sync_workspace`]
++/// after a 2-second quiet window.
+ ///
+ /// # Errors
+ ///
+@@ -341,6 +349,7 @@ pub async fn run_with_shutdown(
+     ttl: Arc<TtlTimer>,
+     shutdown_tx: Arc<watch::Sender<bool>>,
+     shutdown_rx: watch::Receiver<bool>,
++    mut event_rx: mpsc::UnboundedReceiver<WatcherEvent>,
+ ) -> Result<(), EngramError> {
+     let workspace_path = std::fs::canonicalize(workspace).map_err(|e| {
+         EngramError::Ipc(DomainIpcError::ConnectionFailed {
+@@ -430,6 +439,138 @@ pub async fn run_with_shutdown(
+                     tokio::spawn(async move {
+                         ttl_task.run_until_expired(tx_init).await;
+                     });
++                    // Auto-sync on startup: picks up any changes since the last
++                    // flush, or performs a full index if the code graph is empty.
++                    let state_auto = Arc::clone(&state_init);
++                    tokio::spawn(async move {
++                        if !state_auto.try_start_indexing() {
++                            return;
++                        }
++                        let should_flush = 'sync: {
++                            let Some(snapshot) = state_auto.snapshot_workspace().await else {
++                                break 'sync false;
++                            };
++                            let Some(ws_config) = state_auto.workspace_config().await else {
++                                break 'sync false;
++                            };
++                            let ws_path = std::path::PathBuf::from(&snapshot.path);
++                            match crate::services::code_graph::sync_workspace(
++                                &ws_path,
++                                &snapshot.data_dir,
++                                &snapshot.branch,
++                                &ws_config.code_graph,
++                            )
++                            .await
++                            {
++                                Ok(result) => {
++                                    info!(
++                                        files_added = result.files_added,
++                                        files_modified = result.files_modified,
++                                        files_unchanged = result.files_unchanged,
++                                        "startup auto-sync complete"
++                                    );
++                                    true
++                                }
++                                Err(e) => {
++                                    warn!(error = %e, "startup auto-sync failed");
++                                    false
++                                }
++                            }
++                        };
++
++                        // ΓöÇΓöÇ Registry content ingestion ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++                        //
++                        // Load the content registry from disk and ingest all active
++                        // sources. Runs after the code-graph sync so the DB connection
++                        // is warm. Non-fatal: failures are logged and do not prevent
++                        // the daemon serving tool calls.
++                        //
++                        // After ingestion, backfill any content records that lack an
++                        // embedding vector ΓÇö covering both newly ingested files and
++                        // records persisted in previous daemon runs.
++                        if let Some(snapshot) = state_auto.snapshot_workspace().await {
++                            let ws_path = std::path::PathBuf::from(&snapshot.path);
++                            match crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await
++                            {
++                                Ok(db) => {
++                                    let queries = crate::db::queries::CodeGraphQueries::new(db);
++
++                                    // Run registry ingestion.
++                                    let registry_path =
++                                        ws_path.join(".engram").join("registry.yaml");
++                                    match crate::services::registry::load_registry(&registry_path) {
++                                        Ok(Some(mut config)) => {
++                                            let _ = crate::services::registry::validate_sources(
++                                                &mut config,
++                                                &ws_path,
++                                            );
++                                            match crate::services::ingestion::ingest_all_sources(
++                                                &config, &ws_path, &queries,
++                                            )
++                                            .await
++                                            {
++                                                Ok(summary) => {
++                                                    info!(
++                                                        ingested = summary.ingested,
++                                                        unchanged = summary.unchanged,
++                                                        total = summary.total_files,
++                                                        "startup registry ingestion complete"
++                                                    );
++                                                }
++                                                Err(e) => warn!(
++                                                    error = %e,
++                                                    "startup registry ingestion failed"
++                                                ),
++                                            }
++                                        }
++                                        Ok(None) => {
++                                            debug!("no registry.yaml ΓÇö skipping content ingestion");
++                                        }
++                                        Err(e) => {
++                                            warn!(error = %e, "startup registry load failed");
++                                        }
++                                    }
++
++                                    // Backfill embeddings for content records with no vector.
++                                    match crate::services::ingestion::backfill_content_embeddings(
++                                        &queries,
++                                    )
++                                    .await
++                                    {
++                                        Ok(0) => {}
++                                        Ok(n) => {
++                                            info!(
++                                                updated = n,
++                                                "startup content embedding backfill complete"
++                                            );
++                                        }
++                                        Err(e) => warn!(
++                                            error = %e,
++                                            "startup content embedding backfill failed"
++                                        ),
++                                    }
++                                }
++                                Err(e) => {
++                                    warn!(
++                                        error = %e,
++                                        "startup ingestion: failed to connect to database"
++                                    );
++                                }
++                            }
++                        }
++
++                        // finish_indexing MUST come before flush_state ΓÇö
++                        // flush_state rejects calls while indexing is in progress.
++                        state_auto.finish_indexing().await;
++                        if should_flush {
++                            if let Err(e) =
++                                crate::tools::write::flush_state(Arc::clone(&state_auto), None)
++                                    .await
++                            {
++                                warn!(error = %e, "startup auto-flush failed");
++                            }
++                        }
++                    });
+                 }
+                 Err(e) => {
+                     error!(error = %e, "workspace hydration failed ΓÇö initiating shutdown");
+@@ -439,6 +580,81 @@ pub async fn run_with_shutdown(
+         });
+     }
+ 
++    // ΓöÇΓöÇ File-change auto-sync loop ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++    //
++    // Receives debounced file events from the workspace watcher (started in
++    // daemon::run). Batches events for a 2-second quiet window, then triggers
++    // sync_workspace so the code graph stays current without explicit MCP calls.
++    // Follows each sync with a flush_state to persist updated graph to disk.
++    {
++        let state_watcher = Arc::clone(&state);
++        let ttl_watcher = Arc::clone(&ttl);
++        tokio::spawn(async move {
++            while let Some(event) = event_rx.recv().await {
++                ttl_watcher.reset();
++                let mut pending_reindex = matches!(
++                    crate::daemon::debounce::adapt_event(&event),
++                    crate::daemon::debounce::ServiceAction::ReindexFile { .. }
++                );
++
++                // Drain all events within the 2-second debounce window.
++                while let Ok(Some(ev)) =
++                    tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await
++                {
++                    ttl_watcher.reset();
++                    if matches!(
++                        crate::daemon::debounce::adapt_event(&ev),
++                        crate::daemon::debounce::ServiceAction::ReindexFile { .. }
++                    ) {
++                        pending_reindex = true;
++                    }
++                }
++
++                if pending_reindex && state_watcher.try_start_indexing() {
++                    let should_flush = 'sync: {
++                        let Some(snapshot) = state_watcher.snapshot_workspace().await else {
++                            break 'sync false;
++                        };
++                        let Some(ws_config) = state_watcher.workspace_config().await else {
++                            break 'sync false;
++                        };
++                        let ws_path = std::path::PathBuf::from(&snapshot.path);
++                        match crate::services::code_graph::sync_workspace(
++                            &ws_path,
++                            &snapshot.data_dir,
++                            &snapshot.branch,
++                            &ws_config.code_graph,
++                        )
++                        .await
++                        {
++                            Ok(result) => {
++                                info!(
++                                    files_added = result.files_added,
++                                    files_modified = result.files_modified,
++                                    "file-change auto-sync complete"
++                                );
++                                true
++                            }
++                            Err(e) => {
++                                warn!(error = %e, "file-change auto-sync failed");
++                                false
++                            }
++                        }
++                    };
++                    // finish_indexing MUST come before flush_state.
++                    state_watcher.finish_indexing().await;
++                    if should_flush {
++                        if let Err(e) =
++                            crate::tools::write::flush_state(Arc::clone(&state_watcher), None).await
++                        {
++                            warn!(error = %e, "file-change auto-flush failed");
++                        }
++                    }
++                }
++            }
++        });
++    }
++
+     accept_loop(listener, state, ttl, shutdown_tx, shutdown_rx).await;
+     Ok(())
+ }
+@@ -455,7 +671,11 @@ pub async fn run_with_shutdown(
+ pub async fn run(workspace: &str) -> Result<(), EngramError> {
+     let ttl = TtlTimer::new(std::time::Duration::ZERO); // no auto-shutdown
+     let (tx, rx) = watch::channel(false);
+-    run_with_shutdown(workspace, ttl, Arc::new(tx), rx).await
++    // Legacy callers have no file watcher; pass a channel that is immediately
++    // closed so the auto-sync loop in run_with_shutdown exits cleanly.
++    let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
++    drop(event_tx);
++    run_with_shutdown(workspace, ttl, Arc::new(tx), rx, event_rx).await
+ }
+ 
+ // ΓöÇΓöÇ Accept loop ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+diff --git a/src/daemon/mod.rs b/src/daemon/mod.rs
+index 33e8297..c18b144 100644
+--- a/src/daemon/mod.rs
++++ b/src/daemon/mod.rs
+@@ -158,8 +158,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
+         });
+     }
+ 
+-    // ΓöÇΓöÇ 7. Start file watcher and wire TTL reset ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<WatcherEvent>();
++    // ΓöÇΓöÇ 7. Start file watcher ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WatcherEvent>();
+ 
+     let watcher_config = WatcherConfig {
+         debounce_ms: plugin_config.debounce_ms,
+@@ -172,34 +172,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
+             None
+         });
+ 
+-    {
+-        let ttl_for_watcher = Arc::clone(&ttl);
+-        tokio::spawn(async move {
+-            while let Some(event) = event_rx.recv().await {
+-                // S047: every file event resets the idle timer.
+-                ttl_for_watcher.reset();
+-                // T092: classify the event and log code-file changes so the
+-                // daemon is aware of pending re-indexing work without triggering
+-                // an expensive workspace-level sync on every save.  The client
+-                // drives explicit sync_workspace calls via MCP.
+-                match crate::daemon::debounce::adapt_event(&event) {
+-                    crate::daemon::debounce::ServiceAction::ReindexFile { path } => {
+-                        tracing::debug!(
+-                            path = %path.display(),
+-                            "watcher: source file changed ΓÇö pending for next sync_workspace"
+-                        );
+-                    }
+-                    crate::daemon::debounce::ServiceAction::ReingestContent { path } => {
+-                        tracing::debug!(
+-                            path = %path.display(),
+-                            "watcher: content file changed ΓÇö pending for re-ingestion"
+-                        );
+-                    }
+-                    crate::daemon::debounce::ServiceAction::Skip => {}
+-                }
+-            }
+-        });
+-    }
++    // event_rx is forwarded to run_with_shutdown which wires up TTL resets,
++    // debounced auto-sync, and auto-flush using the shared AppState.
+ 
+     // ΓöÇΓöÇ T080: Workspace-moved detection ΓÇö check every 60s that workspace still valid ΓöÇΓöÇ
+     // If the workspace directory is moved or deleted while the daemon is running,
+@@ -229,6 +203,7 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
+         Arc::clone(&ttl),
+         Arc::clone(&shutdown_tx),
+         shutdown_rx,
++        event_rx,
+     )
+     .await?;
+ 
+diff --git a/src/db/mod.rs b/src/db/mod.rs
+index 0e0da9e..db31dd1 100644
+--- a/src/db/mod.rs
++++ b/src/db/mod.rs
+@@ -1,15 +1,15 @@
+ //! Database layer: embedded SurrealDB connection and schema management.
+ //!
+ //! Each workspace gets an isolated SurrealDB database identified by the
+-//! SHA-256 hash of its canonicalized path. Schema is bootstrapped on the
+-//! first connection; subsequent calls return the cached handle.
++//! current git branch name under the workspace data directory.
++//! Schema is bootstrapped on the first connection; subsequent calls
++//! return the cached handle.
+ 
+ use std::collections::HashMap;
+ use std::fs;
+-use std::path::PathBuf;
++use std::path::Path;
+ use std::sync::LazyLock;
+ 
+-use dirs::data_dir;
+ use surrealdb::Surreal;
+ use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
+ use tokio::sync::RwLock;
+@@ -22,27 +22,31 @@ pub mod workspace;
+ 
+ pub type Db = Surreal<LocalDb>;
+ 
+-/// Per-workspace connection cache.  Keyed by workspace hash, each entry
+-/// holds a cloneable `Surreal<LocalDb>` handle.  `LazyLock` avoids polluting
+-/// `AppState` and the `static` is safe because `Db` is `Send + Sync`.
++/// Per-workspace connection cache.  Keyed by the resolved database path,
++/// each entry holds a cloneable `Surreal<LocalDb>` handle.  `LazyLock`
++/// avoids polluting `AppState` and the `static` is safe because `Db` is
++/// `Send + Sync`.
+ static DB_CACHE: LazyLock<RwLock<HashMap<String, Db>>> =
+     LazyLock::new(|| RwLock::new(HashMap::new()));
+ 
+ /// Return a cached SurrealDB handle for the given workspace, opening a new
+-/// connection only on the first call for each hash.
+-pub async fn connect_db(workspace_hash: &str) -> Result<Db, EngramError> {
++/// connection only on the first call for each data_dir + branch combination.
++///
++/// The database is stored at `{data_dir}/db/{branch}/` using the embedded
++/// SurrealKV engine.
++pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError> {
++    let db_path = data_dir.join("db").join(branch);
++    let cache_key = db_path.to_string_lossy().to_string();
++
+     // Fast path: existing connection
+     {
+         let cache = DB_CACHE.read().await;
+-        if let Some(db) = cache.get(workspace_hash) {
++        if let Some(db) = cache.get(&cache_key) {
+             return Ok(db.clone());
+         }
+     }
+ 
+     // Slow path: open, schema-bootstrap, then cache
+-    let base = data_dir().unwrap_or_else(|| PathBuf::from("./"));
+-    let db_path = base.join("engram").join("db").join(workspace_hash);
+-
+     fs::create_dir_all(&db_path).map_err(|e| {
+         EngramError::from(SystemError::DatabaseError {
+             reason: format!("failed to create db directory: {e}"),
+@@ -54,14 +58,14 @@ pub async fn connect_db(workspace_hash: &str) -> Result<Db, EngramError> {
+         .map_err(map_db_err)?;
+ 
+     db.use_ns("engram")
+-        .use_db(workspace_hash)
++        .use_db(branch)
+         .await
+         .map_err(map_db_err)?;
+ 
+     ensure_schema(&db).await?;
+ 
+     let mut cache = DB_CACHE.write().await;
+-    cache.insert(workspace_hash.to_string(), db.clone());
++    cache.insert(cache_key, db.clone());
+ 
+     Ok(db)
+ }
+@@ -86,6 +90,9 @@ async fn ensure_schema(db: &Db) -> Result<(), EngramError> {
+     db.query(schema::DEFINE_COMMIT_NODE)
+         .await
+         .map_err(map_db_err)?;
++    db.query(schema::DEFINE_FILE_HASH)
++        .await
++        .map_err(map_db_err)?;
+     Ok(())
+ }
+ 
+diff --git a/src/db/queries.rs b/src/db/queries.rs
+index e586e49..46858e1 100644
+--- a/src/db/queries.rs
++++ b/src/db/queries.rs
+@@ -939,7 +939,7 @@ impl CodeGraphQueries {
+                 *table
+             };
+             let query = format!(
+-                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE name = $name AND body_hash = $bh"
++                "SELECT id, name, file_path, body_hash, embedding FROM {table_name} WHERE name = $name AND body_hash = $bh"
+             );
+             let mut resp = self
+                 .db
+@@ -956,6 +956,7 @@ impl CodeGraphQueries {
+                     name: row.name,
+                     file_path: row.file_path,
+                     body_hash: row.body_hash,
++                    embedding: row.embedding,
+                 });
+             }
+         }
+@@ -979,7 +980,7 @@ impl CodeGraphQueries {
+                 *table
+             };
+             let query = format!(
+-                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE file_path = $fp"
++                "SELECT id, name, file_path, body_hash, embedding FROM {table_name} WHERE file_path = $fp"
+             );
+             let mut resp = self
+                 .db
+@@ -995,6 +996,7 @@ impl CodeGraphQueries {
+                     name: row.name,
+                     file_path: row.file_path,
+                     body_hash: row.body_hash,
++                    embedding: row.embedding,
+                 });
+             }
+         }
+@@ -1729,7 +1731,11 @@ impl CodeGraphQueries {
+             .map_err(map_db_err)?;
+         let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
+         for row in func_rows {
+-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
++            let raw_score = row.knn_score.unwrap_or(0.0);
++            if !raw_score.is_finite() {
++                continue; // skip zero-vector records (NaN cosine distance)
++            }
++            let score = raw_score.clamp(0.0, 1.0);
+             let f = row.into_function();
+             results.push((
+                 score,
+@@ -1762,7 +1768,11 @@ impl CodeGraphQueries {
+             .map_err(map_db_err)?;
+         let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
+         for row in class_rows {
+-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
++            let raw_score = row.knn_score.unwrap_or(0.0);
++            if !raw_score.is_finite() {
++                continue;
++            }
++            let score = raw_score.clamp(0.0, 1.0);
+             let c = row.into_class();
+             results.push((
+                 score,
+@@ -1795,7 +1805,11 @@ impl CodeGraphQueries {
+             .map_err(map_db_err)?;
+         let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
+         for row in iface_rows {
+-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
++            let raw_score = row.knn_score.unwrap_or(0.0);
++            if !raw_score.is_finite() {
++                continue;
++            }
++            let score = raw_score.clamp(0.0, 1.0);
+             let i = row.into_interface();
+             results.push((
+                 score,
+@@ -1940,7 +1954,11 @@ impl CodeGraphQueries {
+         // ΓöÇΓöÇ Functions ΓöÇΓöÇ
+         let func_rows: Vec<FunctionRow> = resp.take(func_idx).map_err(map_db_err)?;
+         for row in func_rows {
+-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
++            let raw_score = row.knn_score.unwrap_or(0.0);
++            if !raw_score.is_finite() {
++                continue;
++            }
++            let score = raw_score.clamp(0.0, 1.0);
+             let f = row.into_function();
+             results.push((
+                 score,
+@@ -1963,7 +1981,11 @@ impl CodeGraphQueries {
+         // ΓöÇΓöÇ Classes ΓöÇΓöÇ
+         let class_rows: Vec<ClassRow> = resp.take(class_idx).map_err(map_db_err)?;
+         for row in class_rows {
+-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
++            let raw_score = row.knn_score.unwrap_or(0.0);
++            if !raw_score.is_finite() {
++                continue;
++            }
++            let score = raw_score.clamp(0.0, 1.0);
+             let c = row.into_class();
+             results.push((
+                 score,
+@@ -1986,7 +2008,11 @@ impl CodeGraphQueries {
+         // ΓöÇΓöÇ Interfaces ΓöÇΓöÇ
+         let iface_rows: Vec<InterfaceRow> = resp.take(iface_idx).map_err(map_db_err)?;
+         for row in iface_rows {
+-            let score = row.knn_score.unwrap_or(0.0).clamp(0.0, 1.0);
++            let raw_score = row.knn_score.unwrap_or(0.0);
++            if !raw_score.is_finite() {
++                continue;
++            }
++            let score = raw_score.clamp(0.0, 1.0);
+             let i = row.into_interface();
+             results.push((
+                 score,
+@@ -2387,6 +2413,26 @@ impl CodeGraphQueries {
+         Ok(records)
+     }
+ 
++    /// Update the embedding vector for a content record by its ID.
++    ///
++    /// Used by the content embedding backfill pass to store vectors generated
++    /// by the embedding service after initial ingestion.
++    #[tracing::instrument(skip(self, embedding), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
++    pub async fn update_content_record_embedding(
++        &self,
++        record_id: &str,
++        embedding: Vec<f32>,
++    ) -> Result<(), EngramError> {
++        let record = Thing::from(("content_record", record_id));
++        self.db
++            .query("UPDATE $id SET embedding = $emb")
++            .bind(("id", record))
++            .bind(("emb", embedding))
++            .await
++            .map_err(map_db_err)?;
++        Ok(())
++    }
++
+     /// Delete a content record by file path.
+     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+     pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+@@ -2398,6 +2444,82 @@ impl CodeGraphQueries {
+         Ok(())
+     }
+ 
++    /// Search content records by vector similarity using the database-native MTREE KNN operator.
++    ///
++    /// Returns up to `limit` records ranked by cosine similarity to `query_embedding`.
++    /// Optionally restricted to a single `content_type`. Records without embeddings are
++    /// excluded automatically by the KNN operator.
++    ///
++    /// # Errors
++    ///
++    /// Returns `EngramError` if the database query fails.
++    #[tracing::instrument(skip(self, query_embedding), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
++    pub async fn vector_search_content_native(
++        &self,
++        query_embedding: &[f32],
++        limit: usize,
++        content_type: Option<&str>,
++    ) -> Result<Vec<(f32, crate::models::ContentRecord)>, EngramError> {
++        if limit == 0 {
++            return Ok(Vec::new());
++        }
++
++        let start = std::time::Instant::now();
++        let query_vec = query_embedding.to_vec();
++
++        // Fetch more candidates than needed so that post-filtering by content_type
++        // still yields `limit` results. SurrealDB's MTREE KNN operator does not
++        // reliably combine with additional WHERE predicates, so filtering is done
++        // in Rust after the KNN scan.
++        let fetch_limit = if content_type.is_some() {
++            limit.saturating_mul(4).max(50)
++        } else {
++            limit
++        };
++
++        let sql = format!(
++            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
++             FROM content_record WHERE embedding <|{fetch_limit},COSINE|> $query"
++        );
++
++        let mut resp = self
++            .db
++            .query(&sql)
++            .bind(("query", query_vec))
++            .await
++            .map_err(map_db_err)?;
++
++        let rows: Vec<ContentRecordRow> = resp.take(0).map_err(map_db_err)?;
++        let mut results: Vec<(f32, crate::models::ContentRecord)> = rows
++            .into_iter()
++            .filter_map(|row| {
++                // Apply content_type filter in Rust to avoid MTREE+WHERE interaction issues.
++                if let Some(ct) = content_type {
++                    if row.content_type != ct {
++                        return None;
++                    }
++                }
++                let raw_score = row.knn_score.unwrap_or(0.0);
++                if !raw_score.is_finite() {
++                    return None; // skip zero-vector records (NaN cosine distance)
++                }
++                let score = raw_score.clamp(0.0, 1.0);
++                Some((score, row.into_model()))
++            })
++            .collect();
++
++        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
++        results.truncate(limit);
++
++        record_query_metrics(
++            "knn_content_search",
++            "content_record",
++            results.len(),
++            start.elapsed(),
++        );
++        Ok(results)
++    }
++
+     // ΓöÇΓöÇ Commit Node queries ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ 
+     /// Upsert a commit node by hash.
+@@ -2572,6 +2694,8 @@ pub struct SymbolIdentity {
+     pub file_path: String,
+     /// Body hash for identity matching.
+     pub body_hash: String,
++    /// Embedding vector ΓÇö carried forward to avoid zero-vector writes on re-sync.
++    pub embedding: Vec<f32>,
+ }
+ 
+ /// Internal row for ID-only queries.
+@@ -2622,6 +2746,8 @@ struct SymbolIdentityRow {
+     name: String,
+     file_path: String,
+     body_hash: String,
++    #[serde(default)]
++    embedding: Vec<f32>,
+ }
+ 
+ // ΓöÇΓöÇ Supporting Types for BFS / Symbol Listing ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+@@ -2747,6 +2873,9 @@ struct ContentRecordRow {
+     file_size_bytes: i64,
+     #[serde(default)]
+     ingested_at: Option<String>,
++    /// Populated only by KNN queries via `vector::similarity::cosine(...) AS knn_score`.
++    #[serde(default)]
++    knn_score: Option<f32>,
+ }
+ 
+ impl ContentRecordRow {
+@@ -2827,6 +2956,110 @@ fn parse_thing(node_id: &str) -> Thing {
+     Thing::from((table.as_str(), raw_id.as_str()))
+ }
+ 
++// ΓöÇΓöÇ File Hash Record ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// A stored file hash record from the `file_hash` table.
++///
++/// Maps a workspace-relative file path to its last-known SHA-256 content hash
++/// and size, enabling offline change detection on daemon restart.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct FileHashRecord {
++    /// Workspace-relative file path (e.g., `src/main.rs`).
++    pub file_path: String,
++    /// SHA-256 hex digest of the file contents at record time.
++    pub content_hash: String,
++    /// File size in bytes at record time.
++    pub size_bytes: u64,
++    /// Timestamp when the hash was last recorded.
++    pub recorded_at: DateTime<Utc>,
++}
++
++/// Internal row type for deserializing `file_hash` records from SurrealDB.
++#[derive(Deserialize)]
++struct FileHashRow {
++    file_path: String,
++    content_hash: String,
++    size_bytes: i64,
++    recorded_at: DateTime<Utc>,
++}
++
++impl FileHashRow {
++    fn into_record(self) -> FileHashRecord {
++        FileHashRecord {
++            file_path: self.file_path,
++            content_hash: self.content_hash,
++            size_bytes: u64::try_from(self.size_bytes).unwrap_or(0),
++            recorded_at: self.recorded_at,
++        }
++    }
++}
++
++impl CodeGraphQueries {
++    // ΓöÇΓöÇ File Hash queries ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++    /// Upsert a file hash record, creating or replacing the stored hash for
++    /// `file_path` with the given `content_hash` and `size_bytes`.
++    ///
++    /// The record ID is derived from the SHA-256 hash of `file_path` for a
++    /// stable, collision-free key.
++    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
++    pub async fn upsert_file_hash(
++        &self,
++        file_path: &str,
++        content_hash: &str,
++        size_bytes: u64,
++    ) -> Result<(), EngramError> {
++        use sha2::{Digest, Sha256};
++        let id = hex::encode(Sha256::digest(file_path.as_bytes()));
++        let thing = Thing::from(("file_hash", id.as_str()));
++        let now = chrono::Utc::now().to_rfc3339();
++        self.db
++            .query(
++                "UPSERT $record SET \
++                    file_path = $file_path, \
++                    content_hash = $content_hash, \
++                    size_bytes = $size_bytes, \
++                    recorded_at = <datetime>$now",
++            )
++            .bind(("record", thing))
++            .bind(("file_path", file_path.to_owned()))
++            .bind(("content_hash", content_hash.to_owned()))
++            .bind(("size_bytes", i64::try_from(size_bytes).unwrap_or(i64::MAX)))
++            .bind(("now", now))
++            .await
++            .map_err(map_db_err)?;
++        record_query_metrics("crud", "file_hash", 1, std::time::Duration::ZERO);
++        Ok(())
++    }
++
++    /// Retrieve all stored file hash records for the current workspace.
++    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
++    pub async fn get_all_file_hashes(&self) -> Result<Vec<FileHashRecord>, EngramError> {
++        let start = std::time::Instant::now();
++        let rows: Vec<FileHashRow> = self
++            .db
++            .query("SELECT file_path, content_hash, size_bytes, recorded_at FROM file_hash ORDER BY file_path")
++            .await
++            .map_err(map_db_err)?
++            .take(0)
++            .map_err(map_db_err)?;
++        let records: Vec<_> = rows.into_iter().map(FileHashRow::into_record).collect();
++        record_query_metrics("crud", "file_hash", records.len(), start.elapsed());
++        Ok(records)
++    }
++
++    /// Delete the stored hash record for a single workspace-relative file path.
++    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
++    pub async fn delete_file_hash_by_path(&self, file_path: &str) -> Result<(), EngramError> {
++        self.db
++            .query("DELETE FROM file_hash WHERE file_path = $fp")
++            .bind(("fp", file_path.to_owned()))
++            .await
++            .map_err(map_db_err)?;
++        Ok(())
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use crate::services::embedding::has_meaningful_embedding;
+diff --git a/src/db/schema.rs b/src/db/schema.rs
+index e7f9dd6..7c1cf2b 100644
+--- a/src/db/schema.rs
++++ b/src/db/schema.rs
+@@ -100,6 +100,21 @@ DEFINE FIELD OVERWRITE linked_by ON TABLE concerns TYPE string;
+ DEFINE FIELD OVERWRITE created_at ON TABLE concerns TYPE datetime DEFAULT time::now();
+ "#;
+ 
++/// File hash table ΓÇö stores SHA-256 content hashes for tracked workspace files.
++///
++/// Each record maps a workspace-relative file path to its last-known content
++/// hash and size. Used to detect offline changes (files modified while the
++/// daemon was not running) by comparing stored hashes against current on-disk
++/// state at startup or hydration time.
++pub const DEFINE_FILE_HASH: &str = r#"
++DEFINE TABLE IF NOT EXISTS file_hash SCHEMAFULL;
++DEFINE FIELD OVERWRITE file_path ON TABLE file_hash TYPE string ASSERT $value != '';
++DEFINE FIELD OVERWRITE content_hash ON TABLE file_hash TYPE string ASSERT $value != '';
++DEFINE FIELD OVERWRITE size_bytes ON TABLE file_hash TYPE int ASSERT $value >= 0;
++DEFINE FIELD OVERWRITE recorded_at ON TABLE file_hash TYPE datetime DEFAULT time::now();
++DEFINE INDEX IF NOT EXISTS file_hash_path ON TABLE file_hash COLUMNS file_path UNIQUE;
++"#;
++
+ /// Schema version constant for `.engram/.version` file.
+ pub const SCHEMA_VERSION: &str = "2.0.0";
+ 
+@@ -119,6 +134,7 @@ DEFINE FIELD OVERWRITE file_size_bytes ON TABLE content_record TYPE int DEFAULT
+ DEFINE FIELD OVERWRITE ingested_at ON TABLE content_record TYPE datetime DEFAULT time::now();
+ DEFINE INDEX IF NOT EXISTS content_type_idx ON TABLE content_record COLUMNS content_type;
+ DEFINE INDEX IF NOT EXISTS content_file_idx ON TABLE content_record COLUMNS file_path UNIQUE;
++DEFINE INDEX IF NOT EXISTS content_record_embedding_idx ON TABLE content_record COLUMNS embedding MTREE DIMENSION 384 DIST COSINE;
+ "#;
+ 
+ /// Commit node table ΓÇö git commits in the change graph.
+diff --git a/src/db/workspace.rs b/src/db/workspace.rs
+index d6c2deb..0c76a0d 100644
+--- a/src/db/workspace.rs
++++ b/src/db/workspace.rs
+@@ -4,6 +4,25 @@ use sha2::{Digest, Sha256};
+ 
+ use crate::errors::WorkspaceError;
+ 
++/// Strip the Windows extended-length path prefix (`\\?\`) from a canonicalized path.
++///
++/// `std::fs::canonicalize` on Windows returns paths prefixed with `\\?\` for
++/// extended-length path support. This prefix causes hash instability (the same
++/// workspace produces a different SHA-256 depending on how the path was derived)
++/// and can cause compatibility issues with crates that do not handle UNC paths.
++/// Stripping it gives a regular absolute path while preserving full path fidelity
++/// for paths under 260 characters, which all workspace roots in practice are.
++fn normalize_canonical(path: PathBuf) -> PathBuf {
++    #[cfg(windows)]
++    {
++        let s = path.to_string_lossy();
++        if let Some(stripped) = s.strip_prefix(r"\\?\") {
++            return PathBuf::from(stripped.to_string());
++        }
++    }
++    path
++}
++
+ /// Canonicalize and validate a workspace path; ensures .git exists at root.
+ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
+     let candidate = Path::new(path);
+@@ -13,11 +32,14 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
+         });
+     }
+ 
+-    let canonical = candidate
+-        .canonicalize()
+-        .map_err(|_| WorkspaceError::NotFound {
+-            path: path.to_string(),
+-        })?;
++    let canonical =
++        normalize_canonical(
++            candidate
++                .canonicalize()
++                .map_err(|_| WorkspaceError::NotFound {
++                    path: path.to_string(),
++                })?,
++        );
+ 
+     if !canonical.join(".git").is_dir() {
+         return Err(WorkspaceError::NotGitRoot {
+@@ -35,3 +57,48 @@ pub fn workspace_hash(path: &Path) -> String {
+     let digest = hasher.finalize();
+     hex::encode(digest)
+ }
++
++/// Resolve the current git branch name for the workspace.
++///
++/// Reads `.git/HEAD` directly (no subprocess) and extracts the branch name.
++/// Returns a truncated commit SHA when HEAD is detached.
++pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
++    let head_path = workspace.join(".git").join("HEAD");
++    let head_content =
++        std::fs::read_to_string(&head_path).map_err(|_| WorkspaceError::NotGitRoot {
++            path: workspace.display().to_string(),
++        })?;
++
++    let head = head_content.trim();
++    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
++        Ok(sanitize_branch_for_path(branch))
++    } else {
++        // Detached HEAD: use first 12 chars of the commit SHA
++        Ok(head.chars().take(12).collect())
++    }
++}
++
++/// Sanitize a git branch name for use as a filesystem directory name.
++///
++/// Replaces `/` with `__` so branches like `feature/foo` become `feature__foo`.
++fn sanitize_branch_for_path(branch: &str) -> String {
++    branch.replace('/', "__")
++}
++
++/// Resolve the data directory for database storage.
++///
++/// Priority:
++/// 1. `ENGRAM_DATA_DIR` env var (resolved relative to workspace if not absolute)
++/// 2. Default: `{workspace}/.engram`
++pub fn resolve_data_dir(workspace: &Path) -> PathBuf {
++    if let Ok(env_dir) = std::env::var("ENGRAM_DATA_DIR") {
++        let p = PathBuf::from(&env_dir);
++        if p.is_absolute() {
++            p
++        } else {
++            workspace.join(p)
++        }
++    } else {
++        workspace.join(".engram")
++    }
++}
+diff --git a/src/installer/mod.rs b/src/installer/mod.rs
+index d871265..e9e47ef 100644
+--- a/src/installer/mod.rs
++++ b/src/installer/mod.rs
+@@ -143,7 +143,7 @@ const AUTO_DETECT_DIRS: &[(&str, &str, Option<&str>)] = &[
+     (".context", "context", Some("markdown")),
+     (".github", "instructions", Some("markdown")),
+     (".copilot-tracking", "memory", Some("markdown")),
+-    (".backlog", "memory", Some("markdown")),
++    (".backlog", "backlog", Some("markdown")),
+ ];
+ 
+ /// Scan `workspace` for common directories and generate a default
+@@ -551,6 +551,12 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
+         })
+     })?;
+ 
++    // Generate registry.yaml only if it does not already exist, to avoid
++    // overwriting user-edited source entries on update.
++    if !engram_dir.join("registry.yaml").exists() {
++        generate_default_registry(workspace, &engram_dir)?;
++    }
++
+     info!("engram plugin updated successfully");
+     Ok(())
+ }
+@@ -628,6 +634,9 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
+         })
+     })?;
+ 
++    // Always regenerate registry.yaml on reinstall.
++    generate_default_registry(workspace, &engram_dir)?;
++
+     info!("engram plugin reinstalled successfully");
+     Ok(())
+ }
+diff --git a/src/installer/templates.rs b/src/installer/templates.rs
+index f7a7cfd..2094747 100644
+--- a/src/installer/templates.rs
++++ b/src/installer/templates.rs
+@@ -45,19 +45,21 @@ pub fn mcp_json(engram_exe: &Path) -> String {
+ 
+ /// Return the `.gitignore` entries that should be appended for engram.
+ ///
+-/// Only excludes runtime artifacts (Unix socket, lock files) from version
+-/// control. State files (`tasks.md`, `graph.surql`, `.version`, `.lastflush`)
+-/// are Git-friendly and intentionally committed per the constitution.
++/// Excludes runtime artifacts (Unix socket, lock files) and the embedded
++/// database directory from version control. State files (`tasks.md`,
++/// `graph.surql`, `.version`, `.lastflush`) are Git-friendly and
++/// intentionally committed per the constitution.
+ ///
+ /// # Examples
+ ///
+ /// ```
+ /// let entries = engram::installer::templates::gitignore_entries();
+ /// assert!(entries.contains(".engram/run/"));
++/// assert!(entries.contains(".engram/db/"));
+ /// assert!(!entries.contains(".engram/\n"));
+ /// ```
+ pub fn gitignore_entries() -> &'static str {
+-    "\n# engram plugin (runtime artifacts ΓÇö state files are intentionally tracked)\n.engram/run/\n"
++    "\n# engram plugin (runtime artifacts ΓÇö state files are intentionally tracked)\n.engram/run/\n.engram/db/\n"
+ }
+ 
+ /// Generate the GitHub Copilot instructions markdown for `.github/copilot-instructions.md`.
+diff --git a/src/models/registry.rs b/src/models/registry.rs
+index 25670a0..05afe52 100644
+--- a/src/models/registry.rs
++++ b/src/models/registry.rs
+@@ -42,6 +42,7 @@ pub const BUILT_IN_TYPES: &[&str] = &[
+     "memory",
+     "context",
+     "instructions",
++    "backlog",
+ ];
+ 
+ /// A single declared content source from `.engram/registry.yaml`.
+@@ -58,6 +59,21 @@ pub struct ContentSource {
+     /// Relative path from workspace root to the content directory.
+     pub path: String,
+ 
++    /// Optional glob pattern for filtering files within the source directory.
++    ///
++    /// When set, only files whose path relative to the source directory matches
++    /// the pattern are ingested. Standard glob syntax applies: `*` matches any
++    /// sequence of non-separator characters, `**` matches across directory
++    /// separators, `?` matches a single character, and `[abc]` matches a
++    /// character class. Patterns are matched case-sensitively.
++    ///
++    /// Examples:
++    /// - `"*-research.md"` ΓÇö files whose name ends with `-research.md`
++    /// - `"**/*.md"` ΓÇö all Markdown files anywhere in the directory tree
++    /// - `"tasks/**"` ΓÇö everything under a `tasks/` subdirectory
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub pattern: Option<String>,
++
+     /// Validation status set at hydration time (not serialized in YAML).
+     #[serde(skip)]
+     pub status: ContentSourceStatus,
+diff --git a/src/server/state.rs b/src/server/state.rs
+index 7fbe03e..edd73f4 100644
+--- a/src/server/state.rs
++++ b/src/server/state.rs
+@@ -13,6 +13,7 @@
+ // Verdict: no deadlock potential identified.
+ 
+ use std::collections::{HashMap, VecDeque};
++use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+ use std::time::{Duration, Instant};
+@@ -29,6 +30,8 @@ use crate::services::hydration::FileFingerprint;
+ #[derive(Clone, Debug)]
+ pub struct WorkspaceSnapshot {
+     pub workspace_id: String,
++    pub branch: String,
++    pub data_dir: PathBuf,
+     pub path: String,
+     pub last_flush: Option<String>,
+     pub stale_files: bool,
+diff --git a/src/services/code_graph.rs b/src/services/code_graph.rs
+index 0974261..ceb1241 100644
+--- a/src/services/code_graph.rs
++++ b/src/services/code_graph.rs
+@@ -69,13 +69,14 @@ pub struct FileError {
+ /// Per-file parse errors are collected in `IndexResult::errors` (non-fatal).
+ pub async fn index_workspace(
+     ws_path: &Path,
+-    ws_id: &str,
++    data_dir: &Path,
++    branch: &str,
+     config: &CodeGraphConfig,
+     force: bool,
+ ) -> Result<IndexResult, EngramError> {
+     let start = std::time::Instant::now();
+ 
+-    let db = connect_db(ws_id).await?;
++    let db = connect_db(data_dir, branch).await?;
+     let queries = CodeGraphQueries::new(db);
+ 
+     // ΓöÇΓöÇ Step 1: Discover files ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+@@ -467,12 +468,13 @@ pub struct SyncResult {
+ /// Per-file parse errors are collected in `SyncResult::errors` (non-fatal).
+ pub async fn sync_workspace(
+     ws_path: &Path,
+-    ws_id: &str,
++    data_dir: &Path,
++    branch: &str,
+     config: &CodeGraphConfig,
+ ) -> Result<SyncResult, EngramError> {
+     let start = std::time::Instant::now();
+ 
+-    let db = connect_db(ws_id).await?;
++    let db = connect_db(data_dir, branch).await?;
+     let queries = CodeGraphQueries::new(db);
+ 
+     // Discover current files on disk.
+@@ -666,9 +668,15 @@ pub async fn sync_workspace(
+                         f.docstring.as_deref(),
+                     );
+ 
+-                    // Check if body_hash matches an old symbol (reuse embedding).
+-                    let reused = old_sym_map.contains_key(&(f.name.clone(), f.body_hash.clone()));
++                    // Check if body_hash matches an old symbol and carry its embedding forward.
++                    // Without this, reused symbols would be written with a zero-vector, causing
++                    // NaN cosine scores on the next KNN search.
++                    let old_embedding = old_sym_map
++                        .get(&(f.name.clone(), f.body_hash.clone()))
++                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
++                        .map(|s| s.embedding.clone());
+ 
++                    let reused = old_embedding.is_some();
+                     if reused {
+                         result.symbols_reused += 1;
+                     } else {
+@@ -689,7 +697,8 @@ pub async fn sync_workspace(
+                         body_hash: f.body_hash.clone(),
+                         token_count: f.token_count,
+                         embed_type: embed_type.to_owned(),
+-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
++                        embedding: old_embedding
++                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
+                         summary,
+                     };
+                     queries.upsert_function(&func).await?;
+@@ -708,8 +717,12 @@ pub async fn sync_workspace(
+                         c.docstring.as_deref(),
+                     );
+ 
+-                    let reused = old_sym_map.contains_key(&(c.name.clone(), c.body_hash.clone()));
++                    let old_embedding = old_sym_map
++                        .get(&(c.name.clone(), c.body_hash.clone()))
++                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
++                        .map(|s| s.embedding.clone());
+ 
++                    let reused = old_embedding.is_some();
+                     if reused {
+                         result.symbols_reused += 1;
+                     } else {
+@@ -729,7 +742,8 @@ pub async fn sync_workspace(
+                         body_hash: c.body_hash.clone(),
+                         token_count: c.token_count,
+                         embed_type: embed_type.to_owned(),
+-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
++                        embedding: old_embedding
++                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
+                         summary,
+                     };
+                     queries.upsert_class(&class).await?;
+@@ -748,8 +762,12 @@ pub async fn sync_workspace(
+                         i.docstring.as_deref(),
+                     );
+ 
+-                    let reused = old_sym_map.contains_key(&(i.name.clone(), i.body_hash.clone()));
++                    let old_embedding = old_sym_map
++                        .get(&(i.name.clone(), i.body_hash.clone()))
++                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
++                        .map(|s| s.embedding.clone());
+ 
++                    let reused = old_embedding.is_some();
+                     if reused {
+                         result.symbols_reused += 1;
+                     } else {
+@@ -769,7 +787,8 @@ pub async fn sync_workspace(
+                         body_hash: i.body_hash.clone(),
+                         token_count: i.token_count,
+                         embed_type: embed_type.to_owned(),
+-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
++                        embedding: old_embedding
++                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
+                         summary,
+                     };
+                     queries.upsert_interface(&iface).await?;
+diff --git a/src/services/dehydration.rs b/src/services/dehydration.rs
+index 883a2bc..c6661c1 100644
+--- a/src/services/dehydration.rs
++++ b/src/services/dehydration.rs
+@@ -33,7 +33,7 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
+     };
+ 
+     let workspace_path = Path::new(&snapshot.path);
+-    let db = db::connect_db(&snapshot.workspace_id).await?;
++    let db = db::connect_db(&snapshot.data_dir, &snapshot.branch).await?;
+     let cg_queries = crate::db::queries::CodeGraphQueries::new(db);
+ 
+     dehydrate_code_graph(&cg_queries, workspace_path).await?;
+diff --git a/src/services/embedding.rs b/src/services/embedding.rs
+index 58bea31..c4941a1 100644
+--- a/src/services/embedding.rs
++++ b/src/services/embedding.rs
+@@ -27,10 +27,10 @@ pub fn model_cache_dir() -> PathBuf {
+ 
+ /// Global, lazily-initialised embedding model.
+ ///
+-/// `OnceLock` guarantees the model is loaded exactly once; subsequent calls
+-/// return the cached handle.
++/// `OnceLock` + `Mutex` guarantees the model is loaded exactly once;
++/// subsequent calls share the handle via the mutex.
+ #[cfg(feature = "embeddings")]
+-static MODEL: std::sync::OnceLock<Result<fastembed::TextEmbedding, String>> =
++static MODEL: std::sync::OnceLock<Result<std::sync::Mutex<fastembed::TextEmbedding>, String>> =
+     std::sync::OnceLock::new();
+ 
+ /// Initialise (or return) the cached embedding model.
+@@ -40,7 +40,7 @@ static MODEL: std::sync::OnceLock<Result<fastembed::TextEmbedding, String>> =
+ /// - The `embeddings` feature is disabled.
+ /// - The ONNX model fails to download or load.
+ #[cfg(feature = "embeddings")]
+-fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
++fn get_model() -> Result<std::sync::MutexGuard<'static, fastembed::TextEmbedding>, EngramError> {
+     let result = MODEL.get_or_init(|| {
+         let cache = model_cache_dir();
+         std::fs::create_dir_all(&cache).ok();
+@@ -49,11 +49,17 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
+             .with_cache_dir(cache)
+             .with_show_download_progress(true);
+ 
+-        fastembed::TextEmbedding::try_new(options).map_err(|e| e.to_string())
++        fastembed::TextEmbedding::try_new(options)
++            .map(std::sync::Mutex::new)
++            .map_err(|e| e.to_string())
+     });
+ 
+     match result {
+-        Ok(model) => Ok(model),
++        Ok(mutex) => mutex.lock().map_err(|e| {
++            EngramError::System(crate::errors::SystemError::ModelLoadFailed {
++                reason: format!("model mutex poisoned: {e}"),
++            })
++        }),
+         Err(reason) => {
+             tracing::error!(reason = %reason, "embedding model initialisation failed");
+             Err(EngramError::System(
+@@ -72,7 +78,7 @@ fn get_model() -> Result<&'static fastembed::TextEmbedding, EngramError> {
+ /// - `QueryError::SearchFailed` when generation itself fails.
+ #[cfg(feature = "embeddings")]
+ pub fn embed_text(text: &str) -> Result<Vec<f32>, EngramError> {
+-    let model = get_model()?;
++    let mut model = get_model()?;
+     let embeddings = model.embed(vec![text.to_string()], None).map_err(|e| {
+         EngramError::Query(QueryError::SearchFailed {
+             reason: e.to_string(),
+@@ -95,8 +101,8 @@ pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
+     if texts.is_empty() {
+         return Ok(Vec::new());
+     }
+-    let model = get_model()?;
+-    model.embed(texts.to_vec(), None).map_err(|e| {
++    let mut model = get_model()?;
++    model.embed(texts, None).map_err(|e| {
+         EngramError::Query(QueryError::SearchFailed {
+             reason: e.to_string(),
+         })
+diff --git a/src/services/file_tracker.rs b/src/services/file_tracker.rs
+new file mode 100644
+index 0000000..4b61d2e
+--- /dev/null
++++ b/src/services/file_tracker.rs
+@@ -0,0 +1,302 @@
++//! Workspace file hash tracking for offline change detection.
++//!
++//! Provides SHA-256 hash recording for tracked workspace files and compares
++//! stored hashes against current on-disk state to surface changes that
++//! occurred while the daemon was not running.
++//!
++//! # How it fits in the lifecycle
++//!
++//! 1. After indexing or ingesting a file, call [`record_file_hash`] to persist
++//!    the hash to the `file_hash` table.
++//! 2. On daemon startup (after DB hydration), call [`detect_offline_changes`]
++//!    to discover files that were added, modified, or deleted while the daemon
++//!    was offline.  Pass the results to the sync pipeline for re-indexing.
++//! 3. The file watcher calls [`record_file_hash`] after processing each
++//!    [`WatcherEvent`](crate::models::WatcherEvent) to keep hashes current.
++
++use std::path::Path;
++
++use sha2::{Digest, Sha256};
++use tracing::{debug, warn};
++
++use crate::db::queries::CodeGraphQueries;
++use crate::errors::{EngramError, SystemError};
++
++// ΓöÇΓöÇ Default exclusion patterns (mirrors watcher defaults) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// Directory prefixes excluded from file tracking (forward-slash normalised).
++const EXCLUDED_PREFIXES: &[&str] = &[".engram/", ".git/", "node_modules/", "target/", ".env"];
++
++// ΓöÇΓöÇ Public types ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// The kind of change detected for a workspace file.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum FileChangeKind {
++    /// File exists on disk but has no stored hash (new since last daemon run).
++    Added,
++    /// File exists on disk and has a stored hash, but the hash differs.
++    Modified,
++    /// File has a stored hash but no longer exists on disk.
++    Deleted,
++}
++
++/// A single file change detected by [`detect_offline_changes`].
++#[derive(Debug, Clone)]
++pub struct FileChange {
++    /// Workspace-relative file path (forward-slash separated).
++    pub path: String,
++    /// The kind of change.
++    pub kind: FileChangeKind,
++    /// The previously stored hash, if any (`None` for `Added`).
++    pub previous_hash: Option<String>,
++    /// The current on-disk hash, if any (`None` for `Deleted`).
++    pub current_hash: Option<String>,
++}
++
++// ΓöÇΓöÇ Public API ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// Compute the SHA-256 hex digest of a file's contents.
++///
++/// # Errors
++///
++/// Returns `EngramError` if the file cannot be read.
++pub fn compute_file_hash(path: &Path) -> Result<String, EngramError> {
++    let content = std::fs::read(path).map_err(|e| {
++        EngramError::System(SystemError::DatabaseError {
++            reason: format!("cannot read file for hashing ({}): {e}", path.display()),
++        })
++    })?;
++    let mut hasher = Sha256::new();
++    hasher.update(&content);
++    Ok(hex::encode(hasher.finalize()))
++}
++
++/// Compute the SHA-256 hex digest of a file and store it in the database.
++///
++/// `rel_path` must be the workspace-relative, forward-slash-separated path
++/// (e.g., `"src/main.rs"`).  `abs_path` is the absolute path used for
++/// reading.
++///
++/// Idempotent: calling this multiple times for the same path replaces the
++/// stored record with the current state.
++///
++/// # Errors
++///
++/// Returns `EngramError` if the file cannot be read or the database write
++/// fails.
++pub async fn record_file_hash(
++    rel_path: &str,
++    abs_path: &Path,
++    queries: &CodeGraphQueries,
++) -> Result<(), EngramError> {
++    let metadata = std::fs::metadata(abs_path).map_err(|e| {
++        EngramError::System(SystemError::DatabaseError {
++            reason: format!("cannot stat file ({}): {e}", abs_path.display()),
++        })
++    })?;
++
++    let hash = compute_file_hash(abs_path)?;
++    let normalized = rel_path.replace('\\', "/");
++
++    debug!(
++        path = %normalized,
++        hash = %&hash[..8],
++        size = metadata.len(),
++        "file_tracker: recording hash"
++    );
++
++    queries
++        .upsert_file_hash(&normalized, &hash, metadata.len())
++        .await
++}
++
++/// Walk `workspace_root`, compare every non-excluded file against stored
++/// hashes, and return the set of files that changed while the daemon was
++/// offline.
++///
++/// Three change kinds are detected:
++/// - **Added**: file present on disk, no stored hash.
++/// - **Modified**: file present on disk, stored hash differs from current.
++/// - **Deleted**: stored hash exists, file no longer present on disk.
++///
++/// Paths inside `.engram/`, `.git/`, `target/`, `node_modules/`, and `.env*`
++/// are excluded (mirroring [`crate::daemon::watcher::WatcherConfig`] defaults).
++///
++/// # Errors
++///
++/// Returns `EngramError` if the database query fails.  File I/O errors for
++/// individual files are logged as warnings and skipped rather than aborting
++/// the scan.
++#[tracing::instrument(skip(queries), fields(workspace = %workspace_root.display()))]
++pub async fn detect_offline_changes(
++    workspace_root: &Path,
++    queries: &CodeGraphQueries,
++) -> Result<Vec<FileChange>, EngramError> {
++    // Load all stored hashes into a map for O(1) lookup.
++    let stored = queries.get_all_file_hashes().await?;
++    let mut stored_map: std::collections::HashMap<String, String> = stored
++        .into_iter()
++        .map(|r| (r.file_path, r.content_hash))
++        .collect();
++
++    let mut changes = Vec::new();
++
++    // Walk the workspace, skipping excluded paths.
++    let disk_files = collect_workspace_files(workspace_root);
++
++    for abs_path in disk_files {
++        let rel = match abs_path.strip_prefix(workspace_root) {
++            Ok(r) => r.to_string_lossy().replace('\\', "/"),
++            Err(_) => continue,
++        };
++
++        let current_hash = match compute_file_hash(&abs_path) {
++            Ok(h) => h,
++            Err(e) => {
++                warn!(path = %rel, error = %e, "file_tracker: cannot hash file ΓÇö skipping");
++                continue;
++            }
++        };
++
++        match stored_map.remove(&rel) {
++            None => {
++                // File on disk but no stored hash ΓåÆ Added.
++                changes.push(FileChange {
++                    path: rel,
++                    kind: FileChangeKind::Added,
++                    previous_hash: None,
++                    current_hash: Some(current_hash),
++                });
++            }
++            Some(stored_hash) if stored_hash != current_hash => {
++                // Hash mismatch ΓåÆ Modified.
++                changes.push(FileChange {
++                    path: rel,
++                    kind: FileChangeKind::Modified,
++                    previous_hash: Some(stored_hash),
++                    current_hash: Some(current_hash),
++                });
++            }
++            Some(_) => {
++                // Hashes match ΓåÆ no change.
++                debug!(path = %rel, "file_tracker: unchanged");
++            }
++        }
++    }
++
++    // Any entries remaining in stored_map have no matching disk file ΓåÆ Deleted.
++    for (path, stored_hash) in stored_map {
++        changes.push(FileChange {
++            path,
++            kind: FileChangeKind::Deleted,
++            previous_hash: Some(stored_hash),
++            current_hash: None,
++        });
++    }
++
++    tracing::info!(
++        added = changes
++            .iter()
++            .filter(|c| c.kind == FileChangeKind::Added)
++            .count(),
++        modified = changes
++            .iter()
++            .filter(|c| c.kind == FileChangeKind::Modified)
++            .count(),
++        deleted = changes
++            .iter()
++            .filter(|c| c.kind == FileChangeKind::Deleted)
++            .count(),
++        "file_tracker: offline change detection complete"
++    );
++
++    Ok(changes)
++}
++
++// ΓöÇΓöÇ Internals ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// Recursively collect all non-excluded files under `workspace_root`.
++fn collect_workspace_files(root: &Path) -> Vec<std::path::PathBuf> {
++    let mut files = Vec::new();
++    collect_recursive(root, root, &mut files);
++    files.sort();
++    files
++}
++
++fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<std::path::PathBuf>) {
++    let entries = match std::fs::read_dir(dir) {
++        Ok(e) => e,
++        Err(e) => {
++            warn!(dir = %dir.display(), error = %e, "file_tracker: cannot read directory");
++            return;
++        }
++    };
++
++    for entry in entries.flatten() {
++        let path = entry.path();
++
++        // Compute workspace-relative forward-slash path for exclusion check.
++        let rel = match path.strip_prefix(root) {
++            Ok(r) => r.to_string_lossy().replace('\\', "/"),
++            Err(_) => continue,
++        };
++
++        if is_excluded(&rel) {
++            debug!(path = %rel, "file_tracker: excluded");
++            continue;
++        }
++
++        if path.is_dir() {
++            collect_recursive(root, &path, files);
++        } else if path.is_file() {
++            files.push(path);
++        }
++    }
++}
++
++/// Return `true` when a workspace-relative path falls under an excluded prefix.
++fn is_excluded(rel: &str) -> bool {
++    EXCLUDED_PREFIXES.iter().any(|prefix| {
++        let stem = prefix.trim_end_matches('/');
++        rel == stem || rel.starts_with(&format!("{stem}/"))
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn excluded_git_dir() {
++        assert!(is_excluded(".git/HEAD"));
++        assert!(is_excluded(".git"));
++    }
++
++    #[test]
++    fn excluded_engram_dir() {
++        assert!(is_excluded(".engram/db/main"));
++        assert!(is_excluded(".engram"));
++    }
++
++    #[test]
++    fn excluded_target_dir() {
++        assert!(is_excluded("target/debug/engram"));
++    }
++
++    #[test]
++    fn excluded_node_modules() {
++        assert!(is_excluded("node_modules/lodash/index.js"));
++    }
++
++    #[test]
++    fn not_excluded_src() {
++        assert!(!is_excluded("src/main.rs"));
++        assert!(!is_excluded("README.md"));
++    }
++
++    #[test]
++    fn not_excluded_dotenv_like_dir_named_targeting() {
++        // Only ".env" prefix matches, not arbitrary names starting with 't'.
++        assert!(!is_excluded("targeting/foo.rs"));
++    }
++}
+diff --git a/src/services/ingestion.rs b/src/services/ingestion.rs
+index 7355f55..9e30ee5 100644
+--- a/src/services/ingestion.rs
++++ b/src/services/ingestion.rs
+@@ -9,9 +9,16 @@ use std::collections::HashSet;
+ use std::path::Path;
+ 
+ use chrono::Utc;
++use globset::{Glob, GlobSet, GlobSetBuilder};
+ use sha2::{Digest, Sha256};
+ use tracing::{debug, info, warn};
+ 
++/// Maximum characters of content passed to the embedding model per record.
++///
++/// Content is truncated to this limit before embedding to stay within
++/// model token budgets and prevent excessive memory usage during backfill.
++const MAX_EMBED_CHARS: usize = 4_096;
++
+ use crate::db::queries::CodeGraphQueries;
+ use crate::errors::{EngramError, IngestionError};
+ use crate::models::content::ContentRecord;
+@@ -39,6 +46,7 @@ pub struct IngestionSummary {
+ /// For each source with [`ContentSourceStatus::Active`], walks the directory,
+ /// reads eligible files, computes SHA-256 hashes, and upserts content records.
+ /// Files exceeding `max_file_size_bytes` or detected as binary are skipped.
++/// When a source declares a `pattern`, only files matching that glob are ingested.
+ pub async fn ingest_all_sources(
+     config: &RegistryConfig,
+     workspace_root: &Path,
+@@ -57,6 +65,9 @@ pub async fn ingest_all_sources(
+             continue;
+         }
+ 
++        // Build a glob filter from the optional pattern field.
++        let glob_filter = build_glob_filter(source.pattern.as_deref());
++
+         let source_path = workspace_root.join(&source.path);
+         let summary = ingest_directory(
+             &source_path,
+@@ -65,6 +76,7 @@ pub async fn ingest_all_sources(
+             &source.path,
+             config.max_file_size_bytes,
+             config.batch_size,
++            glob_filter.as_ref(),
+             queries,
+         )
+         .await?;
+@@ -89,7 +101,33 @@ pub async fn ingest_all_sources(
+     Ok(total_summary)
+ }
+ 
++/// Build a [`GlobSet`] from an optional pattern string.
++///
++/// Returns `None` when no pattern is provided or when the pattern is invalid
++/// (a warning is logged for invalid patterns so the source is ingested in full
++/// rather than silently dropped).
++fn build_glob_filter(pattern: Option<&str>) -> Option<GlobSet> {
++    let pat = pattern?;
++    let glob = match Glob::new(pat) {
++        Ok(g) => g,
++        Err(e) => {
++            warn!(pattern = %pat, error = %e, "invalid glob pattern in registry source ΓÇö pattern filter disabled for this source");
++            return None;
++        }
++    };
++    let mut builder = GlobSetBuilder::new();
++    builder.add(glob);
++    match builder.build() {
++        Ok(gs) => Some(gs),
++        Err(e) => {
++            warn!(pattern = %pat, error = %e, "failed to build glob set ΓÇö pattern filter disabled for this source");
++            None
++        }
++    }
++}
++
+ /// Ingest all eligible files from a single directory.
++#[allow(clippy::too_many_arguments)]
+ async fn ingest_directory(
+     dir_path: &Path,
+     workspace_root: &Path,
+@@ -97,6 +135,7 @@ async fn ingest_directory(
+     source_path: &str,
+     max_file_size: u64,
+     batch_size: usize,
++    glob_filter: Option<&GlobSet>,
+     queries: &CodeGraphQueries,
+ ) -> Result<IngestionSummary, EngramError> {
+     let mut summary = IngestionSummary::default();
+@@ -105,8 +144,22 @@ async fn ingest_directory(
+         return Ok(summary);
+     }
+ 
+-    // Collect all files recursively.
+-    let files = collect_files(dir_path);
++    // Collect all files recursively then apply the glob filter.
++    let files: Vec<_> = collect_files(dir_path)
++        .into_iter()
++        .filter(|p| {
++            if let Some(gs) = glob_filter {
++                let rel = p
++                    .strip_prefix(dir_path)
++                    .unwrap_or(p)
++                    .to_string_lossy()
++                    .replace('\\', "/");
++                gs.is_match(rel.as_str())
++            } else {
++                true
++            }
++        })
++        .collect();
+     summary.total_files = files.len();
+ 
+     // Get existing records to detect changes.
+@@ -237,13 +290,15 @@ fn is_binary(content: &[u8]) -> bool {
+ /// Ingest a single file that changed (for file watcher integration).
+ ///
+ /// Computes the hash, checks against the existing record, and upserts
+-/// if changed. Returns `true` if the record was updated.
++/// if changed. When `glob_filter` is `Some`, the file is only ingested if its
++/// name matches the pattern. Returns `true` if the record was updated.
+ pub async fn ingest_single_file(
+     file_path: &Path,
+     workspace_root: &Path,
+     content_type: &str,
+     source_path: &str,
+     max_file_size: u64,
++    glob_filter: Option<&GlobSet>,
+     queries: &CodeGraphQueries,
+ ) -> Result<bool, EngramError> {
+     let rel_path = file_path
+@@ -252,6 +307,17 @@ pub async fn ingest_single_file(
+         .to_string_lossy()
+         .replace('\\', "/");
+ 
++    // Apply glob pattern filter if configured.
++    if let Some(gs) = glob_filter {
++        let filename = file_path
++            .file_name()
++            .map(|n| n.to_string_lossy().into_owned())
++            .unwrap_or_default();
++        if !gs.is_match(filename.as_str()) && !gs.is_match(rel_path.as_str()) {
++            return Ok(false);
++        }
++    }
++
+     // Check if file still exists (may have been deleted).
+     if !file_path.exists() {
+         queries.delete_content_record_by_path(&rel_path).await?;
+@@ -305,3 +371,73 @@ pub async fn ingest_single_file(
+     queries.upsert_content_record(&record).await?;
+     Ok(true)
+ }
++
++/// Generate and store embeddings for content records that currently have none.
++///
++/// Queries all content records, filters those lacking an embedding vector,
++/// truncates content to [`MAX_EMBED_CHARS`] characters, batch-embeds via
++/// [`crate::services::embedding::embed_texts`], and writes each vector back
++/// using [`CodeGraphQueries::update_content_record_embedding`].
++///
++/// Non-fatal: if the `embeddings` feature is disabled or the ONNX model
++/// cannot be loaded, the function returns `Ok(0)` immediately after a
++/// debug-level trace event.
++///
++/// Returns the number of records that received a new embedding.
++///
++/// # Errors
++///
++/// Returns `EngramError` only on database query failures.
++pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<usize, EngramError> {
++    let records = queries.select_content_records(None).await?;
++
++    let pending: Vec<_> = records
++        .into_iter()
++        .filter(|r| r.embedding.as_ref().is_none_or(Vec::is_empty))
++        .collect();
++
++    if pending.is_empty() {
++        debug!("content embedding backfill: all records already have embeddings");
++        return Ok(0);
++    }
++
++    info!(
++        count = pending.len(),
++        "content embedding backfill: generating embeddings for content records"
++    );
++
++    let texts: Vec<String> = pending
++        .iter()
++        .map(|r| r.content.chars().take(MAX_EMBED_CHARS).collect())
++        .collect();
++
++    let vectors = match crate::services::embedding::embed_texts(&texts) {
++        Ok(vecs) => vecs,
++        Err(e) => {
++            debug!(
++                error = %e,
++                "content embedding model unavailable ΓÇö backfill skipped"
++            );
++            return Ok(0);
++        }
++    };
++
++    let mut updated = 0usize;
++    for (record, vector) in pending.iter().zip(vectors.into_iter()) {
++        if let Err(e) = queries
++            .update_content_record_embedding(&record.id, vector)
++            .await
++        {
++            debug!(
++                error = %e,
++                record_id = %record.id,
++                "content embedding write-back failed"
++            );
++        } else {
++            updated += 1;
++        }
++    }
++
++    info!(updated, "content embedding backfill complete");
++    Ok(updated)
++}
+diff --git a/src/services/mod.rs b/src/services/mod.rs
+index f8f346e..edece57 100644
+--- a/src/services/mod.rs
++++ b/src/services/mod.rs
+@@ -10,6 +10,7 @@ pub mod config;
+ pub mod connection;
+ pub mod dehydration;
+ pub mod embedding;
++pub mod file_tracker;
+ pub mod gate;
+ #[cfg(feature = "git-graph")]
+ pub mod git_graph;
+diff --git a/src/services/search.rs b/src/services/search.rs
+index 60d2243..0a8d12a 100644
+--- a/src/services/search.rs
++++ b/src/services/search.rs
+@@ -182,7 +182,12 @@ pub fn hybrid_search(
+ ) -> Result<Vec<SearchResult>, EngramError> {
+     embedding::validate_query_length(query)?;
+ 
+-    let query_embedding: Option<Vec<f32>> = embedding::embed_text(query).ok();
++    // Only load the embedding model when at least one candidate has a vector.
++    let query_embedding: Option<Vec<f32>> = if candidates.iter().any(|c| c.embedding.is_some()) {
++        embedding::embed_text(query).ok()
++    } else {
++        None
++    };
+ 
+     let mut scored: Vec<SearchResult> = candidates
+         .iter()
+diff --git a/src/tools/lifecycle.rs b/src/tools/lifecycle.rs
+index 871800d..f34a393 100644
+--- a/src/tools/lifecycle.rs
++++ b/src/tools/lifecycle.rs
+@@ -5,7 +5,9 @@ use sysinfo::System;
+ 
+ use crate::db::connect_db;
+ use crate::db::queries::CodeGraphQueries;
+-use crate::db::workspace::{canonicalize_workspace, workspace_hash};
++use crate::db::workspace::{
++    canonicalize_workspace, resolve_data_dir, resolve_git_branch, workspace_hash,
++};
+ use crate::errors::{EngramError, WorkspaceError};
+ use crate::server::state::{AppState, WorkspaceSnapshot};
+ use crate::services::config::parse_config;
+@@ -33,6 +35,10 @@ pub struct DaemonStatus {
+ #[derive(Debug, Serialize, Deserialize)]
+ pub struct WorkspaceStatus {
+     pub path: String,
++    /// Active git branch name (used as the DB storage subdirectory).
++    pub branch: String,
++    /// Absolute path to the SurrealDB storage directory for this workspace and branch.
++    pub db_path: String,
+     pub last_flush: Option<String>,
+     pub stale_files: bool,
+     pub connection_count: usize,
+@@ -57,6 +63,8 @@ pub async fn set_workspace(
+ 
+     let canonical = canonicalize_workspace(&path)?;
+     let workspace_id = workspace_hash(&canonical);
++    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
++    let data_dir = resolve_data_dir(&canonical);
+ 
+     if !state.has_workspace_capacity().await {
+         return Err(EngramError::Workspace(WorkspaceError::LimitReached {
+@@ -67,7 +75,7 @@ pub async fn set_workspace(
+     let hydration = hydrate_workspace(&canonical).await?;
+ 
+     // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
+-    let db = connect_db(&workspace_id).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let cg_queries = CodeGraphQueries::new(db);
+     let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
+ 
+@@ -77,6 +85,8 @@ pub async fn set_workspace(
+ 
+     let snapshot = WorkspaceSnapshot {
+         workspace_id: workspace_id.clone(),
++        branch: branch.clone(),
++        data_dir: data_dir.clone(),
+         path: canonical.display().to_string(),
+         last_flush: hydration.last_flush.clone(),
+         stale_files: hydration.stale_files,
+@@ -131,7 +141,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
+         }
+ 
+         // Gather code graph stats from the database
+-        let code_graph = if let Ok(db) = connect_db(&snapshot.workspace_id).await {
++        let code_graph = if let Ok(db) = connect_db(&snapshot.data_dir, &snapshot.branch).await {
+             let cg_queries = CodeGraphQueries::new(db);
+             let code_files = cg_queries.count_code_files().await.unwrap_or(0);
+             let functions = cg_queries.count_functions().await.unwrap_or(0);
+@@ -149,8 +159,17 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
+             CodeGraphStats::default()
+         };
+ 
++        let db_path = snapshot
++            .data_dir
++            .join("db")
++            .join(&snapshot.branch)
++            .display()
++            .to_string();
++
+         return Ok(WorkspaceStatus {
+             path: snapshot.path,
++            branch: snapshot.branch,
++            db_path,
+             last_flush: snapshot.last_flush,
+             stale_files: stale_now,
+             connection_count: state.active_connections(),
+diff --git a/src/tools/read.rs b/src/tools/read.rs
+index 401568a..d0bebe3 100644
+--- a/src/tools/read.rs
++++ b/src/tools/read.rs
+@@ -1,3 +1,5 @@
++use std::path::PathBuf;
++
+ use serde::Deserialize;
+ use serde_json::{Value, json};
+ 
+@@ -18,9 +20,9 @@ async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
+     Ok(())
+ }
+ 
+-async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
++async fn workspace_db(state: &SharedState) -> Result<(PathBuf, String), EngramError> {
+     if let Some(snapshot) = state.snapshot_workspace().await {
+-        return Ok(snapshot.workspace_id);
++        return Ok((snapshot.data_dir.clone(), snapshot.branch.clone()));
+     }
+     Err(EngramError::Workspace(WorkspaceError::NotSet))
+ }
+@@ -75,8 +77,8 @@ pub async fn get_workspace_statistics(
+ ) -> Result<Value, EngramError> {
+     ensure_workspace(&state).await?;
+ 
+-    let ws_id = workspace_id(&state).await?;
+-    let db = connect_db(&ws_id).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let cg_queries = CodeGraphQueries::new(db);
+ 
+     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
+@@ -134,8 +136,8 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
+     // Validate query length before any DB or model work.
+     embedding::validate_query_length(&parsed.query)?;
+ 
+-    let workspace_id = workspace_id(&state).await?;
+-    let db = connect_db(&workspace_id).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let queries = CodeGraphQueries::new(db);
+     let mut candidates: Vec<SearchCandidate> = Vec::new();
+     let content_records = queries
+@@ -197,8 +199,8 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
+     let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
+     let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
+ 
+-    let workspace_id = workspace_id(&state).await?;
+-    let db = connect_db(&workspace_id).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let cg_queries = CodeGraphQueries::new(db);
+ 
+     // Exact-name lookup across all symbol tables
+@@ -344,8 +346,8 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
+     // Clamp limit
+     let limit = parsed.limit.clamp(1, 500);
+ 
+-    let workspace_id = workspace_id(&state).await?;
+-    let db = connect_db(&workspace_id).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let cg_queries = CodeGraphQueries::new(db);
+ 
+     let filter = SymbolFilter {
+@@ -444,17 +446,16 @@ pub async fn unified_search(
+     // Clamp limit to [1, 50].
+     let limit = parsed.limit.clamp(1, 50);
+ 
+-    // Guard: reject semantic search early when the embedding model is not
+-    // available. This produces a clear, actionable 4xxx error rather than
+-    // a confusing DatabaseError from the embed_text call below.
+-    if !embedding::is_available() {
+-        return Err(EngramError::Query(QueryError::SearchFailed {
+-            reason: "Semantic search requires the embeddings feature. \
+-                     Enable it with `cargo build --features embeddings`. \
+-                     Text-based search via keyword queries is unaffected."
+-                .to_owned(),
+-        }));
+-    }
++    // Guard: reject semantic search at compile time when the embeddings feature
++    // is not compiled in. When it IS enabled, embed_text lazily loads the model
++    // on the first call ΓÇö do not gate on is_available() here.
++    #[cfg(not(feature = "embeddings"))]
++    return Err(EngramError::Query(QueryError::SearchFailed {
++        reason: "Semantic search requires the embeddings feature. \
++                 Enable it with `cargo build --features embeddings`. \
++                 Text-based search via keyword queries is unaffected."
++            .to_owned(),
++    }));
+ 
+     // Embed the query. FR-157: if embedding fails, return 5001.
+     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
+@@ -463,11 +464,9 @@ pub async fn unified_search(
+         })
+     })?;
+ 
+-    let workspace_id = workspace_id(&state).await?;
+-    let db = connect_db(&workspace_id).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let queries = CodeGraphQueries::new(db);
+-
+-    // ΓöÇΓöÇ Code region: vector search on code symbols ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+     let code_results = {
+         let symbols = if let Some(scope) = parsed
+             .scope_to_symbol
+@@ -514,49 +513,78 @@ pub async fn unified_search(
+             .collect::<Vec<_>>()
+     };
+ 
+-    // ΓöÇΓöÇ Content records: keyword scoring ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+-    let query_words: Vec<&str> = trimmed.split_whitespace().collect();
+-    let content_records = queries
+-        .select_content_records(parsed.content_type.as_deref())
+-        .await?;
+-    let content_results: Vec<UnifiedSearchResult> = content_records
+-        .into_iter()
+-        .filter_map(|cr| {
+-            if query_words.is_empty() {
+-                return None;
+-            }
+-            let haystack = cr.content.to_lowercase();
+-            let matched = query_words
+-                .iter()
+-                .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+-                .count();
+-            let score = matched as f32 / query_words.len() as f32;
+-            if score > 0.0 {
+-                Some(UnifiedSearchResult {
+-                    region: SearchRegion::Code,
++    // ΓöÇΓöÇ Content records: KNN vector search ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++    // Requires embeddings feature; the cfg guard at the top of this
++    // function already returned an error for non-embeddings builds, so
++    // we are guaranteed to have a valid query_embedding here.
++    let content_results: Vec<UnifiedSearchResult> = {
++        let knn = queries
++            .vector_search_content_native(&query_embedding, limit, parsed.content_type.as_deref())
++            .await?;
++
++        // If no embedded records exist yet (backfill still in progress),
++        // fall back to keyword scoring so the tool stays useful.
++        if knn.is_empty() {
++            let query_words: Vec<&str> = trimmed.split_whitespace().collect();
++            let all_records = queries
++                .select_content_records(parsed.content_type.as_deref())
++                .await?;
++            all_records
++                .into_iter()
++                .filter_map(|cr| {
++                    if query_words.is_empty() {
++                        return None;
++                    }
++                    let haystack = cr.content.to_lowercase();
++                    let matched = query_words
++                        .iter()
++                        .filter(|w| haystack.contains(&w.to_lowercase()[..]))
++                        .count();
++                    let score = matched as f32 / query_words.len() as f32;
++                    if score > 0.0 {
++                        Some(UnifiedSearchResult {
++                            region: SearchRegion::Task,
++                            score,
++                            node_type: cr.content_type.clone(),
++                            id: format!("content_record:{}", cr.id),
++                            title: Some(cr.file_path.clone()),
++                            summary: Some(truncate_summary(&cr.content, 200)),
++                            file_path: Some(cr.file_path),
++                            line_range: None,
++                            status: None,
++                            linked_symbols: None,
++                        })
++                    } else {
++                        None
++                    }
++                })
++                .collect()
++        } else {
++            knn.into_iter()
++                .map(|(score, cr)| UnifiedSearchResult {
++                    region: SearchRegion::Task,
+                     score,
+                     node_type: cr.content_type.clone(),
+                     id: format!("content_record:{}", cr.id),
+-                    title: None,
++                    title: Some(cr.file_path.clone()),
+                     summary: Some(truncate_summary(&cr.content, 200)),
+                     file_path: Some(cr.file_path),
+                     line_range: None,
+                     status: None,
+                     linked_symbols: None,
+                 })
+-            } else {
+-                None
+-            }
+-        })
+-        .collect();
++                .collect()
++        }
++    };
+ 
+     // ΓöÇΓöÇ Merge and rank ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+     let merged = merge_unified_results(code_results, content_results, limit);
+-    let total_matches = merged.len();
++    let total_count = merged.len();
+ 
+     Ok(json!({
+         "results": merged,
+-        "total_matches": total_matches,
++        "total_count": total_count,
++        "total_matches": total_count,
+     }))
+ }
+ 
+@@ -635,11 +663,9 @@ pub async fn impact_analysis(
+         .clamp(1, 100)
+         .min(config.code_graph.max_traversal_nodes);
+ 
+-    let workspace_id = workspace_id(&state).await?;
+-    let db = connect_db(&workspace_id).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let cg_queries = CodeGraphQueries::new(db);
+-
+-    // Step 1: Resolve symbol name to code node(s).
+     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
+     if matches.is_empty() {
+         return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+@@ -789,7 +815,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
+ 
+     use crate::services::gate::sanitize_query;
+ 
+-    let ws_id = workspace_id(&state).await?;
++    let (data_dir, branch) = workspace_db(&state).await?;
+ 
+     let parsed: QueryGraphParams =
+         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+@@ -813,7 +839,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
+             (c.query_timeout_ms, c.query_row_limit)
+         });
+ 
+-    let db = connect_db(&ws_id).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let start = Instant::now();
+ 
+     // Inject a LIMIT clause to cap result-set materialization at the DB level.
+@@ -910,8 +936,8 @@ pub async fn query_changes(
+ ) -> Result<Value, EngramError> {
+     use chrono::DateTime;
+ 
+-    let ws_id = if let Some(snap) = state.snapshot_workspace().await {
+-        snap.workspace_id
++    let (data_dir, branch) = if let Some(snap) = state.snapshot_workspace().await {
++        (snap.data_dir.clone(), snap.branch.clone())
+     } else {
+         return Err(EngramError::Workspace(WorkspaceError::NotSet));
+     };
+@@ -925,7 +951,7 @@ pub async fn query_changes(
+ 
+     let limit = parsed.limit.unwrap_or(20);
+ 
+-    let db = connect_db(&ws_id).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let queries = CodeGraphQueries::new(db);
+     let since_dt = parsed
+         .since
+@@ -958,7 +984,7 @@ pub async fn query_changes(
+     // If a symbol is provided, resolve its file path via the code graph so we
+     // can filter commits by file. Symbol not found ΓåÆ CodeGraphError::SymbolNotFound.
+     let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
+-        let cg_db = connect_db(&ws_id).await?;
++        let cg_db = connect_db(&data_dir, &branch).await?;
+         let cg = CodeGraphQueries::new(cg_db);
+         let syms = cg.find_symbols_by_name(sym).await?;
+         if syms.is_empty() {
+diff --git a/src/tools/write.rs b/src/tools/write.rs
+index e32eb9d..dc5335b 100644
+--- a/src/tools/write.rs
++++ b/src/tools/write.rs
+@@ -12,6 +12,7 @@ use crate::server::state::SharedState;
+ use crate::services::dehydration;
+ use crate::services::hydration;
+ 
++#[cfg(feature = "git-graph")]
+ async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
+     if let Some(snapshot) = state.snapshot_workspace().await {
+         return Ok(PathBuf::from(snapshot.path));
+@@ -19,13 +20,6 @@ async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
+     Err(EngramError::Workspace(WorkspaceError::NotSet))
+ }
+ 
+-async fn workspace_id(state: &SharedState) -> Result<String, EngramError> {
+-    if let Some(snapshot) = state.snapshot_workspace().await {
+-        return Ok(snapshot.workspace_id);
+-    }
+-    Err(EngramError::Workspace(WorkspaceError::NotSet))
+-}
+-
+ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+     // FR-153: Reject flush while indexing ΓÇö code graph may be in inconsistent state
+     if state.is_indexing() {
+@@ -40,7 +34,8 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
+         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+ 
+     let path = PathBuf::from(&snapshot.path);
+-    let workspace_id = snapshot.workspace_id.clone();
++    let data_dir = snapshot.data_dir.clone();
++    let branch = snapshot.branch.clone();
+     let engram_dir = path.join(".engram");
+     let stale_strategy = state.stale_strategy();
+     let mut warnings: Vec<String> = Vec::new();
+@@ -49,7 +44,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
+ 
+     let _ = params;
+ 
+-    let db = connect_db(&workspace_id).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let cg_queries = crate::db::queries::CodeGraphQueries::new(db.clone());
+ 
+     // Determine staleness action from strategy before touching the DB
+@@ -111,8 +106,13 @@ pub async fn index_workspace(
+     state: SharedState,
+     params: Option<Value>,
+ ) -> Result<Value, EngramError> {
+-    let ws_path = workspace_path(&state).await?;
+-    let ws_id = workspace_id(&state).await?;
++    let snapshot = state
++        .snapshot_workspace()
++        .await
++        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
++    let ws_path = PathBuf::from(&snapshot.path);
++    let data_dir = snapshot.data_dir.clone();
++    let branch = snapshot.branch.clone();
+ 
+     // Reject if indexing is already running.
+     if !state.try_start_indexing() {
+@@ -120,7 +120,7 @@ pub async fn index_workspace(
+     }
+ 
+     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
+-    let result = index_workspace_inner(&state, &ws_path, &ws_id, params).await;
++    let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
+     state.finish_indexing().await;
+     result
+ }
+@@ -129,7 +129,8 @@ pub async fn index_workspace(
+ async fn index_workspace_inner(
+     state: &SharedState,
+     ws_path: &std::path::Path,
+-    ws_id: &str,
++    data_dir: &std::path::Path,
++    branch: &str,
+     params: Option<Value>,
+ ) -> Result<Value, EngramError> {
+     let parsed: IndexWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+@@ -145,8 +146,14 @@ async fn index_workspace_inner(
+         .map(|c| c.code_graph.clone())
+         .unwrap_or_default();
+ 
+-    let result =
+-        crate::services::code_graph::index_workspace(ws_path, ws_id, &config, parsed.force).await?;
++    let result = crate::services::code_graph::index_workspace(
++        ws_path,
++        data_dir,
++        branch,
++        &config,
++        parsed.force,
++    )
++    .await?;
+ 
+     serde_json::to_value(result).map_err(|e| {
+         EngramError::System(SystemError::DatabaseError {
+@@ -167,8 +174,13 @@ pub async fn sync_workspace(
+     state: SharedState,
+     params: Option<Value>,
+ ) -> Result<Value, EngramError> {
+-    let ws_path = workspace_path(&state).await?;
+-    let ws_id = workspace_id(&state).await?;
++    let snapshot = state
++        .snapshot_workspace()
++        .await
++        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
++    let ws_path = PathBuf::from(&snapshot.path);
++    let data_dir = snapshot.data_dir.clone();
++    let branch = snapshot.branch.clone();
+ 
+     // Reject if indexing is already running (FR-121 / 7003).
+     if !state.try_start_indexing() {
+@@ -176,7 +188,7 @@ pub async fn sync_workspace(
+     }
+ 
+     // Run the sync logic, ensuring the flag is cleared on all exit paths.
+-    let result = sync_workspace_inner(&state, &ws_path, &ws_id, params).await;
++    let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
+     state.finish_indexing().await;
+     result
+ }
+@@ -185,7 +197,8 @@ pub async fn sync_workspace(
+ async fn sync_workspace_inner(
+     state: &SharedState,
+     ws_path: &std::path::Path,
+-    ws_id: &str,
++    data_dir: &std::path::Path,
++    branch: &str,
+     params: Option<Value>,
+ ) -> Result<Value, EngramError> {
+     let _ = params; // no params for sync_workspace currently
+@@ -196,7 +209,8 @@ async fn sync_workspace_inner(
+         .map(|c| c.code_graph.clone())
+         .unwrap_or_default();
+ 
+-    let result = crate::services::code_graph::sync_workspace(ws_path, ws_id, &config).await?;
++    let result =
++        crate::services::code_graph::sync_workspace(ws_path, data_dir, branch, &config).await?;
+ 
+     serde_json::to_value(result).map_err(|e| {
+         EngramError::System(SystemError::DatabaseError {
+@@ -229,7 +243,13 @@ pub async fn index_git_history(
+     params: Option<Value>,
+ ) -> Result<Value, EngramError> {
+     let ws_path = workspace_path(&state).await?;
+-    let ws_id = workspace_id(&state).await?;
++    let (data_dir, branch) = {
++        let snap = state
++            .snapshot_workspace()
++            .await
++            .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
++        (snap.data_dir.clone(), snap.branch.clone())
++    };
+ 
+     let parsed: IndexGitHistoryParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+         .map_err(|e| {
+@@ -246,7 +266,7 @@ pub async fn index_git_history(
+ 
+     let depth = parsed.depth.unwrap_or(0); // None ΓåÆ service uses default 500
+ 
+-    let db = connect_db(&ws_id).await?;
++    let db = connect_db(&data_dir, &branch).await?;
+     let queries = CodeGraphQueries::new(db);
+ 
+     let summary =
+diff --git a/tests/contract/graph_traversal_knn_test.rs b/tests/contract/graph_traversal_knn_test.rs
+index a372e3c..dfa8a20 100644
+--- a/tests/contract/graph_traversal_knn_test.rs
++++ b/tests/contract/graph_traversal_knn_test.rs
+@@ -10,6 +10,8 @@ use engram::tools;
+ fn ws(id: &str) -> WorkspaceSnapshot {
+     WorkspaceSnapshot {
+         workspace_id: id.to_string(),
++        branch: id.to_string(),
++        data_dir: std::env::temp_dir().join("engram-test"),
+         path: format!("/tmp/{id}"),
+         last_flush: None,
+         stale_files: false,
+diff --git a/tests/contract/read_test.rs b/tests/contract/read_test.rs
+index 26507e6..fddc67a 100644
+--- a/tests/contract/read_test.rs
++++ b/tests/contract/read_test.rs
+@@ -10,6 +10,8 @@ use engram::tools;
+ fn test_snapshot(id: &str) -> WorkspaceSnapshot {
+     WorkspaceSnapshot {
+         workspace_id: id.to_string(),
++        branch: id.to_string(),
++        data_dir: std::env::temp_dir().join("engram-test"),
+         path: format!("/tmp/{id}"),
+         last_flush: None,
+         stale_files: false,
+@@ -41,6 +43,8 @@ async fn contract_query_memory_rejects_long_query() {
+     let state = Arc::new(AppState::new(10));
+     let snapshot = engram::server::state::WorkspaceSnapshot {
+         workspace_id: "test_ws".to_string(),
++        branch: "test_ws".to_string(),
++        data_dir: std::env::temp_dir().join("engram-test"),
+         path: "/tmp/test-repo".to_string(),
+         last_flush: None,
+         stale_files: false,
+@@ -70,6 +74,8 @@ async fn contract_query_memory_returns_results_array() {
+     let state = Arc::new(AppState::new(10));
+     let snapshot = engram::server::state::WorkspaceSnapshot {
+         workspace_id: "test_ws_results".to_string(),
++        branch: "test_ws_results".to_string(),
++        data_dir: std::env::temp_dir().join("engram-test"),
+         path: "/tmp/test-repo-results".to_string(),
+         last_flush: None,
+         stale_files: false,
+diff --git a/tests/contract/unified_search_knn_test.rs b/tests/contract/unified_search_knn_test.rs
+index f09184e..d7f10ce 100644
+--- a/tests/contract/unified_search_knn_test.rs
++++ b/tests/contract/unified_search_knn_test.rs
+@@ -10,6 +10,8 @@ use engram::tools;
+ fn ws(id: &str) -> WorkspaceSnapshot {
+     WorkspaceSnapshot {
+         workspace_id: id.to_string(),
++        branch: id.to_string(),
++        data_dir: std::env::temp_dir().join("engram-test"),
+         path: format!("/tmp/{id}"),
+         last_flush: None,
+         stale_files: false,
+diff --git a/tests/integration/code_graph_test.rs b/tests/integration/code_graph_test.rs
+index 1fc4e43..6309cdd 100644
+--- a/tests/integration/code_graph_test.rs
++++ b/tests/integration/code_graph_test.rs
+@@ -23,15 +23,16 @@ fn write_sample_file(dir: &Path, rel_path: &str, content: &str) {
+     fs::write(full, content).expect("write file");
+ }
+ 
+-/// Helper: hash a workspace path the same way the service does.
+-fn workspace_hash(path: &Path) -> String {
++/// Helper: derive test DB parameters from a workspace path.
++fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
+     use sha2::{Digest, Sha256};
+     let canon = path
+         .canonicalize()
+         .unwrap_or_else(|_| path.to_path_buf())
+         .to_string_lossy()
+         .to_lowercase();
+-    format!("{:x}", Sha256::digest(canon.as_bytes()))
++    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
++    (std::env::temp_dir().join("engram-test"), branch)
+ }
+ 
+ #[test]
+@@ -56,9 +57,9 @@ pub struct Config {
+     );
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+@@ -86,16 +87,16 @@ async fn index_workspace_skips_unchanged_files() {
+     );
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+     // First run: should parse the file.
+-    let r1 = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let r1 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("first index");
+     assert_eq!(r1.files_parsed, 1);
+ 
+     // Second run without changes: should skip.
+-    let r2 = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let r2 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("second index");
+     assert_eq!(r2.files_parsed, 0);
+@@ -114,15 +115,15 @@ async fn index_workspace_force_reindexes_unchanged_files() {
+     );
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+     // Index once.
+-    code_graph::index_workspace(ws, &ws_id, &config, false)
++    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("first index");
+ 
+     // Force re-index should reparse.
+-    let r2 = code_graph::index_workspace(ws, &ws_id, &config, true)
++    let r2 = code_graph::index_workspace(ws, &data_dir, &branch, &config, true)
+         .await
+         .expect("force index");
+     assert_eq!(r2.files_parsed, 1, "force should re-parse the file");
+@@ -143,9 +144,9 @@ pub fn beta() {}
+     );
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+@@ -175,9 +176,9 @@ async fn index_workspace_applies_tiering() {
+     write_sample_file(ws, "src/lib.rs", &format!("{small_fn}\n{large_fn}"));
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+@@ -201,9 +202,9 @@ async fn index_workspace_skips_non_rust_files() {
+     write_sample_file(ws, "src/script.py", "def hello(): pass\n");
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+@@ -227,9 +228,9 @@ pub trait Greeter {
+     );
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+@@ -247,14 +248,14 @@ async fn index_workspace_persists_to_db() {
+     write_sample_file(ws, "src/lib.rs", "pub fn persisted() { let x = 1; }\n");
+ 
+     let config = CodeGraphConfig::default();
+-    let ws_id = workspace_hash(ws);
++    let (data_dir, branch) = test_db_params(ws);
+ 
+-    code_graph::index_workspace(ws, &ws_id, &config, false)
++    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+     // Verify DB records.
+-    let db = connect_db(&ws_id).await.expect("db connect");
++    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+     let q = CodeGraphQueries::new(db);
+     let files = q.list_code_files().await.expect("list files");
+     assert!(
+@@ -280,8 +281,8 @@ async fn index_workspace_skips_oversized_files() {
+         "pub fn this_is_definitely_longer_than_20_bytes() {}\n",
+     );
+ 
+-    let ws_id = workspace_hash(ws);
+-    let result = code_graph::index_workspace(ws, &ws_id, &config, false)
++    let (data_dir, branch) = test_db_params(ws);
++    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+         .await
+         .expect("indexing should succeed");
+ 
+diff --git a/tests/integration/concurrency_test.rs b/tests/integration/concurrency_test.rs
+index 12d9079..c6f6666 100644
+--- a/tests/integration/concurrency_test.rs
++++ b/tests/integration/concurrency_test.rs
+@@ -98,6 +98,7 @@ async fn s027_file_deleted_after_scan_handled_gracefully() {
+         "docs",
+         "docs",
+         1_048_576,
++        None,
+         &queries,
+     )
+     .await;
+@@ -307,6 +308,7 @@ async fn s077_concurrent_ingestion_no_duplicate_records() {
+             content_type: "docs".to_string(),
+             language: None,
+             path: "docs".to_string(),
++            pattern: None,
+             status: ContentSourceStatus::Active,
+         }],
+         max_file_size_bytes: 1_048_576,
+diff --git a/tests/integration/content_knn_search_test.rs b/tests/integration/content_knn_search_test.rs
+new file mode 100644
+index 0000000..226edee
+--- /dev/null
++++ b/tests/integration/content_knn_search_test.rs
+@@ -0,0 +1,190 @@
++//! Integration tests for native KNN vector search on `content_record` (TASK-008.06).
++//!
++//! Verifies that `vector_search_content_native()` uses `SurrealDB`'s MTREE index
++//! on the `content_record` table to rank docs, specs, backlog entries, and other
++//! content by cosine similarity, matching the behaviour of `vector_search_symbols_native`.
++
++use engram::db::connect_db;
++use engram::db::queries::CodeGraphQueries;
++use engram::models::ContentRecord;
++
++/// Create an isolated test DB and return a `CodeGraphQueries` handle.
++async fn test_queries(label: &str) -> CodeGraphQueries {
++    let branch = format!("test_content_knn_{label}_{}", std::process::id());
++    let data_dir = std::env::temp_dir().join("engram-test");
++    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
++    CodeGraphQueries::new(db)
++}
++
++/// Build a `ContentRecord` with a known 384-dim embedding and upsert it.
++async fn insert_content_record_with_embedding(
++    queries: &CodeGraphQueries,
++    id: &str,
++    content_type: &str,
++    content: &str,
++    embedding: Vec<f32>,
++) {
++    let record = ContentRecord {
++        id: id.to_string(),
++        content_type: content_type.to_string(),
++        file_path: format!("docs/{id}.md"),
++        content_hash: format!("hash_{id}"),
++        content: content.to_string(),
++        embedding: Some(embedding),
++        source_path: "docs".to_string(),
++        file_size_bytes: content.len() as u64,
++        ingested_at: chrono::Utc::now(),
++    };
++    queries
++        .upsert_content_record(&record)
++        .await
++        .expect("upsert_content_record");
++}
++
++/// Generate a 384-dim unit vector with a dominant `1.0` at `dim_index`.
++fn unit_vector(dim_index: usize) -> Vec<f32> {
++    let mut v = vec![0.0_f32; 384];
++    v[dim_index] = 1.0;
++    v
++}
++
++#[tokio::test]
++async fn content_knn_returns_top_k_ordered_by_similarity() {
++    // GIVEN a DB with 3 content records having distinct embeddings
++    let q = test_queries("top_k").await;
++    insert_content_record_with_embedding(&q, "close", "spec", "spec content close", unit_vector(0))
++        .await;
++    insert_content_record_with_embedding(
++        &q,
++        "medium",
++        "spec",
++        "spec content medium",
++        unit_vector(1),
++    )
++    .await;
++    insert_content_record_with_embedding(&q, "far", "spec", "spec content far", unit_vector(2))
++        .await;
++
++    // WHEN we search with a query embedding most similar to "close"
++    let query_emb = unit_vector(0);
++    let results = q
++        .vector_search_content_native(&query_emb, 2, None)
++        .await
++        .expect("content knn search");
++
++    // THEN we get at most 2 results, with the closest first
++    assert!(
++        results.len() <= 2,
++        "should return at most limit=2, got {}",
++        results.len()
++    );
++    assert!(
++        !results.is_empty(),
++        "should return at least 1 result for a matching embedding"
++    );
++    assert_eq!(
++        results[0].1.id, "close",
++        "first result should be the most similar record, got '{}'",
++        results[0].1.id
++    );
++}
++
++#[tokio::test]
++async fn content_knn_score_matches_cosine_similarity() {
++    // GIVEN two records: one whose embedding exactly matches the query
++    let q = test_queries("cosine").await;
++    let emb_exact = unit_vector(0);
++    let emb_partial = {
++        let mut v = vec![0.0_f32; 384];
++        v[0] = 0.7;
++        v[1] = 0.7;
++        v
++    };
++    insert_content_record_with_embedding(&q, "exact", "docs", "exact match", emb_exact.clone())
++        .await;
++    insert_content_record_with_embedding(&q, "partial", "docs", "partial match", emb_partial).await;
++
++    // WHEN we search with query = emb_exact
++    let results = q
++        .vector_search_content_native(&emb_exact, 10, None)
++        .await
++        .expect("content knn search");
++
++    // THEN the exact-match record leads with score ~1.0
++    assert!(!results.is_empty());
++    let (score, rec) = &results[0];
++    assert_eq!(rec.id, "exact");
++    assert!(
++        (*score - 1.0).abs() < 0.01,
++        "exact match should have score ~1.0, got {score}"
++    );
++}
++
++#[tokio::test]
++async fn content_knn_empty_table_returns_empty() {
++    // GIVEN an empty database
++    let q = test_queries("empty").await;
++
++    // WHEN we search for any embedding
++    let results = q
++        .vector_search_content_native(&unit_vector(0), 5, None)
++        .await
++        .expect("content knn on empty table");
++
++    // THEN no results are returned
++    assert!(results.is_empty(), "empty table should return no results");
++}
++
++#[tokio::test]
++async fn content_knn_content_type_filter_excludes_other_types() {
++    // GIVEN records of two different content_types
++    let q = test_queries("filter").await;
++    insert_content_record_with_embedding(&q, "spec_a", "spec", "spec a", unit_vector(0)).await;
++    insert_content_record_with_embedding(&q, "backlog_a", "backlog", "backlog a", unit_vector(0))
++        .await;
++
++    // WHEN we search restricted to "spec"
++    let results = q
++        .vector_search_content_native(&unit_vector(0), 10, Some("spec"))
++        .await
++        .expect("filtered content knn");
++
++    // THEN only spec records are returned
++    assert!(!results.is_empty(), "should return the spec record");
++    for (_, rec) in &results {
++        assert_eq!(
++            rec.content_type, "spec",
++            "filter should exclude non-spec records, got type '{}'",
++            rec.content_type
++        );
++    }
++}
++
++#[tokio::test]
++async fn content_knn_respects_limit() {
++    // GIVEN 5 records all with the same embedding
++    let q = test_queries("limit").await;
++    for i in 0..5 {
++        insert_content_record_with_embedding(
++            &q,
++            &format!("rec{i}"),
++            "memory",
++            &format!("record {i}"),
++            unit_vector(0),
++        )
++        .await;
++    }
++
++    // WHEN we search with limit=3
++    let results = q
++        .vector_search_content_native(&unit_vector(0), 3, None)
++        .await
++        .expect("limited content knn");
++
++    // THEN at most 3 results are returned
++    assert!(
++        results.len() <= 3,
++        "result count {} exceeds limit 3",
++        results.len()
++    );
++}
+diff --git a/tests/integration/embedding_status_test.rs b/tests/integration/embedding_status_test.rs
+index e941d9a..ee7e06d 100644
+--- a/tests/integration/embedding_status_test.rs
++++ b/tests/integration/embedding_status_test.rs
+@@ -80,7 +80,10 @@ async fn status_returns_correct_coverage_for_known_counts() {
+     // This test creates an in-memory DB, inserts known symbol counts,
+     // and verifies the percentage calculation.
+     let ws_hash = format!("test_embed_status_{}", std::process::id());
+-    let db = engram::db::connect_db(&ws_hash).await.expect("connect_db");
++    let data_dir = std::env::temp_dir().join("engram-test");
++    let db = engram::db::connect_db(&data_dir, &ws_hash)
++        .await
++        .expect("connect_db");
+     let queries = engram::db::queries::CodeGraphQueries::new(db);
+ 
+     // Insert 2 functions: one with a real embedding, one with a zero vector
+diff --git a/tests/integration/embedding_test.rs b/tests/integration/embedding_test.rs
+index 5cbdc27..2031979 100644
+--- a/tests/integration/embedding_test.rs
++++ b/tests/integration/embedding_test.rs
+@@ -122,28 +122,22 @@ fn cosine_similarity_identical_vectors() {
+ #[test]
+ fn embed_text_produces_correct_dimension() {
+     let result = embedding::embed_text("test sentence for embedding");
+-    match result {
+-        Ok(vec) => assert_eq!(vec.len(), EMBEDDING_DIM),
+-        Err(_) => {
+-            // Model download may fail in CI without network; acceptable
+-        }
++    if let Ok(vec) = result {
++        assert_eq!(vec.len(), EMBEDDING_DIM);
+     }
++    // Err(_): model download may fail in CI without network; acceptable
+ }
+ 
+ #[cfg(feature = "embeddings")]
+ #[test]
+ fn embed_texts_batch_matches_single() {
+     let texts = vec!["hello world".to_string()];
+-    match (
++    if let (Ok(single), Ok(batch)) = (
+         embedding::embed_text("hello world"),
+         embedding::embed_texts(&texts),
+     ) {
+-        (Ok(single), Ok(batch)) => {
+-            assert_eq!(batch.len(), 1);
+-            assert_eq!(single.len(), batch[0].len());
+-        }
+-        _ => {
+-            // Model unavailable; skip comparison
+-        }
++        assert_eq!(batch.len(), 1);
++        assert_eq!(single.len(), batch[0].len());
+     }
++    // Either unavailable: model not loaded; skip comparison
+ }
+diff --git a/tests/integration/file_tracker_test.rs b/tests/integration/file_tracker_test.rs
+new file mode 100644
+index 0000000..f87ec4c
+--- /dev/null
++++ b/tests/integration/file_tracker_test.rs
+@@ -0,0 +1,248 @@
++//! Integration tests for workspace file hash tracking (T039ΓÇôT040).
++//!
++//! Validates that [`engram::services::file_tracker`] correctly detects offline
++//! changes by comparing stored file hashes against current on-disk content.
++//!
++//! Tests: S067ΓÇôS074.
++
++use std::fs;
++
++use engram::db::connect_db;
++use engram::db::queries::CodeGraphQueries;
++use engram::services::file_tracker::{FileChangeKind, detect_offline_changes, record_file_hash};
++use tempfile::TempDir;
++
++// ΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// Derive a stable test data-dir + branch name from the workspace path.
++fn test_db_params(path: &std::path::Path) -> (std::path::PathBuf, String) {
++    use sha2::{Digest, Sha256};
++    let canon = path
++        .canonicalize()
++        .unwrap_or_else(|_| path.to_path_buf())
++        .to_string_lossy()
++        .to_lowercase();
++    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
++    (
++        std::env::temp_dir().join("engram-file-tracker-test"),
++        branch,
++    )
++}
++
++/// Open an isolated `SurrealDB` for `ws`, returning queries handle.
++async fn open_queries(ws: &TempDir) -> CodeGraphQueries {
++    let (data_dir, branch) = test_db_params(ws.path());
++    let db = connect_db(&data_dir, &branch)
++        .await
++        .expect("connect_db must succeed");
++    CodeGraphQueries::new(db)
++}
++
++// ΓöÇΓöÇ T039: Offline change detection ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// S067: `detect_offline_changes` returns empty when hashes match on-disk state.
++#[tokio::test]
++async fn s067_no_changes_when_hashes_current() {
++    let ws = TempDir::new().expect("tempdir");
++    let file = ws.path().join("readme.txt");
++    fs::write(&file, b"hello world").expect("write file");
++
++    let queries = open_queries(&ws).await;
++    record_file_hash("readme.txt", &file, &queries)
++        .await
++        .expect("record_file_hash");
++
++    let changes = detect_offline_changes(ws.path(), &queries)
++        .await
++        .expect("detect_offline_changes");
++
++    assert!(
++        changes.is_empty(),
++        "expected no changes when hash is current; got: {changes:?}"
++    );
++}
++
++/// S068: `detect_offline_changes` returns `Modified` when file content changed
++/// since the hash was recorded.
++#[tokio::test]
++async fn s068_modified_when_content_changed() {
++    let ws = TempDir::new().expect("tempdir");
++    let file = ws.path().join("src.rs");
++    fs::write(&file, b"fn old() {}").expect("write initial");
++
++    let queries = open_queries(&ws).await;
++    record_file_hash("src.rs", &file, &queries)
++        .await
++        .expect("record_file_hash");
++
++    // Simulate offline change.
++    fs::write(&file, b"fn new() {}").expect("write updated");
++
++    let changes = detect_offline_changes(ws.path(), &queries)
++        .await
++        .expect("detect_offline_changes");
++
++    let modified: Vec<_> = changes
++        .iter()
++        .filter(|c| c.path == "src.rs" && c.kind == FileChangeKind::Modified)
++        .collect();
++
++    assert_eq!(
++        modified.len(),
++        1,
++        "expected one Modified change for src.rs; got: {changes:?}"
++    );
++}
++
++/// S069: `detect_offline_changes` returns `Added` for a file present on disk
++/// but with no stored hash.
++#[tokio::test]
++async fn s069_added_when_no_stored_hash() {
++    let ws = TempDir::new().expect("tempdir");
++    let file = ws.path().join("new_file.rs");
++    fs::write(&file, b"pub fn new() {}").expect("write file");
++
++    // Do NOT record a hash for this file.
++    let queries = open_queries(&ws).await;
++
++    let changes = detect_offline_changes(ws.path(), &queries)
++        .await
++        .expect("detect_offline_changes");
++
++    let added: Vec<_> = changes
++        .iter()
++        .filter(|c| c.path == "new_file.rs" && c.kind == FileChangeKind::Added)
++        .collect();
++
++    assert_eq!(
++        added.len(),
++        1,
++        "expected one Added change for new_file.rs; got: {changes:?}"
++    );
++}
++
++/// S070: `detect_offline_changes` returns `Deleted` for a hash record whose
++/// file no longer exists on disk.
++#[tokio::test]
++async fn s070_deleted_when_file_removed() {
++    let ws = TempDir::new().expect("tempdir");
++    let file = ws.path().join("gone.rs");
++    fs::write(&file, b"fn gone() {}").expect("write file");
++
++    let queries = open_queries(&ws).await;
++    record_file_hash("gone.rs", &file, &queries)
++        .await
++        .expect("record_file_hash");
++
++    // Simulate offline deletion.
++    fs::remove_file(&file).expect("remove file");
++
++    let changes = detect_offline_changes(ws.path(), &queries)
++        .await
++        .expect("detect_offline_changes");
++
++    let deleted: Vec<_> = changes
++        .iter()
++        .filter(|c| c.path == "gone.rs" && c.kind == FileChangeKind::Deleted)
++        .collect();
++
++    assert_eq!(
++        deleted.len(),
++        1,
++        "expected one Deleted change for gone.rs; got: {changes:?}"
++    );
++}
++
++/// S071: After recording a hash, a second `detect_offline_changes` call with
++/// the same file returns no changes.
++#[tokio::test]
++async fn s071_no_changes_after_record() {
++    let ws = TempDir::new().expect("tempdir");
++    let file = ws.path().join("stable.rs");
++    fs::write(&file, b"fn stable() {}").expect("write file");
++
++    let queries = open_queries(&ws).await;
++    record_file_hash("stable.rs", &file, &queries)
++        .await
++        .expect("record_file_hash");
++
++    // Detect once ΓÇö should be empty since we just recorded.
++    let first = detect_offline_changes(ws.path(), &queries)
++        .await
++        .expect("detect_offline_changes first");
++    assert!(
++        first.iter().all(|c| c.path != "stable.rs"),
++        "stable.rs should have no changes after recording; got: {first:?}"
++    );
++}
++
++// ΓöÇΓöÇ T040: Hash computation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++/// S072: `compute_file_hash` returns the same value for identical content.
++#[tokio::test]
++async fn s072_compute_hash_consistent() {
++    use engram::services::file_tracker::compute_file_hash;
++
++    let ws = TempDir::new().expect("tempdir");
++    let file = ws.path().join("consistent.txt");
++    fs::write(&file, b"deterministic content").expect("write");
++
++    let h1 = compute_file_hash(&file).expect("hash 1");
++    let h2 = compute_file_hash(&file).expect("hash 2");
++
++    assert_eq!(h1, h2, "same content must produce same hash");
++}
++
++/// S073: `compute_file_hash` returns different values for different content.
++#[tokio::test]
++async fn s073_compute_hash_different_content() {
++    use engram::services::file_tracker::compute_file_hash;
++
++    let ws = TempDir::new().expect("tempdir");
++    let file_a = ws.path().join("a.txt");
++    let file_b = ws.path().join("b.txt");
++    fs::write(&file_a, b"content alpha").expect("write a");
++    fs::write(&file_b, b"content beta").expect("write b");
++
++    let ha = compute_file_hash(&file_a).expect("hash a");
++    let hb = compute_file_hash(&file_b).expect("hash b");
++
++    assert_ne!(ha, hb, "different content must produce different hashes");
++}
++
++/// S074: Excluded paths (`.git/`, `.engram/`, `target/`, `node_modules/`) are
++/// not reported as `Added` by `detect_offline_changes`.
++#[tokio::test]
++async fn s074_excluded_dirs_not_reported() {
++    let ws = TempDir::new().expect("tempdir");
++
++    // Write files in every excluded directory.
++    for dir in [".git", ".engram", "target", "node_modules"] {
++        let d = ws.path().join(dir);
++        fs::create_dir_all(&d).expect("create excluded dir");
++        fs::write(d.join("ignored.txt"), b"ignored").expect("write in excluded dir");
++    }
++    // Write one real file.
++    fs::write(ws.path().join("real.rs"), b"fn real() {}").expect("write real file");
++
++    let queries = open_queries(&ws).await;
++    let changes = detect_offline_changes(ws.path(), &queries)
++        .await
++        .expect("detect_offline_changes");
++
++    // Only real.rs should be reported as Added.
++    for change in &changes {
++        let path_str = change.path.replace('\\', "/");
++        assert!(
++            !path_str.starts_with(".git/")
++                && !path_str.starts_with(".engram/")
++                && !path_str.starts_with("target/")
++                && !path_str.starts_with("node_modules/"),
++            "excluded path should not be reported: {}",
++            change.path
++        );
++    }
++
++    let added: Vec<_> = changes.iter().filter(|c| c.path == "real.rs").collect();
++    assert_eq!(added.len(), 1, "real.rs should be reported as Added");
++}
+diff --git a/tests/integration/graph_vector_rehydration_test.rs b/tests/integration/graph_vector_rehydration_test.rs
+new file mode 100644
+index 0000000..d2c4986
+--- /dev/null
++++ b/tests/integration/graph_vector_rehydration_test.rs
+@@ -0,0 +1,295 @@
++//! End-to-end daemon test for graph and vector rehydration across restart.
++//!
++//! Proves that:
++//! 1. A daemon can index a real workspace and flush `.engram/code-graph/*.jsonl`
++//! 2. After the embedded `SurrealDB` files are deleted, a restarted daemon
++//!    rehydrates graph state from JSONL
++//! 3. Persisted non-zero embeddings in `nodes.jsonl` are restored into the DB,
++//!    making vector coverage visible through the IPC tool surface
++
++use std::fs;
++use std::time::{Duration, Instant};
++
++use engram::daemon::protocol::IpcRequest;
++use engram::shim::ipc_client::send_request;
++use engram::shim::lifecycle::check_health;
++use serde_json::{Value, json};
++
++#[path = "../helpers/mod.rs"]
++mod helpers;
++
++use helpers::DaemonHarness;
++
++fn make_request(id: i64, method: &str, params: Option<Value>) -> IpcRequest {
++    IpcRequest {
++        jsonrpc: "2.0".to_owned(),
++        id: Some(Value::Number(serde_json::Number::from(id))),
++        method: method.to_owned(),
++        params,
++    }
++}
++
++async fn send_ok(endpoint: &str, id: i64, method: &str, params: Option<Value>) -> Value {
++    let request = make_request(id, method, params);
++    let response = send_request(endpoint, &request, Duration::from_secs(20))
++        .await
++        .unwrap_or_else(|e| panic!("{method} IPC call failed: {e}"));
++
++    assert!(
++        response.error.is_none(),
++        "{method} returned an error: {:?}",
++        response.error
++    );
++
++    response
++        .result
++        .unwrap_or_else(|| panic!("{method} response missing result field"))
++}
++
++async fn shutdown_and_wait(endpoint: &str) {
++    let request = make_request(900, "_shutdown", None);
++    let response = send_request(endpoint, &request, Duration::from_secs(5))
++        .await
++        .expect("_shutdown IPC must succeed");
++
++    let result = response
++        .result
++        .as_ref()
++        .expect("_shutdown must return a result");
++    assert_eq!(
++        result["status"], "shutting_down",
++        "_shutdown must report shutting_down status"
++    );
++
++    let deadline = Instant::now() + Duration::from_secs(8);
++    loop {
++        if !check_health(endpoint).await {
++            break;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "daemon must stop responding within 8s of _shutdown"
++        );
++        tokio::time::sleep(Duration::from_millis(100)).await;
++    }
++}
++
++fn inject_meaningful_embedding(
++    workspace_path: &std::path::Path,
++    symbol_name: &str,
++) -> Result<(), Box<dyn std::error::Error>> {
++    let nodes_path = workspace_path
++        .join(".engram")
++        .join("code-graph")
++        .join("nodes.jsonl");
++    let content = fs::read_to_string(&nodes_path)?;
++    let mut mutated = false;
++    let embedding: Vec<f32> = std::iter::once(1.0_f32)
++        .chain(std::iter::repeat_n(0.0_f32, 383))
++        .collect();
++
++    let updated_lines: Vec<String> = content
++        .lines()
++        .map(|line| {
++            let mut value: Value =
++                serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSONL line: {e}"));
++            if value["type"] == "function" && value["name"] == symbol_name {
++                value["embedding"] =
++                    serde_json::to_value(&embedding).expect("embedding vector must serialize");
++                mutated = true;
++            }
++            serde_json::to_string(&value).expect("JSONL line must serialize")
++        })
++        .collect();
++
++    assert!(
++        mutated,
++        "nodes.jsonl must contain function symbol `{symbol_name}`"
++    );
++
++    let updated = format!("{}\n", updated_lines.join("\n"));
++    fs::write(nodes_path, updated)?;
++    Ok(())
++}
++
++fn create_sample_workspace() -> tempfile::TempDir {
++    let workspace = tempfile::tempdir().expect("workspace tempdir");
++    let workspace_path = workspace.path();
++    fs::create_dir_all(workspace_path.join(".git")).expect("create .git");
++    fs::write(
++        workspace_path.join(".git").join("HEAD"),
++        "ref: refs/heads/main\n",
++    )
++    .expect("write HEAD");
++    fs::create_dir_all(workspace_path.join("src")).expect("create src");
++    fs::write(
++        workspace_path.join("src").join("lib.rs"),
++        r"
++pub fn hydrated_vector_anchor() -> i32 {
++    42
++}
++
++pub fn helper_neighbor() -> i32 {
++    hydrated_vector_anchor()
++}
++",
++    )
++    .expect("write sample source");
++
++    workspace
++}
++
++async fn index_flush_and_seed_embedding(workspace_path: &std::path::Path) {
++    let harness1 = DaemonHarness::spawn_for_workspace(workspace_path, Duration::from_secs(15))
++        .await
++        .expect("daemon 1 must spawn");
++    let endpoint1 = harness1.ipc_path().to_str().expect("UTF-8").to_owned();
++
++    // Startup auto-index runs in the background immediately after workspace binding.
++    // Wait for it to fully complete before flushing ΓÇö a stable function count of 2
++    // (matching the two functions in lib.rs) confirms the indexer has finished and
++    // released its lock. This avoids racing against the "indexing in progress" guard.
++    let deadline = Instant::now() + Duration::from_secs(30);
++    loop {
++        let status = send_ok(&endpoint1, 1, "get_workspace_status", None).await;
++        let funcs = status["code_graph"]["functions"].as_u64().unwrap_or(0);
++        if funcs >= 2 {
++            break;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "timed out waiting for startup auto-index to index all symbols (got {funcs})"
++        );
++        tokio::time::sleep(Duration::from_millis(200)).await;
++    }
++
++    let status_before = send_ok(&endpoint1, 2, "get_workspace_status", None).await;
++    assert!(
++        status_before["code_graph"]["functions"]
++            .as_u64()
++            .unwrap_or(0)
++            >= 2,
++        "indexed workspace must report function count before restart: {status_before}"
++    );
++
++    // Retry flush_state until it succeeds ΓÇö the embedding backfill that runs after
++    // indexing may still hold the indexing lock for a short time after symbols appear.
++    let flush_deadline = Instant::now() + Duration::from_secs(30);
++    let flush_result = loop {
++        let request = make_request(3, "flush_state", Some(json!({})));
++        let response = send_request(&endpoint1, &request, Duration::from_secs(20))
++            .await
++            .expect("flush_state IPC call failed");
++        if let Some(ref err) = response.error {
++            let code = err
++                .data
++                .as_ref()
++                .and_then(|d| d.get("engram_code"))
++                .and_then(serde_json::Value::as_u64);
++            if code == Some(7003) {
++                assert!(
++                    Instant::now() < flush_deadline,
++                    "timed out waiting for startup tasks to finish before flush_state"
++                );
++                tokio::time::sleep(Duration::from_millis(200)).await;
++                continue;
++            }
++            panic!("flush_state returned unexpected error: {err:?}");
++        }
++        break response.result.expect("flush_state missing result");
++    };
++    assert!(
++        flush_result["files_written"]
++            .as_array()
++            .is_some_and(|files| !files.is_empty()),
++        "flush_state must write code graph files: {flush_result}"
++    );
++
++    let nodes_path = workspace_path
++        .join(".engram")
++        .join("code-graph")
++        .join("nodes.jsonl");
++    assert!(nodes_path.exists(), "nodes.jsonl must exist after flush");
++
++    // Inject a non-zero embedding into persisted JSONL so restart must restore
++    // vector coverage from disk, independent of model download availability.
++    inject_meaningful_embedding(workspace_path, "hydrated_vector_anchor")
++        .expect("embedding injection into nodes.jsonl");
++
++    shutdown_and_wait(&endpoint1).await;
++}
++
++fn delete_embedded_db_dir(workspace_path: &std::path::Path) {
++    let db_dir = workspace_path.join(".engram").join("db").join("main");
++    if db_dir.exists() {
++        fs::remove_dir_all(&db_dir).expect("remove embedded DB directory");
++    }
++}
++
++async fn assert_rehydrated_graph_and_vector_state(workspace_path: &std::path::Path) {
++    let harness2 = DaemonHarness::spawn_for_workspace(workspace_path, Duration::from_secs(15))
++        .await
++        .expect("daemon 2 must spawn");
++    let endpoint2 = harness2.ipc_path().to_str().expect("UTF-8").to_owned();
++
++    let status_after = send_ok(&endpoint2, 4, "get_workspace_status", None).await;
++    assert!(
++        status_after["code_graph"]["functions"]
++            .as_u64()
++            .unwrap_or(0)
++            >= 2,
++        "restarted daemon must report rehydrated function count: {status_after}"
++    );
++    assert!(
++        status_after["code_graph"]["edges"].as_u64().unwrap_or(0) >= 2,
++        "restarted daemon must report rehydrated edge count: {status_after}"
++    );
++
++    let map_result = send_ok(
++        &endpoint2,
++        5,
++        "map_code",
++        Some(json!({ "symbol_name": "hydrated_vector_anchor" })),
++    )
++    .await;
++    assert_eq!(
++        map_result["root"]["name"], "hydrated_vector_anchor",
++        "map_code must find the rehydrated symbol after restart"
++    );
++
++    let stats_result = send_ok(&endpoint2, 6, "get_workspace_statistics", None).await;
++    assert!(
++        stats_result["functions"].as_u64().unwrap_or(0) >= 2,
++        "workspace statistics must report rehydrated symbols: {stats_result}"
++    );
++    assert!(
++        stats_result["embedding_status"]["symbols_with_embeddings"]
++            .as_u64()
++            .unwrap_or(0)
++            >= 1,
++        "vector hydration must restore at least one non-zero embedding: {stats_result}"
++    );
++    assert!(
++        stats_result["embedding_status"]["coverage_percent"]
++            .as_f64()
++            .unwrap_or(0.0)
++            > 0.0,
++        "vector hydration must report positive coverage after restart: {stats_result}"
++    );
++}
++
++#[tokio::test]
++async fn daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted() {
++    // GIVEN a real workspace with Rust code and git metadata
++    let workspace = create_sample_workspace();
++    let workspace_path = workspace.path();
++
++    // WHEN daemon 1 indexes and flushes the workspace
++    index_flush_and_seed_embedding(workspace_path).await;
++
++    // Delete the embedded DB directory so daemon 2 cannot reuse prior DB state.
++    delete_embedded_db_dir(workspace_path);
++
++    // THEN daemon 2 must rehydrate graph + vector state from JSONL artifacts.
++    assert_rehydrated_graph_and_vector_state(workspace_path).await;
++}
+diff --git a/tests/integration/hybrid_graph_vector_search_test.rs b/tests/integration/hybrid_graph_vector_search_test.rs
+index d33b834..81f4c00 100644
+--- a/tests/integration/hybrid_graph_vector_search_test.rs
++++ b/tests/integration/hybrid_graph_vector_search_test.rs
+@@ -9,8 +9,9 @@ use engram::models::Function;
+ 
+ /// Create a test DB and return a `CodeGraphQueries` handle.
+ async fn test_queries(label: &str) -> CodeGraphQueries {
+-    let hash = format!("test_hybrid_{label}_{}", std::process::id());
+-    let db = connect_db(&hash).await.expect("connect_db");
++    let branch = format!("test_hybrid_{label}_{}", std::process::id());
++    let data_dir = std::env::temp_dir().join("engram-test");
++    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+     CodeGraphQueries::new(db)
+ }
+ 
+diff --git a/tests/integration/native_graph_traversal_test.rs b/tests/integration/native_graph_traversal_test.rs
+index a26b5f0..cfda815 100644
+--- a/tests/integration/native_graph_traversal_test.rs
++++ b/tests/integration/native_graph_traversal_test.rs
+@@ -10,8 +10,9 @@ use engram::models::{CodeFile, Function};
+ 
+ /// Create a test DB and return a `CodeGraphQueries` handle.
+ async fn test_queries(label: &str) -> CodeGraphQueries {
+-    let hash = format!("test_graph_{label}_{}", std::process::id());
+-    let db = connect_db(&hash).await.expect("connect_db");
++    let branch = format!("test_graph_{label}_{}", std::process::id());
++    let data_dir = std::env::temp_dir().join("engram-test");
++    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+     CodeGraphQueries::new(db)
+ }
+ 
+diff --git a/tests/integration/native_knn_search_test.rs b/tests/integration/native_knn_search_test.rs
+index 061ae2f..18de086 100644
+--- a/tests/integration/native_knn_search_test.rs
++++ b/tests/integration/native_knn_search_test.rs
+@@ -10,8 +10,9 @@ use engram::models::{Class, Function, Interface};
+ 
+ /// Create a test DB and return a `CodeGraphQueries` handle.
+ async fn test_queries(label: &str) -> CodeGraphQueries {
+-    let hash = format!("test_knn_{label}_{}", std::process::id());
+-    let db = connect_db(&hash).await.expect("connect_db");
++    let branch = format!("test_knn_{label}_{}", std::process::id());
++    let data_dir = std::env::temp_dir().join("engram-test");
++    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+     CodeGraphQueries::new(db)
+ }
+ 
+diff --git a/tests/integration/query_perf_observability_test.rs b/tests/integration/query_perf_observability_test.rs
+index 3b649ca..b01367e 100644
+--- a/tests/integration/query_perf_observability_test.rs
++++ b/tests/integration/query_perf_observability_test.rs
+@@ -18,8 +18,9 @@ static TIMING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+ // ΓöÇΓöÇ helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ 
+ async fn test_db(label: &str) -> CodeGraphQueries {
+-    let hash = format!("test_perf_obs_{label}_{}", std::process::id());
+-    let db = connect_db(&hash).await.expect("connect_db");
++    let branch = format!("test_perf_obs_{label}_{}", std::process::id());
++    let data_dir = std::env::temp_dir().join("engram-test");
++    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+     CodeGraphQueries::new(db)
+ }
+ 
+diff --git a/tests/integration/security_test.rs b/tests/integration/security_test.rs
+index f7c266f..25a75e5 100644
+--- a/tests/integration/security_test.rs
++++ b/tests/integration/security_test.rs
+@@ -204,12 +204,14 @@ fn s009_registry_path_traversal_rejected_by_validate_sources() {
+                 content_type: "docs".to_string(),
+                 language: None,
+                 path: "../../etc".to_string(),
++                pattern: None,
+                 status: ContentSourceStatus::Unknown,
+             },
+             ContentSource {
+                 content_type: "docs".to_string(),
+                 language: None,
+                 path: "../../../tmp".to_string(),
++                pattern: None,
+                 status: ContentSourceStatus::Unknown,
+             },
+         ],
+@@ -251,6 +253,7 @@ fn s009_registry_multiple_traversal_variants_all_rejected() {
+                 content_type: "docs".to_string(),
+                 language: None,
+                 path: variant.to_string(),
++                pattern: None,
+                 status: ContentSourceStatus::Unknown,
+             }],
+             max_file_size_bytes: 1_048_576,
+@@ -291,6 +294,7 @@ fn s010_symlink_escape_rejected_by_validate_sources() {
+             content_type: "docs".to_string(),
+             language: None,
+             path: "escaped".to_string(),
++            pattern: None,
+             status: ContentSourceStatus::Unknown,
+         }],
+         max_file_size_bytes: 1_048_576,
+@@ -324,6 +328,7 @@ fn workspace_isolation_registry_paths_confined_to_root() {
+             content_type: "docs".to_string(),
+             language: None,
+             path: "docs".to_string(),
++            pattern: None,
+             status: ContentSourceStatus::Unknown,
+         }],
+         max_file_size_bytes: 1_048_576,
+diff --git a/tests/unit/embedding_status_unit_test.rs b/tests/unit/embedding_status_unit_test.rs
+index b1bc596..b3f8898 100644
+--- a/tests/unit/embedding_status_unit_test.rs
++++ b/tests/unit/embedding_status_unit_test.rs
+@@ -3,9 +3,9 @@
+ //! Tests `is_available()`, `status()`, `compute_coverage()`, and
+ //! `has_meaningful_embedding()` in isolation without a live database.
+ 
+-use engram::services::embedding::{
+-    EmbeddingStatus, compute_coverage, has_meaningful_embedding, is_available,
+-};
++#[cfg(not(feature = "embeddings"))]
++use engram::services::embedding::is_available;
++use engram::services::embedding::{EmbeddingStatus, compute_coverage, has_meaningful_embedding};
+ 
+ // ΓöÇΓöÇ is_available() ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ 
+diff --git a/tests/unit/proptest_content.rs b/tests/unit/proptest_content.rs
+index 1132d84..3c39fec 100644
+--- a/tests/unit/proptest_content.rs
++++ b/tests/unit/proptest_content.rs
+@@ -38,6 +38,7 @@ fn arb_content_source() -> impl Strategy<Value = ContentSource> {
+             content_type,
+             language,
+             path,
++            pattern: None,
+             status: ContentSourceStatus::Unknown,
+         })
+ }
+diff --git a/tests/unit/registry_parse_test.rs b/tests/unit/registry_parse_test.rs
+index a99e799..526ee66 100644
+--- a/tests/unit/registry_parse_test.rs
++++ b/tests/unit/registry_parse_test.rs
+@@ -112,6 +112,25 @@ sources:
+     assert_eq!(config.sources[0].content_type, "code");
+ }
+ 
++#[test]
++fn pattern_field_parsed_correctly() {
++    let yaml = r"
++sources:
++  - type: spec
++    path: .backlog/documents
++    pattern: '*-research.md'
++  - type: backlog
++    path: .backlog/tasks
++  - type: memory
++    path: .backlog/archive
++";
++    let config = parse_registry_yaml(yaml).expect("pattern should parse");
++    assert_eq!(config.sources.len(), 3);
++    assert_eq!(config.sources[0].pattern.as_deref(), Some("*-research.md"));
++    assert!(config.sources[1].pattern.is_none());
++    assert!(config.sources[2].pattern.is_none());
++}
++
+ #[test]
+ fn defaults_applied_when_omitted() {
+     let yaml = r"

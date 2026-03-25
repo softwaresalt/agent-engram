@@ -13,6 +13,64 @@ use surrealdb::sql::Thing;
 use crate::db::{Db, map_db_err};
 use crate::errors::EngramError;
 
+// ── Query performance observability (dxo.5.1) ──────────────────────────
+
+/// Threshold in milliseconds above which a query is logged at WARN level.
+pub const SLOW_QUERY_THRESHOLD_MS: u128 = 100;
+
+/// Records query timing metadata and emits a warning for slow queries.
+///
+/// Intended to be called at the end of each public query method to:
+/// 1. Record `result_count` in the current tracing span.
+/// 2. Log a warning if elapsed time exceeds [`SLOW_QUERY_THRESHOLD_MS`].
+///
+/// # Arguments
+///
+/// * `query_type` — Category label (e.g., `"graph_traversal"`, `"knn_search"`, `"crud"`).
+/// * `table` — Primary table being queried (e.g., `"function"`, `"class"`).
+/// * `result_count` — Number of rows/items returned by the query.
+/// * `elapsed` — Wall-clock duration of the query execution.
+pub fn record_query_metrics(
+    query_type: &str,
+    table: &str,
+    result_count: usize,
+    elapsed: std::time::Duration,
+) {
+    let elapsed_ms = elapsed.as_millis();
+
+    // Record fields on the current tracing span (silently ignored when no
+    // matching pre-declared fields exist on the span).
+    let span = tracing::Span::current();
+    span.record("query_type", query_type);
+    span.record("table", table);
+    span.record("result_count", result_count);
+
+    // Downcast to u64 for tracing event fields (`u128` does not implement
+    // `tracing::Value`).
+    let elapsed_ms_u64 = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
+
+    tracing::info!(
+        query_type,
+        table,
+        result_count,
+        elapsed_ms = elapsed_ms_u64,
+        "query completed"
+    );
+
+    if elapsed_ms > SLOW_QUERY_THRESHOLD_MS {
+        tracing::warn!(
+            query_type,
+            table,
+            result_count,
+            elapsed_ms = elapsed_ms_u64,
+            "slow query detected"
+        );
+    }
+
+    // Update in-memory timing stats for health report aggregation.
+    crate::services::query_stats::record_timing(query_type, elapsed_ms_u64);
+}
+
 // ── Shared Row Types ───────────────────────────────────────────────────
 
 /// Internal row type for COUNT() aggregate queries.
@@ -66,6 +124,10 @@ struct FunctionRow {
     embedding: Vec<f32>,
     #[serde(default)]
     summary: String,
+    /// `SurrealDB`-computed KNN similarity score (present when queried via
+    /// `vector::similarity::cosine(embedding, $query) AS knn_score`).
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl FunctionRow {
@@ -105,6 +167,9 @@ struct ClassRow {
     embedding: Vec<f32>,
     #[serde(default)]
     summary: String,
+    /// `SurrealDB`-computed KNN similarity score.
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl ClassRow {
@@ -143,6 +208,9 @@ struct InterfaceRow {
     embedding: Vec<f32>,
     #[serde(default)]
     summary: String,
+    /// `SurrealDB`-computed KNN similarity score.
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl InterfaceRow {
@@ -199,10 +267,12 @@ impl CodeGraphQueries {
     // ── code_file CRUD ──────────────────────────────────────────────
 
     /// Insert or update a code file record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_code_file(
         &self,
         file: &crate::models::CodeFile,
     ) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = file.id.strip_prefix("code_file:").unwrap_or(&file.id);
         let record = Thing::from(("code_file", id_raw));
         #[allow(clippy::cast_possible_wrap)]
@@ -216,10 +286,12 @@ impl CodeGraphQueries {
             .bind(("hash", file.content_hash.clone()))
             .await
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "code_file", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up a code file by its workspace-relative path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_code_file_by_path(
         &self,
         path: &str,
@@ -235,6 +307,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete a code file record and all its `defines` edges.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_code_file(&self, path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM code_file WHERE path = $path")
@@ -245,6 +318,7 @@ impl CodeGraphQueries {
     }
 
     /// List all indexed code files.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_code_files(&self) -> Result<Vec<crate::models::CodeFile>, EngramError> {
         let mut response = self
             .db
@@ -256,6 +330,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all functions in the code graph.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_functions(&self) -> Result<Vec<crate::models::Function>, EngramError> {
         let mut resp = self
             .db
@@ -267,6 +342,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all classes in the code graph.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_classes(&self) -> Result<Vec<crate::models::Class>, EngramError> {
         let mut resp = self
             .db
@@ -278,6 +354,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all interfaces in the code graph.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_interfaces(&self) -> Result<Vec<crate::models::Interface>, EngramError> {
         let mut resp = self
             .db
@@ -289,6 +366,7 @@ impl CodeGraphQueries {
     }
 
     /// Return all code edges across every edge type.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn all_code_edges(&self) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
         use crate::models::code_edge::{CodeEdge, CodeEdgeType};
 
@@ -409,7 +487,9 @@ impl CodeGraphQueries {
     // ── function CRUD ───────────────────────────────────────────────
 
     /// Insert or update a function record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_function(&self, func: &crate::models::Function) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = func.id.strip_prefix("function:").unwrap_or(&func.id);
         let record = Thing::from(("function", id_raw));
         self.db
@@ -430,10 +510,12 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?
             .check()
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "function", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up a function by name.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_function_by_name(
         &self,
         name: &str,
@@ -449,6 +531,7 @@ impl CodeGraphQueries {
     }
 
     /// List all functions in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_functions_by_file(
         &self,
         file_path: &str,
@@ -464,6 +547,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all functions in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_functions_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM `function` WHERE file_path = $fp")
@@ -476,7 +560,9 @@ impl CodeGraphQueries {
     // ── class CRUD ──────────────────────────────────────────────────
 
     /// Insert or update a class record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_class(&self, class: &crate::models::Class) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = class.id.strip_prefix("class:").unwrap_or(&class.id);
         let record = Thing::from(("class", id_raw));
         self.db
@@ -496,10 +582,12 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?
             .check()
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "class", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up a class by name.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_class_by_name(
         &self,
         name: &str,
@@ -515,6 +603,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all classes in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_classes_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM class WHERE file_path = $fp")
@@ -527,10 +616,12 @@ impl CodeGraphQueries {
     // ── interface CRUD ──────────────────────────────────────────────
 
     /// Insert or update an interface record.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_interface(
         &self,
         iface: &crate::models::Interface,
     ) -> Result<(), EngramError> {
+        let start = std::time::Instant::now();
         let id_raw = iface.id.strip_prefix("interface:").unwrap_or(&iface.id);
         let record = Thing::from(("interface", id_raw));
         self.db
@@ -550,10 +641,12 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?
             .check()
             .map_err(map_db_err)?;
+        record_query_metrics("crud", "interface", 1, start.elapsed());
         Ok(())
     }
 
     /// Look up an interface by name.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_interface_by_name(
         &self,
         name: &str,
@@ -569,6 +662,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all interfaces in a given file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_interfaces_by_file(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM interface WHERE file_path = $fp")
@@ -582,6 +676,7 @@ impl CodeGraphQueries {
 
     /// Create a `calls` edge between two functions.
     #[allow(clippy::similar_names)]
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_calls_edge(
         &self,
         caller_id: &str,
@@ -606,6 +701,7 @@ impl CodeGraphQueries {
 
     /// Create an `imports` edge between two code files.
     #[allow(clippy::similar_names)]
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_imports_edge(
         &self,
         importer_id: &str,
@@ -635,6 +731,7 @@ impl CodeGraphQueries {
     }
 
     /// Create a `defines` edge from a code file to a symbol.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_defines_edge(
         &self,
         file_id: &str,
@@ -660,6 +757,7 @@ impl CodeGraphQueries {
     }
 
     /// Create an `inherits_from` edge from class to class/interface.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_inherits_edge(
         &self,
         child_table: &str,
@@ -687,6 +785,7 @@ impl CodeGraphQueries {
     }
 
     /// Create a `concerns` edge from a task to a code symbol.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn create_concerns_edge(
         &self,
         task_id: &str,
@@ -711,6 +810,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all edges of a given type originating from a code file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_edges_from_file(
         &self,
         edge_table: &str,
@@ -730,6 +830,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all symbols and edges for a file (used during re-indexing).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn clear_file_graph(&self, file_path: &str) -> Result<(), EngramError> {
         self.delete_functions_by_file(file_path).await?;
         self.delete_classes_by_file(file_path).await?;
@@ -742,6 +843,7 @@ impl CodeGraphQueries {
     /// Retrieve all `concerns` edges whose target (`out`) is a symbol in the
     /// given file path. Returns `(task_id, symbol_table, symbol_id, linked_by)`
     /// tuples for every matching edge.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_concerns_edges_for_file(
         &self,
         file_path: &str,
@@ -791,6 +893,7 @@ impl CodeGraphQueries {
     }
 
     /// Delete all `concerns` edges targeting a specific symbol node.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_concerns_edges_for_symbol(
         &self,
         symbol_table: &str,
@@ -821,6 +924,7 @@ impl CodeGraphQueries {
 
     /// Look up all symbols with a given `(name, body_hash)` across all symbol
     /// tables. Used for hash-resilient concerns edge relinking (FR-124).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn find_symbols_by_name_and_hash(
         &self,
         name: &str,
@@ -835,7 +939,7 @@ impl CodeGraphQueries {
                 *table
             };
             let query = format!(
-                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE name = $name AND body_hash = $bh"
+                "SELECT id, name, file_path, body_hash, embedding FROM {table_name} WHERE name = $name AND body_hash = $bh"
             );
             let mut resp = self
                 .db
@@ -852,6 +956,7 @@ impl CodeGraphQueries {
                     name: row.name,
                     file_path: row.file_path,
                     body_hash: row.body_hash,
+                    embedding: row.embedding,
                 });
             }
         }
@@ -861,6 +966,7 @@ impl CodeGraphQueries {
 
     /// Get all symbols (name + body_hash) in a given file, for pre-sync
     /// snapshot used by hash-resilient concerns relinking.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn get_symbol_identities_for_file(
         &self,
         file_path: &str,
@@ -874,7 +980,7 @@ impl CodeGraphQueries {
                 *table
             };
             let query = format!(
-                "SELECT id, name, file_path, body_hash FROM {table_name} WHERE file_path = $fp"
+                "SELECT id, name, file_path, body_hash, embedding FROM {table_name} WHERE file_path = $fp"
             );
             let mut resp = self
                 .db
@@ -890,6 +996,7 @@ impl CodeGraphQueries {
                     name: row.name,
                     file_path: row.file_path,
                     body_hash: row.body_hash,
+                    embedding: row.embedding,
                 });
             }
         }
@@ -900,6 +1007,7 @@ impl CodeGraphQueries {
     // ── Concerns Edge CRUD for link/unlink (T049) ───────────────────
 
     /// Check if a `concerns` edge already exists between task and symbol (FR-152 idempotency).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn concerns_edge_exists(
         &self,
         task_id: &str,
@@ -926,6 +1034,7 @@ impl CodeGraphQueries {
     /// Delete all `concerns` edges from a task to symbols with the given name.
     ///
     /// Returns the number of edges deleted.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_concerns_by_task_and_symbol_name(
         &self,
         task_id: &str,
@@ -964,6 +1073,7 @@ impl CodeGraphQueries {
     }
 
     /// List all `concerns` edges for a given task, returning symbol info.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_concerns_for_task(
         &self,
         task_id: &str,
@@ -1004,6 +1114,7 @@ impl CodeGraphQueries {
     /// `concerns` edges (task → symbol direction, queried in reverse).
     ///
     /// Returns `(task_id, symbol_id)` pairs so callers can build dependency paths.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn find_tasks_for_symbols(
         &self,
         symbol_ids: &[String],
@@ -1035,7 +1146,9 @@ impl CodeGraphQueries {
     /// Look up all symbols (functions, classes, interfaces) whose name matches exactly.
     ///
     /// Returns a vec of `(table, id, name, file_path)` tuples across all symbol tables.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
+        let start = std::time::Instant::now();
         let mut results = Vec::new();
 
         // Query functions
@@ -1113,6 +1226,12 @@ impl CodeGraphQueries {
             });
         }
 
+        record_query_metrics(
+            "symbol_lookup",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
         Ok(results)
     }
 
@@ -1120,6 +1239,7 @@ impl CodeGraphQueries {
     /// hops and capping at `max_nodes` total results.
     ///
     /// Returns the list of neighbor nodes (excluding the root) and edges.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn bfs_neighborhood(
         &self,
         root_id: &str,
@@ -1249,6 +1369,7 @@ impl CodeGraphQueries {
     }
 
     /// Resolve any symbol ID to its full metadata.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn resolve_symbol(&self, node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
         let (table, _raw_id) = parse_node_id(node_id);
 
@@ -1363,6 +1484,7 @@ impl CodeGraphQueries {
     ///
     /// Filters by `file_path`, `node_type` (function/class/interface),
     /// and `name_prefix`. Returns paginated results with total count.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_symbols(
         &self,
         filter: &SymbolFilter,
@@ -1545,113 +1667,577 @@ impl CodeGraphQueries {
 
     /// Vector search across all symbol embeddings. Returns up to `limit` nearest
     /// matches by cosine similarity.
+    ///
+    /// Delegates to [`vector_search_symbols_native`] and strips scores.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn vector_search_symbols(
         &self,
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<SymbolMatch>, EngramError> {
-        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
+        let start = std::time::Instant::now();
+        let with_scores = self
+            .vector_search_symbols_native(query_embedding, limit)
+            .await?;
+        let results: Vec<SymbolMatch> = with_scores.into_iter().map(|(_, m)| m).collect();
+        record_query_metrics(
+            "knn_search",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
+        Ok(results)
+    }
 
-        // Search functions
+    // ── Native KNN vector search (dxo.2.1 / dxo.2.3) ─────────────
+
+    /// Vector search using `SurrealDB`'s native KNN operator with MTREE indexes.
+    ///
+    /// Replaces the O(n) full-table-scan approach in [`vector_search_symbols`]
+    /// with O(log n) index-backed queries using `<|K,COSINE|>`.
+    ///
+    /// Scores are `SurrealDB`-authoritative: computed via
+    /// `vector::similarity::cosine(embedding, $query)` in the SELECT clause.
+    ///
+    /// Returns up to `limit` nearest matches with cosine similarity scores.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if any database query fails.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn vector_search_symbols_native(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let start = std::time::Instant::now();
+        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
+        let query_vec = query_embedding.to_vec();
+
+        // ── Functions — KNN + DB-computed score ──
+        let func_sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM `function` WHERE embedding <|{limit},COSINE|> $query"
+        );
         let mut resp = self
             .db
-            .query("SELECT * FROM `function`")
+            .query(&func_sql)
+            .bind(("query", query_vec.clone()))
             .await
             .map_err(map_db_err)?;
         let func_rows: Vec<FunctionRow> = resp.take(0).map_err(map_db_err)?;
         for row in func_rows {
-            let f = row.into_function();
-            if has_meaningful_embedding(&f.embedding) {
-                let score = cosine_similarity(query_embedding, &f.embedding);
-                results.push((
-                    score,
-                    SymbolMatch {
-                        table: "function".to_owned(),
-                        id: f.id,
-                        name: f.name,
-                        file_path: f.file_path,
-                        line_start: Some(f.line_start),
-                        line_end: Some(f.line_end),
-                        signature: Some(f.signature),
-                        body: f.body,
-                        embed_type: Some(f.embed_type),
-                        summary: Some(f.summary),
-                        embedding: f.embedding,
-                    },
-                ));
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue; // skip zero-vector records (NaN cosine distance)
             }
+            let score = raw_score.clamp(0.0, 1.0);
+            let f = row.into_function();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "function".to_owned(),
+                    id: f.id,
+                    name: f.name,
+                    file_path: f.file_path,
+                    line_start: Some(f.line_start),
+                    line_end: Some(f.line_end),
+                    signature: Some(f.signature),
+                    body: f.body,
+                    embed_type: Some(f.embed_type),
+                    summary: Some(f.summary),
+                    embedding: f.embedding,
+                },
+            ));
         }
 
-        // Search classes
+        // ── Classes — KNN + DB-computed score ──
+        let class_sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM class WHERE embedding <|{limit},COSINE|> $query"
+        );
         let mut resp = self
             .db
-            .query("SELECT * FROM class")
+            .query(&class_sql)
+            .bind(("query", query_vec.clone()))
             .await
             .map_err(map_db_err)?;
         let class_rows: Vec<ClassRow> = resp.take(0).map_err(map_db_err)?;
         for row in class_rows {
-            let c = row.into_class();
-            if has_meaningful_embedding(&c.embedding) {
-                let score = cosine_similarity(query_embedding, &c.embedding);
-                results.push((
-                    score,
-                    SymbolMatch {
-                        table: "class".to_owned(),
-                        id: c.id,
-                        name: c.name,
-                        file_path: c.file_path,
-                        line_start: Some(c.line_start),
-                        line_end: Some(c.line_end),
-                        signature: None,
-                        body: c.body,
-                        embed_type: Some(c.embed_type),
-                        summary: Some(c.summary),
-                        embedding: c.embedding,
-                    },
-                ));
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
             }
+            let score = raw_score.clamp(0.0, 1.0);
+            let c = row.into_class();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "class".to_owned(),
+                    id: c.id,
+                    name: c.name,
+                    file_path: c.file_path,
+                    line_start: Some(c.line_start),
+                    line_end: Some(c.line_end),
+                    signature: None,
+                    body: c.body,
+                    embed_type: Some(c.embed_type),
+                    summary: Some(c.summary),
+                    embedding: c.embedding,
+                },
+            ));
         }
 
-        // Search interfaces
+        // ── Interfaces — KNN + DB-computed score ──
+        let iface_sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM interface WHERE embedding <|{limit},COSINE|> $query"
+        );
         let mut resp = self
             .db
-            .query("SELECT * FROM interface")
+            .query(&iface_sql)
+            .bind(("query", query_vec))
             .await
             .map_err(map_db_err)?;
         let iface_rows: Vec<InterfaceRow> = resp.take(0).map_err(map_db_err)?;
         for row in iface_rows {
-            let i = row.into_interface();
-            if has_meaningful_embedding(&i.embedding) {
-                let score = cosine_similarity(query_embedding, &i.embedding);
-                results.push((
-                    score,
-                    SymbolMatch {
-                        table: "interface".to_owned(),
-                        id: i.id,
-                        name: i.name,
-                        file_path: i.file_path,
-                        line_start: Some(i.line_start),
-                        line_end: Some(i.line_end),
-                        signature: None,
-                        body: i.body,
-                        embed_type: Some(i.embed_type),
-                        summary: Some(i.summary),
-                        embedding: i.embedding,
-                    },
-                ));
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
             }
+            let score = raw_score.clamp(0.0, 1.0);
+            let i = row.into_interface();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "interface".to_owned(),
+                    id: i.id,
+                    name: i.name,
+                    file_path: i.file_path,
+                    line_start: Some(i.line_start),
+                    line_end: Some(i.line_end),
+                    signature: None,
+                    body: i.body,
+                    embed_type: Some(i.embed_type),
+                    summary: Some(i.summary),
+                    embedding: i.embedding,
+                },
+            ));
         }
 
-        // Sort by score descending and take top `limit`
+        // Merge results across tables, sort by score descending, take top limit
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        let matches: Vec<SymbolMatch> = results.into_iter().take(limit).map(|(_, m)| m).collect();
+        results.truncate(limit);
 
-        Ok(matches)
+        record_query_metrics(
+            "knn_search",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
+        Ok(results)
+    }
+
+    // ── Hybrid graph + vector search (dxo.3.1) ───────────────────────
+
+    /// Combines SurrealQL graph traversal with vector KNN search in a single
+    /// database round-trip.
+    ///
+    /// Traverses `edge_types` outbound from `root_id` up to `max_depth` hops,
+    /// then filters those neighbors by cosine similarity to `query_embedding`,
+    /// returning up to `limit` results ordered by similarity score descending.
+    ///
+    /// When `edge_types` is empty, all five default edge types (`calls`,
+    /// `imports`, `defines`, `inherits_from`, `concerns`) are traversed.
+    ///
+    /// `max_depth` is capped at 5 to bound query complexity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngramError`] if the database query fails.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn hybrid_graph_vector_search(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        query_embedding: &[f32],
+        limit: usize,
+        edge_types: &[&str],
+    ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
+        const DEFAULT_EDGES: [&str; 5] =
+            ["calls", "imports", "defines", "inherits_from", "concerns"];
+        const MAX_DEPTH_CAP: usize = 5;
+
+        if limit == 0 || max_depth == 0 {
+            return Ok(Vec::new());
+        }
+
+        let start = std::time::Instant::now();
+
+        let effective_depth = max_depth.min(MAX_DEPTH_CAP);
+        let edges: &[&str] = if edge_types.is_empty() {
+            &DEFAULT_EDGES
+        } else {
+            edge_types
+        };
+
+        let root_thing = parse_thing(root_id);
+        let mut sql = String::new();
+
+        // Build one LET variable per BFS depth level (outbound traversal only).
+        for depth in 1..=effective_depth {
+            let where_clause: String = if depth == 1 {
+                "= $root".to_owned()
+            } else {
+                format!("IN $d{}", depth - 1)
+            };
+
+            let edge_union = edges
+                .iter()
+                .map(|e| format!("(SELECT VALUE out FROM {e} WHERE in {where_clause})"))
+                .reduce(|acc, p| format!("array::union({acc}, {p})"))
+                .unwrap_or_else(|| "[]".to_owned());
+
+            sql.push_str(&format!("LET $d{depth} = array::distinct({edge_union});"));
+        }
+
+        // Union all per-depth neighbor sets into $all_neighbors.
+        let all_union = (1..=effective_depth)
+            .map(|d| format!("$d{d}"))
+            .reduce(|acc, d| format!("array::union({acc}, {d})"))
+            .unwrap_or_else(|| "[]".to_owned());
+        sql.push_str(&format!(
+            "LET $all_neighbors = array::distinct({all_union});"
+        ));
+
+        // KNN queries per table, each filtered to the neighbor set.
+        // Statement indices: LET $d1..N = indices 0..N-1,
+        // LET $all_neighbors = index N, then SELECTs at N+1, N+2, N+3.
+        sql.push_str(&format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM `function` WHERE id IN $all_neighbors \
+             AND embedding <|{limit},COSINE|> $query \
+             ORDER BY knn_score DESC LIMIT {limit};"
+        ));
+        sql.push_str(&format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM class WHERE id IN $all_neighbors \
+             AND embedding <|{limit},COSINE|> $query \
+             ORDER BY knn_score DESC LIMIT {limit};"
+        ));
+        sql.push_str(&format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM interface WHERE id IN $all_neighbors \
+             AND embedding <|{limit},COSINE|> $query \
+             ORDER BY knn_score DESC LIMIT {limit};"
+        ));
+
+        let func_idx = effective_depth + 1;
+        let class_idx = effective_depth + 2;
+        let iface_idx = effective_depth + 3;
+
+        let query_vec = query_embedding.to_vec();
+        let mut resp = self
+            .db
+            .query(&sql)
+            .bind(("root", root_thing))
+            .bind(("query", query_vec))
+            .await
+            .map_err(map_db_err)?;
+
+        let mut results: Vec<(f32, SymbolMatch)> = Vec::new();
+
+        // ── Functions ──
+        let func_rows: Vec<FunctionRow> = resp.take(func_idx).map_err(map_db_err)?;
+        for row in func_rows {
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
+            let f = row.into_function();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "function".to_owned(),
+                    id: f.id,
+                    name: f.name,
+                    file_path: f.file_path,
+                    line_start: Some(f.line_start),
+                    line_end: Some(f.line_end),
+                    signature: Some(f.signature),
+                    body: f.body,
+                    embed_type: Some(f.embed_type),
+                    summary: Some(f.summary),
+                    embedding: f.embedding,
+                },
+            ));
+        }
+
+        // ── Classes ──
+        let class_rows: Vec<ClassRow> = resp.take(class_idx).map_err(map_db_err)?;
+        for row in class_rows {
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
+            let c = row.into_class();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "class".to_owned(),
+                    id: c.id,
+                    name: c.name,
+                    file_path: c.file_path,
+                    line_start: Some(c.line_start),
+                    line_end: Some(c.line_end),
+                    signature: None,
+                    body: c.body,
+                    embed_type: Some(c.embed_type),
+                    summary: Some(c.summary),
+                    embedding: c.embedding,
+                },
+            ));
+        }
+
+        // ── Interfaces ──
+        let iface_rows: Vec<InterfaceRow> = resp.take(iface_idx).map_err(map_db_err)?;
+        for row in iface_rows {
+            let raw_score = row.knn_score.unwrap_or(0.0);
+            if !raw_score.is_finite() {
+                continue;
+            }
+            let score = raw_score.clamp(0.0, 1.0);
+            let i = row.into_interface();
+            results.push((
+                score,
+                SymbolMatch {
+                    table: "interface".to_owned(),
+                    id: i.id,
+                    name: i.name,
+                    file_path: i.file_path,
+                    line_start: Some(i.line_start),
+                    line_end: Some(i.line_end),
+                    signature: None,
+                    body: i.body,
+                    embed_type: Some(i.embed_type),
+                    summary: Some(i.summary),
+                    embedding: i.embedding,
+                },
+            ));
+        }
+
+        // Merge results across tables, sort by score descending, take top limit.
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+
+        record_query_metrics(
+            "hybrid_search",
+            "function,class,interface",
+            results.len(),
+            start.elapsed(),
+        );
+        Ok(results)
+    }
+
+    // ── Native graph traversal (dxo.1.1) ─────────────────────────
+
+    /// Traverse the code graph using native SurrealQL `->edge->` / `<-edge<-`
+    /// syntax instead of the manual BFS in [`bfs_neighborhood`].
+    ///
+    /// Issues a single batched SurrealQL query per hop covering all edge types
+    /// (calls, imports, defines, `inherits_from`, concerns) in both directions,
+    /// replacing the N×5 round-trip pattern of the original BFS.
+    ///
+    /// Returns the same [`BfsResult`] shape for backward compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if the database query fails.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn graph_neighborhood(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<BfsResult, EngramError> {
+        let start = std::time::Instant::now();
+        // Edge types traversed in both directions per hop.
+        const EDGE_TABLES: [&str; 5] = ["calls", "imports", "defines", "inherits_from", "concerns"];
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = Vec::new();
+        let mut neighbors: Vec<SymbolMatch> = Vec::new();
+        let mut edges: Vec<BfsEdge> = Vec::new();
+        let mut truncated = false;
+
+        visited.insert(root_id.to_owned());
+        frontier.push(root_id.to_owned());
+
+        for _depth in 0..max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+
+            let mut next_frontier: Vec<String> = Vec::new();
+
+            for current_id in &frontier {
+                if truncated {
+                    break;
+                }
+
+                let record = parse_thing(current_id);
+
+                // Single batched query: 10 statements (5 outbound + 5 inbound)
+                // covering all edge types in one database round-trip.
+                let mut resp = self
+                    .db
+                    .query(
+                        "SELECT out FROM calls WHERE in = $node;\
+                         SELECT out FROM imports WHERE in = $node;\
+                         SELECT out FROM defines WHERE in = $node;\
+                         SELECT out FROM inherits_from WHERE in = $node;\
+                         SELECT out FROM concerns WHERE in = $node;\
+                         SELECT in FROM calls WHERE out = $node;\
+                         SELECT in FROM imports WHERE out = $node;\
+                         SELECT in FROM defines WHERE out = $node;\
+                         SELECT in FROM inherits_from WHERE out = $node;\
+                         SELECT in FROM concerns WHERE out = $node;",
+                    )
+                    .bind(("node", record))
+                    .await
+                    .map_err(map_db_err)?;
+
+                // Process outbound edges (statements 0..5).
+                for (idx, edge_type) in EDGE_TABLES.iter().enumerate() {
+                    let rows: Vec<OutEdgeRow> = resp.take(idx).map_err(map_db_err)?;
+                    for row in rows {
+                        let target_id = format!("{}:{}", row.out.tb, row.out.id.to_raw());
+                        truncated = !self
+                            .try_add_neighbor(
+                                current_id,
+                                &target_id,
+                                edge_type,
+                                true,
+                                max_nodes,
+                                &mut visited,
+                                &mut neighbors,
+                                &mut edges,
+                                &mut next_frontier,
+                            )
+                            .await?;
+                        if truncated {
+                            break;
+                        }
+                    }
+                    if truncated {
+                        break;
+                    }
+                }
+
+                // Process inbound edges (statements 5..10).
+                if !truncated {
+                    for (idx, edge_type) in EDGE_TABLES.iter().enumerate() {
+                        let rows: Vec<InEdgeRow> = resp.take(5 + idx).map_err(map_db_err)?;
+                        for row in rows {
+                            let source_id = format!("{}:{}", row.r#in.tb, row.r#in.id.to_raw());
+                            truncated = !self
+                                .try_add_neighbor(
+                                    current_id,
+                                    &source_id,
+                                    edge_type,
+                                    false,
+                                    max_nodes,
+                                    &mut visited,
+                                    &mut neighbors,
+                                    &mut edges,
+                                    &mut next_frontier,
+                                )
+                                .await?;
+                            if truncated {
+                                break;
+                            }
+                        }
+                        if truncated {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            frontier = next_frontier;
+        }
+
+        let result = BfsResult {
+            neighbors,
+            edges,
+            truncated,
+        };
+        record_query_metrics(
+            "graph_traversal",
+            "all",
+            result.neighbors.len(),
+            start.elapsed(),
+        );
+        Ok(result)
+    }
+
+    /// Try to add a neighbor discovered during [`graph_neighborhood`] traversal.
+    ///
+    /// Returns `Ok(true)` if the neighbor was added (or already visited),
+    /// `Ok(false)` if `max_nodes` was reached and traversal should stop.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_add_neighbor(
+        &self,
+        current_id: &str,
+        neighbor_id: &str,
+        edge_type: &str,
+        is_outbound: bool,
+        max_nodes: usize,
+        visited: &mut HashSet<String>,
+        neighbors: &mut Vec<SymbolMatch>,
+        edges: &mut Vec<BfsEdge>,
+        next_frontier: &mut Vec<String>,
+    ) -> Result<bool, EngramError> {
+        if visited.contains(neighbor_id) {
+            return Ok(true);
+        }
+        if neighbors.len() >= max_nodes {
+            return Ok(false);
+        }
+
+        visited.insert(neighbor_id.to_owned());
+
+        if let Some(sym) = self.resolve_symbol(neighbor_id).await? {
+            neighbors.push(sym);
+
+            let (from, to) = if is_outbound {
+                (current_id.to_owned(), neighbor_id.to_owned())
+            } else {
+                (neighbor_id.to_owned(), current_id.to_owned())
+            };
+
+            edges.push(BfsEdge {
+                edge_type: edge_type.to_owned(),
+                from,
+                to,
+            });
+
+            next_frontier.push(neighbor_id.to_owned());
+        }
+
+        Ok(true)
     }
 
     // ── Embedding write-back (T076/T077) ────────────────────────────
 
     /// Update the embedding vector for any symbol node by its full ID (e.g., `"function:abc"`).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn update_symbol_embedding(
         &self,
         sym_id: &str,
@@ -1671,6 +2257,7 @@ impl CodeGraphQueries {
     // ── COUNT queries (T094) ─────────────────────────────────────────
 
     /// Return the total count of indexed code files.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_code_files(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -1682,6 +2269,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of indexed functions.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_functions(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -1693,6 +2281,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of indexed classes.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_classes(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -1704,6 +2293,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of indexed interfaces.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_interfaces(&self) -> Result<u64, EngramError> {
         let mut resp = self
             .db
@@ -1715,6 +2305,7 @@ impl CodeGraphQueries {
     }
 
     /// Return the total count of code edges across all edge types.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn count_code_edges(&self) -> Result<u64, EngramError> {
         let mut total = 0u64;
         for table in &["calls", "imports", "defines", "inherits_from", "concerns"] {
@@ -1731,6 +2322,7 @@ impl CodeGraphQueries {
     /// List all `concerns` edges for multiple tasks in a single query.
     ///
     /// Returns a map of `task_id` → `Vec<ConcernsLink>`.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn list_concerns_for_tasks(
         &self,
         task_ids: &[String],
@@ -1752,6 +2344,7 @@ impl CodeGraphQueries {
 
     /// Upsert a content record by file path, creating or replacing
     /// the existing record for that file.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_content_record(
         &self,
         record: &crate::models::ContentRecord,
@@ -1788,10 +2381,12 @@ impl CodeGraphQueries {
     }
 
     /// Select all content records, optionally filtered by content type.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn select_content_records(
         &self,
         content_type: Option<&str>,
     ) -> Result<Vec<crate::models::ContentRecord>, EngramError> {
+        let start = std::time::Instant::now();
         let rows: Vec<ContentRecordRow> = if let Some(ct) = content_type {
             self.db
                 .query("SELECT * FROM content_record WHERE content_type = $ct ORDER BY file_path")
@@ -1808,10 +2403,38 @@ impl CodeGraphQueries {
                 .take(0)
                 .map_err(map_db_err)?
         };
-        Ok(rows.into_iter().map(ContentRecordRow::into_model).collect())
+        let records: Vec<_> = rows.into_iter().map(ContentRecordRow::into_model).collect();
+        record_query_metrics(
+            "content_search",
+            "content_record",
+            records.len(),
+            start.elapsed(),
+        );
+        Ok(records)
+    }
+
+    /// Update the embedding vector for a content record by its ID.
+    ///
+    /// Used by the content embedding backfill pass to store vectors generated
+    /// by the embedding service after initial ingestion.
+    #[tracing::instrument(skip(self, embedding), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn update_content_record_embedding(
+        &self,
+        record_id: &str,
+        embedding: Vec<f32>,
+    ) -> Result<(), EngramError> {
+        let record = Thing::from(("content_record", record_id));
+        self.db
+            .query("UPDATE $id SET embedding = $emb")
+            .bind(("id", record))
+            .bind(("emb", embedding))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
     }
 
     /// Delete a content record by file path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
         self.db
             .query("DELETE FROM content_record WHERE file_path = $fp")
@@ -1821,9 +2444,86 @@ impl CodeGraphQueries {
         Ok(())
     }
 
+    /// Search content records by vector similarity using the database-native MTREE KNN operator.
+    ///
+    /// Returns up to `limit` records ranked by cosine similarity to `query_embedding`.
+    /// Optionally restricted to a single `content_type`. Records without embeddings are
+    /// excluded automatically by the KNN operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if the database query fails.
+    #[tracing::instrument(skip(self, query_embedding), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn vector_search_content_native(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        content_type: Option<&str>,
+    ) -> Result<Vec<(f32, crate::models::ContentRecord)>, EngramError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let start = std::time::Instant::now();
+        let query_vec = query_embedding.to_vec();
+
+        // Fetch more candidates than needed so that post-filtering by content_type
+        // still yields `limit` results. SurrealDB's MTREE KNN operator does not
+        // reliably combine with additional WHERE predicates, so filtering is done
+        // in Rust after the KNN scan.
+        let fetch_limit = if content_type.is_some() {
+            limit.saturating_mul(4).max(50)
+        } else {
+            limit
+        };
+
+        let sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $query) AS knn_score \
+             FROM content_record WHERE embedding <|{fetch_limit},COSINE|> $query"
+        );
+
+        let mut resp = self
+            .db
+            .query(&sql)
+            .bind(("query", query_vec))
+            .await
+            .map_err(map_db_err)?;
+
+        let rows: Vec<ContentRecordRow> = resp.take(0).map_err(map_db_err)?;
+        let mut results: Vec<(f32, crate::models::ContentRecord)> = rows
+            .into_iter()
+            .filter_map(|row| {
+                // Apply content_type filter in Rust to avoid MTREE+WHERE interaction issues.
+                if let Some(ct) = content_type {
+                    if row.content_type != ct {
+                        return None;
+                    }
+                }
+                let raw_score = row.knn_score.unwrap_or(0.0);
+                if !raw_score.is_finite() {
+                    return None; // skip zero-vector records (NaN cosine distance)
+                }
+                let score = raw_score.clamp(0.0, 1.0);
+                Some((score, row.into_model()))
+            })
+            .collect();
+
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+
+        record_query_metrics(
+            "knn_content_search",
+            "content_record",
+            results.len(),
+            start.elapsed(),
+        );
+        Ok(results)
+    }
+
     // ── Commit Node queries ─────────────────────────────────────────
 
     /// Upsert a commit node by hash.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_commit_node(
         &self,
         node: &crate::models::CommitNode,
@@ -1858,6 +2558,7 @@ impl CodeGraphQueries {
     }
 
     /// Select commit nodes within a date range, ordered by timestamp descending.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn select_commits_by_date_range(
         &self,
         since: Option<&DateTime<Utc>>,
@@ -1919,6 +2620,7 @@ impl CodeGraphQueries {
     }
 
     /// Select commit nodes that have a change record for a given file path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn select_commits_by_file_path(
         &self,
         file_path: &str,
@@ -1945,6 +2647,7 @@ impl CodeGraphQueries {
     ///
     /// Used by the git graph service to resume incremental indexing without
     /// re-walking commits that are already stored.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn latest_indexed_commit_hash(&self) -> Result<Option<String>, EngramError> {
         #[derive(serde::Deserialize)]
         struct HashRow {
@@ -1991,6 +2694,8 @@ pub struct SymbolIdentity {
     pub file_path: String,
     /// Body hash for identity matching.
     pub body_hash: String,
+    /// Embedding vector — carried forward to avoid zero-vector writes on re-sync.
+    pub embedding: Vec<f32>,
 }
 
 /// Internal row for ID-only queries.
@@ -2041,6 +2746,8 @@ struct SymbolIdentityRow {
     name: String,
     file_path: String,
     body_hash: String,
+    #[serde(default)]
+    embedding: Vec<f32>,
 }
 
 // ── Supporting Types for BFS / Symbol Listing ──────────────────────────
@@ -2166,6 +2873,9 @@ struct ContentRecordRow {
     file_size_bytes: i64,
     #[serde(default)]
     ingested_at: Option<String>,
+    /// Populated only by KNN queries via `vector::similarity::cosine(...) AS knn_score`.
+    #[serde(default)]
+    knn_score: Option<f32>,
 }
 
 impl ContentRecordRow {
@@ -2246,34 +2956,108 @@ fn parse_thing(node_id: &str) -> Thing {
     Thing::from((table.as_str(), raw_id.as_str()))
 }
 
-/// Compute cosine similarity between two vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
+// ── File Hash Record ───────────────────────────────────────────────────────────
+
+// The public `FileHashRecord` type lives in `crate::models::file_hash`; re-export
+// it here so existing code inside this module compiles unchanged.
+pub use crate::models::FileHashRecord;
+
+/// Internal row type for deserializing `file_hash` records from SurrealDB.
+///
+/// SurrealDB returns `int` fields as `i64`; `FileHashRow` absorbs this and
+/// converts to the `u64` exposed by the public model type.
+#[derive(Deserialize)]
+struct FileHashRow {
+    file_path: String,
+    content_hash: String,
+    size_bytes: i64,
+    recorded_at: DateTime<Utc>,
 }
 
-/// Returns `true` if `e` is a non-empty vector with at least one non-zero component.
-///
-/// Excludes the zero-vector placeholder used when embeddings are unavailable.
-/// A zero embedding cannot be meaningfully ranked by cosine similarity — its
-/// denominator is zero, so every query matches at score 0.0 uniformly.
-fn has_meaningful_embedding(e: &[f32]) -> bool {
-    !e.is_empty() && e.iter().any(|&v| v != 0.0)
+impl FileHashRow {
+    fn into_record(self) -> FileHashRecord {
+        FileHashRecord {
+            file_path: self.file_path,
+            content_hash: self.content_hash,
+            size_bytes: u64::try_from(self.size_bytes).unwrap_or(0),
+            recorded_at: self.recorded_at,
+        }
+    }
+}
+
+impl CodeGraphQueries {
+    // ── File Hash queries ─────────────────────────────────────────────────────
+
+    /// Upsert a file hash record, creating or replacing the stored hash for
+    /// `file_path` with the given `content_hash` and `size_bytes`.
+    ///
+    /// The record ID is derived from the SHA-256 hash of `file_path` for a
+    /// stable, collision-free key.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn upsert_file_hash(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        size_bytes: u64,
+    ) -> Result<(), EngramError> {
+        use sha2::{Digest, Sha256};
+        let id = hex::encode(Sha256::digest(file_path.as_bytes()));
+        let thing = Thing::from(("file_hash", id.as_str()));
+        let now = chrono::Utc::now().to_rfc3339();
+        let start = std::time::Instant::now();
+        self.db
+            .query(
+                "UPSERT $record SET \
+                    file_path = $file_path, \
+                    content_hash = $content_hash, \
+                    size_bytes = $size_bytes, \
+                    recorded_at = <datetime>$now",
+            )
+            .bind(("record", thing))
+            .bind(("file_path", file_path.to_owned()))
+            .bind(("content_hash", content_hash.to_owned()))
+            .bind(("size_bytes", i64::try_from(size_bytes).unwrap_or(i64::MAX)))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?;
+        record_query_metrics("crud", "file_hash", 1, start.elapsed());
+        Ok(())
+    }
+
+    /// Retrieve all stored file hash records for the current workspace.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn get_all_file_hashes(&self) -> Result<Vec<FileHashRecord>, EngramError> {
+        let start = std::time::Instant::now();
+        let rows: Vec<FileHashRow> = self
+            .db
+            .query("SELECT file_path, content_hash, size_bytes, recorded_at FROM file_hash ORDER BY file_path")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        let records: Vec<_> = rows.into_iter().map(FileHashRow::into_record).collect();
+        record_query_metrics("crud", "file_hash", records.len(), start.elapsed());
+        Ok(records)
+    }
+
+    /// Delete the stored hash record for a single workspace-relative file path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn delete_file_hash_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM file_hash WHERE file_path = $fp")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::services::embedding::has_meaningful_embedding;
 
     // ── GAP-002: has_meaningful_embedding unit tests ─────────────────
+    // Tests are against the canonical `services::embedding::has_meaningful_embedding`.
 
     #[test]
     fn meaningful_embedding_excludes_empty_vec() {
@@ -2294,6 +3078,7 @@ mod tests {
 
     #[test]
     fn meaningful_embedding_accepts_small_nonzero() {
-        assert!(has_meaningful_embedding(&[0.0, 0.0, f32::MIN_POSITIVE]));
+        // f32::MIN_POSITIVE < f32::EPSILON, so use a value above EPSILON threshold
+        assert!(has_meaningful_embedding(&[0.0, 0.0, 2.0 * f32::EPSILON]));
     }
 }

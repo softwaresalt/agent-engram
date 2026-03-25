@@ -11,7 +11,8 @@ The Engram daemon accepts configuration through CLI flags and `ENGRAM_`-prefixed
 3. [Example Invocations](#example-invocations)
 4. [Installer Options](#installer-options)
 5. [Workspace Config File](#workspace-config-file)
-6. [Validation Rules](#validation-rules)
+6. [Content Registry (`registry.yaml`)](#content-registry-registryyaml)
+7. [Validation Rules](#validation-rules)
 
 ---
 
@@ -258,6 +259,235 @@ Each workspace may optionally contain `.engram/config.toml` to set workspace-lev
 ```
 
 > **Note**: Workspace config keys are validated against a known schema. Unknown keys return error code `6003` (`UNKNOWN_CONFIG_KEY`).
+
+---
+
+## Content Registry (`registry.yaml`)
+
+Every workspace contains `.engram/registry.yaml`, which tells Engram which directories to ingest as searchable content records. The file is generated automatically by `engram install` by scanning for well-known directories; you can edit it freely afterward.
+
+### File Format
+
+```yaml
+sources:
+  - type: docs             # required — see Content Types below
+    path: docs             # required — path relative to the workspace root
+    language: markdown     # optional — language hint (see Language Hints)
+
+  - type: spec
+    path: specs
+
+  - type: instructions
+    path: .github
+    language: markdown
+
+  - type: memory
+    path: .copilot-tracking
+```
+
+Each entry under `sources` is a content source with these fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | Yes | Content type. See [Content Types](#content-types) below. |
+| `path` | Yes | Directory path relative to the workspace root. Must be a directory. Subdirectory paths are valid — each entry indexes only its declared subtree. |
+| `language` | No | Language hint used when indexing `code` type sources. Ignored by the content ingestion pipeline. |
+| `pattern` | No | Glob pattern for filtering files within the source directory. See [File Pattern Filtering](#file-pattern-filtering). |
+
+### Content Types
+
+Engram recognizes seven built-in content types. Custom type strings are also accepted (see [Custom Types](#custom-types)).
+
+#### `backlog`
+
+Structured project backlog content managed by a backlog tool (such as Backlog.md): feature definitions, user stories, tasks, ADRs, decisions, and research documents. Ingested as content records searchable via `query_memory`. Using a dedicated `backlog` type (rather than `docs`, `spec`, or `memory`) lets agents filter specifically for planning artifacts without pulling in unrelated documentation.
+
+```yaml
+- type: backlog
+  path: .backlog
+  language: markdown
+```
+
+> [!NOTE]
+> If your backlog tool stores completed and archived items under subdirectories (`.backlog/completed/`, `.backlog/archive/`), they are included automatically — Engram traverses the whole directory tree for each source entry.
+
+#### `docs`
+
+Documentation files: `docs/`, `README` files, architecture guides, changelogs. Ingested as searchable content records accessible via `query_memory`. Use this type for any directory whose purpose is explaining the project to humans or agents.
+
+```yaml
+- type: docs
+  path: docs
+  language: markdown
+```
+
+#### `spec`
+
+Specification and design documents: feature specs, API contracts, behavior descriptions. Ingested as content records with the `spec` content type, allowing `query_memory` to filter on `content_type = "spec"`. Use this type for structured requirement documents that describe _what_ the system does.
+
+```yaml
+- type: spec
+  path: specs
+```
+
+#### `tests`
+
+Test files and test documentation: integration test directories, test fixtures with embedded comments, testing guides. Ingested as content records for semantic search. Use this type alongside the code graph — the code graph indexes the test code as symbols while the content record captures free-form test descriptions.
+
+```yaml
+- type: tests
+  path: tests
+  language: rust
+```
+
+#### `instructions`
+
+Agent configuration and instructions: `.github/` with Copilot instruction files, agent prompts, custom workflow definitions. Ingested as content records so agents can search for relevant guidance. This is the natural type for any directory containing instructions files or prompt templates.
+
+```yaml
+- type: instructions
+  path: .github
+  language: markdown
+```
+
+#### `context`
+
+Active workspace context: conversation fragments, session notes, or any directory an agent writes ephemeral context into. Ingested and searchable via `query_memory`. Distinct from `memory` primarily by intent — context is the current working set while memory is historical.
+
+```yaml
+- type: context
+  path: .context
+```
+
+#### `memory`
+
+Persistent memory and notes: agent-written summaries, review logs, tracked decisions. Ingested as searchable content records. Any directory that functions as an external memory store fits here.
+
+```yaml
+- type: memory
+  path: .copilot-tracking
+  language: markdown
+
+- type: memory
+  path: .backlog
+```
+
+#### `code`
+
+Reserved for the code graph indexer. Sources of type `code` are **skipped by the content ingestion pipeline** and do not produce content records. The code graph indexer discovers source files automatically using gitignore-aware traversal; you do not need a `code` entry for Engram to index your source code.
+
+A `code` entry in `registry.yaml` acts as documentation that a given directory is source code. It has no operational effect on ingestion or indexing today.
+
+```yaml
+- type: code
+  path: src
+  language: rust
+```
+
+### Custom Types
+
+You can use any string as a content type. Custom types go through the same content ingestion pipeline as the built-in types (except `code`). They appear as-is in the `content_type` field of content records and can be filtered in `query_memory`.
+
+```yaml
+- type: rfcs
+  path: rfcs
+  language: markdown
+
+- type: runbooks
+  path: ops/runbooks
+```
+
+### Subdirectory Classification
+
+Because `path` can point to any subdirectory, a single root directory can be split across multiple entries with different types. Each entry ingests only its declared subtree — there is no overlap unless two entries point to overlapping paths.
+
+This is the recommended approach for the `.backlog/` directory managed by Backlog.md, where different subdirectories hold content with distinct purposes:
+
+```yaml
+sources:
+  # Active planning artifacts — searchable as 'backlog'
+  - type: backlog
+    path: .backlog/tasks
+    language: markdown
+
+  - type: backlog
+    path: .backlog/milestones
+    language: markdown
+
+  # Research and design documents — searchable as 'spec'
+  - type: spec
+    path: .backlog/documents
+    language: markdown
+
+  # Historical record — searchable as 'memory', excluded from 'backlog' queries
+  - type: memory
+    path: .backlog/completed
+    language: markdown
+
+  - type: memory
+    path: .backlog/archive
+    language: markdown
+```
+
+With this configuration, `query_memory` with `content_type = "backlog"` returns only active tasks and milestones, while `content_type = "memory"` covers historical completed and archived items.
+
+### File Pattern Filtering
+
+The optional `pattern` field limits ingestion to files matching a glob expression. The pattern is matched against each file's path **relative to the source directory** (not the workspace root), using standard glob syntax:
+
+| Syntax | Matches |
+|---|---|
+| `*` | Any sequence of characters within a single path segment |
+| `**` | Any sequence of characters across path separators |
+| `?` | Any single character |
+| `[abc]` | A character class |
+
+```yaml
+sources:
+  # Only ingest files ending with '-research.md' from the documents folder
+  - type: spec
+    path: .backlog/documents
+    pattern: '*-research.md'
+    language: markdown
+
+  # Only Markdown files anywhere under the docs tree
+  - type: docs
+    path: docs
+    pattern: '**/*.md'
+
+  # Everything — same as omitting the pattern field
+  - type: backlog
+    path: .backlog/tasks
+```
+
+> [!NOTE]
+> When a `pattern` is invalid, Engram logs a warning and ingests the entire directory rather than skipping the source silently.
+
+### Language Hints
+
+The `language` field is optional on all source entries. For non-`code` types the field is stored but has no effect on ingestion behavior. Common values include `markdown`, `rust`, `typescript`, `python`, `go`, `json`, and `yaml`. Using consistent values makes it easier to filter content records programmatically.
+
+### Auto-Detection
+
+`engram install` (and `engram reinstall`) scans the workspace root for the following directories and generates matching entries automatically:
+
+| Directory | Generated Type | Language Hint |
+|---|---|---|
+| `src/` | `code` | `rust` |
+| `tests/` | `tests` | `rust` |
+| `specs/` | `spec` | `markdown` |
+| `docs/` | `docs` | `markdown` |
+| `backlog/` | `docs` | `markdown` |
+| `.context/` | `context` | `markdown` |
+| `.github/` | `instructions` | `markdown` |
+| `.copilot-tracking/` | `memory` | `markdown` |
+| `.backlog/` | `backlog` | `markdown` |
+
+Any directory not in this list requires a manual entry. Re-running `engram install` overwrites the generated entries; the `engram install --hooks-only` flag regenerates hook files without touching `registry.yaml`.
+
+### Startup Behavior
+
+On startup, after the code graph is synchronized, the daemon reads `registry.yaml` and ingests all active sources through the content ingestion pipeline. Any content records without embedding vectors are then backfilled automatically (when compiled with the `embeddings` feature). This means a fully populated `registry.yaml` is sufficient — you do not need to call any MCP tool to trigger ingestion.
 
 ---
 
