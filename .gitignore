@@ -32,10 +32,6 @@ Thumbs.db
 .copilot/
 .beads/.beads-credential-key
 
-# Local tooling state (not part of the product)
-.backlog/
-.context/
-
 # Logs and temp files
 *.log
 *.tmp
