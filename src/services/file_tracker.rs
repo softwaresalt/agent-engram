@@ -148,22 +148,22 @@ pub async fn detect_offline_changes(
     let root = workspace_root.to_path_buf();
 
     // All blocking I/O runs in a dedicated thread so the event loop is free.
-    let changes =
-        tokio::task::spawn_blocking(move || compare_disk_to_stored(&root, stored_map))
-            .await
-            .map_err(|e| {
-                EngramError::System(SystemError::DatabaseError {
-                    reason: format!("file tracker scan task panicked: {e}"),
-                })
-            })?;
+    let changes = tokio::task::spawn_blocking(move || compare_disk_to_stored(&root, stored_map))
+        .await
+        .map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("file tracker scan task panicked: {e}"),
+            })
+        })?;
 
-    let (added, modified, deleted) = changes.iter().fold((0usize, 0, 0), |(a, m, d), c| {
-        match c.kind {
-            FileChangeKind::Added => (a + 1, m, d),
-            FileChangeKind::Modified => (a, m + 1, d),
-            FileChangeKind::Deleted => (a, m, d + 1),
-        }
-    });
+    let (added, modified, deleted) =
+        changes
+            .iter()
+            .fold((0usize, 0, 0), |(a, m, d), c| match c.kind {
+                FileChangeKind::Added => (a + 1, m, d),
+                FileChangeKind::Modified => (a, m + 1, d),
+                FileChangeKind::Deleted => (a, m, d + 1),
+            });
 
     tracing::info!(
         added,

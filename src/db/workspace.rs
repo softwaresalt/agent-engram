@@ -15,9 +15,37 @@ use crate::errors::WorkspaceError;
 fn normalize_canonical(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
-        let s = path.to_string_lossy();
-        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            return PathBuf::from(stripped.to_string());
+        use std::path::{Component, Prefix};
+
+        // Inspect the leading path component to detect any verbatim prefix
+        // (`\\?\C:\...` or `\\?\UNC\server\share\...`).  String round-trips
+        // miss the UNC variant and produce non-canonical output on non-UTF-8
+        // paths; component inspection is exact.
+        if let Some(Component::Prefix(prefix_component)) = path.components().next() {
+            let rebuilt: Option<PathBuf> = match prefix_component.kind() {
+                Prefix::VerbatimDisk(drive) => {
+                    // \\?\C:\rest  →  C:\rest
+                    let suffix: PathBuf = path.components().skip(1).collect();
+                    Some(PathBuf::from(format!("{}:\\", drive as char)).join(suffix))
+                }
+                Prefix::VerbatimUNC(server, share) => {
+                    // \\?\UNC\server\share\rest  →  \\server\share\rest
+                    let server = server.to_string_lossy();
+                    let share = share.to_string_lossy();
+                    let suffix: PathBuf = path.components().skip(1).collect();
+                    Some(PathBuf::from(format!(r"\\{server}\{share}")).join(suffix))
+                }
+                Prefix::Verbatim(inner) => {
+                    // \\?\other  →  other (best-effort)
+                    let inner = inner.to_string_lossy();
+                    let suffix: PathBuf = path.components().skip(1).collect();
+                    Some(PathBuf::from(inner.as_ref()).join(suffix))
+                }
+                _ => None,
+            };
+            if let Some(p) = rebuilt {
+                return p;
+            }
         }
     }
     path

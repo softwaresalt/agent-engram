@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use surrealdb::Surreal;
@@ -26,7 +26,7 @@ pub type Db = Surreal<LocalDb>;
 /// each entry holds a cloneable `Surreal<LocalDb>` handle.  `LazyLock`
 /// avoids polluting `AppState` and the `static` is safe because `Db` is
 /// `Send + Sync`.
-static DB_CACHE: LazyLock<RwLock<HashMap<String, Db>>> =
+static DB_CACHE: LazyLock<RwLock<HashMap<PathBuf, Db>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Return a cached SurrealDB handle for the given workspace, opening a new
@@ -36,7 +36,7 @@ static DB_CACHE: LazyLock<RwLock<HashMap<String, Db>>> =
 /// SurrealKV engine.
 pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError> {
     let db_path = data_dir.join("db").join(branch);
-    let cache_key = db_path.to_string_lossy().to_string();
+    let cache_key = db_path.clone();
 
     // Fast path: existing connection
     {

@@ -112,8 +112,8 @@ pub fn merge_unified_results(
 /// Code symbol search should use
 /// [`CodeGraphQueries::vector_search_symbols_native`] which delegates to
 /// SurrealDB's native `<|K,COSINE|>` KNN operator. This function is retained
-/// only for content-record scoring in [`hybrid_search`], which cannot use
-/// DB-native KNN because content records lack an MTREE index.
+/// only for content-record scoring in [`hybrid_search`], which applies
+/// application-level scoring rather than DB-native KNN.
 #[deprecated(
     note = "Use SurrealDB native KNN via CodeGraphQueries::vector_search_symbols_native() \
             for code symbol similarity. Only hybrid_search content scoring may use this."

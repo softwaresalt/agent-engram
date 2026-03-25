@@ -4,9 +4,27 @@
 //! `query_type`, `table`, and `result_count` fields, and that slow
 //! queries (>100ms) produce WARN-level log entries.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tracing_subscriber::layer::SubscriberExt;
+
 use engram::db::queries::{SLOW_QUERY_THRESHOLD_MS, record_query_metrics};
+
+/// A minimal tracing `Layer` that counts WARN-level events.
+struct WarnCounter(Arc<Mutex<usize>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCounter {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().level() == &tracing::Level::WARN {
+            *self.0.lock().unwrap() += 1;
+        }
+    }
+}
 
 #[test]
 fn slow_query_threshold_is_100ms() {
@@ -29,13 +47,28 @@ fn record_query_metrics_does_not_panic_for_normal_query() {
 }
 
 #[test]
-fn record_query_metrics_does_not_panic_for_slow_query() {
-    // GIVEN a query that exceeds the slow threshold
-    let elapsed = Duration::from_millis(200);
+fn record_query_metrics_emits_warn_for_slow_query() {
+    // GIVEN a custom tracing layer that counts WARN events
+    let warn_count = Arc::new(Mutex::new(0_usize));
+    let subscriber = tracing_subscriber::registry().with(WarnCounter(warn_count.clone()));
+    let _guard = tracing::subscriber::set_default(subscriber);
 
-    // WHEN we record metrics for a slow query
-    // THEN it should not panic (and should emit a WARN log)
-    record_query_metrics("graph_traversal", "function", 42, elapsed);
+    // AND a duration that exceeds the slow-query threshold
+    let slow = Duration::from_millis(200);
+    assert!(
+        slow.as_millis() > SLOW_QUERY_THRESHOLD_MS,
+        "test duration must exceed SLOW_QUERY_THRESHOLD_MS ({SLOW_QUERY_THRESHOLD_MS}ms) \
+         to exercise the WARN path"
+    );
+
+    // WHEN metrics are recorded
+    record_query_metrics("graph_traversal", "function", 42, slow);
+
+    // THEN at least one WARN event must have been emitted
+    assert!(
+        *warn_count.lock().unwrap() > 0,
+        "record_query_metrics must emit a WARN event when elapsed exceeds SLOW_QUERY_THRESHOLD_MS"
+    );
 }
 
 #[test]

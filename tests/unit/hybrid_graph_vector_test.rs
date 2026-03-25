@@ -1,40 +1,45 @@
 //! Unit tests for dxo.3.1: `hybrid_graph_vector_search` method on `CodeGraphQueries`.
 //!
-//! These source-level tests verify that the method exists with the correct
-//! signature before exercising it in integration tests (dxo.3.3).
+//! These compile-time tests verify that the method exists with the correct
+//! signature. If the method is removed or its signature changes, this file
+//! will not compile, surfacing the contract breakage at build time rather
+//! than at runtime.
 
-// GIVEN the queries module source
-// WHEN we inspect it
-// THEN hybrid_graph_vector_search method must be present
+use engram::db::queries::{CodeGraphQueries, SymbolMatch};
+use engram::errors::EngramError;
+
+/// Compile-time contract check: `hybrid_graph_vector_search` must exist on
+/// `CodeGraphQueries`, accept the specified parameter types, and return
+/// `Result<Vec<(f32, SymbolMatch)>, EngramError>`.
+///
+/// This function is never called; its existence enforces the API at compile time.
+#[allow(dead_code)]
+fn _assert_hybrid_graph_vector_search_signature(
+    q: &CodeGraphQueries,
+) -> impl std::future::Future<Output = Result<Vec<(f32, SymbolMatch)>, EngramError>> + '_ {
+    // root_id: &str, max_depth: usize, query_embedding: &[f32], limit: usize, edge_types: &[&str]
+    q.hybrid_graph_vector_search("root", 2, &[0.0f32; 4], 5, &["calls", "imports"])
+}
+
+// GIVEN the hybrid_graph_vector_search API contract
+// WHEN this file compiles
+// THEN the method exists with the expected signature, parameter types, and return type
+
 #[test]
 fn hybrid_graph_vector_search_method_exists() {
-    let source = include_str!("../../src/db/queries.rs");
-    assert!(
-        source.contains("hybrid_graph_vector_search"),
-        "queries.rs must define hybrid_graph_vector_search"
-    );
+    // Compilation of `_assert_hybrid_graph_vector_search_signature` above IS
+    // the test. Source scanning is replaced by a compile-time type check that
+    // the Rust type checker enforces on every build.
 }
 
-// GIVEN the hybrid_graph_vector_search method
-// WHEN we check its return type
-// THEN it must return Vec<(f32, SymbolMatch)>
 #[test]
 fn hybrid_graph_vector_search_returns_scored_symbol_matches() {
-    let source = include_str!("../../src/db/queries.rs");
-    assert!(
-        source.contains("Vec<(f32, SymbolMatch)>"),
-        "hybrid_graph_vector_search must return Vec<(f32, SymbolMatch)>"
-    );
+    // Verified at compile time: the return type `Result<Vec<(f32, SymbolMatch)>, _>`
+    // is the declared return of `_assert_hybrid_graph_vector_search_signature`.
 }
 
-// GIVEN the hybrid_graph_vector_search method
-// WHEN we inspect its parameters
-// THEN it must accept a configurable edge_types slice
 #[test]
 fn hybrid_graph_vector_search_accepts_edge_types_slice() {
-    let source = include_str!("../../src/db/queries.rs");
-    assert!(
-        source.contains("edge_types: &[&str]"),
-        "hybrid_graph_vector_search must accept edge_types: &[&str] parameter"
-    );
+    // Verified at compile time: `_assert_hybrid_graph_vector_search_signature`
+    // passes `&["calls", "imports"]` for the `edge_types: &[&str]` parameter.
 }
