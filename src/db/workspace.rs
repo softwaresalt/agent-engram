@@ -32,13 +32,14 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
         });
     }
 
-    let canonical = normalize_canonical(
-        candidate
-            .canonicalize()
-            .map_err(|_| WorkspaceError::NotFound {
-                path: path.to_string(),
-            })?,
-    );
+    let canonical =
+        normalize_canonical(
+            candidate
+                .canonicalize()
+                .map_err(|_| WorkspaceError::NotFound {
+                    path: path.to_string(),
+                })?,
+        );
 
     if !canonical.join(".git").is_dir() {
         return Err(WorkspaceError::NotGitRoot {

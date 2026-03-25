@@ -158,8 +158,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
         });
     }
 
-    // ── 7. Start file watcher and wire TTL reset ──────────────────────────────
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<WatcherEvent>();
+    // ── 7. Start file watcher ─────────────────────────────────────────────────
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WatcherEvent>();
 
     let watcher_config = WatcherConfig {
         debounce_ms: plugin_config.debounce_ms,
@@ -172,34 +172,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
             None
         });
 
-    {
-        let ttl_for_watcher = Arc::clone(&ttl);
-        tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                // S047: every file event resets the idle timer.
-                ttl_for_watcher.reset();
-                // T092: classify the event and log code-file changes so the
-                // daemon is aware of pending re-indexing work without triggering
-                // an expensive workspace-level sync on every save.  The client
-                // drives explicit sync_workspace calls via MCP.
-                match crate::daemon::debounce::adapt_event(&event) {
-                    crate::daemon::debounce::ServiceAction::ReindexFile { path } => {
-                        tracing::debug!(
-                            path = %path.display(),
-                            "watcher: source file changed — pending for next sync_workspace"
-                        );
-                    }
-                    crate::daemon::debounce::ServiceAction::ReingestContent { path } => {
-                        tracing::debug!(
-                            path = %path.display(),
-                            "watcher: content file changed — pending for re-ingestion"
-                        );
-                    }
-                    crate::daemon::debounce::ServiceAction::Skip => {}
-                }
-            }
-        });
-    }
+    // event_rx is forwarded to run_with_shutdown which wires up TTL resets,
+    // debounced auto-sync, and auto-flush using the shared AppState.
 
     // ── T080: Workspace-moved detection — check every 60s that workspace still valid ──
     // If the workspace directory is moved or deleted while the daemon is running,
@@ -229,6 +203,7 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
         Arc::clone(&ttl),
         Arc::clone(&shutdown_tx),
         shutdown_rx,
+        event_rx,
     )
     .await?;
 
