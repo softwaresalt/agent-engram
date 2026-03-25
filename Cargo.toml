@@ -329,3 +329,7 @@ path = "tests/integration/query_tracing_test.rs"
 [[test]]
 name = "integration_content_knn_search"
 path = "tests/integration/content_knn_search_test.rs"
+
+[[test]]
+name = "integration_file_tracker"
+path = "tests/integration/file_tracker_test.rs"

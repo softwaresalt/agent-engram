@@ -10,6 +10,7 @@ pub mod config;
 pub mod connection;
 pub mod dehydration;
 pub mod embedding;
+pub mod file_tracker;
 pub mod gate;
 #[cfg(feature = "git-graph")]
 pub mod git_graph;

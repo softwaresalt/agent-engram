@@ -1424,6 +1424,7 @@ dependencies = [
  "fastembed",
  "fd-lock",
  "git2",
+ "globset",
  "hex",
  "ignore",
  "interprocess",

@@ -2956,6 +2956,110 @@ fn parse_thing(node_id: &str) -> Thing {
     Thing::from((table.as_str(), raw_id.as_str()))
 }
 
+// ── File Hash Record ───────────────────────────────────────────────────────────
+
+/// A stored file hash record from the `file_hash` table.
+///
+/// Maps a workspace-relative file path to its last-known SHA-256 content hash
+/// and size, enabling offline change detection on daemon restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileHashRecord {
+    /// Workspace-relative file path (e.g., `src/main.rs`).
+    pub file_path: String,
+    /// SHA-256 hex digest of the file contents at record time.
+    pub content_hash: String,
+    /// File size in bytes at record time.
+    pub size_bytes: u64,
+    /// Timestamp when the hash was last recorded.
+    pub recorded_at: DateTime<Utc>,
+}
+
+/// Internal row type for deserializing `file_hash` records from SurrealDB.
+#[derive(Deserialize)]
+struct FileHashRow {
+    file_path: String,
+    content_hash: String,
+    size_bytes: i64,
+    recorded_at: DateTime<Utc>,
+}
+
+impl FileHashRow {
+    fn into_record(self) -> FileHashRecord {
+        FileHashRecord {
+            file_path: self.file_path,
+            content_hash: self.content_hash,
+            size_bytes: u64::try_from(self.size_bytes).unwrap_or(0),
+            recorded_at: self.recorded_at,
+        }
+    }
+}
+
+impl CodeGraphQueries {
+    // ── File Hash queries ─────────────────────────────────────────────────────
+
+    /// Upsert a file hash record, creating or replacing the stored hash for
+    /// `file_path` with the given `content_hash` and `size_bytes`.
+    ///
+    /// The record ID is derived from the SHA-256 hash of `file_path` for a
+    /// stable, collision-free key.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn upsert_file_hash(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        size_bytes: u64,
+    ) -> Result<(), EngramError> {
+        use sha2::{Digest, Sha256};
+        let id = hex::encode(Sha256::digest(file_path.as_bytes()));
+        let thing = Thing::from(("file_hash", id.as_str()));
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .query(
+                "UPSERT $record SET \
+                    file_path = $file_path, \
+                    content_hash = $content_hash, \
+                    size_bytes = $size_bytes, \
+                    recorded_at = <datetime>$now",
+            )
+            .bind(("record", thing))
+            .bind(("file_path", file_path.to_owned()))
+            .bind(("content_hash", content_hash.to_owned()))
+            .bind(("size_bytes", i64::try_from(size_bytes).unwrap_or(i64::MAX)))
+            .bind(("now", now))
+            .await
+            .map_err(map_db_err)?;
+        record_query_metrics("crud", "file_hash", 1, std::time::Duration::ZERO);
+        Ok(())
+    }
+
+    /// Retrieve all stored file hash records for the current workspace.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn get_all_file_hashes(&self) -> Result<Vec<FileHashRecord>, EngramError> {
+        let start = std::time::Instant::now();
+        let rows: Vec<FileHashRow> = self
+            .db
+            .query("SELECT file_path, content_hash, size_bytes, recorded_at FROM file_hash ORDER BY file_path")
+            .await
+            .map_err(map_db_err)?
+            .take(0)
+            .map_err(map_db_err)?;
+        let records: Vec<_> = rows.into_iter().map(FileHashRow::into_record).collect();
+        record_query_metrics("crud", "file_hash", records.len(), start.elapsed());
+        Ok(records)
+    }
+
+    /// Delete the stored hash record for a single workspace-relative file path.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub async fn delete_file_hash_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+        self.db
+            .query("DELETE FROM file_hash WHERE file_path = $fp")
+            .bind(("fp", file_path.to_owned()))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::services::embedding::has_meaningful_embedding;
