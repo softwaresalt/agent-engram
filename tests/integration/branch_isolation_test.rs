@@ -39,26 +39,40 @@ async fn i009_01_different_branches_use_different_db_directories() {
     // WHEN set_workspace is called with branch "alpha"
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/alpha\n").expect("write HEAD alpha");
     let state_a = Arc::new(AppState::new(10));
-    tools::dispatch(state_a.clone(), "set_workspace", Some(json!({ "path": path.clone() })))
-        .await
-        .expect("set_workspace alpha");
+    tools::dispatch(
+        state_a.clone(),
+        "set_workspace",
+        Some(json!({ "path": path.clone() })),
+    )
+    .await
+    .expect("set_workspace alpha");
     let snap_a = state_a.snapshot_workspace().await.expect("snapshot alpha");
 
     // AND set_workspace is called with branch "beta"
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/beta\n").expect("write HEAD beta");
     let state_b = Arc::new(AppState::new(10));
-    tools::dispatch(state_b.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace beta");
+    tools::dispatch(
+        state_b.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace beta");
     let snap_b = state_b.snapshot_workspace().await.expect("snapshot beta");
 
     // THEN the branch names in the snapshots are distinct
-    assert_ne!(snap_a.branch, snap_b.branch, "snapshots must record different branch names");
+    assert_ne!(
+        snap_a.branch, snap_b.branch,
+        "snapshots must record different branch names"
+    );
 
     // AND the resolved DB storage directories differ
     let db_a = snap_a.data_dir.join("db").join(&snap_a.branch);
     let db_b = snap_b.data_dir.join("db").join(&snap_b.branch);
-    assert_ne!(db_a, db_b, "DB storage directories must differ across branches");
+    assert_ne!(
+        db_a, db_b,
+        "DB storage directories must differ across branches"
+    );
 }
 
 // ── I009-02: Branch databases are data-isolated ───────────────────────────────
@@ -79,9 +93,13 @@ async fn i009_02_branch_databases_do_not_share_records() {
     // Bind "alpha"
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/alpha\n").expect("write HEAD alpha");
     let state_a = Arc::new(AppState::new(10));
-    tools::dispatch(state_a.clone(), "set_workspace", Some(json!({ "path": path.clone() })))
-        .await
-        .expect("set_workspace alpha");
+    tools::dispatch(
+        state_a.clone(),
+        "set_workspace",
+        Some(json!({ "path": path.clone() })),
+    )
+    .await
+    .expect("set_workspace alpha");
     let snap_a = state_a.snapshot_workspace().await.expect("snapshot alpha");
 
     // WHEN a record is inserted into the alpha DB
@@ -96,9 +114,13 @@ async fn i009_02_branch_databases_do_not_share_records() {
     // AND bind "beta" (same root path, different HEAD)
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/beta\n").expect("write HEAD beta");
     let state_b = Arc::new(AppState::new(10));
-    tools::dispatch(state_b.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace beta");
+    tools::dispatch(
+        state_b.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace beta");
     let snap_b = state_b.snapshot_workspace().await.expect("snapshot beta");
 
     // THEN the beta DB does not contain the alpha record
@@ -134,13 +156,20 @@ async fn i009_03_snapshot_branch_reflects_git_head() {
     let state = Arc::new(AppState::new(10));
 
     // WHEN set_workspace is called
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
 
     // THEN the snapshot branch equals the .git/HEAD branch name
     let snap = state.snapshot_workspace().await.expect("snapshot");
-    assert_eq!(snap.branch, "release-1.0", "snapshot.branch must match .git/HEAD ref");
+    assert_eq!(
+        snap.branch, "release-1.0",
+        "snapshot.branch must match .git/HEAD ref"
+    );
 }
 
 // ── I009-04: get_workspace_status.db_path encodes the branch ─────────────────
@@ -161,9 +190,13 @@ async fn i009_04_workspace_status_db_path_encodes_branch() {
     let path = workspace.path().to_string_lossy().to_string();
 
     let state = Arc::new(AppState::new(10));
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace");
 
     // WHEN get_workspace_status is called
     let status = tools::dispatch(state.clone(), "get_workspace_status", None)

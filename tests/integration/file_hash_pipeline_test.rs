@@ -48,9 +48,13 @@ async fn bind_git_workspace(files: &[(&str, &str)]) -> (TempDir, Arc<AppState>) 
 
     let state = Arc::new(AppState::new(10));
     let path = ws.path().to_string_lossy().to_string();
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace must succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
 
     (ws, state)
 }
@@ -77,9 +81,13 @@ async fn s085_no_offline_changes_after_index_workspace() {
     .await;
 
     // WHEN index_workspace is called
-    tools::dispatch(state.clone(), "index_workspace", Some(json!({ "force": true })))
-        .await
-        .expect("index_workspace must succeed");
+    tools::dispatch(
+        state.clone(),
+        "index_workspace",
+        Some(json!({ "force": true })),
+    )
+    .await
+    .expect("index_workspace must succeed");
 
     // THEN detect_offline_changes returns no changes for indexed src/ files
     let snap = state.snapshot_workspace().await.expect("snapshot");
@@ -118,9 +126,13 @@ async fn s086_indexed_files_have_file_hash_records() {
     let (ws, state) = bind_git_workspace(&[("src/utils.rs", "pub fn helper() {}")]).await;
 
     // WHEN index_workspace is called
-    tools::dispatch(state.clone(), "index_workspace", Some(json!({ "force": true })))
-        .await
-        .expect("index_workspace must succeed");
+    tools::dispatch(
+        state.clone(),
+        "index_workspace",
+        Some(json!({ "force": true })),
+    )
+    .await
+    .expect("index_workspace must succeed");
 
     // THEN the file_hash table contains a record for src/utils.rs
     let snap = state.snapshot_workspace().await.expect("snapshot");
@@ -157,12 +169,20 @@ async fn s087_reindex_unchanged_files_is_idempotent() {
         bind_git_workspace(&[("src/stable.rs", "pub fn stable() -> u32 { 42 }")]).await;
 
     // WHEN index_workspace is called twice with force=true
-    tools::dispatch(state.clone(), "index_workspace", Some(json!({ "force": true })))
-        .await
-        .expect("first index_workspace");
-    tools::dispatch(state.clone(), "index_workspace", Some(json!({ "force": true })))
-        .await
-        .expect("second index_workspace");
+    tools::dispatch(
+        state.clone(),
+        "index_workspace",
+        Some(json!({ "force": true })),
+    )
+    .await
+    .expect("first index_workspace");
+    tools::dispatch(
+        state.clone(),
+        "index_workspace",
+        Some(json!({ "force": true })),
+    )
+    .await
+    .expect("second index_workspace");
 
     // THEN detect_offline_changes shows no changes for that file
     let snap = state.snapshot_workspace().await.expect("snapshot");
@@ -201,9 +221,13 @@ async fn s088_file_modified_after_indexing_is_detected() {
     let (ws, state) =
         bind_git_workspace(&[("src/mutable.rs", "pub fn version() -> u32 { 1 }")]).await;
 
-    tools::dispatch(state.clone(), "index_workspace", Some(json!({ "force": true })))
-        .await
-        .expect("index_workspace");
+    tools::dispatch(
+        state.clone(),
+        "index_workspace",
+        Some(json!({ "force": true })),
+    )
+    .await
+    .expect("index_workspace");
 
     let snap = state.snapshot_workspace().await.expect("snapshot");
     let db = connect_db(&snap.data_dir, &snap.branch)
@@ -212,8 +236,11 @@ async fn s088_file_modified_after_indexing_is_detected() {
     let queries = CodeGraphQueries::new(db);
 
     // WHEN the file is modified after indexing recorded its hash
-    fs::write(ws.path().join("src/mutable.rs"), "pub fn version() -> u32 { 2 }")
-        .expect("write updated content");
+    fs::write(
+        ws.path().join("src/mutable.rs"),
+        "pub fn version() -> u32 { 2 }",
+    )
+    .expect("write updated content");
 
     // THEN detect_offline_changes reports src/mutable.rs as Modified
     let changes = detect_offline_changes(ws.path(), &queries)

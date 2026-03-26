@@ -2,6 +2,7 @@
 id: TASK-009.01
 title: '009-01: Add current_git_branch() to workspace.rs'
 status: Done
+type: task
 assignee: []
 created_date: '2026-03-22 21:51'
 updated_date: '2026-03-25 22:40'

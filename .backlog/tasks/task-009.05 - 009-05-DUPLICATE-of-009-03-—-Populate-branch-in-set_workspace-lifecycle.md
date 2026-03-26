@@ -2,6 +2,7 @@
 id: TASK-009.05
 title: '009-05: DUPLICATE of 009-03 — Populate branch in set_workspace lifecycle'
 status: Done
+type: task
 assignee: []
 created_date: '2026-03-22 21:52'
 updated_date: '2026-03-25 22:40'

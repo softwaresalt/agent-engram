@@ -2,6 +2,7 @@
 id: TASK-009
 title: '009: Branch-Aware Database Isolation'
 status: To Do
+type: feature
 assignee: []
 created_date: '2026-03-22 21:50'
 updated_date: '2026-03-25 22:41'

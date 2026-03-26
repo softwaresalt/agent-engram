@@ -2,6 +2,7 @@
 id: TASK-009.06
 title: '009-06: Expose branch in MCP status responses'
 status: Done
+type: task
 assignee: []
 created_date: '2026-03-22 21:52'
 updated_date: '2026-03-25 22:40'

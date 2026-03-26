@@ -31,8 +31,7 @@ fn s081_same_path_different_branch_produces_different_hash() {
 
     // THEN the digests differ
     assert_ne!(
-        hash_main,
-        hash_dev,
+        hash_main, hash_dev,
         "workspace_id must differ across branches for the same path \
          (worker: include branch in SHA-256 — see workspace_hash doc)"
     );
@@ -72,7 +71,10 @@ fn s083_different_paths_produce_different_hashes() {
     let hash_b = workspace_hash(path_b, branch);
 
     // THEN the digests differ
-    assert_ne!(hash_a, hash_b, "distinct paths must yield distinct workspace IDs");
+    assert_ne!(
+        hash_a, hash_b,
+        "distinct paths must yield distinct workspace IDs"
+    );
 }
 
 // ── S084: Detached-HEAD branch string treated as opaque identifier ─────────────
@@ -94,13 +96,15 @@ fn s084_detached_head_branch_is_distinct_from_named_branch() {
 
     // THEN the two digests differ (branch is part of the identity)
     assert_ne!(
-        h_sha,
-        h_main,
+        h_sha, h_main,
         "detached-HEAD SHA branch must differ from named branch hash \
          (worker: include branch in SHA-256 — see workspace_hash doc)"
     );
 
     // AND the SHA-branch hash is stable across repeated calls
     let h_sha2 = workspace_hash(path, sha_branch);
-    assert_eq!(h_sha, h_sha2, "detached-HEAD branch hash must be deterministic");
+    assert_eq!(
+        h_sha, h_sha2,
+        "detached-HEAD branch hash must be deterministic"
+    );
 }

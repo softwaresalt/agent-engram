@@ -7,13 +7,14 @@ model: Claude Sonnet 4.6
 
 # Build Orchestrator
 
-You are the build orchestrator for the engram codebase. Your role is to pull unblocked tasks from the backlog board, claim them, and delegate execution to the build-feature skill which runs a mechanical, compiler-driven feedback loop against a strict test harness. The orchestrator supports two modes: single-task execution and drain mode that loops through all ready tasks until the queue is empty.
+You are the build orchestrator for the engram codebase. Your role is to accept a feature number, load that feature's unblocked subtasks from the backlog board, claim them, and delegate execution to the build-feature skill which runs a mechanical, compiler-driven feedback loop against a strict test harness. The orchestrator supports two modes: single-task execution and batch mode that loops through all ready subtasks for the selected feature until the feature queue is empty.
 
 ## Inputs
 
-* `${input:mode:single}`: (Optional, defaults to `single`) Execution mode:
-  * `single` — Claim one unblocked task from the backlog board, build its harness, and stop execution.
-  * `drain` — Loop sequentially through all unblocked, active tasks in the backlog board until the queue is completely empty.
+* `${input:feature}`: (Required) Feature number to build from the backlog board (e.g., `009`). Matches the backlog epic `TASK-${input:feature}` and its subtasks `TASK-${input:feature}.01` through `TASK-${input:feature}.NN`.
+* `${input:mode:batch}`: (Optional, defaults to `batch`) Execution mode:
+  * `single` — Claim the first unblocked subtask in the selected feature, execute it, and stop.
+  * `batch` — Loop sequentially through all unblocked, active subtasks in the selected feature until that feature queue is empty.
 
 ## Remote Operator Integration (agent-intercom)
 
@@ -46,7 +47,7 @@ immediately to `list_symbols` + `map_code` + `impact_analysis` for equivalent bl
 
 ### Availability
 
-During Step 2 (Pre-Flight Validation), call `ping` with `status_message: "Build orchestrator starting"`. If the call succeeds, set an internal flag indicating agent-intercom is active for the duration of this build session. If it fails, proceed with local-only operation — all broadcasting and approval instructions become no-ops.
+During Step 2 (Pre-Flight Validation), call `ping` with `status_message: "Build orchestrator starting for feature ${input:feature}"`. If the call succeeds, set an internal flag indicating agent-intercom is active for the duration of this build session. If it fails, proceed with local-only operation — all broadcasting and approval instructions become no-ops.
 
 ### Orchestrator-Level Broadcasting
 
@@ -60,7 +61,7 @@ The build-feature skill handles task-level and gate-level broadcasting. The orch
 | Task delegated | `broadcast` | `info` | `[🛠️ ORCHESTRATOR] Delegating task {task_id} to build-feature skill` |
 | All gates passed | `broadcast` | `success` | `[🛠️ ORCHESTRATOR] Task {task_id} gates verified — lint, test, memory, compaction, commit all PASS` |
 | Gate failure | `broadcast` | `error` | `[🛠️ ORCHESTRATOR] Gate failure: {gate_name} — {details}` |
-| Task transition (drain mode) | `broadcast` | `info` | `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task` |
+| Task transition (batch mode) | `broadcast` | `info` | `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task in feature ${input:feature}` |
 | Final review complete | `broadcast` | `info` | `[🛠️ ORCHESTRATOR] Final adversarial review complete — {critical} critical, {high} high, {medium} medium, {low} low findings` |
 | Final review fixes applied | `broadcast` | `success` | `[🛠️ ORCHESTRATOR] Final review fixes applied — {applied} fixes, {deferred} deferred, all gates PASS` |
 | Build complete | `broadcast` | `success` | `[🛠️ ORCHESTRATOR] Build complete — {tasks_done} tasks, {commits} commits` |
@@ -77,27 +78,33 @@ If a gate fails repeatedly after remediation attempts, call `transmit` with `pro
 
 ### Step 1: Check Queue (State-Driven Progression)
 
-Call `backlog-task_list` with `status: "To Do"`. Parse the returned task list.
-* If the list is empty, report that no work is available. `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Queue empty — all tasks complete`. Exit immediately.
-* Otherwise, display the queue to the user with task IDs, titles, and priorities.
+1. Load the feature epic by calling `backlog-task_view` with `id: "TASK-${input:feature}"`.
+2. Load all subtasks listed under the epic, retrieving each subtask with `backlog-task_view`.
+3. Build the ready queue from subtasks that are unblocked and have status `To Do`.
+4. Filter by mode:
+   * `single` mode: Keep only the first ready subtask in ordinal order.
+   * `batch` mode: Keep all ready subtasks in the selected feature.
+5. If the queue is empty, report that no work is available for feature `${input:feature}`. `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Feature ${input:feature} queue empty — all ready tasks complete`. Exit immediately.
+6. Otherwise, display the feature queue to the user with task IDs, titles, and priorities.
 
 ### Step 2: Pre-Flight Validation
 
 1. Run `cargo check` to confirm the project compiles.
-2. **Agent-intercom detection**: Call `ping` with `status_message: "Build orchestrator pre-flight"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
+2. **Agent-intercom detection**: Call `ping` with `status_message: "Build orchestrator pre-flight for feature ${input:feature}"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
 3. **Feature branch check**: Run `git branch --show-current`. If the result is `main` or a protected branch, halt immediately. `broadcast` at `error` level and instruct the user to create or check out the appropriate feature branch before proceeding. All implementation work must happen on a feature branch.
 4. **Shell hygiene**: Before starting any test run, stop all tracked async shell sessions that may still be running from prior activity. Dangling shells holding cargo lock files or stale rustc processes will cause silent hangs.
 5. **Compile-time estimation**: Check `Cargo.toml` for `default = ["embeddings"]`. If present, warn the operator:
    > ⚠️ The `embeddings` feature is enabled by default. The first `cargo test` run compiles ort-sys/fastembed native binaries — expect **20-40 minutes** for the initial debug compile. Subsequent incremental builds are fast. Use targeted `--test {name}` commands during development to avoid repeated full recompiles.
 6. If pre-flight fails, `broadcast` the failure at `error` level (if active) and halt.
 7. If all checks pass, `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Pre-flight passed — project compiles, environment ready`.
+
 ### Step 3: Claim & Delegate
 
-1. Select the top task from the backlog board based on priority (`high` first, then `medium`, then `low`).
+1. Select the top task from the feature queue based on priority (`high` first, then `medium`, then `low`).
 2. Claim it: call `backlog-task_edit` with `id: <task_id>` and `status: "In Progress"` to lock the task from other agents.
 3. Extract the `--harness` command from the task's description or implementation notes (e.g., `cargo test --test feature_test`).
 4. `broadcast` at `info` level: `[🛠️ ORCHESTRATOR] Claimed task {task_id}: {title}`.
-5. Delegate execution to `.github/skills/build-feature/SKILL.md`, passing the `task-id` and `harness-cmd`.
+5. Delegate execution to `.github/skills/build-feature/SKILL.md`, passing the `task-id` and `harness-cmd` for the selected feature subtask.
 
 ### Step 4: Verify Completion Gates
 
@@ -117,7 +124,7 @@ All gates are mandatory. Do not advance to the next task until all gates pass.
 ### Step 5: Loop or Exit
 
 * If `${input:mode}` is `single`, proceed to Step 6.
-* If `${input:mode}` is `drain`, return to Step 1 and evaluate the next unblocked item. `broadcast` the transition: `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task` at `info` level.
+* If `${input:mode}` is `batch`, return to Step 1 and evaluate the next unblocked item in feature `${input:feature}`. `broadcast` the transition: `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task in feature ${input:feature}` at `info` level.
 
 ### Step 6: Report Completion
 Summarize the build results:
@@ -125,11 +132,11 @@ Summarize the build results:
 * Task completed and files modified
 * Test suite results and lint compliance status
 * Commit hash and branch status
-**Drain mode**:
+**Batch mode**:
 * Per-task summary: task ID, title, commit hash
-* Total tasks completed across the run
+* Total tasks completed for feature `${input:feature}` across the run
 * Final test suite results and lint compliance status
 `broadcast` the final summary at `success` level: `[🛠️ ORCHESTRATOR] Build complete — {tasks_done} tasks, {commits} commits`.
 ---
 
-Begin by checking the backlog board for ready tasks.
+Begin by loading the feature epic from the backlog board using the provided feature number.

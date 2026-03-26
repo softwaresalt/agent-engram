@@ -47,8 +47,11 @@ fn s076_resolve_git_branch_nested_name_sanitised() {
     let ws = TempDir::new().expect("tempdir");
     let git_dir = ws.path().join(".git");
     fs::create_dir_all(&git_dir).expect("create .git");
-    fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature/nested-name\n")
-        .expect("write HEAD");
+    fs::write(
+        git_dir.join("HEAD"),
+        "ref: refs/heads/feature/nested-name\n",
+    )
+    .expect("write HEAD");
 
     // WHEN resolve_git_branch is called
     let branch = resolve_git_branch(ws.path()).expect("must resolve nested ref");

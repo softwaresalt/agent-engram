@@ -37,16 +37,24 @@ async fn c009_01_set_workspace_returns_valid_workspace_id() {
     let path = workspace.path().to_string_lossy().to_string();
 
     // WHEN set_workspace is called
-    let result = tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace must succeed");
+    let result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
 
     // THEN workspace_id is a 64-char hex string
     let workspace_id = result
         .get("workspace_id")
         .and_then(Value::as_str)
         .expect("workspace_id must be present");
-    assert_eq!(workspace_id.len(), 64, "workspace_id must be a 64-char SHA-256 hex digest");
+    assert_eq!(
+        workspace_id.len(),
+        64,
+        "workspace_id must be a 64-char SHA-256 hex digest"
+    );
     assert!(
         workspace_id.chars().all(|c| c.is_ascii_hexdigit()),
         "workspace_id must be valid hex; got: {workspace_id}"
@@ -72,9 +80,13 @@ async fn c009_02_get_workspace_status_branch_matches_git_head() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace must succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
 
     // WHEN get_workspace_status is called
     let status = tools::dispatch(state.clone(), "get_workspace_status", None)
@@ -110,10 +122,13 @@ async fn c009_03_workspace_id_differs_across_branches() {
     // WHEN bound on branch "alpha"
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/alpha\n").expect("write HEAD alpha");
     let state_a = Arc::new(AppState::new(10));
-    let result_a =
-        tools::dispatch(state_a, "set_workspace", Some(json!({ "path": path.clone() })))
-            .await
-            .expect("set_workspace alpha");
+    let result_a = tools::dispatch(
+        state_a,
+        "set_workspace",
+        Some(json!({ "path": path.clone() })),
+    )
+    .await
+    .expect("set_workspace alpha");
     let id_a = result_a
         .get("workspace_id")
         .and_then(Value::as_str)
@@ -134,8 +149,7 @@ async fn c009_03_workspace_id_differs_across_branches() {
 
     // THEN workspace_id is distinct for each branch
     assert_ne!(
-        id_a,
-        id_b,
+        id_a, id_b,
         "workspace_id must differ across branches \
          (worker: include branch in SHA-256 digest in workspace_hash)"
     );
