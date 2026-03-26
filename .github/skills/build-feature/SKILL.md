@@ -59,7 +59,7 @@ Before starting any test run, verify no previous cargo or rustc processes are st
 ## Remote Operator Integration (agent-intercom)
 When the agent-intercom MCP server is reachable, status updates and file modifications route through it so the remote operator can follow progress via Slack.
 ### Availability Detection
-At the start of execution, call `ping` with a brief status message. If the call succeeds, agent-intercom is active � follow all remote workflow rules below. If it fails or times out, fall back to local-only operation.
+At the start of execution, call `ping` with a brief status message. If the call succeeds, agent-intercom is active and you must follow all remote workflow rules below, then verify messaging with the first `broadcast` before reading files or running the harness. If it fails or times out, print a prominent CLI warning that agent-intercom is unavailable and Slack status updates will not be delivered for this task, then fall back to local-only operation. Silent fallback is forbidden.
 ### Status Broadcasting
 Use `broadcast` (non-blocking) throughout execution to keep the operator informed.
 | When | Tool | Level | Message Pattern |
@@ -73,7 +73,7 @@ Use `broadcast` (non-blocking) throughout execution to keep the operator informe
 | Circuit breaker hit | `broadcast` | `error` | `[BUILD] Circuit breaker � 5 attempts exhausted, task blocked` |
 | Workspace test pass | `broadcast` | `success` | `[BUILD] Workspace tests pass � task {task-id} complete` |
 | Task complete | `broadcast` | `success` | `[BUILD] Task {task-id} complete � commit {short_hash}` |
-Post the first `broadcast` as a new top-level message and capture the returned `ts`. Use that `ts` as `thread_ts` for all subsequent messages.
+Post the first `broadcast` as a new top-level message and capture the returned `ts`. Use that `ts` as `thread_ts` for all subsequent messages. That first `broadcast` is an intercom verification gate and must happen before reading files, editing code, or running the harness. If it fails after a successful `ping`, print a prominent CLI warning, mark agent-intercom unavailable for the remainder of the task, and continue in local-only mode instead of assuming the operator received the update.
 ### File Change Workflow
 File creation and modification proceed with direct writes. After each file write, call `broadcast` at `info` level with the change details.
 For **destructive operations** (file deletion, directory removal), route through the approval workflow:

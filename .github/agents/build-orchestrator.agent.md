@@ -87,7 +87,7 @@ immediately to `list_symbols` + `map_code` + `impact_analysis` for equivalent bl
 
 ### Availability
 
-During Step 2 (Pre-Flight Validation), call `ping` with `status_message: "Build orchestrator starting for feature ${input:feature}"`. If the call succeeds, set an internal flag indicating agent-intercom is active for the duration of this build session. If it fails, proceed with local-only operation — all broadcasting and approval instructions become no-ops.
+During Step 1 (Pre-Flight Validation), call `ping` with `status_message: "Build orchestrator starting for feature ${input:feature}"`. If the call succeeds, set an internal flag indicating agent-intercom is active for the duration of this build session, then verify messaging by sending the first `broadcast` before any real work begins. If `ping` fails, print a prominent CLI warning that agent-intercom is unavailable and operator visibility is degraded, then proceed with local-only operation. Silent fallback is forbidden.
 
 ### Orchestrator-Level Broadcasting
 
@@ -107,7 +107,7 @@ The build-feature skill handles task-level and gate-level broadcasting. The orch
 | Final review fixes applied | `broadcast` | `success` | `[🛠️ ORCHESTRATOR] Final review fixes applied — {applied} fixes, {deferred} deferred, all gates PASS` |
 | Build complete | `broadcast` | `success` | `[🛠️ ORCHESTRATOR] Build complete — {tasks_done} tasks, {commits} commits` |
 
-Capture the `ts` from the first `broadcast` and thread all subsequent orchestrator messages under it. The build-feature skill manages its own thread per phase.
+Capture the `ts` from the first `broadcast` and thread all subsequent orchestrator messages under it. The first `broadcast` is an intercom verification gate and must happen before queue inspection, compilation, or task delegation. If that first `broadcast` fails after a successful `ping`, print a prominent CLI warning, mark agent-intercom unavailable for the remainder of the session, and continue in local-only mode rather than assuming Slack received the update. The build-feature skill manages its own thread per phase.
 
 ### Decision Points
 
@@ -117,7 +117,19 @@ If a gate fails repeatedly after remediation attempts, call `transmit` with `pro
 
 ## Execution Loop
 
-### Step 1: Check Queue (State-Driven Progression)
+### Step 1: Pre-Flight Validation
+
+1. **Agent-intercom detection**: Call `ping` with `status_message: "Build orchestrator pre-flight for feature ${input:feature}"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, print a prominent CLI warning that no Slack status updates or approval routing will occur for this run, then proceed with local-only operation.
+2. **Messaging verification**: If agent-intercom is active, send the first `broadcast` immediately with a startup message and confirm it returns a thread `ts` before continuing. This verification must complete before queue inspection, compilation, or any other build work.
+3. Run `cargo check` to confirm the project compiles.
+4. **Feature branch check**: Run `git branch --show-current`. If the result is `main` or a protected branch, halt immediately. `broadcast` at `error` level and instruct the user to create or check out the appropriate feature branch before proceeding. Do not auto-switch branches in build-orchestrator — branch preparation belongs to harness-architect or the user before the build loop starts. All implementation work must happen on a feature branch.
+5. **Shell hygiene**: Before starting any test run, stop all tracked async shell sessions that may still be running from prior activity. Dangling shells holding cargo lock files or stale rustc processes will cause silent hangs.
+6. **Compile-time estimation**: Check `Cargo.toml` for `default = ["embeddings"]`. If present, warn the operator:
+   > ⚠️ The `embeddings` feature is enabled by default. The first `cargo test` run compiles ort-sys/fastembed native binaries — expect **20-40 minutes** for the initial debug compile. Subsequent incremental builds are fast. Use targeted `--test {name}` commands during development to avoid repeated full recompiles.
+7. If pre-flight fails, `broadcast` the failure at `error` level (if active) and halt.
+8. If all checks pass, `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Pre-flight passed — project compiles, environment ready`.
+
+### Step 2: Check Queue (State-Driven Progression)
 
 1. Load the feature epic by calling `backlog-task_view` with `id: "TASK-${input:feature}"`.
 2. Load all subtasks listed under the epic, retrieving each subtask with `backlog-task_view`.
@@ -127,17 +139,6 @@ If a gate fails repeatedly after remediation attempts, call `transmit` with `pro
    * `batch` mode: Keep all ready subtasks in the selected feature.
 5. If the queue is empty, report that no work is available for feature `${input:feature}`. `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Feature ${input:feature} queue empty — all ready tasks complete`. Exit immediately.
 6. Otherwise, display the feature queue to the user with task IDs, titles, and priorities.
-
-### Step 2: Pre-Flight Validation
-
-1. Run `cargo check` to confirm the project compiles.
-2. **Agent-intercom detection**: Call `ping` with `status_message: "Build orchestrator pre-flight for feature ${input:feature}"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
-3. **Feature branch check**: Run `git branch --show-current`. If the result is `main` or a protected branch, halt immediately. `broadcast` at `error` level and instruct the user to create or check out the appropriate feature branch before proceeding. All implementation work must happen on a feature branch.
-4. **Shell hygiene**: Before starting any test run, stop all tracked async shell sessions that may still be running from prior activity. Dangling shells holding cargo lock files or stale rustc processes will cause silent hangs.
-5. **Compile-time estimation**: Check `Cargo.toml` for `default = ["embeddings"]`. If present, warn the operator:
-   > ⚠️ The `embeddings` feature is enabled by default. The first `cargo test` run compiles ort-sys/fastembed native binaries — expect **20-40 minutes** for the initial debug compile. Subsequent incremental builds are fast. Use targeted `--test {name}` commands during development to avoid repeated full recompiles.
-6. If pre-flight fails, `broadcast` the failure at `error` level (if active) and halt.
-7. If all checks pass, `broadcast` at `success` level: `[🛠️ ORCHESTRATOR] Pre-flight passed — project compiles, environment ready`.
 
 ### Step 3: Claim & Delegate
 
@@ -212,7 +213,7 @@ After each completed task, invoke the `memory` agent in checkpoint mode:
 ### Step 6: Loop or Exit
 
 * If `${input:mode}` is `single`, proceed to Step 7.
-* If `${input:mode}` is `batch`, return to Step 1 and evaluate the next unblocked item in feature `${input:feature}`. `broadcast` the transition: `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task in feature ${input:feature}` at `info` level.
+* If `${input:mode}` is `batch`, return to Step 2 and evaluate the next unblocked item in feature `${input:feature}`. `broadcast` the transition: `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task in feature ${input:feature}` at `info` level.
 * **Session loop guard**: Increment the tasks-attempted counter. If it exceeds 20, halt: `broadcast(error, "[CIRCUIT] Session task limit (20) reached — halting")`, write a memory checkpoint, and exit.
 * **Consecutive failure guard**: If 3 consecutive tasks fail (circuit breaker in build-feature), halt: `broadcast(error, "[CIRCUIT] 3 consecutive task failures — requesting operator guidance")`, invoke `transmit` for operator input.
 
@@ -260,6 +261,7 @@ Summarize the build results:
 * Review findings summary
 * Compound artifacts written
 * Commit hash and branch status
+* Whether agent-intercom was active or the run fell back to local-only mode
 
 **Batch mode**:
 * Per-task summary: task ID, title, commit hash
@@ -267,6 +269,7 @@ Summarize the build results:
 * Final test suite results and lint compliance status
 * Review findings summary
 * Compound artifacts written
+* Whether agent-intercom was active or the run fell back to local-only mode
 
 `broadcast` the final summary at `success` level: `[🛠️ ORCHESTRATOR] Build complete — {tasks_done} tasks, {commits} commits`.
 

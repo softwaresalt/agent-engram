@@ -28,7 +28,7 @@ The harness architect integrates with the agent-intercom MCP server to provide r
 
 ### Availability
 
-During Step 1, call `ping` with `status_message: "Harness architect starting"`. If the call succeeds, set an internal flag indicating agent-intercom is active for the duration of this session. If it fails, proceed with local-only operation — all broadcasting instructions become no-ops.
+During Step 1, call `ping` with `status_message: "Harness architect starting"`. If the call succeeds, set an internal flag indicating agent-intercom is active for the duration of this session, then verify messaging by sending the first `broadcast` before feature-branch work begins. If it fails, print a prominent CLI warning that agent-intercom is unavailable and remote visibility is degraded, then proceed with local-only operation. Silent fallback is forbidden.
 
 ### Broadcasting
 
@@ -49,7 +49,7 @@ During Step 1, call `ping` with `status_message: "Harness architect starting"`. 
 | Harness complete            | `broadcast` | `success` | `[📐 ARCHITECT] Harness complete — {features_done} feature(s), {total_tests} test(s) generated`|
 | Unrecoverable error         | `broadcast` | `error`   | `[📐 ARCHITECT] Harness generation failed for {task_id} — {reason}`                            |
 
-Capture the `ts` from the first `broadcast` and thread all subsequent messages under it. In `batch` mode, start a new thread per feature harness.
+Capture the `ts` from the first `broadcast` and thread all subsequent messages under it. The first `broadcast` is an intercom verification gate and must happen before branch switching, backlog reads, or harness generation. If that first `broadcast` fails after a successful `ping`, print a prominent CLI warning, mark agent-intercom unavailable for the remainder of the session, and continue in local-only mode instead of assuming Slack received the update. In `batch` mode, start a new thread per feature harness.
 
 ## Execution Steps
 
@@ -58,28 +58,37 @@ Capture the `ts` from the first `broadcast` and thread all subsequent messages u
 **Do not write any file until this gate passes.** Work on `main` is forbidden.
 
 1. Run `git branch --show-current` and `git status --short`.
-2. If currently on `main` or any protected branch:
-   a. Load the feature epic by calling `backlog-task_view` with `id: "TASK-${input:feature}"` to get the feature title.
-   b. Derive the branch name using pattern `{feature_number}-{feature_slug}` (e.g., `009-branch-aware-database-isolation`). Convert the epic title to lowercase kebab-case.
-   c. Check if branch exists: `git branch --list {branch_name}` and `git ls-remote --heads origin {branch_name}`.
-      * Exists locally → `git checkout {branch_name}`
-      * Exists on remote only → `git checkout -b {branch_name} origin/{branch_name}`
-      * Does not exist → `git checkout -b {branch_name} origin/main`
-   d. If the working tree on `main` is dirty and the feature branch does not yet exist, carry those uncommitted changes onto the newly created feature branch. Do not stash, discard, or ask for cleanup first — those local edits are part of the new feature branch's starting state.
-   e. If the target branch already exists and Git cannot switch branches cleanly with the current uncommitted changes, halt and report the blocking files instead of discarding or force-moving them.
-3. If already on the target feature branch, set `{branch_name}` to the current branch name. Uncommitted changes are allowed and should be treated as intentional local feature work. If on any other non-protected branch with uncommitted changes, halt and report the dirty files rather than moving them automatically.
-4. `broadcast` at `info` level: `[📐 ARCHITECT] Feature branch ready: {branch_name}`
+2. Load the feature epic by calling `backlog-task_view` with `id: "TASK-${input:feature}"` to get the feature title.
+3. Derive the target branch name using pattern `{feature_number}-{feature_slug}` (e.g., `009-branch-aware-database-isolation`). Convert the epic title to lowercase kebab-case and store it as `{branch_name}`.
+4. If already on `{branch_name}`, continue. Uncommitted changes are allowed and should be treated as intentional local feature work.
+5. Otherwise, determine whether the target branch exists: `git branch --list {branch_name}` and `git ls-remote --heads origin {branch_name}`.
+6. If currently on `main` or any protected branch:
+   * If the working tree is dirty and the target branch does not yet exist, create the feature branch from the current HEAD with `git checkout -b {branch_name}`. The local changes must remain uncommitted on the new feature branch so the working tree state carries forward intact. Do not stash, discard, or ask for cleanup first.
+   * If the working tree is dirty and the target branch already exists, halt and report the blocking files instead of discarding or force-moving them.
+   * If the working tree is clean:
+     * Exists locally → `git checkout {branch_name}`
+     * Exists on remote only → `git checkout -b {branch_name} origin/{branch_name}`
+     * Does not exist → `git checkout -b {branch_name} origin/main`
+7. If currently on any other non-target branch:
+   * If the working tree is dirty, halt and report the dirty files rather than moving them automatically.
+   * If the working tree is clean:
+     * Exists locally → `git checkout {branch_name}`
+     * Exists on remote only → `git checkout -b {branch_name} origin/{branch_name}`
+     * Does not exist → `git checkout -b {branch_name} origin/main`
+8. After any branch switch or creation, run `git branch --show-current` again and confirm the result matches `{branch_name}`. If not, halt and report the mismatch.
+9. `broadcast` at `info` level: `[📐 ARCHITECT] Feature branch ready: {branch_name}`
 
 ### Step 2: Load Feature Context from Backlog
 
-1. **Agent-intercom detection**: Call `ping` with `status_message: "Harness architect starting for feature ${input:feature}"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, proceed with local-only operation.
-2. **Load the feature epic**: Call `backlog-task_view` with `id: "TASK-${input:feature}"` to retrieve the epic description, acceptance criteria, and subtask list.
-3. **Load all subtasks**: For each subtask listed in the epic (pattern `TASK-${input:feature}.NN`), call `backlog-task_view` to retrieve the full task description, acceptance criteria, and references. Collect all subtasks with status "To Do" as the work queue.
-4. **Filter by mode**:
+1. **Agent-intercom detection**: Call `ping` with `status_message: "Harness architect starting for feature ${input:feature}"`. If the call succeeds, agent-intercom is active for this session — follow all remote operator integration rules. If it fails, print a prominent CLI warning that no Slack status updates or approval prompts will be delivered for this run, then proceed with local-only operation.
+2. **Messaging verification fallback**: If agent-intercom is active and the first verification `broadcast` was not already completed during Step 1, send it now and confirm it returns a thread `ts` before continuing. This fallback exists only to prevent silent execution if Step 1 verification was skipped unexpectedly.
+3. **Load the feature epic**: Call `backlog-task_view` with `id: "TASK-${input:feature}"` to retrieve the epic description, acceptance criteria, and subtask list.
+4. **Load all subtasks**: For each subtask listed in the epic (pattern `TASK-${input:feature}.NN`), call `backlog-task_view` to retrieve the full task description, acceptance criteria, and references. Collect all subtasks with status "To Do" as the work queue.
+5. **Filter by mode**:
    * `single` mode: Select only the first "To Do" subtask (lowest ordinal number).
    * `batch` mode: Include all "To Do" subtasks.
-5. If no "To Do" subtasks remain, `broadcast` at `success` level: `[📐 ARCHITECT] Feature ${input:feature} — no unblocked tasks to harness` and exit.
-6. `broadcast` the queue status: `[📐 ARCHITECT] Feature ${input:feature} — {count} unblocked task(s) found ({mode} mode)`
+6. If no "To Do" subtasks remain, `broadcast` at `success` level: `[📐 ARCHITECT] Feature ${input:feature} — no unblocked tasks to harness` and exit.
+7. `broadcast` the queue status: `[📐 ARCHITECT] Feature ${input:feature} — {count} unblocked task(s) found ({mode} mode)`
 
 ### Step 3: Load the Build-Harness Prompt
 
@@ -285,7 +294,8 @@ path = "tests/{tier}/{feature}_test.rs"
 3. Report the harness manifest document path.
 4. Report which subtasks have harness coverage and their commands for the build-orchestrator.
 5. Report any subtasks that were skipped (already Done) or could not be harnessed.
-6. Suggest the next step: invoke the build-orchestrator to begin implementation against the harnesses.
+6. Report whether agent-intercom was active for the run or whether execution fell back to local-only mode.
+7. Suggest the next step: invoke the build-orchestrator to begin implementation against the harnesses.
 
 ## Response Format
 
