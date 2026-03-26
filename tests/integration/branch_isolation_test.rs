@@ -1,7 +1,7 @@
 //! Integration tests for branch-aware database isolation (TASK-009.08).
 //!
 //! Verifies that binding the same workspace root on two different git branches
-//! yields separate SurrealDB directories, that data is not shared across
+//! yields separate `SurrealDB` directories, that data is not shared across
 //! branches, and that `get_workspace_status` surfaces the correct `db_path`.
 //!
 //! Engram analysis context:
@@ -80,7 +80,7 @@ async fn i009_01_different_branches_use_different_db_directories() {
 /// I009-02: A record inserted into the alpha-branch database is not visible
 /// from the beta-branch database of the same workspace root.
 ///
-/// This validates that `connect_db(data_dir, branch)` truly isolates SurrealDB
+/// This validates that `connect_db(data_dir, branch)` truly isolates `SurrealDB`
 /// namespaces between branches.
 #[test]
 async fn i009_02_branch_databases_do_not_share_records() {

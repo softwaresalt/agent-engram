@@ -20,7 +20,7 @@ use engram::tools;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Create a fresh in-memory SurrealDB workspace and return connected queries.
+/// Create a fresh in-memory `SurrealDB` workspace and return connected queries.
 async fn fresh_queries() -> (tempfile::TempDir, CodeGraphQueries) {
     let dir = tempfile::tempdir().expect("tempdir");
     let data_dir = dir.path().to_path_buf();
@@ -221,8 +221,8 @@ async fn gc_returns_zero_on_clean_database() {
 /// `gc_corrupted_embeddings` detects and removes a record whose embedding was
 /// persisted with NaN values before the write-path guard existed.
 ///
-/// The corrupt record is inserted via SurrealDB's native `Array::from(Vec<f64>)`
-/// binding with `f64::NAN`, which is stored as a SurrealDB `Number::Float(NaN)`.
+/// The corrupt record is inserted via `SurrealDB`'s native `Array::from(Vec<f64>)`
+/// binding with `f64::NAN`, which is stored as a `SurrealDB` `Number::Float(NaN)`.
 /// This simulates pre-existing database corruption from an older version of the code.
 #[test]
 async fn gc_removes_corrupted_record() {
@@ -273,7 +273,7 @@ async fn gc_removes_corrupted_record() {
 
 // ── End-to-end: index_workspace + unified_search happy path ──────────────────
 
-/// After index_workspace, unified_search must not return error 5001.
+/// After `index_workspace`, `unified_search` must not return error 5001.
 ///
 /// Uses a fresh workspace with no embeddings (the embeddings feature may or
 /// may not be active).  The critical assertion is that a database-deserialization
