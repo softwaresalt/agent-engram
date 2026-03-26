@@ -1,7 +1,8 @@
 ---
 id: TASK-009.04
 title: '009-04: Modify workspace_hash() to include branch'
-status: To Do
+status: Done
+type: task
 assignee: []
 created_date: '2026-03-22 21:52'
 updated_date: '2026-03-26 00:10'

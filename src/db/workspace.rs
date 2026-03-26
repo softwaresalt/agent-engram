@@ -78,25 +78,18 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
     Ok(canonical)
 }
 
-/// Compute a stable SHA256 hash for the workspace path.
+/// Compute a stable SHA256 hash for the workspace `(path, branch)` pair.
 ///
-/// `branch` is accepted so callers pass the active branch when constructing
-/// `workspace_id`. The branch is not yet included in the digest —
-/// embedding it is the implementation task for TASK-009.04.
-///
-/// # Worker instruction
-///
-/// Include `branch` in the SHA-256 digest so `workspace_id` uniquely
-/// identifies `(path, branch)` pairs:
-/// ```text
-/// hasher.update(path.to_string_lossy().as_bytes());
-/// hasher.update(b":");
-/// hasher.update(branch.as_bytes());
-/// ```
+/// The digest covers the canonical workspace path, a `:` separator, and the
+/// sanitised branch name so `workspace_id` uniquely identifies each
+/// `(path, branch)` combination.  Two workspaces at the same path but on
+/// different branches therefore produce distinct identifiers, matching the
+/// per-branch DB isolation already provided by `connect_db`.
 pub fn workspace_hash(path: &Path, branch: &str) -> String {
-    let _ = branch; // TODO(009.04): include branch in digest
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(b":");
+    hasher.update(branch.as_bytes());
     let digest = hasher.finalize();
     hex::encode(digest)
 }
