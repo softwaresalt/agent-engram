@@ -396,6 +396,18 @@ pub async fn index_workspace(
         }
 
         result.files_parsed += 1;
+        // Record file hash for offline change detection (TASK-009.09).
+        // Non-fatal: a hash recording failure degrades offline detection but
+        // does not invalidate the indexed code graph.
+        if let Err(e) =
+            crate::services::file_tracker::record_file_hash(&rel_path, file_path, &queries).await
+        {
+            debug!(
+                error = %e,
+                path = %rel_path,
+                "code graph: file hash recording failed — offline detection may report false changes"
+            );
+        }
         debug!(path = %rel_path, "code graph: indexed file");
     }
 

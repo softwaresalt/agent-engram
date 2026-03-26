@@ -1,7 +1,8 @@
 ---
 id: TASK-009.09
 title: '009-09: Wire record_file_hash into indexing and watcher pipeline'
-status: To Do
+status: Done
+type: task
 assignee: []
 created_date: '2026-03-25 05:22'
 labels:
