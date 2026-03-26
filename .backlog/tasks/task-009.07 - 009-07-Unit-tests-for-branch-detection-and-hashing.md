@@ -1,7 +1,8 @@
 ---
 id: TASK-009.07
 title: '009-07: Unit tests for branch detection and hashing'
-status: To Do
+status: Done
+type: task
 assignee: []
 created_date: '2026-03-22 21:53'
 updated_date: '2026-03-26 00:11'
