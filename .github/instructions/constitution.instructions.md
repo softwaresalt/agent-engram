@@ -140,6 +140,30 @@ the context window, consuming tokens proportional to file size.
    are insufficient, unavailable, or the query targets literal text
    patterns that the code graph does not index
 
+**Tool-to-question mapping** — use the most specific tool first:
+
+| Question | Correct engram tool |
+|---|---|
+| Does method `foo` exist in `src/db/queries.rs`? | `list_symbols(file_path="src/db/queries.rs", name_contains="foo")` |
+| How many places call `workspace_hash`? | `map_code("workspace_hash", depth=1)` |
+| What would break if I change `connect_db`? | `impact_analysis("connect_db")` |
+| What symbols are in `src/services/file_tracker.rs`? | `list_symbols(file_path="src/services/file_tracker.rs")` |
+| Find all symbols related to concept "branch" | `list_symbols(name_contains="branch")` |
+| Broad discovery across code + context + commits | `unified_search(query="...")` |
+
+**When `unified_search` returns error 5001** ("failed to deserialize;
+expected a 32-bit floating point, found NaNf64"), embedding vectors in
+the DB are corrupted. Do not retry. Fall back immediately to
+`list_symbols` + `map_code` + `impact_analysis` — these cover the full
+blast-radius analysis workflow without the embedding index.
+
+**Daemon IPC patterns**:
+
+- Do NOT call `set_workspace` via IPC when the daemon was started with
+  `--workspace` — it returns error 1005 "Workspace limit reached". Use
+  `get_workspace_status` to verify binding.
+- Windows named pipe: `\\.\pipe\engram-{first_16_hex_of_SHA256(canonical_path)}`
+
 **Rationale**: A single `unified_search` call returns ranked,
 relevant results from code symbols, context records, and commit
 history. The equivalent grep-based approach requires multiple calls

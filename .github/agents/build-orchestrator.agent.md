@@ -23,10 +23,25 @@ The build orchestrator integrates with the agent-intercom MCP server to provide 
 
 All code exploration and context gathering MUST use engram MCP tools before falling back to file-based search. This minimizes token consumption and preserves context window capacity for reasoning.
 
+**Tool-to-question mapping** — always use the most specific tool:
+
+| Question | Correct engram tool | Forbidden alternative |
+|---|---|---|
+| Does method `foo` exist in `src/db/queries.rs`? | `list_symbols(file_path="src/db/queries.rs", name_contains="foo")` | `grep "fn foo" src/db/queries.rs` |
+| What calls function `X`? | `map_code("X", depth=1)` | `grep -rn "X(" src/` |
+| What would break if I change `X`? | `impact_analysis("X")` | Reading every caller file |
+| What symbols are in module `Y`? | `list_symbols(file_path="Y")` | `view Y` |
+| Find all symbols related to concept "branch" | `list_symbols(name_contains="branch")` | Multiple grep passes |
+| Broad discovery across code + context + commits | `unified_search(query="...")` | N/A |
+
+**When `unified_search` returns error 5001** ("failed to deserialize; expected a 32-bit floating
+point, found NaNf64"), embedding vectors in the DB are corrupted. Do not retry. Fall back
+immediately to `list_symbols` + `map_code` + `impact_analysis` for equivalent blast-radius coverage.
+
 * Call `unified_search` to find code, context, and commits related to a task's domain before reading source files.
 * Call `map_code` to understand symbol relationships and call graphs instead of grepping for function names.
 * Call `impact_analysis` before modifying code to understand blast radius.
-* Call `list_symbols` to discover available symbols by type or file path.
+* Call `list_symbols` to discover available symbols by type or file path — including verifying that a specific method exists before writing a test that calls it.
 * Fall back to grep/glob **only** when engram results are insufficient or the query targets literal text patterns the code graph does not index.
 
 ### Availability

@@ -50,9 +50,21 @@ Parse the extracted section to identify:
 7. **References** from the `### References` subsection (code line ranges, external docs).
 
 When analyzing files-to-modify and references, use `engram` MCP tools to validate and enrich context before reading raw files:
-* Call `unified_search` with the feature's key concepts to find related code, prior decisions, and context records.
-* Call `map_code` for referenced functions and structs to understand their call graphs and dependents.
-* Call `list_symbols` filtered by file path to discover available symbols in each module.
+
+* **Symbol inventory first**: For each file listed in `files-to-modify`, call
+  `list_symbols(file_path=<path>)` to understand what functions, structs, and traits
+  are defined there. This replaces opening the file to read its structure.
+* **Existence check**: When verifying that a specific function exists before referencing
+  it in a task description, use `list_symbols(file_path=<path>, name_contains=<name>)`.
+  Never grep for this — `list_symbols` returns line numbers and symbol types in one call.
+* **Call-site count**: For each function the feature proposes to modify, call
+  `map_code(<function_name>, depth=1)` to enumerate callers. A function with one caller
+  is easy to update surgically; one with many callers requires broader task scoping.
+* **Impact analysis**: For each proposed signature change, call `impact_analysis(<symbol>)`
+  to discover transitively affected symbols and inform dependency wiring in Step 4d.
+* **Broad discovery**: Call `unified_search` with the feature's key concepts to find
+  related prior decisions, context records, and commits. If `unified_search` returns
+  error 5001 (NaN embedding deserialization), skip it and rely on the targeted tools above.
 * Fall back to grep/glob only when engram results are insufficient or the query targets literal text patterns.
 
 ### Step 3: Build the Decomposition Plan

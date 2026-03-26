@@ -105,12 +105,39 @@ context window, consuming tokens proportional to file size.
    insufficient, unavailable, or the query targets literal text patterns
    that the code graph does not index
 
+**Tool-to-question mapping** — use the most specific tool first:
+
+| Question | Correct engram tool | Forbidden alternative |
+|---|---|---|
+| Does method `foo` exist in `src/db/queries.rs`? | `list_symbols(file_path="src/db/queries.rs", name_contains="foo")` | `grep -n "fn foo" src/db/queries.rs` |
+| What calls `workspace_hash`? | `map_code("workspace_hash", depth=1)` | `grep -rn "workspace_hash" src/` |
+| What would break if I change `connect_db`? | `impact_analysis("connect_db")` | Reading every caller file |
+| What symbols are defined in `src/services/file_tracker.rs`? | `list_symbols(file_path="src/services/file_tracker.rs")` | `view src/services/file_tracker.rs` |
+| Find all structs/fns related to "branch" concept | `list_symbols(name_contains="branch")` | Multiple grep passes |
+| Broad discovery — code + context + commits | `unified_search(query="...")` | N/A (no file equivalent) |
+| What does `DaemonState` contain? | `list_symbols(name_contains="DaemonState")` | `grep -A20 "struct DaemonState"` |
+
+**When `unified_search` returns error 5001** ("failed to deserialize; expected a
+32-bit floating point, found NaNf64"), embedding vectors in the DB are corrupted.
+Do not retry. Fall back immediately to `list_symbols` + `map_code` + `impact_analysis`
+for the same discovery work — these three tools cover the entire blast-radius analysis
+workflow without relying on the embedding index.
+
+**Daemon IPC patterns** (when interacting with the running engram daemon via IPC):
+
+- The daemon auto-binds its own workspace at startup via `--workspace`. Do NOT
+  call `set_workspace` via IPC — it returns error 1005 "Workspace limit reached".
+  Use `get_workspace_status` to verify the binding instead.
+- Windows named pipe address: `\\.\pipe\engram-{first_16_hex_of_SHA256(canonical_path)}`
+  where `canonical_path` is the fully resolved absolute workspace path.
+
 **When file-based search is appropriate:**
 
-- Exact regex pattern matching across file contents (engram indexes symbols,
-  not arbitrary text patterns)
-- Finding files by name or extension (glob)
-- Reading a specific file whose path is already known (view)
+- Exact regex pattern matching across file *text* (engram indexes symbols, not
+  arbitrary string patterns)
+- Finding files by name or extension (glob) when the path is not already known
+- Reading a file whose exact path is already known and the content — not structure —
+  is needed (e.g., checking a specific line after engram identified the line number)
 - The engram workspace is not yet bound or indexed
 
 **Rationale**: A single `unified_search` call returns ranked, relevant

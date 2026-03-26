@@ -96,12 +96,65 @@ For each subtask in the work queue (from Step 2):
 1. Extract the task title, description, acceptance criteria, and file references from the subtask payload loaded in Step 2.
 2. Cross-reference with the epic-level acceptance criteria to identify which epic criteria this subtask satisfies.
 3. Identify the domain structs, functions, traits, and tests required based on the task description.
-4. Map the feature's blast radius using `engram` MCP tools first:
-   * Call `unified_search` with the feature's key concepts to find related code, context, and prior decisions.
-   * Call `map_code` for each domain struct and function to visualize call graphs, callers, and dependencies.
-   * Call `impact_analysis` to identify symbols affected by the proposed changes.
-   * Call `list_symbols` to discover available symbols by type or file path.
-   * Fall back to `grep` or `glob` **only** when engram results are insufficient or you need exact regex matching on text patterns the code graph does not index.
+4. Map the feature's blast radius using `engram` MCP tools. **Using raw file
+   reads (view, Get-Content, cat) or grep to understand code structure BEFORE
+   exhausting the engram tools below is a protocol violation.** This was the
+   single most common failure mode in practice — agents opening source files to
+   understand their contents when `list_symbols` would have answered the question
+   in one call at a fraction of the token cost.
+
+   Execute in this order:
+
+   **a. Symbol inventory** — for each file path in the task's `references` array,
+   call `list_symbols(file_path=<path>)` to get all symbols defined there. This
+   replaces reading the file to understand its structure.
+
+   ```
+   # Example: task references src/services/file_tracker.rs
+   list_symbols(file_path="src/services/file_tracker.rs")
+   # Returns: record_file_hash (fn, line 85), detect_offline_changes (fn, line 137), ...
+   ```
+
+   **b. Existence check** — when you need to verify a specific method exists
+   before writing a test that calls it, use `list_symbols` with both filters:
+
+   ```
+   # "Does get_all_file_hashes exist in CodeGraphQueries?"
+   list_symbols(file_path="src/db/queries.rs", name_contains="get_all_file_hashes")
+   # NEVER: grep -n "fn get_all_file_hashes" src/db/queries.rs
+   ```
+
+   **c. Call-site count** — for any function whose signature you plan to change,
+   call `map_code(<function_name>, depth=1)` to count callers. One caller is safe
+   to update surgically; many callers signals a larger blast radius.
+
+   ```
+   # "How many places call workspace_hash?"
+   map_code("workspace_hash", depth=1)   # Returns callers list + call count
+   ```
+
+   **d. Impact analysis** — for each symbol whose signature will change, call
+   `impact_analysis(<symbol_name>)` to enumerate transitively affected symbols.
+
+   **e. Visibility / zero call sites** — if a function has zero callers in
+   `map_code` results, that is the core architectural gap the task is fixing.
+   Record it explicitly — it drives which tests are RED gates vs. GREEN guards.
+
+   **f. `unified_search` for broad discovery** — call `unified_search` with the
+   feature's key concepts to surface context records, prior decisions, and commits.
+   If `unified_search` returns error 5001 ("failed to deserialize; expected a
+   32-bit floating point, found NaNf64"), embedding vectors are corrupted. Do not
+   retry — fall back immediately to steps a–e above, which provide equivalent
+   blast-radius coverage without the embedding index.
+
+   **g. File-based fallback** — grep or view may be used ONLY when:
+   * The engram workspace is not indexed (daemon not running or `index_workspace`
+     has never been called)
+   * The question requires matching a literal text pattern (e.g., a `TODO` comment
+     or a string literal) that the code graph does not index as a symbol
+   * You need to read a specific line identified by engram (e.g., view lines 82-95
+     of a file after `list_symbols` returned line 82 as the start)
+
 5. Determine the integration test file path (`tests/integration/{feature}_test.rs`) and the source stub path (`src/{feature}.rs` or appropriate module).
 6. **Compile-time flag check**: If the task touches `src/services/embedding.rs`, `src/tools/read.rs` unified_search, or any `#[cfg(feature = "embeddings")]` code, note in the harness description that:
    * The `embeddings` feature is **enabled by default** — `cargo test` compiles ort-sys/fastembed native binaries taking 20-40 minutes on first run.
