@@ -4,7 +4,7 @@ title: '009-04: Modify workspace_hash() to include branch'
 status: To Do
 assignee: []
 created_date: '2026-03-22 21:52'
-updated_date: '2026-03-25 22:40'
+updated_date: '2026-03-26 00:10'
 labels:
   - feature
   - 009
@@ -35,4 +35,6 @@ priority: medium
 
 <!-- SECTION:NOTES:BEGIN -->
 **Current state**: Per-branch DB isolation already works via `connect_db(data_dir, branch)` directory structure. The hash change is a semantic correctness improvement, not a functional requirement.\n\n**Decision needed**: Whether to (a) update workspace_hash to include branch, or (b) accept workspace_id as path-only and document the distinction. Option (a) is cleaner but requires updating all callers. Option (b) is zero-change but may cause confusion.\n\n**Files to modify**: `src/db/workspace.rs` (workspace_hash signature), `src/tools/lifecycle.rs` (set_workspace caller), plus any tests that call workspace_hash directly."
+
+Harness: `cargo test --test unit_branch_hash` — tests S081 and S084 are RED gates. S081 asserts same path + different branch → different hash digest. S084 asserts detached-HEAD SHA prefix produces distinct digest from a named branch. Implement by including the sanitized branch string in the SHA-256 input inside `workspace_hash` in `src/db/workspace.rs`.
 <!-- SECTION:NOTES:END -->

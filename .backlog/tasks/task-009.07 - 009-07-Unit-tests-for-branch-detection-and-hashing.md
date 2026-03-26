@@ -4,7 +4,7 @@ title: '009-07: Unit tests for branch detection and hashing'
 status: To Do
 assignee: []
 created_date: '2026-03-22 21:53'
-updated_date: '2026-03-25 22:41'
+updated_date: '2026-03-26 00:11'
 labels:
   - feature
   - 009
@@ -36,4 +36,6 @@ Add unit tests to `tests/unit/` for the branch detection and hashing functions t
 
 <!-- SECTION:NOTES:BEGIN -->
 **Actual function names**: `resolve_git_branch()` and `sanitize_branch_for_path()` in `src/db/workspace.rs`. The spec used the name `current_git_branch()` but the implementation differs.\n\n**Visibility consideration**: `sanitize_branch_for_path` is private (`fn`). Either make it `pub(crate)` for direct unit testing, or test it indirectly through `resolve_git_branch` by providing branch-name inputs with slashes.\n\n**Cargo.toml**: Add `[[test]]` block for the new test file."
+
+Harness: `cargo test --test unit_branch_workspace` — all 6 tests (S075–S080) are GREEN gates that must remain passing after any refactor. These cover standard ref parsing, nested branch names, detached HEAD SHA truncation, missing HEAD error, no .git dir error, and hash determinism.
 <!-- SECTION:NOTES:END -->
