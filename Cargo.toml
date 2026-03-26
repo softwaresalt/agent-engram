@@ -353,3 +353,7 @@ path = "tests/integration/branch_isolation_test.rs"
 [[test]]
 name = "integration_file_hash_pipeline"
 path = "tests/integration/file_hash_pipeline_test.rs"
+
+[[test]]
+name = "integration_unified_search"
+path = "tests/integration/unified_search_test.rs"

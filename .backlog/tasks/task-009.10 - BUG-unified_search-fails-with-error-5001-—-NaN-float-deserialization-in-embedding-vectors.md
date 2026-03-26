@@ -3,7 +3,8 @@ id: TASK-009.10
 title: >-
   BUG: unified_search fails with error 5001 — NaN float deserialization in
   embedding vectors
-status: To Do
+status: Done
+type: bug
 assignee: []
 created_date: '2026-03-26 00:44'
 labels:

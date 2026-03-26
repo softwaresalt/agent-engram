@@ -71,11 +71,34 @@ fn get_model() -> Result<std::sync::MutexGuard<'static, fastembed::TextEmbedding
     }
 }
 
+/// Validate that an embedding vector contains only finite (non-NaN, non-Inf) values.
+///
+/// Called at the embedding generation boundary so corrupted vectors are caught
+/// before they reach the database write path.  The same check is repeated at
+/// the `upsert_*` call sites in `queries.rs` as defence-in-depth.
+///
+/// # Errors
+///
+/// Returns `SystemError::DatabaseError` if any element is `NaN` or infinite.
+pub fn validate_embedding_vec(embedding: &[f32]) -> Result<(), EngramError> {
+    if embedding.iter().any(|v| !v.is_finite()) {
+        return Err(EngramError::System(
+            crate::errors::SystemError::DatabaseError {
+                reason: "embedding vector contains non-finite values (NaN or Inf); \
+                     record rejected to prevent database corruption"
+                    .to_owned(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 /// Generate an embedding vector for a single piece of text.
 ///
 /// # Errors
 /// - `QueryError::ModelNotLoaded` when the model cannot be initialised.
 /// - `QueryError::SearchFailed` when generation itself fails.
+/// - `SystemError::DatabaseError` when the generated vector contains NaN/Inf.
 #[cfg(feature = "embeddings")]
 pub fn embed_text(text: &str) -> Result<Vec<f32>, EngramError> {
     let mut model = get_model()?;
@@ -85,28 +108,35 @@ pub fn embed_text(text: &str) -> Result<Vec<f32>, EngramError> {
         })
     })?;
 
-    embeddings.into_iter().next().ok_or_else(|| {
+    let vec = embeddings.into_iter().next().ok_or_else(|| {
         EngramError::Query(QueryError::SearchFailed {
             reason: "model returned no embeddings".to_string(),
         })
-    })
+    })?;
+    validate_embedding_vec(&vec)?;
+    Ok(vec)
 }
 
 /// Batch-embed multiple texts in one call for efficiency.
 ///
 /// # Errors
-/// Same as [`embed_text`].
+/// Same as [`embed_text`].  Also returns `SystemError::DatabaseError` if any
+/// generated vector contains NaN or infinite values.
 #[cfg(feature = "embeddings")]
 pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
     let mut model = get_model()?;
-    model.embed(texts, None).map_err(|e| {
+    let vectors = model.embed(texts, None).map_err(|e| {
         EngramError::Query(QueryError::SearchFailed {
             reason: e.to_string(),
         })
-    })
+    })?;
+    for v in &vectors {
+        validate_embedding_vec(v)?;
+    }
+    Ok(vectors)
 }
 
 // ── Feature-gated stubs ─────────────────────────────────────────────

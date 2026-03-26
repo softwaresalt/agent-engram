@@ -12,6 +12,7 @@ use surrealdb::sql::Thing;
 
 use crate::db::{Db, map_db_err};
 use crate::errors::EngramError;
+use crate::services::embedding::validate_embedding_vec;
 
 // ── Query performance observability (dxo.5.1) ──────────────────────────
 
@@ -489,6 +490,7 @@ impl CodeGraphQueries {
     /// Insert or update a function record.
     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_function(&self, func: &crate::models::Function) -> Result<(), EngramError> {
+        validate_embedding_vec(&func.embedding)?;
         let start = std::time::Instant::now();
         let id_raw = func.id.strip_prefix("function:").unwrap_or(&func.id);
         let record = Thing::from(("function", id_raw));
@@ -562,6 +564,7 @@ impl CodeGraphQueries {
     /// Insert or update a class record.
     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn upsert_class(&self, class: &crate::models::Class) -> Result<(), EngramError> {
+        validate_embedding_vec(&class.embedding)?;
         let start = std::time::Instant::now();
         let id_raw = class.id.strip_prefix("class:").unwrap_or(&class.id);
         let record = Thing::from(("class", id_raw));
@@ -621,6 +624,7 @@ impl CodeGraphQueries {
         &self,
         iface: &crate::models::Interface,
     ) -> Result<(), EngramError> {
+        validate_embedding_vec(&iface.embedding)?;
         let start = std::time::Instant::now();
         let id_raw = iface.id.strip_prefix("interface:").unwrap_or(&iface.id);
         let record = Thing::from(("interface", id_raw));
@@ -2243,6 +2247,7 @@ impl CodeGraphQueries {
         sym_id: &str,
         embedding: Vec<f32>,
     ) -> Result<(), EngramError> {
+        validate_embedding_vec(&embedding)?;
         let (table, raw_id) = sym_id.split_once(':').unwrap_or(("", sym_id));
         let record = Thing::from((table, raw_id));
         self.db
@@ -2252,6 +2257,93 @@ impl CodeGraphQueries {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+
+    // ── GC / repair (TASK-009.10) ────────────────────────────────────
+
+    /// Delete all symbol and content records whose stored embedding vector
+    /// contains non-finite values (`NaN` or `Inf`).
+    ///
+    /// SurrealDB cannot natively query for `NaN` in vector fields, so this
+    /// method fetches every record in each symbol table, deserialises the
+    /// embedding field in Rust, and issues targeted `DELETE` statements for
+    /// any corrupted rows.  The operation is idempotent: calling it on a
+    /// clean database makes no changes.
+    ///
+    /// # Returns
+    ///
+    /// The total number of corrupted records deleted across all tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EngramError` if any database query fails.
+    pub async fn gc_corrupted_embeddings(&self) -> Result<usize, EngramError> {
+        // Table names that may contain embedding vectors.
+        // `function` must be backtick-quoted because it is a SurrealDB reserved word.
+        let quoted_tables: &[&str] = &["`function`", "class", "interface", "content_record"];
+
+        let mut total_deleted: usize = 0;
+
+        for quoted_table in quoted_tables {
+            // ── Phase 1: Collect all IDs (no embedding field — safe) ──
+
+            #[derive(serde::Deserialize)]
+            struct IdRow {
+                id: surrealdb::sql::Thing,
+            }
+
+            let id_query = format!("SELECT id FROM {quoted_table}");
+            let mut id_resp = self.db.query(id_query).await.map_err(map_db_err)?;
+            let id_rows: Vec<IdRow> = id_resp.take(0).map_err(map_db_err)?;
+
+            // ── Phase 2: Probe each record's embedding individually ──
+            // Deserialization of NaN embedding → serde error, which we treat as
+            // evidence of corruption and delete the owning record.
+
+            #[derive(serde::Deserialize)]
+            struct EmbProbe {
+                #[serde(default)]
+                embedding: Vec<f32>,
+            }
+
+            for id_row in id_rows {
+                let mut probe_resp = self
+                    .db
+                    .query("SELECT embedding FROM $id")
+                    .bind(("id", id_row.id.clone()))
+                    .await
+                    .map_err(map_db_err)?;
+
+                let is_corrupted = match probe_resp.take::<Vec<EmbProbe>>(0) {
+                    // Deserialization error → NaN cannot be converted to f32; corrupt.
+                    Err(_) => true,
+                    // Deserialized OK, but contains non-finite values.
+                    Ok(rows) => rows
+                        .first()
+                        .map_or(false, |r| r.embedding.iter().any(|v| !v.is_finite())),
+                };
+
+                if is_corrupted {
+                    self.db
+                        .query("DELETE $id")
+                        .bind(("id", id_row.id.clone()))
+                        .await
+                        .map_err(map_db_err)?;
+                    total_deleted += 1;
+                    tracing::warn!(
+                        id = %id_row.id,
+                        table = %quoted_table,
+                        "gc_corrupted_embeddings: deleted record with non-finite embedding"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            deleted = total_deleted,
+            "gc_corrupted_embeddings: repair complete"
+        );
+        Ok(total_deleted)
     }
 
     // ── COUNT queries (T094) ─────────────────────────────────────────
@@ -2349,6 +2441,9 @@ impl CodeGraphQueries {
         &self,
         record: &crate::models::ContentRecord,
     ) -> Result<(), EngramError> {
+        if let Some(emb) = &record.embedding {
+            validate_embedding_vec(emb)?;
+        }
         let thing = Thing::from(("content_record", record.id.as_str()));
         let ingested = record.ingested_at.to_rfc3339();
         self.db
