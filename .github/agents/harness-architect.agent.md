@@ -65,7 +65,9 @@ Capture the `ts` from the first `broadcast` and thread all subsequent messages u
       * Exists locally → `git checkout {branch_name}`
       * Exists on remote only → `git checkout -b {branch_name} origin/{branch_name}`
       * Does not exist → `git checkout -b {branch_name} origin/main`
-3. If the working tree is dirty (uncommitted changes), halt and report the dirty files. Do not proceed until the tree is clean or the user explicitly directs otherwise.
+   d. If the working tree on `main` is dirty and the feature branch does not yet exist, carry those uncommitted changes onto the newly created feature branch. Do not stash, discard, or ask for cleanup first — those local edits are part of the new feature branch's starting state.
+   e. If the target branch already exists and Git cannot switch branches cleanly with the current uncommitted changes, halt and report the blocking files instead of discarding or force-moving them.
+3. If already on the target feature branch, set `{branch_name}` to the current branch name. Uncommitted changes are allowed and should be treated as intentional local feature work. If on any other non-protected branch with uncommitted changes, halt and report the dirty files rather than moving them automatically.
 4. `broadcast` at `info` level: `[📐 ARCHITECT] Feature branch ready: {branch_name}`
 
 ### Step 2: Load Feature Context from Backlog
@@ -156,7 +158,8 @@ For each subtask in the work queue (from Step 2):
      of a file after `list_symbols` returned line 82 as the start)
 
 5. Determine the integration test file path (`tests/integration/{feature}_test.rs`) and the source stub path (`src/{feature}.rs` or appropriate module).
-6. **Compile-time flag check**: If the task touches `src/services/embedding.rs`, `src/tools/read.rs` unified_search, or any `#[cfg(feature = "embeddings")]` code, note in the harness description that:
+6. **Execution posture from plan**: Check `.backlog/plans/` for a plan file matching this feature. If a plan exists, read the `Execution note:` field for each implementation unit and carry the posture signal forward into the task's harness command. Valid postures: `test-first` (default), `characterization-first`, `migration-first`, `spike`. Broadcast: `[📐 ARCHITECT] Execution posture for {task_id}: {posture}`
+7. **Compile-time flag check**: If the task touches `src/services/embedding.rs`, `src/tools/read.rs` unified_search, or any `#[cfg(feature = "embeddings")]` code, note in the harness description that:
    * The `embeddings` feature is **enabled by default** — `cargo test` compiles ort-sys/fastembed native binaries taking 20-40 minutes on first run.
    * Use `#[cfg(feature = "embeddings")]` / `#[cfg(not(feature = "embeddings"))]` for compile-time guards in tests.
    * Do NOT use `embedding::is_available()` as a runtime guard in tool handlers — it returns `false` until the model has been lazily loaded on first call, which would fire the guard incorrectly on every cold start. Use compile-time `#[cfg(not(feature = "embeddings"))]` blocks instead.
@@ -216,7 +219,7 @@ For each subtask that has a corresponding test function in the harness:
 ```
 backlog-task_edit
   id: "TASK-${input:feature}.NN"
-  implementationNotes: "Harness command: cargo test --test {feature}_test -- {test_name}\nTest file: tests/{tier}/{feature}_test.rs\nStub file(s): {stub_paths}"
+  implementationNotes: "Harness command: cargo test --test {feature}_test -- {test_name}\nTest file: tests/{tier}/{feature}_test.rs\nStub file(s): {stub_paths}\nExecution note: {posture}"
 ```
 
 If a subtask is already marked Done (discovered during Step 2), skip it — do not generate harness tests for completed work.

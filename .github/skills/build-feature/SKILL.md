@@ -20,6 +20,25 @@ input:
 
 Implements a requested feature by continuously looping a fast worker agent against a strict, compiling, but failing test harness until success is achieved. The harness defines the contract; the compiler is the critic.
 
+## Subagent Execution Constraint (NON-NEGOTIABLE)
+
+This skill is a leaf executor. It MUST NOT spawn additional subagents via runSubagent, Task, or any other agent-spawning mechanism. Perform all work using direct tool calls (read, edit, search, terminal, MCP tools) and return results to the parent agent (build orchestrator). If you encounter work that seems to require a subagent, report it as a finding and let the parent decide.
+
+## Agent-Intercom Communication (NON-NEGOTIABLE)
+
+If agent-intercom is available (determined by the parent agent's intercom state), broadcast at every step. Broadcasting is not optional.
+
+## Stall Detection
+
+Every terminal command gets a watchdog timeout:
+
+| Operation | Timeout | Action |
+|---|---|---|
+| cargo test/check/clippy | 45 minutes | Kill process, broadcast stall error, check for lock files, clean up |
+| Non-cargo terminal commands | 5 minutes | Kill, broadcast, proceed with error handling |
+
+If a command exceeds its timeout, broadcast `[STALL] {command} exceeded {timeout}`, kill the process, clean up any cargo lock files, and count toward the parent orchestrator's stall limit.
+
 ## Prerequisites
 
 * The test harness defined by `${input:harness-cmd}` compiles (green compilation, red tests)

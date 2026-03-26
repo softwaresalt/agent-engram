@@ -1,7 +1,7 @@
 project_name: "agent-engram"
 default_status: "To Do"
 statuses: ["To Do", "In Progress", "Done"]
-type: ["feature", "task", "bug"]
+type: ["feature", "task", "bug", "spike"]
 labels: []
 definition_of_done: []
 date_format: yyyy-mm-dd

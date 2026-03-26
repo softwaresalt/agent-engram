@@ -1,7 +1,7 @@
 ---
 name: fix-ci
-description: "Usage: Fix CI. Detects CI pipeline failures on the current branch's PR, reproduces and fixes errors locally, runs all CI gates, then pushes and polls until the pipeline passes."
-version: 1.0
+description: "Usage: Fix CI. Detects CI pipeline failures and GitHub Copilot review comments on the current branch's PR, reproduces and fixes errors locally, addresses review comments, runs all CI gates, then pushes and polls until the pipeline passes and comments are resolved."
+version: 2.0
 input:
   properties:
     pr-number:
@@ -15,7 +15,7 @@ input:
       description: "Repository name. Auto-detected from git remote if omitted."
     max-iterations:
       type: integer
-      description: "Maximum fix-push-poll cycles before halting (default: 3)."
+      description: "Maximum fix-push-poll cycles before halting (default: 5)."
     poll-interval:
       type: integer
       description: "Seconds between CI status polls (default: 30)."
@@ -27,7 +27,38 @@ input:
 
 # Fix CI Skill
 
-Automates the cycle of detecting CI pipeline failures on a GitHub PR, reproducing errors locally, applying fixes, running all CI gates to confirm the fix, then pushing and polling until the remote pipeline passes. The skill iterates through fix-push-poll cycles up to a configurable limit, halting only when all checks pass or the iteration cap is reached.
+Automates the cycle of detecting CI pipeline failures AND GitHub Copilot review comments on a PR, reproducing errors locally, applying fixes, addressing review comments, running all CI gates, then pushing and polling until the remote pipeline passes and all review comments are resolved.
+
+## Agent-Intercom Communication (NON-NEGOTIABLE)
+
+Call `ping` at session start. If agent-intercom is reachable, broadcast at every step. If unreachable, warn the user that operator visibility is degraded.
+
+| Event | Level | Message prefix |
+|---|---|---|
+| Session start | info | `[FIX-CI] Starting for PR #{pr_number}` |
+| CI status checked | info | `[FIX-CI] CI status: {passed}/{failed}/{pending} checks` |
+| Copilot comments found | info | `[FIX-CI] Found {count} Copilot review comments` |
+| Reproducing failure | info | `[FIX-CI] Reproducing: {check_name}` |
+| Fix applied | info | `[FIX-CI] Fixed: {description}` |
+| Comment addressed | info | `[FIX-CI] Addressed comment on {file}: {summary}` |
+| Comment declined | info | `[FIX-CI] Declined comment on {file}: {reason}` |
+| Local gate passed | success | `[FIX-CI] Local CI gates pass` |
+| Push and poll | info | `[FIX-CI] Pushed, polling cycle {N}/{max}` |
+| All checks pass | success | `[FIX-CI] All CI checks pass, all comments resolved` |
+| Circuit breaker | error | `[FIX-CI] Max iterations ({max}) reached — halting` |
+| Stall detected | error | `[STALL] {operation} exceeded timeout` |
+| Waiting for input | warning | `[WAIT] Blocked on: {what}` |
+
+## Subagent Execution Constraint (NON-NEGOTIABLE)
+
+When invoked as a subagent, you MUST NOT spawn additional subagents. You are a leaf executor.
+
+## Loop Limits (NON-NEGOTIABLE)
+
+| Counter | Limit | Action |
+|---|---|---|
+| Fix-push-poll cycles | 5 (configurable via max-iterations) | Halt, broadcast error, leave PR open for manual intervention |
+| Stalls in session | 3 | Halt, broadcast error, exit |
 
 ## Prerequisites
 
@@ -88,6 +119,21 @@ Poll the PR's check run statuses to determine which checks need attention.
 6. Also use `mcp_github_pull_request_read` with method `get_comments` to check for CI bot failure summaries that may provide additional diagnostic context.
 7. Report the list of failed checks before proceeding to local reproduction.
 
+### Step 2b: Check for Copilot Review Comments
+
+Detect and classify GitHub Copilot review comments on the PR.
+
+1. Use `mcp_github_pull_request_read` with method `get_reviews` to retrieve all reviews on the PR.
+2. Filter for Copilot-authored review comments (author is `github-actions[bot]` or `copilot` or similar automated reviewer).
+3. For each Copilot comment, extract:
+   - File path and line number
+   - Comment text and suggestion
+   - Whether the comment thread is resolved or unresolved
+4. Filter to only unresolved Copilot comments.
+5. If no unresolved Copilot comments and no CI failures, report success and stop.
+6. `broadcast` at `info` level: `[FIX-CI] Found {count} unresolved Copilot review comments`
+7. Report the list of comments before proceeding.
+
 ### Step 3: Reproduce Failures Locally
 
 Run the failing CI checks locally in CI pipeline order to capture detailed error output.
@@ -131,6 +177,20 @@ Common fix patterns by check type:
 * *test*: Investigate test assertion failures, compilation errors in test code, and missing test fixtures. Fix the implementation rather than weakening the test, unless the test itself contains a bug.
 * *audit*: Review the advisory details from `cargo audit` output. Update the affected dependency version in `Cargo.toml`, or add an advisory ignore if the vulnerability does not apply to the project's usage.
 
+### Step 4b: Address Copilot Review Comments
+
+For each unresolved Copilot review comment (from Step 2b):
+
+1. Read the comment and the referenced code at the specified file and line.
+2. Use engram MCP tools to understand the context:
+   - `map_code` for the affected symbol's call graph
+   - `list_symbols` for the module structure around the comment
+3. Evaluate whether the suggestion is valid:
+   - **Valid suggestion**: Apply the fix. `broadcast` at `info` level: `[FIX-CI] Addressed comment on {file}: {summary}`. Resolve the comment thread if the GitHub API supports it.
+   - **Partially valid**: Apply the applicable portion, leave a reply explaining what was and was not applied.
+   - **Invalid or disagreeable**: Do NOT apply. Leave a reply comment explaining why the suggestion was declined with technical rationale. `broadcast` at `info` level: `[FIX-CI] Declined comment on {file}: {reason}`
+4. After addressing all comments, re-run local CI gates to verify no regressions were introduced.
+
 ### Step 5: Local CI Gate
 
 This is a **hard gate**. All checks pass locally before proceeding to push. Run all CI checks in pipeline order regardless of which ones originally failed, since fixes may have introduced regressions in previously passing checks.
@@ -163,10 +223,10 @@ After pushing, poll the PR's check statuses until all checks complete, then deci
 1. Wait for `poll-interval` seconds (default 30) after pushing to allow CI to start.
 2. Use `mcp_github_pull_request_read` with method `get_status` to retrieve updated check run statuses.
 3. If checks are still *pending*, wait for `poll-interval` seconds and re-poll. Continue until all checks complete or `max-wait` is exceeded.
-4. If all checks pass, proceed to Step 8 with a success status.
+4. If all checks pass, re-check for new Copilot review comments (Step 2b). If no new unresolved comments, proceed to Step 8 with a success status. If new comments appeared, address them (Step 4b), re-run local gates, push, and re-poll.
 5. If any checks fail, increment the iteration counter.
-   * If the counter is below `max-iterations` (default 3), loop back to Step 3 to reproduce the new failures locally and begin another fix cycle.
-   * If the counter has reached `max-iterations`, proceed to Step 8 with a failure status and the accumulated findings.
+   * If the counter is below `max-iterations` (default 5), loop back to Step 3 to reproduce the new failures locally and begin another fix cycle.
+   * If the counter has reached `max-iterations`, proceed to Step 8 with a failure status and the accumulated findings. `broadcast` at `error` level: `[FIX-CI] Max iterations ({max}) reached — halting`
 
 ### Step 8: Completion Report
 
@@ -174,10 +234,11 @@ Summarize the outcome of the fix cycle.
 
 Report the following:
 
-* **Final status**: all checks passed, or maximum iterations reached with remaining failures.
+* **Final status**: all checks passed and all Copilot comments resolved, or maximum iterations reached with remaining issues.
 * **Iterations completed**: how many fix-push-poll cycles ran.
 * **Commits made**: list of commit hashes produced during the fix cycle.
 * **Fixes applied**: summary of all changes made across all iterations.
+* **Copilot comments**: {addressed_count} addressed, {declined_count} declined with rationale.
 * If checks are still failing after reaching `max-iterations`:
   * The specific checks that remain broken.
   * The latest error output from the failing checks.

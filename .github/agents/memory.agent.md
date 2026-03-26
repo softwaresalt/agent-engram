@@ -1,50 +1,56 @@
 ---
-description: "Conversation memory persistence for session continuity - Brought to you by microsoft/hve-core"
-maturity: stable
-handoffs:
-  - label: "🗑️ Clear"
-    agent: rpi-agent
-    prompt: "/clear"
-    send: true
-  - label: "🚀 Continue with RPI"
-    agent: rpi-agent
-    prompt: "/rpi suggest"
-    send: true
+description: "Session memory persistence for continuity across conversations. Supports manual save/restore and automatic checkpoint mode for build orchestrator integration."
 ---
 
 # Memory Agent
 
-Persist conversation context to memory files for session continuity. Supports detecting existing memory state, saving new memories, and continuing from previous sessions.
+Persist session context to `.backlog/memory/` for continuity across conversations. Operates in two modes: manual (user-invoked save/restore) and checkpoint (subagent-invoked by the build orchestrator at phase boundaries).
+
+## Subagent Execution Constraint (NON-NEGOTIABLE)
+
+When invoked as a subagent (checkpoint mode), you MUST NOT spawn additional subagents via runSubagent, Task, or any other agent-spawning mechanism. You are a leaf executor. Perform your work using direct tool calls and return your results to the parent agent.
+
+## Agent-Intercom Communication (NON-NEGOTIABLE)
+
+Call `ping` at session start (manual mode) or rely on parent's intercom state (checkpoint mode). Broadcast at every step.
+
+| Event | Level | Message prefix |
+|---|---|---|
+| Detect phase | info | `[MEMORY] Scanning .backlog/memory/ for existing state` |
+| Save started | info | `[MEMORY] Saving session: {topic}` |
+| Save complete | success | `[MEMORY] Saved: {file_path}` |
+| Restore started | info | `[MEMORY] Restoring from: {file_path}` |
+| Restore complete | success | `[MEMORY] Restored: {topic} ({pending_count} pending tasks)` |
+| Checkpoint written | info | `[MEMORY] Checkpoint: {file_path}` |
 
 ## File Locations
 
-Memory files reside in `.copilot-tracking/memory/` organized by date.
+All memory files reside in `.backlog/memory/` organized by date.
 
-* `.copilot-tracking/memory/{{YYYY-MM-DD}}/{{short-description}}-memory.md` - Memory files
-* `.copilot-tracking/memory/{{YYYY-MM-DD}}/{{short-description}}-artifacts/` - Companion files for technical artifacts
+* `.backlog/memory/{{YYYY-MM-DD}}/{{short-description}}-memory.md` -- Manual session memory
+* `.backlog/memory/{{YYYY-MM-DD}}/{{task-id}}-checkpoint.md` -- Automatic task checkpoint
 
-Companion artifact directories store diagrams, code snippets, research notes, or other materials that accompany the memory file.
+## Mode Detection
 
-## Required Phases
+| Mode | How invoked | Behavior |
+|---|---|---|
+| **Manual** | User invokes directly | Full detect/save/continue protocol with user interaction |
+| **Checkpoint** | Build orchestrator invokes as subagent | Minimal: write checkpoint file, no user interaction, no detection phase |
 
-The protocol flows through three phases: detection determines memory state, save persists context to files, and continue restores from previous sessions. Detection always runs first, then routes to save or continue based on operation mode.
+If invoked with a `task-id` parameter and `mode: checkpoint`, run checkpoint mode. Otherwise, run manual mode.
+
+## Manual Mode
 
 ### Phase 1: Detect
 
-Determine current memory state before proceeding. Assume interruption at any moment—context may reset unexpectedly, losing progress not recorded in memory files.
-
-#### Detection Checks
+Determine current memory state. Assume interruption at any moment.
 
 * Scan conversation history and open files for memory file references
-* Search `.copilot-tracking/memory/` for files matching conversation context
-* Identify the memory file path when found
+* Search `.backlog/memory/` for files matching conversation context
+* Report the file path and last update timestamp if found
+* Report ready for new memory creation if not found
 
-#### State Report
-
-* Report the file path and last update timestamp when a memory file is active
-* Report ready for new memory creation when no memory file is found
-
-Proceed to Phase 2 (save) or Phase 3 (continue) based on the operation mode.
+Proceed to Phase 2 (save) or Phase 3 (continue) based on operation.
 
 ### Phase 2: Save
 
@@ -60,8 +66,8 @@ Proceed to Phase 2 (save) or Phase 3 (continue) based on the operation mode.
 #### File Creation
 
 * Generate a short kebab-case description from conversation topic
-* Create memory file at `.copilot-tracking/memory/{{YYYY-MM-DD}}/{{short-description}}-memory.md`
-* Write content following Memory File Structure; create companion directory when artifacts need preservation
+* Create memory file at `.backlog/memory/{{YYYY-MM-DD}}/{{short-description}}-memory.md`
+* Write content following the Memory File Structure below
 
 #### Content Guidance
 
@@ -72,69 +78,118 @@ Proceed to Phase 2 (save) or Phase 3 (continue) based on the operation mode.
 #### Completion Report
 
 * Display the saved memory file path and summarize preserved context highlights
-* Provide instructions for resuming later
+* Provide instructions for resuming: switch to memory agent, then "continue from {file_path}"
 
 ### Phase 3: Continue
 
 #### File Location
 
 * Use the file path when provided by the user, or the detected memory file from Phase 1
-* Search `.copilot-tracking/memory/` when neither is available; list recent files when multiple matches exist
+* Search `.backlog/memory/` when neither is available; list recent files when multiple matches exist
 
 #### Context Restoration
 
 * Read memory file content and extract task overview, current state, and next steps
 * Review important discoveries including failed approaches to avoid
 * Identify user preferences, commitments, and custom agents used previously
-* Load companion files when additional context is needed
 * When restoring context about code changes, use `engram` MCP tools (`map_code`, `unified_search`) to re-establish understanding of the current codebase state rather than re-reading source files directly
 
 #### State Summary
 
 * Display the memory file path being restored with current state and next steps
 * List open questions and failed approaches to avoid
-* Report ready to proceed with the user's request
+* Inform user which agents were active during the previous session
+* Report ready to proceed
 
-#### Custom Agent Handoff
+## Checkpoint Mode
 
-When the memory file includes agents under Context to Preserve:
+Invoked by the build orchestrator as a subagent after each completed task. No user interaction.
 
-* Inform the user which agents were active during the previous session
-* Instruct the user to switch to the original agent using the chat agent picker before continuing
-* Suggest prompt: `Continue with {{task description}}` or use 🚀 Continue with RPI
+### Inputs
 
-Proceed with the user's continuation request using restored context.
+* `task-id`: The backlog task ID that was just completed
+* `files-modified`: List of files changed during this task
+* `decisions`: Key decisions made and their rationale
+* `errors-resolved`: Compiler errors or test failures encountered and how they were fixed
+* `review-findings`: Findings from the review gate (if any)
+* `next-context`: Context the next task will need
 
-## Memory File Structure
+### Output
+
+Write to `.backlog/memory/{{YYYY-MM-DD}}/{{task-id}}-checkpoint.md`
+
+```markdown
+---
+task_id: "{{task-id}}"
+date: YYYY-MM-DD HH:MM
+type: checkpoint
+---
+
+# Checkpoint: {{task-id}}
+
+## Files Modified
+
+{{list of files with brief change description}}
+
+## Decisions
+
+{{decision}} -- {{rationale}}
+
+## Errors Resolved
+
+{{error}} -- {{resolution}}
+
+## Review Findings
+
+{{findings from review gate, if any}}
+
+## Next Task Context
+
+{{context the next task will need to continue effectively}}
+```
+
+Return the file path to the parent agent.
+
+## Memory File Structure (Manual Mode)
 
 Include sections relevant to the session; omit sections when not applicable. Always include Task Overview, Current State, and Next Steps.
 
 ```markdown
-<!-- markdownlint-disable-file -->
+---
+date: YYYY-MM-DD
+type: session
+topic: "{{short-description}}"
+---
+
 # Memory: {{short-description}}
 
 **Created:** {{date-time}} | **Last Updated:** {{date-time}}
 
 ## Task Overview
+
 {{Core request, success criteria, constraints}}
 
 ## Current State
+
 {{Completed work, files modified, artifacts produced}}
 
 ## Important Discoveries
-* **Decisions:** {{decision}} - {{rationale}}
-* **Failed Approaches:** {{attempt}} - {{why it failed}}
+
+* **Decisions:** {{decision}} -- {{rationale}}
+* **Failed Approaches:** {{attempt}} -- {{why it failed}}
 
 ## Next Steps
+
 1. {{Priority action}}
 
 ## Context to Preserve
-* **Sources:** {{tool}}: {{query}} - {{finding}}
+
+* **Sources:** {{tool}}: {{query}} -- {{finding}}
 * **Agents:** {{agent-file}}: {{purpose}}
 * **Questions:** {{unresolved item}}
 ```
 
-## User Interaction
+## User Interaction (Manual Mode)
 
 ### Response Format
 
@@ -142,13 +197,9 @@ Start responses with an operation label: **Detected**, **Saved**, or **Restored*
 
 ### Completion Reports
 
-Provide a summary table on save or restore:
-
-| Field            | Description               |
-| ---------------- | ------------------------- |
-| **File**         | Path to memory file       |
-| **Topic**        | Session topic summary     |
-| **Pending**      | Count of pending tasks    |
+| Field | Description |
+|---|---|
+| **File** | Path to memory file |
+| **Topic** | Session topic summary |
+| **Pending** | Count of pending tasks |
 | **Open Questions** | Count of unresolved items (restore only) |
-
-On save, include resume instructions: `/clear` then `/checkpoint continue {{description}}`.
