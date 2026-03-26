@@ -2278,6 +2278,18 @@ impl CodeGraphQueries {
     ///
     /// Returns `EngramError` if any database query fails.
     pub async fn gc_corrupted_embeddings(&self) -> Result<usize, EngramError> {
+        // ── Row types used by both phases ────────────────────────────
+        #[derive(serde::Deserialize)]
+        struct IdRow {
+            id: surrealdb::sql::Thing,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct EmbProbe {
+            #[serde(default)]
+            embedding: Vec<f32>,
+        }
+
         // Table names that may contain embedding vectors.
         // `function` must be backtick-quoted because it is a SurrealDB reserved word.
         let quoted_tables: &[&str] = &["`function`", "class", "interface", "content_record"];
@@ -2286,12 +2298,6 @@ impl CodeGraphQueries {
 
         for quoted_table in quoted_tables {
             // ── Phase 1: Collect all IDs (no embedding field — safe) ──
-
-            #[derive(serde::Deserialize)]
-            struct IdRow {
-                id: surrealdb::sql::Thing,
-            }
-
             let id_query = format!("SELECT id FROM {quoted_table}");
             let mut id_resp = self.db.query(id_query).await.map_err(map_db_err)?;
             let id_rows: Vec<IdRow> = id_resp.take(0).map_err(map_db_err)?;
@@ -2299,13 +2305,6 @@ impl CodeGraphQueries {
             // ── Phase 2: Probe each record's embedding individually ──
             // Deserialization of NaN embedding → serde error, which we treat as
             // evidence of corruption and delete the owning record.
-
-            #[derive(serde::Deserialize)]
-            struct EmbProbe {
-                #[serde(default)]
-                embedding: Vec<f32>,
-            }
-
             for id_row in id_rows {
                 let mut probe_resp = self
                     .db
@@ -2320,7 +2319,7 @@ impl CodeGraphQueries {
                     // Deserialized OK, but contains non-finite values.
                     Ok(rows) => rows
                         .first()
-                        .map_or(false, |r| r.embedding.iter().any(|v| !v.is_finite())),
+                        .is_some_and(|r| r.embedding.iter().any(|v| !v.is_finite())),
                 };
 
                 if is_corrupted {
