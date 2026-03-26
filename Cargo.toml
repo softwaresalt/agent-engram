@@ -333,3 +333,23 @@ path = "tests/integration/content_knn_search_test.rs"
 [[test]]
 name = "integration_file_tracker"
 path = "tests/integration/file_tracker_test.rs"
+
+[[test]]
+name = "unit_branch_workspace"
+path = "tests/unit/branch_workspace_test.rs"
+
+[[test]]
+name = "unit_branch_hash"
+path = "tests/unit/branch_hash_test.rs"
+
+[[test]]
+name = "contract_branch_isolation"
+path = "tests/contract/branch_isolation_contract_test.rs"
+
+[[test]]
+name = "integration_branch_isolation"
+path = "tests/integration/branch_isolation_test.rs"
+
+[[test]]
+name = "integration_file_hash_pipeline"
+path = "tests/integration/file_hash_pipeline_test.rs"

@@ -79,7 +79,22 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
 }
 
 /// Compute a stable SHA256 hash for the workspace path.
-pub fn workspace_hash(path: &Path) -> String {
+///
+/// `branch` is accepted so callers pass the active branch when constructing
+/// `workspace_id`. The branch is not yet included in the digest —
+/// embedding it is the implementation task for TASK-009.04.
+///
+/// # Worker instruction
+///
+/// Include `branch` in the SHA-256 digest so `workspace_id` uniquely
+/// identifies `(path, branch)` pairs:
+/// ```text
+/// hasher.update(path.to_string_lossy().as_bytes());
+/// hasher.update(b":");
+/// hasher.update(branch.as_bytes());
+/// ```
+pub fn workspace_hash(path: &Path, branch: &str) -> String {
+    let _ = branch; // TODO(009.04): include branch in digest
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
@@ -109,7 +124,7 @@ pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
 /// Sanitize a git branch name for use as a filesystem directory name.
 ///
 /// Replaces `/` with `__` so branches like `feature/foo` become `feature__foo`.
-fn sanitize_branch_for_path(branch: &str) -> String {
+pub(crate) fn sanitize_branch_for_path(branch: &str) -> String {
     branch.replace('/', "__")
 }
 

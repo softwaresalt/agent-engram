@@ -17,6 +17,12 @@ references:
   - tests/integration/file_tracker_test.rs
 parent_task_id: TASK-009
 priority: medium
+implementationNotes: "Harness: `cargo test --test integration_file_hash_pipeline` — S085,
+  S086, S087 are RED gates; S088 is a GREEN guard. S085 asserts detect_offline_changes
+  returns empty set for src/ files after index_workspace. S086 asserts file_hash table
+  contains a record for each indexed file. S087 asserts re-indexing unchanged files
+  leaves change set empty. Implement by calling `record_file_hash` inside `index_workspace_inner`
+  in `src/tools/write.rs` after each successful file upsert."
 ---
 
 ## Description
