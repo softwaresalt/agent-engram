@@ -37,6 +37,8 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
     let cg_queries = crate::db::queries::CodeGraphQueries::new(db);
 
     dehydrate_code_graph(&cg_queries, workspace_path).await?;
+    let _ =
+        crate::services::metrics::compute_and_write_summary(workspace_path, &snapshot.branch).await;
     Ok(())
 }
 

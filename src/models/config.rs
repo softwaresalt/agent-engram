@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::metrics::MetricsConfig;
+
 /// Top-level workspace configuration read from `.engram/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -15,6 +17,9 @@ pub struct WorkspaceConfig {
     /// Code graph indexing and traversal settings.
     #[serde(default)]
     pub code_graph: CodeGraphConfig,
+    /// Metrics collection and persistence settings.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).
     ///
     /// Queries that exceed this limit are cancelled with a `QUERY_TIMEOUT` error.
@@ -33,6 +38,7 @@ impl Default for WorkspaceConfig {
         Self {
             batch: BatchConfig::default(),
             code_graph: CodeGraphConfig::default(),
+            metrics: MetricsConfig::default(),
             query_timeout_ms: default_query_timeout_ms(),
             query_row_limit: default_query_row_limit(),
         }

@@ -7,7 +7,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::errors::{EngramError, SystemError};
+use crate::models::metrics::UsageEvent;
 use crate::server::state::SharedState;
+use crate::services::metrics;
 
 pub mod lifecycle;
 pub mod read;
@@ -23,6 +25,74 @@ fn not_implemented(method: &str) -> EngramError {
     EngramError::System(SystemError::InvalidParams {
         reason: format!("{method} not implemented"),
     })
+}
+
+fn should_record_metrics(method: &str) -> bool {
+    matches!(
+        method,
+        "query_memory"
+            | "get_workspace_statistics"
+            | "map_code"
+            | "list_symbols"
+            | "unified_search"
+            | "impact_analysis"
+            | "get_health_report"
+            | "query_graph"
+            | "get_branch_metrics"
+            | "get_token_savings_report"
+    ) || cfg!(feature = "git-graph") && method == "query_changes"
+}
+
+fn value_array_len(value: Option<&Value>) -> u32 {
+    value
+        .and_then(Value::as_array)
+        .and_then(|array| u32::try_from(array.len()).ok())
+        .unwrap_or(0)
+}
+
+fn value_u32(value: Option<&Value>) -> u32 {
+    value
+        .and_then(Value::as_u64)
+        .and_then(|count| u32::try_from(count).ok())
+        .unwrap_or(0)
+}
+
+fn extract_counts(method: &str, value: &Value) -> (u32, u32) {
+    match method {
+        "map_code" => {
+            let neighbors = value_array_len(value.get("neighbors"));
+            let root_count = u32::from(!value.get("root").unwrap_or(&Value::Null).is_null());
+            let total = neighbors.saturating_add(root_count);
+            (total, total)
+        }
+        "list_symbols" => {
+            let total = value_u32(value.get("total_count"));
+            (total, total)
+        }
+        "unified_search" | "query_memory" => {
+            let total = value_array_len(value.get("results"));
+            (total, total)
+        }
+        "impact_analysis" => {
+            let total = value_array_len(value.get("code_neighborhood"));
+            (total, total)
+        }
+        "query_graph" => {
+            let total = value_u32(value.get("row_count"));
+            (total, total)
+        }
+        #[cfg(feature = "git-graph")]
+        "query_changes" => {
+            let total = value_u32(value.get("total"));
+            (total, total)
+        }
+        "get_branch_metrics" => {
+            let total = u32::from(value.get("comparison").is_some()) + 1;
+            (0, total)
+        }
+        "get_workspace_statistics" | "get_health_report" | "get_token_savings_report" => (0, 1),
+        _ => (0, 0),
+    }
 }
 
 #[tracing::instrument(
@@ -78,6 +148,8 @@ pub async fn dispatch(
         "unified_search" => read::unified_search(state.clone(), params).await,
         "impact_analysis" => read::impact_analysis(state.clone(), params).await,
         "get_health_report" => read::get_health_report(state.clone(), params).await,
+        "get_branch_metrics" => read::get_branch_metrics(state.clone(), params).await,
+        "get_token_savings_report" => read::get_token_savings_report(state.clone(), params).await,
         "query_graph" => read::query_graph(state.clone(), params).await,
         #[cfg(feature = "git-graph")]
         "query_changes" => read::query_changes(state.clone(), params).await,
@@ -92,6 +164,25 @@ pub async fn dispatch(
         state
             .record_tool_latency(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX))
             .await;
+    }
+
+    if should_record_metrics(method) {
+        if let Ok(value) = &result {
+            if let Some(snapshot) = state.snapshot_workspace().await {
+                let response_bytes = u64::try_from(value.to_string().len()).unwrap_or(u64::MAX);
+                let (symbols_returned, results_returned) = extract_counts(method, value);
+                metrics::record(UsageEvent {
+                    tool_name: method.to_owned(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    response_bytes,
+                    estimated_tokens: response_bytes / 4,
+                    symbols_returned,
+                    results_returned,
+                    branch: snapshot.branch,
+                    connection_id: None,
+                });
+            }
+        }
     }
 
     result

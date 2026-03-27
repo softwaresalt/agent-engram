@@ -16,8 +16,7 @@ async fn t010_04_flush_creates_summary_json() {
 
     // Write 5 usage events to usage.jsonl
     let jsonl_path = metrics_dir.join("usage.jsonl");
-    let mut file =
-        std::fs::File::create(&jsonl_path).unwrap_or_else(|e| panic!("create: {e}"));
+    let mut file = std::fs::File::create(&jsonl_path).unwrap_or_else(|e| panic!("create: {e}"));
     for i in 0..5 {
         let event = serde_json::json!({
             "tool_name": "map_code",
@@ -28,25 +27,23 @@ async fn t010_04_flush_creates_summary_json() {
             "results_returned": 3_u32,
             "branch": "main"
         });
-        let line = serde_json::to_string(&event)
-            .unwrap_or_else(|e| panic!("serialize: {e}"));
+        let line = serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize: {e}"));
         writeln!(file, "{line}").unwrap_or_else(|e| panic!("write: {e}"));
     }
     drop(file);
 
     // WHEN compute_and_write_summary is called
-    let result =
-        engram::services::metrics::compute_and_write_summary(tmp.path(), "main").await;
+    let result = engram::services::metrics::compute_and_write_summary(tmp.path(), "main").await;
 
     // THEN summary.json exists and is valid JSON
     let summary_path = metrics_dir.join("summary.json");
     assert!(result.is_ok(), "compute_and_write_summary should succeed");
     assert!(summary_path.exists(), "summary.json should be created");
 
-    let summary_content = std::fs::read_to_string(&summary_path)
-        .unwrap_or_else(|e| panic!("read summary: {e}"));
-    let summary: serde_json::Value = serde_json::from_str(&summary_content)
-        .unwrap_or_else(|e| panic!("parse summary: {e}"));
+    let summary_content =
+        std::fs::read_to_string(&summary_path).unwrap_or_else(|e| panic!("read summary: {e}"));
+    let summary: serde_json::Value =
+        serde_json::from_str(&summary_content).unwrap_or_else(|e| panic!("parse summary: {e}"));
     assert_eq!(summary["total_tool_calls"], 5);
 }
 
@@ -71,14 +68,11 @@ async fn t010_04_branch_isolation() {
     write_test_events(&feature_dir.join("usage.jsonl"), 2);
 
     // THEN both directories exist with correct event counts
-    let main_summary =
-        engram::services::metrics::compute_summary(tmp.path(), "main");
-    let feature_summary =
-        engram::services::metrics::compute_summary(tmp.path(), "feature__auth");
+    let main_summary = engram::services::metrics::compute_summary(tmp.path(), "main");
+    let feature_summary = engram::services::metrics::compute_summary(tmp.path(), "feature__auth");
 
     let main_summary = main_summary.unwrap_or_else(|e| panic!("main summary: {e}"));
-    let feature_summary =
-        feature_summary.unwrap_or_else(|e| panic!("feature summary: {e}"));
+    let feature_summary = feature_summary.unwrap_or_else(|e| panic!("feature summary: {e}"));
 
     assert_eq!(main_summary.total_tool_calls, 3);
     assert_eq!(feature_summary.total_tool_calls, 2);
@@ -110,15 +104,13 @@ async fn t010_04_append_after_restart() {
             "results_returned": 8_u32,
             "branch": "main"
         });
-        let line = serde_json::to_string(&event)
-            .unwrap_or_else(|e| panic!("serialize: {e}"));
+        let line = serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize: {e}"));
         writeln!(file, "{line}").unwrap_or_else(|e| panic!("write: {e}"));
     }
     drop(file);
 
     // THEN usage.jsonl has 5 total lines
-    let content =
-        std::fs::read_to_string(&jsonl_path).unwrap_or_else(|e| panic!("read: {e}"));
+    let content = std::fs::read_to_string(&jsonl_path).unwrap_or_else(|e| panic!("read: {e}"));
     let line_count = content.lines().filter(|l| !l.is_empty()).count();
     assert_eq!(line_count, 5, "Should have 3 original + 2 appended events");
 }
@@ -144,8 +136,7 @@ fn t010_04_metrics_dir_not_in_gitignore() {
 // -- Test helpers --
 
 fn write_test_events(path: &std::path::Path, count: usize) {
-    let mut file =
-        std::fs::File::create(path).unwrap_or_else(|e| panic!("create: {e}"));
+    let mut file = std::fs::File::create(path).unwrap_or_else(|e| panic!("create: {e}"));
     for i in 0..count {
         let event = serde_json::json!({
             "tool_name": "map_code",
@@ -156,8 +147,7 @@ fn write_test_events(path: &std::path::Path, count: usize) {
             "results_returned": 3_u32,
             "branch": "main"
         });
-        let line = serde_json::to_string(&event)
-            .unwrap_or_else(|e| panic!("serialize: {e}"));
+        let line = serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize: {e}"));
         writeln!(file, "{line}").unwrap_or_else(|e| panic!("write: {e}"));
     }
 }

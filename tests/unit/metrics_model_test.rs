@@ -3,9 +3,7 @@
 //! Validates serde round-trip, summary aggregation, config defaults,
 //! and BTreeMap deterministic ordering.
 
-use engram::models::metrics::{
-    MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent,
-};
+use engram::models::metrics::{MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent};
 use std::collections::BTreeMap;
 
 /// AC#1: UsageEvent serializes to JSON and round-trips via serde_json.
@@ -141,8 +139,7 @@ fn t010_01_btreemap_deterministic_ordering() {
     };
 
     // WHEN serialized to JSON
-    let json =
-        serde_json::to_string(&summary).unwrap_or_else(|e| panic!("serialize failed: {e}"));
+    let json = serde_json::to_string(&summary).unwrap_or_else(|e| panic!("serialize failed: {e}"));
 
     // THEN "alpha_tool" appears before "zebra_tool" (sorted keys)
     let alpha_pos = json.find("alpha_tool");

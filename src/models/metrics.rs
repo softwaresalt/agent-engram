@@ -117,13 +117,70 @@ impl Default for MetricsConfig {
 impl MetricsSummary {
     /// Compute an aggregated summary from a list of usage events.
     #[allow(clippy::cast_precision_loss)]
-    pub fn from_events(_events: &[UsageEvent]) -> Self {
-        unimplemented!(
-            "Worker: Aggregate events into MetricsSummary — group by tool_name \
-             into BTreeMap<String, ToolMetrics>, compute avg_tokens as \
-             total_tokens / call_count, collect top 10 symbols from \
-             tool_name frequencies, extract time_range from first/last \
-             event timestamps, count unique connection_ids for session_count"
-        )
+    pub fn from_events(events: &[UsageEvent]) -> Self {
+        let mut by_tool: BTreeMap<String, ToolMetrics> = BTreeMap::new();
+        let mut symbol_counts: BTreeMap<String, u32> = BTreeMap::new();
+        let mut total_tokens = 0_u64;
+        let mut session_ids = std::collections::BTreeSet::new();
+
+        for event in events {
+            total_tokens += event.estimated_tokens;
+            let entry = by_tool
+                .entry(event.tool_name.clone())
+                .or_insert_with(|| ToolMetrics {
+                    call_count: 0,
+                    total_tokens: 0,
+                    avg_tokens: 0.0,
+                });
+            entry.call_count += 1;
+            entry.total_tokens += event.estimated_tokens;
+
+            *symbol_counts.entry(event.tool_name.clone()).or_insert(0) += 1;
+
+            if let Some(connection_id) = &event.connection_id {
+                session_ids.insert(connection_id.clone());
+            }
+        }
+
+        for metrics in by_tool.values_mut() {
+            metrics.avg_tokens = if metrics.call_count == 0 {
+                0.0
+            } else {
+                metrics.total_tokens as f64 / metrics.call_count as f64
+            };
+        }
+
+        let mut top_symbols: Vec<SymbolCount> = symbol_counts
+            .into_iter()
+            .map(|(name, count)| SymbolCount { name, count })
+            .collect();
+        top_symbols.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        top_symbols.truncate(10);
+
+        let time_range = if let (Some(first), Some(last)) = (events.first(), events.last()) {
+            TimeRange {
+                start: first.timestamp.clone(),
+                end: last.timestamp.clone(),
+            }
+        } else {
+            TimeRange {
+                start: String::new(),
+                end: String::new(),
+            }
+        };
+
+        Self {
+            total_tool_calls: u64::try_from(events.len()).unwrap_or(u64::MAX),
+            total_tokens,
+            by_tool,
+            top_symbols,
+            time_range,
+            session_count: u32::try_from(session_ids.len()).unwrap_or(u32::MAX),
+        }
     }
 }

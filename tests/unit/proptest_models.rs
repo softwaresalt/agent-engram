@@ -7,14 +7,95 @@ use engram::models::code_file::CodeFile;
 use engram::models::config::{BatchConfig, CodeGraphConfig, WorkspaceConfig};
 use engram::models::function::Function;
 use engram::models::interface::Interface;
+use engram::models::metrics::{
+    MetricsConfig, MetricsSummary, SymbolCount, TimeRange, ToolMetrics, UsageEvent,
+};
 
 fn arb_workspace_config() -> impl Strategy<Value = WorkspaceConfig> {
     (1..500u32,).prop_map(|(batch,)| WorkspaceConfig {
         batch: BatchConfig { max_size: batch },
         code_graph: CodeGraphConfig::default(),
+        metrics: MetricsConfig::default(),
         query_timeout_ms: 5_000,
         query_row_limit: 1_000,
     })
+}
+
+fn arb_usage_event() -> impl Strategy<Value = UsageEvent> {
+    (
+        "[a-z_]{3,20}",
+        "2026-03-27T12:[0-5][0-9]:00Z",
+        1..10_000u64,
+        0..100u32,
+        0..100u32,
+        "[a-z0-9_]{3,20}",
+        prop::option::of("[a-z0-9-]{8,36}"),
+    )
+        .prop_map(
+            |(
+                tool_name,
+                timestamp,
+                response_bytes,
+                symbols_returned,
+                results_returned,
+                branch,
+                connection_id,
+            )| UsageEvent {
+                tool_name,
+                timestamp,
+                response_bytes,
+                estimated_tokens: response_bytes / 4,
+                symbols_returned,
+                results_returned,
+                branch,
+                connection_id,
+            },
+        )
+}
+
+fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
+    prop::collection::btree_map("[a-z_]{3,20}", (1..20u64, 1..5_000u64), 0..5).prop_map(
+        |raw_metrics| {
+            let mut by_tool = std::collections::BTreeMap::new();
+            let mut total_tool_calls = 0_u64;
+            let mut total_tokens = 0_u64;
+            let mut top_symbols = Vec::new();
+
+            for (name, (call_count, tool_tokens)) in raw_metrics {
+                let avg_tokens = if call_count == 0 {
+                    0.0
+                } else {
+                    tool_tokens as f64 / call_count as f64
+                };
+                total_tool_calls += call_count;
+                total_tokens += tool_tokens;
+                top_symbols.push(SymbolCount {
+                    name: name.clone(),
+                    count: u32::try_from(call_count).unwrap_or(u32::MAX),
+                });
+                by_tool.insert(
+                    name,
+                    ToolMetrics {
+                        call_count,
+                        total_tokens: tool_tokens,
+                        avg_tokens,
+                    },
+                );
+            }
+
+            MetricsSummary {
+                total_tool_calls,
+                total_tokens,
+                by_tool,
+                top_symbols,
+                time_range: TimeRange {
+                    start: "2026-03-27T12:00:00Z".to_owned(),
+                    end: "2026-03-27T12:59:00Z".to_owned(),
+                },
+                session_count: 0,
+            }
+        },
+    )
 }
 
 fn arb_code_file() -> impl Strategy<Value = CodeFile> {
@@ -255,6 +336,20 @@ proptest! {
         let json = serde_json::to_string(&edge).unwrap();
         let decoded: CodeEdge = serde_json::from_str(&json).unwrap();
         prop_assert_eq!(edge, decoded);
+    }
+
+    #[test]
+    fn usage_event_roundtrip(event in arb_usage_event()) {
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: UsageEvent = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(event, decoded);
+    }
+
+    #[test]
+    fn metrics_summary_roundtrip(summary in arb_metrics_summary()) {
+        let json = serde_json::to_string(&summary).unwrap();
+        let decoded: MetricsSummary = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(summary, decoded);
     }
 }
 

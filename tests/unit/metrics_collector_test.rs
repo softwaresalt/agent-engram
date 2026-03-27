@@ -27,8 +27,7 @@ fn t010_02_usage_event_to_jsonl() {
     let event = test_event("unified_search", 5000);
 
     // WHEN serialized to JSON
-    let json =
-        serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize failed: {e}"));
+    let json = serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize failed: {e}"));
 
     // THEN the output is a single line (no embedded newlines)
     assert!(
@@ -44,8 +43,7 @@ fn t010_02_compute_summary_aggregation() {
     // GIVEN a temp directory with a usage.jsonl file containing 3 events
     let tmp = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     let metrics_dir = tmp.path().join(".engram").join("metrics").join("main");
-    std::fs::create_dir_all(&metrics_dir)
-        .unwrap_or_else(|e| panic!("create_dir failed: {e}"));
+    std::fs::create_dir_all(&metrics_dir).unwrap_or_else(|e| panic!("create_dir failed: {e}"));
 
     let jsonl_path = metrics_dir.join("usage.jsonl");
     let mut file =
@@ -53,8 +51,8 @@ fn t010_02_compute_summary_aggregation() {
 
     for tool in &["map_code", "map_code", "list_symbols"] {
         let event = test_event(tool, 400);
-        let line = serde_json::to_string(&event)
-            .unwrap_or_else(|e| panic!("serialize failed: {e}"));
+        let line =
+            serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize failed: {e}"));
         writeln!(file, "{line}").unwrap_or_else(|e| panic!("write failed: {e}"));
     }
     drop(file);
@@ -74,8 +72,7 @@ fn t010_02_compute_summary_partial_line_tolerance() {
     // GIVEN a usage.jsonl with 2 valid lines and a truncated final line
     let tmp = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     let metrics_dir = tmp.path().join(".engram").join("metrics").join("main");
-    std::fs::create_dir_all(&metrics_dir)
-        .unwrap_or_else(|e| panic!("create_dir failed: {e}"));
+    std::fs::create_dir_all(&metrics_dir).unwrap_or_else(|e| panic!("create_dir failed: {e}"));
 
     let jsonl_path = metrics_dir.join("usage.jsonl");
     let mut file =
@@ -84,8 +81,8 @@ fn t010_02_compute_summary_partial_line_tolerance() {
     // Write 2 valid events
     for _ in 0..2 {
         let event = test_event("map_code", 800);
-        let line = serde_json::to_string(&event)
-            .unwrap_or_else(|e| panic!("serialize failed: {e}"));
+        let line =
+            serde_json::to_string(&event).unwrap_or_else(|e| panic!("serialize failed: {e}"));
         writeln!(file, "{line}").unwrap_or_else(|e| panic!("write failed: {e}"));
     }
     // Write a truncated/corrupt final line
