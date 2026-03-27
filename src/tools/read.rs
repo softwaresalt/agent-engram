@@ -792,7 +792,9 @@ pub async fn get_health_report(
                 "summary": summary,
             }))
             .unwrap_or(Value::Null),
-            Ok(Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. }))) => Value::Null,
+            Ok(Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. }))) => {
+                Value::Null
+            }
             Ok(Err(error)) => return Err(error),
             Err(join_error) => {
                 tracing::warn!(error = %join_error, "metrics computation task panicked");

@@ -66,11 +66,20 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
 
     // Code graph serialization (FR-132, FR-133, FR-134)
     let cg_result = dehydration::dehydrate_code_graph(&cg_queries, &path).await?;
-    crate::services::metrics::compute_and_write_summary(&path, &branch).await?;
+    let metrics_written =
+        match crate::services::metrics::compute_and_write_summary(&path, &branch).await {
+            Ok(()) => true,
+            Err(crate::errors::EngramError::Metrics(crate::errors::MetricsError::NotFound {
+                ..
+            })) => false, // no usage events yet — skip summary
+            Err(error) => return Err(error),
+        };
     let flush_timestamp = chrono::Utc::now().to_rfc3339();
 
     let mut all_files = cg_result.files_written.clone();
-    all_files.push(format!(".engram/metrics/{branch}/summary.json"));
+    if metrics_written {
+        all_files.push(format!(".engram/metrics/{branch}/summary.json"));
+    }
 
     let new_mtimes = hydration::collect_file_mtimes(&engram_dir);
 

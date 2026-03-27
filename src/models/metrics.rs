@@ -135,7 +135,8 @@ impl MetricsSummary {
             entry.call_count = entry.call_count.saturating_add(1);
             entry.total_tokens = entry.total_tokens.saturating_add(event.estimated_tokens);
 
-            *symbol_counts.entry(event.tool_name.clone()).or_insert(0) += 1;
+            let sym_count = symbol_counts.entry(event.tool_name.clone()).or_insert(0);
+            *sym_count = sym_count.saturating_add(1);
 
             if let Some(connection_id) = &event.connection_id {
                 session_ids.insert(connection_id.clone());
@@ -162,15 +163,15 @@ impl MetricsSummary {
         });
         top_symbols.truncate(10);
 
-        let time_range = if let (Some(first), Some(last)) = (events.first(), events.last()) {
-            TimeRange {
-                start: first.timestamp.clone(),
-                end: last.timestamp.clone(),
-            }
-        } else {
-            TimeRange {
-                start: String::new(),
-                end: String::new(),
+        let time_range = {
+            let min_ts = events.iter().map(|e| &e.timestamp).min().cloned();
+            let max_ts = events.iter().map(|e| &e.timestamp).max().cloned();
+            match (min_ts, max_ts) {
+                (Some(start), Some(end)) => TimeRange { start, end },
+                _ => TimeRange {
+                    start: String::new(),
+                    end: String::new(),
+                },
             }
         };
 
