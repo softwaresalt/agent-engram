@@ -124,7 +124,7 @@ impl MetricsSummary {
         let mut session_ids = std::collections::BTreeSet::new();
 
         for event in events {
-            total_tokens += event.estimated_tokens;
+            total_tokens = total_tokens.saturating_add(event.estimated_tokens);
             let entry = by_tool
                 .entry(event.tool_name.clone())
                 .or_insert_with(|| ToolMetrics {
@@ -132,8 +132,8 @@ impl MetricsSummary {
                     total_tokens: 0,
                     avg_tokens: 0.0,
                 });
-            entry.call_count += 1;
-            entry.total_tokens += event.estimated_tokens;
+            entry.call_count = entry.call_count.saturating_add(1);
+            entry.total_tokens = entry.total_tokens.saturating_add(event.estimated_tokens);
 
             *symbol_counts.entry(event.tool_name.clone()).or_insert(0) += 1;
 

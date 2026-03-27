@@ -344,7 +344,15 @@ pub async fn compute_and_write_summary(
     workspace_path: &Path,
     branch: &str,
 ) -> Result<(), EngramError> {
-    let summary = compute_summary(workspace_path, branch)?;
+    let wp = workspace_path.to_path_buf();
+    let br = branch.to_owned();
+    let summary = tokio::task::spawn_blocking(move || compute_summary(&wp, &br))
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!("metrics computation task panicked: {error}"),
+            })
+        })??;
     let summary_json = serde_json::to_string_pretty(&summary).map_err(|error| {
         EngramError::Metrics(MetricsError::WriteFailed {
             reason: format!("failed to serialize summary: {error}"),

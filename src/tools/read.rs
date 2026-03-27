@@ -784,14 +784,20 @@ pub async fn get_health_report(
     // Collect embedding status — no workspace needed for the basic availability check.
     let embedding_status = embedding::status(None).await?;
     let metrics_summary = if let Some(snapshot) = &workspace_snapshot {
-        match metrics::compute_summary(&PathBuf::from(&snapshot.path), &snapshot.branch) {
-            Ok(summary) => serde_json::to_value(json!({
+        let wp = PathBuf::from(&snapshot.path);
+        let br = snapshot.branch.clone();
+        match tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br)).await {
+            Ok(Ok(summary)) => serde_json::to_value(json!({
                 "branch": snapshot.branch,
                 "summary": summary,
             }))
             .unwrap_or(Value::Null),
-            Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. })) => Value::Null,
-            Err(error) => return Err(error),
+            Ok(Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. }))) => Value::Null,
+            Ok(Err(error)) => return Err(error),
+            Err(join_error) => {
+                tracing::warn!(error = %join_error, "metrics computation task panicked");
+                Value::Null
+            }
         }
     } else {
         Value::Null
@@ -838,10 +844,26 @@ pub async fn get_branch_metrics(
     })?;
     let (workspace_path, current_branch) = workspace_snapshot_path_and_branch(&state).await?;
     let branch_name = parsed.branch_name.unwrap_or(current_branch);
-    let summary = metrics::compute_summary(&workspace_path, &branch_name)?;
+    let wp = workspace_path.clone();
+    let br = branch_name.clone();
+    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                reason: format!("metrics computation task panicked: {error}"),
+            })
+        })??;
 
     if let Some(compare_to) = parsed.compare_to {
-        let comparison = metrics::compute_summary(&workspace_path, &compare_to)?;
+        let wp2 = workspace_path.clone();
+        let br2 = compare_to.clone();
+        let comparison = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp2, &br2))
+            .await
+            .map_err(|error| {
+                EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                    reason: format!("metrics computation task panicked: {error}"),
+                })
+            })??;
         return Ok(json!({
             "branch_name": branch_name,
             "summary": summary,
@@ -851,9 +873,9 @@ pub async fn get_branch_metrics(
             },
             "delta": {
                 "tool_calls": i64::try_from(summary.total_tool_calls).unwrap_or(i64::MAX)
-                    - i64::try_from(comparison.total_tool_calls).unwrap_or(i64::MAX),
+                    .saturating_sub(i64::try_from(comparison.total_tool_calls).unwrap_or(i64::MAX)),
                 "tokens": i64::try_from(summary.total_tokens).unwrap_or(i64::MAX)
-                    - i64::try_from(comparison.total_tokens).unwrap_or(i64::MAX),
+                    .saturating_sub(i64::try_from(comparison.total_tokens).unwrap_or(i64::MAX)),
             }
         }));
     }
@@ -870,7 +892,15 @@ pub async fn get_token_savings_report(
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
-    let summary = metrics::compute_summary(&workspace_path, &branch)?;
+    let wp = workspace_path.clone();
+    let br = branch.clone();
+    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                reason: format!("metrics computation task panicked: {error}"),
+            })
+        })??;
     #[allow(clippy::cast_precision_loss)]
     let average_tokens = if summary.total_tool_calls == 0 {
         0.0
