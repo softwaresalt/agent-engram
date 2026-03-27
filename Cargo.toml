@@ -357,3 +357,23 @@ path = "tests/integration/file_hash_pipeline_test.rs"
 [[test]]
 name = "integration_unified_search"
 path = "tests/integration/unified_search_test.rs"
+
+[[test]]
+name = "unit_metrics_model"
+path = "tests/unit/metrics_model_test.rs"
+
+[[test]]
+name = "unit_metrics_collector"
+path = "tests/unit/metrics_collector_test.rs"
+
+[[test]]
+name = "contract_metrics"
+path = "tests/contract/metrics_contract_test.rs"
+
+[[test]]
+name = "integration_metrics_persistence"
+path = "tests/integration/metrics_persistence_test.rs"
+
+[[test]]
+name = "contract_metrics_tools"
+path = "tests/contract/metrics_tools_test.rs"

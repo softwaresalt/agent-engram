@@ -2,8 +2,9 @@
 //!
 //! Errors are organized by domain: workspace (1xxx), hydration (2xxx),
 //! query (4xxx), system (5xxx), config (6xxx), code graph (7xxx),
-//! IPC/daemon (8xxx), and installer (9xxx). Each variant maps to a
-//! numeric error code defined in [codes].
+//! IPC/daemon (8xxx), installer (9xxx), registry (10xxx),
+//! ingestion (11xxx), git graph (12xxx), and metrics (13xxx).
+//! Each variant maps to a numeric error code defined in [codes].
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -197,6 +198,20 @@ pub enum GitGraphError {
     AccessError { reason: String },
 }
 
+/// Errors for the metrics subsystem (13xxx).
+#[derive(Debug, Error)]
+pub enum MetricsError {
+    /// Failed to write metrics data to disk.
+    #[error("failed to write metrics: {reason}")]
+    WriteFailed { reason: String },
+    /// No metrics data found for the requested branch.
+    #[error("no metrics data found for branch '{branch}'")]
+    NotFound { branch: String },
+    /// Failed to parse persisted metrics data.
+    #[error("failed to parse metrics data: {reason}")]
+    ParseError { reason: String },
+}
+
 #[derive(Debug, Error)]
 pub enum EngramError {
     #[error(transparent)]
@@ -229,6 +244,8 @@ pub enum EngramError {
     Ingestion(#[from] IngestionError),
     #[error(transparent)]
     GitGraph(#[from] GitGraphError),
+    #[error(transparent)]
+    Metrics(#[from] MetricsError),
 }
 
 #[derive(Debug, Serialize)]
@@ -572,6 +589,26 @@ impl EngramError {
                 GitGraphError::AccessError { reason } => (
                     GIT_ACCESS_ERROR,
                     "GitAccessError",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+            },
+            EngramError::Metrics(inner) => match inner {
+                MetricsError::WriteFailed { reason } => (
+                    METRICS_WRITE_FAILED,
+                    "MetricsWriteFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                MetricsError::NotFound { branch } => (
+                    METRICS_NOT_FOUND,
+                    "MetricsNotFound",
+                    inner.to_string(),
+                    Some(json!({ "branch": branch })),
+                ),
+                MetricsError::ParseError { reason } => (
+                    METRICS_PARSE_ERROR,
+                    "MetricsParseError",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
                 ),

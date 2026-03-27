@@ -16,6 +16,7 @@ pub mod content;
 pub mod file_hash;
 pub mod function;
 pub mod interface;
+pub mod metrics;
 pub mod registry;
 pub mod watcher;
 
@@ -25,6 +26,7 @@ pub use code_edge::CodeEdge;
 pub use code_file::CodeFile;
 pub use commit::{ChangeRecord, ChangeType, CommitNode};
 pub use config::{BatchConfig, CodeGraphConfig, EmbeddingConfig, PluginConfig, WorkspaceConfig};
+pub use metrics::MetricsConfig;
 pub use content::ContentRecord;
 pub use file_hash::FileHashRecord;
 pub use function::Function;

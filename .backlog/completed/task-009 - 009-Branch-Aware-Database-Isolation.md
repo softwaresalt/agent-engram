@@ -1,11 +1,10 @@
 ---
 id: TASK-009
 title: '009: Branch-Aware Database Isolation'
-status: To Do
-type: feature
+status: Done
 assignee: []
 created_date: '2026-03-22 21:50'
-updated_date: '2026-03-25 22:41'
+updated_date: '2026-03-26 05:44'
 labels:
   - feature
   - 009
@@ -41,16 +40,29 @@ Database identity flows through: `canonicalize_workspace(path)` → `workspace_h
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 workspace_hash produces different hashes for the same path on different branches
-- [ ] #2 workspace_hash produces a deterministic hash for detached HEAD states
+- [x] #1 workspace_hash produces different hashes for the same path on different branches
+- [x] #2 workspace_hash produces a deterministic hash for detached HEAD states
 - [x] #3 current_git_branch correctly parses ref: refs/heads/feature/nested-name
 - [x] #4 current_git_branch returns None for raw SHA in .git/HEAD
 - [x] #5 get_workspace_status response includes branch field
 - [x] #6 Switching branches and calling set_workspace connects to a different database
-- [ ] #7 .engram/ hydration populates the new branch database from existing JSONL files
-- [ ] #8 Old path-only databases do not interfere with new branch-aware databases
-- [ ] #9 cargo test and cargo clippy pass with zero warnings
+- [x] #7 .engram/ hydration populates the new branch database from existing JSONL files
+- [x] #8 Old path-only databases do not interfere with new branch-aware databases
+- [x] #9 cargo test and cargo clippy pass with zero warnings
 <!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [x] #1 workspace_hash produces different hashes for the same path on different branches
+- [x] #2 workspace_hash produces a deterministic hash for detached HEAD states
+- [x] #3 current_git_branch correctly parses ref: refs/heads/feature/nested-name
+- [x] #4 current_git_branch returns None for raw SHA in .git/HEAD
+- [x] #5 get_workspace_status response includes branch field
+- [x] #6 Switching branches and calling set_workspace connects to a different database
+- [x] #7 .engram/ hydration populates the new branch database from existing JSONL files
+- [x] #8 Old path-only databases do not interfere with new branch-aware databases
+- [x] #9 cargo test and cargo clippy pass with zero warnings
+<!-- DOD:END -->
 
 ## Implementation Notes
 

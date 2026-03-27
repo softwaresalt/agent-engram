@@ -16,6 +16,7 @@ pub mod gate;
 pub mod git_graph;
 pub mod hydration;
 pub mod ingestion;
+pub mod metrics;
 pub mod output;
 pub mod parsing;
 pub mod query_stats;

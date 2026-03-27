@@ -2,7 +2,8 @@
 //!
 //! Ranges: 1xxx workspace, 2xxx hydration, 4xxx query,
 //! 5xxx system, 6xxx config, 7xxx code graph, 8xxx IPC/daemon,
-//! 9xxx installer, 10xxx registry, 11xxx ingestion, 12xxx git graph.
+//! 9xxx installer, 10xxx registry, 11xxx ingestion, 12xxx git graph,
+//! 13xxx metrics.
 
 /// Workspace error codes
 pub const WORKSPACE_NOT_FOUND: u16 = 1001;
@@ -77,3 +78,8 @@ pub const INGESTION_FAILED: u16 = 11_001;
 /// Git commit graph error codes (12xxx)
 pub const GIT_NOT_FOUND: u16 = 12_001;
 pub const GIT_ACCESS_ERROR: u16 = 12_002;
+
+/// Metrics subsystem error codes (13xxx)
+pub const METRICS_WRITE_FAILED: u16 = 13_001;
+pub const METRICS_NOT_FOUND: u16 = 13_002;
+pub const METRICS_PARSE_ERROR: u16 = 13_003;
