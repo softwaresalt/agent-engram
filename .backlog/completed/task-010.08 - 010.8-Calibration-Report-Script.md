@@ -1,9 +1,10 @@
 ---
 id: TASK-010.08
 title: '010.8: Calibration Report Script'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:51'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies:
@@ -58,3 +59,9 @@ Create a PowerShell script that compares baseline JSONL (from Extract-SearchBase
 - [ ] #3 JSON output format is valid and machine-readable
 - [ ] #4 Automated validation via -Validate switch or Pester test
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added Compare-Metrics.ps1 and supporting README documentation to derive calibration multipliers and confidence levels.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-010.02
 title: '010.2: Metrics Collector Service'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:49'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies:
@@ -59,3 +60,9 @@ Create the `MetricsCollector` service in `src/services/metrics.rs` (new file) wi
 - [ ] #5 Background writer correctly handles MetricsMessage::Shutdown (drains buffer)
 - [ ] #6 Partial-line tolerance: compute_summary discards unparseable final line
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented the async metrics collector, recent-event ledger, branch switching, summary computation, and summary persistence helpers.
+<!-- SECTION:FINAL_SUMMARY:END -->

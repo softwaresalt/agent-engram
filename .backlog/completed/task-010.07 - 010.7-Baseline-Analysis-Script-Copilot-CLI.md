@@ -1,9 +1,10 @@
 ---
 id: TASK-010.07
 title: '010.7: Baseline Analysis Script (Copilot CLI)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:51'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies:
@@ -60,3 +61,9 @@ Create a PowerShell script that reads the Copilot CLI session store SQLite datab
 - [ ] #5 Automated validation via -Validate switch or Pester test
 - [ ] #6 Scripts replicate / to __ branch sanitization convention
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added Extract-SearchBaseline.ps1 to derive baseline JSONL records from Copilot CLI session history, including validation mode.
+<!-- SECTION:FINAL_SUMMARY:END -->

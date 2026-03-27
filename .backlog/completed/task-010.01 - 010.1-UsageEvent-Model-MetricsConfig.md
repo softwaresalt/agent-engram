@@ -1,9 +1,10 @@
 ---
 id: TASK-010.01
 title: '010.1: UsageEvent Model & MetricsConfig'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:49'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies: []
@@ -48,3 +49,9 @@ Define core data structures for the metrics subsystem in `src/models/metrics.rs`
 - [ ] #5 BTreeMap produces deterministic key ordering in serialized summary
 - [ ] #6 Proptest: UsageEvent and MetricsSummary round-trip through serde_json
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented UsageEvent and MetricsConfig wiring, including config defaults and metrics summary aggregation updates.
+<!-- SECTION:FINAL_SUMMARY:END -->

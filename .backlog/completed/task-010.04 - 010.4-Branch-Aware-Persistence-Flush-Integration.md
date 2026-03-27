@@ -1,9 +1,10 @@
 ---
 id: TASK-010.04
 title: '010.4: Branch-Aware Persistence & Flush Integration'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:50'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies:
@@ -55,3 +56,9 @@ Integrate the MetricsCollector with the flush/dehydration lifecycle, branch swit
 - [ ] #3 Restart MetricsCollector -> appends to existing usage.jsonl without overwriting
 - [ ] #4 .engram/metrics/ directory is NOT in .gitignore template
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Wired branch-aware metrics persistence into workspace binding, sync, flush, dehydration, and daemon shutdown paths.
+<!-- SECTION:FINAL_SUMMARY:END -->

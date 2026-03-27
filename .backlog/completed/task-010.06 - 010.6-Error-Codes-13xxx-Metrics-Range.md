@@ -1,9 +1,10 @@
 ---
 id: TASK-010.06
 title: '010.6: Error Codes (13xxx Metrics Range)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:51'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies: []
@@ -44,3 +45,9 @@ pub const METRICS_PARSE_ERROR: u16 = 13_003;
 - [ ] #2 Each error code produces correct JSON response structure
 - [ ] #3 MetricsError enum variants map to correct u16 codes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Verified and covered the 13xxx metrics error-code range in contract tests and error-response mappings.
+<!-- SECTION:FINAL_SUMMARY:END -->

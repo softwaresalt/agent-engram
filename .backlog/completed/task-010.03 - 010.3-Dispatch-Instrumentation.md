@@ -1,9 +1,10 @@
 ---
 id: TASK-010.03
 title: '010.3: Dispatch Instrumentation'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:50'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies:
@@ -53,3 +54,9 @@ Modify `dispatch()` in `src/tools/mod.rs` to measure response payload size after
 - [ ] #3 estimated_tokens equals response_bytes / 4
 - [ ] #4 symbols_returned correctly extracted per tool type (map_code neighbors, list_symbols total_count, etc.)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Instrumented MCP read-tool dispatch to record usage events and result counts while skipping lifecycle-only tools.
+<!-- SECTION:FINAL_SUMMARY:END -->

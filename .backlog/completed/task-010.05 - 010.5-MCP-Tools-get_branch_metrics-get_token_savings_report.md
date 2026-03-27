@@ -1,9 +1,10 @@
 ---
 id: TASK-010.05
 title: '010.5: MCP Tools (get_branch_metrics, get_token_savings_report)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-27 05:50'
+updated_date: '2026-03-27 21:24'
 labels:
   - task
 dependencies:
@@ -54,3 +55,9 @@ Implement two new MCP tools and extend the health report with metrics data.
 - [ ] #6 get_health_report includes metrics_summary field
 - [ ] #7 Tool catalog count matches dispatch table (TOOL_COUNT = 16)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added get_branch_metrics and get_token_savings_report plus health-report metrics summary support and contract coverage.
+<!-- SECTION:FINAL_SUMMARY:END -->

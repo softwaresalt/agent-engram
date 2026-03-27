@@ -1,10 +1,10 @@
 ---
 id: TASK-010
 title: 'Feature 010: Effectiveness Metrics & Token Usage Tracking'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-27 05:48'
-updated_date: '2026-03-27 15:52'
+updated_date: '2026-03-27 21:24'
 labels:
   - feature
 dependencies: []
@@ -39,3 +39,9 @@ Engram returns precise, pre-indexed results to AI coding assistants, but there i
 **Requirements:** `.backlog/brainstorm/2026-03-27-engram-effectiveness-metrics-requirements.md`
 **Review:** `.backlog/reviews/2026-03-27-engram-effectiveness-metrics-plan-review.md`
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented feature 010 end to end: metrics models, collector, dispatch instrumentation, branch-aware persistence, MCP reporting tools, baseline/calibration scripts, and focused verification. Verified with focused cargo tests, script validation, cargo fmt --check, and cargo clippy --all-targets -- -D warnings.
+<!-- SECTION:FINAL_SUMMARY:END -->
