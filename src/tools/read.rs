@@ -10,6 +10,7 @@ use crate::errors::{
 };
 use crate::server::state::SharedState;
 use crate::services::embedding;
+use crate::services::metrics;
 use crate::services::search::{SearchCandidate, hybrid_search};
 use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
@@ -25,6 +26,16 @@ async fn workspace_db(state: &SharedState) -> Result<(PathBuf, String), EngramEr
         return Ok((snapshot.data_dir.clone(), snapshot.branch.clone()));
     }
     Err(EngramError::Workspace(WorkspaceError::NotSet))
+}
+
+async fn workspace_snapshot_path_and_branch(
+    state: &SharedState,
+) -> Result<(PathBuf, String), EngramError> {
+    let snapshot = state
+        .snapshot_workspace()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    Ok((PathBuf::from(snapshot.path), snapshot.branch))
 }
 
 async fn load_registry_status(state: &SharedState) -> Result<Option<Value>, EngramError> {
@@ -755,7 +766,8 @@ pub async fn get_health_report(
     let version = env!("CARGO_PKG_VERSION");
     let uptime_secs = state.uptime_seconds();
     let connections = state.active_connections();
-    let workspace_id = state.snapshot_workspace().await.map(|s| s.workspace_id);
+    let workspace_snapshot = state.snapshot_workspace().await;
+    let workspace_id = workspace_snapshot.as_ref().map(|s| s.workspace_id.clone());
     let tool_call_count = state.tool_call_count();
     let (p50, p95, p99) = state.latency_percentiles().await;
     let (watcher_events, last_watcher_event) = state.watcher_stats().await;
@@ -771,6 +783,27 @@ pub async fn get_health_report(
 
     // Collect embedding status — no workspace needed for the basic availability check.
     let embedding_status = embedding::status(None).await?;
+    let metrics_summary = if let Some(snapshot) = &workspace_snapshot {
+        let wp = PathBuf::from(&snapshot.path);
+        let br = snapshot.branch.clone();
+        match tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br)).await {
+            Ok(Ok(summary)) => serde_json::to_value(json!({
+                "branch": snapshot.branch,
+                "summary": summary,
+            }))
+            .unwrap_or(Value::Null),
+            Ok(Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. }))) => {
+                Value::Null
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(join_error) => {
+                tracing::warn!(error = %join_error, "metrics computation task panicked");
+                Value::Null
+            }
+        }
+    } else {
+        Value::Null
+    };
 
     Ok(json!({
         "version": version,
@@ -787,7 +820,115 @@ pub async fn get_health_report(
         "watcher_events": watcher_events,
         "last_watcher_event": last_watcher_event,
         "embedding_status": embedding_status,
+        "metrics_summary": metrics_summary,
         "query_timing": crate::services::query_stats::timing_snapshot(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct BranchMetricsParams {
+    #[serde(default)]
+    branch_name: Option<String>,
+    #[serde(default)]
+    compare_to: Option<String>,
+}
+
+/// Return metrics summary data for the current branch or compare two branches.
+pub async fn get_branch_metrics(
+    state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let parsed: BranchMetricsParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|error| {
+        EngramError::System(SystemError::InvalidParams {
+            reason: error.to_string(),
+        })
+    })?;
+    let (workspace_path, current_branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let branch_name = parsed.branch_name.unwrap_or(current_branch);
+    let wp = workspace_path.clone();
+    let br = branch_name.clone();
+    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                reason: format!("metrics computation task panicked: {error}"),
+            })
+        })??;
+
+    if let Some(compare_to) = parsed.compare_to {
+        let wp2 = workspace_path.clone();
+        let br2 = compare_to.clone();
+        let comparison = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp2, &br2))
+            .await
+            .map_err(|error| {
+                EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                    reason: format!("metrics computation task panicked: {error}"),
+                })
+            })??;
+        return Ok(json!({
+            "branch_name": branch_name,
+            "summary": summary,
+            "comparison": {
+                "branch_name": compare_to,
+                "summary": comparison,
+            },
+            "delta": {
+                "tool_calls": i64::try_from(summary.total_tool_calls).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_tool_calls).unwrap_or(i64::MAX)),
+                "tokens": i64::try_from(summary.total_tokens).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_tokens).unwrap_or(i64::MAX)),
+            }
+        }));
+    }
+
+    Ok(json!({
+        "branch_name": branch_name,
+        "summary": summary,
+    }))
+}
+
+/// Return a concise text report describing current-branch token delivery.
+pub async fn get_token_savings_report(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let wp = workspace_path.clone();
+    let br = branch.clone();
+    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                reason: format!("metrics computation task panicked: {error}"),
+            })
+        })??;
+    #[allow(clippy::cast_precision_loss)]
+    let average_tokens = if summary.total_tool_calls == 0 {
+        0.0
+    } else {
+        summary.total_tokens as f64 / summary.total_tool_calls as f64
+    };
+    let top_symbols = if summary.top_symbols.is_empty() {
+        "none".to_owned()
+    } else {
+        summary
+            .top_symbols
+            .iter()
+            .take(5)
+            .map(|entry| format!("{} ({})", entry.name, entry.count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    Ok(json!({
+        "branch": branch,
+        "report": format!(
+            "On branch {branch}, engram delivered {} tokens across {} tool calls. Average {:.2} tokens per call. Most-queried symbols: {top_symbols}.",
+            summary.total_tokens,
+            summary.total_tool_calls,
+            average_tokens,
+        ),
     }))
 }
 

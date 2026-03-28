@@ -7,6 +7,7 @@ use crate::config::StaleStrategy;
 use crate::db::connect_db;
 #[cfg(feature = "git-graph")]
 use crate::db::queries::CodeGraphQueries;
+use crate::db::workspace::{resolve_git_branch, workspace_hash};
 use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::server::state::SharedState;
 use crate::services::dehydration;
@@ -65,9 +66,20 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
 
     // Code graph serialization (FR-132, FR-133, FR-134)
     let cg_result = dehydration::dehydrate_code_graph(&cg_queries, &path).await?;
+    let metrics_written =
+        match crate::services::metrics::compute_and_write_summary(&path, &branch).await {
+            Ok(()) => true,
+            Err(crate::errors::EngramError::Metrics(crate::errors::MetricsError::NotFound {
+                ..
+            })) => false, // no usage events yet — skip summary
+            Err(error) => return Err(error),
+        };
     let flush_timestamp = chrono::Utc::now().to_rfc3339();
 
-    let all_files = cg_result.files_written.clone();
+    let mut all_files = cg_result.files_written.clone();
+    if metrics_written {
+        all_files.push(format!(".engram/metrics/{branch}/summary.json"));
+    }
 
     let new_mtimes = hydration::collect_file_mtimes(&engram_dir);
 
@@ -180,7 +192,23 @@ pub async fn sync_workspace(
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
     let ws_path = PathBuf::from(&snapshot.path);
     let data_dir = snapshot.data_dir.clone();
-    let branch = snapshot.branch.clone();
+    let mut branch = snapshot.branch.clone();
+
+    if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
+        if resolved_branch != branch {
+            let workspace_id = workspace_hash(&ws_path, &resolved_branch);
+            let metrics_branch = resolved_branch.clone();
+            let snapshot_branch = resolved_branch.clone();
+            let _ = state
+                .update_workspace(|ws| {
+                    ws.branch = snapshot_branch;
+                    ws.workspace_id = workspace_id;
+                })
+                .await;
+            crate::services::metrics::switch_branch(metrics_branch);
+            branch = resolved_branch;
+        }
+    }
 
     // Reject if indexing is already running (FR-121 / 7003).
     if !state.try_start_indexing() {

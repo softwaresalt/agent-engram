@@ -103,6 +103,7 @@ pub async fn set_workspace(
     // Load and validate workspace config BEFORE committing the snapshot.
     // If config validation fails, we must not leave the workspace partially bound.
     let ws_config = parse_config(&canonical)?;
+    crate::services::metrics::initialize(&canonical, &branch, &ws_config.metrics).await?;
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),

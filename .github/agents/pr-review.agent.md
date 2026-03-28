@@ -1,5 +1,6 @@
 ---
 description: "Pull Request lifecycle manager. Handles diff analysis, delegates code review to the review skill with persona agents, then manages PR creation, description, and push."
+model: Claude Sonnet 4.6
 ---
 
 # PR Review Assistant

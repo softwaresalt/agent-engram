@@ -50,6 +50,14 @@ fn config_error_codes_match_contract() {
     assert_eq!(UNKNOWN_CONFIG_KEY, 6003);
 }
 
+/// Verify metrics error codes match the contract.
+#[test]
+fn metrics_error_codes_match_contract() {
+    assert_eq!(METRICS_WRITE_FAILED, 13_001);
+    assert_eq!(METRICS_NOT_FOUND, 13_002);
+    assert_eq!(METRICS_PARSE_ERROR, 13_003);
+}
+
 /// Verify error-to-response mapping produces the correct code for each variant.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -148,6 +156,24 @@ fn error_response_codes_are_consistent() {
             ConfigError::UnknownKey { key: "k".into() }.into(),
             6003,
             "UnknownConfigKey",
+        ),
+        (
+            MetricsError::WriteFailed { reason: "x".into() }.into(),
+            13_001,
+            "MetricsWriteFailed",
+        ),
+        (
+            MetricsError::NotFound {
+                branch: "main".into(),
+            }
+            .into(),
+            13_002,
+            "MetricsNotFound",
+        ),
+        (
+            MetricsError::ParseError { reason: "x".into() }.into(),
+            13_003,
+            "MetricsParseError",
         ),
     ];
 

@@ -16,6 +16,7 @@ pub mod content;
 pub mod file_hash;
 pub mod function;
 pub mod interface;
+pub mod metrics;
 pub mod registry;
 pub mod watcher;
 
@@ -29,5 +30,6 @@ pub use content::ContentRecord;
 pub use file_hash::FileHashRecord;
 pub use function::Function;
 pub use interface::Interface;
+pub use metrics::MetricsConfig;
 pub use registry::{ContentSource, ContentSourceStatus, RegistryConfig};
 pub use watcher::{WatchEventKind, WatcherEvent};

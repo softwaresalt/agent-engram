@@ -655,7 +655,9 @@ pub async fn run_with_shutdown(
         });
     }
 
-    accept_loop(listener, state, ttl, shutdown_tx, shutdown_rx).await;
+    accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
+    crate::services::metrics::shutdown().await?;
+    crate::services::dehydration::flush_all_workspaces(&state).await?;
     Ok(())
 }
 

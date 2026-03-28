@@ -5,7 +5,7 @@
 //! (IDEs, agents) get accurate schema information before the daemon is ready
 //! and without an extra round-trip.
 //!
-//! All 14 tools registered in [`crate::tools::dispatch`] must appear here.
+//! All 16 tools registered in [`crate::tools::dispatch`] must appear here.
 //! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_dispatch`
 //! unit test so that catalog and dispatch stay in sync.
 
@@ -15,7 +15,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
 /// Total number of tools registered in the dispatch table and this catalog.
-pub const TOOL_COUNT: usize = 14;
+pub const TOOL_COUNT: usize = 16;
 
 /// Build a `serde_json::Map` from a JSON object literal.
 ///
@@ -224,6 +224,31 @@ pub fn all_tools() -> Vec<Tool> {
                 "properties": {}
             })),
         ),
+        Tool::new(
+            "get_branch_metrics",
+            "Return the persisted metrics summary for a branch, or compare two branches.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Branch to summarize; defaults to the current branch"
+                    },
+                    "compare_to": {
+                        "type": "string",
+                        "description": "Optional second branch to compare against"
+                    }
+                }
+            })),
+        ),
+        Tool::new(
+            "get_token_savings_report",
+            "Return a concise text summary of the current branch's tracked token delivery.",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
         // ── Sandboxed Query ────────────────────────────────────────────────
         Tool::new(
             "query_graph",
@@ -296,6 +321,8 @@ mod tests {
             "unified_search",
             "impact_analysis",
             "get_health_report",
+            "get_branch_metrics",
+            "get_token_savings_report",
             "query_graph",
         ];
         for name in &required {
