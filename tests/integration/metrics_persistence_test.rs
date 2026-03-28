@@ -5,7 +5,7 @@
 
 use std::io::Write;
 
-/// AC#1: Emit 5 UsageEvents then flush → usage.jsonl has 5 lines and
+/// AC#1: Emit 5 `UsageEvent`s then flush → usage.jsonl has 5 lines and
 /// summary.json is valid.
 #[tokio::test]
 async fn t010_04_flush_creates_summary_json() {

@@ -1,12 +1,12 @@
 //! Unit tests for metrics model types (TASK-010.01).
 //!
 //! Validates serde round-trip, summary aggregation, config defaults,
-//! and BTreeMap deterministic ordering.
+//! and `BTreeMap` deterministic ordering.
 
 use engram::models::metrics::{MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent};
 use std::collections::BTreeMap;
 
-/// AC#1: UsageEvent serializes to JSON and round-trips via serde_json.
+/// AC#1: `UsageEvent` serializes to JSON and round-trips via `serde_json`.
 #[test]
 fn t010_01_usage_event_serde_round_trip() {
     // GIVEN a fully populated UsageEvent
@@ -30,7 +30,7 @@ fn t010_01_usage_event_serde_round_trip() {
     assert_eq!(event, round_tripped);
 }
 
-/// AC#1 variant: UsageEvent with connection_id = None omits the field.
+/// AC#1 variant: `UsageEvent` with `connection_id = None` omits the field.
 #[test]
 fn t010_01_usage_event_none_connection_id_omitted() {
     // GIVEN a UsageEvent without connection_id
@@ -55,7 +55,7 @@ fn t010_01_usage_event_none_connection_id_omitted() {
     );
 }
 
-/// AC#2: MetricsSummary::from_events computes correct aggregates.
+/// AC#2: `MetricsSummary::from_events` computes correct aggregates.
 #[test]
 fn t010_01_metrics_summary_from_events() {
     // GIVEN 5 UsageEvents across 2 different tools
@@ -78,7 +78,7 @@ fn t010_01_metrics_summary_from_events() {
     assert!(summary.by_tool.contains_key("list_symbols"));
 }
 
-/// AC#3: MetricsConfig defaults to enabled=true, buffer_size=1024.
+/// AC#3: `MetricsConfig` defaults to `enabled=true`, `buffer_size=1024`.
 #[test]
 fn t010_01_metrics_config_defaults() {
     // GIVEN default MetricsConfig
@@ -89,11 +89,11 @@ fn t010_01_metrics_config_defaults() {
     assert_eq!(config.buffer_size, 1024);
 }
 
-/// AC#4: MetricsConfig deserializes from partial TOML.
+/// AC#4: `MetricsConfig` deserializes from partial TOML.
 #[test]
 fn t010_01_metrics_config_partial_toml() {
     // GIVEN TOML with only enabled field
-    let toml_str = r#"enabled = false"#;
+    let toml_str = r"enabled = false";
 
     // WHEN deserialized
     let config: MetricsConfig =
@@ -104,7 +104,7 @@ fn t010_01_metrics_config_partial_toml() {
     assert_eq!(config.buffer_size, 1024);
 }
 
-/// AC#5: BTreeMap produces deterministic key ordering in serialized summary.
+/// AC#5: `BTreeMap` produces deterministic key ordering in serialized summary.
 #[test]
 fn t010_01_btreemap_deterministic_ordering() {
     // GIVEN a MetricsSummary with tools in non-alphabetical insert order

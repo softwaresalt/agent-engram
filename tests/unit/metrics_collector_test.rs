@@ -6,7 +6,7 @@
 use engram::models::metrics::UsageEvent;
 use std::io::Write;
 
-/// AC#1: record() does not block when channel is full.
+/// AC#1: `record()` does not block when channel is full.
 #[test]
 fn t010_02_record_does_not_block_when_full() {
     // GIVEN a metrics channel with buffer_size = 1 that is already full
@@ -20,7 +20,7 @@ fn t010_02_record_does_not_block_when_full() {
     // The dropped event should be logged at trace level
 }
 
-/// AC#2: UsageEvent serializes to a valid single-line JSON string.
+/// AC#2: `UsageEvent` serializes to a valid single-line JSON string.
 #[test]
 fn t010_02_usage_event_to_jsonl() {
     // GIVEN a UsageEvent
@@ -37,7 +37,7 @@ fn t010_02_usage_event_to_jsonl() {
     assert!(!json.is_empty(), "Serialized event must not be empty");
 }
 
-/// AC#3: compute_summary produces correct aggregates from test JSONL.
+/// AC#3: `compute_summary` produces correct aggregates from test JSONL.
 #[test]
 fn t010_02_compute_summary_aggregation() {
     // GIVEN a temp directory with a usage.jsonl file containing 3 events
@@ -66,7 +66,7 @@ fn t010_02_compute_summary_aggregation() {
     assert_eq!(summary.by_tool.len(), 2);
 }
 
-/// AC#6: compute_summary discards unparseable final line.
+/// AC#6: `compute_summary` discards unparseable final line.
 #[test]
 fn t010_02_compute_summary_partial_line_tolerance() {
     // GIVEN a usage.jsonl with 2 valid lines and a truncated final line

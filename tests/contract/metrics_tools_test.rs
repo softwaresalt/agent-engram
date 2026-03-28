@@ -1,7 +1,7 @@
 //! Contract tests for metrics MCP tools (TASK-010.05).
 //!
-//! Validates get_branch_metrics, get_token_savings_report, and
-//! health report metrics_summary extension.
+//! Validates `get_branch_metrics`, `get_token_savings_report`, and
+//! health report `metrics_summary` extension.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -48,7 +48,7 @@ fn write_usage_events(path: &std::path::Path, branch: &str, tool: &str, count: u
     }
 }
 
-/// AC#1: get_branch_metrics returns valid MetricsSummary after recording events.
+/// AC#1: `get_branch_metrics` returns valid `MetricsSummary` after recording events.
 #[tokio::test]
 async fn t010_05_get_branch_metrics_returns_summary() {
     // GIVEN a workspace with recorded metrics
@@ -66,7 +66,7 @@ async fn t010_05_get_branch_metrics_returns_summary() {
     assert_eq!(value["summary"]["total_tool_calls"], 3);
 }
 
-/// AC#2: get_branch_metrics with non-existent branch returns error 13002.
+/// AC#2: `get_branch_metrics` with non-existent branch returns error 13002.
 #[tokio::test]
 async fn t010_05_get_branch_metrics_not_found() {
     // GIVEN a workspace with no metrics for branch "nonexistent__branch"
@@ -92,7 +92,7 @@ async fn t010_05_get_branch_metrics_not_found() {
     );
 }
 
-/// AC#3: get_branch_metrics without workspace returns error 1001.
+/// AC#3: `get_branch_metrics` without workspace returns error 1001.
 #[tokio::test]
 async fn t010_05_get_branch_metrics_no_workspace() {
     // GIVEN no workspace bound
@@ -110,7 +110,7 @@ async fn t010_05_get_branch_metrics_no_workspace() {
     );
 }
 
-/// AC#4: get_branch_metrics with compare_to returns both summaries and delta.
+/// AC#4: `get_branch_metrics` with `compare_to` returns both summaries and delta.
 #[tokio::test]
 async fn t010_05_get_branch_metrics_compare() {
     // GIVEN a workspace with metrics on two branches
@@ -141,7 +141,7 @@ async fn t010_05_get_branch_metrics_compare() {
     );
 }
 
-/// AC#5: get_token_savings_report returns formatted text summary.
+/// AC#5: `get_token_savings_report` returns formatted text summary.
 #[tokio::test]
 async fn t010_05_get_token_savings_report() {
     // GIVEN a workspace with recorded metrics
@@ -162,7 +162,7 @@ async fn t010_05_get_token_savings_report() {
     assert!(report.contains("tool calls"));
 }
 
-/// AC#6: get_health_report includes metrics_summary field.
+/// AC#6: `get_health_report` includes `metrics_summary` field.
 #[tokio::test]
 async fn t010_05_health_report_includes_metrics() {
     // GIVEN a running daemon state

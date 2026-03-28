@@ -24,8 +24,8 @@ async fn bind_test_workspace(state: &Arc<AppState>, path: &std::path::Path, bran
         .expect("workspace should bind");
 }
 
-/// AC#1: dispatch records a UsageEvent with correct tool_name and
-/// non-zero response_bytes for read tools.
+/// AC#1: dispatch records a `UsageEvent` with correct `tool_name` and
+/// non-zero `response_bytes` for read tools.
 #[tokio::test]
 async fn t010_03_dispatch_records_usage_event_for_read_tools() {
     // GIVEN a minimal AppState with a workspace bound
@@ -53,7 +53,7 @@ async fn t010_03_dispatch_records_usage_event_for_read_tools() {
     assert!(event.response_bytes > 0);
 }
 
-/// AC#2: dispatch does NOT record a UsageEvent for lifecycle/write tools.
+/// AC#2: dispatch does NOT record a `UsageEvent` for lifecycle/write tools.
 #[tokio::test]
 async fn t010_03_dispatch_skips_lifecycle_tools() {
     // GIVEN a minimal AppState
@@ -71,7 +71,7 @@ async fn t010_03_dispatch_skips_lifecycle_tools() {
     );
 }
 
-/// AC#3: estimated_tokens equals response_bytes / 4.
+/// AC#3: `estimated_tokens` equals `response_bytes` / 4.
 #[tokio::test]
 async fn t010_03_estimated_tokens_equals_bytes_div_4() {
     // GIVEN a tool response of known byte size

@@ -62,6 +62,7 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
             let mut top_symbols = Vec::new();
 
             for (name, (call_count, tool_tokens)) in raw_metrics {
+                #[allow(clippy::cast_precision_loss)]
                 let avg_tokens = if call_count == 0 {
                     0.0
                 } else {
