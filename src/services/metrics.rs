@@ -272,11 +272,18 @@ pub async fn shutdown() -> Result<(), EngramError> {
     };
 
     if let Some(handle) = handle {
-        handle.await.map_err(|error| {
-            EngramError::Metrics(MetricsError::WriteFailed {
-                reason: format!("metrics writer task failed to join: {error}"),
-            })
-        })?;
+        match handle.await {
+            Ok(()) => {}
+            Err(error) if error.is_cancelled() => {
+                // Task was cancelled by runtime shutdown or test cleanup — not an error.
+                tracing::debug!("metrics writer task cancelled during shutdown");
+            }
+            Err(error) => {
+                return Err(EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!("metrics writer task failed to join: {error}"),
+                }));
+            }
+        }
     }
 
     Ok(())
