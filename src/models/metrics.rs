@@ -144,11 +144,14 @@ impl MetricsSummary {
         }
 
         for metrics in by_tool.values_mut() {
-            metrics.avg_tokens = if metrics.call_count == 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let raw = if metrics.call_count == 0 {
                 0.0
             } else {
                 metrics.total_tokens as f64 / metrics.call_count as f64
             };
+            // Round to 2 decimal places for stable JSON serialization round-trips.
+            metrics.avg_tokens = (raw * 100.0).round() / 100.0;
         }
 
         let mut top_symbols: Vec<SymbolCount> = symbol_counts

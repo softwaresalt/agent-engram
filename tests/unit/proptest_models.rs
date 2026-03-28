@@ -63,11 +63,12 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
 
             for (name, (call_count, tool_tokens)) in raw_metrics {
                 #[allow(clippy::cast_precision_loss)]
-                let avg_tokens = if call_count == 0 {
+                let raw_avg = if call_count == 0 {
                     0.0
                 } else {
                     tool_tokens as f64 / call_count as f64
                 };
+                let avg_tokens = (raw_avg * 100.0).round() / 100.0;
                 total_tool_calls += call_count;
                 total_tokens += tool_tokens;
                 top_symbols.push(SymbolCount {
