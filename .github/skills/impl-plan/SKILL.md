@@ -1,7 +1,14 @@
 ---
 name: impl-plan
 description: "Transform feature descriptions or requirements into structured implementation plans grounded in repo patterns and research. Use when the user says 'plan this', 'create a plan', 'how should we build', 'break this down', or when a brainstorm requirements document is ready for technical planning."
-argument-hint: "[feature description, requirements doc path, or improvement idea]"
+argument-hint: "source=.backlog/brainstorm/{file}.md or source=.backlog/research/{file}.md"
+input:
+  properties:
+    source:
+      type: string
+      description: "Path to the source document to plan from. Accepted locations: .backlog/brainstorm/{file}.md (brainstorm requirements) or .backlog/research/{file}.md (research reports)."
+  required:
+    - source
 ---
 
 # Create Implementation Plan
@@ -50,6 +57,12 @@ Every plan must contain:
 
 A plan is ready when an implementer can start confidently without needing the plan to write the code for them.
 
+## Inputs
+
+* `${input:source}`: (Required) Path to the source document to plan from. Accepted locations:
+  - `.backlog/brainstorm/{filename}.md` — Requirements documents produced by the brainstorm skill
+  - `.backlog/research/{filename}.md` — External research, evaluation reports, or design explorations
+
 ## Workflow
 
 ### Phase 0: Resume, Source, and Scope
@@ -62,29 +75,24 @@ If the user references an existing plan file or there is an obvious recent match
 - Confirm whether to update in place or create new
 - If updating, preserve completed checkboxes and revise only still-relevant sections
 
-#### 0.2 Find Upstream Requirements Document
+#### 0.2 Read Source Document
 
-Search `.backlog/brainstorm/` for files matching `*-requirements.md`.
+Read the source document at `${input:source}` in full.
 
-A requirements document is relevant if:
-
-- The topic semantically matches the feature description
-- It was created within the last 30 days
-- It covers the same user problem or scope
-
-If multiple sources match, present numbered options and wait for user selection.
+1. Validate the file exists and is in an accepted location (`.backlog/brainstorm/` or `.backlog/research/`).
+2. If the file does not exist, list available files in both directories and halt.
+3. Determine the source type from the file path:
+   - **Brainstorm**: Structured format with YAML frontmatter, `## Problem Frame`, `## Requirements`, `## Success Criteria`, `## Key Decisions`, `## Scope Boundaries`
+   - **Research**: Free-form structure with H1/H2 sections, executive summary, proposed changes, evaluation criteria
+4. Announce the source document: `broadcast` at `info` level: `[PLAN] Using source doc: ${input:source}`
 
 #### 0.3 Use Source Document as Primary Input
-
-If a relevant requirements document exists:
 
 1. Read it thoroughly
 2. Announce it as the origin document for planning
 3. Carry forward: problem frame, requirements, success criteria, scope boundaries, key decisions, dependencies, outstanding questions
 4. Reference carried-forward decisions with `(see origin: {source-path})`
 5. Do not silently omit source content
-
-If no relevant requirements document exists, proceed from the user's request directly with a brief planning bootstrap (problem frame, intended behavior, scope boundaries, success criteria).
 
 #### 0.4 Classify Outstanding Questions
 
