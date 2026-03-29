@@ -91,11 +91,15 @@ Routing rules:
 
 ### Conditional (based on changed files)
 
-| Agent | Select when diff touches |
-|---|---|
-| **MCP Protocol Reviewer** | `src/tools/`, `src/server/`, MCP-related code |
-| **SurrealDB Reviewer** | `src/db/`, queries, schema files |
-| **Concurrency Reviewer** | `Arc`, `RwLock`, `tokio::spawn`, SSE handlers |
+Use a different model from the caller when available to force genuine diversity
+of critique. Cross-model is preferred but not blocking; if unavailable, use the
+caller's model.
+
+| Agent | Select when diff touches | Suggested Model |
+|---|---|---|
+| **MCP Protocol Reviewer** | `src/tools/`, `src/server/`, MCP-related code | GPT-5.4 or Gemini |
+| **SurrealDB Reviewer** | `src/db/`, queries, schema files | GPT-5.4 or Gemini |
+| **Concurrency Reviewer** | `Arc`, `RwLock`, `tokio::spawn`, SSE handlers | GPT-5.4 or Gemini |
 
 ## Workflow
 

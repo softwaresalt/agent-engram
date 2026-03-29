@@ -106,8 +106,9 @@ For each subtask in the work queue (from Step 2):
 
 1. Extract the task title, description, acceptance criteria, and file references from the subtask payload loaded in Step 2.
 2. Cross-reference with the epic-level acceptance criteria to identify which epic criteria this subtask satisfies.
-3. Identify the domain structs, functions, traits, and tests required based on the task description.
-4. Map the feature's blast radius using `engram` MCP tools. **Using raw file
+3. **Granularity check (advisory)**: Evaluate whether the subtask is appropriately sized. If the task description references more than 3 files, more than 5 functions, or would require more than 4 test scenarios in the harness, `broadcast` at `warning` level: `[📐 ARCHITECT] Granularity warning: {task_id} appears oversized ({file_count} files, {fn_count} functions) — consider re-running backlog-harvester to split`. This is an advisory check; the backlog-harvester performs the authoritative granularity validation. Do not block harness generation on this warning.
+4. Identify the domain structs, functions, traits, and tests required based on the task description.
+5. Map the feature's blast radius using `engram` MCP tools. **Using raw file
    reads (view, Get-Content, cat) or grep to understand code structure BEFORE
    exhausting the engram tools below is a protocol violation.** This was the
    single most common failure mode in practice — agents opening source files to
@@ -174,6 +175,8 @@ For each subtask in the work queue (from Step 2):
    * Do NOT use `embedding::is_available()` as a runtime guard in tool handlers — it returns `false` until the model has been lazily loaded on first call, which would fire the guard incorrectly on every cold start. Use compile-time `#[cfg(not(feature = "embeddings"))]` blocks instead.
 
 ### Step 5: Generate the Harness
+
+**Instruction reinforcement**: Before generating any harness code, read `.github/instructions/constitution.instructions.md` and focus on Principle III (Test-First Development). Confirm the target test tier (contract, integration, or unit) and its specific requirements from the constitution. `broadcast` at `info` level: `[REINFORCE] Constitution Principle III confirmed — generating {tier} test harness`.
 
 Following the build-harness prompt rules:
 1. **Write the test file** to the appropriate tier based on the feature scope:
@@ -295,7 +298,7 @@ path = "tests/{tier}/{feature}_test.rs"
 4. Report which subtasks have harness coverage and their commands for the build-orchestrator.
 5. Report any subtasks that were skipped (already Done) or could not be harnessed.
 6. Report whether agent-intercom was active for the run or whether execution fell back to local-only mode.
-7. Suggest the next step: invoke the build-orchestrator to begin implementation against the harnesses.
+7. Suggest the next step: "Run the build-orchestrator agent to begin implementation against these harnesses." This is the standard next step in the workflow pipeline.
 
 ## Response Format
 

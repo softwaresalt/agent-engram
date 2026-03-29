@@ -6,7 +6,7 @@ argument-hint: "[feature idea or problem to explore]"
 
 # Brainstorm a Feature or Improvement
 
-Brainstorming answers **WHAT** to build through collaborative dialogue. It precedes the `plan` skill, which answers **HOW** to build it. The durable output is a requirements document in `.backlog/brainstorm/`.
+Brainstorming answers **WHAT** to build through collaborative dialogue. It precedes the `impl-plan` skill, which answers **HOW** to build it. The durable output is a requirements document in `.backlog/brainstorm/`.
 
 ## Agent-Intercom Communication (NON-NEGOTIABLE)
 
@@ -158,7 +158,7 @@ status: draft|approved
 
 ### Resolve Before Planning
 
-{Questions that must be answered before the plan skill runs}
+{Questions that must be answered before the impl-plan skill runs}
 
 ### Deferred to Implementation
 
@@ -171,6 +171,7 @@ Broadcast the file path when written.
 
 Present options:
 
-1. "Run the plan skill to create an implementation plan from this requirements doc"
-2. "Revise specific sections of the requirements"
-3. "Park this for later"
+1. "Run the backlog-harvester agent to plan, review, and decompose this requirements doc into backlog tasks" (Recommended — the harvester orchestrates impl-plan and plan-review automatically)
+2. "Run the impl-plan skill standalone to create a plan without harvesting"
+3. "Revise specific sections of the requirements"
+4. "Park this for later"

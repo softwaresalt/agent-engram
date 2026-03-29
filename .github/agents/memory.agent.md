@@ -1,5 +1,6 @@
 ---
 description: "Session memory persistence for continuity across conversations. Supports manual save/restore and automatic checkpoint mode for build orchestrator integration."
+model: Claude Haiku 4.5
 ---
 
 # Memory Agent
@@ -116,7 +117,14 @@ Invoked by the build orchestrator as a subagent after each completed task. No us
 
 ### Output
 
-Write to `.backlog/memory/{{YYYY-MM-DD}}/{{task-id}}-checkpoint.md`
+Write to `.backlog/memory/{{YYYY-MM-DD}}/{{task-id}}-checkpoint.md`.
+
+After writing the checkpoint file, count checkpoint files in `.backlog/memory/` for the current feature (match by feature number pattern in filenames). If the count exceeds 10, append the following advisory to the checkpoint output:
+
+> [!TIP]
+> Checkpoint count for this feature exceeds 10. Consider invoking the `compact-context` skill before the next build session to reduce context noise.
+
+Broadcast: `[MEMORY] Compaction advisory — {N} checkpoints for feature {feature}` at `info` level.
 
 ```markdown
 ---

@@ -12,15 +12,15 @@ Validates implementation plans through multi-persona review before the backlog h
 
 Call `ping` at session start. If agent-intercom is reachable, broadcast at every step. If unreachable, warn the user that operator visibility is degraded.
 
-| Event | Level | Message prefix |
-|---|---|---|
-| Review start | info | `[PLAN-REVIEW] Starting review of: {plan_path}` |
-| Persona spawned | info | `[SPAWN] {persona_name} for plan review` |
-| Persona returned | info | `[RETURN] {persona_name}: {finding_count} findings` |
-| Merge complete | info | `[PLAN-REVIEW] Merged: {total_findings} findings ({p0} P0, {p1} P1, {p2} P2, {p3} P3)` |
-| Gate decision | success/error | `[PLAN-REVIEW] Gate: {PASS\|FAIL\|ADVISORY}` |
-| Waiting for input | warning | `[WAIT] Blocked on user decision for P2 findings` |
-| Review written | success | `[PLAN-REVIEW] Review artifact: {file_path}` |
+| Event             | Level         | Message prefix                                                                         |
+| ----------------- | ------------- | -------------------------------------------------------------------------------------- |
+| Review start      | info          | `[PLAN-REVIEW] Starting review of: {plan_path}`                                        |
+| Persona spawned   | info          | `[SPAWN] {persona_name} for plan review`                                               |
+| Persona returned  | info          | `[RETURN] {persona_name}: {finding_count} findings`                                    |
+| Merge complete    | info          | `[PLAN-REVIEW] Merged: {total_findings} findings ({p0} P0, {p1} P1, {p2} P2, {p3} P3)` |
+| Gate decision     | success/error | `[PLAN-REVIEW] Gate: {PASS\|FAIL\|ADVISORY}`                                           |
+| Waiting for input | warning       | `[WAIT] Blocked on user decision for P2 findings`                                      |
+| Review written    | success       | `[PLAN-REVIEW] Review artifact: {file_path}`                                           |
 
 ## Subagent Depth Constraint
 
@@ -38,17 +38,17 @@ Spawn all 4 personas. Use different models when available to force genuine diver
 
 ### Always-On Personas (same model as caller)
 
-| Persona Agent | Focus |
-|---|---|
-| **Constitution Reviewer** | Map plan units against the 9 constitutional principles. Flag violations. |
-| **Rust Safety Reviewer** | Evaluate proposed type signatures, error handling patterns, module boundaries. Will the plan produce code that passes clippy pedantic? |
+| Persona Agent             | Focus                                                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Constitution Reviewer** | Map plan units against the 9 constitutional principles. Flag violations.                                                               |
+| **Rust Safety Reviewer**  | Evaluate proposed type signatures, error handling patterns, module boundaries. Will the plan produce code that passes clippy pedantic? |
 
 ### Cross-Model Personas (different model when available)
 
-| Persona Agent | Focus | Suggested Model |
-|---|---|---|
-| **Architecture Strategist** | Cohesion, coupling, module boundaries, dependency chains. Are the dependencies realistic? | GPT-4.1 or Gemini |
-| **Scope Boundary Auditor** | Scope creep, YAGNI, unnecessary complexity, verification criteria completeness. | o3 or GPT-4.1 |
+| Persona Agent               | Focus                                                                                     | Suggested Model                            |
+| --------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------ |
+| **Architecture Strategist** | Cohesion, coupling, module boundaries, dependency chains. Are the dependencies realistic? | GPT-5.4 or Gemini                          |
+| **Scope Boundary Auditor**  | Scope creep, YAGNI, unnecessary complexity, verification criteria completeness.           | GPT-5.4 Medium |
 
 If cross-model invocation is not available, run all 4 with the caller's model. Multi-model is preferred but not blocking.
 
@@ -85,12 +85,12 @@ As each persona returns:
 
 ### Step 4: Gate Decision
 
-| Condition | Decision | Action |
-|---|---|---|
-| Any P0 or P1 findings | **FAIL** | Present findings to user. Plan must be revised before proceeding to harvester. |
-| P2 findings only | **ADVISORY** | Present findings to user. User decides: revise or proceed. |
-| P3 findings only | **PASS** | Log findings as advisory. Proceed to harvester. |
-| No findings | **PASS** | Plan is clean. Proceed to harvester. |
+| Condition             | Decision     | Action                                                                         |
+| --------------------- | ------------ | ------------------------------------------------------------------------------ |
+| Any P0 or P1 findings | **FAIL**     | Present findings to user. Plan must be revised before proceeding to harvester. |
+| P2 findings only      | **ADVISORY** | Present findings to user. User decides: revise or proceed.                     |
+| P3 findings only      | **PASS**     | Log findings as advisory. Proceed to harvester.                                |
+| No findings           | **PASS**     | Plan is clean. Proceed to harvester.                                           |
 
 Broadcast the gate decision.
 

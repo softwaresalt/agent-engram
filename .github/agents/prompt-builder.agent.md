@@ -1,6 +1,7 @@
 ---
 description: 'Prompt engineering assistant with phase-based workflow for creating and validating prompts, agents, and instructions files - Brought to you by microsoft/hve-core'
 maturity: stable
+model: Claude Haiku 4.5
 handoffs:
   - label: "💡 Update/Create"
     agent: prompt-builder

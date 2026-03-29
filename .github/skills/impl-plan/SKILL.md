@@ -1,12 +1,19 @@
 ---
-name: plan
+name: impl-plan
 description: "Transform feature descriptions or requirements into structured implementation plans grounded in repo patterns and research. Use when the user says 'plan this', 'create a plan', 'how should we build', 'break this down', or when a brainstorm requirements document is ready for technical planning."
-argument-hint: "[feature description, requirements doc path, or improvement idea]"
+argument-hint: "source=.backlog/brainstorm/{file}.md or source=.backlog/research/{file}.md"
+input:
+  properties:
+    source:
+      type: string
+      description: "Path to the source document to plan from. Accepted locations: .backlog/brainstorm/{file}.md (brainstorm requirements) or .backlog/research/{file}.md (research reports)."
+  required:
+    - source
 ---
 
 # Create Implementation Plan
 
-The `brainstorm` skill defines **WHAT** to build. The `plan` skill defines **HOW** to build it. The `backlog-harvester` agent decomposes the plan into tasks.
+The `brainstorm` skill defines **WHAT** to build. The `impl-plan` skill defines **HOW** to build it. The `backlog-harvester` agent decomposes the plan into tasks.
 
 This skill produces a durable implementation plan. It does **not** implement code, run tests, or learn from execution-time results.
 
@@ -33,6 +40,7 @@ Call `ping` at session start. If agent-intercom is reachable, broadcast at every
 4. **Right-size the artifact** -- Small work gets a compact plan. Large work gets more structure.
 5. **Separate planning from execution discovery** -- Resolve planning-time questions here. Defer execution-time unknowns to implementation.
 6. **Keep the plan portable** -- The plan should work as a living document, review artifact, or backlog harvester input.
+7. **Enforce task granularity** -- Every implementation unit must be scoped to roughly 2 hours of human-equivalent effort. Units that appear larger must be split. Units must not mix skill domains (e.g., Rust code + documentation, database migration + API changes). Every unit must produce a verifiable state (passing test, successful build, or measurable output).
 
 ## Plan Quality Bar
 
@@ -46,9 +54,18 @@ Every plan must contain:
 - Existing patterns or code references to follow
 - Specific test scenarios and verification outcomes
 - Clear dependencies and sequencing
+- **Granularity validation**: each implementation unit scoped to ≤2 hours of human effort
+- **Width isolation**: each unit targets a single skill domain (code, docs, config, tests)
+- **Atomic milestone**: each unit specifies a verifiable exit state (test pass, build pass, or measurable output)
 - **Execution posture notes** per implementation unit
 
 A plan is ready when an implementer can start confidently without needing the plan to write the code for them.
+
+## Inputs
+
+* `${input:source}`: (Required) Path to the source document to plan from. Accepted locations:
+  - `.backlog/brainstorm/{filename}.md` — Requirements documents produced by the brainstorm skill
+  - `.backlog/research/{filename}.md` — External research, evaluation reports, or design explorations
 
 ## Workflow
 
@@ -62,29 +79,24 @@ If the user references an existing plan file or there is an obvious recent match
 - Confirm whether to update in place or create new
 - If updating, preserve completed checkboxes and revise only still-relevant sections
 
-#### 0.2 Find Upstream Requirements Document
+#### 0.2 Read Source Document
 
-Search `.backlog/brainstorm/` for files matching `*-requirements.md`.
+Read the source document at `${input:source}` in full.
 
-A requirements document is relevant if:
-
-- The topic semantically matches the feature description
-- It was created within the last 30 days
-- It covers the same user problem or scope
-
-If multiple sources match, present numbered options and wait for user selection.
+1. Validate the file exists and is in an accepted location (`.backlog/brainstorm/` or `.backlog/research/`).
+2. If the file does not exist, list available files in both directories and halt.
+3. Determine the source type from the file path:
+   - **Brainstorm**: Structured format with YAML frontmatter, `## Problem Frame`, `## Requirements`, `## Success Criteria`, `## Key Decisions`, `## Scope Boundaries`
+   - **Research**: Free-form structure with H1/H2 sections, executive summary, proposed changes, evaluation criteria
+4. Announce the source document: `broadcast` at `info` level: `[PLAN] Using source doc: ${input:source}`
 
 #### 0.3 Use Source Document as Primary Input
-
-If a relevant requirements document exists:
 
 1. Read it thoroughly
 2. Announce it as the origin document for planning
 3. Carry forward: problem frame, requirements, success criteria, scope boundaries, key decisions, dependencies, outstanding questions
 4. Reference carried-forward decisions with `(see origin: {source-path})`
 5. Do not silently omit source content
-
-If no relevant requirements document exists, proceed from the user's request directly with a brief planning bootstrap (problem frame, intended behavior, scope boundaries, success criteria).
 
 #### 0.4 Classify Outstanding Questions
 
@@ -106,6 +118,8 @@ If the origin doc has "Resolve Before Planning" questions:
 5. Fall back to grep only when engram results are insufficient
 
 **Learnings check**: Invoke `learnings-researcher` as a subagent to search `.backlog/compound/` for relevant past solutions. Incorporate relevant learnings into the plan's decisions and caveats.
+
+When invoking learnings-researcher, include the following directive: "Searches MUST use `unified_search` or `query_memory` before grep or direct file reads. Grepping `.backlog/compound/` instead of using engram tools is a violation of Principle IX (Engram-First Search)."
 
 **Broadcast** research findings at each step.
 
@@ -146,10 +160,18 @@ status: draft|reviewed|approved
 
 ## Implementation Units
 
+Each unit MUST be scoped to roughly 2 hours of human-equivalent effort. Use these
+heuristics to evaluate size: fewer than 3 files modified, fewer than 5 functions
+changed, fewer than 4 test scenarios. If a unit exceeds these heuristics, split it.
+Each unit MUST target a single skill domain (do not mix Rust code with documentation,
+or database changes with API changes). Each unit MUST specify a verifiable exit state.
+
 ### Unit 1: {Title}
 
 **Files:** {exact file paths}
 **Test files:** {exact test file paths}
+**Effort size:** small|medium — must not exceed "medium" (~2 hours human effort)
+**Skill domain:** code|docs|config|tests — single domain per unit
 **Execution note:** test-first|characterization-first|migration-first|spike
 **Patterns to follow:** {links to existing code patterns via engram map_code}
 **Dependencies:** {other units this depends on}
@@ -158,7 +180,7 @@ status: draft|reviewed|approved
 {Technical approach with rationale}
 
 **Verification:**
-{Specific, testable success criteria}
+{Specific, testable success criteria — must produce a verifiable state}
 
 ### Unit 2: ...
 
@@ -185,10 +207,13 @@ status: draft|reviewed|approved
 {Map proposed work against the 9 constitutional principles; document any justified deviations}
 ```
 
-### Phase 3: Next Steps
+### Phase 3: Complete
 
-Present options:
+1. Confirm the plan file was written to `.backlog/plans/{YYYY-MM-DD}-{slug}-plan.md`.
+2. Return the plan file path to the caller.
 
-1. "Run plan-review to validate this plan with multi-persona review"
-2. "Revise specific sections"
-3. "Run backlog-harvester to decompose into tasks (skip review gate)"
+When invoked standalone (not as a subagent of backlog-harvester), present next steps:
+
+1. "Run backlog-harvester to decompose this plan into backlog tasks" (Recommended)
+2. "Run plan-review to validate this plan with multi-persona review first"
+3. "Revise specific sections"

@@ -5,7 +5,7 @@ support `AGENTS.md`. It defines the authoritative rules for working in this
 repository. All agents operating here must follow these instructions regardless
 of flags such as `--allow-all`, `--yolo`, or `--autopilot`.
 
-Last updated: 2026-03-19 | Constitution version: 2.2.0
+Last updated: 2026-03-29 | Constitution version: 2.2.0
 
 ---
 
@@ -262,6 +262,136 @@ cargo test 2>&1 | Out-File logs\test-results.txt
    (`feat:`, `fix:`, `docs:`, `test:`).
 6. **No dead code**: Placeholder modules MUST be replaced or removed before
    a feature is considered complete.
+
+### Task Granularity (NON-NEGOTIABLE)
+
+Agent reliability drops below 50% for tasks exceeding 2 hours of human-equivalent
+effort and approaches 0% beyond 4 hours. All task decomposition agents enforce
+these rules:
+
+* **2-Hour Rule**: Every task MUST be scoped to roughly 2 hours of human effort.
+  Heuristics: fewer than 3 files modified, fewer than 5 functions changed, fewer
+  than 4 test scenarios. The `backlog-harvester` performs the authoritative check;
+  the `harness-architect` performs an advisory secondary check.
+* **Width Isolation**: Each task MUST target a single skill domain. Do not combine
+  Rust code with documentation, database schema with API handlers, or test
+  infrastructure with production code in the same task.
+* **Atomic Milestone**: Every task MUST produce a verifiable state change: a passing
+  test, a successful build, or a measurable output. The `build-orchestrator` enforces
+  this as a completion gate; the `build-feature` skill satisfies it inherently through
+  the harness loop.
+
+### Stop Conditions and Circuit Breakers
+
+The `build-orchestrator` enforces hard limits to prevent stalls and infinite loops:
+
+| Counter | Limit | Action |
+|---------|-------|--------|
+| Tasks attempted in session | 20 | Halt, broadcast error, write memory checkpoint, exit |
+| Consecutive task failures | 3 | Halt, broadcast error, invoke `transmit` for operator guidance |
+| Review-fix cycles per task | 3 | Accept remaining P2/P3 as backlog items, commit and move on |
+| Total fix-ci cycles | 5 | Halt, broadcast error, leave PR open for manual intervention |
+| Stalls in session | 3 | Halt, broadcast error, write memory checkpoint, exit |
+
+The `build-feature` skill enforces a **5-attempt circuit breaker** per task. The
+`harness-architect` and `build-orchestrator` enforce stall detection watchdogs
+on all terminal commands (45 min for cargo, 5 min for non-cargo).
+
+### Feature Flag Enforcement
+
+All new agent-generated Rust modules in `src/` MUST be feature-gated behind a
+Cargo feature flag. This prevents system-wide instability if an agent introduces
+a panic in new code. Existing modules are not subject to this rule.
+
+### Protected File Awareness
+
+When an agent modifies core harness configuration files (`.github/agents/*.agent.md`,
+`.github/skills/*/SKILL.md`, `.github/instructions/*.instructions.md`, `AGENTS.md`),
+it MUST broadcast a `[PROTECTED]` warning at `info` level. This alerts the operator
+without blocking modification.
+
+### Model Routing
+
+Agents are assigned to model tiers based on task complexity. Cheaper, faster
+models handle low-complexity work; frontier models handle analysis-heavy tasks.
+
+| Tier | Model Class | Agents | Rationale |
+|------|-------------|--------|-----------|
+| **Tier 1 (Fast/Cheap)** | Claude Haiku 4.5 | doc-ops, memory, prompt-builder, learnings-researcher | Low-complexity: docs, state persistence, prompt editing, knowledge search |
+| **Tier 2 (Standard)** | Claude Sonnet 4.6 | build-orchestrator, pr-review, rust-engineer | Coordination, code writing, review orchestration |
+| **Tier 3 (Frontier)** | Claude Opus 4.6 / GPT-5.4 | backlog-harvester, harness-architect, rust-mcp-expert | Deep analysis, architectural decisions, complex decomposition |
+
+**Model escalation**: When `build-feature` fails 3 consecutive times on a Tier 1
+or Tier 2 model, the `build-orchestrator` escalates to a Tier 3 model and retries
+before halting. Escalation broadcasts use the `[ESCALATE]` prefix.
+
+**Cross-model review**: The `plan-review` and `review` skills spawn reviewer
+personas on different models when available. Cross-model diversity is preferred
+but not blocking; if unavailable, all personas use the caller's model.
+
+### Feature Pipeline
+
+Every feature follows a sequential pipeline from ideation through implementation.
+Each stage produces artifacts that feed the next. Agents at each stage suggest
+the correct next step.
+
+```mermaid
+flowchart LR
+    A["Research / Idea"]
+    B["brainstorm skill"]
+    C["backlog-harvester agent"]
+    D["harness-architect agent"]
+    E["build-orchestrator agent"]
+    F["pr-review agent"]
+
+    A -- "drop .md into\n.backlog/research/" --> C
+    A -- "need to explore\nrequirements" --> B
+    B -- ".backlog/brainstorm/\nrequirements doc" --> C
+
+    subgraph C["backlog-harvester agent"]
+        C1["impl-plan skill"]
+        C2["plan-review skill"]
+        C3["task decomposition"]
+        C1 -- ".backlog/plans/" --> C2
+        C2 -- "gate: PASS" --> C3
+    end
+
+    C -- "epic + subtasks\nin .backlog/tasks/" --> D
+    D -- "BDD test harnesses\n+ structural stubs" --> E
+    E -- "implemented code\npassing all tests" --> F
+    F -- "PR created\nand reviewed" --> G["Done"]
+```
+
+**Entry points** (choose one):
+
+* **With research**: Drop a markdown file into `.backlog/research/`, then invoke
+  `backlog-harvester` with `source: .backlog/research/{file}.md`. The harvester
+  runs impl-plan, plan-review, and task decomposition automatically.
+* **Without research**: Invoke the `brainstorm` skill to explore requirements
+  collaboratively. The brainstorm output goes to `.backlog/brainstorm/`, then
+  invoke `backlog-harvester` with `source: .backlog/brainstorm/{file}.md`.
+
+**Stage outputs and handoffs:**
+
+| Stage | Agent / Skill | Input | Output | Suggests Next |
+|-------|---------------|-------|--------|---------------|
+| Ideation | `brainstorm` | Feature idea | `.backlog/brainstorm/{file}.md` | backlog-harvester |
+| Planning + Review + Decomposition | `backlog-harvester` | Research or brainstorm file | Epic + subtasks in `.backlog/tasks/` | harness-architect |
+| Harness | `harness-architect` | Feature number from backlog | BDD tests + stubs in `tests/` and `src/` | build-orchestrator |
+| Build | `build-orchestrator` | Feature number from backlog | Implemented code, all tests passing | pr-review |
+| Review | `pr-review` | Branch diff | PR created and reviewed | Done |
+
+The `backlog-harvester` internally orchestrates three sub-phases:
+1. `impl-plan` skill — produces `.backlog/plans/{file}.md`
+2. `plan-review` skill — validates the plan (PASS/ADVISORY/FAIL gate)
+3. Task decomposition — creates epic, sub-epics, and tasks in `.backlog/tasks/`
+
+Use `skip_plan: true` to bypass planning (when source is already a plan file).
+Use `skip_review: true` to bypass review (when speed matters more than validation).
+
+**Queue**: `.backlog/queue.md` holds a simple list of unrefined ideas. Items
+graduate from the queue into the pipeline when they enter the brainstorm or
+research stage.
 
 ---
 
