@@ -1,5 +1,6 @@
 ---
 description: "Session memory persistence for continuity across conversations. Supports manual save/restore and automatic checkpoint mode for build orchestrator integration."
+model: Claude Haiku 4.5
 ---
 
 # Memory Agent

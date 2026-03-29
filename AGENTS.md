@@ -310,6 +310,25 @@ When an agent modifies core harness configuration files (`.github/agents/*.agent
 it MUST broadcast a `[PROTECTED]` warning at `info` level. This alerts the operator
 without blocking modification.
 
+### Model Routing
+
+Agents are assigned to model tiers based on task complexity. Cheaper, faster
+models handle low-complexity work; frontier models handle analysis-heavy tasks.
+
+| Tier | Model Class | Agents | Rationale |
+|------|-------------|--------|-----------|
+| **Tier 1 (Fast/Cheap)** | Claude Haiku 4.5 | doc-ops, memory, prompt-builder, learnings-researcher | Low-complexity: docs, state persistence, prompt editing, knowledge search |
+| **Tier 2 (Standard)** | Claude Sonnet 4.6 | build-orchestrator, pr-review, rust-engineer | Coordination, code writing, review orchestration |
+| **Tier 3 (Frontier)** | Claude Opus 4.6 / GPT-5.4 | backlog-harvester, harness-architect, rust-mcp-expert | Deep analysis, architectural decisions, complex decomposition |
+
+**Model escalation**: When `build-feature` fails 3 consecutive times on a Tier 1
+or Tier 2 model, the `build-orchestrator` escalates to a Tier 3 model and retries
+before halting. Escalation broadcasts use the `[ESCALATE]` prefix.
+
+**Cross-model review**: The `plan-review` and `review` skills spawn reviewer
+personas on different models when available. Cross-model diversity is preferred
+but not blocking; if unavailable, all personas use the caller's model.
+
 ### Feature Pipeline
 
 Every feature follows a sequential pipeline from ideation through implementation.

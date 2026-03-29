@@ -4,7 +4,7 @@
 
 The agent-engram repository demonstrates a highly advanced, file-system-backed agent harness that leans heavily into persistent state management and capability isolation. By externalizing agent roles (.github/agents/), skills (.github/skills/), and memory/tracking (.copilot-tracking/, .backlog/), the repository effectively treats the file system as its primary context and orchestration database.
 
-However, when evaluated against emerging research on Compound AI Systems and **Irreducible Harness Primitives**, several structural gaps emerge—specifically around dynamic context compaction, task granularity, execution sandboxing, and automated evaluation loops. The model is currently vulnerable to "model drift" in long-horizon tasks due to the sheer volume of Markdown logs it must ingest and improperly sized task horizons.
+However, when evaluated against emerging research on Compound AI Systems and **Irreducible Harness Primitives**, several structural gaps emerge—specifically around dynamic context compaction, task granularity, model routing, execution sandboxing, and automated evaluation loops. The model is currently vulnerable to "model drift" in long-horizon tasks due to the sheer volume of Markdown logs it must ingest and improperly sized task horizons.
 
 ## **1\. State & Context Management Primitive**
 
@@ -27,7 +27,18 @@ However, when evaluated against emerging research on Compound AI Systems and **I
   * **Width vs. Depth Isolation:** Ensure tasks are isolated by skill (Width). Do not bundle core Rust database migrations with documentation updates in the same sub-task. Route the database chunk to rust-engineer.agent.md and the documentation chunk to doc-ops.agent.md sequentially.  
   * **Atomic Milestone Validation:** Mandate that every decomposed sub-task must result in a verifiable state (e.g., a passing test or successful build). The agent must yield control to the test runner before proceeding to the next chunk.
 
-## **3\. Orchestration & Routing Primitive**
+## **3\. Model Routing & Escalation Primitive**
+
+**Definition:** Dynamically assigning LLMs based on task complexity, cost constraints, and latency requirements, utilizing fallback escalations (laddering) when cheaper models fail.
+
+* **Current State:** The repository relies heavily on the user's local execution environment (e.g., Copilot or a single chosen foundational model) treating all agents, from rust-engineer to doc-ops, as equals in terms of computational inference power.  
+* **Identified Gaps:** Monolithic model deployment inflates costs and latency. High-volume, low-complexity tasks (like documentation updates or simple linting fixes) waste compute when processed by a frontier reasoning model. Furthermore, there is no system to measure which model tier is mathematically proven to handle specific tasks efficiently, nor is there a fallback mechanism to rescue a failing fast-model.  
+* **Proposed Changes:**  
+  * **Task-Based Model Routing:** Configure the harness to strictly bind specific agent roles to specific model classes. E.g., doc-ops.agent.md and backlog-harvester.agent.md default to a fast/cheap model (like Claude 3.5 Haiku or Gemini 2.5 Flash), while architecture-strategist.agent.md is hard-routed to a reasoning-heavy frontier model.  
+  * **Iterative Model Laddering ("Frugal Routing"):** Implement a cascading retry strategy within the workflow. When an agent is dispatched on a standard coding task, begin inference with a smaller, cost-effective model. If the task hits a failure condition (e.g., failing the fix-ci skill loop 3 consecutive times), the harness automatically pauses, bumps the active model to the next tier up (a frontier model), and resumes the prompt with the added context of the previous failures.  
+  * **Outcome Tracking for Right-Sizing:** Extend the Metrics Collector (Task 010\) to log a Model Success Rate metric. By tracking Cost-per-Task against First-Pass-CI-Success, you can confidently analyze which tasks the cheaper models reliably handle and iteratively adjust the baseline routing rules in config.yml.
+
+## **4\. Orchestration & Delegation Primitive**
 
 **Definition:** How work is decomposed, delegated, and routed between specialized agents, including handoffs and stop conditions.
 
@@ -37,7 +48,7 @@ However, when evaluated against emerging research on Compound AI Systems and **I
   * **Explicit Supervisor Pattern:** Introduce a supervisor.agent.md whose sole job is to read the .backlog/tasks/ and assign discrete chunks to the rust-engineer or doc-ops agents. The supervisor must *not* write code, keeping its context clean to focus purely on state management.  
   * **Stop Conditions & Yielding:** Update ping-loop.prompt.md to include strict turn limits. For example: *"If CI tests fail 3 consecutive times, STOP execution and yield to build-orchestrator.agent.md for environmental analysis."*
 
-## **4\. Tool Execution & Guardrails Primitive**
+## **5\. Tool Execution & Guardrails Primitive**
 
 **Definition:** The mechanisms that allow agents to mutate the environment safely, including sandboxing, policy enforcement, and validation.
 
@@ -47,7 +58,7 @@ However, when evaluated against emerging research on Compound AI Systems and **I
   * **Policy Engine via MCP:** Restrict the write.rs tools based on the active agent. E.g., doc-ops.agent.md should only have write permissions for /docs and \*.md files.  
   * **Feature Flag Enforcement:** Bind the integration of new rust modules to strict feature flags, enforcing a rule in rust.instructions.md that all new agent-generated logic must be gated, preventing system-wide instability if the agent introduces a panic.
 
-## **5\. Injection Points & Dynamic Reminders Primitive**
+## **6\. Injection Points & Dynamic Reminders Primitive**
 
 **Definition:** How the harness dynamically surfaces critical constraints, rules, and rules-of-engagement exactly when the agent needs them, rather than front-loading them in a massive system prompt.
 
@@ -57,7 +68,7 @@ However, when evaluated against emerging research on Compound AI Systems and **I
   * **Tool-Bound Injections:** Modify the harness so that specific instructions are dynamically injected into the prompt *only* when relevant. For example, inject git-merge.instructions.md into the context window only when the agent stages a commit, rather than maintaining it in the global context at all times.  
   * **Definition of Done (DoD) Checks:** Add a pre-flight checklist hook that forces the agent to read the specific task-xxx.md file and output a self-reflection confirming all DoD criteria are met before invoking the final commit tool.
 
-## **6\. Observability & Evaluation Primitive**
+## **7\. Observability & Evaluation Primitive**
 
 **Definition:** Tracking agent efficacy, token usage, failure modes, and implementing automated graders to verify output quality.
 

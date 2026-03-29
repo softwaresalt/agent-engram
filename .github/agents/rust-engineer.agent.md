@@ -1,6 +1,7 @@
 ---
 description: Expert Rust software engineer providing language-specific engineering standards, coding conventions, and architecture knowledge for the engram codebase.
 tools: ['execute/runInTerminal', 'execute/getTerminalOutput', 'read', 'read/problems', 'edit/createFile', 'edit/editFiles', 'search', 'agent-intercom/*']
+model: Claude Sonnet 4.6
 user-invokable: false
 ---
 

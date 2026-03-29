@@ -251,7 +251,12 @@ After each completed task, invoke the `memory` agent in checkpoint mode:
 * If `${input:mode}` is `single`, proceed to Step 7.
 * If `${input:mode}` is `batch`, return to Step 2 and evaluate the next unblocked item in feature `${input:feature}`. `broadcast` the transition: `[🛠️ ORCHESTRATOR] Task {task_id} complete → checking queue for next task in feature ${input:feature}` at `info` level.
 * **Session loop guard**: Increment the tasks-attempted counter. If it exceeds 20, halt: `broadcast(error, "[CIRCUIT] Session task limit (20) reached — halting")`, write a memory checkpoint, and exit.
-* **Consecutive failure guard**: If 3 consecutive tasks fail (circuit breaker in build-feature), halt: `broadcast(error, "[CIRCUIT] 3 consecutive task failures — requesting operator guidance")`, invoke `transmit` for operator input.
+* **Consecutive failure guard with model escalation**: If 3 consecutive tasks fail (circuit breaker in build-feature):
+   1. Check whether the current build-feature invocations used a Tier 1 or Tier 2 model.
+   2. If a lower-tier model was used, `broadcast` at `warning` level: `[ESCALATE] Bumping model tier for {task_id} after 3 consecutive failures — retrying with Tier 3 model`.
+   3. Retry the most recent failed task with a Tier 3 (frontier) model by passing the `model` parameter override to the build-feature skill invocation.
+   4. If the Tier 3 retry also fails, halt: `broadcast(error, "[CIRCUIT] 3 consecutive task failures + Tier 3 escalation failed — requesting operator guidance")`, invoke `transmit` for operator input.
+   5. If the original invocations already used a Tier 3 model, skip escalation and halt immediately.
 
 ### Step 7: Session Completion Sequence
 
@@ -310,6 +315,7 @@ Summarize the build results:
 
 **Single mode**:
 * Task completed and files modified
+* Model tier used and whether escalation occurred
 * Test suite results and lint compliance status
 * Review findings summary
 * Compound artifacts written
@@ -317,7 +323,8 @@ Summarize the build results:
 * Whether agent-intercom was active or the run fell back to local-only mode
 
 **Batch mode**:
-* Per-task summary: task ID, title, commit hash
+* Per-task summary: task ID, title, commit hash, model tier used
+* Model routing summary: tasks per tier, escalation count, first-pass success rate per tier
 * Total tasks completed for feature `${input:feature}` across the run
 * Final test suite results and lint compliance status
 * Review findings summary
