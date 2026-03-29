@@ -106,8 +106,9 @@ For each subtask in the work queue (from Step 2):
 
 1. Extract the task title, description, acceptance criteria, and file references from the subtask payload loaded in Step 2.
 2. Cross-reference with the epic-level acceptance criteria to identify which epic criteria this subtask satisfies.
-3. Identify the domain structs, functions, traits, and tests required based on the task description.
-4. Map the feature's blast radius using `engram` MCP tools. **Using raw file
+3. **Granularity check (advisory)**: Evaluate whether the subtask is appropriately sized. If the task description references more than 3 files, more than 5 functions, or would require more than 4 test scenarios in the harness, `broadcast` at `warning` level: `[📐 ARCHITECT] Granularity warning: {task_id} appears oversized ({file_count} files, {fn_count} functions) — consider re-running backlog-harvester to split`. This is an advisory check; the backlog-harvester performs the authoritative granularity validation. Do not block harness generation on this warning.
+4. Identify the domain structs, functions, traits, and tests required based on the task description.
+5. Map the feature's blast radius using `engram` MCP tools. **Using raw file
    reads (view, Get-Content, cat) or grep to understand code structure BEFORE
    exhausting the engram tools below is a protocol violation.** This was the
    single most common failure mode in practice — agents opening source files to

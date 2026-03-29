@@ -127,6 +127,28 @@ Each task description MUST include:
 * **`Cargo.toml` registration note** when creating a new test file
 * **Compile time note** when touching embeddings code
 
+#### Step 3.2b: Granularity Validation (NON-NEGOTIABLE)
+
+Before creating any tasks, validate every Level 3 task against the granularity rules:
+
+1. **2-hour rule**: Each task should be completable in roughly 2 hours of human effort. Use these heuristics to evaluate:
+   - Fewer than 3 files modified
+   - Fewer than 5 functions changed
+   - Fewer than 4 test scenarios
+   If a task exceeds these heuristics, split it into smaller tasks.
+
+2. **Width isolation**: Each task must target a single skill domain. Do not combine:
+   - Rust code changes with documentation changes
+   - Database schema changes with API handler changes
+   - Test infrastructure with production code
+   If a task mixes domains, separate it into domain-specific tasks.
+
+3. **Atomic milestone**: Each task must specify a verifiable exit state (passing test, successful build, or measurable output). Tasks without a clear verification criterion must be revised to include one.
+
+`broadcast` at `info` level: `[HARVEST] Granularity check: {passed_count} tasks passed, {split_count} split, {rejected_count} rejected`
+
+This is the authoritative granularity check. The harness-architect performs an advisory secondary check at harness generation time.
+
 #### Step 3.3: Create Backlog.md Entries
 
 Before creating, call `backlog-task_search` with the feature title prefix to check for existing coverage. If the root epic already exists, skip 3.3a and reuse its ID.

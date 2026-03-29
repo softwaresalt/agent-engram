@@ -263,6 +263,24 @@ cargo test 2>&1 | Out-File logs\test-results.txt
 6. **No dead code**: Placeholder modules MUST be replaced or removed before
    a feature is considered complete.
 
+### Task Granularity (NON-NEGOTIABLE)
+
+Agent reliability drops below 50% for tasks exceeding 2 hours of human-equivalent
+effort and approaches 0% beyond 4 hours. All task decomposition agents enforce
+these rules:
+
+* **2-Hour Rule**: Every task MUST be scoped to roughly 2 hours of human effort.
+  Heuristics: fewer than 3 files modified, fewer than 5 functions changed, fewer
+  than 4 test scenarios. The `backlog-harvester` performs the authoritative check;
+  the `harness-architect` performs an advisory secondary check.
+* **Width Isolation**: Each task MUST target a single skill domain. Do not combine
+  Rust code with documentation, database schema with API handlers, or test
+  infrastructure with production code in the same task.
+* **Atomic Milestone**: Every task MUST produce a verifiable state change: a passing
+  test, a successful build, or a measurable output. The `build-orchestrator` enforces
+  this as a completion gate; the `build-feature` skill satisfies it inherently through
+  the harness loop.
+
 ### Feature Pipeline
 
 Every feature follows a sequential pipeline from ideation through implementation.

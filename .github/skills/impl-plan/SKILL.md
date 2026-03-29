@@ -40,6 +40,7 @@ Call `ping` at session start. If agent-intercom is reachable, broadcast at every
 4. **Right-size the artifact** -- Small work gets a compact plan. Large work gets more structure.
 5. **Separate planning from execution discovery** -- Resolve planning-time questions here. Defer execution-time unknowns to implementation.
 6. **Keep the plan portable** -- The plan should work as a living document, review artifact, or backlog harvester input.
+7. **Enforce task granularity** -- Every implementation unit must be scoped to roughly 2 hours of human-equivalent effort. Units that appear larger must be split. Units must not mix skill domains (e.g., Rust code + documentation, database migration + API changes). Every unit must produce a verifiable state (passing test, successful build, or measurable output).
 
 ## Plan Quality Bar
 
@@ -53,6 +54,9 @@ Every plan must contain:
 - Existing patterns or code references to follow
 - Specific test scenarios and verification outcomes
 - Clear dependencies and sequencing
+- **Granularity validation**: each implementation unit scoped to ≤2 hours of human effort
+- **Width isolation**: each unit targets a single skill domain (code, docs, config, tests)
+- **Atomic milestone**: each unit specifies a verifiable exit state (test pass, build pass, or measurable output)
 - **Execution posture notes** per implementation unit
 
 A plan is ready when an implementer can start confidently without needing the plan to write the code for them.
@@ -154,10 +158,18 @@ status: draft|reviewed|approved
 
 ## Implementation Units
 
+Each unit MUST be scoped to roughly 2 hours of human-equivalent effort. Use these
+heuristics to evaluate size: fewer than 3 files modified, fewer than 5 functions
+changed, fewer than 4 test scenarios. If a unit exceeds these heuristics, split it.
+Each unit MUST target a single skill domain (do not mix Rust code with documentation,
+or database changes with API changes). Each unit MUST specify a verifiable exit state.
+
 ### Unit 1: {Title}
 
 **Files:** {exact file paths}
 **Test files:** {exact test file paths}
+**Effort size:** small|medium — must not exceed "medium" (~2 hours human effort)
+**Skill domain:** code|docs|config|tests — single domain per unit
 **Execution note:** test-first|characterization-first|migration-first|spike
 **Patterns to follow:** {links to existing code patterns via engram map_code}
 **Dependencies:** {other units this depends on}
@@ -166,7 +178,7 @@ status: draft|reviewed|approved
 {Technical approach with rationale}
 
 **Verification:**
-{Specific, testable success criteria}
+{Specific, testable success criteria — must produce a verifiable state}
 
 ### Unit 2: ...
 

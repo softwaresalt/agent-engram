@@ -175,8 +175,14 @@ After the build-feature skill finishes, verify that all mandatory gates were sat
 
 3. **Commit gate**: Confirm that `git status` shows a clean working tree (all changes committed).
 
+4. **Atomic milestone gate**: Confirm the task produced a verifiable state change. Every completed task MUST result in at least one of:
+   - A passing test (harness test or unit test)
+   - A successful build (`cargo check` passes with the new code)
+   - A measurable output (new file, updated configuration, documented decision)
+   If the task produced only code changes without any verification artifact, the gate fails. `broadcast` at `error` level: `[🛠️ ORCHESTRATOR] Atomic milestone missing — task {task_id} has no verifiable state change`.
+
 All gates are mandatory. Do not advance to the next task until all gates pass.
-`broadcast` the aggregate gate result when all pass: `[🛠️ ORCHESTRATOR] Task {task_id} gates verified — lint, test, commit all PASS` at `success` level. If any gate fails after remediation, `broadcast` at `error` level with the failing gate name and details.
+`broadcast` the aggregate gate result when all pass: `[🛠️ ORCHESTRATOR] Task {task_id} gates verified — lint, test, milestone, commit all PASS` at `success` level. If any gate fails after remediation, `broadcast` at `error` level with the failing gate name and details.
 
 ### Step 4b: Post-Build Review Gate
 

@@ -96,6 +96,8 @@ For **destructive operations** (file deletion, directory removal), route through
 
 ### Step 2: Mechanical Feedback Loop (Actor-Critic)
 
+The harness loop inherently satisfies the **atomic milestone validation** requirement: every task exits with either a passing test (verifiable state) or a circuit breaker (blocked state). No task completes without a concrete verification artifact.
+
 Execute the following loop with a **hard limit of 5 attempts**:
 1. **Run** the targeted `${input:harness-cmd}`.
 2. **If it passes** (exit code 0): proceed to Step 3.
