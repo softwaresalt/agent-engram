@@ -119,6 +119,8 @@ If the origin doc has "Resolve Before Planning" questions:
 
 **Learnings check**: Invoke `learnings-researcher` as a subagent to search `.backlog/compound/` for relevant past solutions. Incorporate relevant learnings into the plan's decisions and caveats.
 
+When invoking learnings-researcher, include the following directive: "Searches MUST use `unified_search` or `query_memory` before grep or direct file reads. Grepping `.backlog/compound/` instead of using engram tools is a violation of Principle IX (Engram-First Search)."
+
 **Broadcast** research findings at each step.
 
 ### Phase 2: Structure the Plan

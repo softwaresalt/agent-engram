@@ -99,6 +99,11 @@ For each subdirectory batch in the compaction manifest:
 
 3. **Archive originals**: Move the compacted files to `.copilot-tracking/archive/{subdirectory}/`. Create the archive subdirectory if it does not exist. Use file move operations, not copy-then-delete.
 
+   Before executing any file moves, route through the approval gate per Principle VIII:
+   1. Call `auto_check(tool_name: "Move-Item", kind: "terminal_command", context: { destination: ".copilot-tracking/archive/", risk_level: "low" })`
+   2. If agent-intercom is active and auto_check does not auto-approve, call `check_clearance` with the file list and await `status: "approved"`
+   3. Execute moves only after approval is confirmed
+
 4. **Broadcast**: Report the summary file path and the count of archived originals.
 
 5. Repeat for each subdirectory batch in the manifest.

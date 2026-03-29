@@ -115,7 +115,7 @@ severity: {enum value}
 message: "{Short description, max 200 chars — matches BugEvent.message}"
 file_path: "{Affected file path, if applicable}"
 resolved: true
-bug_id: "{Optional: UUID of related BugEvent, if the solution originated from a recorded bug}"
+bug_id: "{Reserved for future use — only populate once the bug-logging MCP tool exists and returns a valid BugEvent UUID. Leave empty until the bug-logging feature is implemented.}"
 tags: [{relevant, searchable, keywords}]
 date: YYYY-MM-DD
 ---
