@@ -101,14 +101,21 @@ Write to `.backlog/compound/{category}/{slug}-{YYYY-MM-DD}.md`
 
 ### Document Template
 
+The frontmatter includes fields aligned with the BugEvent model from the bug-logging feature to enable cross-referencing between compound solutions and recorded bugs.
+
 ```markdown
 ---
 title: "{Problem Title}"
 problem_type: {enum value}
+category: {same as problem_type — alias for BugEvent cross-referencing}
 component: {enum value}
 root_cause: {enum value}
 resolution_type: {enum value}
 severity: {enum value}
+message: "{Short description, max 200 chars — matches BugEvent.message}"
+file_path: "{Affected file path, if applicable}"
+resolved: true
+bug_id: "{Optional: UUID of related BugEvent, if the solution originated from a recorded bug}"
 tags: [{relevant, searchable, keywords}]
 date: YYYY-MM-DD
 ---

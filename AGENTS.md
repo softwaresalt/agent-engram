@@ -5,7 +5,7 @@ support `AGENTS.md`. It defines the authoritative rules for working in this
 repository. All agents operating here must follow these instructions regardless
 of flags such as `--allow-all`, `--yolo`, or `--autopilot`.
 
-Last updated: 2026-03-19 | Constitution version: 2.2.0
+Last updated: 2026-03-29 | Constitution version: 2.2.0
 
 ---
 
@@ -262,6 +262,57 @@ cargo test 2>&1 | Out-File logs\test-results.txt
    (`feat:`, `fix:`, `docs:`, `test:`).
 6. **No dead code**: Placeholder modules MUST be replaced or removed before
    a feature is considered complete.
+
+### Feature Pipeline
+
+Every feature follows a sequential pipeline from ideation through implementation.
+Each stage produces artifacts that feed the next. Agents at each stage suggest
+the correct next step.
+
+```mermaid
+flowchart LR
+    A["Research / Idea"]
+    B["brainstorm skill"]
+    P["impl-plan skill"]
+    C["backlog-harvester agent"]
+    D["harness-architect agent"]
+    E["build-orchestrator agent"]
+    F["pr-review agent"]
+
+    A -- "drop .md into\n.backlog/research/" --> P
+    A -- "need to explore\nrequirements" --> B
+    B -- ".backlog/brainstorm/\nrequirements doc" --> P
+    P -- ".backlog/plans/\nimplementation plan" --> C
+    C -- "epic + subtasks\nin .backlog/tasks/" --> D
+    D -- "BDD test harnesses\n+ structural stubs" --> E
+    E -- "implemented code\npassing all tests" --> F
+    F -- "PR created\nand reviewed" --> G["Done"]
+```
+
+**Entry points** (choose one):
+
+* **With research**: Drop a markdown file into `.backlog/research/`, then invoke
+  `impl-plan` with the research file as input. The plan output goes to
+  `.backlog/plans/`, then invoke `backlog-harvester` with the plan file.
+* **Without research**: Invoke the `brainstorm` skill to explore requirements
+  collaboratively. The brainstorm output goes to `.backlog/brainstorm/`, then
+  invoke `impl-plan` to create an implementation plan, then invoke
+  `backlog-harvester` with the plan file.
+
+**Stage outputs and handoffs:**
+
+| Stage | Agent / Skill | Input | Output | Suggests Next |
+|-------|---------------|-------|--------|---------------|
+| Ideation | `brainstorm` | Feature idea | `.backlog/brainstorm/{file}.md` | impl-plan |
+| Planning | `impl-plan` | Research or brainstorm file | `.backlog/plans/{file}.md` | backlog-harvester |
+| Decomposition | `backlog-harvester` | Plan, research, or brainstorm file | Epic + subtasks in `.backlog/tasks/` | harness-architect |
+| Harness | `harness-architect` | Feature number from backlog | BDD tests + stubs in `tests/` and `src/` | build-orchestrator |
+| Build | `build-orchestrator` | Feature number from backlog | Implemented code, all tests passing | pr-review |
+| Review | `pr-review` | Branch diff | PR created and reviewed | Done |
+
+**Queue**: `.backlog/queue.md` holds a simple list of unrefined ideas. Items
+graduate from the queue into the pipeline when they enter the brainstorm or
+research stage.
 
 ---
 

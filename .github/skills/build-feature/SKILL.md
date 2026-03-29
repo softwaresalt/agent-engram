@@ -71,8 +71,9 @@ Use `broadcast` (non-blocking) throughout execution to keep the operator informe
 | Harness passes | `broadcast` | `success` | `[BUILD] Harness passed on attempt {N}` |
 | Harness fails | `broadcast` | `warning` | `[LOOP] Attempt {N} failed � {error_summary}` |
 | Circuit breaker hit | `broadcast` | `error` | `[BUILD] Circuit breaker � 5 attempts exhausted, task blocked` |
-| Workspace test pass | `broadcast` | `success` | `[BUILD] Workspace tests pass � task {task-id} complete` |
-| Task complete | `broadcast` | `success` | `[BUILD] Task {task-id} complete � commit {short_hash}` |
+| Workspace test pass | `broadcast` | `success` | `[BUILD] Workspace tests pass — task {task-id} complete` |
+| Instruction re-read | `broadcast` | `info` | `[REINFORCE] Coding standards refreshed for attempt {N}/5` |
+| Task complete | `broadcast` | `success` | `[BUILD] Task {task-id} complete — commit {short_hash} — {N} attempt(s)` |
 Post the first `broadcast` as a new top-level message and capture the returned `ts`. Use that `ts` as `thread_ts` for all subsequent messages. That first `broadcast` is an intercom verification gate and must happen before reading files, editing code, or running the harness. If it fails after a successful `ping`, print a prominent CLI warning, mark agent-intercom unavailable for the remainder of the task, and continue in local-only mode instead of assuming the operator received the update.
 ### File Change Workflow
 File creation and modification proceed with direct writes. After each file write, call `broadcast` at `info` level with the change details.
@@ -101,7 +102,8 @@ Execute the following loop with a **hard limit of 5 attempts**:
 3. **If it fails** (exit code != 0):
    a. Capture the raw `stderr` output (compiler errors, type mismatches, or panic traces).
    b. `broadcast` the failure summary at `warning` level.
-   c. Analyze the error output and implement the fix:
+   c. **Instruction reinforcement**: Read `.github/agents/rust-engineer.agent.md` coding standards section to refresh project conventions before implementing the fix. `broadcast` at `info` level: `[REINFORCE] Coding standards refreshed for attempt {N}/5`.
+   d. Analyze the error output and implement the fix:
       * **Compiler errors**: Fix type mismatches, missing imports, incorrect signatures in the `src/` stubs.
       * **Panic traces** (`unimplemented!()` or assertion failures): Implement the underlying logic inside the `src/` stubs to make the harness pass. Replace the `unimplemented!()` macros with real logic.
       * **Test assertion failures**: Fix the implementation logic (not the test itself, unless the test setup has a compilation error).
@@ -131,7 +133,7 @@ Once the isolated harness passes:
 3. **Commit**: Stage and commit validated changes:
    * `git add -A`
    * `git commit -m "feat: implement passing harness for ${input:task-id}"`
-   * `broadcast` at `success` level: `[BUILD] Task {task-id} complete — commit {short_hash}`.
+   * `broadcast` at `success` level: `[BUILD] Task {task-id} complete — commit {short_hash} — {N} attempt(s)`. The attempt count is used by the build-orchestrator to decide whether to invoke compound knowledge capture.
 4. **State update**: Mark the task complete in the backlog board:
    * Call `backlog-task_complete` with `id: ${input:task-id}`
 

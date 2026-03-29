@@ -175,6 +175,8 @@ For each subtask in the work queue (from Step 2):
 
 ### Step 5: Generate the Harness
 
+**Instruction reinforcement**: Before generating any harness code, read `.github/instructions/constitution.instructions.md` and focus on Principle III (Test-First Development). Confirm the target test tier (contract, integration, or unit) and its specific requirements from the constitution. `broadcast` at `info` level: `[REINFORCE] Constitution Principle III confirmed — generating {tier} test harness`.
+
 Following the build-harness prompt rules:
 1. **Write the test file** to the appropriate tier based on the feature scope:
    * `tests/integration/{feature}_test.rs` for cross-module flows (MCP tools, Slack interactions, session lifecycle)
@@ -295,7 +297,7 @@ path = "tests/{tier}/{feature}_test.rs"
 4. Report which subtasks have harness coverage and their commands for the build-orchestrator.
 5. Report any subtasks that were skipped (already Done) or could not be harnessed.
 6. Report whether agent-intercom was active for the run or whether execution fell back to local-only mode.
-7. Suggest the next step: invoke the build-orchestrator to begin implementation against the harnesses.
+7. Suggest the next step: "Run the build-orchestrator agent to begin implementation against these harnesses." This is the standard next step in the workflow pipeline.
 
 ## Response Format
 

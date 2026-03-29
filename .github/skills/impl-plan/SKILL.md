@@ -1,12 +1,12 @@
 ---
-name: plan
+name: impl-plan
 description: "Transform feature descriptions or requirements into structured implementation plans grounded in repo patterns and research. Use when the user says 'plan this', 'create a plan', 'how should we build', 'break this down', or when a brainstorm requirements document is ready for technical planning."
 argument-hint: "[feature description, requirements doc path, or improvement idea]"
 ---
 
 # Create Implementation Plan
 
-The `brainstorm` skill defines **WHAT** to build. The `plan` skill defines **HOW** to build it. The `backlog-harvester` agent decomposes the plan into tasks.
+The `brainstorm` skill defines **WHAT** to build. The `impl-plan` skill defines **HOW** to build it. The `backlog-harvester` agent decomposes the plan into tasks.
 
 This skill produces a durable implementation plan. It does **not** implement code, run tests, or learn from execution-time results.
 
@@ -189,6 +189,6 @@ status: draft|reviewed|approved
 
 Present options:
 
-1. "Run plan-review to validate this plan with multi-persona review"
-2. "Revise specific sections"
-3. "Run backlog-harvester to decompose into tasks (skip review gate)"
+1. "Run backlog-harvester to decompose this plan into backlog tasks" (Recommended — this is the standard next step in the workflow)
+2. "Run plan-review to validate this plan with multi-persona review first"
+3. "Revise specific sections"
