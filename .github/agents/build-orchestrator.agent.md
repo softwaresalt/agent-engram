@@ -197,6 +197,17 @@ After quality gates pass but before committing, invoke the `review` skill in `re
    - **P3**: Log in broadcast. Proceed with commit.
 5. `broadcast` the review result: `[🛠️ ORCHESTRATOR] Review gate: {p0} P0, {p1} P1, {p2} P2, {p3} P3`
 
+### Step 4c: Definition of Done Pre-Flight Check
+
+Before committing, verify that all acceptance criteria and Definition of Done items for the current task are satisfied:
+
+1. Call `backlog-task_view` with the current task ID to retrieve acceptance criteria and DoD items.
+2. For each acceptance criterion and DoD item, evaluate whether it is satisfied by the current implementation.
+3. If all items are satisfied, `broadcast` at `info` level: `[DOD] Pre-flight passed — all acceptance criteria and DoD items verified for {task_id}`.
+4. If any item is unsatisfied, `broadcast` at `warning` level: `[DOD] Pre-flight FAILED — {unsatisfied_count} item(s) not met for {task_id}: {list}`. Do not proceed to commit. Attempt to resolve the unsatisfied items before re-checking.
+
+This check is blocking — the task MUST NOT be committed until all DoD items pass.
+
 ### Step 5: Commit and Record the Task
 
 After Step 4b passes for the current task:
@@ -255,6 +266,23 @@ Invoke the `review` skill in `report-only` mode on the full set of accumulated c
 3. P0/P1 findings: attempt to fix (within the review-fix cycle limit). If unfixable, create backlog tasks.
 4. P2/P3 findings: create backlog tasks or log as advisory.
 5. `broadcast` the results.
+6. **Push gate**: If P0/P1 findings remain unresolved after the review-fix cycle limit, the orchestrator MUST NOT push the branch. `broadcast` at `error` level: `[🛠️ ORCHESTRATOR] Review gate BLOCKED push — {count} unresolved P0/P1 findings`. Halt and require human intervention.
+
+#### 7a.5. Metrics Check
+
+Call `get_branch_metrics` (engram MCP tool) to retrieve token usage for the session:
+
+1. `broadcast` at `info` level: `[🛠️ ORCHESTRATOR] Checking session metrics`
+2. If the input-to-output token ratio exceeds 10:1, `broadcast` at `warning` level: `[METRICS] High token ratio ({ratio}:1) for this session — review skill efficiency for potential prompt optimization`
+3. This check is advisory, not blocking.
+
+#### 7a.6. Granularity Compliance Report
+
+Report granularity compliance for the session:
+
+1. Count how many tasks were within the 2-hour heuristic vs. flagged as oversized.
+2. `broadcast` at `info` level: `[GRANULARITY] Session compliance: {compliant_count}/{total_count} tasks within 2-hour heuristic, {flagged_count} flagged`
+3. Include this in the Step 7e session completion report.
 
 #### 7b. Compound Knowledge Capture
 

@@ -281,6 +281,35 @@ these rules:
   this as a completion gate; the `build-feature` skill satisfies it inherently through
   the harness loop.
 
+### Stop Conditions and Circuit Breakers
+
+The `build-orchestrator` enforces hard limits to prevent stalls and infinite loops:
+
+| Counter | Limit | Action |
+|---------|-------|--------|
+| Tasks attempted in session | 20 | Halt, broadcast error, write memory checkpoint, exit |
+| Consecutive task failures | 3 | Halt, broadcast error, invoke `transmit` for operator guidance |
+| Review-fix cycles per task | 3 | Accept remaining P2/P3 as backlog items, commit and move on |
+| Total fix-ci cycles | 5 | Halt, broadcast error, leave PR open for manual intervention |
+| Stalls in session | 3 | Halt, broadcast error, write memory checkpoint, exit |
+
+The `build-feature` skill enforces a **5-attempt circuit breaker** per task. The
+`harness-architect` and `build-orchestrator` enforce stall detection watchdogs
+on all terminal commands (45 min for cargo, 5 min for non-cargo).
+
+### Feature Flag Enforcement
+
+All new agent-generated Rust modules in `src/` MUST be feature-gated behind a
+Cargo feature flag. This prevents system-wide instability if an agent introduces
+a panic in new code. Existing modules are not subject to this rule.
+
+### Protected File Awareness
+
+When an agent modifies core harness configuration files (`.github/agents/*.agent.md`,
+`.github/skills/*/SKILL.md`, `.github/instructions/*.instructions.md`, `AGENTS.md`),
+it MUST broadcast a `[PROTECTED]` warning at `info` level. This alerts the operator
+without blocking modification.
+
 ### Feature Pipeline
 
 Every feature follows a sequential pipeline from ideation through implementation.

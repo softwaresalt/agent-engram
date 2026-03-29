@@ -77,6 +77,9 @@ Use `broadcast` (non-blocking) throughout execution to keep the operator informe
 Post the first `broadcast` as a new top-level message and capture the returned `ts`. Use that `ts` as `thread_ts` for all subsequent messages. That first `broadcast` is an intercom verification gate and must happen before reading files, editing code, or running the harness. If it fails after a successful `ping`, print a prominent CLI warning, mark agent-intercom unavailable for the remainder of the task, and continue in local-only mode instead of assuming the operator received the update.
 ### File Change Workflow
 File creation and modification proceed with direct writes. After each file write, call `broadcast` at `info` level with the change details.
+
+**Protected file awareness**: When modifying core harness configuration files (`.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, `.github/instructions/*.instructions.md`, `AGENTS.md`), `broadcast` at `info` level: `[PROTECTED] Modifying harness config: {file_path}`. This alerts the operator without blocking modification.
+
 For **destructive operations** (file deletion, directory removal), route through the approval workflow:
 1. `auto_check` � Check if workspace policy allows the operation.
 2. `check_clearance` � Submit proposal and block until operator responds.
