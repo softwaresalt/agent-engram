@@ -193,10 +193,13 @@ status: draft|reviewed|approved
 {Map proposed work against the 9 constitutional principles; document any justified deviations}
 ```
 
-### Phase 3: Next Steps
+### Phase 3: Complete
 
-Present options:
+1. Confirm the plan file was written to `.backlog/plans/{YYYY-MM-DD}-{slug}-plan.md`.
+2. Return the plan file path to the caller.
 
-1. "Run backlog-harvester to decompose this plan into backlog tasks" (Recommended — this is the standard next step in the workflow)
+When invoked standalone (not as a subagent of backlog-harvester), present next steps:
+
+1. "Run backlog-harvester to decompose this plan into backlog tasks" (Recommended)
 2. "Run plan-review to validate this plan with multi-persona review first"
 3. "Revise specific sections"

@@ -273,16 +273,23 @@ the correct next step.
 flowchart LR
     A["Research / Idea"]
     B["brainstorm skill"]
-    P["impl-plan skill"]
     C["backlog-harvester agent"]
     D["harness-architect agent"]
     E["build-orchestrator agent"]
     F["pr-review agent"]
 
-    A -- "drop .md into\n.backlog/research/" --> P
+    A -- "drop .md into\n.backlog/research/" --> C
     A -- "need to explore\nrequirements" --> B
-    B -- ".backlog/brainstorm/\nrequirements doc" --> P
-    P -- ".backlog/plans/\nimplementation plan" --> C
+    B -- ".backlog/brainstorm/\nrequirements doc" --> C
+
+    subgraph C["backlog-harvester agent"]
+        C1["impl-plan skill"]
+        C2["plan-review skill"]
+        C3["task decomposition"]
+        C1 -- ".backlog/plans/" --> C2
+        C2 -- "gate: PASS" --> C3
+    end
+
     C -- "epic + subtasks\nin .backlog/tasks/" --> D
     D -- "BDD test harnesses\n+ structural stubs" --> E
     E -- "implemented code\npassing all tests" --> F
@@ -292,23 +299,29 @@ flowchart LR
 **Entry points** (choose one):
 
 * **With research**: Drop a markdown file into `.backlog/research/`, then invoke
-  `impl-plan` with the research file as input. The plan output goes to
-  `.backlog/plans/`, then invoke `backlog-harvester` with the plan file.
+  `backlog-harvester` with `source: .backlog/research/{file}.md`. The harvester
+  runs impl-plan, plan-review, and task decomposition automatically.
 * **Without research**: Invoke the `brainstorm` skill to explore requirements
   collaboratively. The brainstorm output goes to `.backlog/brainstorm/`, then
-  invoke `impl-plan` to create an implementation plan, then invoke
-  `backlog-harvester` with the plan file.
+  invoke `backlog-harvester` with `source: .backlog/brainstorm/{file}.md`.
 
 **Stage outputs and handoffs:**
 
 | Stage | Agent / Skill | Input | Output | Suggests Next |
 |-------|---------------|-------|--------|---------------|
-| Ideation | `brainstorm` | Feature idea | `.backlog/brainstorm/{file}.md` | impl-plan |
-| Planning | `impl-plan` | Research or brainstorm file | `.backlog/plans/{file}.md` | backlog-harvester |
-| Decomposition | `backlog-harvester` | Plan, research, or brainstorm file | Epic + subtasks in `.backlog/tasks/` | harness-architect |
+| Ideation | `brainstorm` | Feature idea | `.backlog/brainstorm/{file}.md` | backlog-harvester |
+| Planning + Review + Decomposition | `backlog-harvester` | Research or brainstorm file | Epic + subtasks in `.backlog/tasks/` | harness-architect |
 | Harness | `harness-architect` | Feature number from backlog | BDD tests + stubs in `tests/` and `src/` | build-orchestrator |
 | Build | `build-orchestrator` | Feature number from backlog | Implemented code, all tests passing | pr-review |
 | Review | `pr-review` | Branch diff | PR created and reviewed | Done |
+
+The `backlog-harvester` internally orchestrates three sub-phases:
+1. `impl-plan` skill — produces `.backlog/plans/{file}.md`
+2. `plan-review` skill — validates the plan (PASS/ADVISORY/FAIL gate)
+3. Task decomposition — creates epic, sub-epics, and tasks in `.backlog/tasks/`
+
+Use `skip_plan: true` to bypass planning (when source is already a plan file).
+Use `skip_review: true` to bypass review (when speed matters more than validation).
 
 **Queue**: `.backlog/queue.md` holds a simple list of unrefined ideas. Items
 graduate from the queue into the pipeline when they enter the brainstorm or
