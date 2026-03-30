@@ -17,7 +17,12 @@ use engram::server::state::AppState;
 use engram::tools;
 
 /// Helper: create a temp git workspace, bind it to state, and inject a policy config.
-async fn setup_workspace_with_policy(policy: PolicyConfig) -> Arc<AppState> {
+///
+/// Returns both the `Arc<AppState>` and the `TempDir` handle. The caller MUST hold
+/// the `TempDir` for the duration of the test — dropping it deletes the workspace.
+async fn setup_workspace_with_policy(
+    policy: PolicyConfig,
+) -> (Arc<AppState>, tempfile::TempDir) {
     let workspace = tempfile::tempdir().expect("tempdir");
     let git_dir = workspace.path().join(".git");
     fs::create_dir_all(&git_dir).expect("create .git");
@@ -41,7 +46,7 @@ async fn setup_workspace_with_policy(policy: PolicyConfig) -> Arc<AppState> {
     };
     state.set_workspace_config(Some(config)).await;
 
-    state
+    (state, workspace)
 }
 
 // ── C016-01: Policy disabled ─────────────────────────────────────────────────
@@ -49,7 +54,7 @@ async fn setup_workspace_with_policy(policy: PolicyConfig) -> Arc<AppState> {
 /// C016-01: When policy is disabled (default), all tool calls proceed.
 #[test]
 async fn c016_01_disabled_policy_allows_all_tools() {
-    let state = setup_workspace_with_policy(PolicyConfig {
+    let (state, _workspace) = setup_workspace_with_policy(PolicyConfig {
         enabled: false,
         ..PolicyConfig::default()
     })
@@ -76,7 +81,7 @@ async fn c016_01_disabled_policy_allows_all_tools() {
 /// is present in params, the call is denied with error code 14001.
 #[test]
 async fn c016_02_unmatched_deny_blocks_anonymous_agent() {
-    let state = setup_workspace_with_policy(PolicyConfig {
+    let (state, _workspace) = setup_workspace_with_policy(PolicyConfig {
         enabled: true,
         unmatched: UnmatchedPolicy::Deny,
         rules: vec![],
@@ -103,7 +108,7 @@ async fn c016_02_unmatched_deny_blocks_anonymous_agent() {
 /// the call proceeds (or fails for a non-policy reason).
 #[test]
 async fn c016_03_matching_allow_rule_permits_call() {
-    let state = setup_workspace_with_policy(PolicyConfig {
+    let (state, _workspace) = setup_workspace_with_policy(PolicyConfig {
         enabled: true,
         unmatched: UnmatchedPolicy::Deny,
         rules: vec![PolicyRule {
@@ -138,7 +143,7 @@ async fn c016_03_matching_allow_rule_permits_call() {
 /// the requested tool, the call returns 14001 `PolicyDenied`.
 #[test]
 async fn c016_04_deny_list_blocks_tool_via_dispatch() {
-    let state = setup_workspace_with_policy(PolicyConfig {
+    let (state, _workspace) = setup_workspace_with_policy(PolicyConfig {
         enabled: true,
         unmatched: UnmatchedPolicy::Allow,
         rules: vec![PolicyRule {
@@ -172,7 +177,7 @@ async fn c016_04_deny_list_blocks_tool_via_dispatch() {
 /// `{ error: { code: 14001, name: "PolicyDenied", message: "...", details: { agent_role, tool_name } } }`.
 #[test]
 async fn c016_05_policy_denied_error_shape() {
-    let state = setup_workspace_with_policy(PolicyConfig {
+    let (state, _workspace) = setup_workspace_with_policy(PolicyConfig {
         enabled: true,
         unmatched: UnmatchedPolicy::Deny,
         rules: vec![],

@@ -211,8 +211,10 @@ fn detect_tool_hammering(role: &str, events: &[&UsageEvent]) -> Option<AnomalyFl
         }
         timestamps.sort_unstable();
         // Sliding window: check if any 21-item subsequence spans ≤60 seconds.
+        // `windows(21)` always yields slices of exactly 21 elements, so direct
+        // indexing is safe and avoids a semantically-wrong `unwrap_or(&0)` fallback.
         for window in timestamps.windows(21) {
-            let span = window.last().unwrap_or(&0) - window.first().unwrap_or(&0);
+            let span = window[20] - window[0];
             if span <= 60 {
                 return Some(AnomalyFlag {
                     anomaly_type: "tool_hammering".to_string(),

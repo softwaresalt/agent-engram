@@ -15,7 +15,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
 /// Total number of tools registered in the dispatch table and this catalog.
-pub const TOOL_COUNT: usize = 16;
+pub const TOOL_COUNT: usize = 17;
 
 /// Build a `serde_json::Map` from a JSON object literal.
 ///
@@ -249,6 +249,14 @@ pub fn all_tools() -> Vec<Tool> {
                 "properties": {}
             })),
         ),
+        Tool::new(
+            "get_evaluation_report",
+            "Compute an agent efficiency evaluation report from recorded usage events. Returns per-agent scoring, anomaly flags (token ratio spikes, error bursts, tool hammering), and actionable recommendations.",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
         // ── Sandboxed Query ────────────────────────────────────────────────
         Tool::new(
             "query_graph",
@@ -323,6 +331,7 @@ mod tests {
             "get_health_report",
             "get_branch_metrics",
             "get_token_savings_report",
+            "get_evaluation_report",
             "query_graph",
         ];
         for name in &required {

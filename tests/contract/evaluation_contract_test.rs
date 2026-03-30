@@ -189,3 +189,22 @@ async fn c017_04_no_workspace_returns_workspace_not_set() {
         "must return 1003 WorkspaceNotSet when no workspace bound"
     );
 }
+
+// ── C017-05: Tool catalog discoverability ────────────────────────────────────
+
+/// C017-05: `get_evaluation_report` must be discoverable in the static MCP tool catalog.
+///
+/// Validates that the tool appears in [`engram::shim::tools_catalog::all_tools`] so that
+/// MCP clients calling `tools/list` can discover it. This guards Principle II (MCP
+/// Protocol Fidelity): all tools must be unconditionally visible.
+#[test]
+async fn c017_05_evaluation_report_discoverable_in_tool_catalog() {
+    let tools = engram::shim::tools_catalog::all_tools();
+    let found = tools
+        .iter()
+        .any(|t| t.name.as_ref() == "get_evaluation_report");
+    assert!(
+        found,
+        "get_evaluation_report must be listed in all_tools() for MCP discoverability"
+    );
+}
