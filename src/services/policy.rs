@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::errors::PolicyError;
-use crate::models::policy::PolicyConfig;
+use crate::models::policy::{PolicyConfig, UnmatchedPolicy};
 
 /// Context carried through the dispatch pipeline per tool call.
 #[derive(Debug, Default, Clone)]
@@ -18,10 +18,13 @@ pub struct ToolCallContext {
 
 /// Extract agent role from the `_meta.agent_role` field in JSON-RPC params.
 #[must_use]
-pub fn extract_agent_role(_params: &Option<Value>) -> Option<String> {
-    unimplemented!(
-        "Worker: extract params._meta.agent_role as Option<String> from the JSON-RPC params value. Return None if _meta or agent_role is absent."
-    )
+pub fn extract_agent_role(params: &Option<Value>) -> Option<String> {
+    let params = params.as_ref()?;
+    params
+        .get("_meta")
+        .and_then(|m| m.get("agent_role"))
+        .and_then(Value::as_str)
+        .map(String::from)
 }
 
 /// Evaluate whether an agent role is permitted to call a tool.
@@ -33,18 +36,41 @@ pub fn extract_agent_role(_params: &Option<Value>) -> Option<String> {
 /// Returns [`PolicyError::Denied`] when the policy explicitly forbids the
 /// agent role from calling the specified tool.
 pub fn evaluate(
-    _config: &PolicyConfig,
-    _agent_role: Option<&str>,
-    _tool_name: &str,
+    config: &PolicyConfig,
+    agent_role: Option<&str>,
+    tool_name: &str,
 ) -> Result<(), PolicyError> {
-    unimplemented!(
-        "Worker: implement policy evaluation logic. \
-         1) If config.enabled is false, return Ok(()). \
-         2) If agent_role is None, apply config.unmatched policy. \
-         3) Find matching PolicyRule by exact agent_role string. \
-         4) If no match, apply config.unmatched. \
-         5) If rule.deny contains tool_name, return Err(Denied). \
-         6) If rule.allow is non-empty and does not contain tool_name, return Err(Denied). \
-         7) Otherwise Ok(())."
-    )
+    if !config.enabled {
+        return Ok(());
+    }
+
+    let rule = agent_role.and_then(|role| config.rules.iter().find(|r| r.agent_role == role));
+
+    let Some(rule) = rule else {
+        return match config.unmatched {
+            UnmatchedPolicy::Allow => Ok(()),
+            UnmatchedPolicy::Deny => Err(PolicyError::Denied {
+                agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
+                tool_name: tool_name.to_string(),
+            }),
+        };
+    };
+
+    // Deny list takes precedence.
+    if rule.deny.iter().any(|t| t == tool_name) {
+        return Err(PolicyError::Denied {
+            agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
+            tool_name: tool_name.to_string(),
+        });
+    }
+
+    // Non-empty allow list acts as allowlist; not in list → denied.
+    if !rule.allow.is_empty() && !rule.allow.iter().any(|t| t == tool_name) {
+        return Err(PolicyError::Denied {
+            agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
+            tool_name: tool_name.to_string(),
+        });
+    }
+
+    Ok(())
 }
