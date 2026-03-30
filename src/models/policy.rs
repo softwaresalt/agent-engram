@@ -6,19 +6,14 @@
 use serde::{Deserialize, Serialize};
 
 /// Behavior when no policy rule matches the requesting agent's role.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnmatchedPolicy {
     /// Allow tool calls from unrecognized agent roles (default).
+    #[default]
     Allow,
     /// Deny tool calls from unrecognized agent roles.
     Deny,
-}
-
-impl Default for UnmatchedPolicy {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// A single policy rule mapping an agent role to tool permissions.
@@ -35,7 +30,7 @@ pub struct PolicyRule {
 }
 
 /// Workspace-level policy configuration loaded from `.engram/engram.toml`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PolicyConfig {
     /// When false, policy enforcement is disabled (allow-all).
     #[serde(default)]
@@ -46,14 +41,4 @@ pub struct PolicyConfig {
     /// Per-agent-role rules.
     #[serde(default)]
     pub rules: Vec<PolicyRule>,
-}
-
-impl Default for PolicyConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            unmatched: UnmatchedPolicy::default(),
-            rules: Vec::new(),
-        }
-    }
 }

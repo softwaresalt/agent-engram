@@ -226,6 +226,17 @@ impl AppState {
         self.workspace_config.read().await.clone()
     }
 
+    /// Get the active policy configuration, or `PolicyConfig::default()` if none loaded.
+    ///
+    /// Returns `None` when no workspace is bound (policy evaluation requires workspace context).
+    pub async fn policy_config(&self) -> Option<crate::models::policy::PolicyConfig> {
+        self.workspace_config
+            .read()
+            .await
+            .as_ref()
+            .map(|c| c.policy.clone())
+    }
+
     /// Set the workspace config.
     pub async fn set_workspace_config(&self, config: Option<WorkspaceConfig>) {
         *self.workspace_config.write().await = config;

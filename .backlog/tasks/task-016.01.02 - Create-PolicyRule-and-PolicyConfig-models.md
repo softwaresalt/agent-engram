@@ -1,7 +1,7 @@
 ---
 id: TASK-016.01.02
 title: Create PolicyRule and PolicyConfig models
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:53'
 labels:
@@ -36,3 +36,7 @@ All structs derive `Debug, Clone, Serialize, Deserialize, PartialEq`.
 
 **Note:** Register any new test file as `[[test]]` in `Cargo.toml`.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+Implemented in harness commit `51da38f`. `src/models/policy.rs` created with `PolicyRule`, `PolicyConfig`, `UnmatchedPolicy`. `src/models/mod.rs` updated. All 4 harness tests pass. Completed in commit `51da38f`.

@@ -19,7 +19,9 @@ pub struct ToolCallContext {
 /// Extract agent role from the `_meta.agent_role` field in JSON-RPC params.
 #[must_use]
 pub fn extract_agent_role(_params: &Option<Value>) -> Option<String> {
-    unimplemented!("Worker: extract params._meta.agent_role as Option<String> from the JSON-RPC params value. Return None if _meta or agent_role is absent.")
+    unimplemented!(
+        "Worker: extract params._meta.agent_role as Option<String> from the JSON-RPC params value. Return None if _meta or agent_role is absent."
+    )
 }
 
 /// Evaluate whether an agent role is permitted to call a tool.

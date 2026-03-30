@@ -9,12 +9,12 @@
 use engram::errors::codes::{POLICY_CONFIG_INVALID, POLICY_DENIED};
 use engram::errors::{EngramError, PolicyError};
 use engram::models::policy::{PolicyConfig, PolicyRule, UnmatchedPolicy};
-use engram::services::policy::{evaluate, extract_agent_role, ToolCallContext};
+use engram::services::policy::{ToolCallContext, evaluate, extract_agent_role};
 use serde_json::json;
 
 // ── Section 1: Model serde round-trips (TASK-016.01.02) ─────────────
 
-/// GIVEN a fully populated PolicyConfig
+/// GIVEN a fully populated [`PolicyConfig`]
 /// WHEN serialized to JSON and deserialized back
 /// THEN the round-tripped value equals the original.
 #[test]
@@ -44,9 +44,9 @@ fn t016_01_02_policy_config_serde_round_trip() {
     assert_eq!(config, round_tripped);
 }
 
-/// GIVEN a default PolicyConfig
+/// GIVEN a default [`PolicyConfig`]
 /// WHEN checked
-/// THEN enabled is false and unmatched is Allow.
+/// THEN `enabled` is false and `unmatched` is `Allow`.
 #[test]
 fn t016_01_02_policy_config_defaults() {
     let config = PolicyConfig::default();
@@ -57,15 +57,12 @@ fn t016_01_02_policy_config_defaults() {
         UnmatchedPolicy::Allow,
         "default unmatched policy should be Allow"
     );
-    assert!(
-        config.rules.is_empty(),
-        "default rules should be empty"
-    );
+    assert!(config.rules.is_empty(), "default rules should be empty");
 }
 
-/// GIVEN a PolicyRule with only allow list
+/// GIVEN a [`PolicyRule`] with only `allow` list
 /// WHEN serialized
-/// THEN deny field defaults to empty vec.
+/// THEN `deny` field defaults to empty vec.
 #[test]
 fn t016_01_02_policy_rule_optional_deny_defaults() {
     let json_str = r#"{"agent_role":"tester","allow":["map_code"]}"#;
@@ -77,25 +74,25 @@ fn t016_01_02_policy_rule_optional_deny_defaults() {
     assert!(rule.deny.is_empty(), "deny should default to empty");
 }
 
-/// GIVEN an UnmatchedPolicy::Deny
+/// GIVEN an [`UnmatchedPolicy::Deny`]
 /// WHEN serialized to JSON
-/// THEN the string is "deny".
+/// THEN the string is `"deny"`.
 #[test]
 fn t016_01_02_unmatched_policy_serde_rename() {
     let json_str = serde_json::to_string(&UnmatchedPolicy::Deny)
         .unwrap_or_else(|e| panic!("serialize failed: {e}"));
     assert_eq!(json_str, r#""deny""#);
 
-    let deserialized: UnmatchedPolicy = serde_json::from_str(r#""allow""#)
-        .unwrap_or_else(|e| panic!("deserialize failed: {e}"));
+    let deserialized: UnmatchedPolicy =
+        serde_json::from_str(r#""allow""#).unwrap_or_else(|e| panic!("deserialize failed: {e}"));
     assert_eq!(deserialized, UnmatchedPolicy::Allow);
 }
 
 // ── Section 2: PolicyError and error codes (TASK-016.01.03) ─────────
 
-/// GIVEN a PolicyError::Denied
-/// WHEN converted to EngramError and then to_response
-/// THEN the error code is 14001 and details contain agent_role and tool_name.
+/// GIVEN a [`PolicyError::Denied`]
+/// WHEN converted to [`EngramError`] and then `to_response`
+/// THEN the error code is 14001 and details contain `agent_role` and `tool_name`.
 #[test]
 fn t016_01_03_policy_denied_error_response() {
     let err = EngramError::from(PolicyError::Denied {
@@ -116,8 +113,8 @@ fn t016_01_03_policy_denied_error_response() {
     assert_eq!(details["tool_name"], "set_workspace");
 }
 
-/// GIVEN a PolicyError::ConfigInvalid
-/// WHEN converted to EngramError and then to_response
+/// GIVEN a [`PolicyError::ConfigInvalid`]
+/// WHEN converted to [`EngramError`] and then `to_response`
 /// THEN the error code is 14002.
 #[test]
 fn t016_01_03_policy_config_invalid_error_response() {
@@ -133,8 +130,8 @@ fn t016_01_03_policy_config_invalid_error_response() {
 // ── Section 3: extract_agent_role (TASK-016.02.02) ──────────────────
 
 /// GIVEN JSON-RPC params with `_meta.agent_role`
-/// WHEN extract_agent_role is called
-/// THEN it returns Some(role).
+/// WHEN `extract_agent_role` is called
+/// THEN it returns `Some(role)`.
 #[test]
 fn t016_02_02_extract_agent_role_from_meta() {
     let params = Some(json!({
@@ -147,8 +144,8 @@ fn t016_02_02_extract_agent_role_from_meta() {
 }
 
 /// GIVEN JSON-RPC params without `_meta`
-/// WHEN extract_agent_role is called
-/// THEN it returns None.
+/// WHEN `extract_agent_role` is called
+/// THEN it returns `None`.
 #[test]
 fn t016_02_02_extract_agent_role_missing_meta() {
     let params = Some(json!({ "query": "test" }));
@@ -157,9 +154,9 @@ fn t016_02_02_extract_agent_role_missing_meta() {
     assert_eq!(role, None);
 }
 
-/// GIVEN None params
-/// WHEN extract_agent_role is called
-/// THEN it returns None.
+/// GIVEN `None` params
+/// WHEN `extract_agent_role` is called
+/// THEN it returns `None`.
 #[test]
 fn t016_02_02_extract_agent_role_none_params() {
     let role = extract_agent_role(&None);
@@ -167,8 +164,8 @@ fn t016_02_02_extract_agent_role_none_params() {
 }
 
 /// GIVEN `_meta` present but `agent_role` absent
-/// WHEN extract_agent_role is called
-/// THEN it returns None.
+/// WHEN `extract_agent_role` is called
+/// THEN it returns `None`.
 #[test]
 fn t016_02_02_extract_agent_role_meta_without_role() {
     let params = Some(json!({
@@ -181,9 +178,9 @@ fn t016_02_02_extract_agent_role_meta_without_role() {
 
 // ── Section 4: ToolCallContext (TASK-016.02.02) ─────────────────────
 
-/// GIVEN a ToolCallContext
+/// GIVEN a [`ToolCallContext`]
 /// WHEN constructed with default
-/// THEN agent_role is None.
+/// THEN `agent_role` is `None`.
 #[test]
 fn t016_02_02_tool_call_context_default() {
     let ctx = ToolCallContext::default();
@@ -236,7 +233,10 @@ fn t016_02_01_unmatched_deny_blocks_unknown_agent() {
     };
 
     let result = evaluate(&config, Some("unknown-agent"), "list_symbols");
-    assert!(result.is_err(), "unmatched=Deny should block unknown agents");
+    assert!(
+        result.is_err(),
+        "unmatched=Deny should block unknown agents"
+    );
 }
 
 /// GIVEN an agent with an allow-list
@@ -344,7 +344,7 @@ fn t016_02_01_deny_takes_precedence_over_allow() {
 }
 
 /// GIVEN policy is enabled
-/// WHEN agent_role is None and unmatched=Allow
+/// WHEN `agent_role` is `None` and `unmatched=Allow`
 /// THEN evaluate returns Ok.
 #[test]
 fn t016_02_01_none_agent_role_with_allow_unmatched() {
@@ -362,7 +362,7 @@ fn t016_02_01_none_agent_role_with_allow_unmatched() {
 }
 
 /// GIVEN policy is enabled
-/// WHEN agent_role is None and unmatched=Deny
+/// WHEN `agent_role` is `None` and `unmatched=Deny`
 /// THEN evaluate returns Err.
 #[test]
 fn t016_02_01_none_agent_role_with_deny_unmatched() {

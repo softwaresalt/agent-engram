@@ -1,10 +1,7 @@
 ---
 id: TASK-016.01.03
 title: Add PolicyError variant and error codes (14xxx)
-status: To Do
-assignee: []
-created_date: '2026-03-30 01:53'
-updated_date: '2026-03-30 01:59'
+status: Done
 labels:
   - daemon
 dependencies:

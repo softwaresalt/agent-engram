@@ -1,8 +1,8 @@
 //! BDD harness for observability and evaluation daemon primitives (TASK-017).
 //!
 //! Tests cover: evaluation model serde, scoring weights defaults,
-//! evaluation config serde, the evaluate() computation, anomaly detection,
-//! and the `EvaluationReport` structure.
+//! evaluation config serde, the `evaluate()` computation, anomaly detection,
+//! and the [`EvaluationReport`] structure.
 //!
 //! Run: `cargo test --test evaluation_test`
 
@@ -14,7 +14,7 @@ use engram::services::evaluation::evaluate;
 
 // ── Section 1: Evaluation model serde (TASK-017.02.01) ──────────────
 
-/// GIVEN a fully populated EvaluationReport
+/// GIVEN a fully populated [`EvaluationReport`]
 /// WHEN serialized to JSON and deserialized back
 /// THEN the round-tripped value equals the original.
 #[test]
@@ -50,9 +50,9 @@ fn t017_02_01_evaluation_report_serde_round_trip() {
     assert_eq!(report, round_tripped);
 }
 
-/// GIVEN an AnomalyFlag with agent_role = None
+/// GIVEN an [`AnomalyFlag`] with `agent_role = None`
 /// WHEN serialized to JSON
-/// THEN the agent_role field is omitted.
+/// THEN the `agent_role` field is omitted.
 #[test]
 fn t017_02_01_anomaly_flag_omits_none_agent_role() {
     let flag = AnomalyFlag {
@@ -62,17 +62,16 @@ fn t017_02_01_anomaly_flag_omits_none_agent_role() {
         agent_role: None,
     };
 
-    let json_str =
-        serde_json::to_string(&flag).unwrap_or_else(|e| panic!("serialize failed: {e}"));
+    let json_str = serde_json::to_string(&flag).unwrap_or_else(|e| panic!("serialize failed: {e}"));
     assert!(
         !json_str.contains("agent_role"),
         "agent_role should be omitted when None"
     );
 }
 
-/// GIVEN a minimal AgentEfficiency
+/// GIVEN a minimal [`AgentEfficiency`]
 /// WHEN serialized
-/// THEN anomalies defaults to empty vec.
+/// THEN `anomalies` defaults to empty vec.
 #[test]
 fn t017_02_01_agent_efficiency_empty_anomalies_default() {
     let json_str = r#"{
@@ -95,7 +94,7 @@ fn t017_02_01_agent_efficiency_empty_anomalies_default() {
 
 // ── Section 2: ScoringWeights and EvaluationConfig defaults (TASK-017.02.03) ─
 
-/// GIVEN ScoringWeights::default()
+/// GIVEN [`ScoringWeights::default()`]
 /// WHEN checked
 /// THEN weights sum to 1.0 and match the spec.
 #[test]
@@ -126,7 +125,7 @@ fn t017_02_03_scoring_weights_defaults() {
     );
 }
 
-/// GIVEN EvaluationConfig::default()
+/// GIVEN [`EvaluationConfig::default()`]
 /// WHEN checked
 /// THEN thresholds match spec defaults.
 #[test]
@@ -151,7 +150,7 @@ fn t017_02_03_evaluation_config_defaults() {
     );
 }
 
-/// GIVEN an EvaluationConfig with custom weights
+/// GIVEN an [`EvaluationConfig`] with custom weights
 /// WHEN serialized and deserialized
 /// THEN values are preserved.
 #[test]
@@ -179,7 +178,7 @@ fn t017_02_03_evaluation_config_serde_round_trip() {
 
 // ── Section 3: Evaluation computation (TASK-017.02.02) ──────────────
 
-/// Helper: build a UsageEvent with agent_role and outcome fields.
+/// Helper: build a [`UsageEvent`] with `agent_role` and `outcome` fields.
 fn make_event(tool: &str, tokens: u64, agent_role: Option<&str>) -> UsageEvent {
     UsageEvent {
         tool_name: tool.to_string(),
@@ -196,8 +195,8 @@ fn make_event(tool: &str, tokens: u64, agent_role: Option<&str>) -> UsageEvent {
 }
 
 /// GIVEN a set of well-behaved usage events from one agent
-/// WHEN evaluate() is called
-/// THEN it returns an EvaluationReport with efficiency_score > 0.
+/// WHEN `evaluate()` is called
+/// THEN it returns an [`EvaluationReport`] with `efficiency_score > 0`.
 #[test]
 fn t017_02_02_evaluate_basic_scoring() {
     let events = vec![
@@ -213,10 +212,7 @@ fn t017_02_02_evaluate_basic_scoring() {
         report.efficiency_score > 0,
         "score should be positive for well-behaved events"
     );
-    assert!(
-        report.efficiency_score <= 100,
-        "score must not exceed 100"
-    );
+    assert!(report.efficiency_score <= 100, "score must not exceed 100");
     assert_eq!(report.branch, "main");
     assert_eq!(report.agents.len(), 1);
     assert_eq!(report.agents[0].agent_role, "doc-ops");
@@ -224,7 +220,7 @@ fn t017_02_02_evaluate_basic_scoring() {
 }
 
 /// GIVEN events from multiple agents
-/// WHEN evaluate() is called
+/// WHEN `evaluate()` is called
 /// THEN the report contains per-agent breakdowns.
 #[test]
 fn t017_02_02_evaluate_multi_agent_breakdown() {
@@ -239,14 +235,18 @@ fn t017_02_02_evaluate_multi_agent_breakdown() {
 
     assert_eq!(report.agents.len(), 2, "should have 2 agent breakdowns");
 
-    let agent_roles: Vec<&str> = report.agents.iter().map(|a| a.agent_role.as_str()).collect();
+    let agent_roles: Vec<&str> = report
+        .agents
+        .iter()
+        .map(|a| a.agent_role.as_str())
+        .collect();
     assert!(agent_roles.contains(&"doc-ops"));
     assert!(agent_roles.contains(&"rust-engineer"));
 }
 
-/// GIVEN events with no agent_role (anonymous)
-/// WHEN evaluate() is called
-/// THEN anonymous events are grouped under "anonymous".
+/// GIVEN events with no `agent_role` (anonymous)
+/// WHEN `evaluate()` is called
+/// THEN anonymous events are grouped under `"anonymous"`.
 #[test]
 fn t017_02_02_evaluate_anonymous_agent() {
     let events = vec![
@@ -262,7 +262,7 @@ fn t017_02_02_evaluate_anonymous_agent() {
 }
 
 /// GIVEN an empty event list
-/// WHEN evaluate() is called
+/// WHEN `evaluate()` is called
 /// THEN the report has score 0 and no agents.
 #[test]
 fn t017_02_02_evaluate_empty_events() {
@@ -275,8 +275,8 @@ fn t017_02_02_evaluate_empty_events() {
 }
 
 /// GIVEN events all using the same tool
-/// WHEN evaluate() is called
-/// THEN tool_diversity is 1 and a narrow-usage anomaly may be flagged.
+/// WHEN `evaluate()` is called
+/// THEN `tool_diversity` is 1 and a narrow-usage anomaly may be flagged.
 #[test]
 fn t017_02_02_evaluate_low_tool_diversity() {
     let events: Vec<UsageEvent> = (0..10)
@@ -293,8 +293,8 @@ fn t017_02_02_evaluate_low_tool_diversity() {
 // ── Section 4: Anomaly detection (TASK-017.02.02) ───────────────────
 
 /// GIVEN events with high token usage relative to results
-/// WHEN evaluate() is called
-/// THEN a token_ratio_spike anomaly is flagged.
+/// WHEN `evaluate()` is called
+/// THEN a `token_ratio_spike` anomaly is flagged.
 #[test]
 fn t017_02_02_anomaly_token_ratio_spike() {
     let mut events = Vec::new();
@@ -310,10 +310,7 @@ fn t017_02_02_anomaly_token_ratio_spike() {
     let config = EvaluationConfig::default();
     let report = evaluate(&events, &config);
 
-    let spike_agent = report
-        .agents
-        .iter()
-        .find(|a| a.agent_role == "spike-agent");
+    let spike_agent = report.agents.iter().find(|a| a.agent_role == "spike-agent");
     assert!(
         spike_agent.is_some(),
         "spike-agent should appear in the report"
@@ -330,8 +327,8 @@ fn t017_02_02_anomaly_token_ratio_spike() {
 }
 
 /// GIVEN events where one agent makes >20 calls to the same tool in rapid succession
-/// WHEN evaluate() is called
-/// THEN a tool_hammering anomaly is flagged.
+/// WHEN `evaluate()` is called
+/// THEN a `tool_hammering` anomaly is flagged.
 #[test]
 fn t017_02_02_anomaly_tool_hammering() {
     let events: Vec<UsageEvent> = (0..25)
@@ -359,7 +356,7 @@ fn t017_02_02_anomaly_tool_hammering() {
 // ── Section 5: Score clamping and edge cases (TASK-017.02.02) ───────
 
 /// GIVEN a single high-error event
-/// WHEN evaluate() is called
+/// WHEN `evaluate()` is called
 /// THEN the score is between 0 and 100 inclusive.
 #[test]
 fn t017_02_02_score_clamped_0_100() {
@@ -370,14 +367,11 @@ fn t017_02_02_score_clamped_0_100() {
     let config = EvaluationConfig::default();
     let report = evaluate(&[event], &config);
 
-    assert!(
-        report.efficiency_score <= 100,
-        "score must not exceed 100"
-    );
+    assert!(report.efficiency_score <= 100, "score must not exceed 100");
 }
 
 /// GIVEN events producing recommendations
-/// WHEN evaluate() is called
+/// WHEN `evaluate()` is called
 /// THEN recommendations are non-empty strings.
 #[test]
 fn t017_02_02_recommendations_are_actionable() {

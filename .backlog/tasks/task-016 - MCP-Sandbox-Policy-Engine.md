@@ -4,6 +4,7 @@ title: MCP Sandbox Policy Engine
 status: To Do
 assignee: []
 created_date: '2026-03-30 01:50'
+updated_date: '2026-03-30 02:47'
 labels:
   - epic
   - daemon
@@ -38,3 +39,9 @@ Per-agent tool access control for the engram MCP daemon. Adds a policy enforceme
 - F3: Share agent_role extraction with Observability feature
 - F6: Invalid config should warn and fall back to disabled
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Harness\n\n**Command**: `cargo test --test integration_policy -- --test-threads=1`\n**Branch**: `016-mcp-sandbox-policy-engine`\n**Red phase**: 7 passed (models/errors), 15 failed (stubs)\n\n**Orchestration**: Use `build-orchestrator` agent to claim leaf tasks and drive them through the harness via `build-feature` skill.\n\n## Ready Tasks (no blocking deps)\n- TASK-016.01.01 (WorkspaceConfig policy section)\n- TASK-016.01.02 (PolicyRule/PolicyConfig models — already stubbed)\n\n## Dependency Chain\n```\n016.01.02 → 016.01.03 → 016.02.01\n016.01.01 ──────────→ 016.02.02\n                       016.02.01 → 016.02.02\n016.02.02 → 016.04 (shared agent_role)\n016.02.02 → 016.03.01 (contract tests)\n016.02.02 + 016.04 → 016.03.02 (integration tests)\n```
+<!-- SECTION:NOTES:END -->

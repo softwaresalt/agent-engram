@@ -217,7 +217,10 @@ pub enum MetricsError {
 pub enum PolicyError {
     /// Agent role is denied from calling the requested tool.
     #[error("agent '{agent_role}' is denied access to tool '{tool_name}'")]
-    Denied { agent_role: String, tool_name: String },
+    Denied {
+        agent_role: String,
+        tool_name: String,
+    },
     /// Policy configuration is invalid (logged as warning, fallback to disabled).
     #[error("invalid policy configuration: {reason}")]
     ConfigInvalid { reason: String },

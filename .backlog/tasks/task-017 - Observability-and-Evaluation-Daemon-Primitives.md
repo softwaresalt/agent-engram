@@ -4,7 +4,7 @@ title: Observability and Evaluation Daemon Primitives
 status: To Do
 assignee: []
 created_date: '2026-03-30 01:55'
-updated_date: '2026-03-30 01:59'
+updated_date: '2026-03-30 02:47'
 labels:
   - epic
   - daemon
@@ -43,3 +43,9 @@ Daemon-level observability infrastructure for agent-attributed metrics, session 
 - F5: Use skip_serializing_if for by_agent field in MetricsSummary
 - F7: Consider caching evaluation results for large metrics files
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Harness\n\n**Command**: `cargo test --test integration_evaluation -- --test-threads=1`\n**Branch**: `016-mcp-sandbox-policy-engine`\n**Red phase**: 6 passed (models/config), 9 failed (stubs)\n\n**Orchestration**: Use `build-orchestrator` agent to claim leaf tasks and drive them through the harness via `build-feature` skill.\n\n## Ready Tasks (no blocking deps)\n- TASK-017.02.01 (evaluation data models — already stubbed)\n\n## Dependency Chain\n```\n016.02.02 → 017.01.01 (outcome tracking)\n017.01.01 + 016.04 → 017.01.02 (per-agent breakdown)\n017.02.01 → 017.02.02 (eval service)\n017.02.01 → 017.02.03 (eval config)\n017.01.01 → 017.02.02\n017.02.02 + 017.02.03 → 017.03.01 (MCP tool)\n017.03.01 → 017.04.01 (contract tests)\n017.03.01 + 017.01.02 → 017.04.02 (integration tests)\n```
+<!-- SECTION:NOTES:END -->
