@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::errors::{EngramError, SystemError};
 use crate::models::metrics::UsageEvent;
 use crate::server::state::SharedState;
-use crate::services::metrics;
+use crate::services::{metrics, policy};
 
 pub mod lifecycle;
 pub mod read;
@@ -107,6 +107,15 @@ pub async fn dispatch(
 ) -> Result<Value, EngramError> {
     let start = std::time::Instant::now();
 
+    // Extract agent identity from JSON-RPC _meta before dispatch.
+    let agent_role = policy::extract_agent_role(&params);
+
+    // Enforce sandbox policy when a workspace is bound.
+    if let Some(policy_config) = state.policy_config().await {
+        policy::evaluate(&policy_config, agent_role.as_deref(), method)
+            .map_err(EngramError::from)?;
+    }
+
     let result = match method {
         "set_workspace" => {
             let parsed: WorkspaceParams =
@@ -180,7 +189,7 @@ pub async fn dispatch(
                     results_returned,
                     branch: snapshot.branch,
                     connection_id: None,
-                    agent_role: None,
+                    agent_role: agent_role.clone(),
                     outcome: "success".to_string(),
                 });
             }
