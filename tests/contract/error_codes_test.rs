@@ -58,6 +58,14 @@ fn metrics_error_codes_match_contract() {
     assert_eq!(METRICS_PARSE_ERROR, 13_003);
 }
 
+/// Verify policy error codes match the contract (TASK-016.03.01).
+#[test]
+fn policy_error_codes_match_contract() {
+    use engram::errors::codes::{POLICY_CONFIG_INVALID, POLICY_DENIED};
+    assert_eq!(POLICY_DENIED, 14_001);
+    assert_eq!(POLICY_CONFIG_INVALID, 14_002);
+}
+
 /// Verify error-to-response mapping produces the correct code for each variant.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -174,6 +182,23 @@ fn error_response_codes_are_consistent() {
             MetricsError::ParseError { reason: "x".into() }.into(),
             13_003,
             "MetricsParseError",
+        ),
+        (
+            PolicyError::Denied {
+                agent_role: "doc-ops".into(),
+                tool_name: "set_workspace".into(),
+            }
+            .into(),
+            14_001,
+            "PolicyDenied",
+        ),
+        (
+            PolicyError::ConfigInvalid {
+                reason: "duplicate role".into(),
+            }
+            .into(),
+            14_002,
+            "PolicyConfigInvalid",
         ),
     ];
 
