@@ -1,7 +1,7 @@
 ---
 id: TASK-017.02.03
 title: Add evaluation config to WorkspaceConfig
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:58'
 updated_date: '2026-03-30 01:59'

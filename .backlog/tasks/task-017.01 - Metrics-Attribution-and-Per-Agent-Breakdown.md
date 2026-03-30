@@ -1,7 +1,7 @@
 ---
 id: TASK-017.01
 title: Metrics Attribution and Per-Agent Breakdown
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:55'
 labels:

@@ -1,7 +1,7 @@
 ---
 id: TASK-017.01.02
 title: Add per-agent breakdown to MetricsSummary
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:57'
 updated_date: '2026-03-30 01:59'

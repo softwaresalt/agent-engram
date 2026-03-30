@@ -1,7 +1,7 @@
 ---
 id: TASK-017.02.02
 title: Implement evaluation computation service
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:57'
 updated_date: '2026-03-30 01:59'

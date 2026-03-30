@@ -1,7 +1,7 @@
 ---
 id: TASK-017.04.02
 title: Evaluation integration tests
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:59'
 updated_date: '2026-03-30 01:59'

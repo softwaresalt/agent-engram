@@ -1,7 +1,7 @@
 ---
 id: TASK-017
 title: Observability and Evaluation Daemon Primitives
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:55'
 updated_date: '2026-03-30 02:47'

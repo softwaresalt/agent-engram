@@ -1,7 +1,7 @@
 ---
 id: TASK-017.03.01
 title: Implement get_evaluation_report handler and routing
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:58'
 updated_date: '2026-03-30 01:59'

@@ -1,7 +1,7 @@
 ---
 id: TASK-017.01.01
 title: Add outcome tracking to UsageEvent
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:56'
 updated_date: '2026-03-30 01:59'

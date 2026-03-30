@@ -1,7 +1,7 @@
 ---
 id: TASK-017.04
 title: Evaluation Tests
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:56'
 labels:
