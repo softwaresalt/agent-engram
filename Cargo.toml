@@ -389,3 +389,7 @@ path = "tests/contract/policy_contract_test.rs"
 [[test]]
 name = "integration_evaluation"
 path = "tests/integration/evaluation_test.rs"
+
+[[test]]
+name = "contract_evaluation"
+path = "tests/contract/evaluation_contract_test.rs"
