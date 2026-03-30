@@ -1170,3 +1170,39 @@ pub async fn query_changes(
         "symbol": parsed.symbol,
     }))
 }
+
+/// Compute and return an agent efficiency evaluation report.
+///
+/// Reads recorded [`UsageEvent`]s for the active branch, scores agent
+/// tool-usage patterns, and returns an [`EvaluationReport`] as JSON.
+///
+/// # Errors
+///
+/// Returns `WorkspaceError::NotSet` (1003) when no workspace is active.
+/// Returns `MetricsError::NotFound` (13002) when no usage events have been
+/// recorded for the current branch.
+pub async fn get_evaluation_report(
+    state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let config = state.evaluation_config().await.unwrap_or_default();
+
+    let wp = workspace_path.clone();
+    let br = branch.clone();
+    let events = tokio::task::spawn_blocking(move || metrics::load_events(&wp, &br))
+        .await
+        .map_err(|e| {
+            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+                reason: format!("metrics load task panicked: {e}"),
+            })
+        })??;
+
+    let report = crate::services::evaluation::evaluate(&events, &config);
+
+    serde_json::to_value(&report).map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("failed to serialize evaluation report: {e}"),
+        })
+    })
+}

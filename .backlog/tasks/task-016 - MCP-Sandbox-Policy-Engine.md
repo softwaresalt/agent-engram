@@ -1,7 +1,7 @@
 ---
 id: TASK-016
 title: MCP Sandbox Policy Engine
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:50'
 updated_date: '2026-03-30 02:47'

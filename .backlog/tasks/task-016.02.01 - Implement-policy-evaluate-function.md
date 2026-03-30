@@ -1,7 +1,8 @@
 ---
 id: TASK-016.02.01
 title: Implement policy evaluate() function
-status: To Do
+status: Done
+implementation_note: Implemented in commit 9f9c49d
 assignee: []
 created_date: '2026-03-30 01:53'
 updated_date: '2026-03-30 01:59'

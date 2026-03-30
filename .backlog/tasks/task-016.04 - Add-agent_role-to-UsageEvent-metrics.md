@@ -1,7 +1,8 @@
 ---
 id: TASK-016.04
 title: Add agent_role to UsageEvent metrics
-status: To Do
+status: Done
+implementation_note: Implemented in commit f57baab
 assignee: []
 created_date: '2026-03-30 01:54'
 updated_date: '2026-03-30 01:59'

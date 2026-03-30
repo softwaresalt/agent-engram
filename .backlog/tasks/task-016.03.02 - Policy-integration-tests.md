@@ -1,7 +1,8 @@
 ---
 id: TASK-016.03.02
 title: Policy integration tests
-status: To Do
+status: Done
+implementation_note: policy_test.rs 22 tests (commit 51da38f), contract_policy 5 tests (commit cc24aeb)
 assignee: []
 created_date: '2026-03-30 01:54'
 updated_date: '2026-03-30 01:59'

@@ -237,6 +237,17 @@ impl AppState {
             .map(|c| c.policy.clone())
     }
 
+    /// Get the active evaluation configuration.
+    ///
+    /// Returns `None` when no workspace is bound.
+    pub async fn evaluation_config(&self) -> Option<crate::models::evaluation::EvaluationConfig> {
+        self.workspace_config
+            .read()
+            .await
+            .as_ref()
+            .map(|c| c.evaluation.clone())
+    }
+
     /// Set the workspace config.
     pub async fn set_workspace_config(&self, config: Option<WorkspaceConfig>) {
         *self.workspace_config.write().await = config;

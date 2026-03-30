@@ -99,7 +99,7 @@ async fn c016_02_unmatched_deny_blocks_anonymous_agent() {
 
 // ── C016-03: Policy enabled, agent_role present and allowed ─────────────────
 
-/// C016-03: When policy is enabled and the agent_role matches an allow rule,
+/// C016-03: When policy is enabled and the `agent_role` matches an allow rule,
 /// the call proceeds (or fails for a non-policy reason).
 #[test]
 async fn c016_03_matching_allow_rule_permits_call() {
@@ -134,7 +134,7 @@ async fn c016_03_matching_allow_rule_permits_call() {
 
 // ── C016-04: Policy enabled, agent_role present but tool denied ──────────────
 
-/// C016-04: When policy is enabled and the agent_role is in the deny list for
+/// C016-04: When policy is enabled and the `agent_role` is in the deny list for
 /// the requested tool, the call returns 14001 `PolicyDenied`.
 #[test]
 async fn c016_04_deny_list_blocks_tool_via_dispatch() {

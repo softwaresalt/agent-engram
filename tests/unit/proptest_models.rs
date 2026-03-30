@@ -17,6 +17,7 @@ fn arb_workspace_config() -> impl Strategy<Value = WorkspaceConfig> {
         code_graph: CodeGraphConfig::default(),
         metrics: MetricsConfig::default(),
         policy: engram::models::policy::PolicyConfig::default(),
+        evaluation: engram::models::evaluation::EvaluationConfig::default(),
         query_timeout_ms: 5_000,
         query_row_limit: 1_000,
     })

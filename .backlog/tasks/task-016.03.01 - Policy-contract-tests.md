@@ -1,7 +1,8 @@
 ---
 id: TASK-016.03.01
 title: Policy contract tests
-status: To Do
+status: Done
+implementation_note: Implemented in commit cc24aeb
 assignee: []
 created_date: '2026-03-30 01:54'
 updated_date: '2026-03-30 01:59'

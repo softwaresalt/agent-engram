@@ -1,7 +1,7 @@
 ---
 id: TASK-016.02
 title: Policy Evaluation Service and Dispatch Integration
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:51'
 labels:

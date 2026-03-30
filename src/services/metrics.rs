@@ -296,6 +296,17 @@ pub async fn shutdown() -> Result<(), EngramError> {
 /// `MetricsSummary`. Silently discards the final line if it fails to parse
 /// (concurrent-append tolerance).
 pub fn compute_summary(workspace_path: &Path, branch: &str) -> Result<MetricsSummary, EngramError> {
+    let events = load_events(workspace_path, branch)?;
+    Ok(MetricsSummary::from_events(&events))
+}
+
+/// Load raw usage events for a branch from the `.engram/` data directory.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::NotFound`] when no events file exists for the branch.
+/// Returns [`MetricsError::ParseError`] when event lines cannot be parsed.
+pub fn load_events(workspace_path: &Path, branch: &str) -> Result<Vec<UsageEvent>, EngramError> {
     let usage_path = usage_path(workspace_path, branch);
     let file = std::fs::File::open(&usage_path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -340,7 +351,7 @@ pub fn compute_summary(workspace_path: &Path, branch: &str) -> Result<MetricsSum
         }
     }
 
-    Ok(MetricsSummary::from_events(&events))
+    Ok(events)
 }
 
 /// Compute and atomically write `summary.json` for a branch.
