@@ -3,7 +3,7 @@
 //! Ranges: 1xxx workspace, 2xxx hydration, 4xxx query,
 //! 5xxx system, 6xxx config, 7xxx code graph, 8xxx IPC/daemon,
 //! 9xxx installer, 10xxx registry, 11xxx ingestion, 12xxx git graph,
-//! 13xxx metrics.
+//! 13xxx metrics, 14xxx policy.
 
 /// Workspace error codes
 pub const WORKSPACE_NOT_FOUND: u16 = 1001;
@@ -83,3 +83,7 @@ pub const GIT_ACCESS_ERROR: u16 = 12_002;
 pub const METRICS_WRITE_FAILED: u16 = 13_001;
 pub const METRICS_NOT_FOUND: u16 = 13_002;
 pub const METRICS_PARSE_ERROR: u16 = 13_003;
+
+/// Policy engine error codes (14xxx)
+pub const POLICY_DENIED: u16 = 14_001;
+pub const POLICY_CONFIG_INVALID: u16 = 14_002;

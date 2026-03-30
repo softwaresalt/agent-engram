@@ -180,6 +180,8 @@ pub async fn dispatch(
                     results_returned,
                     branch: snapshot.branch,
                     connection_id: None,
+                    agent_role: None,
+                    outcome: "success".to_string(),
                 });
             }
         }

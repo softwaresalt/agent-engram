@@ -377,3 +377,11 @@ path = "tests/integration/metrics_persistence_test.rs"
 [[test]]
 name = "contract_metrics_tools"
 path = "tests/contract/metrics_tools_test.rs"
+
+[[test]]
+name = "integration_policy"
+path = "tests/integration/policy_test.rs"
+
+[[test]]
+name = "integration_evaluation"
+path = "tests/integration/evaluation_test.rs"

@@ -110,5 +110,7 @@ fn test_event(tool: &str, response_bytes: u64) -> UsageEvent {
         results_returned: 1,
         branch: "main".to_string(),
         connection_id: None,
+        agent_role: None,
+        outcome: "success".to_string(),
     }
 }

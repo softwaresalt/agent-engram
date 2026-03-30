@@ -49,6 +49,8 @@ fn arb_usage_event() -> impl Strategy<Value = UsageEvent> {
                 results_returned,
                 branch,
                 connection_id,
+                agent_role: None,
+                outcome: "success".to_string(),
             },
         )
 }

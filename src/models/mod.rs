@@ -13,10 +13,12 @@ pub mod code_file;
 pub mod commit;
 pub mod config;
 pub mod content;
+pub mod evaluation;
 pub mod file_hash;
 pub mod function;
 pub mod interface;
 pub mod metrics;
+pub mod policy;
 pub mod registry;
 pub mod watcher;
 

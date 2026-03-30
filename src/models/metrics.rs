@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+fn default_outcome() -> String {
+    "success".to_string()
+}
+
 /// Message types for the metrics background writer channel.
 #[derive(Debug)]
 pub enum MetricsMessage {
@@ -38,6 +42,12 @@ pub struct UsageEvent {
     /// SSE connection UUID, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
+    /// Agent role identity from `_meta.agent_role`, if provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<String>,
+    /// Outcome of the tool call (e.g., `"success"`, `"error"`).
+    #[serde(default = "default_outcome")]
+    pub outcome: String,
 }
 
 /// Aggregated metrics for a branch.

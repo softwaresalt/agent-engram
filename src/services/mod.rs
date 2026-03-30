@@ -10,6 +10,7 @@ pub mod config;
 pub mod connection;
 pub mod dehydration;
 pub mod embedding;
+pub mod evaluation;
 pub mod file_tracker;
 pub mod gate;
 #[cfg(feature = "git-graph")]
@@ -19,6 +20,7 @@ pub mod ingestion;
 pub mod metrics;
 pub mod output;
 pub mod parsing;
+pub mod policy;
 pub mod query_stats;
 pub mod registry;
 pub mod search;
