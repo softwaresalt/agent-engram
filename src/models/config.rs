@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::evaluation::EvaluationConfig;
 use crate::models::metrics::MetricsConfig;
+use crate::models::policy::PolicyConfig;
 
 /// Top-level workspace configuration read from `.engram/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +22,12 @@ pub struct WorkspaceConfig {
     /// Metrics collection and persistence settings.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Per-agent tool access policy.
+    #[serde(default)]
+    pub policy: PolicyConfig,
+    /// Agent efficiency evaluation configuration.
+    #[serde(default)]
+    pub evaluation: EvaluationConfig,
     /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).
     ///
     /// Queries that exceed this limit are cancelled with a `QUERY_TIMEOUT` error.
@@ -39,6 +47,8 @@ impl Default for WorkspaceConfig {
             batch: BatchConfig::default(),
             code_graph: CodeGraphConfig::default(),
             metrics: MetricsConfig::default(),
+            policy: PolicyConfig::default(),
+            evaluation: EvaluationConfig::default(),
             query_timeout_ms: default_query_timeout_ms(),
             query_row_limit: default_query_row_limit(),
         }

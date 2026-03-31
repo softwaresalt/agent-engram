@@ -19,6 +19,8 @@ fn t010_01_usage_event_serde_round_trip() {
         results_returned: 5,
         branch: "main".to_string(),
         connection_id: Some("uuid-1234".to_string()),
+        agent_role: None,
+        outcome: "success".to_string(),
     };
 
     // WHEN serialized to JSON and deserialized back
@@ -43,6 +45,8 @@ fn t010_01_usage_event_none_connection_id_omitted() {
         results_returned: 10,
         branch: "main".to_string(),
         connection_id: None,
+        agent_role: None,
+        outcome: "success".to_string(),
     };
 
     // WHEN serialized to JSON
@@ -162,5 +166,7 @@ fn usage_event(tool: &str, response_bytes: u64, timestamp: &str) -> UsageEvent {
         results_returned: 1,
         branch: "main".to_string(),
         connection_id: None,
+        agent_role: None,
+        outcome: "success".to_string(),
     }
 }

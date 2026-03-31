@@ -16,6 +16,8 @@ fn arb_workspace_config() -> impl Strategy<Value = WorkspaceConfig> {
         batch: BatchConfig { max_size: batch },
         code_graph: CodeGraphConfig::default(),
         metrics: MetricsConfig::default(),
+        policy: engram::models::policy::PolicyConfig::default(),
+        evaluation: engram::models::evaluation::EvaluationConfig::default(),
         query_timeout_ms: 5_000,
         query_row_limit: 1_000,
     })
@@ -49,6 +51,8 @@ fn arb_usage_event() -> impl Strategy<Value = UsageEvent> {
                 results_returned,
                 branch,
                 connection_id,
+                agent_role: None,
+                outcome: "success".to_string(),
             },
         )
 }

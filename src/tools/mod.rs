@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::errors::{EngramError, SystemError};
 use crate::models::metrics::UsageEvent;
 use crate::server::state::SharedState;
-use crate::services::metrics;
+use crate::services::{metrics, policy};
 
 pub mod lifecycle;
 pub mod read;
@@ -107,6 +107,28 @@ pub async fn dispatch(
 ) -> Result<Value, EngramError> {
     let start = std::time::Instant::now();
 
+    // Extract agent identity from JSON-RPC _meta before dispatch.
+    let agent_role = policy::extract_agent_role(&params);
+
+    // Enforce sandbox policy when a workspace is bound.
+    //
+    // Design constraints (v1):
+    // - Policy is workspace-scoped. The config snapshot is read here and the
+    //   lock is released before the tool runs. A concurrent `set_workspace_config`
+    //   call can change policy between this check and tool execution (TOCTOU).
+    //   Strict per-call enforcement requires an atomic workspace+config snapshot;
+    //   tracked in TASK-018.
+    // - Before a workspace is bound (`policy_config()` returns `None`), the
+    //   policy engine is bypassed. In particular, the initial `set_workspace`
+    //   call is always ungated. A daemon-level policy (independent of workspace
+    //   config) would be needed to gate workspace binding itself.
+    // - Policy-denied calls return early before the metrics recording block;
+    //   they are not included in `get_evaluation_report` data.
+    if let Some(policy_config) = state.policy_config().await {
+        policy::evaluate(&policy_config, agent_role.as_deref(), method)
+            .map_err(EngramError::from)?;
+    }
+
     let result = match method {
         "set_workspace" => {
             let parsed: WorkspaceParams =
@@ -150,6 +172,7 @@ pub async fn dispatch(
         "get_health_report" => read::get_health_report(state.clone(), params).await,
         "get_branch_metrics" => read::get_branch_metrics(state.clone(), params).await,
         "get_token_savings_report" => read::get_token_savings_report(state.clone(), params).await,
+        "get_evaluation_report" => read::get_evaluation_report(state.clone(), params).await,
         "query_graph" => read::query_graph(state.clone(), params).await,
         #[cfg(feature = "git-graph")]
         "query_changes" => read::query_changes(state.clone(), params).await,
@@ -167,21 +190,29 @@ pub async fn dispatch(
     }
 
     if should_record_metrics(method) {
-        if let Ok(value) = &result {
-            if let Some(snapshot) = state.snapshot_workspace().await {
-                let response_bytes = u64::try_from(value.to_string().len()).unwrap_or(u64::MAX);
-                let (symbols_returned, results_returned) = extract_counts(method, value);
-                metrics::record(UsageEvent {
-                    tool_name: method.to_owned(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    response_bytes,
-                    estimated_tokens: response_bytes / 4,
-                    symbols_returned,
-                    results_returned,
-                    branch: snapshot.branch,
-                    connection_id: None,
-                });
-            }
+        if let Some(snapshot) = state.snapshot_workspace().await {
+            // Compute response stats from the result (zero defaults for errors).
+            let (response_bytes, symbols_returned, results_returned) = match &result {
+                Ok(value) => {
+                    let rb = u64::try_from(value.to_string().len()).unwrap_or(u64::MAX);
+                    let (sym, res) = extract_counts(method, value);
+                    (rb, sym, res)
+                }
+                Err(_) => (0_u64, 0_u32, 0_u32),
+            };
+            let outcome = if result.is_ok() { "success" } else { "error" };
+            metrics::record(UsageEvent {
+                tool_name: method.to_owned(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                response_bytes,
+                estimated_tokens: response_bytes / 4,
+                symbols_returned,
+                results_returned,
+                branch: snapshot.branch,
+                connection_id: None,
+                agent_role: agent_role.clone(),
+                outcome: outcome.to_string(),
+            });
         }
     }
 

@@ -212,6 +212,20 @@ pub enum MetricsError {
     ParseError { reason: String },
 }
 
+/// Errors for the MCP sandbox policy engine (14xxx).
+#[derive(Debug, Error)]
+pub enum PolicyError {
+    /// Agent role is denied from calling the requested tool.
+    #[error("agent '{agent_role}' is denied access to tool '{tool_name}'")]
+    Denied {
+        agent_role: String,
+        tool_name: String,
+    },
+    /// Policy configuration is invalid (logged as warning, fallback to disabled).
+    #[error("invalid policy configuration: {reason}")]
+    ConfigInvalid { reason: String },
+}
+
 #[derive(Debug, Error)]
 pub enum EngramError {
     #[error(transparent)]
@@ -246,6 +260,8 @@ pub enum EngramError {
     GitGraph(#[from] GitGraphError),
     #[error(transparent)]
     Metrics(#[from] MetricsError),
+    #[error(transparent)]
+    Policy(#[from] PolicyError),
 }
 
 #[derive(Debug, Serialize)]
@@ -609,6 +625,23 @@ impl EngramError {
                 MetricsError::ParseError { reason } => (
                     METRICS_PARSE_ERROR,
                     "MetricsParseError",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+            },
+            EngramError::Policy(inner) => match inner {
+                PolicyError::Denied {
+                    agent_role,
+                    tool_name,
+                } => (
+                    POLICY_DENIED,
+                    "PolicyDenied",
+                    inner.to_string(),
+                    Some(json!({ "agent_role": agent_role, "tool_name": tool_name })),
+                ),
+                PolicyError::ConfigInvalid { reason } => (
+                    POLICY_CONFIG_INVALID,
+                    "PolicyConfigInvalid",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
                 ),
