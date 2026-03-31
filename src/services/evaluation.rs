@@ -3,7 +3,7 @@
 //! Provides [`evaluate`] to compute an [`EvaluationReport`] from usage
 //! events, including per-agent efficiency scoring and anomaly detection.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::models::evaluation::{AgentEfficiency, AnomalyFlag, EvaluationConfig, EvaluationReport};
 use crate::models::metrics::UsageEvent;
@@ -61,7 +61,8 @@ pub fn evaluate(events: &[UsageEvent], config: &EvaluationConfig) -> EvaluationR
         let tokens_per_result = if total_results > 0 {
             total_tokens as f64 / total_results as f64
         } else {
-            total_tokens as f64
+            // Zero results means zero efficiency, not raw token spend.
+            0.0
         };
 
         let error_count = role_events
@@ -195,7 +196,7 @@ pub fn evaluate(events: &[UsageEvent], config: &EvaluationConfig) -> EvaluationR
 /// Detect tool hammering: >20 calls to the same tool within any 60-second window.
 fn detect_tool_hammering(role: &str, events: &[&UsageEvent]) -> Option<AnomalyFlag> {
     // Group timestamps by tool.
-    let mut by_tool: HashMap<&str, Vec<i64>> = HashMap::new();
+    let mut by_tool: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
     for event in events {
         if let Ok(dt) = event.timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
             by_tool

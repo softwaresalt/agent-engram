@@ -37,7 +37,8 @@ pub struct PolicyRule {
 /// Workspace-level policy configuration loaded from `.engram/engram.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PolicyConfig {
-    /// When false, policy enforcement is disabled (allow-all).
+    /// When `false`, all tool calls are allowed regardless of rules (backward-compatible default).
+    /// Set to `true` to enforce role-based allow/deny rules from `.engram/engram.toml`.
     #[serde(default)]
     pub enabled: bool,
     /// Default behavior when no rule matches the agent role.
