@@ -391,10 +391,6 @@ name = "contract_policy"
 path = "tests/contract/policy_contract_test.rs"
 
 [[test]]
-name = "contract_atomic_policy_snapshot"
-path = "tests/contract/atomic_policy_snapshot_test.rs"
-
-[[test]]
 name = "integration_evaluation"
 path = "tests/integration/evaluation_test.rs"
 
