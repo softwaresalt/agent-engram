@@ -190,7 +190,11 @@ fn t010_05_tool_count_matches_catalog() {
     let tools = engram::shim::tools_catalog::all_tools();
 
     // THEN the tool count matches the declared constant
-    // (After adding get_branch_metrics and get_token_savings_report,
-    //  TOOL_COUNT should be 16)
-    assert_eq!(tools.len(), 16, "Expected 16 tools after metrics additions");
+    // (After adding get_branch_metrics, get_token_savings_report, and
+    //  get_evaluation_report in TASK-017, TOOL_COUNT should be 17)
+    assert_eq!(
+        tools.len(),
+        17,
+        "Expected 17 tools after metrics and evaluation additions"
+    );
 }
