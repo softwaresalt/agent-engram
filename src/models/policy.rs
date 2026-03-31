@@ -6,13 +6,18 @@
 use serde::{Deserialize, Serialize};
 
 /// Behavior when no policy rule matches the requesting agent's role.
+///
+/// The default is [`Deny`][UnmatchedPolicy::Deny], which is the safe choice
+/// when `enabled = true`.  Because [`PolicyConfig::enabled`] defaults to
+/// `false`, operators who have not opted in to policy enforcement are
+/// unaffected by this default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnmatchedPolicy {
-    /// Allow tool calls from unrecognized agent roles (default).
-    #[default]
+    /// Allow tool calls from unrecognized agent roles.
     Allow,
-    /// Deny tool calls from unrecognized agent roles.
+    /// Deny tool calls from unrecognized agent roles (default).
+    #[default]
     Deny,
 }
 

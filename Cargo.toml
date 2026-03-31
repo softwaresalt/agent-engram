@@ -383,8 +383,16 @@ name = "integration_policy"
 path = "tests/integration/policy_test.rs"
 
 [[test]]
+name = "unit_workspace_config_policy"
+path = "tests/unit/workspace_config_policy_test.rs"
+
+[[test]]
 name = "contract_policy"
 path = "tests/contract/policy_contract_test.rs"
+
+[[test]]
+name = "contract_atomic_policy_snapshot"
+path = "tests/contract/atomic_policy_snapshot_test.rs"
 
 [[test]]
 name = "integration_evaluation"

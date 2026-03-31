@@ -46,7 +46,7 @@ fn t016_01_02_policy_config_serde_round_trip() {
 
 /// GIVEN a default [`PolicyConfig`]
 /// WHEN checked
-/// THEN `enabled` is false and `unmatched` is `Allow`.
+/// THEN `enabled` is false and `unmatched` is `Deny`.
 #[test]
 fn t016_01_02_policy_config_defaults() {
     let config = PolicyConfig::default();
@@ -54,8 +54,8 @@ fn t016_01_02_policy_config_defaults() {
     assert!(!config.enabled, "default policy should be disabled");
     assert_eq!(
         config.unmatched,
-        UnmatchedPolicy::Allow,
-        "default unmatched policy should be Allow"
+        UnmatchedPolicy::Deny,
+        "default unmatched policy should be Deny"
     );
     assert!(config.rules.is_empty(), "default rules should be empty");
 }

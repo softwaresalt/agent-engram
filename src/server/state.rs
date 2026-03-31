@@ -39,6 +39,21 @@ pub struct WorkspaceSnapshot {
     pub file_mtimes: HashMap<String, FileFingerprint>,
 }
 
+/// Atomic snapshot of workspace + config for dispatch-time policy evaluation (TASK-018).
+///
+/// Captures both the workspace state and the policy config under a single
+/// logical lock acquisition to eliminate the TOCTOU window between the
+/// policy check and tool execution.  Once created, the snapshot is immune
+/// to concurrent [`AppState::set_workspace_config`] calls.
+#[derive(Clone, Debug)]
+pub struct DispatchSnapshot {
+    /// The workspace state at snapshot time.
+    pub workspace: WorkspaceSnapshot,
+    /// The workspace config at snapshot time (defaults to
+    /// [`WorkspaceConfig::default()`] when no config was loaded).
+    pub config: WorkspaceConfig,
+}
+
 /// Sliding-window rate limiter for SSE connections (FR-025/T118).
 ///
 /// Tracks connection timestamps and rejects new connections when the
@@ -151,6 +166,27 @@ impl AppState {
 
     pub async fn snapshot_workspace(&self) -> Option<WorkspaceSnapshot> {
         self.active_workspace.read().await.clone()
+    }
+
+    /// Atomically snapshot workspace and config for dispatch-time use (TASK-018).
+    ///
+    /// Returns `None` if no workspace is bound.  Otherwise returns a frozen
+    /// clone of both the workspace state and the config that is immune to
+    /// concurrent [`Self::set_workspace_config`] calls, closing the TOCTOU
+    /// window in the policy gate.
+    ///
+    /// When the workspace is bound but no config has been loaded, the
+    /// snapshot contains [`WorkspaceConfig::default()`] (policy disabled).
+    // TASK-018 stub — `async` is intentional for the future `.await` implementation.
+    #[allow(clippy::unused_async)]
+    pub async fn snapshot_dispatch_context(&self) -> Option<DispatchSnapshot> {
+        unimplemented!(
+            "Worker: Read both `self.active_workspace` and `self.workspace_config` \
+             under a single lock scope (or sequential reads with a generation check) \
+             and return DispatchSnapshot {{ workspace, config }}. \
+             Return None if no workspace is bound. \
+             Use WorkspaceConfig::default() when workspace_config is None."
+        )
     }
 
     pub async fn set_workspace(&self, snapshot: WorkspaceSnapshot) -> Result<(), WorkspaceError> {

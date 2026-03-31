@@ -35,6 +35,7 @@ pub fn extract_agent_role(params: &Option<Value>) -> Option<String> {
 ///
 /// Returns [`PolicyError::Denied`] when the policy explicitly forbids the
 /// agent role from calling the specified tool.
+#[tracing::instrument(level = "debug", skip(config))]
 pub fn evaluate(
     config: &PolicyConfig,
     agent_role: Option<&str>,
@@ -48,16 +49,35 @@ pub fn evaluate(
 
     let Some(rule) = rule else {
         return match config.unmatched {
-            UnmatchedPolicy::Allow => Ok(()),
-            UnmatchedPolicy::Deny => Err(PolicyError::Denied {
-                agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
-                tool_name: tool_name.to_string(),
-            }),
+            UnmatchedPolicy::Allow => {
+                tracing::debug!(
+                    agent_role = ?agent_role,
+                    tool_name,
+                    "policy: unmatched role allowed by unmatched=allow"
+                );
+                Ok(())
+            }
+            UnmatchedPolicy::Deny => {
+                tracing::warn!(
+                    agent_role = ?agent_role,
+                    tool_name,
+                    "policy denied: no matching rule and unmatched=deny"
+                );
+                Err(PolicyError::Denied {
+                    agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
+                    tool_name: tool_name.to_string(),
+                })
+            }
         };
     };
 
     // Deny list takes precedence.
     if rule.deny.iter().any(|t| t == tool_name) {
+        tracing::warn!(
+            agent_role = ?agent_role,
+            tool_name,
+            "policy denied: tool is in agent deny list"
+        );
         return Err(PolicyError::Denied {
             agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
             tool_name: tool_name.to_string(),
@@ -66,11 +86,21 @@ pub fn evaluate(
 
     // Non-empty allow list acts as allowlist; not in list → denied.
     if !rule.allow.is_empty() && !rule.allow.iter().any(|t| t == tool_name) {
+        tracing::warn!(
+            agent_role = ?agent_role,
+            tool_name,
+            "policy denied: tool not in agent allow list"
+        );
         return Err(PolicyError::Denied {
             agent_role: agent_role.unwrap_or("<anonymous>").to_string(),
             tool_name: tool_name.to_string(),
         });
     }
 
+    tracing::debug!(
+        agent_role = ?agent_role,
+        tool_name,
+        "policy: matching rule permits tool call"
+    );
     Ok(())
 }
