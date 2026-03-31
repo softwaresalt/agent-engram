@@ -1,8 +1,8 @@
-//! Unit tests for WorkspaceConfig policy integration (TASK-016.01.01).
+//! Unit tests for `WorkspaceConfig` policy integration (TASK-016.01.01).
 //!
 //! Covers:
-//! - WorkspaceConfig deserializes with a `[policy]` section
-//! - WorkspaceConfig deserializes without a `[policy]` section (defaults to disabled)
+//! - `WorkspaceConfig` deserializes with a `[policy]` section
+//! - `WorkspaceConfig` deserializes without a `[policy]` section (defaults to disabled)
 //! - `AppState::policy_config()` returns `None` when no workspace config is loaded
 //! - `AppState::policy_config()` returns the cached `PolicyConfig` when workspace config is set
 //! - `parse_config` falls back gracefully when the `[policy]` section has invalid values
@@ -63,7 +63,10 @@ fn workspace_config_without_policy_defaults_to_disabled() {
     let config: WorkspaceConfig =
         toml::from_str("").unwrap_or_else(|e| panic!("toml parse failed: {e}"));
 
-    assert!(!config.policy.enabled, "policy should be disabled by default");
+    assert!(
+        !config.policy.enabled,
+        "policy should be disabled by default"
+    );
     assert_eq!(
         config.policy.unmatched,
         UnmatchedPolicy::Deny,
