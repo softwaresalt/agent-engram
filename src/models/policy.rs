@@ -34,11 +34,11 @@ pub struct PolicyRule {
     pub deny: Vec<String>,
 }
 
-/// Workspace-level policy configuration loaded from `.engram/engram.toml`.
+/// Workspace-level policy configuration loaded from `.engram/config.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PolicyConfig {
     /// When `false`, all tool calls are allowed regardless of rules (backward-compatible default).
-    /// Set to `true` to enforce role-based allow/deny rules from `.engram/engram.toml`.
+    /// Set to `true` to enforce role-based allow/deny rules from `.engram/config.toml`.
     #[serde(default)]
     pub enabled: bool,
     /// Default behavior when no rule matches the agent role.

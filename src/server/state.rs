@@ -226,9 +226,12 @@ impl AppState {
         self.workspace_config.read().await.clone()
     }
 
-    /// Get the active policy configuration, or `PolicyConfig::default()` if none loaded.
+    /// Get the policy configuration from the active workspace config.
     ///
-    /// Returns `None` when no workspace is bound (policy evaluation requires workspace context).
+    /// Returns `None` when no workspace config has been loaded (either no workspace is bound
+    /// or `set_workspace_config` has not yet been called). When `Some` is returned it contains
+    /// the `PolicyConfig` from the loaded `WorkspaceConfig`, which may have `enabled: false`
+    /// if no `[policy]` section was present in `.engram/config.toml`.
     pub async fn policy_config(&self) -> Option<crate::models::policy::PolicyConfig> {
         self.workspace_config
             .read()

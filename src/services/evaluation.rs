@@ -13,6 +13,9 @@ use crate::models::metrics::UsageEvent;
 /// Scores agents on token efficiency, error rate, tool diversity, and
 /// latency. Detects anomalies such as token ratio spikes, error bursts,
 /// and tool hammering. Generates template-based recommendations.
+///
+/// When `events` is empty, returns a report with `efficiency_score: 0` and no
+/// agents, anomalies, or recommendations — there is no data to score.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn evaluate(events: &[UsageEvent], config: &EvaluationConfig) -> EvaluationReport {
