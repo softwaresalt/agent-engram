@@ -1,8 +1,9 @@
 ---
 name: "Rust Reviewer"
 description: "Reviews code changes for Rust-specific safety, correctness, and best practices"
-maturity: stable
-tools: read, search
+tools:
+  - read
+  - search
 model_routing: "Tier 1 (Fast/Cheap)"
 subagent_depth: 0
 ---
@@ -50,7 +51,7 @@ Return a JSON array of findings:
 
 * No subagent spawning (leaf executor)
 * Read-only analysis — do not modify files
-* Reference the workspace's `rust.instructions.md` as the authoritative style guide
+* Reference the workspace's `.github/instructions/technology-rust.instructions.md` as the authoritative style guide
 
 ## Model Routing
 

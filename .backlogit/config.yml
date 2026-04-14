@@ -30,7 +30,7 @@ suffix_map:
   bug: "B"
   epic: "E"
   subtask: "ST"
-  shipment: "S"
+  shipment: "SH"
 
 # Status values
 statuses:

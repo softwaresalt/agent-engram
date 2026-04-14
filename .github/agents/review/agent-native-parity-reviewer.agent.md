@@ -1,8 +1,9 @@
 ---
 name: Agent-Native Parity Reviewer
 description: "Reviews agent-facing systems for parity between user workflows, agent workflows, context surfaces, and tool contracts"
-maturity: stable
-tools: read, search
+tools:
+  - read
+  - search
 model_routing: "Tier 1 (Fast/Cheap)"
 subagent_depth: 0
 ---

@@ -34,7 +34,7 @@ backlog:
     bug: "B"
     epic: "E"
     subtask: "ST"
-    shipment: "S"
+    shipment: "SH"
 
 # Long-lived knowledge artifact directories
 docs:
