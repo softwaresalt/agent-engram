@@ -1,16 +1,77 @@
 ---
 name: review
-description: "Structured code review using tiered persona agents, confidence-gated findings, and a merge/dedup pipeline. Use when reviewing code changes before creating a PR, as a build gate, or for standalone review."
+description: "Structured code review using tiered persona subagents, confidence-gated findings, and a merge/dedup pipeline. Use when reviewing code changes before creating a PR, as a build gate, or for standalone review."
 argument-hint: "[mode:autofix|mode:report-only] [branch name or file paths]"
 ---
 
 # Code Review
 
-Reviews code changes using dynamically selected reviewer personas. Spawns persona subagents that return structured JSON findings, then merges and deduplicates into a unified report.
+Reviews code changes using dynamically selected reviewer personas. Spawns persona subagents that return structured findings, then merges and deduplicates into a unified report.
 
-## Agent-Intercom Communication (NON-NEGOTIABLE)
+## Subagent Depth Constraint
 
-Call `ping` at session start. If agent-intercom is reachable, broadcast at every step. If unreachable, warn the user that operator visibility is degraded.
+This skill spawns reviewer subagents. Those subagents are leaf executors and MUST NOT spawn their own subagents. Maximum depth: review skill → persona subagent (1 hop).
+
+## Mode Detection
+
+Check arguments for `mode:autofix` or `mode:report-only`. Strip the mode token before interpreting remaining arguments.
+
+| Mode | When | Behavior |
+|---|---|---|
+| **Interactive** (default) | No mode token | Review, present findings, ask for decisions |
+| **Autofix** | `mode:autofix` | No user interaction. Apply `safe_auto` fixes only, write artifact, emit residual work |
+| **Report-only** | `mode:report-only` | Read-only. Report findings with no edits, no artifacts, no follow-up item creation |
+
+### Autofix mode rules
+
+- Skip all user questions
+- Apply only `safe_auto` findings
+- Leave `gated_auto`, `manual`, and `advisory` findings unresolved
+- Write a review artifact to `docs/closure/`
+- Create backlog follow-up items for unresolved actionable findings
+- Never commit, push, or create a PR
+
+### Report-only mode rules
+
+- Skip all user questions
+- Never edit files
+- Return structured findings to caller
+- Do not write a review artifact
+- Do not create backlog follow-up items
+- Safe for the ship agent to invoke during the build loop
+
+## Severity Scale
+
+| Level | Meaning | Build gate action |
+|---|---|---|
+| **P0** | Critical breakage, exploitable vulnerability, data corruption | Block commit |
+| **P1** | High-impact defect in normal usage, breaking contract | Block commit |
+| **P2** | Moderate issue (edge case, perf, maintainability) | Record as backlog follow-up item |
+| **P3** | Low-impact, minor improvement | User's discretion |
+
+## Action Routing
+
+| Class | Default owner | Meaning |
+|---|---|---|
+| `safe_auto` | Review skill (autofix mode) | Deterministic local fix |
+| `gated_auto` | agent-intercom approval | Fix exists but changes behavior/contracts |
+| `manual` | Backlog follow-up item | Actionable work requiring human judgment |
+| `advisory` | Informational | Learnings, rollout notes, residual risk |
+
+Routing rules:
+
+- Choose the more conservative route on disagreement between personas
+- Only `safe_auto` findings enter the autofix queue
+- `requires_verification: true` means a fix needs tests or re-review
+
+## Agent-Intercom Communication
+
+When the `agent-intercom` capability pack is installed, call `ping` at session start. If reachable, broadcast at every step. If unreachable, warn the operator that visibility is degraded.
+
+When the `strict-safety` capability pack is installed, also follow
+`.github/instructions/strict-safety.instructions.md`: for high-risk diffs, call
+out the `ProposedAction`, `ActionRisk`, approval, and rollback gaps that should
+be visible before merge or deployment.
 
 | Event | Level | Message prefix |
 |---|---|---|
@@ -21,98 +82,42 @@ Call `ping` at session start. If agent-intercom is reachable, broadcast at every
 | Persona returned | info | `[RETURN] {persona_name}: {finding_count} findings` |
 | Merge complete | info | `[REVIEW] Merged: {total} findings ({p0} P0, {p1} P1, {p2} P2, {p3} P3)` |
 | Autofix applied | info | `[REVIEW] Applied safe_auto fix: {finding_summary}` |
-| Review written | success | `[REVIEW] Review artifact: {file_path}` |
-| Waiting for input | warning | `[WAIT] Blocked on user decision` |
 | Review complete | success | `[REVIEW] Complete: {summary}` |
-
-## Subagent Depth Constraint
-
-This skill spawns reviewer subagents. Those subagents are leaf executors and MUST NOT spawn their own subagents. Maximum depth: review skill -> persona subagent (1 hop).
-
-## Mode Detection
-
-Check arguments for `mode:autofix` or `mode:report-only`. Strip the mode token before interpreting remaining arguments.
-
-| Mode | When | Behavior |
-|---|---|---|
-| **Interactive** (default) | No mode token | Review, present findings, ask for decisions |
-| **Autofix** | `mode:autofix` | No user interaction. Apply `safe_auto` fixes only, write artifact, emit residual work |
-| **Report-only** | `mode:report-only` | Read-only. Report findings, no edits, no artifacts beyond review doc |
-
-### Autofix mode rules
-
-- Skip all user questions
-- Apply only `safe_auto` findings
-- Leave `gated_auto`, `manual`, and `advisory` findings unresolved
-- Write a review artifact to `.backlog/reviews/`
-- Create backlog tasks for unresolved actionable findings
-- Never commit, push, or create a PR
-
-### Report-only mode rules
-
-- Skip all user questions
-- Never edit files
-- Return structured findings to caller
-- Safe for the build orchestrator to invoke during the build loop
-
-## Severity Scale
-
-| Level | Meaning | Build gate action |
-|---|---|---|
-| **P0** | Critical breakage, exploitable vulnerability, data corruption | Block commit |
-| **P1** | High-impact defect in normal usage, breaking contract | Block commit |
-| **P2** | Moderate issue (edge case, perf, maintainability) | Record as backlog task |
-| **P3** | Low-impact, minor improvement | User's discretion |
-
-## Action Routing
-
-| Class | Default owner | Meaning |
-|---|---|---|
-| `safe_auto` | Review skill (autofix mode) | Deterministic local fix |
-| `gated_auto` | agent-intercom approval | Fix exists but changes behavior/contracts |
-| `manual` | Backlog task | Actionable work requiring human judgment |
-| `advisory` | Informational | Learnings, rollout notes, residual risk |
-
-Routing rules:
-
-- Choose the more conservative route on disagreement between personas
-- Only `safe_auto` findings enter the autofix queue
-- `requires_verification: true` means a fix needs tests or re-review
 
 ## Reviewer Personas
 
 ### Always-On (every review)
 
-| Agent | Focus |
+| Persona Subagent | Focus |
 |---|---|
-| **Rust Safety Reviewer** | `forbid(unsafe_code)`, `unwrap`/`expect` denial, error handling, lifetimes |
-| **Constitution Reviewer** | 9 constitutional principles compliance |
-| **Learnings Researcher** | Search `.backlog/compound/` for related past issues |
+| **Constitution Reviewer** | Constitutional compliance |
+| **Rust Reviewer** | Language-specific safety and correctness |
+| **Learnings Researcher** | Search compound library for related past issues |
 
 ### Conditional (based on changed files)
 
-Use a different model from the caller when available to force genuine diversity
-of critique. Cross-model is preferred but not blocking; if unavailable, use the
-caller's model.
+Use a different model from the caller when available to force genuine diversity of critique. Cross-model is preferred but not blocking.
 
-| Agent | Select when diff touches | Suggested Model |
+| Persona Subagent | Select when diff touches | Suggested Model |
 |---|---|---|
-| **MCP Protocol Reviewer** | `src/tools/`, `src/server/`, MCP-related code | GPT-5.4 or Gemini |
-| **SurrealDB Reviewer** | `src/db/`, queries, schema files | GPT-5.4 or Gemini |
-| **Concurrency Reviewer** | `Arc`, `RwLock`, `tokio::spawn`, SSE handlers | GPT-5.4 or Gemini |
+| **Architecture Strategist** | Module boundaries, new abstractions, dependency changes | Different from caller |
+| **Concurrency Reviewer** | Concurrent/async patterns | Different from caller |
+| **Scope Boundary Auditor** | Changes spanning multiple domains or exceeding expected scope | Different from caller |
+| **Agent-Native Parity Reviewer** | MCP SDKs, tool handlers, agent-exposed actions, or user/agent parity-critical flows | Different from caller |
 
 ## Workflow
 
 ### Step 1: Determine Review Scope
 
 1. Identify changed files from git diff, explicit file list, or caller-provided scope
-2. For branch-based review: `git diff --stat origin/main..HEAD`
-3. Broadcast the diff analysis
+2. Categorize each file by type and domain
+3. Identify which instruction files apply (via `applyTo` patterns)
+4. Broadcast the diff analysis
 
 ### Step 2: Route Personas
 
-1. Always-on: spawn Rust Safety Reviewer, Constitution Reviewer, Learnings Researcher
-2. Conditional: analyze changed file paths and content patterns to select additional personas
+1. Always-on: spawn Constitution Reviewer, Rust Reviewer, Learnings Researcher
+2. Conditional: analyze changed file paths, content patterns, and workspace agent-native signals to select additional personas
 3. Broadcast the routing decision with persona count
 
 ### Step 3: Spawn Persona Subagents
@@ -121,8 +126,8 @@ Spawn all selected personas. Each receives:
 
 - The list of changed files with line ranges
 - The diff content relevant to their domain
-- Instructions to return structured JSON findings
-- Engram-first search directive
+- Instructions to return structured findings
+- Codebase search directive (use grep/glob for context)
 
 Broadcast each spawn.
 
@@ -140,56 +145,42 @@ As each persona returns:
 
 **Interactive mode:**
 
-1. Present findings by severity (P0 first)
-2. For each finding, present recommendation and ask for decision
+1. Present findings grouped by severity (P0 first)
+2. For each P0/P1, ask the user to accept, modify, or reject the recommendation
 3. Apply approved fixes
 
 **Autofix mode:**
 
 1. Apply all `safe_auto` findings automatically
-2. Create backlog tasks for `manual` findings
-3. Write review artifact
+2. Create backlog follow-up items for unresolved actionable findings
+3. Write review artifact to `docs/closure/`
 
 **Report-only mode:**
 
 1. Return structured findings to caller
-2. No edits, no side effects beyond the review artifact
+2. No side effects: no edits, no review artifact, no follow-up items
 
-### Step 6: Write Review Artifact
+When the diff changes runtime surfaces, include an explicit recommendation for whether follow-up runtime verification is required and which mode (`manual`, `api`, `browser`) is appropriate.
 
-Write to `.backlog/reviews/{YYYY-MM-DD}-{slug}-review.md`
+When the diff includes destructive potential, contract changes, migrations,
+security-sensitive edits, or other high-blast-radius work, include an explicit
+recommendation for whether strict-safety action classification or approval
+follow-up is required before merge or deployment.
 
-```markdown
----
-title: "Code Review: {scope_description}"
-date: YYYY-MM-DD
-mode: interactive|autofix|report-only
-gate: pass|fail
-reviewers: [{persona_list}]
----
+When the `adversarial-review` capability pack is installed and this review surfaces 3 or more
+P0/P1 findings, recommend escalation to the `adversarial-review` agent for multi-model consensus
+validation before blocking the build.
 
-# Code Review: {scope_description}
+## Quality Criteria
 
-## Summary
+* Every changed file is reviewed by at least the always-on personas
+* All P0 findings are addressed before the review is marked complete
+* P1 findings require explicit acknowledgment (fix or defer with rationale)
+* The review report accurately reflects all findings and their resolution status
 
-| Severity | Count | Action |
-|---|---|---|
-| P0 | {n} | {blocked/fixed/deferred} |
-| P1 | {n} | {blocked/fixed/deferred} |
-| P2 | {n} | {backlog tasks created} |
-| P3 | {n} | {advisory} |
 
-## Findings
+## Model Routing
 
-{Grouped by file, ordered by severity}
+This skill operates at **Tier 2 (Standard)** — review coordination and finding assembly.
 
-## Learnings Applied
-
-{Relevant solutions from .backlog/compound/ that informed this review}
-
-## Residual Work
-
-{Findings not resolved in this review session}
-```
-
-Broadcast the file path when written.
+Generated by autoharness | Template: review/SKILL.md.tmpl

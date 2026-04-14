@@ -1,194 +1,153 @@
 ---
-name: build-feature
-description: "Usage: Build feature {task-id} with harness {harness-cmd}. Implements a requested feature by continuously looping a fast worker agent against a strict, compiling, but failing test harness until success is achieved."
-version: 2.0
-maturity: stable
-input:
-  properties:
-    task-id:
-      type: string
-      description: "The unique Backlog.md task ID."
-    harness-cmd:
-      type: string
-      description: "The cargo test command defining the strict compiler harness boundary."
-  required:
-    - task-id
-    - harness-cmd
+description: "Execute a harness loop — iteratively run tests, capture failures, fix code, and repeat until the harness passes or the circuit breaker trips"
 ---
 
-# Build Feature Skill
+## Build Feature
 
-Implements a requested feature by continuously looping a fast worker agent against a strict, compiling, but failing test harness until success is achieved. The harness defines the contract; the compiler is the critic.
+Implement a requested feature by continuously looping against a strict, compiling, but failing test harness until all tests pass.
 
-## Subagent Execution Constraint (NON-NEGOTIABLE)
+## When to Use
 
-This skill is a leaf executor. It MUST NOT spawn additional subagents via runSubagent, Task, or any other agent-spawning mechanism. Perform all work using direct tool calls (read, edit, search, terminal, MCP tools) and return results to the parent agent (build orchestrator). If you encounter work that seems to require a subagent, report it as a finding and let the parent decide.
+Invoked by the ship agent when a task has the `harness-ready` label. Not invoked directly by users.
 
-## Agent-Intercom Communication (NON-NEGOTIABLE)
+## Inputs
 
-If agent-intercom is available (determined by the parent agent's intercom state), broadcast at every step. Broadcasting is not optional.
+* `task_id`: (Required) The backlog task ID to implement.
+* `harness_cmd`: (Required) The test command to run (e.g., `cargo test`).
 
-## Stall Detection
+## Output
 
-Every terminal command gets a watchdog timeout:
+* All harness tests passing
+* Code changes committed
+* Task marked complete in backlog
 
-| Operation | Timeout | Action |
-|---|---|---|
-| cargo test/check/clippy | 45 minutes | Kill process, broadcast stall error, check for lock files, clean up |
-| Non-cargo terminal commands | 5 minutes | Kill, broadcast, proceed with error handling |
+## Required Protocol
 
-If a command exceeds its timeout, broadcast `[STALL] {command} exceeded {timeout}`, kill the process, clean up any cargo lock files, and count toward the parent orchestrator's stall limit.
+When the `agent-intercom` capability pack is installed, follow
+`.github/instructions/agent-intercom.instructions.md` throughout the loop: establish heartbeat /
+ping visibility up front, broadcast meaningful attempt transitions, and route any destructive
+actions through the intercom approval path rather than improvising local-only approval.
 
-## Prerequisites
+When the `agent-engram` capability pack is installed, follow
+`.github/instructions/agent-engram.instructions.md` throughout the loop: prefer indexed symbol and
+impact lookup while diagnosing failures, verify the workspace is bound before trusting engram
+results, and refresh stale indexes before concluding the code graph is wrong.
 
-* The test harness defined by `${input:harness-cmd}` compiles (green compilation, red tests)
-* The structural stubs in `src/` exist with `unimplemented!()` markers
-* The project compiles before starting (`cargo check` passes)
-* All `[[test]]` entries for new test files are registered in `Cargo.toml`
+### The Harness Loop (5-Attempt Circuit Breaker)
 
-## Compile Time Warning
+**Before entering the loop**: Read coding standards once — constitution Principle I
+and `rust.instructions.md`. These apply to all fix attempts.
+Do not re-read the full standards on every iteration; only do a targeted re-read
+if working on a file in an unfamiliar module or if the error pattern changes.
 
-> ⚠️ **embeddings feature is enabled by default.** The `ort-sys` and `fastembed` crates compile native ONNX binaries. First-time `cargo test` on a changed source tree takes **20-40 minutes** in debug profile. Release builds (`cargo build --release`) take 5-10 minutes and cache separately.
->
-> **Mitigation strategy**: Always use `--test {specific_test}` for the feedback loop. Run `cargo test` (full suite) only once before the final commit.
+This loop is a skill-managed exception to the universal 3-retry circuit breaker
+(per `circuit-breaker.instructions.md`). The 5-attempt limit governs within this
+loop scope. However, if the **same error** recurs on attempts 3+, the universal
+circuit breaker applies: stop and escalate.
 
-## Shell Session Hygiene
+```text
+Attempt 1..5:
+  1. Run harness_cmd → capture stdout/stderr
+  2. If all tests pass → SUCCESS → exit loop
+  3. Parse failure output → identify failing tests and error messages
+  4. If error is substantially identical to previous attempt → check same-error recurrence limit
+  5. Fix the code to address the specific failure
+  6. Verify compilation: cargo check
+  7. If compilation fails → fix compilation errors first
+  8. Loop back to step 1
 
-Before starting any test run, verify no previous cargo or rustc processes are still running from prior iterations. On Windows: `Get-Process -Name cargo,rustc -ErrorAction SilentlyContinue`. Stale processes hold the cargo lock file and cause silent hangs. Stop them before proceeding.
-
-## Remote Operator Integration (agent-intercom)
-When the agent-intercom MCP server is reachable, status updates and file modifications route through it so the remote operator can follow progress via Slack.
-### Availability Detection
-At the start of execution, call `ping` with a brief status message. If the call succeeds, agent-intercom is active and you must follow all remote workflow rules below, then verify messaging with the first `broadcast` before reading files or running the harness. If it fails or times out, print a prominent CLI warning that agent-intercom is unavailable and Slack status updates will not be delivered for this task, then fall back to local-only operation. Silent fallback is forbidden.
-### Status Broadcasting
-Use `broadcast` (non-blocking) throughout execution to keep the operator informed.
-| When | Tool | Level | Message Pattern |
-|---|---|---|---|
-| Skill start | `broadcast` | `info` | `[BUILD] Starting task {task-id}: {harness-cmd}` |
-| Each iteration start | `broadcast` | `info` | `[LOOP] Attempt {N}/5 � running harness` |
-| File created | `broadcast` | `info` | `[FILE] created: {file_path}` � include full content in body |
-| File modified | `broadcast` | `info` | `[FILE] modified: {file_path}` � include unified diff in body |
-| Harness passes | `broadcast` | `success` | `[BUILD] Harness passed on attempt {N}` |
-| Harness fails | `broadcast` | `warning` | `[LOOP] Attempt {N} failed � {error_summary}` |
-| Circuit breaker hit | `broadcast` | `error` | `[BUILD] Circuit breaker � 5 attempts exhausted, task blocked` |
-| Workspace test pass | `broadcast` | `success` | `[BUILD] Workspace tests pass — task {task-id} complete` |
-| Instruction re-read | `broadcast` | `info` | `[REINFORCE] Coding standards refreshed for attempt {N}/5` |
-| Task complete | `broadcast` | `success` | `[BUILD] Task {task-id} complete — commit {short_hash} — {N} attempt(s)` |
-Post the first `broadcast` as a new top-level message and capture the returned `ts`. Use that `ts` as `thread_ts` for all subsequent messages. That first `broadcast` is an intercom verification gate and must happen before reading files, editing code, or running the harness. If it fails after a successful `ping`, print a prominent CLI warning, mark agent-intercom unavailable for the remainder of the task, and continue in local-only mode instead of assuming the operator received the update.
-### File Change Workflow
-File creation and modification proceed with direct writes. After each file write, call `broadcast` at `info` level with the change details.
-
-**Protected file awareness**: When modifying core harness configuration files (`.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, `.github/instructions/*.instructions.md`, `AGENTS.md`), `broadcast` at `info` level: `[PROTECTED] Modifying harness config: {file_path}`. This alerts the operator without blocking modification.
-
-For **destructive operations** (file deletion, directory removal), route through the approval workflow:
-1. `auto_check` � Check if workspace policy allows the operation.
-2. `check_clearance` � Submit proposal and block until operator responds.
-3. `check_diff` � Execute only after `status: "approved"`.
-## Execution Steps
-
-### Step 1: Context Isolation
-
-1. Read the test file targeted by the `${input:harness-cmd}`. Carefully read the embedded `// GIVEN`, `// WHEN`, `// THEN` BDD comments to fully internalize the human intent behind the test.
-2. Use `engram` MCP tools to understand the codebase context before reading raw files:
-   * Call `map_code` for each domain struct and function found in the test. This maps the exact source files in `src/` containing the `unimplemented!()` stubs that require attention, including their call graphs and relationships.
-   * Call `unified_search` with the feature's key concepts to find related code, context records, and prior decisions that inform the implementation.
-   * Call `list_symbols` filtered by file path if you need to discover available symbols in specific modules.
-   * Fall back to grep/glob **only** when engram results are insufficient or you need exact text pattern matching.
-3. Read `.github/copilot-instructions.md` and `.github/agents/rust-engineer.agent.md` for project coding standards and Rust-specific conventions.
-4. `broadcast` at `info` level: `[BUILD] Starting task {task-id}: {harness-cmd}` with a summary of the test scenarios and stub files.
-
-### Step 2: Mechanical Feedback Loop (Actor-Critic)
-
-The harness loop inherently satisfies the **atomic milestone validation** requirement: every task exits with either a passing test (verifiable state) or a circuit breaker (blocked state). No task completes without a concrete verification artifact.
-
-Execute the following loop with a **hard limit of 5 attempts**:
-1. **Run** the targeted `${input:harness-cmd}`.
-2. **If it passes** (exit code 0): proceed to Step 3.
-3. **If it fails** (exit code != 0):
-   a. Capture the raw `stderr` output (compiler errors, type mismatches, or panic traces).
-   b. `broadcast` the failure summary at `warning` level.
-   c. **Instruction reinforcement**: Read `.github/agents/rust-engineer.agent.md` coding standards section to refresh project conventions before implementing the fix. `broadcast` at `info` level: `[REINFORCE] Coding standards refreshed for attempt {N}/5`.
-   d. Analyze the error output and implement the fix:
-      * **Compiler errors**: Fix type mismatches, missing imports, incorrect signatures in the `src/` stubs.
-      * **Panic traces** (`unimplemented!()` or assertion failures): Implement the underlying logic inside the `src/` stubs to make the harness pass. Replace the `unimplemented!()` macros with real logic.
-      * **Test assertion failures**: Fix the implementation logic (not the test itself, unless the test setup has a compilation error).
-   d. Apply all project coding standards:
-      * All fallible operations return `Result<T, AppError>` � never `unwrap()` or `expect()`.
-      * Default visibility `pub(crate)` unless wider access is needed.
-      * `///` doc comments on public items, `//!` on modules.
-      * Run `cargo check` after each fix to verify compilation before re-running the harness.
-   e. After each file write, `broadcast` the change at `info` level with the unified diff.
-   f. **Do not modify the test file itself** unless fixing a compilation error in the test setup.
-   g. Return to step 1 of this loop.
-
-4. **Circuit breaker**: If 5 attempts are exhausted without the harness passing:
-   * `broadcast` at `error` level: `[BUILD] Circuit breaker � 5 attempts exhausted, task blocked`.
-   * Call `backlog-task_edit` with `id: ${input:task-id}` and add a note in the task description indicating it is blocked pending human review.
-   * Halt execution. Do not retry automatically.
-### Step 3: Verification & State Update
-
-Once the isolated harness passes:
-1. **Workspace verification — tiered strategy**: Do NOT run `cargo test` (full suite) after every harness pass in the feedback loop. Use this order:
-   a. Run `cargo test --test {harness_test_name}` — confirms the harness still passes after any cleanup changes.
-   b. Run `cargo test --lib` — fast check for library unit test regressions.
-   c. Run `cargo test` (full suite) exactly once before committing. If ort/fastembed have not been compiled for the current source state, this takes 20-40 minutes — broadcast a warning and wait.
-   * If new failures appear in the full suite, diagnose and fix them before committing.
-   * `broadcast` at `success` level: `[BUILD] Workspace tests pass — task {task-id} complete`.
-2. **Lint verification**: Run `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`. Fix any violations.
-3. **Commit**: Stage and commit validated changes:
-   * `git add -A`
-   * `git commit -m "feat: implement passing harness for ${input:task-id}"`
-   * `broadcast` at `success` level: `[BUILD] Task {task-id} complete — commit {short_hash} — {N} attempt(s)`. The attempt count is used by the build-orchestrator to decide whether to invoke compound knowledge capture.
-4. **State update**: Mark the task complete in the backlog board:
-   * Call `backlog-task_complete` with `id: ${input:task-id}`
-
-## Troubleshooting
-
-### Build fails on fastembed/ort-sys
-
-The `fastembed` crate is enabled **by default** (`default = ["embeddings"]` in `Cargo.toml`). Every `cargo test` run after a source change recompiles ort-sys native binaries in debug profile — this takes 20-40 minutes on first compile and is normal. Do not assume a hang; check `Get-Process -Name rustc` to confirm compilation is active.
-
-If you need to run tests without ort compilation overhead, use `cargo test --no-default-features` to skip the embeddings feature, but note that embedding-gated tests will be excluded.
-
-### Feature guards: compile-time vs runtime
-
-Two patterns exist for embedding availability checks:
-
-* **Compile-time** (`#[cfg(feature = "embeddings")]`): Use in tool handlers and test files to gate code that should not compile without the feature. This is the correct pattern for blocking tool execution paths.
-* **Runtime** (`embedding::is_available()`): Returns `false` until the model has been lazily loaded on the **first call**. Do NOT use this as a guard in tool request handlers — it fires on every cold start, including when the feature is compiled in. It is only appropriate for status/health reporting.
-
-### Cargo.toml `[[test]]` registration missing
-
-Every new external test file in `tests/` requires a `[[test]]` block in `Cargo.toml`. Without it, `cargo test` silently ignores the file — no error, no output. Always verify:
-
-```toml
-[[test]]
-name = "{feature}_test"
-path = "tests/integration/{feature}_test.rs"
+After 5 failures → mark task as BLOCKED → exit
 ```
 
-### SurrealDB v2 SDK behavioral differences
+### Step-by-Step Detail
 
-Refer to the session memory at `.copilot-tracking/memory/` for documented workarounds including `Thing` deserialization, `<datetime>` casts, and raw SurrealQL over SDK methods.
+#### Step 1: Run the Harness
 
-Known test data requirements:
-* `embed_type` must be `"explicit_code"` (not `"code"`) — the DB schema validates this field
-* `embedding` must be `vec![0.0_f32; 384]` — SurrealDB enforces 384-dimensional vectors even for test fixtures that do not exercise vector search
+Execute `harness_cmd` and capture the full output. Record execution time.
 
-### Global state in integration tests
+**Stall timeouts**:
 
-`OnceLock`-backed singletons (e.g., `query_stats`) persist across parallel test threads. Use `tokio::sync::Mutex::const_new(())` as a test-level serialization lock when tests share global state. `std::sync::Mutex` cannot be held across `.await` points — clippy will deny this with `await_holding_lock`.
+* Build/test commands: 45 minutes
+* Other commands: 5 minutes
 
-### Tests pass locally but fail in CI
+If the command exceeds the timeout, terminate and count it as a failed attempt.
 
-Verify `rust-toolchain.toml` matches the CI configuration in `.github/workflows/ci.yml`. Check that all `[[test]]` entries in `Cargo.toml` include the new test files.
+#### Step 2: Evaluate Results
 
-### Circuit breaker triggered (5 failed attempts)
+If all tests pass, proceed to quality gates.
 
-When the 5-attempt hard limit is reached, the task is marked as blocked in the backlog board. Review the `stderr` output from each attempt to identify the root cause. Common issues include missing trait implementations, incorrect type signatures in stubs, or test assumptions that conflict with the codebase architecture.
+#### Step 3: Parse Failures
 
----
+Extract from the test output:
 
-Proceed by reading the harness test file and isolating context for the given task.
+* Which tests failed
+* The assertion or error message
+* The file and line where the failure occurred
+* The expected vs. actual values (if applicable)
 
+When the `agent-engram` capability pack is installed, use engram-first lookup to inspect symbols,
+callers, and affected regions before expanding into broader file-based searches.
 
+#### Step 4: Re-read Standards
+
+Before writing any fix, re-read the relevant coding standards:
+
+* Constitution Principle I (safety-first language practices)
+* Technology-specific instructions (`rust.instructions.md`)
+* Any instruction files matching the files being modified
+
+#### Step 5: Fix the Code
+
+Apply targeted fixes to address the specific test failure. Do NOT:
+
+* Modify the test to make it pass (tests are the specification)
+* Add unrelated changes
+* Refactor code not related to the failure
+* Skip error handling to shortcut a fix
+
+If the root cause is still unclear after repeated attempts, or the task touches a risky subsystem, invoke **safety-modes** in `investigate-first` or `freeze-scope` mode before continuing.
+
+#### Step 6: Verify Compilation
+
+Run `cargo check` to confirm the fix compiles. If compilation fails, fix compilation errors before returning to the harness loop.
+
+### Post-Loop Quality Gates
+
+After the harness passes:
+
+1. **Lint**: `cargo clippy -- -D warnings -D clippy::pedantic`
+2. **Format**: `cargo fmt --all -- --check`
+   * If violations found: `cargo fmt --all` and re-check
+3. **Full test suite**: `cargo test`
+
+### Commit
+
+If all quality gates pass:
+
+1. Stage all changes
+2. Create a conventional commit message referencing the task ID
+3. Report success to the caller
+
+## Behavioral Constraints
+
+* No subagent spawning (leaf executor)
+* Never modify test files (tests are the specification)
+* Maximum 5 attempts before circuit breaker trips (skill-managed exception; see `circuit-breaker.instructions.md`)
+* Same-error recurrence at attempt 3+ triggers the universal circuit breaker
+* Read coding standards once at task start; targeted re-read for unfamiliar modules
+* One file change per tool call; broadcast after each write
+* When the `agent-intercom` capability pack is installed, use intercom broadcasts for attempt milestones and file-write visibility
+
+## Quality Criteria
+
+* All harness tests pass
+* No lint violations
+* No format violations
+* Full test suite passes
+* Changes are scoped to the task requirements
+
+## Model Routing
+
+This skill operates at **Tier 2 (Standard)** — routine build loop execution and quality verification.
+
+Generated by autoharness | Template: build-feature/SKILL.md.tmpl
