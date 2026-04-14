@@ -98,6 +98,10 @@ The build-feature skill handles task-level and gate-level broadcasting. The orch
 | Instruction re-read | `broadcast` | `info` | `[REINFORCE] Constitution check: Principles {list} apply to current action` |
 | Compaction triggered | `broadcast` | `info` | `[COMPACT] Tracking directory at {N} files / {size} — invoking compaction` |
 | Compaction skipped | `broadcast` | `info` | `[COMPACT] Tracking directory healthy ({N} files)` |
+| Policy gate passed | `broadcast` | `info` | `[POLICY] {policy_id} gate passed — {summary}` |
+| Policy violation | `broadcast` | `error` | `[POLICY] {policy_id} violated — {one-line summary}` |
+| Policy violation detail | `broadcast` | `info` | `[POLICY] {policy_id} context — {details and recommended remediation}` |
+| Policy override | `broadcast` | `warning` | `[POLICY] {policy_id} overridden by operator — {rationale}` |
 | Compound captured | `broadcast` | `success` | `[COMPOUND] Hard-won solution captured for task {task_id} ({N} attempts)` |
 | Compound skipped | `broadcast` | `info` | `[COMPOUND] Task {task_id} passed in {N} attempt(s) — below compound threshold` |
 | Task claimed | `broadcast` | `info` | `[🛠️ ORCHESTRATOR] Claimed task {task_id}: {title} ({mode} mode)` |
@@ -129,6 +133,14 @@ If a gate fails repeatedly after remediation attempts, call `transmit` with `pro
 3. **Context compaction check**: Count files in `.copilot-tracking/` (excluding `archive/`). If the count exceeds 40 OR total size exceeds 500 KB, invoke the `compact-context` skill to archive stale tracking artifacts before the build session begins. `broadcast` at `info` level: `[COMPACT] Tracking directory at {N} files / {size} — invoking compaction`. If the threshold is not met, `broadcast`: `[COMPACT] Tracking directory healthy ({N} files)`.
 4. Run `cargo check` to confirm the project compiles.
 5. **Feature branch check**: Run `git branch --show-current`. If the result is `main` or a protected branch, halt immediately. `broadcast` at `error` level and instruct the user to create or check out the appropriate feature branch before proceeding. Do not auto-switch branches in build-orchestrator — branch preparation belongs to harness-architect or the user before the build loop starts. All implementation work must happen on a feature branch.
+5a. **Single-feature policy gate (P-001)**: Read `.github/policies/workflow-policies.md` and apply policy P-001. Call `backlog-task_list` with `status: "In Progress"`. Examine each returned task ID. If any task's ID prefix does not match `TASK-${input:feature}` (i.e., it belongs to a different feature), halt:
+    ```
+    broadcast(error, "[POLICY] P-001 violated — feature {other_feature} has {count} task(s) In Progress.
+      Complete or explicitly park feature {other_feature} before starting feature ${input:feature}.
+      In Progress tasks: {task_id_list}")
+    ```
+    Do not proceed until the operator resolves the conflict. The operator may pass `skip_policy: "P-001"` to explicitly override; if present, `broadcast` at `warning` level: `[POLICY] P-001 overridden by operator — proceeding with feature ${input:feature}` and continue.
+    If no foreign In Progress tasks exist, `broadcast` at `info` level: `[POLICY] P-001 gate passed — no other features In Progress`.
 6. **Shell hygiene**: Before starting any test run, stop all tracked async shell sessions that may still be running from prior activity. Dangling shells holding cargo lock files or stale rustc processes will cause silent hangs.
 7. **Compile-time estimation**: Check `Cargo.toml` for `default = ["embeddings"]`. If present, warn the operator:
    > ⚠️ The `embeddings` feature is enabled by default. The first `cargo test` run compiles ort-sys/fastembed native binaries — expect **20-40 minutes** for the initial debug compile. Subsequent incremental builds are fast. Use targeted `--test {name}` commands during development to avoid repeated full recompiles.
@@ -140,7 +152,16 @@ If a gate fails repeatedly after remediation attempts, call `transmit` with `pro
 1. **Instruction reinforcement**: Read `.github/instructions/constitution.instructions.md` and identify which constitutional principles apply to the current session mode (`single` or `batch`). `broadcast` at `info` level: `[REINFORCE] Constitution check: Principles I, III, IV, VII apply to {mode} build session`. This ensures fresh constitutional awareness before any task claims.
 2. Load the feature epic by calling `backlog-task_view` with `id: "TASK-${input:feature}"`.
 3. Load all subtasks listed under the epic, retrieving each subtask with `backlog-task_view`.
-4. Build the ready queue from subtasks that are unblocked and have status `To Do`.
+4. Build the ready queue from subtasks that are unblocked and have status `To Do`. **Apply P-002 harness-ready filter**: additionally require that each task carries the `harness-ready` label. Tasks that are `To Do` but lack this label have not been processed by the harness-architect and must not be claimed. Separate the full `To Do` list into:
+   * `harness_ready_queue`: tasks with `To Do` status AND the `harness-ready` label — eligible for implementation.
+   * `pending_harness_queue`: tasks with `To Do` status but WITHOUT `harness-ready` — blocked on harness generation.
+   If `harness_ready_queue` is empty but `pending_harness_queue` is non-empty, broadcast at `warning` level:
+   ```
+   broadcast(warning, "[POLICY] P-002 — No harness-ready tasks in feature ${input:feature} queue.
+     {count} task(s) are To Do but have not been harnessed.
+     Run: harness-architect feature=${input:feature}")
+   ```
+   Halt and suggest running the harness-architect. Do not claim un-harnessed tasks.
 5. Filter by mode:
    * `single` mode: Keep only the first ready subtask in ordinal order.
    * `batch` mode: Keep all ready subtasks in the selected feature.
@@ -320,6 +341,7 @@ Summarize the build results:
 * Review findings summary
 * Compound artifacts written
 * Commit hash and branch status
+* Policy compliance: list any policy violations encountered, whether they halted execution or were overridden, and the override rationale
 * Whether agent-intercom was active or the run fell back to local-only mode
 
 **Batch mode**:
@@ -329,6 +351,7 @@ Summarize the build results:
 * Final test suite results and lint compliance status
 * Review findings summary
 * Compound artifacts written
+* **Policy compliance summary**: list all policy IDs checked during the session, gate outcomes (passed/violated/overridden), and any violations that were recorded. If any violations occurred, the PR description must include a `## Policy Compliance` section per P-005.
 * Whether agent-intercom was active or the run fell back to local-only mode
 * `broadcast` the final summary at `success` level: `[🛠️ ORCHESTRATOR] Build complete — {tasks_done} tasks, {commits} commits`.
 * Suggest next step: "Run pr-review to create a PR for feature ${input:feature}, then fix-ci to handle Copilot comments and CI failures."

@@ -40,6 +40,9 @@ Call `ping` at session start. If agent-intercom is reachable, broadcast at every
 | Phase 2 start | `broadcast` | `info` | `[HARVEST] Phase 2: Invoking plan-review skill` |
 | Phase 2 complete | `broadcast` | `success` | `[HARVEST] Review gate: {PASS\|FAIL\|ADVISORY}` |
 | Phase 2 fail | `broadcast` | `error` | `[HARVEST] Review FAILED — plan requires revision before harvesting` |
+| P-003 gate passed | `broadcast` | `info` | `[POLICY] P-003 gate: {passed_count}/5 checks passed — proceeding to harvest` |
+| P-003 violation | `broadcast` | `error` | `[POLICY] P-003 violated — decomposition chain broken at stage: {stage}. {reason}` |
+| P-003 task skipped | `broadcast` | `warning` | `[POLICY] P-003 — task candidate '{title}' has no acceptance criteria. Skipped.` |
 | Phase 3 start | `broadcast` | `info` | `[HARVEST] Phase 3: Decomposing plan into backlog tasks` |
 | Task created | `broadcast` | `info` | `[HARVEST] Created: {task_id} — {title}` |
 | Harvest complete | `broadcast` | `success` | `[HARVEST] Complete: {epic_count} epics, {task_count} tasks created` |
@@ -78,6 +81,29 @@ Decompose the reviewed plan into Backlog.md task hierarchy.
 1. `broadcast` at `info` level: `[HARVEST] Phase 3: Decomposing plan into backlog tasks`
 2. Read the plan file (from Phase 1, or from `${input:source}` if `skip_plan` was true).
 3. Determine the plan path to use as the source for harvesting.
+
+#### Step 3.0: Decomposition Chain Validation (P-003)
+
+Read `.github/policies/workflow-policies.md` and apply policy P-003 before creating any backlog entries.
+
+Run all five structural checks. Any failure halts the harvest:
+
+1. **Source document exists**: Verify the file at `${input:source}` is readable and non-empty. If not, halt: `broadcast(error, "[POLICY] P-003 violated — source document not found: ${input:source}")`
+
+2. **Plan references source**: If a plan was generated (Phase 1 was not skipped), verify the plan file contains the `${input:source}` path as a reference in its frontmatter or body. If the plan does not link back to the source, halt: `broadcast(error, "[POLICY] P-003 violated — plan file does not reference source document. Add a references entry linking to ${input:source}.")`
+
+3. **Sub-epics reference plan**: When building the sub-epic candidates in Step 3.2, verify each sub-epic description includes either the plan file path or the plan title. If a sub-epic has no traceable link to the plan, add one before creating the task.
+
+4. **Tasks reference sub-epic**: Every Level 3 task must carry a `parentTaskId` pointing to its sub-epic. Tasks created without a parent are a chain integrity violation. Do not create orphan tasks.
+
+5. **Acceptance criteria present**: Every Level 3 task must include at least one acceptance criterion. Tasks without acceptance criteria cannot be verified by the harness-architect and must not be created. If a task candidate lacks criteria, derive them from the plan's success criteria before creating the task. If derivation is not possible, log the task as a gap item and skip creation: `broadcast(warning, "[POLICY] P-003 — task candidate '{title}' has no acceptance criteria. Skipped. Add criteria to the plan and re-run.")`
+
+Report the validation summary before proceeding:
+```
+broadcast(info, "[POLICY] P-003 gate: {passed_count}/5 checks passed — proceeding to harvest")
+```
+
+If any of checks 1–4 fail, halt entirely. Check 5 failures are per-task warnings that skip the affected task without halting the full harvest.
 
 #### Step 3.1: Analyze Plan Structure
 
@@ -240,6 +266,7 @@ Include:
 * Preserve code examples and file references in task descriptions.
 * Create one task per `backlog-task_create` call.
 * Do not skip Phase 2 (plan-review) unless the user explicitly passes `skip_review: true`.
+* Do not bypass the P-003 decomposition chain validation in Step 3.0. Tasks with broken lineage (missing parent, missing acceptance criteria) create silent failures in the harness-architect and build-orchestrator. Report and skip rather than create.
 
 ---
 
