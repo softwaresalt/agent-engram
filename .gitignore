@@ -47,3 +47,7 @@ temp/
 # engram plugin (workspace-local state)
 .engram/
 
+# Agent file locks (autoharness file-lock skill)
+.*.lock
+**/.*.lock
+

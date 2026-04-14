@@ -1,153 +1,149 @@
 ---
 name: plan-review
-description: "Multi-model, multi-persona review gate for implementation plans. Validates architectural soundness, scope boundaries, constitutional compliance, and Rust safety before the backlog harvester decomposes a plan into tasks."
-argument-hint: "[path to plan file in .backlog/plans/]"
+description: "Multi-persona review gate for implementation plans. Validates architectural soundness, scope boundaries, and coding standards compliance before the harvest skill decomposes a plan into work items."
+argument-hint: "[path to plan file in docs/exec-plans/]"
 ---
 
 # Plan Review Gate
 
-Validates implementation plans through multi-persona review before the backlog harvester decomposes them into tasks. This gate prevents flawed plans from generating flawed task hierarchies.
-
-## Agent-Intercom Communication (NON-NEGOTIABLE)
-
-Call `ping` at session start. If agent-intercom is reachable, broadcast at every step. If unreachable, warn the user that operator visibility is degraded.
-
-| Event             | Level         | Message prefix                                                                         |
-| ----------------- | ------------- | -------------------------------------------------------------------------------------- |
-| Review start      | info          | `[PLAN-REVIEW] Starting review of: {plan_path}`                                        |
-| Persona spawned   | info          | `[SPAWN] {persona_name} for plan review`                                               |
-| Persona returned  | info          | `[RETURN] {persona_name}: {finding_count} findings`                                    |
-| Merge complete    | info          | `[PLAN-REVIEW] Merged: {total_findings} findings ({p0} P0, {p1} P1, {p2} P2, {p3} P3)` |
-| Gate decision     | success/error | `[PLAN-REVIEW] Gate: {PASS\|FAIL\|ADVISORY}`                                           |
-| Waiting for input | warning       | `[WAIT] Blocked on user decision for P2 findings`                                      |
-| Review written    | success       | `[PLAN-REVIEW] Review artifact: {file_path}`                                           |
+Validates implementation plans through multi-persona review before the harvest skill decomposes them into work items. This gate prevents flawed plans from generating flawed work hierarchies.
 
 ## Subagent Depth Constraint
 
-This skill spawns reviewer subagents. Those subagents are leaf executors and MUST NOT spawn their own subagents. Maximum depth: plan-review -> persona subagent (1 hop).
+This skill spawns reviewer subagents. Those subagents are leaf executors and MUST NOT spawn their own subagents. Maximum depth: plan-review skill → persona subagent (1 hop).
+
+## Severity Scale
+
+| Level | Meaning | Gate action |
+|---|---|---|
+| **P0** | Plan will produce unshippable or unsafe code (missing security, broken contracts, impossible scope) | Block harvest |
+| **P1** | Plan has a high-impact gap that will cause significant rework (missing requirements, wrong decomposition, absent verification) | Block harvest |
+| **P2** | Plan has a moderate gap (edge case coverage, missing test scenario, suboptimal decomposition) | Record as backlog follow-up |
+| **P3** | Plan has a minor improvement opportunity (wording, optional optimization) | Advisory |
+
+Use the same severity conventions as the code review skill adapted for plan
+artifacts rather than code diffs.
+
+## Agent-Intercom Communication
+
+When the `agent-intercom` capability pack is installed, call `ping` at session start. If reachable, broadcast at every step. If unreachable, warn the operator that visibility is degraded.
+
+| Event | Level | Message prefix |
+|---|---|---|
+| Review start | info | `[PLAN-REVIEW] Starting review of: {plan_path}` |
+| Persona spawned | info | `[SPAWN] {persona_name} for plan review` |
+| Persona returned | info | `[RETURN] {persona_name}: {finding_count} findings` |
+| Merge complete | info | `[PLAN-REVIEW] Merged: {total_findings} findings ({p0} P0, {p1} P1, {p2} P2, {p3} P3)` |
+| Gate decision | success/error | `[PLAN-REVIEW] Gate: {PASS\|FAIL\|ADVISORY}` |
+| Review appended | success | `[PLAN-REVIEW] Review appended to: {plan_path}` |
 
 ## Inputs
 
-The user provides the path to a plan file in `.backlog/plans/` when invoking this skill.
+* `plan_path`: (Required) Path to the plan file (`docs/exec-plans/{YYYY-MM-DD}-{slug}-plan.md`).
 
-If no path is provided, search `.backlog/plans/` for the most recent `*-plan.md` file and confirm with the user.
+If no path is provided, search `docs/exec-plans/` for the most recent `*-plan.md` file and confirm with the operator.
+
+## Output
+
+Review findings are **appended to the plan file** as a `## Plan Review` section,
+not written as a separate file. The plan-review skill produces a gate decision
+(`PASS`, `ADVISORY`, or `FAIL`) that is recorded in the appended section. When
+the compact-context skill later consolidates the plan, it merges the plan and
+appended reviews into a decided-plan.
 
 ## Reviewer Personas
 
-Spawn all 4 personas. Use different models when available to force genuine diversity of critique.
+Spawn all always-on personas and any triggered cross-model personas. Use different
+models when available to force genuine diversity of critique.
 
 ### Always-On Personas (same model as caller)
 
-| Persona Agent             | Focus                                                                                                                                  |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **Constitution Reviewer** | Map plan units against the 9 constitutional principles. Flag violations.                                                               |
-| **Rust Safety Reviewer**  | Evaluate proposed type signatures, error handling patterns, module boundaries. Will the plan produce code that passes clippy pedantic? |
+| Persona Subagent | Focus |
+|---|---|
+| **Constitution Reviewer** | Map plan units against constitutional principles. Flag violations. |
+| **Rust Reviewer** | Evaluate proposed type signatures, error handling patterns, package boundaries, and verification steps. |
+| **Scope Boundary Auditor** | Verify units stay within declared scope. Detect scope creep, YAGNI, unnecessary complexity. |
+| **Learnings Researcher** | Confirm the plan is not ignoring relevant prior solutions. |
 
 ### Cross-Model Personas (different model when available)
 
-| Persona Agent               | Focus                                                                                     | Suggested Model                            |
-| --------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------ |
-| **Architecture Strategist** | Cohesion, coupling, module boundaries, dependency chains. Are the dependencies realistic? | GPT-5.4 or Gemini                          |
-| **Scope Boundary Auditor**  | Scope creep, YAGNI, unnecessary complexity, verification criteria completeness.           | GPT-5.4 Medium |
+| Persona Subagent | Focus | Suggested Model |
+|---|---|---|
+| **Architecture Strategist** | Cohesion, coupling, module boundaries, dependency chains. | Different from caller |
+| **Agent-Native Parity Reviewer** | Plans that expose MCP tools, agent-facing actions, or user/agent parity-sensitive workflows. | Different from caller |
 
-If cross-model invocation is not available, run all 4 with the caller's model. Multi-model is preferred but not blocking.
+If cross-model invocation is not available, run all personas with the caller's model. Multi-model is preferred but not blocking.
 
 ## Workflow
 
-### Step 1: Load Plan and Context
+### Step 1: Load and Parse Plan
 
-1. Read the plan file from `.backlog/plans/`
-2. If the plan references an origin document in `.backlog/brainstorm/`, read that too
-3. Broadcast: `[PLAN-REVIEW] Starting review of: {plan_path}`
+1. Read the plan file from `docs/exec-plans/`.
+2. Extract implementation units, dependency graph, decisions, risks, hardening signals, and whether a `## Plan Hardening` section is present.
+3. When `strict-safety` is enabled and the plan contains a `## Plan Hardening` section, also extract any `ProposedAction` / `ActionRisk` entries.
+4. If the plan references an origin document, read that too for context.
+5. Broadcast: `[PLAN-REVIEW] Starting review of: {plan_path}`
 
 ### Step 2: Spawn Reviewer Subagents
 
-Spawn all 4 persona subagents. Each receives:
+Spawn all always-on personas plus the cross-model personas whose trigger
+conditions are met. Each receives:
 
 - The full plan content
 - The origin requirements doc (if any)
-- The project's constitutional principles (reference `.github/instructions/constitution.instructions.md`)
-- Instructions to return structured JSON findings
+- The project's coding standards and conventions (reference `.github/instructions/constitution.instructions.md`)
+- Instructions to return structured findings
 
-Broadcast each spawn: `[SPAWN] {persona_name} for plan review`
+Broadcast each spawn.
 
 ### Step 3: Collect and Merge Findings
 
 As each persona returns:
 
-1. Broadcast: `[RETURN] {persona_name}: {finding_count} findings`
+1. Broadcast the return with finding count
 2. Collect all findings into a unified list
 3. Deduplicate: merge findings that identify the same issue from different perspectives
 4. Assign final severity (use the more conservative severity when personas disagree)
-5. Assign action routing:
-   - Plan revision needed -> `manual`
-   - Advisory observation -> `advisory`
 
 ### Step 4: Gate Decision
 
-| Condition             | Decision     | Action                                                                         |
-| --------------------- | ------------ | ------------------------------------------------------------------------------ |
-| Any P0 or P1 findings | **FAIL**     | Present findings to user. Plan must be revised before proceeding to harvester. |
-| P2 findings only      | **ADVISORY** | Present findings to user. User decides: revise or proceed.                     |
-| P3 findings only      | **PASS**     | Log findings as advisory. Proceed to harvester.                                |
-| No findings           | **PASS**     | Plan is clean. Proceed to harvester.                                           |
+| Condition | Decision | Action |
+|---|---|---|
+| Plan shows hardening signals but lacks plan hardening or equivalent high-risk detail | **FAIL** | Return the plan to `plan-harden` or manual revision before `harvest`. |
+| Strict-safety enabled, hardening present, but risky actions lack `ProposedAction` / `ActionRisk` classification | **FAIL** | Plans with hardening signals must classify risky actions explicitly when strict-safety is active. |
+| Any P0 or P1 findings | **FAIL** | Present findings to user. Plan must be revised before proceeding to `harvest`. |
+| P2 findings only | **ADVISORY** | Present findings to user. User decides: revise or proceed. |
+| P3 findings only or none | **PASS** | Log findings as advisory. Proceed to `harvest`. |
 
 Broadcast the gate decision.
 
-### Step 5: Write Review Artifact
+### Step 5: Append Review to Plan
 
-Write to `.backlog/reviews/{YYYY-MM-DD}-{slug}-plan-review.md`
+Append a `## Plan Review` section to the plan file with:
 
-```markdown
----
-title: "Plan Review: {plan_title}"
-date: YYYY-MM-DD
-plan: "{plan_path}"
-gate: pass|fail|advisory
-reviewers: [constitution-reviewer, rust-safety-reviewer, architecture-strategist, scope-boundary-auditor]
----
+* Gate decision and rationale
+* Whether plan hardening was required and whether that requirement was satisfied
+* All findings organized by severity
+* Specific recommendations for addressing P0/P1 issues
+* Acknowledgment of P2/P3 items for awareness
+* Runtime verification and operational closure gaps called out explicitly when missing
 
-# Plan Review: {plan_title}
+The review is appended (not written as a separate file) so that the plan and its
+review travel together as a single artifact. The compact-context skill later
+consolidates this into a decided-plan.
 
-## Gate Decision: {PASS|FAIL|ADVISORY}
+## Quality Criteria
 
-## Summary
+* Every implementation unit is reviewed by at least the always-on personas
+* The gate decision correctly reflects finding severities
+* Findings include actionable recommendations
+* The review is appended to the plan before the gate decision is communicated
+* Plans with hardening signals are failed when hardening is missing or materially incomplete
+* Plans that touch runtime surfaces are checked for verification and closure readiness
 
-{Total findings by severity and category}
 
-## Findings
+## Model Routing
 
-### P0 -- Critical (must fix before proceeding)
+This skill operates at **Tier 2 (Standard)** — plan review coordination and finding assembly.
 
-{Findings or "None"}
-
-### P1 -- High (should fix before proceeding)
-
-{Findings or "None"}
-
-### P2 -- Moderate (user discretion)
-
-{Findings or "None"}
-
-### P3 -- Low (advisory)
-
-{Findings or "None"}
-
-## Reviewer Attribution
-
-| Finding | Reviewer | Model |
-|---|---|---|
-| {finding_ref} | {persona_name} | {model_used} |
-
-## Next Steps
-
-{Based on gate decision: revise plan, proceed to harvester, or user decides}
-```
-
-Broadcast the file path when written.
-
-### Step 6: Present Results
-
-- On **FAIL**: Present P0/P1 findings. Recommend specific plan revisions.
-- On **ADVISORY**: Present P2 findings. Ask user: "Revise the plan, or proceed to the backlog harvester?"
-- On **PASS**: Report clean pass. Suggest: "Run backlog-harvester to decompose this plan into tasks."
+Generated by autoharness | Template: plan-review/SKILL.md.tmpl
