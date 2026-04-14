@@ -1,0 +1,10 @@
+enabled: true
+event_thresholds:
+    blocked_stale_days: 7
+agent_subscriptions:
+    ship:
+        - post_merge_closure
+        - feature_review_ready
+    stage:
+        - feature_review_ready
+        - blocked_stale

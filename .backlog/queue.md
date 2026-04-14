@@ -17,3 +17,4 @@
 	- C
 	- C++
 
+- For the agent harness, need to determine what the correct workflow should be without exception. Should the agent always decompose research into a plan, a plan into features, and features into tasks and subtasks? And should each feature be developed on a unique branch through to completion and PR/merge before starting on the next feature?  If so, this should be a distinct policy applied to the agent harness composition.

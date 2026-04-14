@@ -46,6 +46,8 @@ During Step 1, call `ping` with `status_message: "Harness architect starting"`. 
 | Approval granted            | `broadcast` | `success` | `[📐 ARCHITECT] Harness approved — proceeding to backlog registration`                         |
 | Approval rejected           | `broadcast` | `info`    | `[📐 ARCHITECT] Harness rejected — {reason}`                                                   |
 | Backlog registration complete | `broadcast` | `info`  | `[📐 ARCHITECT] Registered {count} task(s) in backlog: {task_ids}`                             |
+| TDD gate sealed             | `broadcast` | `success` | `[📐 ARCHITECT] TDD gate sealed — {count} task(s) marked harness-ready`                       |
+| TDD gate violation          | `broadcast` | `error`   | `[POLICY] P-004 violated — harness does not meet red-phase criteria for {task_id}`             |
 | Harness complete            | `broadcast` | `success` | `[📐 ARCHITECT] Harness complete — {features_done} feature(s), {total_tests} test(s) generated`|
 | Unrecoverable error         | `broadcast` | `error`   | `[📐 ARCHITECT] Harness generation failed for {task_id} — {reason}`                            |
 
@@ -235,6 +237,34 @@ backlog-task_edit
 ```
 
 If a subtask is already marked Done (discovered during Step 2), skip it — do not generate harness tests for completed work.
+
+### Step 7b: Seal the TDD Gate (P-002 / P-004)
+
+Read `.github/policies/workflow-policies.md` and apply policies P-002 and P-004. This step is the formal TDD gate seal: it marks tasks as eligible for implementation by the build-orchestrator.
+
+**Precondition**: Both of the following must be true before proceeding:
+1. `cargo check --tests` passes (compilation confirmed).
+2. `cargo test --test {feature}_test` exits non-zero with `unimplemented!` in the output for every test function (red phase confirmed).
+
+If either precondition is not met, broadcast the P-004 violation and do NOT apply the `harness-ready` label:
+```
+broadcast(error, "[POLICY] P-004 violated — harness does not meet red-phase criteria for TASK-${input:feature}.NN.
+  Compilation: {PASS|FAIL}
+  Red phase: {CONFIRMED|NOT CONFIRMED — reason: {reason}}
+  harness-ready label NOT applied. Fix harness before re-submitting.")
+```
+
+If both preconditions are met, apply the `harness-ready` label to each task that received a harness command in Step 7:
+
+```
+backlog-task_edit
+  id: "TASK-${input:feature}.NN"
+  labels: ["harness-ready"]
+```
+
+`broadcast` at `success` level: `[📐 ARCHITECT] TDD gate sealed — {count} task(s) marked harness-ready`
+
+This label is the signal the build-orchestrator reads in its P-002 queue filter. No implementation work may begin until this label is present.
 
 ### Step 8: Write Harness Manifest
 
