@@ -22,7 +22,7 @@ was modified.
 The `backlog-harvester` agent was rewritten as a 3-phase pipeline orchestrator:
 `impl-plan` (Phase 1) → `plan-review` (Phase 2) → harvest with granularity
 validation (Phase 3). The old `.context/backlog.md`-based workflow is replaced
-by a `${input:source}` input accepting `.backlog/research/` or `.backlog/brainstorm/`
+by a `${input:source}` input accepting `.backlog/research/`
 files directly.
 
 ### Harness Resilience Primitives (Items 1, 3–6 from Evaluation Report)
@@ -57,12 +57,12 @@ one Tier 3 retry before halting).
 ### `impl-plan` Skill (Renamed from `plan`)
 
 Renamed from `plan` to avoid conflict with the native GHCP CLI `/plan` slash command.
-Now accepts `${input:source}` for research or brainstorm documents.
+Now accepts `${input:source}` for research documents.
 
 ### AGENTS.md Workflow Diagram
 
 Mermaid workflow diagram documents the full pipeline:
-brainstorm → impl-plan → plan-review → backlog-harvester → harness-architect →
+deliberate → impl-plan → plan-review → backlog-harvester → harness-architect →
 backlog-orchestrator. Each stage suggests the next.
 
 ### ADR: No File Content Document Store

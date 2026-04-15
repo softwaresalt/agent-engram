@@ -193,7 +193,7 @@ async fn index_workspace_applies_tiering() {
 }
 
 #[test]
-async fn index_workspace_skips_non_rust_files() {
+async fn index_workspace_skips_unsupported_files() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
 
@@ -208,7 +208,10 @@ async fn index_workspace_skips_non_rust_files() {
         .await
         .expect("indexing should succeed");
 
-    assert_eq!(result.files_parsed, 1, "only the .rs file should be parsed");
+    assert_eq!(
+        result.files_parsed, 2,
+        "the .rs and .py files should be parsed; .txt is skipped"
+    );
 }
 
 #[test]

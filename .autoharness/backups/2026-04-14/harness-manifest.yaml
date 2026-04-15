@@ -4,7 +4,6 @@
 
 schema_version: "1.0.0"
 installed_at: "2025-07-23"
-tuned_at: "2026-04-14"
 installer_version: "autoharness-cli"
 preset: full
 primary_stack_pack: mcp-server
@@ -41,19 +40,19 @@ artifacts:
     - path: AGENTS.md
       source: templates/foundation/AGENTS.md.tmpl
     - path: .github/copilot-instructions.md
-      source: templates/foundation/copilot-instructions.md.tmpl
+      source: templates/foundation/copilot-instructions.tmpl
     - path: .github/instructions/constitution.instructions.md
-      source: templates/foundation/constitution.instructions.md.tmpl
+      source: templates/foundation/constitution.tmpl
     - path: .backlogit/config.yml
       source: templates/backlog/config.yml.tmpl
     - path: .backlogit/queue/.stash.md
       source: templates/backlog/stash.md.tmpl
     - path: start.ps1
-      source: templates/scripts/start.ps1.tmpl
+      source: templates/foundation/start.ps1.tmpl
     - path: start.sh
-      source: templates/scripts/start.sh.tmpl
+      source: templates/foundation/start.sh.tmpl
     - path: .autoharness/config.yaml
-      source: templates/harness-config.yaml.tmpl
+      source: templates/foundation/harness-config.yaml.tmpl
 
   agents:
     - path: .github/agents/stage.agent.md
@@ -90,8 +89,6 @@ artifacts:
   prompts:
     - path: .github/prompts/ping-loop.prompt.md
       source: templates/prompts/ping-loop.prompt.md.tmpl
-    - path: .github/prompts/stage-grouping-analysis.prompt.md
-      source: templates/prompts/stage-grouping-analysis.prompt.md.tmpl
 
   instructions:
     - path: .github/instructions/technology-rust.instructions.md
@@ -142,6 +139,8 @@ artifacts:
       source: templates/instructions/adversarial-review.instructions.md.tmpl
 
   skills:
+    - path: .github/skills/brainstorm/SKILL.md
+      source: templates/skills/brainstorm/SKILL.md.tmpl
     - path: .github/skills/build-feature/SKILL.md
       source: templates/skills/build-feature/SKILL.md.tmpl
     - path: .github/skills/compact-context/SKILL.md
@@ -189,17 +188,17 @@ artifacts:
 
   scripts:
     - path: scripts/acquire_lock.ps1
-      source: templates/skills/file-lock/scripts/acquire_lock.ps1
+      source: templates/scripts/file-lock/acquire_lock.ps1
     - path: scripts/acquire_lock.sh
-      source: templates/skills/file-lock/scripts/acquire_lock.sh
+      source: templates/scripts/file-lock/acquire_lock.sh
     - path: scripts/release_lock.ps1
-      source: templates/skills/file-lock/scripts/release_lock.ps1
+      source: templates/scripts/file-lock/release_lock.ps1
     - path: scripts/release_lock.sh
-      source: templates/skills/file-lock/scripts/release_lock.sh
+      source: templates/scripts/file-lock/release_lock.sh
     - path: scripts/search.ps1
-      source: templates/skills/skill-search/scripts/search.ps1
+      source: templates/scripts/skill-search/search.ps1
     - path: scripts/search.sh
-      source: templates/skills/skill-search/scripts/search.sh
+      source: templates/scripts/skill-search/search.sh
 
   config:
     - path: .autoharness/workspace-profile.yaml

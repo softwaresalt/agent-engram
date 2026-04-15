@@ -49,6 +49,8 @@ pub const SYMBOL_NOT_FOUND: u16 = 7004;
 /// 7005 is reserved for future use.
 pub const FILE_TOO_LARGE: u16 = 7006;
 pub const SYNC_CONFLICT: u16 = 7007;
+/// Grammar-engine parse failure (no source location available).
+pub const PARSE_FAILED: u16 = 7008;
 
 /// IPC and daemon error codes (8xxx)
 pub const IPC_CONNECTION_FAILED: u16 = 8001;

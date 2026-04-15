@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -59,13 +59,15 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
             warnings.push("2004 StaleWorkspace: .engram files modified externally".to_string());
         }
         (true, StaleStrategy::Rehydrate) => {
-            hydration::hydrate_code_graph(&path, &cg_queries).await?;
+            hydration::hydrate_code_graph(&path, Path::new(&data_dir), &branch, &cg_queries)
+                .await?;
         }
         (false, _) => {}
     }
 
     // Code graph serialization (FR-132, FR-133, FR-134)
-    let cg_result = dehydration::dehydrate_code_graph(&cg_queries, &path).await?;
+    let cg_result =
+        dehydration::dehydrate_code_graph(&cg_queries, Path::new(&data_dir), &branch).await?;
     let metrics_written =
         match crate::services::metrics::compute_and_write_summary(&path, &branch).await {
             Ok(()) => true,

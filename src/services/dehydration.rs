@@ -36,7 +36,7 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
     let db = db::connect_db(&snapshot.data_dir, &snapshot.branch).await?;
     let cg_queries = crate::db::queries::CodeGraphQueries::new(db);
 
-    dehydrate_code_graph(&cg_queries, workspace_path).await?;
+    dehydrate_code_graph(&cg_queries, Path::new(&snapshot.data_dir), &snapshot.branch).await?;
     if let Err(error) =
         crate::services::metrics::compute_and_write_summary(workspace_path, &snapshot.branch).await
     {
@@ -60,7 +60,10 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
 /// be incremented when the on-disk `.engram/` file format changes in a way
 /// that is incompatible with previous readers. Tying it to `CARGO_PKG_VERSION`
 /// would invalidate every existing workspace on every release.
-pub const SCHEMA_VERSION: &str = "3.0.0";
+///
+/// 4.0.0: code-graph JSONL files moved to branch-aware paths
+///        (`{data_dir}/code-graph/{branch}/nodes.jsonl`).
+pub const SCHEMA_VERSION: &str = "4.0.0";
 
 /// Result of a code graph dehydration operation.
 #[derive(Debug, Clone)]
@@ -73,15 +76,16 @@ pub struct CodeGraphDehydrationResult {
     pub edges_written: usize,
 }
 
-/// Dehydrate code graph state to `.engram/code-graph/` JSONL files (FR-132, FR-133, FR-134).
+/// Dehydrate code graph state to `{data_dir}/code-graph/{branch}/` JSONL files (FR-132, FR-133, FR-134).
 ///
 /// Writes `nodes.jsonl` and `edges.jsonl` using atomic temp-file-then-rename.
 /// Only writes files when there is data; removes stale files when the graph is empty.
 pub async fn dehydrate_code_graph(
     cg_queries: &crate::db::queries::CodeGraphQueries,
-    workspace_path: &Path,
+    data_dir: &Path,
+    branch: &str,
 ) -> Result<CodeGraphDehydrationResult, EngramError> {
-    let code_graph_dir = workspace_path.join(".engram").join("code-graph");
+    let code_graph_dir = data_dir.join("code-graph").join(branch);
     tokio::fs::create_dir_all(&code_graph_dir)
         .await
         .map_err(|_| flush_err(&code_graph_dir))?;
@@ -101,7 +105,7 @@ pub async fn dehydrate_code_graph(
     if total_nodes > 0 {
         let nodes_content = serialize_nodes_jsonl(&code_files, &functions, &classes, &interfaces);
         atomic_write(&nodes_path, &nodes_content).await?;
-        files_written.push(".engram/code-graph/nodes.jsonl".to_string());
+        files_written.push(format!(".engram/code-graph/{branch}/nodes.jsonl"));
     } else if tokio::fs::try_exists(&nodes_path).await.unwrap_or(false) {
         let _ = tokio::fs::remove_file(&nodes_path).await;
     }
@@ -111,7 +115,7 @@ pub async fn dehydrate_code_graph(
     if total_edges > 0 {
         let edges_content = serialize_edges_jsonl(&edges);
         atomic_write(&edges_path, &edges_content).await?;
-        files_written.push(".engram/code-graph/edges.jsonl".to_string());
+        files_written.push(format!(".engram/code-graph/{branch}/edges.jsonl"));
     } else if tokio::fs::try_exists(&edges_path).await.unwrap_or(false) {
         let _ = tokio::fs::remove_file(&edges_path).await;
     }

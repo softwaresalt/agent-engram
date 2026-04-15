@@ -66,7 +66,7 @@ pub async fn hydrate_workspace(path: &Path) -> Result<HydrationSummary, EngramEr
                 })
             })?;
         let version = version.trim();
-        if !version.is_empty() && version != SCHEMA_VERSION {
+        if !version.is_empty() && version != SCHEMA_VERSION && version != "3.0.0" {
             return Err(EngramError::Hydration(HydrationError::SchemaMismatch {
                 expected: SCHEMA_VERSION.to_string(),
                 found: version.to_string(),
@@ -121,15 +121,26 @@ pub struct CodeGraphHydrationResult {
     pub lines_skipped: usize,
 }
 
-/// Hydrate code graph from `.engram/code-graph/` JSONL files (FR-132, FR-135).
+/// Hydrate code graph from `{data_dir}/code-graph/{branch}/` JSONL files (FR-132, FR-135).
 ///
 /// Parses `nodes.jsonl` and `edges.jsonl`, upserting into SurrealDB.
 /// Corrupt lines are logged and skipped (FR-135: graceful degradation).
+/// Falls back to the legacy `{path}/.engram/code-graph/` path for schema 3.0.0 workspaces.
 pub async fn hydrate_code_graph(
     path: &Path,
+    data_dir: &Path,
+    branch: &str,
     cg_queries: &crate::db::queries::CodeGraphQueries,
 ) -> Result<CodeGraphHydrationResult, EngramError> {
-    let code_graph_dir = path.join(".engram").join("code-graph");
+    // Branch-aware path (schema 4.0.0).
+    let new_path = data_dir.join("code-graph").join(branch);
+    // Legacy path fallback (schema 3.0.0).
+    let legacy_path = path.join(".engram").join("code-graph");
+    let code_graph_dir = if new_path.exists() {
+        new_path
+    } else {
+        legacy_path
+    };
     let mut result = CodeGraphHydrationResult::default();
 
     // Parse nodes.jsonl

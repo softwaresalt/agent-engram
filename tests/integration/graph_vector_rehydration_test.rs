@@ -81,6 +81,7 @@ fn inject_meaningful_embedding(
     let nodes_path = workspace_path
         .join(".engram")
         .join("code-graph")
+        .join("main")
         .join("nodes.jsonl");
     let content = fs::read_to_string(&nodes_path)?;
     let mut mutated = false;
@@ -208,6 +209,7 @@ async fn index_flush_and_seed_embedding(workspace_path: &std::path::Path) {
     let nodes_path = workspace_path
         .join(".engram")
         .join("code-graph")
+        .join("main")
         .join("nodes.jsonl");
     assert!(nodes_path.exists(), "nodes.jsonl must exist after flush");
 

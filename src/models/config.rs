@@ -157,7 +157,15 @@ const fn default_max_traversal_nodes() -> usize {
 }
 
 fn default_supported_languages() -> Vec<String> {
-    vec!["rust".to_owned()]
+    vec![
+        "rust".to_owned(),
+        "python".to_owned(),
+        "typescript".to_owned(),
+        "tsx".to_owned(),
+        "javascript".to_owned(),
+        "go".to_owned(),
+        "csharp".to_owned(),
+    ]
 }
 
 const fn default_token_limit() -> usize {

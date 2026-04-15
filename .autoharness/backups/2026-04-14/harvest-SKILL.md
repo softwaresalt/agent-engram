@@ -92,20 +92,6 @@ Before creating anything, apply backlog shaping rules:
 4. Preserve plan references so downstream execution can trace work
    back to the plan.
 
-**Parent-first ordering (NON-NEGOTIABLE):** Tasks require a `parent_id`
-referencing an existing feature. The root feature MUST be created before any
-tasks are created. If the harvest context does not include an existing parent
-feature for task-kind work items, create or identify one before proceeding.
-Omitting `parent_id` for task-kind artifacts violates the required
-parent-child hierarchy (P-003 decomposition integrity) and may be blocked by
-the configured backlog registry or policy gates.
-
-When the `backlogit` capability pack is installed and the registry advertises
-`features.shipments: true`, the parent feature MUST be added to the shipment
-before its child tasks during shipment assembly. This ordering is enforced
-downstream by the Ship agent — flag it explicitly in the harvest report so
-Ship can assemble the shipment correctly.
-
 ### Phase 4: Execute or preview
 
 If `${input:dry_run}` is `true`:
@@ -119,7 +105,8 @@ If `${input:dry_run}` is `false`:
 1. Query the backlog first to avoid duplicate root features.
    Use `backlogit_list_items` or `backlogit_search_items` to check for existing
    items with matching titles.
-2. Create the root feature via `backlogit_create_item`.
+2. Create the root feature via `backlogit_create_item` or
+   `backlogit_create_item`.
 3. Create one task per implementation unit under that feature.
 4. Create granular subtasks under each task.
 5. Wire dependencies when the backlog tool supports dependency operations

@@ -10,9 +10,8 @@ options, recommendation, and backlog-link targets. The artifact feeds directly
 into `impl-plan` for technical planning or into the backlog queue as a stashed
 work item for future pursuit.
 
-This skill replaces the earlier `brainstorm` entry point with a richer protocol
-that adds explicit research synthesis, option comparison, and queue/stash
-linkage.
+This skill provides a structured protocol with explicit research synthesis,
+option comparison, and queue/stash linkage.
 
 ## When to Use
 
