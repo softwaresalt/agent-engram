@@ -71,8 +71,10 @@ async fn contract_get_workspace_status_reports_state() {
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
-    let canonical = fs::canonicalize(workspace.path()).expect("canonicalize workspace");
-    let canonical_path = canonical.display().to_string();
+    let canonical_path = engram::db::workspace::canonicalize_workspace(&path)
+        .expect("canonicalize_workspace should succeed")
+        .display()
+        .to_string();
 
     tools::dispatch(
         state.clone(),

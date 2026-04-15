@@ -79,7 +79,7 @@ pub async fn set_workspace(
     // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
     let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
-    let _cg_result = hydrate_code_graph(&canonical, &cg_queries).await?;
+    let _cg_result = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await?;
 
     // Detect files changed while the daemon was offline and emit a summary.
     // This is best-effort: I/O failures for individual files are already logged

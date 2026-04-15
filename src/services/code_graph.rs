@@ -17,7 +17,7 @@ use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
-use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, parse_rust_source};
+use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
 /// Summary returned by [`index_workspace`] after indexing completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,13 +161,25 @@ pub async fn index_workspace(
 
         // ── Parse via tree-sitter (CPU-bound, run in blocking task) ─
         let source_clone = source.clone();
+        let lang_enum = match Language::try_from(lang.as_str()) {
+            Ok(l) => l,
+            Err(e) => {
+                result.errors.push(FileError {
+                    file: rel_path.clone(),
+                    error: e.to_string(),
+                });
+                result.files_skipped += 1;
+                continue;
+            }
+        };
         let parse_result =
-            match tokio::task::spawn_blocking(move || parse_rust_source(&source_clone)).await {
+            match tokio::task::spawn_blocking(move || parse_source(&source_clone, lang_enum)).await
+            {
                 Ok(Ok(pr)) => pr,
                 Ok(Err(e)) => {
                     result.errors.push(FileError {
                         file: rel_path.clone(),
-                        error: e,
+                        error: e.to_string(),
                     });
                     result.files_skipped += 1;
                     continue;
@@ -616,13 +628,24 @@ pub async fn sync_workspace(
 
         // ── Parse file ──────────────────────────────────────────────
         let source_clone = source.clone();
+        let lang_enum = match Language::try_from(lang.as_str()) {
+            Ok(l) => l,
+            Err(e) => {
+                result.errors.push(FileError {
+                    file: rel_path.clone(),
+                    error: e.to_string(),
+                });
+                continue;
+            }
+        };
         let parse_result =
-            match tokio::task::spawn_blocking(move || parse_rust_source(&source_clone)).await {
+            match tokio::task::spawn_blocking(move || parse_source(&source_clone, lang_enum)).await
+            {
                 Ok(Ok(pr)) => pr,
                 Ok(Err(e)) => {
                     result.errors.push(FileError {
                         file: rel_path.clone(),
-                        error: e,
+                        error: e.to_string(),
                     });
                     continue;
                 }
@@ -1084,6 +1107,8 @@ fn language_from_path(path: &Path) -> String {
             "py" => "python",
             "js" => "javascript",
             "ts" => "typescript",
+            "go" => "go",
+            "cs" => "csharp",
             _ => ext,
         })
         .unwrap_or("unknown")

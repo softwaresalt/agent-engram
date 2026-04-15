@@ -2,7 +2,7 @@
 name: Ship
 description: "Manages the backlog-to-shipped pipeline: harness generation, build execution, review, CI remediation, and PR lifecycle"
 maturity: stable
-tools: vscode, execute, read, agent, edit, search, todo, memory, backlogit
+tools: vscode, execute, read, agent, edit, search, todo, memory, backlog
 model_routing: "Tier 2 (Standard)"
 subagent_depth: 2
 ---
@@ -94,47 +94,6 @@ is available before depending on indexed analysis.
 When the `backlogit` capability pack is installed, also follow
 `.github/instructions/backlogit.instructions.md` and verify the backlog queue / dependency /
 checkpoint surface is available before depending on those behaviors.
-
-### Step 0.5: Shipment Intake (backlogit with shipments only)
-
-When the `backlogit` capability pack is installed and the registry advertises
-`features.shipments: true`:
-
-**Primary path — Stage-prepared shipment (preferred)**:
-
-When `shipment_id` is provided as input (as produced by Stage), validate it before any
-build work begins:
-
-1. Load the shipment using `backlogit_get_shipment`. Confirm it is `queued` or `active`.
-2. Confirm the shipment has explicit item membership (feature + tasks).
-3. Verify no item in the shipment is missing a covering feature parent.
-4. If the shipment is still `queued`, claim it using `backlogit_claim_shipment` before
-   build work begins. Broadcast `[SHIP] Shipment claimed: {shipment_id}`.
-5. Record `shipment_id` as the session scope. All build execution and PR scope is bounded
-   by this shipment.
-
-**Fallback path — direct invocation without a Stage-prepared shipment**:
-
-When `shipment_id` is not provided (Ship invoked directly by the operator):
-
-1. List existing `queued` shipments using `backlogit_list_shipments` to check for one that
-   already covers the intended feature scope. If found, record its ID and proceed as primary
-   path.
-2. If no suitable shipment exists, request one from the operator or confirm that direct
-   assembly is intended before continuing.
-3. If the operator confirms direct assembly, create the shipment:
-   a. Identify the covering feature: the highest-priority queued feature without an existing
-      shipment. If the work is bare tasks without a covering feature, halt and request that
-      Stage be run first to synthesize a covering feature and assemble the shipment.
-   b. Create the shipment using `backlogit_create_shipment` with a title from the feature
-      and an initial `items` list containing the covering feature ID (e.g., `[feature_id]`).
-   c. Add each task in dependency order. Add each subtask after its parent task.
-   d. Broadcast `[SHIP] Shipment assembled (fallback): {shipment_id} — {feature_id} +
-      {task_count} tasks`.
-4. Claim and record `shipment_id` as the session scope.
-
-When the `agent-intercom` capability pack is also installed, broadcast each sub-step with
-its outcome.
 
 ### Step 1: Pre-Flight Checks
 
@@ -262,8 +221,8 @@ After the user approves merge:
 2. Evaluate whether documentation or compound learnings need updates for the shipped scope:
    * `docs/ARCHITECTURE.md` for structural changes
    * `AGENTS.md` for agent or skill changes
-   * `docs/research/` for graduated design decisions
-   * `docs/research/` for requirement updates
+   * `docs/decisions/` for graduated design decisions
+   * `docs/specs/` for requirement updates
 3. Apply documentation updates directly (knowledge graduation).
 4. If the shipped work superseded, duplicated, or invalidated existing learnings in `docs/compound/`, invoke **compound-refresh** so stale entries are classified as keep / update / consolidate / replace / delete using evidence from the shipped work and closure artifacts. When evidence is incomplete, mark entries stale rather than rewriting them blindly.
 5. **Stash follow-up items**: If the post-merge closure artifact identified follow-up tasks (monitoring gaps, deferred scope, documentation debt, or any action not covered by the shipped work), stash every follow-up:

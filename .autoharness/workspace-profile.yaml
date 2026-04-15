@@ -362,7 +362,7 @@ harness_recommendations:
     - layer: agents
       description: "Custom agents (backlog-harvester, build-orchestrator, etc.)"
     - layer: skills
-      description: "Skills (brainstorm, build-feature, review, etc.)"
+      description: "Skills (deliberate, build-feature, review, etc.)"
     - layer: instructions
       description: "Instructions (Rust, MCP, constitution, commit-message, etc.)"
     - layer: policies
@@ -511,7 +511,6 @@ existing_harness:
       directory: ".github/skills/"
       count: 8
       items:
-        - brainstorm
         - build-feature
         - compact-context
         - compound

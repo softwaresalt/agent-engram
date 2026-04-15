@@ -90,6 +90,9 @@ pub enum CodeGraphError {
     /// A sync operation detected conflicting state.
     #[error("File '{file_path}' changed during sync operation")]
     SyncConflict { file_path: String },
+    /// Grammar-engine parse failure with no source-location information.
+    #[error("Source parse failed: {reason}")]
+    ParseFailed { reason: String },
 }
 
 #[derive(Debug, Error)]
@@ -551,6 +554,12 @@ impl EngramError {
                     Some(
                         json!({ "file_path": file_path, "suggestion": "Re-run sync_workspace to resolve the conflict" }),
                     ),
+                ),
+                CodeGraphError::ParseFailed { reason } => (
+                    PARSE_FAILED,
+                    "ParseFailed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
                 ),
             },
             EngramError::GraphQuery(inner) => match inner {
