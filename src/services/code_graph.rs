@@ -1105,8 +1105,9 @@ fn language_from_path(path: &Path) -> String {
         .map(|ext| match ext {
             "rs" => "rust",
             "py" => "python",
-            "js" => "javascript",
+            "js" | "jsx" => "javascript",
             "ts" => "typescript",
+            "tsx" => "tsx",
             "go" => "go",
             "cs" => "csharp",
             _ => ext,

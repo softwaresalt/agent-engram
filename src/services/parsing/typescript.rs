@@ -1,8 +1,9 @@
 //! Tree-sitter TypeScript grammar parser.
 //!
 //! Extracts top-level functions, classes, interfaces, and import edges from
-//! TypeScript source files (`.ts`). TSX files are handled by the same parser
-//! using the TypeScript grammar (JSX nodes are ignored at Tier 1).
+//! TypeScript source files (`.ts`) and TypeScript with JSX source files
+//! (`.tsx`). TypeScript files use the `LANGUAGE_TYPESCRIPT` grammar; TSX files
+//! use `LANGUAGE_TSX` so that embedded JSX syntax is parsed correctly.
 
 use tree_sitter::{Node, Parser};
 
@@ -32,6 +33,40 @@ pub(super) fn parse_typescript_source(
     let tree = parser.parse(source, None).ok_or_else(|| {
         crate::errors::EngramError::CodeGraph(crate::errors::CodeGraphError::ParseFailed {
             reason: "tree-sitter returned no parse tree for TypeScript source".to_owned(),
+        })
+    })?;
+
+    let root = tree.root_node();
+    let mut symbols = Vec::new();
+    let mut edges = Vec::new();
+
+    extract_top_level(root, source, &mut symbols, &mut edges);
+
+    Ok(ParseResult { symbols, edges })
+}
+
+/// Parse a TypeScript with JSX source file (`.tsx`) and extract symbols and edges.
+///
+/// Uses the `LANGUAGE_TSX` grammar so that embedded JSX syntax is parsed
+/// correctly rather than causing tree-sitter errors.
+///
+/// # Errors
+///
+/// Returns [`crate::errors::EngramError`] if the grammar cannot be loaded or
+/// tree-sitter fails to produce a valid parse tree.
+pub(super) fn parse_tsx_source(source: &str) -> Result<ParseResult, crate::errors::EngramError> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+        .map_err(|e| {
+            crate::errors::EngramError::CodeGraph(crate::errors::CodeGraphError::ParseFailed {
+                reason: format!("Failed to set TSX grammar: {e}"),
+            })
+        })?;
+
+    let tree = parser.parse(source, None).ok_or_else(|| {
+        crate::errors::EngramError::CodeGraph(crate::errors::CodeGraphError::ParseFailed {
+            reason: "tree-sitter returned no parse tree for TSX source".to_owned(),
         })
     })?;
 

@@ -25,7 +25,9 @@ pub enum Language {
     Python,
     /// TypeScript (`.ts`)
     TypeScript,
-    /// JavaScript (`.js`)
+    /// TypeScript with JSX (`.tsx`)
+    Tsx,
+    /// JavaScript (`.js`, `.jsx`)
     JavaScript,
     /// Go (`.go`)
     Go,
@@ -41,6 +43,7 @@ impl Language {
             Language::Rust => "rust",
             Language::Python => "python",
             Language::TypeScript => "typescript",
+            Language::Tsx => "tsx",
             Language::JavaScript => "javascript",
             Language::Go => "go",
             Language::CSharp => "csharp",
@@ -56,15 +59,13 @@ impl TryFrom<&str> for Language {
             "rust" => Ok(Language::Rust),
             "python" => Ok(Language::Python),
             "typescript" => Ok(Language::TypeScript),
+            "tsx" => Ok(Language::Tsx),
             "javascript" => Ok(Language::JavaScript),
             "go" => Ok(Language::Go),
             "csharp" => Ok(Language::CSharp),
-            _ => Err(EngramError::CodeGraph(
-                CodeGraphError::UnsupportedLanguage {
-                    file_path: String::new(),
-                    language: value.to_owned(),
-                },
-            )),
+            _ => Err(EngramError::CodeGraph(CodeGraphError::ParseFailed {
+                reason: format!("unsupported language: {value}"),
+            })),
         }
     }
 }
@@ -195,6 +196,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult, Eng
             .map_err(|reason| EngramError::CodeGraph(CodeGraphError::ParseFailed { reason })),
         Language::Python => python::parse_python_source(source),
         Language::TypeScript => typescript::parse_typescript_source(source),
+        Language::Tsx => typescript::parse_tsx_source(source),
         Language::JavaScript => javascript::parse_javascript_source(source),
         Language::Go => go_lang::parse_go_source(source),
         Language::CSharp => csharp::parse_csharp_source(source),

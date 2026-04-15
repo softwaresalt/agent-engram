@@ -161,6 +161,7 @@ fn default_supported_languages() -> Vec<String> {
         "rust".to_owned(),
         "python".to_owned(),
         "typescript".to_owned(),
+        "tsx".to_owned(),
         "javascript".to_owned(),
         "go".to_owned(),
         "csharp".to_owned(),

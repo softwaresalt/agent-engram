@@ -268,21 +268,21 @@ After the user approves merge:
    c. Commit the backlogit state: `git add .backlogit/ && git commit -m "chore: archive {shipment_id} backlog artifacts"`
 
 2. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`.
-2. Evaluate whether documentation or compound learnings need updates for the shipped scope:
+3. Evaluate whether documentation or compound learnings need updates for the shipped scope:
    * `docs/ARCHITECTURE.md` for structural changes
    * `AGENTS.md` for agent or skill changes
-   * `docs/research/` for graduated design decisions
+   * `docs/decisions/` for graduated design decisions
    * `docs/research/` for requirement updates
-3. Apply documentation updates directly (knowledge graduation).
-4. If the shipped work superseded, duplicated, or invalidated existing learnings in `docs/compound/`, invoke **compound-refresh** so stale entries are classified as keep / update / consolidate / replace / delete using evidence from the shipped work and closure artifacts. When evidence is incomplete, mark entries stale rather than rewriting them blindly.
-5. **Stash follow-up items**: If the post-merge closure artifact identified follow-up tasks (monitoring gaps, deferred scope, documentation debt, or any action not covered by the shipped work), stash every follow-up:
+4. Apply documentation updates directly (knowledge graduation).
+5. If the shipped work superseded, duplicated, or invalidated existing learnings in `docs/compound/`, invoke **compound-refresh** so stale entries are classified as keep / update / consolidate / replace / delete using evidence from the shipped work and closure artifacts. When evidence is incomplete, mark entries stale rather than rewriting them blindly.
+6. **Stash follow-up items**: If the post-merge closure artifact identified follow-up tasks (monitoring gaps, deferred scope, documentation debt, or any action not covered by the shipped work), stash every follow-up:
    * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using `backlogit_create_item` with `artifact_type: "stash"`, `title` from the follow-up summary, `description` linking to the closure artifact, and `status: "queued"`. After creation, re-read each entry to confirm it persisted correctly.
    * When `backlog-md` is the installed backlog tool, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path} Labels: stash, follow-up`.
    * When no backlog tool is installed, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path}`.
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Stashed {count} follow-up item(s) from post-merge closure: {summary_list}` listing each item's title.
-6. **Mandatory**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints, finalize any decided-plans, and compact closure artifacts. This is required because built-in AI assistant memory features do not write to the repository's `docs/` directory — compact-context is the mechanism that ensures durable persistence.
-7. When the `continuous-learning` capability pack is installed, invoke the **learn** skill with `scope: recent` to cluster observations accumulated during this session into instincts. If any instinct has reached the promotion threshold (`3`), invoke the **evolve** skill in `mode: propose` for each mature instinct and include the proposal paths in the session summary.
-8. When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Session complete: {outcome}`.
+7. **Mandatory**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints, finalize any decided-plans, and compact closure artifacts. This is required because built-in AI assistant memory features do not write to the repository's `docs/` directory — compact-context is the mechanism that ensures durable persistence.
+8. When the `continuous-learning` capability pack is installed, invoke the **learn** skill with `scope: recent` to cluster observations accumulated during this session into instincts. If any instinct has reached the promotion threshold (`3`), invoke the **evolve** skill in `mode: propose` for each mature instinct and include the proposal paths in the session summary.
+9. When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Session complete: {outcome}`.
 
 ## Circuit Breakers
 

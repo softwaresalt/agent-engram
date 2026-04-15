@@ -119,8 +119,7 @@ If `${input:dry_run}` is `false`:
 1. Query the backlog first to avoid duplicate root features.
    Use `backlogit_list_items` or `backlogit_search_items` to check for existing
    items with matching titles.
-2. Create the root feature via `backlogit_create_item` or
-   `N/A`.
+2. Create the root feature via `backlogit_create_item`.
 3. Create one task per implementation unit under that feature.
 4. Create granular subtasks under each task.
 5. Wire dependencies when the backlog tool supports dependency operations
