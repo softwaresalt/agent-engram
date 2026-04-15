@@ -136,7 +136,7 @@ Agent ──► index_workspace() ──► Write handler
                                (tree-sitter parsers)
                                       │
                            ┌──────────▼──────────┐
-                           │   Per-file parsing   │
+                           │   Per-language parsing │
                            │  • functions         │
                            │  • classes           │
                            │  • interfaces        │
@@ -273,7 +273,8 @@ flush_state() (MCP tool call) or graceful shutdown
 | DB Layer | `src/db/` | SurrealDB connection management, `CodeGraphQueries` struct, workspace hashing and canonicalization. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
 | Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `3.0.0`. |
-| Code Graph | `src/services/code_graph.rs` | tree-sitter parsing, symbol extraction, edge building, incremental sync, impact traversal. |
+| Code Graph | `src/services/code_graph.rs` | Orchestrates tree-sitter indexing: walks workspace files, dispatches per-language parsers, upserts symbol and edge records, manages incremental sync and impact traversal. |
+| Parsing | `src/services/parsing/` | Multi-language tree-sitter parsers. `parsing.rs` defines the `Language` enum (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp) and dispatches to per-language submodules (`rust.rs`, `python.rs`, `typescript.rs`, `javascript.rs`, `go_lang.rs`, `csharp.rs`). |
 | Content Registry | `src/services/ingestion.rs` | Process indexed workspace content for embedding. Error codes 11xxx. |
 | Git Graph | `src/services/git_graph.rs` | Walk git commit history, index commits as graph nodes, cross-reference with code graph. Error codes 12xxx. |
 | Errors | `src/errors/` | Typed error hierarchy (`EngramError`), error codes (`src/errors/codes.rs`), MCP error serialization. |
@@ -303,3 +304,7 @@ Code symbol names, content records, and commit messages are embedded using the b
 ### IPC Transport
 
 The `engram` binary serves dual roles: as the MCP daemon (`engram daemon`) and as a CLI client (`engram install`, `engram up`, `engram status`). CLI subcommands communicate with a running daemon over a Unix socket (Linux/macOS) or named pipe (Windows) using a simple binary protocol.
+
+### Multi-Language Parsing
+
+The `Language` enum in `src/services/parsing/` centralises language dispatch. Each variant (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp) maps to a dedicated submodule that uses the appropriate tree-sitter grammar. TSX uses `LANGUAGE_TSX` (not `LANGUAGE_TYPESCRIPT`) to correctly parse JSX syntax. Extensions `.jsx` reuse the JavaScript grammar; `.tsx` requires the TSX grammar variant. Grammar crates must stay at `"0.23"` in `Cargo.toml` — tree-sitter 0.24.x only accepts ABI 13–14, and v0.24+ grammar crates emit ABI 15 which fails at runtime.
