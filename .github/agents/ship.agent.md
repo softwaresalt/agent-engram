@@ -258,7 +258,16 @@ When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Post-m
 
 After the user approves merge:
 
-1. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`.
+1. **Close the shipment** (when the `backlogit` capability pack is installed and `features.shipments` is true):
+   a. Call `backlogit_ship_shipment` with the merge commit SHA. This archives all
+      queue items (feature + tasks) to `.backlogit/archive/`.
+   b. **Verify archive integrity (P-007)**: Run `git status -- ".backlogit/archive/"`.
+      If any archive files appear as working-tree deletions, restore them immediately:
+      `git restore .backlogit/archive/`. Do not skip this check — `backlogit_ship_shipment`
+      deletes archive files from disk after moving them internally.
+   c. Commit the backlogit state: `git add .backlogit/ && git commit -m "chore: archive {shipment_id} backlog artifacts"`
+
+2. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`.
 2. Evaluate whether documentation or compound learnings need updates for the shipped scope:
    * `docs/ARCHITECTURE.md` for structural changes
    * `AGENTS.md` for agent or skill changes
