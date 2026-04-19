@@ -73,6 +73,9 @@ legacy-sse = []
 proptest = "1"
 tempfile = "3"
 tokio-test = "0.4"
+# Phase 0: API spike and benchmark harnesses (removed at Phase 1 start when
+# cozo enters [dependencies] behind the cozo-backend feature flag).
+cozo = { version = "0.7", features = ["storage-sqlite"] }
 
 [[bin]]
 name = "engram"

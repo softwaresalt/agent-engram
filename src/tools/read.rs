@@ -425,6 +425,11 @@ const fn default_unified_limit() -> usize {
 /// - `SearchFailed` (4004) if the embedding model is not loaded/enabled.
 /// - `SystemError::DatabaseError` (5001) if embedding generation fails after model load.
 /// - `WorkspaceError::NotSet` (1003) if workspace not bound.
+// The #[cfg(not(feature = "embeddings"))] early-return guard makes the
+// embeddings-specific function body unreachable in no-embeddings builds.
+// This is intentional: the guard keeps the non-embeddings build from
+// pulling in embedding API call sites.
+#[allow(unreachable_code)]
 pub async fn unified_search(
     state: SharedState,
     params: Option<Value>,
@@ -454,9 +459,6 @@ pub async fn unified_search(
         }));
     }
 
-    // Clamp limit to [1, 50].
-    let limit = parsed.limit.clamp(1, 50);
-
     // Guard: reject semantic search at compile time when the embeddings feature
     // is not compiled in. When it IS enabled, embed_text lazily loads the model
     // on the first call — do not gate on is_available() here.
@@ -467,6 +469,9 @@ pub async fn unified_search(
                  Text-based search via keyword queries is unaffected."
             .to_owned(),
     }));
+
+    // Clamp limit to [1, 50].
+    let limit = parsed.limit.clamp(1, 50);
 
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
