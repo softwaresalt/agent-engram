@@ -752,7 +752,7 @@ mod tests {
     fn long_workspace_path_uses_tmp_fallback() {
         // "/.engram/run/engram.sock" = 24 chars; workspace needs > 84 chars so
         // total exceeds 108 bytes.
-        let long_ws = "/tmp/".to_owned() + &"a".repeat(90); // 95 chars → total 119
+        let long_ws = format!("/tmp/{}", "a".repeat(90)); // 95 chars → total 119
         let ws = Path::new(&long_ws);
         let ep = ipc_endpoint(ws).unwrap();
         assert!(

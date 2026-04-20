@@ -1,7 +1,7 @@
 //! Dual-backend behavioral sweep (Task 001.003.010-T — U2.10).
 //!
-//! Verifies that the CozoDB backend honours the same observable contracts as
-//! the SurrealDB backend: connect → bootstrap → upsert → read → count →
+//! Verifies that the `CozoDB` backend honours the same observable contracts as
+//! the `SurrealDB` backend: connect → bootstrap → upsert → read → count →
 //! delete, all without error.
 //!
 //! Tests are gated on the `cozo-backend` feature.  Under the default
@@ -10,8 +10,8 @@
 //! run and are expected to FAIL until Phase 2 is complete.
 //!
 //! CI invocation (advisory axis):
-//!   cargo test --no-default-features --features cozo-backend
-//!              --test integration_cozo_dual_backend_sweep
+//!   `cargo test --no-default-features --features cozo-backend`
+//!              `--test integration_cozo_dual_backend_sweep`
 
 #[cfg(feature = "cozo-backend")]
 mod sweep {

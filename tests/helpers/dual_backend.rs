@@ -23,7 +23,7 @@
 //! | `assert_ok_or_stub!`        | asserts `result.is_ok()`  | asserts stub error contains "not yet implemented" |
 //! | `assert_empty_count_or_stub!` | asserts `result == Ok(0)` | asserts stub error contains "not yet implemented" |
 
-/// Assert that a `Result` is `Ok` under `surreal-backend`, or is the CozoDB
+/// Assert that a `Result` is `Ok` under `surreal-backend`, or is the `CozoDB`
 /// Phase 2 stub error under `cozo-backend`.
 ///
 /// # Examples
@@ -57,7 +57,7 @@ macro_rules! assert_ok_or_stub {
 }
 
 /// Assert that a count query result is `Ok(0)` under `surreal-backend` (empty
-/// DB), or is the CozoDB stub error under `cozo-backend`.
+/// DB), or is the `CozoDB` stub error under `cozo-backend`.
 ///
 /// # Examples
 ///

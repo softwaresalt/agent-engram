@@ -423,7 +423,7 @@ pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<u
     };
 
     let mut updated = 0usize;
-    for (record, vector) in pending.iter().zip(vectors.into_iter()) {
+    for (record, vector) in pending.iter().zip(vectors) {
         if let Err(e) = queries
             .update_content_record_embedding(&record.id, vector)
             .await

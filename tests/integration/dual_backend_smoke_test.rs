@@ -46,7 +46,7 @@ async fn smoke_connect_db() {
     );
 }
 
-/// Smoke: count_code_files on an empty workspace.
+/// Smoke: `count_code_files` on an empty workspace.
 ///
 /// Under `surreal-backend`: returns `Ok(0)`.
 /// Under `cozo-backend`: connects and counts, returns `Ok(0)`.
@@ -80,7 +80,7 @@ async fn smoke_empty_count_code_files() {
     }
 }
 
-/// Smoke: count_functions on an empty workspace.
+/// Smoke: `count_functions` on an empty workspace.
 #[tokio::test]
 async fn smoke_empty_count_functions() {
     let (_workspace, data_dir) = make_workspace();
