@@ -15,6 +15,12 @@ use crate::errors::{EngramError, QueryError};
 /// Embedding vector dimension for `bge-small-en-v1.5`.
 pub const EMBEDDING_DIM: usize = 384;
 
+/// Embedding model identifier for `bge-small-en-v1.5`.
+///
+/// Used by the CozoDB schema bootstrap (Phase 2 U2.8) to embed model
+/// provenance in persisted metadata.
+pub const EMBEDDING_MODEL: &str = "bge-small-en-v1.5";
+
 /// Maximum query length in characters (rough proxy for 500 tokens).
 pub const MAX_QUERY_CHARS: usize = 2000;
 

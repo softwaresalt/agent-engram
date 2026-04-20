@@ -425,6 +425,11 @@ const fn default_unified_limit() -> usize {
 /// - `SearchFailed` (4004) if the embedding model is not loaded/enabled.
 /// - `SystemError::DatabaseError` (5001) if embedding generation fails after model load.
 /// - `WorkspaceError::NotSet` (1003) if workspace not bound.
+// The #[cfg(not(feature = "embeddings"))] early-return guard makes the
+// embeddings-specific function body unreachable in no-embeddings builds.
+// This is intentional: the guard keeps the non-embeddings build from
+// pulling in embedding API call sites.
+#[allow(unreachable_code)]
 pub async fn unified_search(
     state: SharedState,
     params: Option<Value>,
@@ -454,9 +459,6 @@ pub async fn unified_search(
         }));
     }
 
-    // Clamp limit to [1, 50].
-    let limit = parsed.limit.clamp(1, 50);
-
     // Guard: reject semantic search at compile time when the embeddings feature
     // is not compiled in. When it IS enabled, embed_text lazily loads the model
     // on the first call — do not gate on is_available() here.
@@ -467,6 +469,9 @@ pub async fn unified_search(
                  Text-based search via keyword queries is unaffected."
             .to_owned(),
     }));
+
+    // Clamp limit to [1, 50].
+    let limit = parsed.limit.clamp(1, 50);
 
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
@@ -950,6 +955,7 @@ struct QueryGraphParams {
 /// error. Execution is bounded by `query_timeout_ms` from [`WorkspaceConfig`]
 /// and results are capped at `query_row_limit` rows, with a `"truncated"` flag
 /// when the cap is applied.
+#[cfg(feature = "surreal-backend")]
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     use std::time::Instant;
@@ -1026,11 +1032,43 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
     }
 }
 
+/// Execute a sandboxed read-only Cozo Datalog query against the workspace graph.
+///
+/// Phase 1 stub — not yet implemented.  Returns an error until the CozoDB backend
+/// is wired in Phase 2.
+#[cfg(feature = "cozo-backend")]
+#[tracing::instrument(name = "tool.query_graph", skip(state, params))]
+pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    use crate::services::gate::sanitize_query;
+
+    let parsed: QueryGraphParams =
+        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+    if parsed.query.trim().is_empty() {
+        return Err(EngramError::Query(QueryError::QueryEmpty));
+    }
+
+    sanitize_query(&parsed.query)?;
+
+    // Ensure the workspace is set before returning the backend error so that
+    // basic pre-condition failures (no workspace) still surface correctly.
+    workspace_db(&state).await?;
+
+    Err(EngramError::GraphQuery(GraphQueryError::Invalid {
+        reason: "CozoDB query_graph not yet implemented (Phase 2)".into(),
+    }))
+}
+
 /// Appends `LIMIT <n>` to a query when the user hasn't already specified one.
 ///
 /// This ensures the DB never materializes an unbounded result set. If the query
 /// already contains a top-level LIMIT clause, it is left unchanged (the
 /// configured row_limit still caps the returned rows after the fact).
+#[cfg(feature = "surreal-backend")]
 fn inject_limit(query: &str, limit: usize) -> String {
     let upper = query.to_uppercase();
     // Only inject when the query lacks a top-level LIMIT (outside subqueries).

@@ -357,7 +357,7 @@ pub async fn index_workspace(
             match embedding::embed_texts(&embed_texts) {
                 Ok(vectors) => {
                     result.embeddings_generated += vectors.len();
-                    for (sym_id, vector) in embed_ids.iter().zip(vectors.into_iter()) {
+                    for (sym_id, vector) in embed_ids.iter().zip(vectors) {
                         if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
                             debug!(error = %e, sym_id = %sym_id, "code graph: embedding write-back failed");
                         }
@@ -839,7 +839,7 @@ pub async fn sync_workspace(
         if !embed_texts.is_empty() {
             match embedding::embed_texts(&embed_texts) {
                 Ok(vectors) => {
-                    for (sym_id, vector) in embed_ids.iter().zip(vectors.into_iter()) {
+                    for (sym_id, vector) in embed_ids.iter().zip(vectors) {
                         if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
                             debug!(error = %e, sym_id = %sym_id, "code graph sync: embedding write-back failed");
                         }

@@ -30,6 +30,7 @@ Thumbs.db
 .env.*
 *.env
 .copilot/
+.mcp.json
 
 # Logs and temp files
 *.log
