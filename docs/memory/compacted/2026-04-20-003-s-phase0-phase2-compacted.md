@@ -3,7 +3,8 @@ type: compacted-memory
 scope: chore/001-c-cozodb-datalog-migration
 phases: Phase-0 → Phase-2 (003-S shipped)
 date: 2026-04-20
-status: pr-merged-pending
+status: complete
+merge_commit: 0f195d37d6b018312aec61eb2974d23f3a1d83ae
 sources:
   - docs/memory/2026-04-13/phase-1-u14-u16-complete-memory.md
   - docs/memory/2026-04-14/shipment-a-staging-memory.md
@@ -12,6 +13,8 @@ sources:
   - docs/memory/2026-04-19/stage-cozodb-shipment-handoff.md
   - docs/memory/2026-04-19/phase-2-harness-complete-memory.md
   - docs/memory/2026-04-20/phase-2-u21-done-u22-in-progress.md
+  - docs/memory/2026-04-20/003-s-phase2-pr-ready-memory.md
+  - docs/memory/2026-04-20/003-s-post-merge-memory.md
 archived_to: docs/archive/memory/
 ---
 
@@ -98,12 +101,29 @@ Phase 2 (chore `001.003-C`) shipped. Phases 3–7 remain.
 
 ---
 
-## PR Status
+## PR Status → MERGED
 
 - **PR #15:** https://github.com/softwaresalt/agent-engram/pull/15
-- **CI:** ✅ both legs (HEAD `c668d19`)
+- **Merge commit:** `0f195d37d6b018312aec61eb2974d23f3a1d83ae`
+- **CI:** ✅ both legs
 - **Copilot review:** ✅ replied + resolved
-- **State:** awaiting user merge approval
+- **State:** merged to `main`
+
+---
+
+## Post-Merge Closure (Step 6)
+
+| Step | Outcome |
+|------|---------|
+| `backlogit_ship_shipment` | ✅ 50 items archived |
+| P-007 archive integrity | ✅ restored via `git restore .backlogit/archive/` |
+| Backlogit commit | `d663b77` |
+| `docs/architecture.md` update | ✅ Dual-Backend section added — `e4a378e` |
+| Compound refresh | No stale entries found — all 7 compound learnings remain accurate |
+| compact-context | ✅ this pass |
+
+### main HEAD after closure
+`e4a378e` — docs(adrs): add CozoDB dual-backend architecture section
 
 ---
 
