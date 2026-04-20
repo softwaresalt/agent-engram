@@ -57,11 +57,11 @@ recommendation: PROCEED            # PROCEED | HALT — operator reconcile requi
 
 | ID | Classification | Queue Path | Archive Path | Declared Status | Expected Status |
 |---|---|---|---|---|---|
-| 002-C        | matched        | .backlogit/queue/002-C.C.md        | —            | done  | done |
-| 002.001-T    | matched        | .backlogit/queue/002.001-T.T.md    | —            | done  | done |
-| 002.002-T    | missing        | —                                  | —            | —     | done |
-| 002.003-T    | status-mismatch| .backlogit/queue/002.003-T.T.md    | —            | queued| done |
-| 002.010-T    | orphan         | .backlogit/queue/002.010-T.T.md    | —            | done  | (not in manifest) |
+| 002-C        | matched        | .backlogit/queue/002-C.md        | —            | done  | done |
+| 002.001-T    | matched        | .backlogit/queue/002.001-T.md    | —            | done  | done |
+| 002.002-T    | missing        | —                                 | —            | —     | done |
+| 002.003-T    | status-mismatch| .backlogit/queue/002.003-T.md    | —            | queued| done |
+| 002.010-T    | orphan         | .backlogit/queue/002.010-T.md    | —            | done  | (not in manifest) |
 ```
 
 ### Item Field Definitions
@@ -110,7 +110,7 @@ Post-mode reports include an additional section:
 
 | Archive File | Status |
 |---|---|
-| .backlogit/archive/004-S.S.md | present |
+| .backlogit/archive/004-S.md | present |
 
 ## git status Check
 
@@ -119,21 +119,21 @@ No deletions detected in .backlogit/archive/.
 
 or when deletions detected:
 
-```markdown
+````markdown
 ## git status Check
 
 **WARNING**: The following archive files were deleted by `backlogit_ship_shipment` and must be restored:
 
 ```
-D  .backlogit/archive/002-C.C.md
-D  .backlogit/archive/002.001-T.T.md
+D  .backlogit/archive/002-C.md
+D  .backlogit/archive/002.001-T.md
 ```
 
 Run before committing:
 ```powershell
 git restore .backlogit/archive/
 ```
-```
+````
 
 ## Item Classification Reference
 

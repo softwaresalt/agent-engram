@@ -54,7 +54,7 @@ The report ends with a `recommendation`:
 * **No prune mode in v1.** Auto-mutation of the manifest is reserved for a future
   version after upstream `backlogit` validation surface is confirmed.
 * **Single-writer lock.** When invoked from Ship Step 6, this skill holds the
-  `.backlogit/queue/{shipment_id}.S.md` file lock (via the `file-lock` skill) for
+  `.backlogit/queue/{shipment_id}.md` file lock (via the `file-lock` skill) for
   the duration of pre-mode → post-mode. See lock protocol in the Required Protocol
   section below.
 * **Halt on RECONCILE_FAIL.** Do not proceed to `backlogit_ship_shipment` unless
@@ -65,7 +65,7 @@ The report ends with a `recommendation`:
 ### Pre-Mode
 
 1. **Acquire single-writer lock** (Ship Step 6 invocations only, not intake):
-   Invoke the `file-lock` skill to acquire `.backlogit/queue/{shipment_id}.S.md`.
+   Invoke the `file-lock` skill to acquire `.backlogit/queue/{shipment_id}.md`.
    If lock acquisition fails, count as a session stall (circuit-breaker protocol)
    and prompt the operator.
 
@@ -73,7 +73,7 @@ The report ends with a `recommendation`:
    Extract the `items` list.
 
 3. **Check each manifest item**:
-   * Attempt to locate the file at `.backlogit/queue/{id}.*` or `.backlogit/archive/{id}.*`
+   * Attempt to locate the file at `.backlogit/queue/{id}.*`
    * Read its frontmatter and compare `status` to `expected_status`
    * Classify as `matched`, `missing`, or `status-mismatch`
 

@@ -89,7 +89,8 @@ an optional enhancement. See `.github/skills/shipment-reconcile/SKILL.md`.
    → If RECONCILE_FAIL: halt, prompt operator, do NOT proceed to step 2
    → If PROCEED: continue
 2. Call backlogit_ship_shipment(shipment_id, merge_sha)
-3. Run git restore .backlogit/archive/ (always, known deletion quirk)
+3. Run `git restore .backlogit/archive/` only when `git status` reports deletions
+   in `.backlogit/archive/` (known deletion quirk)
 4. Invoke shipment-reconcile mode: post
    → If HALT: restore archives before committing
 5. Commit

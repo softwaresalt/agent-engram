@@ -42,10 +42,10 @@ The tool should:
 ### Actual Behavior
 
 The tool:
-* Deletes each manifest item's queue file from `.backlogit/queue/` without
-  checking its status.
-* Does NOT move individual item files to `.backlogit/archive/` — only the
-  shipment manifest itself is archived.
+* Moves each manifest item's queue file to `.backlogit/archive/` without
+  checking its `status` field (does not validate `status: done` before archiving).
+* Deletes the on-disk archive copies after the internal move — the known workaround
+  is to run `git restore .backlogit/archive/` when `git status` reports deletions.
 * Archives the shipment as if all manifest items were shipped, regardless of
   their actual completion state.
 

@@ -267,7 +267,7 @@ After the user approves merge:
    0. **Pre-archive reconciliation gate (mandatory)**:
       * Invoke the `shipment-reconcile` skill with `mode: pre`, `shipment_id`, and
         `expected_status: done`. This acquires the single-writer lock on
-        `.backlogit/queue/{shipment_id}.S.md` (via the `file-lock` skill) and verifies
+        `.backlogit/queue/{shipment_id}.md` (via the `file-lock` skill) and verifies
         that every manifest item is present in queue with `status: done`, and scans for
         orphan items (queue files declaring this `shipment_id` that are NOT in the manifest).
       * If the skill returns `RECONCILE_FAIL`: halt and surface the reconciliation report
