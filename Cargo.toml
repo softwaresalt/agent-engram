@@ -156,6 +156,7 @@ path = "tests/integration/embedding_test.rs"
 [[test]]
 name = "integration_concurrency"
 path = "tests/integration/concurrency_test.rs"
+required-features = ["surreal-backend"]
 [[test]]
 name = "contract_error_codes"
 path = "tests/contract/error_codes_test.rs"
@@ -368,6 +369,7 @@ path = "tests/contract/branch_isolation_contract_test.rs"
 [[test]]
 name = "integration_branch_isolation"
 path = "tests/integration/branch_isolation_test.rs"
+required-features = ["surreal-backend"]
 
 [[test]]
 name = "integration_file_hash_pipeline"
@@ -376,6 +378,7 @@ path = "tests/integration/file_hash_pipeline_test.rs"
 [[test]]
 name = "integration_unified_search"
 path = "tests/integration/unified_search_test.rs"
+required-features = ["surreal-backend"]
 
 [[test]]
 name = "unit_metrics_model"
@@ -420,6 +423,31 @@ path = "tests/contract/evaluation_contract_test.rs"
 [[test]]
 name = "integration_dual_backend_smoke"
 path = "tests/integration/dual_backend_smoke_test.rs"
+
+# ── Phase 2: CozoDB + Datalog migration (001.003-C) ──────────────────────────
+
+[[test]]
+name = "unit_embedding_constants"
+path = "tests/unit/embedding_constants_test.rs"
+
+[[test]]
+name = "unit_cozo_schema"
+path = "tests/unit/cozo_schema_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "unit_cozo_validation"
+path = "tests/unit/cozo_validation_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_crud"
+path = "tests/integration/cozo_crud_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_dual_backend_sweep"
+path = "tests/integration/cozo_dual_backend_sweep_test.rs"
 
 [[example]]
 name = "cozo_api_spike"

@@ -137,38 +137,9 @@ pub use surreal_db::{Db, connect_db, map_db_err};
 #[path = "cozo_queries.rs"]
 pub mod queries;
 
+/// CozoDB backend — Phase 2 connection and handle management.
 #[cfg(feature = "cozo-backend")]
-mod cozo_db {
-    use std::path::Path;
-
-    use crate::errors::{EngramError, SystemError};
-
-    /// Opaque CozoDB connection handle.
-    ///
-    /// Phase 2 will replace this with a real `cozo::DbInstance` wrapper
-    /// backed by an SQLite store under `.engram/db/{branch}/`.
-    #[derive(Clone)]
-    pub struct CozoHandle;
-
-    /// The active database handle type for the CozoDB backend.
-    pub type Db = CozoHandle;
-
-    /// Open (or return a cached) CozoDB handle for the given workspace.
-    ///
-    /// Not yet implemented — Phase 2 will wire up `cozo::DbInstance::new`.
-    pub async fn connect_db(_data_dir: &Path, _branch: &str) -> Result<Db, EngramError> {
-        Err(EngramError::from(SystemError::DatabaseError {
-            reason: "CozoDB backend connection not yet implemented (Phase 2)".into(),
-        }))
-    }
-
-    /// Map any error value into an [`EngramError`] database error.
-    pub fn map_db_err<E: ToString>(err: E) -> EngramError {
-        EngramError::from(SystemError::DatabaseError {
-            reason: err.to_string(),
-        })
-    }
-}
+pub mod cozo_backend;
 
 #[cfg(feature = "cozo-backend")]
-pub use cozo_db::{Db, connect_db, map_db_err};
+pub use cozo_backend::{Db, connect_db, map_db_err};

@@ -24,6 +24,32 @@ pub use crate::models::FileHashRecord;
 /// `crate::db::queries::SLOW_QUERY_THRESHOLD_MS`.
 pub const SLOW_QUERY_THRESHOLD_MS: u128 = 100;
 
+/// Emit tracing span fields and a log event for a completed query.
+///
+/// Mirrors the function from the SurrealDB `queries` module for API
+/// compatibility.  The implementation is backend-agnostic — it records
+/// span fields and emits a tracing event with no database interaction.
+pub fn record_query_metrics(
+    query_type: &str,
+    table: &str,
+    result_count: usize,
+    elapsed: std::time::Duration,
+) {
+    let elapsed_ms = elapsed.as_millis();
+    let span = tracing::Span::current();
+    span.record("query_type", query_type);
+    span.record("table", table);
+    span.record("result_count", result_count);
+    let elapsed_ms_u64 = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
+    tracing::info!(
+        query_type,
+        table,
+        result_count,
+        elapsed_ms = elapsed_ms_u64,
+        "query completed"
+    );
+}
+
 // ── Shared data types ─────────────────────────────────────────────────────
 //
 // These types are duplicated from `queries.rs` because they have no
