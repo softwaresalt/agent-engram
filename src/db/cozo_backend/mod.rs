@@ -45,7 +45,7 @@ pub type Db = CozoDb;
 ///
 /// `CozoHandle` opens a temporary in-memory DB (validates CozoScript syntax).
 /// `CozoDb` returns the persistent DB instance.
-pub(crate) trait SchemaTarget {
+pub trait SchemaTarget {
     /// Acquire the `cozo::DbInstance` for schema bootstrap.
     ///
     /// # Errors

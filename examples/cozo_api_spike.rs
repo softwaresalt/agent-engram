@@ -29,6 +29,20 @@
 
 use std::collections::BTreeMap;
 
+/// Read the first integer count from a Cozo `count(id)` query result.
+fn read_count(result: &cozo::NamedRows) -> cozo::Num {
+    result
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .and_then(|v| match v {
+            cozo::DataValue::Num(n) => Some(*n),
+            _ => None,
+        })
+        .unwrap_or(cozo::Num::Int(0))
+}
+
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Open an in-memory Cozo store ──────────────────────────────────
     let db = cozo::DbInstance::new("mem", "", Default::default())?;
@@ -38,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // This matches the Phase 2 schema (U2.1) but scoped to a single
     // relation for spike purposes.
-    let schema_script = r#"
+    let schema_script = r"
         :create function_meta {
             id: String
             =>
@@ -49,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ::index create function_meta:by_name { name }
         ::index create function_meta:by_file { file_path }
-    "#;
+    ";
     db.run_script(
         schema_script,
         BTreeMap::new(),
@@ -83,19 +97,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         result
             .rows
             .first()
-            .map(|row| format!("{{ id: {:?}, name: {:?} }}", row[0], row[1]))
-            .unwrap_or_else(|| "no rows".to_owned())
+            .map_or_else(
+                || "no rows".to_owned(),
+                |row| format!("{{ id: {:?}, name: {:?} }}", row[0], row[1]),
+            )
     );
 
     // ── 5. Parameter binding via BTreeMap ─────────────────────────────────
     //
     // The §9 trait methods pass query parameters; confirm the binding API.
-    let parameterized_script = r#"
+    let parameterized_script = r"
         ?[id, name] :=
             *function_meta { id, name, file_path: $fp },
             fp_len = length($fp),
             fp_len > 0
-    "#;
+    ";
     let mut params = BTreeMap::new();
     params.insert("fp".to_owned(), cozo::DataValue::from("src/lib.rs"));
     let result = db.run_script(
@@ -121,24 +137,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.run_script(multi_put, BTreeMap::new(), cozo::ScriptMutability::Mutable)?;
 
     // Verify both rows present
-    let count_script = r#"
+    let count_script = r"
         ?[count(id)] := *function_meta { id }
-    "#;
+    ";
     let count_result = db.run_script(
         count_script,
         BTreeMap::new(),
         cozo::ScriptMutability::Immutable,
     )?;
-    let count = count_result
-        .rows
-        .first()
-        .and_then(|row| row.first())
-        .and_then(|v| match v {
-            cozo::DataValue::Num(n) => Some(*n),
-            _ => None,
-        })
-        .unwrap_or(cozo::Num::Int(0));
-    println!("[cozo] count after two :put calls: {:?}", count);
+    let count = read_count(&count_result);
+    println!("[cozo] count after two :put calls: {count:?}");
 
     // ── 7. HNSW availability note ─────────────────────────────────────────
     //
@@ -158,19 +166,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BTreeMap::new(),
         cozo::ScriptMutability::Immutable,
     )?;
-    let post_rm_count = post_rm
-        .rows
-        .first()
-        .and_then(|row| row.first())
-        .and_then(|v| match v {
-            cozo::DataValue::Num(n) => Some(*n),
-            _ => None,
-        })
-        .unwrap_or(cozo::Num::Int(0));
-    println!(
-        "[cozo] count after :rm fn:001: {:?} (expected 1)",
-        post_rm_count
-    );
+    let post_rm_count = read_count(&post_rm);
+    println!("[cozo] count after :rm fn:001: {post_rm_count:?} (expected 1)");
 
     println!("[cozo] spike complete — trait surface confirmed viable");
     Ok(())

@@ -1,4 +1,4 @@
-//! Unit tests for CozoDB embedding validation (Task 001.003.008-T — U2.7).
+//! Unit tests for `CozoDB` embedding validation (Task 001.003.008-T — U2.7).
 //!
 //! Verifies that `validate_cozo_embedding` rejects:
 //! - empty IDs

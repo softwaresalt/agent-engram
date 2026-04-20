@@ -1,7 +1,7 @@
-//! Unit tests for CozoDB schema bootstrap (Task 001.003.002-T — U2.1).
+//! Unit tests for `CozoDB` schema bootstrap (Task 001.003.002-T — U2.1).
 //!
 //! Verifies that `run_schema_bootstrap` succeeds on a fresh in-memory DB
-//! and that all CozoScript relation-creation constants are non-empty strings.
+//! and that all `CozoScript` relation-creation constants are non-empty strings.
 //!
 //! These tests are gated on the `cozo-backend` feature because they depend
 //! on types and modules that are only compiled under that feature.
@@ -20,7 +20,7 @@ mod schema_tests {
         assert!(result.is_ok(), "schema bootstrap failed: {result:?}");
     }
 
-    /// Each ```:create``` constant must be a non-empty CozoScript string.
+    /// Each `:create` constant must be a non-empty `CozoScript` string.
     #[test]
     fn file_node_create_script_is_populated() {
         assert!(

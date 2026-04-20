@@ -1,16 +1,16 @@
-//! Integration tests for CozoDB symbol CRUD parity
+//! Integration tests for `CozoDB` symbol CRUD parity
 //! (Tasks 001.003.003-T through 001.003.009-T — U2.2–U2.9).
 //!
 //! Tests the full write–read–delete roundtrip for each symbol type
 //! (`code_file`, `function`, `class`, `interface`) and the aggregate count
-//! queries against a CozoDB handle.
+//! queries against a `CozoDB` handle.
 //!
 //! Requires the `cozo-backend` feature:
-//!   cargo test --no-default-features --features cozo-backend --test integration_cozo_crud
+//!   `cargo test --no-default-features --features cozo-backend --test integration_cozo_crud`
 
 use tempfile::TempDir;
 
-/// Construct a temporary data directory and connect to the CozoDB backend.
+/// Construct a temporary data directory and connect to the `CozoDB` backend.
 ///
 /// Fails (panics) until Phase 2 implements `connect_db`.
 async fn make_db() -> (TempDir, engram::db::Db) {

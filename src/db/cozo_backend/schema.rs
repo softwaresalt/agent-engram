@@ -27,7 +27,7 @@ use super::{SchemaTarget, map_db_err};
 /// # Errors
 /// Returns [`EngramError`] when any script fails for a reason other than
 /// the relation already existing.
-pub(crate) fn run_schema_bootstrap(db: &impl SchemaTarget) -> Result<(), EngramError> {
+pub fn run_schema_bootstrap(db: &impl SchemaTarget) -> Result<(), EngramError> {
     let cozo_db = db.cozo_instance()?;
     run_scripts(&cozo_db)
 }
