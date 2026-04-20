@@ -23,7 +23,8 @@ interprocess = { version = "2", features = ["tokio"] }
 fd-lock = "4"
 notify = "9.0.0-rc.2"
 notify-debouncer-full = "0.7.0"
-surrealdb = { version = "2", features = ["kv-surrealkv"] }
+surrealdb = { version = "2", features = ["kv-surrealkv"], optional = true }
+cozo = { version = "0.7", features = ["storage-sqlite"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pulldown-cmark = "0.10"
@@ -60,8 +61,14 @@ serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
 
 [features]
-default = ["embeddings"]
+default = ["embeddings", "surreal-backend"]
 embeddings = ["fastembed", "fastembed/ort-download-binaries-native-tls", "fastembed/hf-hub-native-tls"]
+# Database backends — exactly one should be active at a time.
+# surreal-backend: SurrealDB embedded via surrealkv (current default).
+surreal-backend = ["surrealdb"]
+# cozo-backend: CozoDB embedded via SQLite (target of Phase 1–6 migration).
+# Enable with: cargo build --features cozo-backend --no-default-features ... etc.
+cozo-backend = ["cozo"]
 git-graph = ["git2"]
 otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
 # Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
@@ -73,9 +80,13 @@ legacy-sse = []
 proptest = "1"
 tempfile = "3"
 tokio-test = "0.4"
-# Phase 0: API spike and benchmark harnesses (removed at Phase 1 start when
-# cozo enters [dependencies] behind the cozo-backend feature flag).
-cozo = { version = "0.7", features = ["storage-sqlite"] }
+
+# Rayon is pinned below 1.11 to work around graph_builder 0.4.1's
+# `.into_par_iter().copied()` breakage introduced in rayon 1.11.
+# See docs/decisions/2026-04-19-cozo-storage-backend.md §Known dependency issue.
+# Remove this pin once graph/graph_builder is updated upstream or cozo
+# migrates away from graph_builder.
+rayon = ">=1.0, <1.11"
 
 [[bin]]
 name = "engram"
