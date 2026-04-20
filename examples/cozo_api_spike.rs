@@ -94,13 +94,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "[cozo] select function by id: {:?}",
-        result
-            .rows
-            .first()
-            .map_or_else(
-                || "no rows".to_owned(),
-                |row| format!("{{ id: {:?}, name: {:?} }}", row[0], row[1]),
-            )
+        result.rows.first().map_or_else(
+            || "no rows".to_owned(),
+            |row| format!("{{ id: {:?}, name: {:?} }}", row[0], row[1]),
+        )
     );
 
     // ── 5. Parameter binding via BTreeMap ─────────────────────────────────
