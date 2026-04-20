@@ -19,6 +19,10 @@ use crate::errors::{EngramError, SystemError};
 pub struct CozoHandle;
 
 /// Production CozoDB connection handle backed by a `cozo::DbInstance`.
+///
+/// `CozoDb: Send + Sync` because `cozo::DbInstance` uses internal `Arc<RwLock<…>>`
+/// for all mutable state (CozoDB 0.7 guarantee). Do not remove the `Arc` wrapper
+/// without re-verifying thread safety.
 #[derive(Clone)]
 pub struct CozoDb {
     pub(crate) inner: Arc<cozo::DbInstance>,
@@ -41,7 +45,7 @@ pub type Db = CozoDb;
 ///
 /// `CozoHandle` opens a temporary in-memory DB (validates CozoScript syntax).
 /// `CozoDb` returns the persistent DB instance.
-pub trait SchemaTarget {
+pub(crate) trait SchemaTarget {
     /// Acquire the `cozo::DbInstance` for schema bootstrap.
     ///
     /// # Errors
