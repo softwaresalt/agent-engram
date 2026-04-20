@@ -135,6 +135,10 @@ Implementation plan: `docs/exec-plans/2026-04-20-shipment-integrity-plan.md`
 
 ## Action Items
 
-* Backlog item created: `fix backlogit_ship_shipment manifest reconciliation` (status validation + per-item archive + integrity check)
-* Backlog item created: `add Ship pre-archive reconciliation gate` (verify manifest items match what actually shipped before calling backlogit_ship_shipment)
-* Update Ship agent post-merge protocol: add explicit reconciliation step before `backlogit_ship_shipment`
+> **004-S delivered** (shipment `004-S`, merge commit `86b468511b92b2ac8f2ad6bbb9fc0f2f7e85b4ec`):
+
+* ✅ `add Ship pre-archive reconciliation gate` — delivered as `shipment-reconcile` skill + Ship Step 6 gates
+* ✅ `Update Ship agent post-merge protocol` — Ship Step 6 now has pre/post reconciliation wrapping `backlogit_ship_shipment`
+* ✅ Stage scope guard — Stage Step 5.5/step 3.0 prevents over-inclusion at harvest assembly time
+* ⏳ `fix backlogit_ship_shipment manifest reconciliation` — upstream issue drafted at
+  `docs/upstream/backlogit-ship-shipment-validation-2026-04-20.md`; stash entry `73DD2A8D` tracks forwarding to maintainers
