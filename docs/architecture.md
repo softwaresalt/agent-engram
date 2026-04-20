@@ -16,6 +16,7 @@ Engram is a code intelligence MCP daemon. It indexes source files into a queryab
 3. [Workspace Lifecycle](#workspace-lifecycle)
 4. [Module Responsibilities](#module-responsibilities)
 5. [Key Design Decisions](#key-design-decisions)
+6. [Dual-Backend Architecture](#dual-backend-architecture)
 
 ---
 
@@ -84,6 +85,17 @@ Engram is a code intelligence MCP daemon. It indexes source files into a queryab
 │  │  │  • Content records      │  │                        │   │    │
 │  │  │  • Git commit graph     │  │                        │   │    │
 │  │  └─────────────────────────┘  └────────────────────────┘   │    │
+│  │                                                             │    │
+│  │  Alternate backend (feature flag: cozo-backend):           │    │
+│  │  ┌─────────────────────────┐                               │    │
+│  │  │        CozoDB           │                               │    │
+│  │  │  (embedded SQLite,      │                               │    │
+│  │  │   Datalog/CozoScript)   │                               │    │
+│  │  │                         │                               │    │
+│  │  │  • Code graph nodes     │                               │    │
+│  │  │  • Semantic embeddings  │                               │    │
+│  │  │  • Content records      │                               │    │
+│  │  └─────────────────────────┘                               │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
 
@@ -270,7 +282,10 @@ flush_state() (MCP tool call) or graceful shutdown
 | Read Tools | `src/tools/read.rs` | All read-only MCP tools: `query_memory`, `unified_search`, `map_code`, `list_symbols`, `impact_analysis`, `get_workspace_statistics`, `query_graph`. |
 | Write Tools | `src/tools/write.rs` | Mutating MCP tools: `flush_state`, `index_workspace`, `sync_workspace`. |
 | Daemon Tools | `src/tools/daemon.rs` | Daemon-specific tool implementations. |
-| DB Layer | `src/db/` | SurrealDB connection management, `CodeGraphQueries` struct, workspace hashing and canonicalization. |
+| DB Layer | `src/db/` | SurrealDB connection management, `CodeGraphQueries` struct, workspace hashing and canonicalization. CozoDB backend under `src/db/cozo_backend/` (feature-gated). |
+| CozoDB Backend | `src/db/cozo_backend/` | Feature-gated CozoDB backend. `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (Arc<DbInstance>), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
+| CozoDB Queries | `src/db/cozo_queries.rs` | Datalog/CozoScript CRUD for code_file, function, class, interface relations; counts; symbol search by name. Returns `Ok(vec![])` for symbol-not-found (not `Err`) to support `impact_analysis` contract. |
+| CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
 | Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `3.0.0`. |
 | Code Graph | `src/services/code_graph.rs` | Orchestrates tree-sitter indexing: walks workspace files, dispatches per-language parsers, upserts symbol and edge records, manages incremental sync and impact traversal. |
@@ -308,3 +323,87 @@ The `engram` binary serves dual roles: as the MCP daemon (`engram daemon`) and a
 ### Multi-Language Parsing
 
 The `Language` enum in `src/services/parsing/` centralises language dispatch. Each variant (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp) maps to a dedicated submodule that uses the appropriate tree-sitter grammar. TSX uses `LANGUAGE_TSX` (not `LANGUAGE_TYPESCRIPT`) to correctly parse JSX syntax. Extensions `.jsx` reuse the JavaScript grammar; `.tsx` requires the TSX grammar variant. Grammar crates must stay at `"0.23"` in `Cargo.toml` — tree-sitter 0.24.x only accepts ABI 13–14, and v0.24+ grammar crates emit ABI 15 which fails at runtime.
+
+---
+
+## Dual-Backend Architecture
+
+Phase 2 of the CozoDB migration introduced a feature-gated dual-backend design. The two backends are **mutually exclusive** at compile time via Cargo feature flags.
+
+### Feature Flags
+
+| Feature | Default | Description |
+|---|---|---|
+| `surreal-backend` | ✅ on | SurrealDB embedded (SurrealKv) — stable, production backend |
+| `cozo-backend` | ❌ off | CozoDB embedded (SQLite) — migration target backend |
+
+A `compile_error!` guard in `src/db/mod.rs` prevents both from being active simultaneously:
+
+```rust
+#[cfg(all(feature = "surreal-backend", feature = "cozo-backend"))]
+compile_error!("surreal-backend and cozo-backend are mutually exclusive");
+```
+
+To build or test with the CozoDB backend, you **must** disable defaults:
+
+```bash
+cargo build --no-default-features --features "cozo-backend"
+cargo test  --no-default-features --features "cozo-backend"
+cargo clippy --no-default-features --features "cozo-backend"
+```
+
+### CozoDB Storage Path
+
+The CozoDB backend stores its SQLite file at:
+
+```
+{ENGRAM_DATA_DIR}/{workspace_hash}/cozo.db
+```
+
+This is separate from the SurrealDB path (`{ENGRAM_DATA_DIR}/{workspace_hash}/`), so both backends can coexist on disk without conflict during migration development.
+
+### CozoDB Schema
+
+Twelve CozoScript `:create` relations are bootstrapped idempotently at connection time via `run_schema_bootstrap` in `src/db/cozo_backend/schema.rs`:
+
+| Relation | Purpose |
+|---|---|
+| `code_file` | Source file nodes |
+| `function` | Function/method symbol nodes |
+| `class` | Class symbol nodes |
+| `interface` | Interface/trait symbol nodes |
+| `call_edge` | Caller→callee edges |
+| `ref_edge` | Reference edges |
+| `content_record` | Indexed content chunks |
+| `commit_node` | Git commit nodes |
+| `commit_edge` | Commit parent edges |
+| `workspace_meta` | Per-workspace configuration |
+| `embedding_vector` | Symbol embedding vectors |
+| `hnsw_index` | HNSW vector index metadata |
+
+Schema bootstrap is idempotent: `:create` errors containing "already", "defined", "conflicts", or "existing" are silently ignored.
+
+### Query Language
+
+CozoDB uses **CozoScript** (Datalog dialect) rather than SQL:
+
+```cozo
+?[id, name, file_path, start_line, end_line, signature, language] :=
+    *function[id, name, file_path, start_line, end_line, signature, language],
+    name = $name
+```
+
+Key Datalog patterns used in `src/db/cozo_queries.rs`:
+
+* `*relation[...]` — table scan with pattern matching
+* `:put relation {fields}` — upsert
+* `:rm relation {key_fields}` — delete by key
+* `?[count(id)] := *relation[id, ...]` — aggregation
+
+### Thread Safety
+
+`CozoDb` wraps `Arc<cozo::DbInstance>`. CozoDB 0.7's `DbInstance` uses internal `Arc<RwLock<...>>`, making it `Send + Sync` and safe for shared async access without additional locking.
+
+### Phase 3+ Roadmap
+
+Graph edge CRUD (call/ref edges), BFS/DFS traversal, HNSW vector KNN search, and bulk-read operations are deferred to Phase 3 (`68E3719F`). The stubs in `src/db/cozo_queries.rs` return `Err(EngramError::Backend(...))` until implemented.
