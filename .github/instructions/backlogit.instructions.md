@@ -76,6 +76,42 @@ When work changes backlog state materially:
 If `.backlogit/` content was edited outside the usual backlogit mutation flow, refresh the index
 before relying on query or queue output. Treat stale index results as suspect until rehydration completes.
 
+## Shipment Reconciliation
+
+`backlogit_ship_shipment` MUST NOT be called without first invoking the
+`shipment-reconcile` skill with `mode: pre`. This is a mandatory gate, not
+an optional enhancement. See `.github/skills/shipment-reconcile/SKILL.md`.
+
+### Required invocation pattern in Ship Step 6
+
+```text
+1. Invoke shipment-reconcile mode: pre, expected_status: done
+   → If RECONCILE_FAIL: halt, prompt operator, do NOT proceed to step 2
+   → If PROCEED: continue
+2. Call backlogit_ship_shipment(shipment_id, merge_sha)
+3. Run git restore .backlogit/archive/ (always, known deletion quirk)
+4. Invoke shipment-reconcile mode: post
+   → If HALT: restore archives before committing
+5. Commit
+```
+
+### Required invocation pattern in Ship Step 0.5 (intake)
+
+```text
+Invoke shipment-reconcile mode: pre, expected_status: queued
+→ Catches Stage-side over-inclusion before build work begins
+→ RECONCILE_FAIL at intake means Stage swept in items outside the
+  current harvest scope — reconcile the manifest before claiming work
+```
+
+### Why this is required
+
+`backlogit_ship_shipment` does not validate per-item completion state before
+archiving. It will archive items that are still `queued`, `active`, or even
+`missing` from disk. The `shipment-reconcile` skill provides the compensating
+GI/GR double-entry check the tool itself lacks (upstream issue documented at
+`docs/upstream/backlogit-ship-shipment-validation-2026-04-20.md`).
+
 ## Data Ownership Rule
 
 Treat backlogit's markdown files as the current-state source of truth, its query index as a
