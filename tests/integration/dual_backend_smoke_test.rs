@@ -72,10 +72,7 @@ async fn smoke_empty_count_code_files() {
 
     #[cfg(feature = "cozo-backend")]
     {
-        let err_msg = connect_db(&data_dir, "main")
-            .await
-            .unwrap_err()
-            .to_string();
+        let err_msg = connect_db(&data_dir, "main").await.unwrap_err().to_string();
         assert!(
             err_msg.contains("not yet implemented") || err_msg.contains("Phase 2"),
             "expected cozo stub sentinel from connect_db, got: {err_msg}"
@@ -101,10 +98,7 @@ async fn smoke_empty_count_functions() {
 
     #[cfg(feature = "cozo-backend")]
     {
-        let err_msg = connect_db(&data_dir, "main")
-            .await
-            .unwrap_err()
-            .to_string();
+        let err_msg = connect_db(&data_dir, "main").await.unwrap_err().to_string();
         assert!(
             err_msg.contains("not yet implemented") || err_msg.contains("Phase 2"),
             "expected cozo stub sentinel from connect_db, got: {err_msg}"

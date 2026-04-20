@@ -25,5 +25,8 @@ fn embedding_model_constant_is_not_empty() {
 #[test]
 fn embedding_dim_is_384() {
     // Confirm the existing constant aligns with the model's native output size.
-    assert_eq!(EMBEDDING_DIM, 384, "bge-small-en-v1.5 outputs 384 dimensions");
+    assert_eq!(
+        EMBEDDING_DIM, 384,
+        "bge-small-en-v1.5 outputs 384 dimensions"
+    );
 }

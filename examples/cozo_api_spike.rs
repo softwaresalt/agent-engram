@@ -50,7 +50,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ::index create function_meta:by_name { name }
         ::index create function_meta:by_file { file_path }
     "#;
-    db.run_script(schema_script, BTreeMap::new(), cozo::ScriptMutability::Mutable)?;
+    db.run_script(
+        schema_script,
+        BTreeMap::new(),
+        cozo::ScriptMutability::Mutable,
+    )?;
     println!("[cozo] schema bootstrap succeeded");
 
     // ── 3. :put a function row ────────────────────────────────────────────
@@ -69,8 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ?[id, name, file_path, line_start, line_end] :=
             *function_meta { id: "fn:001", name, file_path, line_start, line_end }
     "#;
-    let result =
-        db.run_script(select_script, BTreeMap::new(), cozo::ScriptMutability::Immutable)?;
+    let result = db.run_script(
+        select_script,
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    )?;
     println!(
         "[cozo] select function by id: {:?}",
         result
@@ -91,8 +98,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     "#;
     let mut params = BTreeMap::new();
     params.insert("fp".to_owned(), cozo::DataValue::from("src/lib.rs"));
-    let result = db.run_script(parameterized_script, params, cozo::ScriptMutability::Immutable)?;
-    println!("[cozo] param-bound select: {} row(s) returned", result.rows.len());
+    let result = db.run_script(
+        parameterized_script,
+        params,
+        cozo::ScriptMutability::Immutable,
+    )?;
+    println!(
+        "[cozo] param-bound select: {} row(s) returned",
+        result.rows.len()
+    );
 
     // ── 6. Transaction-style multi-statement via run_script ───────────────
     //
@@ -110,8 +124,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let count_script = r#"
         ?[count(id)] := *function_meta { id }
     "#;
-    let count_result =
-        db.run_script(count_script, BTreeMap::new(), cozo::ScriptMutability::Immutable)?;
+    let count_result = db.run_script(
+        count_script,
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    )?;
     let count = count_result
         .rows
         .first()
@@ -136,8 +153,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         :rm function_meta { id }
     "#;
     db.run_script(rm_script, BTreeMap::new(), cozo::ScriptMutability::Mutable)?;
-    let post_rm =
-        db.run_script(count_script, BTreeMap::new(), cozo::ScriptMutability::Immutable)?;
+    let post_rm = db.run_script(
+        count_script,
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    )?;
     let post_rm_count = post_rm
         .rows
         .first()
@@ -147,7 +167,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => None,
         })
         .unwrap_or(cozo::Num::Int(0));
-    println!("[cozo] count after :rm fn:001: {:?} (expected 1)", post_rm_count);
+    println!(
+        "[cozo] count after :rm fn:001: {:?} (expected 1)",
+        post_rm_count
+    );
 
     println!("[cozo] spike complete — trait surface confirmed viable");
     Ok(())

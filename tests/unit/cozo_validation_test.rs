@@ -51,12 +51,18 @@ fn rejects_neg_inf_in_embedding() {
     let mut embedding = vec![0.0_f32; EMBEDDING_DIM];
     embedding[1] = f32::NEG_INFINITY;
     let result = validate_cozo_embedding(&embedding, EMBEDDING_DIM, "class:test-id");
-    assert!(result.is_err(), "negative Inf in embedding must be rejected");
+    assert!(
+        result.is_err(),
+        "negative Inf in embedding must be rejected"
+    );
 }
 
 #[test]
 fn accepts_valid_embedding() {
     let embedding = vec![0.1_f32; EMBEDDING_DIM];
     let result = validate_cozo_embedding(&embedding, EMBEDDING_DIM, "fn:valid-id");
-    assert!(result.is_ok(), "valid embedding must be accepted: {result:?}");
+    assert!(
+        result.is_ok(),
+        "valid embedding must be accepted: {result:?}"
+    );
 }

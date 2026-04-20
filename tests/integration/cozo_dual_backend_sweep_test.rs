@@ -31,8 +31,7 @@ mod sweep {
     #[tokio::test]
     async fn schema_bootstrap_completes() {
         let (_tmp, db) = open_db().await;
-        let result =
-            engram::db::cozo_backend::schema::run_schema_bootstrap(&db);
+        let result = engram::db::cozo_backend::schema::run_schema_bootstrap(&db);
         assert!(result.is_ok(), "schema bootstrap failed: {result:?}");
     }
 
@@ -56,15 +55,15 @@ mod sweep {
         let after_insert = q.count_code_files().await.expect("count after insert");
         assert_eq!(after_insert, before + 1, "count must increase after upsert");
 
-        let retrieved = q
-            .get_code_file_by_path("src/sweep.rs")
-            .await
-            .expect("get");
+        let retrieved = q.get_code_file_by_path("src/sweep.rs").await.expect("get");
         assert!(retrieved.is_some(), "file must be found after upsert");
 
         q.delete_code_file("src/sweep.rs").await.expect("delete");
         let after_delete = q.count_code_files().await.expect("count after delete");
-        assert_eq!(after_delete, before, "count must return to baseline after delete");
+        assert_eq!(
+            after_delete, before,
+            "count must return to baseline after delete"
+        );
     }
 
     // ── function roundtrip ────────────────────────────────────────────────

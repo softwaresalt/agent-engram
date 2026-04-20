@@ -40,7 +40,10 @@ async fn upsert_and_get_code_file() {
         .get_code_file_by_path("src/lib.rs")
         .await
         .expect("get_code_file_by_path");
-    assert!(retrieved.is_some(), "code file must be retrievable after upsert");
+    assert!(
+        retrieved.is_some(),
+        "code file must be retrievable after upsert"
+    );
     assert_eq!(retrieved.unwrap().path, "src/lib.rs");
 }
 
@@ -57,7 +60,9 @@ async fn delete_code_file_removes_it() {
         last_indexed_at: "2026-01-01T00:00:00Z".into(),
     };
     q.upsert_code_file(&file).await.expect("upsert");
-    q.delete_code_file("src/to_delete.rs").await.expect("delete");
+    q.delete_code_file("src/to_delete.rs")
+        .await
+        .expect("delete");
     let result = q
         .get_code_file_by_path("src/to_delete.rs")
         .await
@@ -91,7 +96,10 @@ async fn upsert_and_get_function() {
         .get_function_by_name("test_function")
         .await
         .expect("get_function_by_name");
-    assert!(retrieved.is_some(), "function must be retrievable after upsert");
+    assert!(
+        retrieved.is_some(),
+        "function must be retrievable after upsert"
+    );
     assert_eq!(retrieved.unwrap().name, "test_function");
 }
 
@@ -150,7 +158,10 @@ async fn upsert_and_get_class() {
         .get_class_by_name("TestClass")
         .await
         .expect("get_class_by_name");
-    assert!(retrieved.is_some(), "class must be retrievable after upsert");
+    assert!(
+        retrieved.is_some(),
+        "class must be retrievable after upsert"
+    );
     assert_eq!(retrieved.unwrap().name, "TestClass");
 }
 
@@ -179,7 +190,10 @@ async fn upsert_and_get_interface() {
         .get_interface_by_name("TestInterface")
         .await
         .expect("get_interface_by_name");
-    assert!(retrieved.is_some(), "interface must be retrievable after upsert");
+    assert!(
+        retrieved.is_some(),
+        "interface must be retrievable after upsert"
+    );
     assert_eq!(retrieved.unwrap().name, "TestInterface");
 }
 
@@ -207,7 +221,9 @@ async fn function_upsert_writes_meta_code_and_embedding_tables() {
         embedding: vec![0.5_f32; engram::services::embedding::EMBEDDING_DIM],
         summary: String::new(),
     };
-    q.upsert_function(&func).await.expect("upsert for fan-out test");
+    q.upsert_function(&func)
+        .await
+        .expect("upsert for fan-out test");
     let count_after = q.count_functions().await.expect("count_functions after");
     assert_eq!(
         count_after,

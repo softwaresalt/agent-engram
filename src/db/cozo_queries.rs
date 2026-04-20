@@ -221,8 +221,8 @@ pub struct CodeGraphQueries {
 
 impl CodeGraphQueries {
     /// Create a new stub wrapping the given CozoDB handle.
-    pub fn new(_db: Db) -> Self {
-        Self { _db }
+    pub fn new(db: Db) -> Self {
+        Self { _db: db }
     }
 
     // ── code_file CRUD ─────────────────────────────────────────────
@@ -490,10 +490,7 @@ impl CodeGraphQueries {
     // ── BFS traversal ─────────────────────────────────────────────
 
     /// Stub — not yet implemented.
-    pub async fn find_symbols_by_name(
-        &self,
-        _name: &str,
-    ) -> Result<Vec<SymbolMatch>, EngramError> {
+    pub async fn find_symbols_by_name(&self, _name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
         Err(backend_err())
     }
 
@@ -508,10 +505,7 @@ impl CodeGraphQueries {
     }
 
     /// Stub — not yet implemented.
-    pub async fn resolve_symbol(
-        &self,
-        _node_id: &str,
-    ) -> Result<Option<SymbolMatch>, EngramError> {
+    pub async fn resolve_symbol(&self, _node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
         Err(backend_err())
     }
 
@@ -648,10 +642,7 @@ impl CodeGraphQueries {
     }
 
     /// Stub — not yet implemented.
-    pub async fn delete_content_record_by_path(
-        &self,
-        _file_path: &str,
-    ) -> Result<(), EngramError> {
+    pub async fn delete_content_record_by_path(&self, _file_path: &str) -> Result<(), EngramError> {
         Err(backend_err())
     }
 

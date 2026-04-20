@@ -8,7 +8,7 @@
 
 #[cfg(feature = "cozo-backend")]
 mod schema_tests {
-    use engram::db::cozo_backend::{schema, CozoHandle};
+    use engram::db::cozo_backend::{CozoHandle, schema};
 
     /// Phase 2 U2.1: bootstrap must complete without error on a fresh handle.
     ///

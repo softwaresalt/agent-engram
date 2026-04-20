@@ -1038,10 +1038,7 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
 /// is wired in Phase 2.
 #[cfg(feature = "cozo-backend")]
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
-pub async fn query_graph(
-    state: SharedState,
-    params: Option<Value>,
-) -> Result<Value, EngramError> {
+pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     use crate::services::gate::sanitize_query;
 
     let parsed: QueryGraphParams =
