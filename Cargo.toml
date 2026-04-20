@@ -416,3 +416,12 @@ path = "tests/integration/evaluation_test.rs"
 [[test]]
 name = "contract_evaluation"
 path = "tests/contract/evaluation_contract_test.rs"
+
+[[test]]
+name = "integration_dual_backend_smoke"
+path = "tests/integration/dual_backend_smoke_test.rs"
+
+[[example]]
+name = "cozo_api_spike"
+path = "examples/cozo_api_spike.rs"
+required-features = ["cozo-backend"]

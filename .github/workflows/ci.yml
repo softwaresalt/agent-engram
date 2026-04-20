@@ -12,6 +12,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: surreal-backend
+            features: ""
+            cozo_advisory: false
+          - backend: cozo-backend
+            features: "--no-default-features --features cozo-backend"
+            cozo_advisory: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,15 +35,25 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: fmt
+        if: matrix.backend == 'surreal-backend'
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings -D clippy::pedantic
+        run: cargo clippy ${{ matrix.features }} --all-targets -- -D warnings -D clippy::pedantic
 
       - name: test
+        if: matrix.backend == 'surreal-backend'
         run: cargo test --all-targets
 
+      - name: test (cozo-backend smoke — advisory until Phase 4)
+        if: matrix.backend == 'cozo-backend'
+        continue-on-error: true
+        run: >
+          cargo test ${{ matrix.features }}
+          --test integration_dual_backend_smoke
+
       - name: audit
+        if: matrix.backend == 'surreal-backend'
         continue-on-error: true
         run: |
           cargo install cargo-audit --locked

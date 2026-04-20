@@ -1,4 +1,7 @@
-//! Daemon process test harness.
+//! Daemon process test harness and dual-backend test utilities.
+//!
+//! This module bundles the [`DaemonHarness`] subprocess fixture and the
+//! [`dual_backend`] compile-time-switched assertion macros.
 //!
 //! Provides [`DaemonHarness`] for spawning an `engram daemon` subprocess in
 //! integration tests. Each instance gets its own [`TempDir`] workspace so
@@ -31,6 +34,8 @@
 // Allow dead code at the module level: the harness is infrastructure for
 // Phase 3 tests (T020-T025) which do not exist yet.
 #![allow(dead_code)]
+
+pub mod dual_backend;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
