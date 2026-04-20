@@ -112,6 +112,11 @@ build work begins:
    build work begins. Broadcast `[SHIP] Shipment claimed: {shipment_id}`.
 5. Record `shipment_id` as the session scope. All build execution and PR scope is bounded
    by this shipment.
+6. **Intake reconciliation check**: Invoke `shipment-reconcile` with `mode: pre` and
+   `expected_status: queued`. This verifies every manifest item is present in
+   `.backlogit/queue/` with `status: queued`, and scans for orphan items. A `RECONCILE_FAIL`
+   here means Stage swept non-harvest items into the manifest; reconcile before proceeding
+   to Step 1. (Lock is not held at intake — this is a lightweight early-warning check only.)
 
 **Fallback path — direct invocation without a Stage-prepared shipment**:
 
@@ -259,13 +264,30 @@ When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Post-m
 After the user approves merge:
 
 1. **Close the shipment** (when the `backlogit` capability pack is installed and `features.shipments` is true):
+   0. **Pre-archive reconciliation gate (mandatory)**:
+      * Invoke the `shipment-reconcile` skill with `mode: pre`, `shipment_id`, and
+        `expected_status: done`. This acquires the single-writer lock on
+        `.backlogit/queue/{shipment_id}.md` (via the `file-lock` skill) and verifies
+        that every manifest item is present in queue with `status: done`, and scans for
+        orphan items (queue files declaring this `shipment_id` that are NOT in the manifest).
+      * If the skill returns `RECONCILE_FAIL`: halt and surface the reconciliation report
+        to the operator. Do NOT proceed to step 1.a until the operator resolves the
+        discrepancies and re-invokes Ship Step 6.
+      * If the skill returns `PROCEED`: continue to step 1.a. The lock remains held until
+        post-mode completes in step 1.c.
    a. Call `backlogit_ship_shipment` with the merge commit SHA. This archives all
       queue items (feature + tasks) to `.backlogit/archive/`.
    b. **Verify archive integrity (P-007)**: Run `git status -- ".backlogit/archive/"`.
       If any archive files appear as working-tree deletions, restore them immediately:
       `git restore .backlogit/archive/`. Do not skip this check — `backlogit_ship_shipment`
       deletes archive files from disk after moving them internally.
-   c. Commit the backlogit state: `git add .backlogit/ && git commit -m "chore: archive {shipment_id} backlog artifacts"`
+   c. **Post-archive reconciliation**: Invoke `shipment-reconcile` with `mode: post` and
+      `merge_commit_sha`. This verifies that every manifest item has an archive file and
+      detects any files deleted by `backlogit_ship_shipment`. Attach the resulting
+      reconciliation report to the closure artifact. If the skill returns
+      `HALT — restore archives`, run `git restore .backlogit/archive/` before step 1.d.
+      The lock is released by the skill at the end of post-mode.
+   d. Commit the backlogit state: `git add .backlogit/ && git commit -m "chore: archive {shipment_id} backlog artifacts"`
 
 2. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`.
 3. Evaluate whether documentation or compound learnings need updates for the shipped scope:

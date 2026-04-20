@@ -355,6 +355,12 @@ completes. This is the final act of Stage — the shipment ID is the handoff tok
    * Broadcast `[STAGE] Created shipment: {shipment_id} — "{title}"`.
 
 3. **Add remaining items in parent-first, dependency order** using `backlogit_add_to_shipment`:
+   0. **Scope guard (mandatory first step)**: Record the exact list of IDs returned by the
+      immediately preceding harvest invocation as `harvest_ids`. This is the canonical scope
+      for shipment assembly. `backlogit_add_to_shipment` MUST ONLY be called for items that
+      appear in `harvest_ids`. Pre-existing queue items NOT emitted by this harvest MUST be
+      excluded, even if they appear un-assigned and ready. Never expand scope by searching the
+      queue for unassigned items — use only the ID list the harvest step returned.
    a. Ensure the covering feature is already present in the shipment before adding children;
       when the shipment was just created, this is satisfied by including the feature in the
       initial `items` list instead of re-adding it.

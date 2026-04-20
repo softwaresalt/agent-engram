@@ -93,6 +93,46 @@ The Stage agent's harvest-into-shipment behavior should also be revisited:
 * `docs/compound/best-practices/pub-visibility-for-external-test-harness-2026-04-20.md`
 * The P-007 archive-deletion workaround documented in repo memory (run `git restore .backlogit/archive/` after `backlogit_ship_shipment`) is **still valid** but only addresses the corruption of pre-existing archive files. It does NOT address the new bug where queue files are deleted instead of archived.
 
+## Resolution
+
+This compound learning has been operationalized as a reusable harness skill:
+
+**Skill**: `.github/skills/shipment-reconcile/SKILL.md`
+
+The skill provides a GI/GR double-entry reconciliation check as a compensating
+control for the missing `backlogit_ship_shipment` per-item validation:
+
+* `mode: pre` — runs before `backlogit_ship_shipment`; verifies every manifest
+  item is present in queue with `status: done`; detects orphan items; halts on
+  any discrepancy (`RECONCILE_FAIL`)
+* `mode: post` — runs after archive + restore; verifies archive integrity and
+  detects the known file-deletion quirk
+
+### Amended Agent Steps
+
+* **Stage Step 5.5 / step 3** (`.github/agents/stage.agent.md`): A new scope
+  guard (step 3.0) requires that `backlogit_add_to_shipment` is ONLY called for
+  items emitted by the current harvest invocation (`harvest_ids`). Pre-existing
+  queue items must be excluded.
+
+* **Ship Step 0.5** (`.github/agents/ship.agent.md`): An intake reconciliation
+  check (`mode: pre`, `expected_status: queued`) now runs after shipment claim,
+  catching Stage-side over-inclusion before any build work begins.
+
+* **Ship Step 6** (`.github/agents/ship.agent.md`): Pre-archive and post-archive
+  reconciliation gates (`mode: pre`/`mode: post`) wrap the
+  `backlogit_ship_shipment` call and archive restore step.
+
+### Upstream Escalation
+
+An issue draft for the `backlogit` maintainers is at:
+`docs/upstream/backlogit-ship-shipment-validation-2026-04-20.md`
+
+### Delivery
+
+Shipped in shipment `004-S` via branch `chore/004-s-shipment-integrity`.
+Implementation plan: `docs/exec-plans/2026-04-20-shipment-integrity-plan.md`
+
 ## Action Items
 
 * Backlog item created: `fix backlogit_ship_shipment manifest reconciliation` (status validation + per-item archive + integrity check)
