@@ -4,8 +4,8 @@
 //! feature-gated database backends:
 //!
 //! * **`surreal-backend`** (default): an empty workspace returns `0` for all counts.
-//! * **`cozo-backend`** (`--no-default-features --features cozo-backend`): the
-//!   Phase 1 stub `connect_db` returns the expected "not yet implemented" sentinel.
+//! * **`cozo-backend`** (`--no-default-features --features cozo-backend`): `connect_db`
+//!   succeeds and count queries return `0` on a fresh DB.
 
 // Include the dual_backend helper macros from tests/helpers/.
 #[path = "../helpers/dual_backend.rs"]
@@ -26,8 +26,7 @@ fn make_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
 
 // ── Smoke tests ────────────────────────────────────────────────────────────
 
-/// Smoke: `connect_db` on an empty workspace returns `Ok(db)` under
-/// `surreal-backend`, or the Phase 1 stub error under `cozo-backend`.
+/// Smoke: `connect_db` on an empty workspace returns `Ok(db)` under both backends.
 #[tokio::test]
 async fn smoke_connect_db() {
     let (_workspace, data_dir) = make_workspace();
@@ -41,20 +40,16 @@ async fn smoke_connect_db() {
     );
 
     #[cfg(feature = "cozo-backend")]
-    {
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("not yet implemented") || err_msg.contains("Phase 2"),
-            "expected cozo stub sentinel, got: {err_msg}"
-        );
-    }
+    assert!(
+        result.is_ok(),
+        "connect_db should succeed under cozo-backend, got: {result:?}"
+    );
 }
 
 /// Smoke: count_code_files on an empty workspace.
 ///
 /// Under `surreal-backend`: returns `Ok(0)`.
-/// Under `cozo-backend`: `connect_db` returns the stub error before we can
-/// construct `CodeGraphQueries`, so we verify the sentinel directly.
+/// Under `cozo-backend`: connects and counts, returns `Ok(0)`.
 #[tokio::test]
 async fn smoke_empty_count_code_files() {
     let (_workspace, data_dir) = make_workspace();
@@ -72,11 +67,16 @@ async fn smoke_empty_count_code_files() {
 
     #[cfg(feature = "cozo-backend")]
     {
-        let err_msg = connect_db(&data_dir, "main").await.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("not yet implemented") || err_msg.contains("Phase 2"),
-            "expected cozo stub sentinel from connect_db, got: {err_msg}"
-        );
+        use engram::db::queries::CodeGraphQueries;
+        let db = connect_db(&data_dir, "main")
+            .await
+            .expect("connect_db should succeed under cozo-backend");
+        let cg = CodeGraphQueries::new(db);
+        let count = cg
+            .count_code_files()
+            .await
+            .expect("count_code_files should succeed");
+        assert_eq!(count, 0_u64, "fresh DB must have zero code files");
     }
 }
 
@@ -98,10 +98,15 @@ async fn smoke_empty_count_functions() {
 
     #[cfg(feature = "cozo-backend")]
     {
-        let err_msg = connect_db(&data_dir, "main").await.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("not yet implemented") || err_msg.contains("Phase 2"),
-            "expected cozo stub sentinel from connect_db, got: {err_msg}"
-        );
+        use engram::db::queries::CodeGraphQueries;
+        let db = connect_db(&data_dir, "main")
+            .await
+            .expect("connect_db should succeed under cozo-backend");
+        let cg = CodeGraphQueries::new(db);
+        let count = cg
+            .count_functions()
+            .await
+            .expect("count_functions should succeed");
+        assert_eq!(count, 0_u64, "fresh DB must have zero functions");
     }
 }

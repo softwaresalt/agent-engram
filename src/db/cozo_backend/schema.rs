@@ -2,12 +2,6 @@
 //!
 //! Phase 2 (U2.1) — relation-creation constants and bootstrap execution.
 //!
-//! Each `CREATE_*` constant is a single CozoScript `:create` statement that
-//! defines one stored relation.  `run_schema_bootstrap` validates them by
-//! running against a fresh in-memory CozoDB; production bootstrap (running
-//! against a live SQLite handle) is wired in Phase 2 U2.2+ when
-//! `connect_db` returns a real handle.
-//!
 //! Three-table layout per symbol type (function / class / interface):
 //!  * `*_meta`      — identity and source-position fields (key lookups)
 //!  * `*_code`      — raw body text (separate to avoid over-fetching)
@@ -17,25 +11,29 @@ use std::collections::BTreeMap;
 
 use crate::errors::EngramError;
 
-use super::{Db, map_db_err};
+use super::{SchemaTarget, map_db_err};
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────
 
-/// Bootstrap all CozoDB relations for a fresh workspace.
+/// Bootstrap all CozoDB relations for a workspace.
 ///
-/// Validates every `CREATE_*` script by executing it against a temporary
-/// in-memory CozoDB instance.  Returns `Ok(())` if all scripts are
-/// syntactically valid and execute without error.
+/// Runs every `CREATE_*` script against the DB instance acquired from `db`.
+/// For `CozoHandle`, a fresh in-memory instance is opened (validates syntax).
+/// For `CozoDb`, scripts are run against the persistent SQLite store.
+///
+/// This function is idempotent: `:create` errors for already-existing
+/// relations are silently ignored.
 ///
 /// # Errors
-/// Returns an [`EngramError`] when any schema statement fails to execute.
-pub fn run_schema_bootstrap(_db: &Db) -> Result<(), EngramError> {
-    // Open a fresh in-memory store to validate the schema scripts.
-    // Phase 2 U2.2+: replace with execution on the persistent _db handle
-    // once connect_db returns a live cozo::DbInstance.
-    let mem_db = cozo::DbInstance::new("mem", "", Default::default())
-        .map_err(|e| map_db_err(format!("{e}")))?;
+/// Returns [`EngramError`] when any script fails for a reason other than
+/// the relation already existing.
+pub fn run_schema_bootstrap(db: &impl SchemaTarget) -> Result<(), EngramError> {
+    let cozo_db = db.cozo_instance()?;
+    run_scripts(&cozo_db)
+}
 
+/// Execute all `:create` scripts against `cozo_db`, ignoring "already exists" errors.
+fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     let scripts = [
         CREATE_FILE_NODE,
         CREATE_FUNCTION_META,
@@ -52,9 +50,20 @@ pub fn run_schema_bootstrap(_db: &Db) -> Result<(), EngramError> {
     ];
 
     for script in &scripts {
-        mem_db
-            .run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(format!("schema bootstrap failed: {e}")))?;
+        match cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("already")
+                    || msg.contains("defined")
+                    || msg.contains("conflicts")
+                    || msg.contains("existing")
+                {
+                    continue;
+                }
+                return Err(map_db_err(format!("schema bootstrap: {e}")));
+            }
+        }
     }
 
     Ok(())
@@ -62,14 +71,14 @@ pub fn run_schema_bootstrap(_db: &Db) -> Result<(), EngramError> {
 
 // ── File node ──────────────────────────────────────────────────────────────
 
-/// CozoScript `:create` statement for the `file_node` relation.
+/// CozoScript `:create` for `file_node` — source file metadata.
 ///
-/// Key: `path` (unique workspace-relative file path).
-/// Values: language tag, size, content hash, last-indexed timestamp (ISO string).
+/// Key: `path`. Values: `id`, language, size in bytes, content hash, timestamp.
 pub const CREATE_FILE_NODE: &str = r#"
 :create file_node {
     path: String
     =>
+    id: String,
     language: String,
     size_bytes: Int,
     content_hash: String,

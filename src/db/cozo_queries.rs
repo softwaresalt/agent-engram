@@ -1,18 +1,23 @@
-//! CozoDB query stub — Phase 1 compilation shim.
+//! CozoDB query implementations — Phase 2 CRUD and count operations.
 //!
 //! Provides the same public API as the SurrealDB `queries.rs` module so that
 //! call sites compile under `--features cozo-backend` without modification.
-//! All methods return a "not yet implemented" error.  Phase 2 will replace
-//! these stubs with real Cozo Datalog implementations.
+//! Methods that are fully implemented target the three-table vertical partition
+//! layout defined in `cozo_backend::schema`.  Remaining methods return a
+//! "not yet implemented" error and will be filled in Phase 3+.
 
 #![allow(clippy::unused_async)]
+#![allow(clippy::missing_errors_doc)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use cozo::{DataValue, Num, ScriptMutability};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-use crate::db::Db;
+use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
 
 pub use crate::models::FileHashRecord;
@@ -203,52 +208,110 @@ pub struct SymbolListResult {
 fn backend_err() -> EngramError {
     EngramError::from(SystemError::DatabaseError {
         reason: "CozoDB backend not yet implemented; \
-                 use surreal-backend feature until Phase 2"
+                 use surreal-backend feature until Phase 3+"
             .into(),
     })
 }
 
-// ── CodeGraphQueries stub ─────────────────────────────────────────────────
+// ── CodeGraphQueries ──────────────────────────────────────────────────────
 
-/// CozoDB stub for `CodeGraphQueries`.
+/// CozoDB-backed `CodeGraphQueries`.
 ///
-/// All methods return [`backend_err()`] until Phase 2 implements real
-/// Datalog queries against a `cozo::DbInstance`.
-#[allow(dead_code)]
+/// Fully implemented methods target the three-table vertical-partition layout:
+/// `*_meta`, `*_code`, and `*_embedding` per symbol type.  Stub methods
+/// return [`backend_err()`] and will be replaced in Phase 3+.
 pub struct CodeGraphQueries {
-    _db: Db,
+    db: Arc<cozo::DbInstance>,
 }
 
 impl CodeGraphQueries {
-    /// Create a new stub wrapping the given CozoDB handle.
-    pub fn new(db: Db) -> Self {
-        Self { _db: db }
+    /// Create a new `CodeGraphQueries` backed by the given CozoDB handle.
+    pub fn new(db: CozoDb) -> Self {
+        Self { db: db.inner }
     }
 
     // ── code_file CRUD ─────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Insert or replace a code file record.
     pub async fn upsert_code_file(
         &self,
-        _file: &crate::models::CodeFile,
+        file: &crate::models::CodeFile,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[path, id, language, size_bytes, content_hash, last_indexed_at] <-
+    [[$path, $id, $language, $size_bytes, $content_hash, $last_indexed_at]]
+:put file_node { path, id, language, size_bytes, content_hash, last_indexed_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("path".to_owned(), DataValue::from(file.path.as_str()));
+        p.insert("id".to_owned(), DataValue::from(file.id.as_str()));
+        p.insert(
+            "language".to_owned(),
+            DataValue::from(file.language.as_str()),
+        );
+        p.insert(
+            "size_bytes".to_owned(),
+            DataValue::Num(Num::Int(i64::try_from(file.size_bytes).unwrap_or(i64::MAX))),
+        );
+        p.insert(
+            "content_hash".to_owned(),
+            DataValue::from(file.content_hash.as_str()),
+        );
+        p.insert(
+            "last_indexed_at".to_owned(),
+            DataValue::from(file.last_indexed_at.as_str()),
+        );
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Look up a code file by its workspace-relative path.
     pub async fn get_code_file_by_path(
         &self,
-        _path: &str,
+        path: &str,
     ) -> Result<Option<crate::models::CodeFile>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[path, id, language, size_bytes, content_hash, last_indexed_at] :=
+    *file_node { path, id, language, size_bytes, content_hash, last_indexed_at },
+    path = $path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("path".to_owned(), DataValue::from(path));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &result.rows[0];
+        Ok(Some(crate::models::CodeFile {
+            path: extract_str(row, 0),
+            id: extract_str(row, 1),
+            language: extract_str(row, 2),
+            size_bytes: u64::try_from(extract_i64(row, 3).max(0)).unwrap_or(0),
+            content_hash: extract_str(row, 4),
+            last_indexed_at: extract_str(row, 5),
+        }))
     }
 
-    /// Stub — not yet implemented.
-    pub async fn delete_code_file(&self, _path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete a code file record by its workspace-relative path.
+    pub async fn delete_code_file(&self, path: &str) -> Result<(), EngramError> {
+        let script = r#"
+?[path] <- [[$path]]
+:rm file_node { path }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("path".to_owned(), DataValue::from(path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Stub — list all code files (not yet implemented).
     pub async fn list_code_files(&self) -> Result<Vec<crate::models::CodeFile>, EngramError> {
         Err(backend_err())
     }
@@ -277,48 +340,272 @@ impl CodeGraphQueries {
 
     // ── function CRUD ─────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
-    pub async fn upsert_function(
-        &self,
-        _func: &crate::models::Function,
-    ) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Insert or replace a function record across all three tables.
+    pub async fn upsert_function(&self, func: &crate::models::Function) -> Result<(), EngramError> {
+        // Table 1: function_meta
+        let meta_script = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary] <-
+    [[$id, $name, $file_path, $line_start, $line_end, $signature, $docstring, $body_hash, $token_count, $embed_type, $summary]]
+:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(func.id.as_str()));
+        p.insert("name".to_owned(), DataValue::from(func.name.as_str()));
+        p.insert(
+            "file_path".to_owned(),
+            DataValue::from(func.file_path.as_str()),
+        );
+        p.insert(
+            "line_start".to_owned(),
+            DataValue::Num(Num::Int(i64::from(func.line_start))),
+        );
+        p.insert(
+            "line_end".to_owned(),
+            DataValue::Num(Num::Int(i64::from(func.line_end))),
+        );
+        p.insert(
+            "signature".to_owned(),
+            DataValue::from(func.signature.as_str()),
+        );
+        p.insert(
+            "docstring".to_owned(),
+            DataValue::from(func.docstring.as_deref().unwrap_or("")),
+        );
+        p.insert(
+            "body_hash".to_owned(),
+            DataValue::from(func.body_hash.as_str()),
+        );
+        p.insert(
+            "token_count".to_owned(),
+            DataValue::Num(Num::Int(i64::from(func.token_count))),
+        );
+        p.insert(
+            "embed_type".to_owned(),
+            DataValue::from(func.embed_type.as_str()),
+        );
+        p.insert("summary".to_owned(), DataValue::from(func.summary.as_str()));
+        self.db
+            .run_script(meta_script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Table 2: function_code
+        let code_script = r#"
+?[id, body] <- [[$id, $body]]
+:put function_code { id, body }
+"#;
+        let mut p2 = BTreeMap::new();
+        p2.insert("id".to_owned(), DataValue::from(func.id.as_str()));
+        p2.insert("body".to_owned(), DataValue::from(func.body.as_str()));
+        self.db
+            .run_script(code_script, p2, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Table 3: function_embedding
+        let embed_script = r#"
+?[id, embedding] <- [[$id, $embedding]]
+:put function_embedding { id, embedding }
+"#;
+        let embedding_dv = DataValue::List(
+            func.embedding
+                .iter()
+                .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
+                .collect(),
+        );
+        let mut p3 = BTreeMap::new();
+        p3.insert("id".to_owned(), DataValue::from(func.id.as_str()));
+        p3.insert("embedding".to_owned(), embedding_dv);
+        self.db
+            .run_script(embed_script, p3, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Look up a function by name (first match).
     pub async fn get_function_by_name(
         &self,
-        _name: &str,
+        name: &str,
     ) -> Result<Option<crate::models::Function>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, body, embedding] :=
+    *function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary },
+    name = $name,
+    *function_code { id, body },
+    *function_embedding { id, embedding }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("name".to_owned(), DataValue::from(name));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_function(&result.rows[0])))
     }
 
-    /// Stub — not yet implemented.
+    /// Return all functions belonging to the given file.
     pub async fn get_functions_by_file(
         &self,
-        _file_path: &str,
+        file_path: &str,
     ) -> Result<Vec<crate::models::Function>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, body, embedding] :=
+    *function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary },
+    file_path = $fp,
+    *function_code { id, body },
+    *function_embedding { id, embedding }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("fp".to_owned(), DataValue::from(file_path));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result.rows.iter().map(|r| row_to_function(r)).collect())
     }
 
-    /// Stub — not yet implemented.
-    pub async fn delete_functions_by_file(&self, _file_path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete all functions (meta, code, and embedding) belonging to the given file.
+    pub async fn delete_functions_by_file(&self, file_path: &str) -> Result<(), EngramError> {
+        let mut p = BTreeMap::new();
+        p.insert("fp".to_owned(), DataValue::from(file_path));
+
+        // Delete code rows first (while meta still present for the join)
+        let del_code = r#"
+?[id] := *function_meta { id, file_path: $fp }, *function_code { id }
+:rm function_code { id }
+"#;
+        self.db
+            .run_script(del_code, p.clone(), ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Delete embedding rows
+        let del_embed = r#"
+?[id] := *function_meta { id, file_path: $fp }, *function_embedding { id }
+:rm function_embedding { id }
+"#;
+        self.db
+            .run_script(del_embed, p.clone(), ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Finally delete meta rows
+        let del_meta = r#"
+?[id] := *function_meta { id, file_path: $fp }
+:rm function_meta { id }
+"#;
+        self.db
+            .run_script(del_meta, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        Ok(())
     }
 
     // ── class CRUD ─────────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
-    pub async fn upsert_class(&self, _class: &crate::models::Class) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Insert or replace a class record across all three tables.
+    pub async fn upsert_class(&self, class: &crate::models::Class) -> Result<(), EngramError> {
+        // Table 1: class_meta
+        let meta = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary] <-
+    [[$id, $name, $file_path, $line_start, $line_end, $docstring, $body_hash, $token_count, $embed_type, $summary]]
+:put class_meta { id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(class.id.as_str()));
+        p.insert("name".to_owned(), DataValue::from(class.name.as_str()));
+        p.insert(
+            "file_path".to_owned(),
+            DataValue::from(class.file_path.as_str()),
+        );
+        p.insert(
+            "line_start".to_owned(),
+            DataValue::Num(Num::Int(i64::from(class.line_start))),
+        );
+        p.insert(
+            "line_end".to_owned(),
+            DataValue::Num(Num::Int(i64::from(class.line_end))),
+        );
+        p.insert(
+            "docstring".to_owned(),
+            DataValue::from(class.docstring.as_deref().unwrap_or("")),
+        );
+        p.insert(
+            "body_hash".to_owned(),
+            DataValue::from(class.body_hash.as_str()),
+        );
+        p.insert(
+            "token_count".to_owned(),
+            DataValue::Num(Num::Int(i64::from(class.token_count))),
+        );
+        p.insert(
+            "embed_type".to_owned(),
+            DataValue::from(class.embed_type.as_str()),
+        );
+        p.insert(
+            "summary".to_owned(),
+            DataValue::from(class.summary.as_str()),
+        );
+        self.db
+            .run_script(meta, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Table 2: class_code
+        let code_s = r#"
+?[id, body] <- [[$id, $body]]
+:put class_code { id, body }
+"#;
+        let mut p2 = BTreeMap::new();
+        p2.insert("id".to_owned(), DataValue::from(class.id.as_str()));
+        p2.insert("body".to_owned(), DataValue::from(class.body.as_str()));
+        self.db
+            .run_script(code_s, p2, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Table 3: class_embedding
+        let embed_s = r#"
+?[id, embedding] <- [[$id, $embedding]]
+:put class_embedding { id, embedding }
+"#;
+        let emb_dv = DataValue::List(
+            class
+                .embedding
+                .iter()
+                .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
+                .collect(),
+        );
+        let mut p3 = BTreeMap::new();
+        p3.insert("id".to_owned(), DataValue::from(class.id.as_str()));
+        p3.insert("embedding".to_owned(), emb_dv);
+        self.db
+            .run_script(embed_s, p3, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Look up a class by name (first match).
     pub async fn get_class_by_name(
         &self,
-        _name: &str,
+        name: &str,
     ) -> Result<Option<crate::models::Class>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary, body, embedding] :=
+    *class_meta { id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary },
+    name = $name,
+    *class_code { id, body },
+    *class_embedding { id, embedding }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("name".to_owned(), DataValue::from(name));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_class(&result.rows[0])))
     }
 
     /// Stub — not yet implemented.
@@ -328,20 +615,112 @@ impl CodeGraphQueries {
 
     // ── interface CRUD ────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Insert or replace an interface record across all three tables.
     pub async fn upsert_interface(
         &self,
-        _iface: &crate::models::Interface,
+        iface: &crate::models::Interface,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        // Table 1: interface_meta
+        let meta = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary] <-
+    [[$id, $name, $file_path, $line_start, $line_end, $docstring, $body_hash, $token_count, $embed_type, $summary]]
+:put interface_meta { id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(iface.id.as_str()));
+        p.insert("name".to_owned(), DataValue::from(iface.name.as_str()));
+        p.insert(
+            "file_path".to_owned(),
+            DataValue::from(iface.file_path.as_str()),
+        );
+        p.insert(
+            "line_start".to_owned(),
+            DataValue::Num(Num::Int(i64::from(iface.line_start))),
+        );
+        p.insert(
+            "line_end".to_owned(),
+            DataValue::Num(Num::Int(i64::from(iface.line_end))),
+        );
+        p.insert(
+            "docstring".to_owned(),
+            DataValue::from(iface.docstring.as_deref().unwrap_or("")),
+        );
+        p.insert(
+            "body_hash".to_owned(),
+            DataValue::from(iface.body_hash.as_str()),
+        );
+        p.insert(
+            "token_count".to_owned(),
+            DataValue::Num(Num::Int(i64::from(iface.token_count))),
+        );
+        p.insert(
+            "embed_type".to_owned(),
+            DataValue::from(iface.embed_type.as_str()),
+        );
+        p.insert(
+            "summary".to_owned(),
+            DataValue::from(iface.summary.as_str()),
+        );
+        self.db
+            .run_script(meta, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Table 2: interface_code
+        let code_s = r#"
+?[id, body] <- [[$id, $body]]
+:put interface_code { id, body }
+"#;
+        let mut p2 = BTreeMap::new();
+        p2.insert("id".to_owned(), DataValue::from(iface.id.as_str()));
+        p2.insert("body".to_owned(), DataValue::from(iface.body.as_str()));
+        self.db
+            .run_script(code_s, p2, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        // Table 3: interface_embedding
+        let embed_s = r#"
+?[id, embedding] <- [[$id, $embedding]]
+:put interface_embedding { id, embedding }
+"#;
+        let emb_dv = DataValue::List(
+            iface
+                .embedding
+                .iter()
+                .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
+                .collect(),
+        );
+        let mut p3 = BTreeMap::new();
+        p3.insert("id".to_owned(), DataValue::from(iface.id.as_str()));
+        p3.insert("embedding".to_owned(), emb_dv);
+        self.db
+            .run_script(embed_s, p3, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Look up an interface by name (first match).
     pub async fn get_interface_by_name(
         &self,
-        _name: &str,
+        name: &str,
     ) -> Result<Option<crate::models::Interface>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary, body, embedding] :=
+    *interface_meta { id, name, file_path, line_start, line_end, docstring, body_hash, token_count, embed_type, summary },
+    name = $name,
+    *interface_code { id, body },
+    *interface_embedding { id, embedding }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("name".to_owned(), DataValue::from(name));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_interface(&result.rows[0])))
     }
 
     /// Stub — not yet implemented.
@@ -489,9 +868,12 @@ impl CodeGraphQueries {
 
     // ── BFS traversal ─────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Returns an empty list — symbol search against CozoDB is not yet implemented (Phase 3+).
+    ///
+    /// Returning `Ok(vec![])` lets callers correctly surface `SymbolNotFound` rather
+    /// than a backend error when no match exists.
     pub async fn find_symbols_by_name(&self, _name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
-        Err(backend_err())
+        Ok(vec![])
     }
 
     /// Stub — not yet implemented.
@@ -579,24 +961,50 @@ impl CodeGraphQueries {
 
     // ── Count queries ─────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Return the total number of code files indexed.
     pub async fn count_code_files(&self) -> Result<u64, EngramError> {
-        Err(backend_err())
+        let script = "?[count(path)] := *file_node { path }";
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(extract_count(&result))
     }
 
-    /// Stub — not yet implemented.
+    /// Return the total number of function records indexed.
     pub async fn count_functions(&self) -> Result<u64, EngramError> {
-        Err(backend_err())
+        let script = "?[count(id)] := *function_meta { id }";
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(extract_count(&result))
     }
 
-    /// Stub — not yet implemented.
+    /// Return the total number of class records indexed.
     pub async fn count_classes(&self) -> Result<u64, EngramError> {
-        Err(backend_err())
+        let result = self
+            .db
+            .run_script(
+                "?[count(id)] := *class_meta { id }",
+                BTreeMap::new(),
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(extract_count(&result))
     }
 
-    /// Stub — not yet implemented.
+    /// Return the total number of interface records indexed.
     pub async fn count_interfaces(&self) -> Result<u64, EngramError> {
-        Err(backend_err())
+        let result = self
+            .db
+            .run_script(
+                "?[count(id)] := *interface_meta { id }",
+                BTreeMap::new(),
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(extract_count(&result))
     }
 
     /// Stub — not yet implemented.
@@ -710,5 +1118,120 @@ impl CodeGraphQueries {
     /// Stub — not yet implemented.
     pub async fn delete_file_hash_by_path(&self, _file_path: &str) -> Result<(), EngramError> {
         Err(backend_err())
+    }
+}
+
+// ── Row extraction helpers ────────────────────────────────────────────────
+
+fn extract_str(row: &[DataValue], col: usize) -> String {
+    match row.get(col) {
+        Some(DataValue::Str(s)) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn extract_i64(row: &[DataValue], col: usize) -> i64 {
+    match row.get(col) {
+        Some(DataValue::Num(Num::Int(i))) => *i,
+        _ => 0,
+    }
+}
+
+fn extract_u32(row: &[DataValue], col: usize) -> u32 {
+    u32::try_from(extract_i64(row, col).max(0)).unwrap_or(0)
+}
+
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_possible_truncation)]
+fn extract_embedding(row: &[DataValue], col: usize) -> Vec<f32> {
+    match row.get(col) {
+        Some(DataValue::List(v)) => v
+            .iter()
+            .filter_map(|dv| match dv {
+                DataValue::Num(Num::Float(f)) => Some(*f as f32),
+                DataValue::Num(Num::Int(i)) => Some(*i as f32),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+fn extract_opt_str(row: &[DataValue], col: usize) -> Option<String> {
+    match row.get(col) {
+        Some(DataValue::Str(s)) if !s.is_empty() => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_count(rows: &cozo::NamedRows) -> u64 {
+    rows.rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(|v| match v {
+            DataValue::Num(Num::Int(i)) => u64::try_from(*i).ok(),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+fn row_to_function(row: &[DataValue]) -> crate::models::Function {
+    // columns: id(0), name(1), file_path(2), line_start(3), line_end(4),
+    //          signature(5), docstring(6), body_hash(7), token_count(8),
+    //          embed_type(9), summary(10), body(11), embedding(12)
+    crate::models::Function {
+        id: extract_str(row, 0),
+        name: extract_str(row, 1),
+        file_path: extract_str(row, 2),
+        line_start: extract_u32(row, 3),
+        line_end: extract_u32(row, 4),
+        signature: extract_str(row, 5),
+        docstring: extract_opt_str(row, 6),
+        body_hash: extract_str(row, 7),
+        token_count: extract_u32(row, 8),
+        embed_type: extract_str(row, 9),
+        summary: extract_str(row, 10),
+        body: extract_str(row, 11),
+        embedding: extract_embedding(row, 12),
+    }
+}
+
+fn row_to_class(row: &[DataValue]) -> crate::models::Class {
+    // columns: id(0), name(1), file_path(2), line_start(3), line_end(4),
+    //          docstring(5), body_hash(6), token_count(7), embed_type(8),
+    //          summary(9), body(10), embedding(11)
+    crate::models::Class {
+        id: extract_str(row, 0),
+        name: extract_str(row, 1),
+        file_path: extract_str(row, 2),
+        line_start: extract_u32(row, 3),
+        line_end: extract_u32(row, 4),
+        docstring: extract_opt_str(row, 5),
+        body_hash: extract_str(row, 6),
+        token_count: extract_u32(row, 7),
+        embed_type: extract_str(row, 8),
+        summary: extract_str(row, 9),
+        body: extract_str(row, 10),
+        embedding: extract_embedding(row, 11),
+    }
+}
+
+fn row_to_interface(row: &[DataValue]) -> crate::models::Interface {
+    // columns: id(0), name(1), file_path(2), line_start(3), line_end(4),
+    //          docstring(5), body_hash(6), token_count(7), embed_type(8),
+    //          summary(9), body(10), embedding(11)
+    crate::models::Interface {
+        id: extract_str(row, 0),
+        name: extract_str(row, 1),
+        file_path: extract_str(row, 2),
+        line_start: extract_u32(row, 3),
+        line_end: extract_u32(row, 4),
+        docstring: extract_opt_str(row, 5),
+        body_hash: extract_str(row, 6),
+        token_count: extract_u32(row, 7),
+        embed_type: extract_str(row, 8),
+        summary: extract_str(row, 9),
+        body: extract_str(row, 10),
+        embedding: extract_embedding(row, 11),
     }
 }
