@@ -352,6 +352,7 @@ Idea/Research
   → Stage agent
      → deliberate skill or spike skill
      → impl-plan skill → plan-harden skill (when needed) → plan-review skill → harvest skill
+     → shipment-reconcile skill (Step 5.5 scope guard)
   → ready backlog
    → Ship agent
       → harness-architect skill → build-feature skill
@@ -359,6 +360,7 @@ Idea/Research
       → runtime-verification skill → operational-closure skill
    → user-approved merge
    → Ship post-merge closure
+      → shipment-reconcile skill (Step 6 GI/GR gate: pre + post)
       → compound-refresh skill → compact-context skill
 ```
 
