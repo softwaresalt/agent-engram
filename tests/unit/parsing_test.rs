@@ -384,25 +384,27 @@ fn si1_language_tryfrom_str_new_variants() {
 
 #[test]
 fn si1_parse_source_returns_ok_empty_for_stubs() {
-    // No-op stubs must return Ok(empty) — not Err — so mixed-lang workspaces
-    // are not broken while language tasks are in progress.
+    // Empty input must return Ok(empty) for all language variants —
+    // not Err — so callers can distinguish "no symbols found" from parse failure.
+    // Swift has a full implementation but still returns empty on empty input.
     let swift_result = parse_source("", Language::Swift).unwrap();
     assert!(swift_result.symbols.is_empty());
     assert!(swift_result.edges.is_empty());
 
+    // Kotlin is a no-op stub (deferred: tree-sitter-kotlin incompatible with >=0.25).
     let kotlin_result = parse_source("", Language::Kotlin).unwrap();
     assert!(kotlin_result.symbols.is_empty());
     assert!(kotlin_result.edges.is_empty());
 }
 
 // ── A-1 spike: Swift grammar ABI verification (027.002-T) ───────────────────
-// Passes if tree-sitter-swift loads with ABI 14; fails at runtime if ABI 15.
-// A failure here means a different version must be pinned before A-2.
+// Verifies tree-sitter-swift loads and parses without ABI or runtime error.
+// tree-sitter-swift 0.7.1 emits ABI 15; requires tree-sitter >=0.25 runtime.
 
 #[test]
 fn a1_spike_swift_grammar_loads() {
-    // Currently Ok(empty) from no-op stub; continues to pass once A-1 wires
-    // tree-sitter-swift and grammar loads successfully.
+    // Swift parser is fully implemented (swift.rs). This test confirms the
+    // grammar loads and parse_source returns Ok for valid Swift input.
     let result = parse_source("func foo() { }", Language::Swift);
     assert!(
         result.is_ok(),
@@ -412,7 +414,7 @@ fn a1_spike_swift_grammar_loads() {
 }
 
 // ── A-2/A-3: Swift parser (027.003-T / 027.004-T) ───────────────────────────
-// FAIL until A-2 implements real extraction in swift.rs.
+// Swift parsing is fully implemented in swift.rs.
 
 #[test]
 fn test_swift_parsing() {

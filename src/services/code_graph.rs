@@ -1111,7 +1111,7 @@ fn language_from_path(path: &Path) -> String {
             "go" => "go",
             "cs" => "csharp",
             "c" | "h" => "c",
-            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => "cpp",
             "swift" => "swift",
             "kt" | "kts" => "kotlin",
             _ => ext,
