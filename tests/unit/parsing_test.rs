@@ -5,7 +5,9 @@
 
 #![allow(clippy::needless_raw_string_hashes)]
 
-use engram::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source};
+use engram::services::parsing::{
+    ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source,
+};
 
 #[test]
 fn extracts_top_level_function() {
@@ -447,8 +449,14 @@ func make_person(name: String) -> Person {
         .filter(|s| matches!(s, ExtractedSymbol::Interface(_)))
         .count();
     assert!(func_count >= 1, "expected ≥1 Function, got {func_count}");
-    assert!(class_count >= 1, "expected ≥1 Class (struct/actor), got {class_count}");
-    assert!(iface_count >= 1, "expected ≥1 Interface (protocol), got {iface_count}");
+    assert!(
+        class_count >= 1,
+        "expected ≥1 Class (struct/actor), got {class_count}"
+    );
+    assert!(
+        iface_count >= 1,
+        "expected ≥1 Interface (protocol), got {iface_count}"
+    );
     assert!(
         result
             .edges
@@ -471,9 +479,13 @@ fn b1_spike_kotlin_grammar_loads() {
 }
 
 // ── B-2/B-3: Kotlin parser (027.006-T / 027.007-T) ──────────────────────────
-// FAIL until B-2 implements real extraction in kotlin.rs.
+// IGNORED: tree-sitter-kotlin 0.3.x depends on tree-sitter 0.20–0.22 which
+// conflicts with the project-wide tree-sitter 0.24 runtime.  Kotlin support
+// is deferred until a 0.24-compatible grammar crate is available.
+// Track: see stash item for "Kotlin tree-sitter 0.24 compat".
 
 #[test]
+#[ignore = "deferred: tree-sitter-kotlin incompatible with tree-sitter 0.24"]
 fn test_kotlin_parsing() {
     let source = r#"
 import java.lang.String
@@ -509,7 +521,10 @@ fun make_person(name: String): Person {
         .filter(|s| matches!(s, ExtractedSymbol::Interface(_)))
         .count();
     assert!(func_count >= 1, "expected ≥1 Function, got {func_count}");
-    assert!(class_count >= 1, "expected ≥1 Class (data class), got {class_count}");
+    assert!(
+        class_count >= 1,
+        "expected ≥1 Class (data class), got {class_count}"
+    );
     assert!(iface_count >= 1, "expected ≥1 Interface, got {iface_count}");
     assert!(
         result
@@ -553,7 +568,10 @@ void print_point(struct Point *p) {
         .filter(|s| matches!(s, ExtractedSymbol::Class(_)))
         .count();
     assert!(func_count >= 1, "expected ≥1 Function, got {func_count}");
-    assert!(class_count >= 1, "expected ≥1 Class (struct), got {class_count}");
+    assert!(
+        class_count >= 1,
+        "expected ≥1 Class (struct), got {class_count}"
+    );
     assert!(
         result
             .edges
@@ -614,4 +632,3 @@ int free_function() {
         "expected Imports edge for #include"
     );
 }
-

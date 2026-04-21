@@ -1,38 +1,32 @@
-//! Tree-sitter Kotlin grammar parser.
+//! Kotlin grammar parser stub.
 //!
-//! Extracts top-level and member functions, class/data-class/sealed-class
-//! declarations, interface declarations, and `import` edges from Kotlin
-//! source files.
+//! Full extraction is deferred: `tree-sitter-kotlin 0.3.x` depends on
+//! `tree-sitter 0.20–0.22`, which conflicts with the `tree-sitter 0.24`
+//! runtime used by the rest of this codebase.  The `Language::Kotlin` variant
+//! and file-extension routing (`.kt`, `.kts`) are wired up so this language
+//! slot is ready for activation once a `tree-sitter 0.24`-compatible Kotlin
+//! grammar crate is published.
 //!
-//! # Status
-//!
-//! This is a no-op stub pending ABI 14 verification (task B-1, 027.005-T).
-//! Once ABI is confirmed, grammar loading and extraction are implemented in
-//! task B-2 (027.006-T).
-//!
-//! # Planned node kinds (pending node-types.json validation in B-2)
-//!
-//! - `function_declaration` → [`super::ExtractedSymbol::Function`]
-//! - `class_declaration` (incl. data class, sealed class) → [`super::ExtractedSymbol::Class`]
-//! - `interface_declaration` → [`super::ExtractedSymbol::Interface`]
-//! - `import_header` → [`super::ExtractedEdge::Imports`]
-//! - `call_expression` → [`super::ExtractedEdge::Calls`]
+//! Until then this function returns an empty [`ParseResult`] rather than an
+//! error, so Kotlin files are silently skipped during indexing rather than
+//! causing noise.
 
 use super::ParseResult;
 
-/// Parse a Kotlin source file and extract symbols and edges.
+/// Parse a Kotlin source file.
 ///
-/// This is a no-op stub returning an empty [`ParseResult`]. ABI compatibility
-/// with tree-sitter 0.24 is verified in task B-1 (027.005-T); full extraction
-/// is implemented in task B-2 (027.006-T).
+/// Currently a no-op stub — returns an empty result.  See module-level docs
+/// for the reason this feature is deferred.
 ///
 /// # Errors
 ///
-/// Currently infallible. Will return errors once grammar loading is added in B-1.
+/// This function never errors in its current stub form.
+// The Result return type is required to match the dispatcher's call convention.
+// This stub intentionally never errors; the allow suppresses the lint.
+#[allow(clippy::unnecessary_wraps)]
 pub(super) fn parse_kotlin_source(
     _source: &str,
 ) -> Result<ParseResult, crate::errors::EngramError> {
-    // No-op stub — grammar loading pending ABI verification in task B-1 (027.005-T).
     Ok(ParseResult {
         symbols: vec![],
         edges: vec![],

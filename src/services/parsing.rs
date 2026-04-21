@@ -5,9 +5,9 @@
 //! module defines the shared types, the [`Language`] enum, and the
 //! [`parse_source`] dispatcher.
 
-mod csharp;
 mod c;
 mod cpp;
+mod csharp;
 mod go_lang;
 mod javascript;
 mod kotlin;
