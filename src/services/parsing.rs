@@ -5,11 +5,15 @@
 //! module defines the shared types, the [`Language`] enum, and the
 //! [`parse_source`] dispatcher.
 
+mod c;
+mod cpp;
 mod csharp;
 mod go_lang;
 mod javascript;
+mod kotlin;
 mod python;
 mod rust;
+mod swift;
 mod typescript;
 
 use sha2::{Digest, Sha256};
@@ -33,6 +37,14 @@ pub enum Language {
     Go,
     /// C# (`.cs`)
     CSharp,
+    /// C (`.c`, `.h`)
+    C,
+    /// C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`)
+    Cpp,
+    /// Swift (`.swift`)
+    Swift,
+    /// Kotlin (`.kt`, `.kts`)
+    Kotlin,
 }
 
 impl Language {
@@ -47,6 +59,10 @@ impl Language {
             Language::JavaScript => "javascript",
             Language::Go => "go",
             Language::CSharp => "csharp",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Swift => "swift",
+            Language::Kotlin => "kotlin",
         }
     }
 }
@@ -63,6 +79,10 @@ impl TryFrom<&str> for Language {
             "javascript" => Ok(Language::JavaScript),
             "go" => Ok(Language::Go),
             "csharp" => Ok(Language::CSharp),
+            "c" => Ok(Language::C),
+            "cpp" => Ok(Language::Cpp),
+            "swift" => Ok(Language::Swift),
+            "kotlin" => Ok(Language::Kotlin),
             _ => Err(EngramError::CodeGraph(CodeGraphError::ParseFailed {
                 reason: format!("unsupported language: {value}"),
             })),
@@ -200,6 +220,10 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult, Eng
         Language::JavaScript => javascript::parse_javascript_source(source),
         Language::Go => go_lang::parse_go_source(source),
         Language::CSharp => csharp::parse_csharp_source(source),
+        Language::C => c::parse_c_source(source),
+        Language::Cpp => cpp::parse_cpp_source(source),
+        Language::Swift => swift::parse_swift_source(source),
+        Language::Kotlin => kotlin::parse_kotlin_source(source),
     }
 }
 

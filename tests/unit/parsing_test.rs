@@ -5,7 +5,9 @@
 
 #![allow(clippy::needless_raw_string_hashes)]
 
-use engram::services::parsing::{ExtractedEdge, ExtractedSymbol, parse_rust_source};
+use engram::services::parsing::{
+    ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source,
+};
 
 #[test]
 fn extracts_top_level_function() {
@@ -358,4 +360,282 @@ fn verbose_function() {
         }
         _ => panic!("Expected Function"),
     }
+}
+
+// ── SI-1 infrastructure tests ────────────────────────────────────────────────
+// Verify shared infrastructure added in 027.001-T.
+// PASS once SI-1 is in place and continue to pass through all later tasks.
+
+#[test]
+fn si1_language_enum_new_variants_exist() {
+    assert_eq!(Language::C.as_str(), "c");
+    assert_eq!(Language::Cpp.as_str(), "cpp");
+    assert_eq!(Language::Swift.as_str(), "swift");
+    assert_eq!(Language::Kotlin.as_str(), "kotlin");
+}
+
+#[test]
+fn si1_language_tryfrom_str_new_variants() {
+    assert!(Language::try_from("c").is_ok());
+    assert!(Language::try_from("cpp").is_ok());
+    assert!(Language::try_from("swift").is_ok());
+    assert!(Language::try_from("kotlin").is_ok());
+}
+
+#[test]
+fn si1_parse_source_returns_ok_empty_for_stubs() {
+    // No-op stubs must return Ok(empty) — not Err — so mixed-lang workspaces
+    // are not broken while language tasks are in progress.
+    let swift_result = parse_source("", Language::Swift).unwrap();
+    assert!(swift_result.symbols.is_empty());
+    assert!(swift_result.edges.is_empty());
+
+    let kotlin_result = parse_source("", Language::Kotlin).unwrap();
+    assert!(kotlin_result.symbols.is_empty());
+    assert!(kotlin_result.edges.is_empty());
+}
+
+// ── A-1 spike: Swift grammar ABI verification (027.002-T) ───────────────────
+// Passes if tree-sitter-swift loads with ABI 14; fails at runtime if ABI 15.
+// A failure here means a different version must be pinned before A-2.
+
+#[test]
+fn a1_spike_swift_grammar_loads() {
+    // Currently Ok(empty) from no-op stub; continues to pass once A-1 wires
+    // tree-sitter-swift and grammar loads successfully.
+    let result = parse_source("func foo() { }", Language::Swift);
+    assert!(
+        result.is_ok(),
+        "Swift grammar failed to load: {:?}",
+        result.err()
+    );
+}
+
+// ── A-2/A-3: Swift parser (027.003-T / 027.004-T) ───────────────────────────
+// FAIL until A-2 implements real extraction in swift.rs.
+
+#[test]
+fn test_swift_parsing() {
+    let source = r#"
+import Foundation
+
+protocol Greetable {
+    func greet() -> String
+}
+
+struct Person: Greetable {
+    var name: String
+    func greet() -> String { "Hello, \(name)" }
+}
+
+func make_person(name: String) -> Person {
+    return Person(name: name)
+}
+"#;
+    let result = parse_source(source, Language::Swift).unwrap();
+    let func_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Function(_)))
+        .count();
+    let class_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Class(_)))
+        .count();
+    let iface_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Interface(_)))
+        .count();
+    assert!(func_count >= 1, "expected ≥1 Function, got {func_count}");
+    assert!(
+        class_count >= 1,
+        "expected ≥1 Class (struct/actor), got {class_count}"
+    );
+    assert!(
+        iface_count >= 1,
+        "expected ≥1 Interface (protocol), got {iface_count}"
+    );
+    assert!(
+        result
+            .edges
+            .iter()
+            .any(|e| matches!(e, ExtractedEdge::Imports { .. })),
+        "expected at least one Imports edge"
+    );
+}
+
+// ── B-1 spike: Kotlin no-op stub validation (027.005-T) ─────────────────────
+// NOTE: This test validates that the no-op Kotlin stub returns Ok(empty result)
+// without panicking.  It does NOT verify grammar or ABI compatibility — the
+// stub never calls Parser::set_language(), so it cannot detect ABI issues.
+// Real grammar compatibility must be tested once a tree-sitter 0.25-compatible
+// Kotlin crate is available.
+
+#[test]
+fn b1_kotlin_stub_returns_ok() {
+    let result = parse_source("fun foo() { }", Language::Kotlin);
+    assert!(
+        result.is_ok(),
+        "Kotlin stub returned error unexpectedly: {:?}",
+        result.err()
+    );
+    let pr = result.unwrap();
+    assert!(pr.symbols.is_empty(), "stub should return no symbols");
+}
+
+// ── B-2/B-3: Kotlin parser (027.006-T / 027.007-T) ──────────────────────────
+// IGNORED: tree-sitter-kotlin 0.3.x depends on tree-sitter 0.20–0.22 which
+// conflicts with the project-wide tree-sitter 0.25 runtime.  Kotlin support
+// is deferred until a 0.25-compatible grammar crate is available.
+// Track: see stash item for "Kotlin tree-sitter 0.25 compat".
+
+#[test]
+#[ignore = "deferred: tree-sitter-kotlin incompatible with tree-sitter 0.25"]
+fn test_kotlin_parsing() {
+    let source = r#"
+import java.lang.String
+
+interface Greetable {
+    fun greet(): String
+}
+
+data class Person(val name: String) : Greetable {
+    override fun greet(): String {
+        return "Hello, $name"
+    }
+}
+
+fun make_person(name: String): Person {
+    return Person(name)
+}
+"#;
+    let result = parse_source(source, Language::Kotlin).unwrap();
+    let func_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Function(_)))
+        .count();
+    let class_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Class(_)))
+        .count();
+    let iface_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Interface(_)))
+        .count();
+    assert!(func_count >= 1, "expected ≥1 Function, got {func_count}");
+    assert!(
+        class_count >= 1,
+        "expected ≥1 Class (data class), got {class_count}"
+    );
+    assert!(iface_count >= 1, "expected ≥1 Interface, got {iface_count}");
+    assert!(
+        result
+            .edges
+            .iter()
+            .any(|e| matches!(e, ExtractedEdge::Imports { .. })),
+        "expected at least one Imports edge"
+    );
+}
+
+// ── C-1/C-2: C parser (027.008-T / 027.009-T) ───────────────────────────────
+// FAIL until C-1 implements real extraction in c.rs.
+
+#[test]
+fn test_c_parsing() {
+    let source = r#"
+#include <stdio.h>
+
+struct Point {
+    int x;
+    int y;
+};
+
+int add(int a, int b) {
+    return a + b;
+}
+
+void print_point(struct Point *p) {
+    add(p->x, p->y);
+}
+"#;
+    let result = parse_source(source, Language::C).unwrap();
+    let func_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Function(_)))
+        .count();
+    let class_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Class(_)))
+        .count();
+    assert!(func_count >= 1, "expected ≥1 Function, got {func_count}");
+    assert!(
+        class_count >= 1,
+        "expected ≥1 Class (struct), got {class_count}"
+    );
+    assert!(
+        result
+            .edges
+            .iter()
+            .any(|e| matches!(e, ExtractedEdge::Imports { .. })),
+        "expected Imports edge for #include"
+    );
+}
+
+// ── D-1/D-2: C++ parser (027.010-T / 027.011-T) ─────────────────────────────
+// FAIL until D-1 implements real extraction in cpp.rs.
+
+#[test]
+fn test_cpp_parsing() {
+    let source = r#"
+#include <string>
+
+class Greeter {
+public:
+    std::string greet(const std::string& name);
+    int count() const;
+};
+
+std::string Greeter::greet(const std::string& name) {
+    return "Hello, " + name;
+}
+
+int Greeter::count() const {
+    return 0;
+}
+
+int free_function() {
+    return 42;
+}
+"#;
+    let result = parse_source(source, Language::Cpp).unwrap();
+    let func_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Function(_)))
+        .count();
+    let class_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Class(_)))
+        .count();
+    // class with 2 out-of-line methods + 1 free function = ≥3 Function symbols
+    assert!(
+        func_count >= 3,
+        "expected class 2 methods + free fn (≥3 Function), got {func_count}"
+    );
+    assert!(class_count >= 1, "expected ≥1 Class, got {class_count}");
+    assert!(
+        result
+            .edges
+            .iter()
+            .any(|e| matches!(e, ExtractedEdge::Imports { .. })),
+        "expected Imports edge for #include"
+    );
 }
