@@ -86,7 +86,7 @@ fn extract_swift_top_level(
                         edges.push(ExtractedEdge::Defines {
                             symbol_name: cls.name.clone(),
                         });
-                        extract_swift_members(child, source, &cls.name.clone(), symbols, edges);
+                        extract_swift_members(child, source, &cls.name, symbols, edges);
                         symbols.push(ExtractedSymbol::Class(cls));
                     }
                 }

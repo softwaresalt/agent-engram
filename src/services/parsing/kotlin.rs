@@ -1,10 +1,10 @@
 //! Kotlin grammar parser stub.
 //!
 //! Full extraction is deferred: `tree-sitter-kotlin 0.3.x` depends on
-//! `tree-sitter 0.20–0.22`, which conflicts with the `tree-sitter 0.24`
+//! `tree-sitter 0.20–0.22`, which conflicts with the `tree-sitter 0.25`
 //! runtime used by the rest of this codebase.  The `Language::Kotlin` variant
 //! and file-extension routing (`.kt`, `.kts`) are wired up so this language
-//! slot is ready for activation once a `tree-sitter 0.24`-compatible Kotlin
+//! slot is ready for activation once a `tree-sitter 0.25`-compatible Kotlin
 //! grammar crate is published.
 //!
 //! Until then this function returns an empty [`ParseResult`] rather than an

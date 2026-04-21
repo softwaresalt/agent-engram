@@ -1,7 +1,8 @@
 //! Tree-sitter C++ grammar parser.
 //!
-//! Extracts free functions, class/struct member functions, class and struct
-//! declarations, and `#include` edges from C++ source files.
+//! Extracts free functions and out-of-line member functions, class and struct
+//! declarations, and `#include` edges from C++ source files.  Inline methods
+//! defined inside a class body are not extracted at this level.
 //!
 //! # Node kinds used (tree-sitter-cpp 0.23.4)
 //!

@@ -466,26 +466,33 @@ func make_person(name: String) -> Person {
     );
 }
 
-// ── B-1 spike: Kotlin grammar ABI verification (027.005-T) ──────────────────
+// ── B-1 spike: Kotlin no-op stub validation (027.005-T) ─────────────────────
+// NOTE: This test validates that the no-op Kotlin stub returns Ok(empty result)
+// without panicking.  It does NOT verify grammar or ABI compatibility — the
+// stub never calls Parser::set_language(), so it cannot detect ABI issues.
+// Real grammar compatibility must be tested once a tree-sitter 0.25-compatible
+// Kotlin crate is available.
 
 #[test]
-fn b1_spike_kotlin_grammar_loads() {
+fn b1_kotlin_stub_returns_ok() {
     let result = parse_source("fun foo() { }", Language::Kotlin);
     assert!(
         result.is_ok(),
-        "Kotlin grammar failed to load: {:?}",
+        "Kotlin stub returned error unexpectedly: {:?}",
         result.err()
     );
+    let pr = result.unwrap();
+    assert!(pr.symbols.is_empty(), "stub should return no symbols");
 }
 
 // ── B-2/B-3: Kotlin parser (027.006-T / 027.007-T) ──────────────────────────
 // IGNORED: tree-sitter-kotlin 0.3.x depends on tree-sitter 0.20–0.22 which
-// conflicts with the project-wide tree-sitter 0.24 runtime.  Kotlin support
-// is deferred until a 0.24-compatible grammar crate is available.
-// Track: see stash item for "Kotlin tree-sitter 0.24 compat".
+// conflicts with the project-wide tree-sitter 0.25 runtime.  Kotlin support
+// is deferred until a 0.25-compatible grammar crate is available.
+// Track: see stash item for "Kotlin tree-sitter 0.25 compat".
 
 #[test]
-#[ignore = "deferred: tree-sitter-kotlin incompatible with tree-sitter 0.24"]
+#[ignore = "deferred: tree-sitter-kotlin incompatible with tree-sitter 0.25"]
 fn test_kotlin_parsing() {
     let source = r#"
 import java.lang.String

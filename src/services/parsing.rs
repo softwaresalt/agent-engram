@@ -39,7 +39,7 @@ pub enum Language {
     CSharp,
     /// C (`.c`, `.h`)
     C,
-    /// C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`)
+    /// C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`)
     Cpp,
     /// Swift (`.swift`)
     Swift,
