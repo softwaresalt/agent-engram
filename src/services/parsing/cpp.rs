@@ -96,16 +96,16 @@ fn extract_cpp_declarations(
                     }
                 }
             }
-            "class_specifier" | "struct_specifier" => {
-                // `class Greeter { ... };` or `struct Point { ... };` with no
-                // declarator is a bare type_specifier child of translation_unit.
-                if child.child_by_field_name("body").is_some() {
-                    if let Some(cls) = extract_cpp_class(child, source) {
-                        edges.push(ExtractedEdge::Defines {
-                            symbol_name: cls.name.clone(),
-                        });
-                        symbols.push(ExtractedSymbol::Class(cls));
-                    }
+            // `class Greeter { ... };` or `struct Point { ... };` with no
+            // declarator is a bare type_specifier child of translation_unit.
+            "class_specifier" | "struct_specifier"
+                if child.child_by_field_name("body").is_some() =>
+            {
+                if let Some(cls) = extract_cpp_class(child, source) {
+                    edges.push(ExtractedEdge::Defines {
+                        symbol_name: cls.name.clone(),
+                    });
+                    symbols.push(ExtractedSymbol::Class(cls));
                 }
             }
             "namespace_definition" => {

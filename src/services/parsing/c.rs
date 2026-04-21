@@ -89,16 +89,14 @@ fn extract_c_top_level(
                     }
                 }
             }
-            "struct_specifier" => {
-                // `struct Point { ... };` with no declarator is a bare
-                // type_specifier child of translation_unit in tree-sitter-c.
-                if child.child_by_field_name("body").is_some() {
-                    if let Some(cls) = extract_c_struct(child, source) {
-                        edges.push(ExtractedEdge::Defines {
-                            symbol_name: cls.name.clone(),
-                        });
-                        symbols.push(ExtractedSymbol::Class(cls));
-                    }
+            // `struct Point { ... };` with no declarator is a bare
+            // type_specifier child of translation_unit in tree-sitter-c.
+            "struct_specifier" if child.child_by_field_name("body").is_some() => {
+                if let Some(cls) = extract_c_struct(child, source) {
+                    edges.push(ExtractedEdge::Defines {
+                        symbol_name: cls.name.clone(),
+                    });
+                    symbols.push(ExtractedSymbol::Class(cls));
                 }
             }
             _ => {}
