@@ -289,7 +289,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
 | Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `3.0.0`. |
 | Code Graph | `src/services/code_graph.rs` | Orchestrates tree-sitter indexing: walks workspace files, dispatches per-language parsers, upserts symbol and edge records, manages incremental sync and impact traversal. |
-| Parsing | `src/services/parsing/` | Multi-language tree-sitter parsers. `parsing.rs` defines the `Language` enum (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp) and dispatches to per-language submodules (`rust.rs`, `python.rs`, `typescript.rs`, `javascript.rs`, `go_lang.rs`, `csharp.rs`). |
+| Parsing | `src/services/parsing/` | Multi-language tree-sitter parsers. `parsing.rs` defines the `Language` enum (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp, Swift, Kotlin, C, Cpp) and dispatches to per-language submodules (`rust.rs`, `python.rs`, `typescript.rs`, `javascript.rs`, `go_lang.rs`, `csharp.rs`, `swift.rs`, `kotlin.rs`, `c.rs`, `cpp.rs`). |
 | Content Registry | `src/services/ingestion.rs` | Process indexed workspace content for embedding. Error codes 11xxx. |
 | Git Graph | `src/services/git_graph.rs` | Walk git commit history, index commits as graph nodes, cross-reference with code graph. Error codes 12xxx. |
 | Errors | `src/errors/` | Typed error hierarchy (`EngramError`), error codes (`src/errors/codes.rs`), MCP error serialization. |
@@ -322,7 +322,7 @@ The `engram` binary serves dual roles: as the MCP daemon (`engram daemon`) and a
 
 ### Multi-Language Parsing
 
-The `Language` enum in `src/services/parsing/` centralises language dispatch. Each variant (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp) maps to a dedicated submodule that uses the appropriate tree-sitter grammar. TSX uses `LANGUAGE_TSX` (not `LANGUAGE_TYPESCRIPT`) to correctly parse JSX syntax. Extensions `.jsx` reuse the JavaScript grammar; `.tsx` requires the TSX grammar variant. Grammar crates must stay at `"0.23"` in `Cargo.toml` — tree-sitter 0.24.x only accepts ABI 13–14, and v0.24+ grammar crates emit ABI 15 which fails at runtime.
+The `Language` enum in `src/services/parsing/` centralises language dispatch. Each variant (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp, Swift, C, Cpp, Kotlin) maps to a dedicated submodule that uses the appropriate tree-sitter grammar. TSX uses `LANGUAGE_TSX` (not `LANGUAGE_TYPESCRIPT`) to correctly parse JSX syntax. Extensions `.jsx` reuse the JavaScript grammar; `.tsx` requires the TSX grammar variant. The project runtime baseline is tree-sitter `0.25`, which accepts grammar ABI 13–15. Existing grammar crates pinned at `"0.23"` emit ABI 14 (compatible). `tree-sitter-swift` must be pinned to `"=0.7.1"` (requires ABI 15, emitted by tree-sitter CLI ≥ 0.25). Kotlin parsing is deferred: `tree-sitter-kotlin 0.3.x` targets tree-sitter 0.20–0.22 and is incompatible with 0.25; `kotlin.rs` is a no-op stub until a compatible crate is published.
 
 ---
 

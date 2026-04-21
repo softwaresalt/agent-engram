@@ -42,6 +42,7 @@ or tightened clippy lints that only fire on 1.95:
 | `unnecessary_hashes` | New ~1.92+ | `r#"..."#` without inner quotes |
 | `uninlined_format_args` | Tightened ~1.91+ | Named vars not inlined in `format!` strings |
 | `private_bounds` | New ~1.93+ | `pub fn` with `pub(crate)` trait bound |
+| `collapsible_match` | Tightened ~1.94+ | `if cond { if let Some(x) { ... } }` inside match arm — fix with match guard `pattern if cond => { ... }` |
 
 Each class required its own CI fix commit, causing 4 fix iterations total.
 
@@ -65,6 +66,17 @@ format!("{}", count)  →  format!("{count}")
 
 // private_bounds: make trait pub or make fn pub(crate)
 pub fn foo<T: pub(crate) Trait>  →  pub fn foo<T: Trait>  (make trait pub)
+
+// collapsible_match: move outer `if` into match guard
+match x {
+    Some(v) => {
+        if v.is_valid() { process(v); }  // ← collapsible
+    }
+}
+// Fix: move condition into guard
+match x {
+    Some(v) if v.is_valid() => { process(v); }
+}
 ```
 
 ## Resolution (permanent — stashed as follow-up `83B6BC5A`)
