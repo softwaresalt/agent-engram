@@ -10,6 +10,7 @@ use serde_json::json;
 async fn bind_test_workspace(state: &Arc<AppState>, path: &std::path::Path, branch: &str) {
     let snapshot = WorkspaceSnapshot {
         workspace_id: format!("workspace-{branch}"),
+        workspace_uuid: format!("workspace-uuid-{branch}"),
         branch: branch.to_owned(),
         data_dir: path.join(".engram"),
         path: path.display().to_string(),

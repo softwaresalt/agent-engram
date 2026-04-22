@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use tokio::test;
 
 use engram::errors::codes::{CONFIG_INVALID_VALUE, WORKSPACE_LIMIT_REACHED};
+use engram::errors::{EngramError, IpcError};
 use engram::server::state::AppState;
+use engram::shim::version::{ENGRAM_PROTOCOL_VERSION, ensure_protocol_compatible};
 use engram::tools;
 
 #[test]
@@ -63,6 +65,30 @@ async fn contract_get_daemon_status_reports_counts() {
             .is_some(),
         "active_connections present"
     );
+}
+
+#[test]
+async fn version_handshake_returns_typed_mismatch_error() {
+    let stale_daemon_version = ENGRAM_PROTOCOL_VERSION.saturating_add(1);
+    let wrapped_error = EngramError::from(IpcError::VersionMismatch {
+        expected: ENGRAM_PROTOCOL_VERSION,
+        actual: stale_daemon_version,
+    });
+
+    assert!(matches!(
+        wrapped_error,
+        EngramError::Ipc(IpcError::VersionMismatch { .. })
+    ));
+    assert!(
+        wrapped_error.to_string().contains("respawn"),
+        "version mismatch message should carry the remediation hint"
+    );
+
+    assert!(matches!(
+        ensure_protocol_compatible(stale_daemon_version),
+        Err(EngramError::Ipc(IpcError::VersionMismatch { expected, actual }))
+            if expected == ENGRAM_PROTOCOL_VERSION && actual == stale_daemon_version
+    ));
 }
 
 #[test]

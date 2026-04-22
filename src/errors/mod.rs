@@ -6,9 +6,12 @@
 //! ingestion (11xxx), git graph (12xxx), and metrics (13xxx).
 //! Each variant maps to a numeric error code defined in [codes].
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
+use uuid::Uuid;
 
 pub mod codes;
 use codes::*;
@@ -25,6 +28,18 @@ pub enum WorkspaceError {
     AlreadyActive { path: String },
     #[error("Workspace limit reached (limit {limit})")]
     LimitReached { limit: usize },
+    #[error(
+        "Path '{attempted}' escapes the workspace root '{root}'; only in-workspace paths are allowed"
+    )]
+    PathEscape { attempted: PathBuf, root: PathBuf },
+    #[error(
+        "Workspace bind is ambiguous for '{path}': expected workspace-id {expected_id}, found {found_id}. Remove stale runtime state and retry."
+    )]
+    AmbiguousBind {
+        expected_id: Uuid,
+        found_id: Uuid,
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -133,6 +148,10 @@ pub enum IpcError {
     ReceiveFailed { reason: String },
     #[error("IPC request timed out after {timeout_ms}ms")]
     Timeout { timeout_ms: u64 },
+    #[error(
+        "Daemon protocol version mismatch: expected {expected}, found {actual}. Restart the daemon or rerun the shim to respawn the current binary."
+    )]
+    VersionMismatch { expected: u32, actual: u32 },
 }
 
 #[derive(Debug, Error)]
@@ -315,6 +334,29 @@ impl EngramError {
                     inner.to_string(),
                     Some(json!({ "limit": limit })),
                 ),
+                WorkspaceError::PathEscape { attempted, root } => (
+                    INVALID_PARAMS,
+                    "WorkspacePathEscape",
+                    inner.to_string(),
+                    Some(json!({
+                        "attempted": attempted.display().to_string(),
+                        "root": root.display().to_string(),
+                    })),
+                ),
+                WorkspaceError::AmbiguousBind {
+                    expected_id,
+                    found_id,
+                    path,
+                } => (
+                    INVALID_PARAMS,
+                    "AmbiguousBind",
+                    inner.to_string(),
+                    Some(json!({
+                        "expected_id": expected_id.to_string(),
+                        "found_id": found_id.to_string(),
+                        "path": path.display().to_string(),
+                    })),
+                ),
             },
             EngramError::Hydration(inner) => match inner {
                 HydrationError::Failed { reason } => (
@@ -428,6 +470,12 @@ impl EngramError {
                     "IpcTimeout",
                     inner.to_string(),
                     Some(json!({ "timeout_ms": timeout_ms })),
+                ),
+                IpcError::VersionMismatch { expected, actual } => (
+                    IPC_CONNECTION_FAILED,
+                    "IpcVersionMismatch",
+                    inner.to_string(),
+                    Some(json!({ "expected": expected, "actual": actual })),
                 ),
             },
             EngramError::Daemon(inner) => match inner {

@@ -13,6 +13,21 @@ use tracing::instrument;
 use crate::daemon::protocol::{IpcRequest, IpcResponse};
 use crate::errors::{EngramError, IpcError};
 
+/// Attempt a low-cost connection probe against the daemon endpoint.
+///
+/// # Errors
+///
+/// Returns [`EngramError::Ipc`] when the endpoint cannot be reached within the
+/// provided timeout.
+#[instrument(fields(endpoint = %endpoint))]
+pub async fn probe(endpoint: &str, timeout: Duration) -> Result<(), EngramError> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    tokio::time::timeout(timeout, connect(endpoint))
+        .await
+        .map_err(|_| EngramError::Ipc(IpcError::Timeout { timeout_ms }))?
+        .map(|_| ())
+}
+
 /// Send a single IPC request to the daemon at `endpoint` and return the response.
 ///
 /// A fresh connection is opened for each call (stateless per-connection per

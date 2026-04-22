@@ -10,6 +10,7 @@ use engram::tools;
 fn test_snapshot(id: &str) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         workspace_id: id.to_string(),
+        workspace_uuid: format!("uuid-{id}"),
         branch: id.to_string(),
         data_dir: std::env::temp_dir().join(format!("engram-test-{id}")),
         path: format!("/tmp/{id}"),
@@ -43,6 +44,7 @@ async fn contract_query_memory_rejects_long_query() {
     let state = Arc::new(AppState::new(10));
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws".to_string(),
+        workspace_uuid: "uuid-test_ws".to_string(),
         branch: "test_ws".to_string(),
         data_dir: std::env::temp_dir().join("engram-test-test_ws"),
         path: "/tmp/test-repo".to_string(),
@@ -74,6 +76,7 @@ async fn contract_query_memory_returns_results_array() {
     let state = Arc::new(AppState::new(10));
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws_results".to_string(),
+        workspace_uuid: "uuid-test_ws_results".to_string(),
         branch: "test_ws_results".to_string(),
         data_dir: std::env::temp_dir().join("engram-test-test_ws_results"),
         path: "/tmp/test-repo-results".to_string(),

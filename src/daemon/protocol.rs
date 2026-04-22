@@ -109,6 +109,35 @@ impl IpcRequest {
     }
 }
 
+fn default_build_hash() -> String {
+    "unknown".to_owned()
+}
+
+/// Structured payload returned by the daemon `_health` handshake.
+///
+/// The shim uses `protocol_version` and `build_hash` to detect when it is
+/// talking to a stale daemon binary before forwarding real tool calls.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthCheckResult {
+    /// Daemon readiness state (`"starting"` or `"ready"`).
+    pub status: String,
+    /// Daemon uptime in seconds.
+    #[serde(default)]
+    pub uptime_seconds: u64,
+    /// Bound workspace path when hydration has completed.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// Number of active IPC connections.
+    #[serde(default)]
+    pub active_connections: usize,
+    /// Daemon IPC protocol version.
+    #[serde(default)]
+    pub protocol_version: u32,
+    /// Daemon build identifier for operator diagnostics.
+    #[serde(default = "default_build_hash")]
+    pub build_hash: String,
+}
+
 /// JSON-RPC 2.0 response sent from the daemon back to the shim.
 ///
 /// Exactly one of `result` or `error` is present in a valid response.

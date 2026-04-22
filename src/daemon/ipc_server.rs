@@ -9,7 +9,7 @@
 //! | Platform | Format |
 //! |----------|--------|
 //! | Unix     | `{workspace}/.engram/run/engram.sock` |
-//! | Windows  | `\\.\pipe\engram-{sha256_first_16hex}` |
+//! | Windows  | `\\.\pipe\engram-{workspace_key}` |
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,11 +25,13 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::daemon::protocol::{IpcError as WireError, IpcRequest, IpcResponse};
+use crate::daemon::protocol::{HealthCheckResult, IpcError as WireError, IpcRequest, IpcResponse};
 use crate::daemon::ttl::TtlTimer;
+use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
 use crate::server::state::{AppState, SharedState};
+use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
 
 // ── Endpoint naming ──────────────────────────────────────────────────────────
@@ -37,8 +39,9 @@ use crate::tools;
 /// Compute the IPC endpoint string for the given workspace.
 ///
 /// - **Unix**: `{workspace}/.engram/run/engram.sock`
-/// - **Windows**: `\\.\pipe\engram-{sha256_first_16hex}` where the hash is
-///   the SHA-256 of the canonical workspace path encoded as lowercase hex.
+/// - **Windows**: `\\.\pipe\engram-{workspace_key}` where the key is the
+///   persisted `.workspace-id`, or the legacy path hash while a pre-upgrade
+///   daemon is still live.
 ///
 /// # Errors
 ///
@@ -50,8 +53,6 @@ pub fn ipc_endpoint(workspace: &Path) -> Result<String, EngramError> {
 
 #[cfg(unix)]
 fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
-    use sha2::{Digest, Sha256};
-
     let sock_path = workspace.join(".engram").join("run").join("engram.sock");
 
     let path_str = sock_path.to_str().ok_or_else(|| {
@@ -69,21 +70,11 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
         return Ok(path_str.to_owned());
     }
 
-    // Fallback: /tmp/engram-{sha256_first_16hex}.sock
+    // Fallback: /tmp/engram-{workspace_key}.sock
     // Permissions (0o600) are applied by run_with_shutdown after bind, using
     // the endpoint string returned here, so the fallback path is also secured.
-    let canonical_str = workspace.to_str().ok_or_else(|| {
-        EngramError::Ipc(DomainIpcError::ConnectionFailed {
-            address: workspace.display().to_string(),
-            reason: "workspace path is not valid UTF-8 for fallback hash".to_owned(),
-        })
-    })?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_str.as_bytes());
-    let hash = hasher.finalize();
-    let prefix = hex::encode(&hash[..8]);
-    let fallback = format!("/tmp/engram-{prefix}.sock");
+    let key = daemon_key_for_workspace(workspace)?;
+    let fallback = format!("/tmp/engram-{key}.sock");
 
     tracing::warn!(
         workspace = %workspace.display(),
@@ -97,21 +88,8 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
 
 #[cfg(windows)]
 fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
-    use sha2::{Digest, Sha256};
-
-    let canonical_str = workspace.to_str().ok_or_else(|| {
-        EngramError::Ipc(DomainIpcError::ConnectionFailed {
-            address: workspace.display().to_string(),
-            reason: "workspace path is not valid UTF-8".to_owned(),
-        })
-    })?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_str.as_bytes());
-    let hash = hasher.finalize();
-    // First 8 bytes → 16 lowercase hex characters
-    let prefix = hex::encode(&hash[..8]);
-    Ok(format!(r"\\.\pipe\engram-{prefix}"))
+    let key = daemon_key_for_workspace(workspace)?;
+    Ok(format!(r"\\.\pipe\engram-{key}"))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -287,11 +265,13 @@ async fn process_request(
             };
             IpcResponse::success(
                 id,
-                json!({
-                    "status": status,
-                    "uptime_seconds": state.uptime_seconds(),
-                    "workspace": snapshot.map(|s| s.path),
-                    "active_connections": state.active_connections(),
+                json!(HealthCheckResult {
+                    status: status.to_owned(),
+                    uptime_seconds: state.uptime_seconds(),
+                    workspace: snapshot.map(|s| s.path),
+                    active_connections: state.active_connections(),
+                    protocol_version: ENGRAM_PROTOCOL_VERSION,
+                    build_hash: ENGRAM_BUILD_HASH.to_owned(),
                 }),
             )
         }
@@ -733,6 +713,7 @@ async fn accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::path::Path;
 
     #[test]
@@ -794,8 +775,9 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn windows_endpoint_uses_named_pipe() {
-        let ws = Path::new(r"C:\Users\test\project");
-        let ep = ipc_endpoint(ws).unwrap();
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+        let ep = ipc_endpoint(workspace.path()).unwrap();
         assert!(
             ep.starts_with(r"\\.\pipe\engram-"),
             "expected named pipe, got {ep}"

@@ -24,6 +24,7 @@ use tracing::{error, info};
 use crate::daemon::lockfile::DaemonLock;
 use crate::daemon::ttl::TtlTimer;
 use crate::daemon::watcher::{WatcherConfig, start_watcher};
+use crate::db::workspace::load_or_create_workspace_id;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
 
@@ -93,6 +94,7 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
             reason: e.to_string(),
         })
     })?;
+    let _ = load_or_create_workspace_id(&workspace_path)?;
 
     // ── 2. Acquire lockfile ───────────────────────────────────────────────────
     let _lock = DaemonLock::acquire(&workspace_path)?;
