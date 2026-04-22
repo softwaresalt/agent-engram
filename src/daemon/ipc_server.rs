@@ -733,13 +733,13 @@ mod tests {
         let root_str = root.path().to_string_lossy();
         let target_workspace_len = target_socket_len - SOCKET_SUFFIX_LEN;
         assert!(
-            root_str.len() <= target_workspace_len,
+            root_str.len() < target_workspace_len,
             "tempdir root {} exceeds target workspace length {}",
             root_str.len(),
             target_workspace_len
         );
 
-        let padding = "a".repeat(target_workspace_len - root_str.len());
+        let padding = "a".repeat(target_workspace_len - root_str.len() - 1);
         let workspace = root.path().join(padding);
         std::fs::create_dir_all(&workspace).expect("create padded workspace");
 
