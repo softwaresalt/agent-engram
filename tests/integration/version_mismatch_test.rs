@@ -109,7 +109,11 @@ async fn run_stale_daemon(
     let listener = bind_fake_listener(&endpoint)?;
 
     loop {
-        let stream = listener.accept().await?;
+        let stream = match listener.accept().await {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(Box::new(error)),
+        };
         let (recv_half, mut send_half) = stream.split();
         let mut reader = BufReader::new(recv_half);
         let mut request_line = String::new();
