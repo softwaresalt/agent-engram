@@ -67,7 +67,10 @@
         "/^& \\.specify/scripts/powershell/update-agent-context\\.ps1 -AgentType copilot$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "Get-Item": true,
+        "Get-Size": true,
+        "Resolve-Path": true
     },
 	"powershell.cwd": "agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,
