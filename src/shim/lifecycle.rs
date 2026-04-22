@@ -148,15 +148,32 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 pub async fn ensure_daemon_running(workspace: &Path) -> Result<(), EngramError> {
     let endpoint = ipc_endpoint(workspace)?;
 
-    ensure_daemon_running_inner(workspace, &endpoint, MAX_RESPAWN_ATTEMPTS).await
+    ensure_daemon_running_with_endpoint(workspace, endpoint).await
+}
+
+/// Ensure the daemon is running for `workspace`, starting from a specific
+/// discovery endpoint.
+///
+/// This is primarily used by integration harnesses that need to simulate a
+/// stale daemon endpoint while still exercising the real respawn path.
+///
+/// # Errors
+///
+/// Returns the same errors as [`ensure_daemon_running`].
+#[doc(hidden)]
+pub async fn ensure_daemon_running_with_endpoint(
+    workspace: &Path,
+    endpoint: String,
+) -> Result<(), EngramError> {
+    ensure_daemon_running_inner(workspace, endpoint, MAX_RESPAWN_ATTEMPTS).await
 }
 
 async fn ensure_daemon_running_inner(
     workspace: &Path,
-    endpoint: &str,
+    endpoint: String,
     respawns_remaining: u8,
 ) -> Result<(), EngramError> {
-    match daemon_ready(endpoint).await {
+    match daemon_ready(&endpoint).await {
         Ok(true) => {
             info!("daemon already running and healthy");
             return Ok(());
@@ -173,10 +190,10 @@ async fn ensure_daemon_running_inner(
                 error = %e,
                 "version mismatch detected — respawning daemon"
             );
-            respawn_daemon(workspace, endpoint, pid_hint).await?;
+            let next_endpoint = respawn_daemon(workspace, &endpoint, pid_hint).await?;
             return Box::pin(ensure_daemon_running_inner(
                 workspace,
-                endpoint,
+                next_endpoint,
                 respawns_remaining - 1,
             ))
             .await;
@@ -189,10 +206,11 @@ async fn ensure_daemon_running_inner(
                         error = %e,
                         "health probe failed against live daemon — respawning"
                     );
-                    respawn_daemon(workspace, endpoint, Some(pid_hint)).await?;
+                    let next_endpoint =
+                        respawn_daemon(workspace, &endpoint, Some(pid_hint)).await?;
                     return Box::pin(ensure_daemon_running_inner(
                         workspace,
-                        endpoint,
+                        next_endpoint,
                         respawns_remaining - 1,
                     ))
                     .await;
@@ -206,7 +224,7 @@ async fn ensure_daemon_running_inner(
     if let Some(pid_file) = PidFile::read(workspace) {
         if pid_file.verify_alive()? {
             match crate::shim::ipc_client::probe(
-                endpoint,
+                &endpoint,
                 Duration::from_millis(PIPE_PROBE_TIMEOUT_MS),
             )
             .await
@@ -216,7 +234,7 @@ async fn ensure_daemon_running_inner(
                         pid = pid_file.pid,
                         "reusing reachable daemon from PID metadata"
                     );
-                    return poll_until_ready(endpoint).await;
+                    return poll_until_ready(&endpoint).await;
                 }
                 Err(e) if respawns_remaining > 0 => {
                     info!(
@@ -224,10 +242,11 @@ async fn ensure_daemon_running_inner(
                         error = %e,
                         "live daemon PID has unreachable pipe — respawning"
                     );
-                    respawn_daemon(workspace, endpoint, Some(pid_file.pid)).await?;
+                    let next_endpoint =
+                        respawn_daemon(workspace, &endpoint, Some(pid_file.pid)).await?;
                     return Box::pin(ensure_daemon_running_inner(
                         workspace,
-                        endpoint,
+                        next_endpoint,
                         respawns_remaining - 1,
                     ))
                     .await;
@@ -244,7 +263,8 @@ async fn ensure_daemon_running_inner(
     }
 
     spawn_daemon(workspace)?;
-    poll_until_ready(endpoint).await
+    let endpoint = ipc_endpoint(workspace)?;
+    poll_until_ready(&endpoint).await
 }
 
 /// Spawn the daemon as a detached child process for the given workspace.
@@ -255,11 +275,7 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
         })
     })?;
 
-    let current_exe = std::env::current_exe().map_err(|e| {
-        EngramError::Daemon(DaemonError::SpawnFailed {
-            reason: format!("cannot locate current executable: {e}"),
-        })
-    })?;
+    let current_exe = daemon_executable()?;
 
     info!(
         exe = %current_exe.display(),
@@ -287,11 +303,54 @@ async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
     pid_hint: Option<u32>,
-) -> Result<(), EngramError> {
+) -> Result<String, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
     spawn_daemon(workspace)?;
-    poll_until_ready(endpoint).await
+    let endpoint = ipc_endpoint(workspace)?;
+    poll_until_ready(&endpoint).await?;
+    Ok(endpoint)
+}
+
+fn daemon_executable() -> Result<std::path::PathBuf, EngramError> {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_engram") {
+        return Ok(path.into());
+    }
+
+    let current_exe = std::env::current_exe().map_err(|e| {
+        EngramError::Daemon(DaemonError::SpawnFailed {
+            reason: format!("cannot locate current executable: {e}"),
+        })
+    })?;
+
+    if current_exe
+        .file_stem()
+        .is_some_and(|stem| stem == std::ffi::OsStr::new("engram"))
+    {
+        return Ok(current_exe);
+    }
+
+    let extension = current_exe
+        .extension()
+        .map(|ext| std::ffi::OsString::from(format!(".{}", ext.to_string_lossy())))
+        .unwrap_or_default();
+    let binary_name = std::ffi::OsString::from(format!("engram{}", extension.to_string_lossy()));
+
+    let mut candidates = Vec::new();
+    if let Some(parent) = current_exe.parent() {
+        candidates.push(parent.join(&binary_name));
+        if let Some(grandparent) = parent.parent() {
+            candidates.push(grandparent.join(&binary_name));
+        }
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Ok(current_exe)
 }
 
 async fn request_shutdown(endpoint: &str) {

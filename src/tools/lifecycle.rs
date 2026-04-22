@@ -10,7 +10,7 @@ use crate::db::workspace::{
     canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
     workspace_hash,
 };
-use crate::errors::{EngramError, WorkspaceError};
+use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -72,7 +72,14 @@ pub async fn set_workspace(
 
     if let Some(active) = state.snapshot_workspace().await {
         if active.path == canonical_path && active.workspace_uuid != workspace_uuid.to_string() {
-            let expected_id = Uuid::parse_str(&active.workspace_uuid).unwrap_or(workspace_uuid);
+            let expected_id = Uuid::parse_str(&active.workspace_uuid).map_err(|error| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!(
+                        "active workspace state contains an invalid workspace UUID '{}': {error}",
+                        active.workspace_uuid
+                    ),
+                })
+            })?;
             return Err(EngramError::Workspace(WorkspaceError::AmbiguousBind {
                 expected_id,
                 found_id: workspace_uuid,
