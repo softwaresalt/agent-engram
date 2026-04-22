@@ -87,9 +87,10 @@ frameworks:
   - name: notify
     version: "9.0.0-rc.2"
     purpose: file system watcher for incremental sync
-  mcp_sdk: rmcp
-  mcp_sdk_version: "1.1"
-  mcp_transport: stdio-ipc  # primary: IPC via named pipe; legacy-sse feature for HTTP/SSE
+
+mcp_sdk: rmcp
+mcp_sdk_version: "1.1"
+mcp_transport: stdio-ipc  # primary: IPC via named pipe; legacy-sse feature for HTTP/SSE
 
 # =============================================================================
 # Stack Packs
@@ -124,7 +125,7 @@ build:
 # =============================================================================
 test:
   runner: cargo
-  command: "cargo test"
+  command: "cargo dev-test"
   all_features_command: "cargo ci"  # alias for cargo test --all-targets --all-features
   directory: "tests/"
   tiers:
@@ -219,6 +220,7 @@ ci:
     - "Actions not SHA-pinned (uses @v4 tags) — differs from hve-core convention"
     - "cargo-audit runs with continue-on-error: true"
     - "cargo-release configured in release.toml (tag format: v{{version}}, branch: main only)"
+    - "Local developer default test command is cargo dev-test; full validation remains cargo test / cargo ci"
 
 # =============================================================================
 # Project Structure

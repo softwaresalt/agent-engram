@@ -216,8 +216,14 @@ src/
 ## Development
 
 ```bash
-# Run tests
-cargo test
+# Fast inner loop
+cargo check
+
+# Default local test pass
+cargo dev-test
+
+# Full suite before merge or release work
+cargo full-test
 
 # Run with pedantic linting
 cargo clippy -- -D warnings -D clippy::pedantic
@@ -228,9 +234,53 @@ cargo fmt
 # Build documentation
 cargo doc --no-deps --open
 
+# Run with full-symbol debugging profile when needed
+cargo debug-build
+cargo debug-test
+
 # Run with debug logging
 RUST_LOG=engram=debug cargo run
 ```
+
+### Lean local workflow
+
+Use the lean defaults for day-to-day development, and save the full suite for explicit verification passes:
+
+```bash
+# Fast inner loop
+cargo check
+
+# Default local test pass (lib/unit-focused)
+cargo dev-test
+
+# Full suite before merge or release work
+cargo full-test
+
+# Full-symbol debugging sessions
+cargo debug-build
+cargo debug-test
+```
+
+The `dev` and `test` profiles keep line-table debug info for this crate while disabling full debug info for dependencies. When you need full symbols across the dependency graph, use the `debugging` profile via `cargo debug-build`, `cargo debug-test`, or `cargo test --profile debugging`.
+
+VS Code is configured to keep rust-analyzer off `--all-targets` by default, and the workspace default test task uses the lean local test command instead of the full suite.
+
+### Scheduled build cleanup
+
+Build artifacts can grow quickly in this workspace, especially under `target/` and temporary directories such as `target-redphase/`. Use the cleanup scripts to remove build directories on demand or register a weekly Windows Scheduled Task:
+
+```powershell
+# Preview cleanup targets without deleting anything
+pwsh -NoProfile -File .\scripts\prune-build-artifacts.ps1 -PurgePrimaryTarget -IgnoreAge -WhatIf
+
+# Register the weekly cleanup task (Sunday 3:00 AM by default)
+pwsh -NoProfile -File .\scripts\register-build-prune-task.ps1
+```
+
+The cleanup scripts only remove build artifact directories such as `target/` and `target-*`. They do not touch `.copilot/`, `.engram/`, or other workspace data.
+
+[!NOTE]
+We intentionally preserve `.copilot/` logs and session data so they remain available for later usage analysis and context-window mining.
 
 ### Test Organization
 
