@@ -108,10 +108,42 @@ fn unrelated_stale_daemon_errors_still_fail() {
 }
 
 #[cfg(unix)]
+fn ensure_fake_listener_parent_dir(endpoint: &str) -> std::io::Result<()> {
+    if let Some(parent) = std::path::Path::new(endpoint).parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_fake_listener_parent_dirs_are_created() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let endpoint = tempdir
+        .path()
+        .join(".engram")
+        .join("run")
+        .join("engram.sock");
+    let endpoint_str = endpoint.display().to_string();
+
+    assert!(
+        !endpoint.parent().expect("endpoint parent").exists(),
+        "test precondition should start without parent directories"
+    );
+
+    ensure_fake_listener_parent_dir(&endpoint_str).expect("parent directories should be created");
+
+    assert!(endpoint.parent().expect("endpoint parent").exists());
+}
+
+#[cfg(unix)]
 fn bind_fake_listener(
     endpoint: &str,
 ) -> Result<Listener, Box<dyn std::error::Error + Send + Sync>> {
     use interprocess::local_socket::{GenericFilePath, ToFsName};
+
+    ensure_fake_listener_parent_dir(endpoint)?;
 
     if fs::metadata(endpoint).is_ok() {
         fs::remove_file(endpoint)?;
