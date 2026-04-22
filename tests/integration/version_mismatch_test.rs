@@ -78,6 +78,35 @@ async fn shim_respawns_on_stale_daemon() {
     shutdown_daemon(&endpoint).await;
 }
 
+fn is_expected_stale_daemon_shutdown(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+#[test]
+fn stale_daemon_shutdown_errors_are_treated_as_clean_exit() {
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::BrokenPipe,
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::UnexpectedEof,
+    ] {
+        let error = std::io::Error::from(kind);
+        assert!(is_expected_stale_daemon_shutdown(&error));
+    }
+}
+
+#[test]
+fn unrelated_stale_daemon_errors_still_fail() {
+    let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    assert!(!is_expected_stale_daemon_shutdown(&error));
+}
+
 #[cfg(unix)]
 fn bind_fake_listener(
     endpoint: &str,
@@ -111,13 +140,18 @@ async fn run_stale_daemon(
     loop {
         let stream = match listener.accept().await {
             Ok(stream) => stream,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) if is_expected_stale_daemon_shutdown(&error) => break,
             Err(error) => return Err(Box::new(error)),
         };
         let (recv_half, mut send_half) = stream.split();
         let mut reader = BufReader::new(recv_half);
         let mut request_line = String::new();
-        reader.read_line(&mut request_line).await?;
+        match reader.read_line(&mut request_line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if is_expected_stale_daemon_shutdown(&error) => break,
+            Err(error) => return Err(Box::new(error)),
+        }
         let request = IpcRequest::from_line(&request_line).map_err(|response| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -163,8 +197,17 @@ async fn run_stale_daemon(
             ),
         };
 
-        send_half.write_all(response.to_line()?.as_bytes()).await?;
-        send_half.flush().await?;
+        let response_line = response.to_line()?;
+        match send_half.write_all(response_line.as_bytes()).await {
+            Ok(()) => {}
+            Err(error) if is_expected_stale_daemon_shutdown(&error) => break,
+            Err(error) => return Err(Box::new(error)),
+        }
+        match send_half.flush().await {
+            Ok(()) => {}
+            Err(error) if is_expected_stale_daemon_shutdown(&error) => break,
+            Err(error) => return Err(Box::new(error)),
+        }
 
         if should_exit {
             break;
