@@ -52,6 +52,12 @@ pub fn ipc_endpoint(workspace: &Path) -> Result<String, EngramError> {
 }
 
 #[cfg(unix)]
+#[cfg(target_os = "macos")]
+const MAX_UNIX_SOCKET_PATH_LEN: usize = 103;
+#[cfg(unix)]
+#[cfg(not(target_os = "macos"))]
+const MAX_UNIX_SOCKET_PATH_LEN: usize = 107;
+#[cfg(unix)]
 fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
     let sock_path = workspace.join(".engram").join("run").join("engram.sock");
 
@@ -62,11 +68,10 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
         })
     })?;
 
-    // Unix domain socket paths are limited to 108 bytes on Linux (UNIX_PATH_MAX)
-    // and 104 bytes on macOS.  108 is used as the conservative cross-platform
-    // limit.  If the workspace-scoped path exceeds this, fall back to a
-    // hash-derived path under /tmp/ to avoid ENAMETOOLONG on bind() (S119).
-    if path_str.len() <= 108 {
+    // Unix domain socket paths are limited by `sockaddr_un::sun_path`, including
+    // the terminating NUL byte: Linux exposes 108 bytes and macOS exposes 104.
+    // Use the maximum string length that still leaves room for the terminator.
+    if path_str.len() <= MAX_UNIX_SOCKET_PATH_LEN {
         return Ok(path_str.to_owned());
     }
 
@@ -80,7 +85,7 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
         workspace = %workspace.display(),
         fallback = %fallback,
         path_len = path_str.len(),
-        "Unix socket path exceeds 108 bytes — using /tmp/ fallback (S119)"
+        "Unix socket path exceeds platform limit — using /tmp/ fallback (S119)"
     );
 
     Ok(fallback)
@@ -714,7 +719,41 @@ async fn accept_loop(
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    const SOCKET_SUFFIX_LEN: usize = "/.engram/run/engram.sock".len();
+
+    #[cfg(unix)]
+    fn create_workspace_for_socket_len(
+        target_socket_len: usize,
+        needs_git: bool,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let root_str = root.path().to_string_lossy();
+        let target_workspace_len = target_socket_len - SOCKET_SUFFIX_LEN;
+        assert!(
+            root_str.len() <= target_workspace_len,
+            "tempdir root {} exceeds target workspace length {}",
+            root_str.len(),
+            target_workspace_len
+        );
+
+        let padding = "a".repeat(target_workspace_len - root_str.len());
+        let workspace = root.path().join(padding);
+        std::fs::create_dir_all(&workspace).expect("create padded workspace");
+
+        if needs_git {
+            std::fs::create_dir(workspace.join(".git")).expect("create .git");
+            std::fs::write(
+                workspace.join(".git").join("HEAD"),
+                "ref: refs/heads/main\n",
+            )
+            .expect("write HEAD");
+        }
+
+        (root, workspace)
+    }
 
     #[test]
     #[cfg(unix)]
@@ -731,11 +770,9 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn long_workspace_path_uses_tmp_fallback() {
-        // "/.engram/run/engram.sock" = 24 chars; workspace needs > 84 chars so
-        // total exceeds 108 bytes.
-        let long_ws = format!("/tmp/{}", "a".repeat(90)); // 95 chars → total 119
-        let ws = Path::new(&long_ws);
-        let ep = ipc_endpoint(ws).unwrap();
+        let (_root, workspace) =
+            create_workspace_for_socket_len(MAX_UNIX_SOCKET_PATH_LEN + 1, true);
+        let ep = ipc_endpoint(&workspace).unwrap();
         assert!(
             ep.starts_with("/tmp/engram-"),
             "expected /tmp/ fallback, got {ep}"
@@ -748,28 +785,25 @@ mod tests {
         );
         // The fallback path must itself be short enough to bind.
         assert!(
-            ep.len() <= 108,
-            "fallback path {ep} still exceeds 108 bytes"
+            ep.len() <= MAX_UNIX_SOCKET_PATH_LEN,
+            "fallback path {ep} still exceeds platform limit"
         );
     }
 
     #[test]
     #[cfg(unix)]
-    fn boundary_path_exactly_108_bytes_uses_standard() {
-        // "/.engram/run/engram.sock" = 24 chars.  Workspace must be 84 chars
-        // for the total to be exactly 108 (≤ 108 → standard path taken).
-        // "/tmp/" = 5 chars + 79 'a's = 84.
-        let prefix = "/tmp/";
-        let padding = "a".repeat(84 - prefix.len()); // 79 'a's
-        let ws_str = format!("{prefix}{padding}");
-        assert_eq!(ws_str.len(), 84, "workspace path should be 84 bytes");
-        let ws = Path::new(&ws_str);
-        let ep = ipc_endpoint(ws).unwrap();
+    fn boundary_path_at_platform_limit_uses_standard() {
+        let (_root, workspace) = create_workspace_for_socket_len(MAX_UNIX_SOCKET_PATH_LEN, false);
+        let ep = ipc_endpoint(&workspace).unwrap();
         assert!(
             ep.ends_with("/.engram/run/engram.sock"),
             "expected standard path at boundary, got {ep}"
         );
-        assert_eq!(ep.len(), 108, "boundary path should be exactly 108 bytes");
+        assert_eq!(
+            ep.len(),
+            MAX_UNIX_SOCKET_PATH_LEN,
+            "boundary path should match the platform limit"
+        );
     }
 
     #[test]

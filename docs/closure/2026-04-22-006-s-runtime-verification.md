@@ -75,6 +75,5 @@ automated coverage than manual operator-facing smoke coverage today.
 
 ## Follow-up recommendations
 
-* keep the review follow-up on Unix socket path-length guarding in closure
 * keep the review follow-up on Unix `/tmp` fallback socket creation permissions in closure
 * consider adding an operator-facing smoke command for shim/daemon handshake verification in a later shipment

@@ -88,7 +88,7 @@ production IPC endpoint logic and normalizing lockfile path checks:
 ## Branch and review state
 
 * Release branch prepared: `release/006-s-daemon-reliability-b1`
-* Review gate outcome: no P0/P1 findings; two P2 follow-ups carried forward for closure rather than widened into this shipment at PR time
+* Review gate outcome: no P0/P1 findings; the Unix socket path-length follow-up was fixed before PR, and the remaining Unix fallback socket-permission hardening item is carried forward for closure
 * Final Ship gates re-run on the release branch and passed:
   * `cargo fmt --all -- --check`
   * `cargo clippy --target-dir target-redphase -- -D warnings -D clippy::pedantic`
@@ -96,7 +96,6 @@ production IPC endpoint logic and normalizing lockfile path checks:
 
 ## Follow-up items for closure
 
-* Review follow-up: tighten Unix socket fallback path-length guard in `src/daemon/ipc_server.rs` so the pre-bind limit respects platform `sun_path` constraints exactly
 * Review follow-up: harden Unix socket creation permissions for the `/tmp` fallback path so socket access is constrained from creation time, not only by post-bind `chmod`
 
 ## Open items and next steps
