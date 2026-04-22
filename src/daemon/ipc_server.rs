@@ -9,7 +9,7 @@
 //! | Platform | Format |
 //! |----------|--------|
 //! | Unix     | `{workspace}/.engram/run/engram.sock` |
-//! | Windows  | `\\.\pipe\engram-{sha256_first_16hex}` |
+//! | Windows  | `\\.\pipe\engram-{workspace_key}` |
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,11 +25,13 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::daemon::protocol::{IpcError as WireError, IpcRequest, IpcResponse};
+use crate::daemon::protocol::{HealthCheckResult, IpcError as WireError, IpcRequest, IpcResponse};
 use crate::daemon::ttl::TtlTimer;
+use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
 use crate::server::state::{AppState, SharedState};
+use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
 
 // ── Endpoint naming ──────────────────────────────────────────────────────────
@@ -37,8 +39,9 @@ use crate::tools;
 /// Compute the IPC endpoint string for the given workspace.
 ///
 /// - **Unix**: `{workspace}/.engram/run/engram.sock`
-/// - **Windows**: `\\.\pipe\engram-{sha256_first_16hex}` where the hash is
-///   the SHA-256 of the canonical workspace path encoded as lowercase hex.
+/// - **Windows**: `\\.\pipe\engram-{workspace_key}` where the key is the
+///   persisted `.workspace-id`, or the legacy path hash while a pre-upgrade
+///   daemon is still live.
 ///
 /// # Errors
 ///
@@ -49,9 +52,13 @@ pub fn ipc_endpoint(workspace: &Path) -> Result<String, EngramError> {
 }
 
 #[cfg(unix)]
+#[cfg(target_os = "macos")]
+const MAX_UNIX_SOCKET_PATH_LEN: usize = 103;
+#[cfg(unix)]
+#[cfg(not(target_os = "macos"))]
+const MAX_UNIX_SOCKET_PATH_LEN: usize = 107;
+#[cfg(unix)]
 fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
-    use sha2::{Digest, Sha256};
-
     let sock_path = workspace.join(".engram").join("run").join("engram.sock");
 
     let path_str = sock_path.to_str().ok_or_else(|| {
@@ -61,35 +68,24 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
         })
     })?;
 
-    // Unix domain socket paths are limited to 108 bytes on Linux (UNIX_PATH_MAX)
-    // and 104 bytes on macOS.  108 is used as the conservative cross-platform
-    // limit.  If the workspace-scoped path exceeds this, fall back to a
-    // hash-derived path under /tmp/ to avoid ENAMETOOLONG on bind() (S119).
-    if path_str.len() <= 108 {
+    // Unix domain socket paths are limited by `sockaddr_un::sun_path`, including
+    // the terminating NUL byte: Linux exposes 108 bytes and macOS exposes 104.
+    // Use the maximum string length that still leaves room for the terminator.
+    if path_str.len() <= MAX_UNIX_SOCKET_PATH_LEN {
         return Ok(path_str.to_owned());
     }
 
-    // Fallback: /tmp/engram-{sha256_first_16hex}.sock
+    // Fallback: /tmp/engram-{workspace_key}.sock
     // Permissions (0o600) are applied by run_with_shutdown after bind, using
     // the endpoint string returned here, so the fallback path is also secured.
-    let canonical_str = workspace.to_str().ok_or_else(|| {
-        EngramError::Ipc(DomainIpcError::ConnectionFailed {
-            address: workspace.display().to_string(),
-            reason: "workspace path is not valid UTF-8 for fallback hash".to_owned(),
-        })
-    })?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_str.as_bytes());
-    let hash = hasher.finalize();
-    let prefix = hex::encode(&hash[..8]);
-    let fallback = format!("/tmp/engram-{prefix}.sock");
+    let key = daemon_key_for_workspace(workspace)?;
+    let fallback = format!("/tmp/engram-{key}.sock");
 
     tracing::warn!(
         workspace = %workspace.display(),
         fallback = %fallback,
         path_len = path_str.len(),
-        "Unix socket path exceeds 108 bytes — using /tmp/ fallback (S119)"
+        "Unix socket path exceeds platform limit — using /tmp/ fallback (S119)"
     );
 
     Ok(fallback)
@@ -97,21 +93,8 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
 
 #[cfg(windows)]
 fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
-    use sha2::{Digest, Sha256};
-
-    let canonical_str = workspace.to_str().ok_or_else(|| {
-        EngramError::Ipc(DomainIpcError::ConnectionFailed {
-            address: workspace.display().to_string(),
-            reason: "workspace path is not valid UTF-8".to_owned(),
-        })
-    })?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_str.as_bytes());
-    let hash = hasher.finalize();
-    // First 8 bytes → 16 lowercase hex characters
-    let prefix = hex::encode(&hash[..8]);
-    Ok(format!(r"\\.\pipe\engram-{prefix}"))
+    let key = daemon_key_for_workspace(workspace)?;
+    Ok(format!(r"\\.\pipe\engram-{key}"))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -287,11 +270,13 @@ async fn process_request(
             };
             IpcResponse::success(
                 id,
-                json!({
-                    "status": status,
-                    "uptime_seconds": state.uptime_seconds(),
-                    "workspace": snapshot.map(|s| s.path),
-                    "active_connections": state.active_connections(),
+                json!(HealthCheckResult {
+                    status: status.to_owned(),
+                    uptime_seconds: state.uptime_seconds(),
+                    workspace: snapshot.map(|s| s.path),
+                    active_connections: state.active_connections(),
+                    protocol_version: ENGRAM_PROTOCOL_VERSION,
+                    build_hash: ENGRAM_BUILD_HASH.to_owned(),
                 }),
             )
         }
@@ -733,7 +718,42 @@ async fn accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    #[cfg(unix)]
+    use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    const SOCKET_SUFFIX_LEN: usize = "/.engram/run/engram.sock".len();
+
+    #[cfg(unix)]
+    fn create_workspace_for_socket_len(
+        target_socket_len: usize,
+        needs_git: bool,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let root_str = root.path().to_string_lossy();
+        let target_workspace_len = target_socket_len - SOCKET_SUFFIX_LEN;
+        assert!(
+            root_str.len() < target_workspace_len,
+            "tempdir root {} exceeds target workspace length {}",
+            root_str.len(),
+            target_workspace_len
+        );
+
+        let padding = "a".repeat(target_workspace_len - root_str.len() - 1);
+        let workspace = root.path().join(padding);
+        std::fs::create_dir_all(&workspace).expect("create padded workspace");
+
+        if needs_git {
+            std::fs::create_dir(workspace.join(".git")).expect("create .git");
+            std::fs::write(
+                workspace.join(".git").join("HEAD"),
+                "ref: refs/heads/main\n",
+            )
+            .expect("write HEAD");
+        }
+
+        (root, workspace)
+    }
 
     #[test]
     #[cfg(unix)]
@@ -750,11 +770,9 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn long_workspace_path_uses_tmp_fallback() {
-        // "/.engram/run/engram.sock" = 24 chars; workspace needs > 84 chars so
-        // total exceeds 108 bytes.
-        let long_ws = format!("/tmp/{}", "a".repeat(90)); // 95 chars → total 119
-        let ws = Path::new(&long_ws);
-        let ep = ipc_endpoint(ws).unwrap();
+        let (_root, workspace) =
+            create_workspace_for_socket_len(MAX_UNIX_SOCKET_PATH_LEN + 1, true);
+        let ep = ipc_endpoint(&workspace).unwrap();
         assert!(
             ep.starts_with("/tmp/engram-"),
             "expected /tmp/ fallback, got {ep}"
@@ -767,35 +785,33 @@ mod tests {
         );
         // The fallback path must itself be short enough to bind.
         assert!(
-            ep.len() <= 108,
-            "fallback path {ep} still exceeds 108 bytes"
+            ep.len() <= MAX_UNIX_SOCKET_PATH_LEN,
+            "fallback path {ep} still exceeds platform limit"
         );
     }
 
     #[test]
     #[cfg(unix)]
-    fn boundary_path_exactly_108_bytes_uses_standard() {
-        // "/.engram/run/engram.sock" = 24 chars.  Workspace must be 84 chars
-        // for the total to be exactly 108 (≤ 108 → standard path taken).
-        // "/tmp/" = 5 chars + 79 'a's = 84.
-        let prefix = "/tmp/";
-        let padding = "a".repeat(84 - prefix.len()); // 79 'a's
-        let ws_str = format!("{prefix}{padding}");
-        assert_eq!(ws_str.len(), 84, "workspace path should be 84 bytes");
-        let ws = Path::new(&ws_str);
-        let ep = ipc_endpoint(ws).unwrap();
+    fn boundary_path_at_platform_limit_uses_standard() {
+        let (_root, workspace) = create_workspace_for_socket_len(MAX_UNIX_SOCKET_PATH_LEN, false);
+        let ep = ipc_endpoint(&workspace).unwrap();
         assert!(
             ep.ends_with("/.engram/run/engram.sock"),
             "expected standard path at boundary, got {ep}"
         );
-        assert_eq!(ep.len(), 108, "boundary path should be exactly 108 bytes");
+        assert_eq!(
+            ep.len(),
+            MAX_UNIX_SOCKET_PATH_LEN,
+            "boundary path should match the platform limit"
+        );
     }
 
     #[test]
     #[cfg(windows)]
     fn windows_endpoint_uses_named_pipe() {
-        let ws = Path::new(r"C:\Users\test\project");
-        let ep = ipc_endpoint(ws).unwrap();
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+        let ep = ipc_endpoint(workspace.path()).unwrap();
         assert!(
             ep.starts_with(r"\\.\pipe\engram-"),
             "expected named pipe, got {ep}"

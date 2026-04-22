@@ -12,6 +12,7 @@ use std::io::Write;
 use tempfile::TempDir;
 
 use engram::daemon::lockfile::DaemonLock;
+use engram::shim::pidfile::PidFile;
 // EngramError is only used in the Unix-only S030 test; import it there locally.
 
 #[test]
@@ -30,22 +31,21 @@ fn s027_acquire_on_fresh_workspace_succeeds_and_writes_pid() {
     let lock_path = workspace.join(".engram").join("run").join("engram.lock");
     assert!(lock_path.exists(), "lock file must be created");
 
-    // PID must be the current process ID.  Because engram.pid is a plain
-    // unlocked file on all platforms we can also verify the written value.
+    // PID metadata must be readable from the unlocked runtime file.
     assert_eq!(
         lock.pid(),
         std::process::id(),
         "lock must report current process PID"
     );
-    let written: u32 = fs::read_to_string(&pid_path)
-        .expect("engram.pid must be readable")
-        .trim()
-        .parse()
-        .expect("engram.pid must contain a numeric PID");
+    let written = PidFile::read(workspace).expect("engram.pid must be readable");
     assert_eq!(
-        written,
+        written.pid,
         std::process::id(),
         "engram.pid must match current PID"
+    );
+    assert!(
+        written.start_time_unix >= 1,
+        "engram.pid must record a start time sentinel or real start time"
     );
 }
 

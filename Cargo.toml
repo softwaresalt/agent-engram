@@ -47,6 +47,7 @@ tokio-stream = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 sysinfo = "0.30"
+tempfile = "3"
 toml = "0.8"
 tree-sitter = "0.25"
 tree-sitter-rust = "0.23"
@@ -79,9 +80,36 @@ otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "o
 # See docs/adrs/0016-legacy-sse-feature-gate.md.
 legacy-sse = []
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
+
+[profile.test.build-override]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true
+
+[profile.debugging.package."*"]
+debug = true
+
+[profile.debugging.build-override]
+debug = false
+
 [dev-dependencies]
 proptest = "1"
-tempfile = "3"
 tokio-test = "0.4"
 
 # Rayon is pinned below 1.11 to work around graph_builder 0.4.1's
@@ -160,6 +188,7 @@ path = "tests/integration/embedding_test.rs"
 name = "integration_concurrency"
 path = "tests/integration/concurrency_test.rs"
 required-features = ["surreal-backend"]
+
 [[test]]
 name = "contract_error_codes"
 path = "tests/contract/error_codes_test.rs"
@@ -451,6 +480,18 @@ required-features = ["cozo-backend"]
 [[test]]
 name = "integration_cozo_dual_backend_sweep"
 path = "tests/integration/cozo_dual_backend_sweep_test.rs"
+
+[[test]]
+name = "integration_version_mismatch"
+path = "tests/integration/version_mismatch_test.rs"
+
+[[test]]
+name = "integration_stale_pid_recovery"
+path = "tests/integration/stale_pid_recovery_test.rs"
+
+[[test]]
+name = "integration_workspace_id_drift"
+path = "tests/integration/workspace_id_drift_test.rs"
 
 [[example]]
 name = "cozo_api_spike"

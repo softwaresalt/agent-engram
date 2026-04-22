@@ -13,12 +13,10 @@
 //! - **Unix / macOS**: IPC endpoint is a Unix domain socket at
 //!   `{workspace}/.engram/run/engram.sock`. Ready detection polls via an IPC
 //!   health-check request (more reliable than filesystem presence alone).
-//! - **Windows**: IPC endpoint is a named pipe at
-//!   `\\.\pipe\engram-{sha256_prefix_16}`, where `sha256_prefix_16` is the
-//!   first 16 hex characters of the SHA-256 hash of the **canonical** workspace
-//!   path string, matching the daemon's own naming logic (ADR 0015). Ready
-//!   detection uses an IPC health-check because `std::fs::metadata` does not
-//!   detect named-pipe server readiness on Windows.
+//! - **Windows**: IPC endpoint is a named pipe at `\\.\pipe\engram-{key}`,
+//!   where `{key}` is resolved by the daemon's production endpoint helper.
+//!   Ready detection uses an IPC health-check because `std::fs::metadata` does
+//!   not detect named-pipe server readiness on Windows.
 //!
 //! # Usage (Phase 3+)
 //!
@@ -46,27 +44,13 @@ use tempfile::TempDir;
 /// Compute the IPC endpoint path for a canonical workspace path.
 ///
 /// - **Unix / macOS**: `{workspace}/.engram/run/engram.sock`
-/// - **Windows**: `\\.\pipe\engram-{sha256_prefix_16}` where
-///   `sha256_prefix_16` is the first 16 hex characters (8 bytes) of the
-///   SHA-256 hash of the canonical workspace path string, matching
-///   [`src/daemon/lockfile.rs`] naming (ADR 0015).
+/// - **Windows**: `\\.\pipe\engram-{key}` using the daemon's production
+///   endpoint derivation.
 fn ipc_path_for_workspace(workspace: &Path) -> PathBuf {
-    #[cfg(not(windows))]
-    {
-        workspace.join(".engram").join("run").join("engram.sock")
-    }
-
-    #[cfg(windows)]
-    {
-        use sha2::{Digest, Sha256};
-
-        let mut hasher = Sha256::new();
-        hasher.update(workspace.to_string_lossy().as_bytes());
-        let digest = hasher.finalize();
-        // First 8 bytes → 16 lowercase hex characters.
-        let prefix = hex::encode(&digest[..8]);
-        PathBuf::from(format!(r"\\.\pipe\engram-{prefix}"))
-    }
+    PathBuf::from(
+        engram::daemon::ipc_server::ipc_endpoint(workspace)
+            .expect("test workspace should produce a valid IPC endpoint"),
+    )
 }
 
 /// Returns `true` if the IPC endpoint is accepting health-check requests.
@@ -126,13 +110,13 @@ impl DaemonHarness {
 
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
-        let ipc_path = ipc_path_for_workspace(&workspace_path);
 
         // Create a minimal `.git` directory so the daemon accepts this as a workspace.
         // `canonicalize_workspace()` rejects paths where `.git` is not a directory.
         let git_dir = workspace_path.join(".git");
         std::fs::create_dir_all(&git_dir)?;
         std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+        let ipc_path = ipc_path_for_workspace(&workspace_path);
 
         let workspace_str = workspace_path
             .to_str()
@@ -264,11 +248,11 @@ impl DaemonHarness {
 
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
-        let ipc_path = ipc_path_for_workspace(&workspace_path);
 
         let git_dir = workspace_path.join(".git");
         std::fs::create_dir_all(&git_dir)?;
         std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+        let ipc_path = ipc_path_for_workspace(&workspace_path);
 
         let workspace_str = workspace_path
             .to_str()
@@ -367,8 +351,14 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn ipc_path_windows_format() {
-        let workspace = Path::new(r"C:\Users\test\workspace");
-        let path = ipc_path_for_workspace(workspace);
+        let workspace = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
+        std::fs::write(
+            workspace.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write HEAD");
+        let path = ipc_path_for_workspace(workspace.path());
         let path_str = path.to_str().expect("pipe path is valid UTF-8");
 
         assert!(
@@ -376,17 +366,12 @@ mod tests {
             "Windows IPC path must start with {{pipe prefix}}, got: {path_str}"
         );
 
-        let hash_part = path_str
+        let key_part = path_str
             .strip_prefix(r"\\.\pipe\engram-")
             .expect("prefix already verified");
-        assert_eq!(
-            hash_part.len(),
-            16,
-            "hash suffix must be exactly 16 hex characters, got: {hash_part}"
-        );
         assert!(
-            hash_part.chars().all(|c| c.is_ascii_hexdigit()),
-            "hash suffix must be lowercase hex, got: {hash_part}"
+            !key_part.is_empty(),
+            "pipe suffix must not be empty, got: {key_part}"
         );
     }
 
@@ -395,8 +380,23 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn ipc_path_windows_unique_per_workspace() {
-        let a = ipc_path_for_workspace(Path::new(r"C:\workspace-a"));
-        let b = ipc_path_for_workspace(Path::new(r"C:\workspace-b"));
+        let workspace_a = tempfile::tempdir().expect("tempdir a");
+        std::fs::create_dir(workspace_a.path().join(".git")).expect("create .git a");
+        std::fs::write(
+            workspace_a.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write HEAD a");
+        let workspace_b = tempfile::tempdir().expect("tempdir b");
+        std::fs::create_dir(workspace_b.path().join(".git")).expect("create .git b");
+        std::fs::write(
+            workspace_b.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write HEAD b");
+
+        let a = ipc_path_for_workspace(workspace_a.path());
+        let b = ipc_path_for_workspace(workspace_b.path());
         assert_ne!(a, b, "distinct workspaces must produce distinct pipe names");
     }
 }

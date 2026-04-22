@@ -30,6 +30,7 @@ use crate::services::hydration::FileFingerprint;
 #[derive(Clone, Debug)]
 pub struct WorkspaceSnapshot {
     pub workspace_id: String,
+    pub workspace_uuid: String,
     pub branch: String,
     pub data_dir: PathBuf,
     pub path: String,
@@ -155,11 +156,12 @@ impl AppState {
 
     pub async fn set_workspace(&self, snapshot: WorkspaceSnapshot) -> Result<(), WorkspaceError> {
         let mut workspace = self.active_workspace.write().await;
-        let active = usize::from(workspace.is_some());
-        if active >= self.max_workspaces {
-            return Err(WorkspaceError::LimitReached {
-                limit: self.max_workspaces,
-            });
+        if let Some(active) = workspace.as_ref() {
+            if active.workspace_id != snapshot.workspace_id && self.max_workspaces <= 1 {
+                return Err(WorkspaceError::LimitReached {
+                    limit: self.max_workspaces,
+                });
+            }
         }
 
         *workspace = Some(snapshot);
@@ -180,6 +182,14 @@ impl AppState {
 
     pub async fn has_workspace_capacity(&self) -> bool {
         self.active_workspaces().await < self.max_workspaces
+    }
+
+    pub async fn can_bind_workspace(&self, workspace_id: &str) -> bool {
+        let workspace = self.active_workspace.read().await;
+        match workspace.as_ref() {
+            Some(active) => active.workspace_id == workspace_id || self.max_workspaces > 1,
+            None => self.max_workspaces > 0,
+        }
     }
 
     pub fn stale_strategy(&self) -> StaleStrategy {

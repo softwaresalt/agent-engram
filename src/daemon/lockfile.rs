@@ -5,12 +5,12 @@
 //! | File | Purpose |
 //! |------|---------|
 //! | `engram.lock` | Exclusive OS-level write lock target (via `fd-lock`) |
-//! | `engram.pid`  | Plain text file containing the daemon's PID (never locked) |
+//! | `engram.pid`  | Unlocked PID metadata (`pid` + `start_time_unix`) |
 //!
 //! Separating the lock target from the PID record is required on Windows where
 //! `fd-lock` uses `LockFileEx`, which creates a **mandatory** byte-range lock.
 //! A mandatory lock prevents even *read* operations by other processes, so
-//! `read_pid()` would fail with `ERROR_LOCK_VIOLATION` if both were the same
+//! `read_pid_file()` would fail with `ERROR_LOCK_VIOLATION` if both were the same
 //! file. By keeping `engram.pid` unlocked, any process (including the shim's
 //! stale-PID check) can always read the holder's PID.
 //!
@@ -30,10 +30,11 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use fd_lock::RwLock;
-use sysinfo::{Pid, System};
 use tracing::warn;
 
-use crate::errors::{EngramError, LockError};
+use crate::db::workspace::normalize_canonical;
+use crate::errors::{EngramError, LockError, WorkspaceError};
+use crate::shim::pidfile::PidFile;
 
 /// An acquired exclusive lock on the daemon lock file.
 ///
@@ -52,9 +53,9 @@ pub struct DaemonLock {
 impl DaemonLock {
     /// Acquire an exclusive lock on `.engram/run/engram.lock` inside `workspace`.
     ///
-    /// Creates `.engram/run/` if it does not exist. On success the current
-    /// process ID is written to `.engram/run/engram.pid` (a plain, unlocked
-    /// file that any process can read).
+    /// Creates `.engram/run/` if it does not exist. On success PID metadata is
+    /// written to `.engram/run/engram.pid` (an unlocked file any process can
+    /// read).
     ///
     /// If `try_write()` fails with `WouldBlock` and the recorded PID in
     /// `engram.pid` belongs to a dead process (stale lockfile), both
@@ -89,6 +90,12 @@ impl DaemonLock {
 /// `acquire_inner` is called once more with `allow_retry = false` to prevent
 /// unbounded recursion.
 fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, EngramError> {
+    let canonical_workspace = normalize_canonical(workspace.canonicalize().map_err(|e| {
+        EngramError::Lock(LockError::AcquisitionFailed {
+            path: workspace.display().to_string(),
+            reason: e.to_string(),
+        })
+    })?);
     let run_dir = workspace.join(".engram").join("run");
 
     std::fs::create_dir_all(&run_dir).map_err(|e| {
@@ -97,18 +104,31 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
             reason: e.to_string(),
         })
     })?;
+    let canonical_run_dir = normalize_canonical(run_dir.canonicalize().map_err(|e| {
+        EngramError::Lock(LockError::AcquisitionFailed {
+            path: run_dir.display().to_string(),
+            reason: e.to_string(),
+        })
+    })?);
+    if !canonical_run_dir.starts_with(&canonical_workspace) {
+        return Err(EngramError::Workspace(WorkspaceError::PathEscape {
+            attempted: canonical_run_dir,
+            root: canonical_workspace,
+        }));
+    }
 
     // Lock target: engram.lock (exclusively locked by fd-lock).
-    // PID record:  engram.pid (plain file, never locked — always readable).
+    // PID record:  engram.pid (metadata file, never locked — always readable).
     // Keeping them separate avoids Windows ERROR_LOCK_VIOLATION when other
     // processes try to read the PID from the locked file.
     let lock_path = run_dir.join("engram.lock");
     let pid_path = run_dir.join("engram.pid");
+    ensure_lock_file_exists(&run_dir, &lock_path)?;
 
     let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
+        .create(false)
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| {
@@ -125,17 +145,14 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
 
     match rw_lock.try_write() {
         Ok(guard) => {
-            // Write PID to the plain engram.pid file.  std::fs::write truncates
-            // before writing so stale bytes from a longer previous PID cannot
-            // survive and produce a corrupted read on the next acquire.
-            let pid = std::process::id();
-            let pid_str = pid.to_string();
-            std::fs::write(&pid_path, pid_str.as_bytes()).map_err(|e| {
+            let pid_file = PidFile::current();
+            pid_file.atomic_write(&run_dir).map_err(|e| {
                 EngramError::Lock(LockError::AcquisitionFailed {
                     path: pid_path.display().to_string(),
-                    reason: format!("write PID file failed: {e}"),
+                    reason: e.to_string(),
                 })
             })?;
+            let pid = pid_file.pid;
 
             // T053: clean up any stale Unix socket left behind by a crashed
             // daemon so the next `bind_listener` call succeeds (S039-S040).
@@ -149,15 +166,20 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            // engram.pid is a plain unlocked file — read_pid always succeeds
+            // engram.pid is an unlocked metadata file — read_pid_file always succeeds
             // on all platforms, including Windows.
-            match read_pid(&pid_path) {
-                Some(pid) if is_process_alive(pid) => {
-                    warn!(pid, "daemon lock held by live process, cannot start");
-                    Err(EngramError::Lock(LockError::AlreadyHeld { pid }))
+            match read_pid_file(workspace) {
+                Some(pid_file) if pid_file.verify_alive().unwrap_or(false) => {
+                    warn!(
+                        pid = pid_file.pid,
+                        "daemon lock held by live process, cannot start"
+                    );
+                    Err(EngramError::Lock(LockError::AlreadyHeld {
+                        pid: pid_file.pid,
+                    }))
                 }
-                Some(pid) if allow_retry => {
-                    warn!(pid, "found stale lockfile, cleaning up");
+                Some(pid_file) if allow_retry => {
+                    warn!(pid = pid_file.pid, "found stale lockfile, cleaning up");
                     // The holding process is dead; remove both stale files and
                     // retry once. On most OSes the OS lock is already released when
                     // the holding process died, so the retry should succeed.
@@ -181,10 +203,15 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
                     }
                     acquire_inner(workspace, false)
                 }
-                Some(pid) => {
+                Some(pid_file) => {
                     // Second attempt still blocked — return AlreadyHeld.
-                    warn!(pid, "stale lockfile cleanup retry failed; lock still held");
-                    Err(EngramError::Lock(LockError::AlreadyHeld { pid }))
+                    warn!(
+                        pid = pid_file.pid,
+                        "stale lockfile cleanup retry failed; lock still held"
+                    );
+                    Err(EngramError::Lock(LockError::AlreadyHeld {
+                        pid: pid_file.pid,
+                    }))
                 }
                 None => {
                     warn!("lockfile held but PID unreadable");
@@ -203,7 +230,10 @@ fn acquire_inner(workspace: &Path, allow_retry: bool) -> Result<DaemonLock, Engr
 ///
 /// Uses [`sysinfo`] to query the OS process table. Returns `false` if the
 /// process is not found (dead, zombie, or never existed) or if the PID is 0.
+#[cfg(test)]
 fn is_process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, System};
+
     if pid == 0 {
         return false;
     }
@@ -211,12 +241,31 @@ fn is_process_alive(pid: u32) -> bool {
     sys.refresh_process(Pid::from_u32(pid))
 }
 
-/// Read a PID from `path`, returning `None` if the file is missing, empty, or
-/// contains non-numeric content.
-fn read_pid(path: &Path) -> Option<u32> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+/// Read daemon PID metadata, accepting both structured and legacy numeric PID files.
+fn read_pid_file(workspace: &Path) -> Option<PidFile> {
+    PidFile::read(workspace)
+}
+
+fn ensure_lock_file_exists(run_dir: &Path, lock_path: &Path) -> Result<(), EngramError> {
+    if lock_path.exists() {
+        return Ok(());
+    }
+
+    let temp_file = tempfile::NamedTempFile::new_in(run_dir).map_err(|e| {
+        EngramError::Lock(LockError::AcquisitionFailed {
+            path: lock_path.display().to_string(),
+            reason: e.to_string(),
+        })
+    })?;
+
+    match temp_file.persist(lock_path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(EngramError::Lock(LockError::AcquisitionFailed {
+            path: lock_path.display().to_string(),
+            reason: error.error.to_string(),
+        })),
+    }
 }
 
 /// Remove a stale Unix domain socket file if it exists in `run_dir`.

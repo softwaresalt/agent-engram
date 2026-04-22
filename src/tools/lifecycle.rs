@@ -2,13 +2,15 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
+use uuid::Uuid;
 
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{
-    canonicalize_workspace, resolve_data_dir, resolve_git_branch, workspace_hash,
+    canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
+    workspace_hash,
 };
-use crate::errors::{EngramError, WorkspaceError};
+use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -63,12 +65,31 @@ pub async fn set_workspace(
     validate_workspace_path(&path)?;
 
     let canonical = canonicalize_workspace(&path)?;
-    // Resolve branch before hashing so workspace_id can incorporate it (TASK-009.04).
+    let canonical_path = canonical.display().to_string();
+    let workspace_uuid = load_or_create_workspace_id(&canonical)?;
     let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
     let workspace_id = workspace_hash(&canonical, &branch);
+
+    if let Some(active) = state.snapshot_workspace().await {
+        if active.path == canonical_path && active.workspace_uuid != workspace_uuid.to_string() {
+            let expected_id = Uuid::parse_str(&active.workspace_uuid).map_err(|error| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!(
+                        "active workspace state contains an invalid workspace UUID '{}': {error}",
+                        active.workspace_uuid
+                    ),
+                })
+            })?;
+            return Err(EngramError::Workspace(WorkspaceError::AmbiguousBind {
+                expected_id,
+                found_id: workspace_uuid,
+                path: canonical,
+            }));
+        }
+    }
     let data_dir = resolve_data_dir(&canonical);
 
-    if !state.has_workspace_capacity().await {
+    if !state.can_bind_workspace(&workspace_id).await {
         return Err(EngramError::Workspace(WorkspaceError::LimitReached {
             limit: state.max_workspaces(),
         }));
@@ -107,6 +128,7 @@ pub async fn set_workspace(
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
+        workspace_uuid: workspace_uuid.to_string(),
         branch: branch.clone(),
         data_dir: data_dir.clone(),
         path: canonical.display().to_string(),
