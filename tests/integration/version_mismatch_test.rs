@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use engram::daemon::ipc_server::ipc_endpoint;
 use engram::daemon::protocol::{HealthCheckResult, IpcRequest, IpcResponse};
-use engram::db::workspace::{canonicalize_workspace, workspace_hash};
+use engram::db::workspace::canonicalize_workspace;
 use engram::errors::{EngramError, IpcError};
 use engram::shim::ipc_client::send_request;
 use engram::shim::lifecycle::{check_health, ensure_daemon_running_with_endpoint};
@@ -13,6 +13,9 @@ use interprocess::local_socket::tokio::Listener;
 use interprocess::local_socket::tokio::prelude::*;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+#[cfg(windows)]
+use engram::db::workspace::workspace_hash;
 
 #[tokio::test]
 async fn shim_respawns_on_stale_daemon() {
