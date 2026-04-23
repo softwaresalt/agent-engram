@@ -32,7 +32,7 @@ pub use config::{BatchConfig, CodeGraphConfig, EmbeddingConfig, PluginConfig, Wo
 pub use content::ContentRecord;
 pub use file_hash::FileHashRecord;
 pub use function::Function;
-pub use health::{HealthCheck, HealthReport, HealthStatus, SmokeResult};
+pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
 pub use metrics::MetricsConfig;
 pub use registry::{ContentSource, ContentSourceStatus, RegistryConfig};

@@ -11,7 +11,7 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
-use crate::models::health::HealthReport;
+use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -23,6 +23,8 @@ pub struct WorkspaceBinding {
     pub workspace_id: String,
     pub path: String,
     pub hydrated: bool,
+    /// Whether a background offline-change scan was queued for this binding (029-F WS-6).
+    pub pending_scan: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,6 +52,8 @@ pub struct WorkspaceStatus {
     pub stale_files: bool,
     pub connection_count: usize,
     pub code_graph: CodeGraphStats,
+    /// Background scan progress snapshot; `null` until the first scan is queued (029-F WS-6).
+    pub scan_status: Option<ScanProgress>,
 }
 
 /// Summary statistics for the indexed code graph.
@@ -150,6 +154,7 @@ pub async fn set_workspace(
         workspace_id,
         path: canonical.display().to_string(),
         hydrated: true,
+        pending_scan: false,
     })
 }
 
@@ -223,6 +228,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             stale_files: stale_now,
             connection_count: state.active_connections(),
             code_graph,
+            scan_status: None,
         });
     }
 

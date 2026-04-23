@@ -80,3 +80,20 @@ pub struct SmokeResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
 }
+
+/// Progress snapshot for a background offline-change scan (029-F WS-6).
+///
+/// Returned as `scan_status` in [`WorkspaceStatus`] and serialized as `null`
+/// until the first scan is queued.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScanProgress {
+    /// Whether a scan is currently running.
+    pub running: bool,
+    /// Number of files scanned so far in the current run.
+    pub files_scanned: u64,
+    /// Total files to scan (0 when not yet calculated).
+    pub files_total: u64,
+    /// ISO 8601 timestamp of the last completed scan, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_completed_at: Option<String>,
+}

@@ -136,6 +136,10 @@ name = "contract_registry_strict_validation"
 path = "tests/contract/registry_strict_validation_test.rs"
 
 [[test]]
+name = "contract_background_scan"
+path = "tests/contract/background_scan_test.rs"
+
+[[test]]
 name = "contract_lifecycle"
 path = "tests/contract/lifecycle_test.rs"
 
