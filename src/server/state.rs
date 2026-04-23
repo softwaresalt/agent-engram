@@ -24,8 +24,50 @@ use tokio::sync::RwLock;
 use crate::config::StaleStrategy;
 use crate::errors::WorkspaceError;
 use crate::models::config::WorkspaceConfig;
+use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
 use crate::services::hydration::FileFingerprint;
+
+/// Lock-free process-level reliability counters for the daemon (029-F WS-8).
+///
+/// Counters are `AtomicU64` so increments are allocation-free on the hot path.
+/// Owned by `AppState`; surfaced through `get_daemon_status`.
+#[derive(Debug, Default)]
+pub struct ReliabilityCounters {
+    /// Number of times a stale PID file was recovered on startup.
+    pub stale_pid_recovered: AtomicU64,
+    /// Number of times a version-mismatch forced a daemon respawn.
+    pub version_mismatch_respawn: AtomicU64,
+    /// Number of times `validate_sources_strict` returned a `ValidationFailed` error.
+    pub registry_validation_failures: AtomicU64,
+    /// Number of times a duplicate daemon was detected on bind (lockfile conflict).
+    pub duplicate_daemon_detected: AtomicU64,
+}
+
+impl ReliabilityCounters {
+    /// Increment the `stale_pid_recovered` counter by 1.
+    pub fn inc_stale_pid_recovered(&self) {
+        self.stale_pid_recovered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `version_mismatch_respawn` counter by 1.
+    pub fn inc_version_mismatch_respawn(&self) {
+        self.version_mismatch_respawn
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `registry_validation_failures` counter by 1.
+    pub fn inc_registry_validation_failure(&self) {
+        self.registry_validation_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `duplicate_daemon_detected` counter by 1.
+    pub fn inc_duplicate_daemon_detected(&self) {
+        self.duplicate_daemon_detected
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WorkspaceSnapshot {
@@ -99,6 +141,19 @@ pub struct AppState {
     watcher_event_count: AtomicU64,
     /// Timestamp of the most recently seen file-watcher event.
     last_watcher_event: RwLock<Option<DateTime<Utc>>>,
+    /// Background offline-change scan progress (029-F WS-6).
+    /// `None` until the first scan is queued after a `set_workspace` call.
+    scan_progress: RwLock<Option<ScanProgress>>,
+    /// Cancellation sender for the current background scan generation (029-F WS-6).
+    /// Replaced on each new `set_workspace` call; sending `true` cancels the stale scan.
+    scan_cancel: RwLock<Option<tokio::sync::watch::Sender<bool>>>,
+    /// Lock-free process-level reliability counters (029-F WS-8).
+    reliability: ReliabilityCounters,
+    /// Set to `true` once `background_db_hydration` has run to completion
+    /// (success, failure, or cancellation).  `_health` gates "ready" on this
+    /// flag so that polling clients (shim, test harness) wait until initial
+    /// data load is done before issuing real tool calls.
+    hydration_ready: AtomicBool,
 }
 
 impl AppState {
@@ -132,6 +187,10 @@ impl AppState {
             tool_call_count: AtomicU64::new(0),
             watcher_event_count: AtomicU64::new(0),
             last_watcher_event: RwLock::new(None),
+            scan_progress: RwLock::new(None),
+            scan_cancel: RwLock::new(None),
+            reliability: ReliabilityCounters::default(),
+            hydration_ready: AtomicBool::new(false),
         }
     }
 
@@ -350,6 +409,64 @@ impl AppState {
             .await
             .map(|dt| dt.to_rfc3339());
         (count, last)
+    }
+    // ── Background scan (029-F WS-6) ──────────────────────────────────────────
+
+    /// Store or clear the current background scan progress snapshot.
+    pub async fn set_scan_progress(&self, progress: Option<ScanProgress>) {
+        *self.scan_progress.write().await = progress;
+    }
+
+    /// Return a clone of the current scan progress, or `None` when no scan
+    /// has been queued since startup.
+    pub async fn scan_progress_snapshot(&self) -> Option<ScanProgress> {
+        self.scan_progress.read().await.clone()
+    }
+
+    /// Begin a new scan generation.
+    ///
+    /// Cancels any in-flight background scan from the previous generation by
+    /// sending `true` on the old cancel channel, then registers a fresh
+    /// channel for the new scan.
+    ///
+    /// Returns a `Receiver<bool>` that the new scan task should watch; when
+    /// it yields `true` the task should abandon its work.
+    pub async fn begin_scan_generation(&self) -> tokio::sync::watch::Receiver<bool> {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut cancel = self.scan_cancel.write().await;
+        if let Some(old_tx) = cancel.take() {
+            let _ = old_tx.send(true);
+        }
+        *cancel = Some(tx);
+        rx
+    }
+    /// Returns a reference to the process-level reliability counters (029-F WS-8).
+    ///
+    /// Callers use the returned reference to increment specific counters without
+    /// acquiring any locks (all fields are `AtomicU64`).
+    pub fn reliability_counters(&self) -> &ReliabilityCounters {
+        &self.reliability
+    }
+
+    /// Mark the initial background DB hydration as complete (success, failure,
+    /// or cancellation).  The `_health` handler gates the "ready" status on
+    /// this flag so clients wait until data is loaded before issuing queries.
+    pub fn set_hydration_ready(&self) {
+        self.hydration_ready.store(true, Ordering::Release);
+    }
+
+    /// Reset the hydration-ready flag before a new background hydration cycle.
+    ///
+    /// Call this before spawning a new `background_db_hydration` task so that
+    /// `_health` returns "starting" until the new cycle completes, even if a
+    /// previous workspace was already hydrated.
+    pub fn clear_hydration_ready(&self) {
+        self.hydration_ready.store(false, Ordering::Release);
+    }
+
+    /// Returns `true` once [`set_hydration_ready`] has been called.
+    pub fn is_hydration_ready(&self) -> bool {
+        self.hydration_ready.load(Ordering::Acquire)
     }
 }
 

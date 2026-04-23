@@ -309,6 +309,7 @@ async fn s077_concurrent_ingestion_no_duplicate_records() {
             language: None,
             path: "docs".to_string(),
             pattern: None,
+            optional: false,
             status: ContentSourceStatus::Active,
         }],
         max_file_size_bytes: 1_048_576,

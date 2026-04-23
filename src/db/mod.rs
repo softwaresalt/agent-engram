@@ -34,11 +34,13 @@ mod surreal_db {
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use std::sync::LazyLock;
+    use std::time::Duration;
 
     use surrealdb::Surreal;
     use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
-    use tokio::sync::RwLock;
+    use tokio::sync::{Mutex, RwLock};
 
     use crate::errors::{EngramError, SystemError};
 
@@ -49,6 +51,12 @@ mod surreal_db {
     /// each entry holds a cloneable `Surreal<LocalDb>` handle.
     static DB_CACHE: LazyLock<RwLock<HashMap<PathBuf, Db>>> =
         LazyLock::new(|| RwLock::new(HashMap::new()));
+
+    /// Per-path open locks.  Serialises concurrent `connect_db` callers for
+    /// the same database path so that crash-recovery (wipe + sleep + retry)
+    /// is performed by exactly one task while others wait for the cache.
+    static OPEN_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
 
     /// Return a cached SurrealDB handle for the given workspace, opening a new
     /// connection only on the first call for each data_dir + branch combination.
@@ -67,14 +75,78 @@ mod surreal_db {
             }
         }
 
-        // Slow path: open, schema-bootstrap, then cache
-        fs::create_dir_all(&db_path).map_err(|e| {
+        // Acquire the per-path open lock so that concurrent callers for the
+        // same workspace are serialised.  Once the first caller populates the
+        // cache, the others return the cached handle without repeating the open.
+        let path_lock = {
+            let mut locks = OPEN_LOCKS.lock().await;
+            Arc::clone(
+                locks
+                    .entry(cache_key.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let _guard = path_lock.lock().await;
+
+        // Re-check the cache after acquiring the per-path lock.
+        {
+            let cache = DB_CACHE.read().await;
+            if let Some(db) = cache.get(&cache_key) {
+                return Ok(db.clone());
+            }
+        }
+
+        // Slow path: open with crash-recovery.
+        // SurrealKV may open a corrupt database without error (WAL replay is
+        // deferred to the first data-read transaction).  `try_open_and_bootstrap`
+        // therefore runs a verification read after schema bootstrap so that any
+        // crash-induced WAL corruption is detected here, before the handle is
+        // cached and handed to callers.
+        let db = match try_open_and_bootstrap(&db_path, branch).await {
+            Ok(db) => db,
+            Err(open_err) => {
+                let err_str = open_err.to_string();
+                let is_corruption = err_str.contains("revision")
+                    || err_str.contains("end of file")
+                    || err_str.contains("fill whole buffer");
+                if is_corruption {
+                    tracing::warn!(
+                        error = %open_err,
+                        db_path = %db_path.display(),
+                        "DB files corrupted after crash; wiping and reinitializing"
+                    );
+                    if db_path.exists() {
+                        let _ = fs::remove_dir_all(&db_path);
+                    }
+                    // Give SurrealKV background threads from the failed open
+                    // time to exit before we open the same path again.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    try_open_and_bootstrap(&db_path, branch).await?
+                } else {
+                    return Err(open_err);
+                }
+            }
+        };
+
+        let mut cache = DB_CACHE.write().await;
+        cache.insert(cache_key, db.clone());
+        Ok(db)
+    }
+
+    /// Create the DB directory, open the `SurrealKV` connection, select the
+    /// namespace/database, apply the schema, and verify that data reads succeed.
+    ///
+    /// The verification read forces SurrealKV to replay its WAL so that any
+    /// crash-induced corruption is detected here rather than on the first user
+    /// query after the handle is cached.
+    async fn try_open_and_bootstrap(db_path: &PathBuf, branch: &str) -> Result<Db, EngramError> {
+        fs::create_dir_all(db_path).map_err(|e| {
             EngramError::from(SystemError::DatabaseError {
                 reason: format!("failed to create db directory: {e}"),
             })
         })?;
 
-        let db = Surreal::new::<SurrealKv>(db_path)
+        let db = Surreal::new::<SurrealKv>(db_path.clone())
             .await
             .map_err(map_db_err)?;
 
@@ -85,8 +157,12 @@ mod surreal_db {
 
         ensure_schema(&db).await?;
 
-        let mut cache = DB_CACHE.write().await;
-        cache.insert(cache_key, db.clone());
+        // Verification read: scan one record from each primary table to force
+        // WAL replay.  An IO error here means the database is corrupt; the
+        // caller's recovery path will wipe and retry.
+        db.query("SELECT * FROM code_file LIMIT 1")
+            .await
+            .map_err(map_db_err)?;
 
         Ok(db)
     }

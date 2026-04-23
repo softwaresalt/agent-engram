@@ -75,11 +75,49 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
         return Ok(path_str.to_owned());
     }
 
-    // Fallback: /tmp/engram-{workspace_key}.sock
-    // Permissions (0o600) are applied by run_with_shutdown after bind, using
-    // the endpoint string returned here, so the fallback path is also secured.
+    // Fallback: create a private /tmp/engram-{key}/ directory (0o700) and
+    // place the socket at /tmp/engram-{key}/engram.sock.
+    //
+    // The directory is created at construction time with DirBuilder::mode(0o700)
+    // to avoid a TOCTOU window between creation and permission assignment.
     let key = daemon_key_for_workspace(workspace)?;
-    let fallback = format!("/tmp/engram-{key}.sock");
+    let dir = format!("/tmp/engram-{key}");
+
+    {
+        use std::fs::DirBuilder;
+        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt as _;
+        DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&dir)
+            .map_err(|e| {
+                EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                    address: dir.clone(),
+                    reason: format!("cannot create private socket directory: {e}"),
+                })
+            })?;
+        // Verify the directory has exactly 0o700 permissions.  If another
+        // process pre-created the directory with insecure permissions, refuse
+        // to use it rather than trusting a potentially-compromised path.
+        let meta = std::fs::metadata(&dir).map_err(|e| {
+            EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                address: dir.clone(),
+                reason: format!("cannot stat private socket directory: {e}"),
+            })
+        })?;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o700 {
+            return Err(EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                address: dir.clone(),
+                reason: format!(
+                    "private socket directory has insecure permissions {mode:#o}; expected 0o700"
+                ),
+            }));
+        }
+    }
+
+    let fallback = format!("{dir}/engram.sock");
 
     tracing::warn!(
         workspace = %workspace.display(),
@@ -263,7 +301,7 @@ async fn process_request(
             // the shim keeps polling rather than treating the daemon as healthy
             // before it can serve real tool calls.
             let snapshot = state.snapshot_workspace().await;
-            let status = if snapshot.is_some() {
+            let status = if snapshot.is_some() && state.is_hydration_ready() {
                 "ready"
             } else {
                 "starting"
@@ -412,7 +450,9 @@ pub async fn run_with_shutdown(
         let ttl_init = Arc::clone(&ttl);
         let tx_init = Arc::clone(&shutdown_tx);
         tokio::spawn(async move {
-            match crate::tools::lifecycle::set_workspace(state_init.as_ref(), workspace_str).await {
+            match crate::tools::lifecycle::set_workspace(Arc::clone(&state_init), workspace_str)
+                .await
+            {
                 Ok(_) => {
                     info!("workspace hydration complete — daemon ready to serve");
                     // T049 / S046: Reset idle deadline from "daemon ready", not

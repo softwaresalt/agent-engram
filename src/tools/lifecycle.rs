@@ -1,5 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 use uuid::Uuid;
@@ -11,17 +14,23 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::{AppState, WorkspaceSnapshot};
+use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::file_tracker::detect_offline_changes;
 use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
+use crate::services::registry::{load_registry, validate_sources_strict};
+use crate::tools::doctor::get_health_report_for_daemon;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
     pub workspace_id: String,
     pub path: String,
     pub hydrated: bool,
+    /// Whether a background offline-change scan was queued for this binding (029-F WS-6).
+    pub pending_scan: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,6 +42,19 @@ pub struct DaemonStatus {
     pub memory_bytes: u64,
     pub model_loaded: bool,
     pub model_name: Option<String>,
+    /// Structured diagnostic health report covering all 8 failure modes (029-F WS-2).
+    pub health: HealthReport,
+    /// Process-level reliability counters (029-F WS-8).
+    pub telemetry: ReliabilitySnapshot,
+}
+
+/// Serializable snapshot of `ReliabilityCounters` for `DaemonStatus`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReliabilitySnapshot {
+    pub stale_pid_recovered: u64,
+    pub version_mismatch_respawn: u64,
+    pub registry_validation_failures: u64,
+    pub duplicate_daemon_detected: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,6 +68,8 @@ pub struct WorkspaceStatus {
     pub stale_files: bool,
     pub connection_count: usize,
     pub code_graph: CodeGraphStats,
+    /// Background scan progress snapshot; `null` until the first scan is queued (029-F WS-6).
+    pub scan_status: Option<ScanProgress>,
 }
 
 /// Summary statistics for the indexed code graph.
@@ -59,7 +83,7 @@ pub struct CodeGraphStats {
 }
 
 pub async fn set_workspace(
-    state: &AppState,
+    state: Arc<AppState>,
     path: String,
 ) -> Result<WorkspaceBinding, EngramError> {
     validate_workspace_path(&path)?;
@@ -87,6 +111,7 @@ pub async fn set_workspace(
             }));
         }
     }
+
     let data_dir = resolve_data_dir(&canonical);
 
     if !state.can_bind_workspace(&workspace_id).await {
@@ -95,35 +120,30 @@ pub async fn set_workspace(
         }));
     }
 
+    // Fast metadata hydration: reads .engram/ files but does not open the DB.
     let hydration = hydrate_workspace(&canonical).await?;
 
-    // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
-    let _cg_result = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await?;
+    // Parse workspace config synchronously (fast: reads a single TOML file).
+    let ws_config = parse_config(&canonical)?;
 
-    // Detect files changed while the daemon was offline and emit a summary.
-    // This is best-effort: I/O failures for individual files are already logged
-    // inside `detect_offline_changes` as warnings, so we only surface a
-    // tracing event here rather than aborting workspace binding.
-    match detect_offline_changes(&canonical, &cg_queries).await {
-        Ok(changes) if !changes.is_empty() => {
-            tracing::info!(
-                count = changes.len(),
-                "set_workspace: offline changes detected — re-indexing recommended"
+    // Run strict registry validation. A failure increments the reliability
+    // counter and is logged as a warning, but does NOT abort binding — the
+    // workspace is still usable with reduced source coverage.
+    let registry_path = canonical.join(".engram").join("registry.yaml");
+    if let Ok(Some(mut registry_config)) = load_registry(&registry_path) {
+        if let Err(err) = validate_sources_strict(&mut registry_config, &canonical) {
+            tracing::warn!(
+                error = %err,
+                workspace = %canonical_path,
+                "set_workspace: strict registry validation failed — workspace bound with reduced coverage"
             );
-        }
-        Ok(_) => {
-            tracing::debug!("set_workspace: no offline changes detected");
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "set_workspace: offline change detection failed");
+            state
+                .reliability_counters()
+                .inc_registry_validation_failure();
         }
     }
 
-    // Load and validate workspace config BEFORE committing the snapshot.
-    // If config validation fails, we must not leave the workspace partially bound.
-    let ws_config = parse_config(&canonical)?;
+    // Initialise metrics sink (spawns a channel + background writer, no DB).
     crate::services::metrics::initialize(&canonical, &branch, &ws_config.metrics).await?;
 
     let snapshot = WorkspaceSnapshot {
@@ -139,14 +159,165 @@ pub async fn set_workspace(
     };
 
     state.set_workspace(snapshot).await?;
-    state.set_workspace_config(Some(ws_config)).await;
+    state.set_workspace_config(Some(ws_config.clone())).await;
     crate::services::query_stats::reset_timing();
+
+    // Queue a background scan immediately. The DB connect + hydrate +
+    // offline-change detection are moved off the hot path so that
+    // set_workspace returns well within the 500 ms bind-latency SLA
+    // (029-F WS-6). The `pending_scan` field signals to the caller
+    // that background work has been scheduled.
+    let initial_progress = ScanProgress {
+        running: true,
+        files_scanned: 0,
+        files_total: 0,
+        last_completed_at: None,
+    };
+    state.set_scan_progress(Some(initial_progress)).await;
+
+    // Cancel any stale scan from a prior set_workspace call, then register
+    // a fresh cancellation receiver for this generation.
+    // Also reset the hydration-ready flag so `_health` gates "ready" on the
+    // new cycle completing rather than inheriting the prior workspace's state.
+    state.clear_hydration_ready();
+    let cancel_rx = state.begin_scan_generation().await;
+
+    let state_bg = Arc::clone(&state);
+    let canonical_bg = canonical.clone();
+    let data_dir_bg = data_dir.clone();
+    let branch_bg = branch.clone();
+    let _task = tokio::spawn(async move {
+        background_db_hydration(state_bg, canonical_bg, data_dir_bg, branch_bg, cancel_rx).await;
+    });
 
     Ok(WorkspaceBinding {
         workspace_id,
         path: canonical.display().to_string(),
         hydrated: true,
+        pending_scan: true,
     })
+}
+
+/// Background DB hydration task spawned by [`set_workspace`].
+///
+/// Connects to SurrealDB, hydrates the code graph from JSONL files, and runs
+/// offline-change detection — all off the bind-latency hot path. Updates
+/// [`AppState::scan_progress`] when complete (029-F WS-6).
+///
+/// Checks `cancel_rx` at each major step; when `true` is signalled by
+/// [`AppState::begin_scan_generation`], the task abandons its work (029-F WS-6
+/// CancellationToken requirement).
+async fn background_db_hydration(
+    state: Arc<AppState>,
+    canonical: PathBuf,
+    data_dir: PathBuf,
+    branch: String,
+    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    macro_rules! check_cancel {
+        () => {
+            if *cancel_rx.borrow_and_update() {
+                tracing::info!("background_db_hydration: scan cancelled by new generation");
+                state
+                    .set_scan_progress(Some(ScanProgress {
+                        running: false,
+                        files_scanned: 0,
+                        files_total: 0,
+                        last_completed_at: Some(Utc::now().to_rfc3339()),
+                    }))
+                    .await;
+                state.set_hydration_ready();
+                return;
+            }
+        };
+    }
+
+    let db = match connect_db(&data_dir, &branch).await {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!(error = %e, "background_db_hydration: DB connect failed");
+            state
+                .set_scan_progress(Some(ScanProgress {
+                    running: false,
+                    files_scanned: 0,
+                    files_total: 0,
+                    last_completed_at: Some(Utc::now().to_rfc3339()),
+                }))
+                .await;
+            state.set_hydration_ready();
+            return;
+        }
+    };
+
+    check_cancel!();
+
+    let cg_queries = CodeGraphQueries::new(db);
+
+    if let Err(e) = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await {
+        tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
+    }
+
+    check_cancel!();
+
+    let offline_count = match detect_offline_changes(&canonical, &cg_queries).await {
+        Ok(changes) => {
+            if !changes.is_empty() {
+                tracing::info!(
+                    count = changes.len(),
+                    "background_db_hydration: offline changes detected"
+                );
+            }
+            changes.len() as u64
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "background_db_hydration: offline change detection failed");
+            0
+        }
+    };
+
+    check_cancel!();
+
+    state
+        .set_scan_progress(Some(ScanProgress {
+            running: false,
+            files_scanned: offline_count,
+            files_total: offline_count,
+            last_completed_at: Some(Utc::now().to_rfc3339()),
+        }))
+        .await;
+
+    // Trigger a code-graph re-index when offline changes were found.
+    // Guarded by the try_start_indexing flag so concurrent indexing is prevented.
+    if offline_count > 0 && state.try_start_indexing() {
+        check_cancel!();
+        if let (Some(snapshot), Some(ws_config)) = (
+            state.snapshot_workspace().await,
+            state.workspace_config().await,
+        ) {
+            let ws_path = PathBuf::from(&snapshot.path);
+            match sync_code_graph(
+                &ws_path,
+                &snapshot.data_dir,
+                &snapshot.branch,
+                &ws_config.code_graph,
+            )
+            .await
+            {
+                Ok(result) => tracing::info!(
+                    files_added = result.files_added,
+                    files_modified = result.files_modified,
+                    "background_db_hydration: post-scan re-index complete"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "background_db_hydration: post-scan re-index failed"
+                ),
+            }
+        }
+        state.finish_indexing().await;
+    }
+
+    state.set_hydration_ready();
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
@@ -161,6 +332,22 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         None
     };
 
+    let health = match get_health_report_for_daemon(state).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "get_daemon_status: health report failed; using default");
+            HealthReport::default()
+        }
+    };
+
+    let rc = state.reliability_counters();
+    let telemetry = ReliabilitySnapshot {
+        stale_pid_recovered: rc.stale_pid_recovered.load(Ordering::Relaxed),
+        version_mismatch_respawn: rc.version_mismatch_respawn.load(Ordering::Relaxed),
+        registry_validation_failures: rc.registry_validation_failures.load(Ordering::Relaxed),
+        duplicate_daemon_detected: rc.duplicate_daemon_detected.load(Ordering::Relaxed),
+    };
+
     Ok(DaemonStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.uptime_seconds(),
@@ -169,6 +356,8 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         memory_bytes,
         model_loaded,
         model_name,
+        health,
+        telemetry,
     })
 }
 
@@ -218,6 +407,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             stale_files: stale_now,
             connection_count: state.active_connections(),
             code_graph,
+            scan_status: state.scan_progress_snapshot().await,
         });
     }
 

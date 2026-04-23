@@ -39,6 +39,7 @@ fn arb_content_source() -> impl Strategy<Value = ContentSource> {
             language,
             path,
             pattern: None,
+            optional: false,
             status: ContentSourceStatus::Unknown,
         })
 }
