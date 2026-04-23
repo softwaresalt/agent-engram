@@ -255,7 +255,7 @@ async fn c018_05_concurrent_config_flip_does_not_bypass_policy() {
 /// C018-06: A policy-denied dispatch records a `UsageEvent` with
 /// `outcome == "denied"` in the metrics subsystem.
 ///
-/// RED: The current dispatch returns early on PolicyDenied (line ~129)
+/// RED: The current dispatch returns early on `PolicyDenied` (line ~129)
 /// before reaching the metrics recording block (line ~192), so no event
 /// is recorded for denied calls.
 #[test]
