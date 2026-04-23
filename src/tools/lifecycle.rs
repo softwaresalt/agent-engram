@@ -177,6 +177,9 @@ pub async fn set_workspace(
 
     // Cancel any stale scan from a prior set_workspace call, then register
     // a fresh cancellation receiver for this generation.
+    // Also reset the hydration-ready flag so `_health` gates "ready" on the
+    // new cycle completing rather than inheriting the prior workspace's state.
+    state.clear_hydration_ready();
     let cancel_rx = state.begin_scan_generation().await;
 
     let state_bg = Arc::clone(&state);

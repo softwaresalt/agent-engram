@@ -455,6 +455,15 @@ impl AppState {
         self.hydration_ready.store(true, Ordering::Release);
     }
 
+    /// Reset the hydration-ready flag before a new background hydration cycle.
+    ///
+    /// Call this before spawning a new `background_db_hydration` task so that
+    /// `_health` returns "starting" until the new cycle completes, even if a
+    /// previous workspace was already hydrated.
+    pub fn clear_hydration_ready(&self) {
+        self.hydration_ready.store(false, Ordering::Release);
+    }
+
     /// Returns `true` once [`set_hydration_ready`] has been called.
     pub fn is_hydration_ready(&self) -> bool {
         self.hydration_ready.load(Ordering::Acquire)
