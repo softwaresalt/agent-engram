@@ -25,9 +25,7 @@ use engram::tools;
 /// Returns both the `Arc<AppState>` and the `TempDir` handle.  The caller
 /// MUST hold the `TempDir` for the duration of the test — dropping it
 /// deletes the workspace.
-async fn setup_workspace_with_policy(
-    policy: PolicyConfig,
-) -> (Arc<AppState>, tempfile::TempDir) {
+async fn setup_workspace_with_policy(policy: PolicyConfig) -> (Arc<AppState>, tempfile::TempDir) {
     let workspace = tempfile::tempdir().expect("tempdir");
     let git_dir = workspace.path().join(".git");
     fs::create_dir_all(&git_dir).expect("create .git");
@@ -236,11 +234,7 @@ async fn c018_05_concurrent_config_flip_does_not_bypass_policy() {
     flipper.await.expect("flipper must complete");
 
     // WHEN policy is evaluated against the SNAPSHOT (not the live config)
-    let eval = policy::evaluate(
-        &snapshot.config.policy,
-        Some("anonymous"),
-        "list_symbols",
-    );
+    let eval = policy::evaluate(&snapshot.config.policy, Some("anonymous"), "list_symbols");
 
     // THEN it is still denied — the snapshot captured deny-all before the flip
     assert!(
@@ -261,7 +255,7 @@ async fn c018_05_concurrent_config_flip_does_not_bypass_policy() {
 /// C018-06: A policy-denied dispatch records a `UsageEvent` with
 /// `outcome == "denied"` in the metrics subsystem.
 ///
-/// RED: The current dispatch returns early on PolicyDenied (line ~129)
+/// RED: The current dispatch returns early on `PolicyDenied` (line ~129)
 /// before reaching the metrics recording block (line ~192), so no event
 /// is recorded for denied calls.
 #[test]
@@ -322,21 +316,19 @@ async fn c018_07_denied_metrics_event_carries_agent_role() {
 
     assert!(result.is_err(), "call must be denied");
 
-    // THEN the recorded UsageEvent carries agent_role = "rogue-agent"
+    // THEN the recorded UsageEvent carries agent_role = "rogue-agent".
+    // Filter by all three criteria to avoid matching a concurrent test's denied
+    // event that shares the same tool_name but has no agent_role.
     let events = metrics::recent_events();
-    let denied_event = events
-        .iter()
-        .find(|e| e.tool_name == "list_symbols" && e.outcome == "denied");
+    let denied_event = events.iter().find(|e| {
+        e.tool_name == "list_symbols"
+            && e.outcome == "denied"
+            && e.agent_role.as_deref() == Some("rogue-agent")
+    });
     assert!(
         denied_event.is_some(),
-        "denied call must record a metrics event"
-    );
-    assert_eq!(
-        denied_event
-            .expect("just asserted Some")
-            .agent_role
-            .as_deref(),
-        Some("rogue-agent"),
-        "denied metrics event must carry the agent_role from _meta"
+        "denied metrics event must carry agent_role=\"rogue-agent\"; \
+         got {} event(s): {events:?}",
+        events.len()
     );
 }

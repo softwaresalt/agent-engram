@@ -113,23 +113,39 @@ pub async fn dispatch(
     // Extract agent identity from JSON-RPC _meta before dispatch.
     let agent_role = policy::extract_agent_role(&params);
 
-    // Enforce sandbox policy when a workspace is bound.
+    // Take an atomic snapshot of workspace binding + config at dispatch entry.
     //
-    // Design constraints (v1):
-    // - Policy is workspace-scoped. The config snapshot is read here and the
-    //   lock is released before the tool runs. A concurrent `set_workspace_config`
-    //   call can change policy between this check and tool execution (TOCTOU).
-    //   Strict per-call enforcement requires an atomic workspace+config snapshot;
-    //   tracked in TASK-018.
-    // - Before a workspace is bound (`policy_config()` returns `None`), the
-    //   policy engine is bypassed. In particular, the initial `set_workspace`
-    //   call is always ungated. A daemon-level policy (independent of workspace
-    //   config) would be needed to gate workspace binding itself.
-    // - Policy-denied calls return early before the metrics recording block;
-    //   they are not included in `get_evaluation_report` data.
-    if let Some(policy_config) = state.policy_config().await {
-        policy::evaluate(&policy_config, agent_role.as_deref(), method)
-            .map_err(EngramError::from)?;
+    // Both locks are acquired and released inside `snapshot_dispatch_context`,
+    // producing a frozen `DispatchSnapshot`. This eliminates the TOCTOU window
+    // where a concurrent `set_workspace_config` call could change policy after
+    // the check but before the tool runs. See TASK-018.
+    //
+    // Before a workspace is bound (`snapshot_dispatch_context` returns `None`)
+    // the policy engine is bypassed. The initial `set_workspace` call is always
+    // ungated. A daemon-level policy independent of workspace config would be
+    // needed to gate workspace binding itself.
+    let dispatch_snapshot = state.snapshot_dispatch_context().await;
+
+    // Enforce sandbox policy when a workspace is bound.
+    if let Some(ref snap) = dispatch_snapshot {
+        if let Err(policy_err) =
+            policy::evaluate(&snap.config.policy, agent_role.as_deref(), method)
+        {
+            // Record denied calls in metrics so evaluations reflect policy activity.
+            metrics::record(UsageEvent {
+                tool_name: method.to_owned(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                response_bytes: 0,
+                estimated_tokens: 0,
+                symbols_returned: 0,
+                results_returned: 0,
+                branch: snap.workspace.branch.clone(),
+                connection_id: None,
+                agent_role: agent_role.clone(),
+                outcome: "denied".to_string(),
+            });
+            return Err(EngramError::from(policy_err));
+        }
     }
 
     let result = match method {
@@ -193,7 +209,7 @@ pub async fn dispatch(
     }
 
     if should_record_metrics(method) {
-        if let Some(snapshot) = state.snapshot_workspace().await {
+        if let Some(snap) = dispatch_snapshot {
             // Compute response stats from the result (zero defaults for errors).
             let (response_bytes, symbols_returned, results_returned) = match &result {
                 Ok(value) => {
@@ -211,7 +227,7 @@ pub async fn dispatch(
                 estimated_tokens: response_bytes / 4,
                 symbols_returned,
                 results_returned,
-                branch: snapshot.branch,
+                branch: snap.workspace.branch,
                 connection_id: None,
                 agent_role: agent_role.clone(),
                 outcome: outcome.to_string(),
