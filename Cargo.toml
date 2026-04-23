@@ -132,6 +132,10 @@ name = "contract_doctor_health"
 path = "tests/contract/doctor_health_test.rs"
 
 [[test]]
+name = "contract_registry_strict_validation"
+path = "tests/contract/registry_strict_validation_test.rs"
+
+[[test]]
 name = "contract_lifecycle"
 path = "tests/contract/lifecycle_test.rs"
 

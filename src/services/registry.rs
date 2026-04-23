@@ -179,3 +179,22 @@ pub fn validate_sources(
     );
     Ok(active_count)
 }
+
+/// Strict variant of [`validate_sources`] that treats missing non-optional
+/// sources as hard errors with typed remediation hints.
+///
+/// Differences from [`validate_sources`]:
+/// - Returns an `Err` when any source with `optional: false` is missing.
+/// - Detects known rename patterns and emits a migration suggestion.
+/// - Sources marked `optional: true` that are missing are silently skipped.
+///
+/// The call site in `ipc_server.rs` (`let _ = validate_sources(...)`) MUST
+/// NOT be changed. This function is called from new strict-validation paths
+/// only (029.005.002-T).
+pub fn validate_sources_strict(
+    _config: &mut RegistryConfig,
+    _workspace_root: &Path,
+) -> Result<usize, EngramError> {
+    todo!("Worker: implement validate_sources_strict with known-rename detection (029.005.002-T)")
+}
+

@@ -74,6 +74,13 @@ pub struct ContentSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
 
+    /// When `true`, a missing path is tolerated; no error or remediation hint
+    /// is emitted by `validate_sources_strict`. Defaults to `false` so that
+    /// the strict validator treats an absent source path as a configuration
+    /// error that requires operator attention.
+    #[serde(default)]
+    pub optional: bool,
+
     /// Validation status set at hydration time (not serialized in YAML).
     #[serde(skip)]
     pub status: ContentSourceStatus,
