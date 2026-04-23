@@ -15,9 +15,13 @@ async fn contract_get_daemon_status_includes_health_field() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     let status = tools::dispatch(state.clone(), "get_daemon_status", None)
         .await
@@ -51,9 +55,13 @@ async fn contract_health_report_covers_required_check_names() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     let status = tools::dispatch(state.clone(), "get_daemon_status", None)
         .await
@@ -95,9 +103,13 @@ async fn contract_health_checks_have_valid_status_values() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     let status = tools::dispatch(state.clone(), "get_daemon_status", None)
         .await
@@ -126,7 +138,7 @@ async fn contract_health_checks_have_valid_status_values() {
     }
 }
 
-/// Unit test: HealthReport type structure compiles and has expected API.
+/// Unit test: `HealthReport` type structure compiles and has expected API.
 #[test]
 fn health_report_type_has_expected_structure() {
     let report = HealthReport::default();

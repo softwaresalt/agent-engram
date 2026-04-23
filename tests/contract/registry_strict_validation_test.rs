@@ -55,8 +55,7 @@ fn strict_missing_source_error_contains_remediation_hint() {
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
     let mut cfg = config_with_source("src/does_not_exist", false);
-    let err = validate_sources_strict(&mut cfg, workspace.path())
-        .expect_err("should be an error");
+    let err = validate_sources_strict(&mut cfg, workspace.path()).expect_err("should be an error");
 
     let msg = err.to_string();
     assert!(
@@ -81,7 +80,10 @@ fn strict_known_renamed_path_returns_migration_suggestion() {
     let mut cfg = config_with_source("docs", false);
     let result = validate_sources_strict(&mut cfg, workspace.path());
 
-    assert!(result.is_err(), "renamed path should still be a strict error");
+    assert!(
+        result.is_err(),
+        "renamed path should still be a strict error"
+    );
     let msg = result.expect_err("already checked").to_string();
     assert!(
         msg.contains("documentation") || msg.contains("migrat") || msg.contains("rename"),
@@ -103,18 +105,17 @@ fn strict_optional_missing_source_is_silently_skipped() {
 
     assert!(
         result.is_ok(),
-        "optional missing source must not be treated as an error, got: {:?}",
-        result
+        "optional missing source must not be treated as an error, got: {result:?}"
     );
 }
 
-/// Unit: ContentSource with serde default for `optional` round-trips correctly.
+/// Unit: `ContentSource` with serde default for `optional` round-trips correctly.
 #[test]
 fn content_source_optional_field_defaults_to_false() {
-    let yaml = r#"
+    let yaml = r"
 type: code
 path: src
-"#;
+";
     let source: ContentSource = serde_yaml::from_str(yaml).expect("should deserialise");
     assert!(
         !source.optional,
@@ -122,14 +123,14 @@ path: src
     );
 }
 
-/// Unit: ContentSource with explicit `optional: true` round-trips correctly.
+/// Unit: `ContentSource` with explicit `optional: true` round-trips correctly.
 #[test]
 fn content_source_optional_field_round_trips_true() {
-    let yaml = r#"
+    let yaml = r"
 type: docs
 path: docs
 optional: true
-"#;
+";
     let source: ContentSource = serde_yaml::from_str(yaml).expect("should deserialise");
     assert!(source.optional, "optional: true should deserialise as true");
 }
