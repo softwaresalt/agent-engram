@@ -53,8 +53,7 @@ fn fallback_endpoint_is_inside_private_directory() {
     assert!(
         parent
             .to_str()
-            .map(|s| s.starts_with("/tmp/engram-"))
-            .unwrap_or(false),
+            .is_some_and(|s| s.starts_with("/tmp/engram-")),
         "fallback parent must be /tmp/engram-{{key}}/, got: {}",
         parent.display()
     );

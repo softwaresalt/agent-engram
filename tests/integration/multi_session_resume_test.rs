@@ -121,7 +121,11 @@ async fn get_workspace_status_valid_after_restart() {
     let bind_resp = send_request(&endpoint1, &bind_req, Duration::from_secs(10))
         .await
         .expect("set_workspace must succeed");
-    assert!(bind_resp.error.is_none(), "set_workspace must not error: {:?}", bind_resp.error);
+    assert!(
+        bind_resp.error.is_none(),
+        "set_workspace must not error: {:?}",
+        bind_resp.error
+    );
 
     drop(harness1);
     tokio::time::sleep(Duration::from_millis(300)).await;

@@ -32,7 +32,10 @@ sources:
 
     let result = validate_sources_strict(&mut config, workspace.path());
 
-    assert!(result.is_err(), "strict validation must reject missing non-optional source");
+    assert!(
+        result.is_err(),
+        "strict validation must reject missing non-optional source"
+    );
 
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -65,8 +68,15 @@ sources:
 
     let result = validate_sources_strict(&mut config, workspace.path());
 
-    assert!(result.is_ok(), "strict validation must not error on optional missing sources");
-    assert_eq!(result.unwrap(), 0, "active count must be 0 when all sources are missing");
+    assert!(
+        result.is_ok(),
+        "strict validation must not error on optional missing sources"
+    );
+    assert_eq!(
+        result.unwrap(),
+        0,
+        "active count must be 0 when all sources are missing"
+    );
 }
 
 /// A registry with a known renamed path must return an error whose message
@@ -96,11 +106,16 @@ sources:
 
     let result = validate_sources_strict(&mut config, workspace.path());
 
-    assert!(result.is_err(), "strict validation must error when renamed path is detected");
+    assert!(
+        result.is_err(),
+        "strict validation must error when renamed path is detected"
+    );
 
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("documentation") || err_msg.contains("migrat") || err_msg.contains("rename"),
+        err_msg.contains("documentation")
+            || err_msg.contains("migrat")
+            || err_msg.contains("rename"),
         "error must reference the new path as a migration suggestion, got: {err_msg}"
     );
 }

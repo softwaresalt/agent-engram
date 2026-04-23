@@ -30,9 +30,13 @@ async fn contract_set_workspace_returns_pending_scan_field() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    let result = tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    let result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     assert!(
         result.get("pending_scan").is_some(),
@@ -53,9 +57,13 @@ async fn contract_set_workspace_pending_scan_true_when_offline_changes_exist() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    let result = tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    let result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     let pending_scan = result
         .get("pending_scan")
@@ -81,9 +89,13 @@ async fn contract_set_workspace_returns_within_500ms() {
     let path = workspace.path().to_string_lossy().to_string();
 
     let start = Instant::now();
-    let _result = tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    let _result = tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
     let elapsed_ms = start.elapsed().as_millis();
 
     assert!(
@@ -105,9 +117,13 @@ async fn contract_get_workspace_status_includes_scan_status_field() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     let status = tools::dispatch(
         state.clone(),
@@ -135,9 +151,13 @@ async fn contract_get_workspace_status_scan_status_reflects_queued_scan() {
     let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("set_workspace should succeed");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace should succeed");
 
     let status = tools::dispatch(
         state.clone(),
@@ -147,7 +167,9 @@ async fn contract_get_workspace_status_scan_status_reflects_queued_scan() {
     .await
     .expect("get_workspace_status should succeed");
 
-    let scan_status = status.get("scan_status").expect("scan_status field present");
+    let scan_status = status
+        .get("scan_status")
+        .expect("scan_status field present");
 
     assert!(
         !scan_status.is_null(),

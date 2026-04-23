@@ -24,7 +24,11 @@ async fn doctor_smoke_exercises_full_handshake() {
         .await
         .expect("smoke test should succeed without errors");
 
-    assert!(result.passed, "smoke test reported failure: {}", result.message);
+    assert!(
+        result.passed,
+        "smoke test reported failure: {}",
+        result.message
+    );
 }
 
 /// Smoke result latency field is present when the test completes.

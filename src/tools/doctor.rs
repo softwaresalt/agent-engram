@@ -42,7 +42,10 @@ async fn check_workspace_identity(state: &AppState) -> HealthCheck {
         Some(snap) => HealthCheck {
             name: "workspace_identity".to_owned(),
             status: HealthStatus::Green,
-            message: Some(format!("workspace {} bound at {}", snap.workspace_id, snap.path)),
+            message: Some(format!(
+                "workspace {} bound at {}",
+                snap.workspace_id, snap.path
+            )),
             remediation: None,
         },
         None => HealthCheck {
@@ -94,7 +97,9 @@ async fn check_offline_scan(state: &AppState) -> HealthCheck {
             name: "offline_scan".to_owned(),
             status: HealthStatus::Yellow,
             message: Some("workspace has stale files since last flush".to_owned()),
-            remediation: Some("call flush_state or sync_workspace to re-index stale files".to_owned()),
+            remediation: Some(
+                "call flush_state or sync_workspace to re-index stale files".to_owned(),
+            ),
         },
         Some(_) => HealthCheck {
             name: "offline_scan".to_owned(),
@@ -120,7 +125,9 @@ async fn check_session_resume(state: &AppState) -> HealthCheck {
             name: "session_resume".to_owned(),
             status: HealthStatus::Yellow,
             message: Some("workspace bound but not yet indexed".to_owned()),
-            remediation: Some("call flush_state or index_workspace to complete session setup".to_owned()),
+            remediation: Some(
+                "call flush_state or index_workspace to complete session setup".to_owned(),
+            ),
         },
         (true, Some(indexed_at)) => HealthCheck {
             name: "session_resume".to_owned(),
@@ -157,13 +164,13 @@ async fn check_telemetry_health(state: &AppState) -> HealthCheck {
 // ── Overall roll-up ──────────────────────────────────────────────────────────
 
 fn derive_overall(checks: &[HealthCheck]) -> HealthStatus {
-    checks.iter().fold(HealthStatus::Green, |worst, c| {
-        match (worst, c.status) {
+    checks
+        .iter()
+        .fold(HealthStatus::Green, |worst, c| match (worst, c.status) {
             (_, HealthStatus::Red) | (HealthStatus::Red, _) => HealthStatus::Red,
             (_, HealthStatus::Yellow) | (HealthStatus::Yellow, _) => HealthStatus::Yellow,
             _ => worst,
-        }
-    })
+        })
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -277,4 +284,3 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
         latency_ms: Some(latency_ms),
     })
 }
-

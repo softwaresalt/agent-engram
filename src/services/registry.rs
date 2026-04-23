@@ -300,5 +300,3 @@ fn find_known_rename(declared: &str, workspace_root: &Path) -> Option<String> {
     }
     None
 }
-
-
