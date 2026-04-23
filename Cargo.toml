@@ -342,6 +342,14 @@ name = "integration_doctor_smoke"
 path = "tests/integration/doctor_smoke_test.rs"
 
 [[test]]
+name = "integration_registry_missing_source"
+path = "tests/integration/registry_missing_source_test.rs"
+
+[[test]]
+name = "integration_multi_session_resume"
+path = "tests/integration/multi_session_resume_test.rs"
+
+[[test]]
 name = "integration_smoke"
 path = "tests/integration/smoke_test.rs"
 
