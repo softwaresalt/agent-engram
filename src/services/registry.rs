@@ -180,6 +180,18 @@ pub fn validate_sources(
     Ok(active_count)
 }
 
+/// Known path renames — `(old_path, new_path)` pairs used by
+/// [`validate_sources_strict`] to produce targeted migration suggestions.
+///
+/// When a source declares `old_path` but `new_path` exists in the workspace,
+/// the strict validator surfaces a rename-specific remediation hint.
+const KNOWN_RENAMES: &[(&str, &str)] = &[
+    ("docs", "documentation"),
+    (".backlog", ".backlogit"),
+    ("src/tests", "tests"),
+    ("test", "tests"),
+];
+
 /// Strict variant of [`validate_sources`] that treats missing non-optional
 /// sources as hard errors with typed remediation hints.
 ///
@@ -192,9 +204,101 @@ pub fn validate_sources(
 /// NOT be changed. This function is called from new strict-validation paths
 /// only (029.005.002-T).
 pub fn validate_sources_strict(
-    _config: &mut RegistryConfig,
-    _workspace_root: &Path,
+    config: &mut RegistryConfig,
+    workspace_root: &Path,
 ) -> Result<usize, EngramError> {
-    todo!("Worker: implement validate_sources_strict with known-rename detection (029.005.002-T)")
+    let canonical_root =
+        workspace_root
+            .canonicalize()
+            .map_err(|e| RegistryError::ValidationFailed {
+                reason: format!("Cannot canonicalize workspace root: {e}"),
+            })?;
+
+    let mut active_count = 0usize;
+
+    for source in &mut config.sources {
+        let resolved = canonical_root.join(&source.path);
+
+        let exists = resolved.exists();
+
+        if !exists {
+            if source.optional {
+                // Optional missing source — skip silently.
+                source.status = ContentSourceStatus::Missing;
+                continue;
+            }
+
+            // Check for known rename: if an alternative path exists, surface
+            // a migration hint.
+            if let Some(new_path) = find_known_rename(&source.path, &canonical_root) {
+                return Err(RegistryError::ValidationFailed {
+                    reason: format!(
+                        "Source '{}' not found. This path was likely renamed to '{}'. \
+                         Update your registry to use the new path. \
+                         Remediation: change '{}' → '{}' in .engram/registry.yaml",
+                        source.path, new_path, source.path, new_path
+                    ),
+                }
+                .into());
+            }
+
+            return Err(RegistryError::ValidationFailed {
+                reason: format!(
+                    "Source '{}' does not exist (missing). \
+                     Remediation hint: create the directory or mark the source \
+                     as `optional: true` if it is expected to be absent.",
+                    source.path
+                ),
+            }
+            .into());
+        }
+
+        // Path exists — check for traversal.
+        match resolved.canonicalize() {
+            Ok(canonical) if !canonical.starts_with(&canonical_root) => {
+                return Err(RegistryError::ValidationFailed {
+                    reason: format!(
+                        "Source '{}' resolves outside the workspace root (path traversal rejected)",
+                        source.path
+                    ),
+                }
+                .into());
+            }
+            Err(e) => {
+                return Err(RegistryError::ValidationFailed {
+                    reason: format!("Cannot canonicalize source '{}': {e}", source.path),
+                }
+                .into());
+            }
+            Ok(_) => {}
+        }
+
+        source.status = ContentSourceStatus::Active;
+        active_count += 1;
+    }
+
+    info!(
+        active = active_count,
+        total = config.sources.len(),
+        "Strict registry validation complete"
+    );
+    Ok(active_count)
 }
+
+/// Return the new canonical path name if `declared` is a known renamed path
+/// AND the new path exists under `workspace_root`. Returns `None` otherwise.
+fn find_known_rename(declared: &str, workspace_root: &Path) -> Option<String> {
+    // Normalise separators for comparison.
+    let normalised = declared.replace('\\', "/");
+    for (old, new) in KNOWN_RENAMES {
+        if normalised.trim_end_matches('/') == *old {
+            let candidate = workspace_root.join(new);
+            if candidate.exists() {
+                return Some((*new).to_owned());
+            }
+        }
+    }
+    None
+}
+
 
