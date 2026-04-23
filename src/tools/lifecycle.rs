@@ -11,6 +11,7 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::models::health::HealthReport;
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -33,6 +34,9 @@ pub struct DaemonStatus {
     pub memory_bytes: u64,
     pub model_loaded: bool,
     pub model_name: Option<String>,
+    /// Structured diagnostic health report (029-F WS-2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthReport>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -169,6 +173,7 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         memory_bytes,
         model_loaded,
         model_name,
+        health: None,
     })
 }
 

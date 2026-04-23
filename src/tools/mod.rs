@@ -11,6 +11,7 @@ use crate::models::metrics::UsageEvent;
 use crate::server::state::SharedState;
 use crate::services::{metrics, policy};
 
+pub mod doctor;
 pub mod lifecycle;
 pub mod read;
 pub mod write;

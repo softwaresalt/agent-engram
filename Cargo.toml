@@ -128,6 +128,10 @@ name = "contract_task_removal"
 path = "tests/contract/task_removal_test.rs"
 
 [[test]]
+name = "contract_doctor_health"
+path = "tests/contract/doctor_health_test.rs"
+
+[[test]]
 name = "contract_lifecycle"
 path = "tests/contract/lifecycle_test.rs"
 
@@ -320,6 +324,10 @@ path = "tests/contract/query_test.rs"
 [[test]]
 name = "integration_reliability"
 path = "tests/integration/reliability_test.rs"
+
+[[test]]
+name = "integration_doctor_smoke"
+path = "tests/integration/doctor_smoke_test.rs"
 
 [[test]]
 name = "integration_smoke"
