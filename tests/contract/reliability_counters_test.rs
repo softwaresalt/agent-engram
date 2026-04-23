@@ -43,7 +43,9 @@ async fn contract_telemetry_has_stale_pid_recovered_counter() {
         .await
         .expect("get_daemon_status must succeed");
 
-    let telemetry = result["telemetry"].as_object().expect("telemetry must be object");
+    let telemetry = result["telemetry"]
+        .as_object()
+        .expect("telemetry must be object");
     let counter = telemetry
         .get("stale_pid_recovered")
         .expect("telemetry must have stale_pid_recovered field");
@@ -63,7 +65,9 @@ async fn contract_telemetry_has_version_mismatch_respawn_counter() {
         .await
         .expect("get_daemon_status must succeed");
 
-    let telemetry = result["telemetry"].as_object().expect("telemetry must be object");
+    let telemetry = result["telemetry"]
+        .as_object()
+        .expect("telemetry must be object");
     let counter = telemetry
         .get("version_mismatch_respawn")
         .expect("telemetry must have version_mismatch_respawn field");
@@ -83,7 +87,9 @@ async fn contract_telemetry_has_registry_validation_failures_counter() {
         .await
         .expect("get_daemon_status must succeed");
 
-    let telemetry = result["telemetry"].as_object().expect("telemetry must be object");
+    let telemetry = result["telemetry"]
+        .as_object()
+        .expect("telemetry must be object");
     let counter = telemetry
         .get("registry_validation_failures")
         .expect("telemetry must have registry_validation_failures field");
@@ -103,7 +109,9 @@ async fn contract_telemetry_has_duplicate_daemon_detected_counter() {
         .await
         .expect("get_daemon_status must succeed");
 
-    let telemetry = result["telemetry"].as_object().expect("telemetry must be object");
+    let telemetry = result["telemetry"]
+        .as_object()
+        .expect("telemetry must be object");
     let counter = telemetry
         .get("duplicate_daemon_detected")
         .expect("telemetry must have duplicate_daemon_detected field");
@@ -123,6 +131,11 @@ async fn contract_telemetry_has_duplicate_daemon_detected_counter() {
 async fn contract_broken_registry_increments_validation_failure_counter() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let workspace_path = workspace.path().to_str().expect("UTF-8 path").to_owned();
+
+    // Create minimal .git so set_workspace accepts this as a valid workspace.
+    let git_dir = workspace.path().join(".git");
+    std::fs::create_dir_all(&git_dir).expect("create .git");
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
     let engram_dir = workspace.path().join(".engram");
     std::fs::create_dir_all(&engram_dir).expect("create .engram");
@@ -145,7 +158,9 @@ async fn contract_broken_registry_increments_validation_failure_counter() {
         .await
         .expect("get_daemon_status must succeed");
 
-    let telemetry = result["telemetry"].as_object().expect("telemetry must be object");
+    let telemetry = result["telemetry"]
+        .as_object()
+        .expect("telemetry must be object");
     let counter = telemetry
         .get("registry_validation_failures")
         .expect("telemetry must have registry_validation_failures field");

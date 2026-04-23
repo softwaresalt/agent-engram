@@ -28,6 +28,47 @@ use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
 use crate::services::hydration::FileFingerprint;
 
+/// Lock-free process-level reliability counters for the daemon (029-F WS-8).
+///
+/// Counters are `AtomicU64` so increments are allocation-free on the hot path.
+/// Owned by `AppState`; surfaced through `get_daemon_status`.
+#[derive(Debug, Default)]
+pub struct ReliabilityCounters {
+    /// Number of times a stale PID file was recovered on startup.
+    pub stale_pid_recovered: AtomicU64,
+    /// Number of times a version-mismatch forced a daemon respawn.
+    pub version_mismatch_respawn: AtomicU64,
+    /// Number of times `validate_sources_strict` returned a `ValidationFailed` error.
+    pub registry_validation_failures: AtomicU64,
+    /// Number of times a duplicate daemon was detected on bind (lockfile conflict).
+    pub duplicate_daemon_detected: AtomicU64,
+}
+
+impl ReliabilityCounters {
+    /// Increment the `stale_pid_recovered` counter by 1.
+    pub fn inc_stale_pid_recovered(&self) {
+        self.stale_pid_recovered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `version_mismatch_respawn` counter by 1.
+    pub fn inc_version_mismatch_respawn(&self) {
+        self.version_mismatch_respawn
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `registry_validation_failures` counter by 1.
+    pub fn inc_registry_validation_failure(&self) {
+        self.registry_validation_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `duplicate_daemon_detected` counter by 1.
+    pub fn inc_duplicate_daemon_detected(&self) {
+        self.duplicate_daemon_detected
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkspaceSnapshot {
     pub workspace_id: String,
@@ -106,6 +147,8 @@ pub struct AppState {
     /// Cancellation sender for the current background scan generation (029-F WS-6).
     /// Replaced on each new `set_workspace` call; sending `true` cancels the stale scan.
     scan_cancel: RwLock<Option<tokio::sync::watch::Sender<bool>>>,
+    /// Lock-free process-level reliability counters (029-F WS-8).
+    reliability: ReliabilityCounters,
 }
 
 impl AppState {
@@ -141,6 +184,7 @@ impl AppState {
             last_watcher_event: RwLock::new(None),
             scan_progress: RwLock::new(None),
             scan_cancel: RwLock::new(None),
+            reliability: ReliabilityCounters::default(),
         }
     }
 
@@ -389,6 +433,13 @@ impl AppState {
         }
         *cancel = Some(tx);
         rx
+    }
+    /// Returns a reference to the process-level reliability counters (029-F WS-8).
+    ///
+    /// Callers use the returned reference to increment specific counters without
+    /// acquiring any locks (all fields are `AtomicU64`).
+    pub fn reliability_counters(&self) -> &ReliabilityCounters {
+        &self.reliability
     }
 }
 

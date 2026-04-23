@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -13,14 +14,15 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
-use crate::models::metrics::MetricsConfig;
 use crate::models::health::{HealthReport, ScanProgress};
+use crate::models::metrics::MetricsConfig;
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::file_tracker::detect_offline_changes;
 use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
+use crate::services::registry::{load_registry, validate_sources_strict};
 use crate::tools::doctor::get_health_report_for_daemon;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +45,17 @@ pub struct DaemonStatus {
     pub model_name: Option<String>,
     /// Structured diagnostic health report covering all 8 failure modes (029-F WS-2).
     pub health: HealthReport,
+    /// Process-level reliability counters (029-F WS-8).
+    pub telemetry: ReliabilitySnapshot,
+}
+
+/// Serializable snapshot of `ReliabilityCounters` for `DaemonStatus`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReliabilitySnapshot {
+    pub stale_pid_recovered: u64,
+    pub version_mismatch_respawn: u64,
+    pub registry_validation_failures: u64,
+    pub duplicate_daemon_detected: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -113,6 +126,23 @@ pub async fn set_workspace(
 
     // Parse workspace config synchronously (fast: reads a single TOML file).
     let ws_config = parse_config(&canonical)?;
+
+    // Run strict registry validation. A failure increments the reliability
+    // counter and is logged as a warning, but does NOT abort binding — the
+    // workspace is still usable with reduced source coverage.
+    let registry_path = canonical.join(".engram").join("registry.yaml");
+    if let Ok(Some(mut registry_config)) = load_registry(&registry_path) {
+        if let Err(err) = validate_sources_strict(&mut registry_config, &canonical) {
+            tracing::warn!(
+                error = %err,
+                workspace = %canonical_path,
+                "set_workspace: strict registry validation failed — workspace bound with reduced coverage"
+            );
+            state
+                .reliability_counters()
+                .inc_registry_validation_failure();
+        }
+    }
 
     // Initialise metrics sink (spawns a channel + background writer, no DB).
     crate::services::metrics::initialize(&canonical, &branch, &ws_config.metrics).await?;
@@ -304,7 +334,17 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         None
     };
 
-    let health = get_health_report_for_daemon(state).await.unwrap_or_default();
+    let health = get_health_report_for_daemon(state)
+        .await
+        .unwrap_or_default();
+
+    let rc = state.reliability_counters();
+    let telemetry = ReliabilitySnapshot {
+        stale_pid_recovered: rc.stale_pid_recovered.load(Ordering::Relaxed),
+        version_mismatch_respawn: rc.version_mismatch_respawn.load(Ordering::Relaxed),
+        registry_validation_failures: rc.registry_validation_failures.load(Ordering::Relaxed),
+        duplicate_daemon_detected: rc.duplicate_daemon_detected.load(Ordering::Relaxed),
+    };
 
     Ok(DaemonStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -315,6 +355,7 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         model_loaded,
         model_name,
         health,
+        telemetry,
     })
 }
 
