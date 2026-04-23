@@ -67,14 +67,52 @@ mod surreal_db {
             }
         }
 
-        // Slow path: open, schema-bootstrap, then cache
-        fs::create_dir_all(&db_path).map_err(|e| {
+        // Slow path: open, schema-bootstrap, then cache.
+        // On DB-format corruption (crash-interrupted write), wipe and retry once.
+        let db = match try_open_and_bootstrap(&db_path, branch).await {
+            Ok(db) => db,
+            Err(open_err) => {
+                let err_str = open_err.to_string();
+                let is_corruption = err_str.contains("revision")
+                    || err_str.contains("end of file")
+                    || err_str.contains("fill whole buffer");
+                if is_corruption {
+                    tracing::warn!(
+                        error = %open_err,
+                        db_path = %db_path.display(),
+                        "DB files corrupted after crash; wiping and reinitializing"
+                    );
+                    if db_path.exists() {
+                        fs::remove_dir_all(&db_path).map_err(|e| {
+                            EngramError::from(SystemError::DatabaseError {
+                                reason: format!("failed to remove corrupted db: {e}"),
+                            })
+                        })?;
+                    }
+                    try_open_and_bootstrap(&db_path, branch).await?
+                } else {
+                    return Err(open_err);
+                }
+            }
+        };
+
+        let mut cache = DB_CACHE.write().await;
+        cache.insert(cache_key, db.clone());
+
+        Ok(db)
+    }
+
+    /// Create the DB directory, open the `SurrealKV` connection, select the
+    /// namespace/database, and apply the schema.  Extracted so crash-recovery
+    /// can retry without duplicating the open logic.
+    async fn try_open_and_bootstrap(db_path: &PathBuf, branch: &str) -> Result<Db, EngramError> {
+        fs::create_dir_all(db_path).map_err(|e| {
             EngramError::from(SystemError::DatabaseError {
                 reason: format!("failed to create db directory: {e}"),
             })
         })?;
 
-        let db = Surreal::new::<SurrealKv>(db_path)
+        let db = Surreal::new::<SurrealKv>(db_path.clone())
             .await
             .map_err(map_db_err)?;
 
@@ -84,9 +122,6 @@ mod surreal_db {
             .map_err(map_db_err)?;
 
         ensure_schema(&db).await?;
-
-        let mut cache = DB_CACHE.write().await;
-        cache.insert(cache_key, db.clone());
 
         Ok(db)
     }
