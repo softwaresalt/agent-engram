@@ -276,9 +276,10 @@ flush_state() (MCP tool call) or graceful shutdown
 |---|---|---|
 | Config | `src/config/mod.rs` | Parse CLI flags and environment variables via `clap`. Defines `Config` struct with all daemon settings. |
 | Server | `src/server/` | Axum HTTP server, SSE transport, MCP JSON-RPC dispatch loop. |
-| App State | `src/server/state.rs` | `Arc<AppState>` — shared mutable state across all async handlers. Holds workspace snapshot, DB connection, workspace config, and tool latency ring buffer. |
+| App State | `src/server/state.rs` | `Arc<AppState>` — shared mutable state across all async handlers. Holds workspace snapshot, DB connection, workspace config, tool latency ring buffer, `ReliabilityCounters` (track set_workspace/hydration/scan call counts and error rates), `hydration_ready` flag (AtomicBool, set true only after background DB hydration completes), and background scan progress state. |
 | Tool Dispatcher | `src/tools/mod.rs` | Routes MCP method names to handler functions via a `match` expression. Records per-call latency. |
-| Lifecycle Tools | `src/tools/lifecycle.rs` | `set_workspace`, `get_daemon_status`, `get_workspace_status`. Manages workspace binding and hydration. |
+| Lifecycle Tools | `src/tools/lifecycle.rs` | `set_workspace`, `get_daemon_status`, `get_workspace_status`. Manages workspace binding and hydration. Spawns `background_db_hydration` task; calls `clear_hydration_ready()` before spawn to prevent stale ready state on re-bind. Background scan generation runs under a per-generation `CancellationToken`. |
+| Doctor Tools | `src/tools/doctor.rs` | `get_health_report_for_daemon` — produces structured health report covering DB connectivity, hydration state, registry validity, scan progress, and socket accessibility. `derive_overall` maps component statuses to `Green`/`Yellow`/`Red`; treats `Unknown` as `Yellow`. |
 | Read Tools | `src/tools/read.rs` | All read-only MCP tools: `query_memory`, `unified_search`, `map_code`, `list_symbols`, `impact_analysis`, `get_workspace_statistics`, `query_graph`. |
 | Write Tools | `src/tools/write.rs` | Mutating MCP tools: `flush_state`, `index_workspace`, `sync_workspace`. |
 | Daemon Tools | `src/tools/daemon.rs` | Daemon-specific tool implementations. |
@@ -294,7 +295,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | Git Graph | `src/services/git_graph.rs` | Walk git commit history, index commits as graph nodes, cross-reference with code graph. Error codes 12xxx. |
 | Errors | `src/errors/` | Typed error hierarchy (`EngramError`), error codes (`src/errors/codes.rs`), MCP error serialization. |
 | Installer | `src/installer/` | `engram install/update/uninstall` commands. Creates `.engram/` scaffold and generates agent hook files. |
-| Daemon | `src/daemon/` | IPC server (Unix socket / named pipe), protocol types, daemon spawn/lifecycle management. |
+| Daemon | `src/daemon/` | IPC server (Unix socket / named pipe), protocol types, daemon spawn/lifecycle management. Socket directory is created with `DirBuilder::mode(0o700)` and the resulting permissions are verified post-create via `fs::metadata` (mode must be `0o700`), because `DirBuilder::mode` does not change permissions on pre-existing directories. |
 
 ---
 
