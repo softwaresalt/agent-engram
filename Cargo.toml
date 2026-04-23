@@ -242,6 +242,10 @@ name = "contract_ipc_protocol"
 path = "tests/contract/ipc_protocol_test.rs"
 
 [[test]]
+name = "unit_socket_permissions"
+path = "tests/unit/socket_permissions_test.rs"
+
+[[test]]
 name = "unit_lockfile"
 path = "tests/unit/lockfile_test.rs"
 

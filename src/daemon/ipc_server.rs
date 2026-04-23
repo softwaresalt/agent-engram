@@ -75,11 +75,30 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
         return Ok(path_str.to_owned());
     }
 
-    // Fallback: /tmp/engram-{workspace_key}.sock
-    // Permissions (0o600) are applied by run_with_shutdown after bind, using
-    // the endpoint string returned here, so the fallback path is also secured.
+    // Fallback: create a private /tmp/engram-{key}/ directory (0o700) and
+    // place the socket at /tmp/engram-{key}/engram.sock.
+    //
+    // The directory is created at construction time with DirBuilder::mode(0o700)
+    // to avoid a TOCTOU window between creation and permission assignment.
     let key = daemon_key_for_workspace(workspace)?;
-    let fallback = format!("/tmp/engram-{key}.sock");
+    let dir = format!("/tmp/engram-{key}");
+
+    {
+        use std::fs::DirBuilder;
+        use std::os::unix::fs::DirBuilderExt;
+        DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&dir)
+            .map_err(|e| {
+                EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                    address: dir.clone(),
+                    reason: format!("cannot create private socket directory: {e}"),
+                })
+            })?;
+    }
+
+    let fallback = format!("{dir}/engram.sock");
 
     tracing::warn!(
         workspace = %workspace.display(),
