@@ -1,11 +1,12 @@
 # Operational Closure — 001-S: Atomic Policy TOCTOU Fix
 
-**Mode**: pre-merge  
+**Mode**: post-merge  
 **Date**: 2026-04-23  
 **PR**: [#22 — feat: atomic dispatch snapshot eliminates policy TOCTOU window](https://github.com/softwaresalt/agent-engram/pull/22)  
+**Merge commit**: `c0068d0`  
 **Branch**: `018-atomic-workspace-config-snapshot-toctou`  
-**Shipment**: 001-S  
-**Tasks**: 024.001-T, 024.002-T  
+**Shipment**: 001-S (archived)  
+**Tasks**: 024.001-T, 024.002-T (archived)  
 
 ---
 
@@ -124,9 +125,9 @@ This is an internal correctness fix with no user-visible surface change. Monitor
 
 ## Readiness Status
 
-**READY** — CI green on both backends, Copilot review comments addressed and threads resolved, all contract tests pass, no runtime risk beyond lightweight read-lock acquisition change.
+**COMPLETE** — Merged to `main` at `c0068d0` (2026-04-23). CI green on both backends, Copilot review comments addressed and threads resolved, all contract tests pass. Shipment 001-S archived; 024-F, 024.001-T, 024.002-T archived.
 
-**Pending**: User merge approval.
+**Post-merge**: Validation window active (24 hours from merge). No regressions observed at merge time. Monitoring per plan below.
 
 ---
 
