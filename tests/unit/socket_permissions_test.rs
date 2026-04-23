@@ -19,11 +19,17 @@ use engram::daemon::ipc_server::ipc_endpoint;
 ///
 /// The primary socket path is `{workspace}/.engram/run/engram.sock` (23-char suffix).
 /// Linux allows 107 chars, macOS 103. Using 90 nesting chars exceeds both.
+///
+/// A minimal `.git/HEAD` is created so that `daemon_key_for_workspace` treats
+/// the directory as a valid git root.
 fn long_workspace(base: &std::path::Path) -> std::path::PathBuf {
     // 90-char subdirectory name pushes the full socket path well past 107 chars
     let long_name = "w".repeat(90);
     let ws = base.join(&long_name);
     fs::create_dir_all(&ws).expect("create long workspace dir");
+    let git_dir = ws.join(".git");
+    fs::create_dir_all(&git_dir).expect("create .git dir");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
     ws
 }
 
