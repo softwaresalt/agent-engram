@@ -34,8 +34,8 @@ mod surreal_db {
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::LazyLock;
     use std::sync::Arc;
+    use std::sync::LazyLock;
     use std::time::Duration;
 
     use surrealdb::Surreal;
@@ -80,7 +80,11 @@ mod surreal_db {
         // cache, the others return the cached handle without repeating the open.
         let path_lock = {
             let mut locks = OPEN_LOCKS.lock().await;
-            Arc::clone(locks.entry(cache_key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))))
+            Arc::clone(
+                locks
+                    .entry(cache_key.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
         };
         let _guard = path_lock.lock().await;
 
