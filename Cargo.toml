@@ -140,6 +140,10 @@ name = "contract_background_scan"
 path = "tests/contract/background_scan_test.rs"
 
 [[test]]
+name = "contract_reliability_counters"
+path = "tests/contract/reliability_counters_test.rs"
+
+[[test]]
 name = "contract_lifecycle"
 path = "tests/contract/lifecycle_test.rs"
 
