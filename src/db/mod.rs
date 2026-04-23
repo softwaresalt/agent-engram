@@ -35,6 +35,7 @@ mod surreal_db {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::LazyLock;
+    use std::time::Duration;
 
     use surrealdb::Surreal;
     use surrealdb::engine::local::{Db as LocalDb, SurrealKv};
@@ -68,9 +69,15 @@ mod surreal_db {
         }
 
         // Slow path: open, schema-bootstrap, then cache.
-        // On DB-format corruption (crash-interrupted write), wipe and retry once.
-        let db = match try_open_and_bootstrap(&db_path, branch).await {
-            Ok(db) => db,
+        // On DB-format corruption (crash-interrupted write), wipe the files,
+        // sleep briefly to let SurrealKV background threads from the failed open
+        // fully exit, then retry.  The sleep is only on the crash-recovery path.
+        match try_open_and_bootstrap(&db_path, branch).await {
+            Ok(db) => {
+                let mut cache = DB_CACHE.write().await;
+                cache.insert(cache_key, db.clone());
+                Ok(db)
+            }
             Err(open_err) => {
                 let err_str = open_err.to_string();
                 let is_corruption = err_str.contains("revision")
@@ -83,28 +90,37 @@ mod surreal_db {
                         "DB files corrupted after crash; wiping and reinitializing"
                     );
                     if db_path.exists() {
-                        fs::remove_dir_all(&db_path).map_err(|e| {
-                            EngramError::from(SystemError::DatabaseError {
-                                reason: format!("failed to remove corrupted db: {e}"),
-                            })
-                        })?;
+                        let _ = fs::remove_dir_all(&db_path);
                     }
-                    try_open_and_bootstrap(&db_path, branch).await?
+                    // Give SurrealKV background threads from the failed open time
+                    // to exit before opening the same path again.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    // Re-check the cache: a concurrent caller may have already
+                    // completed recovery and populated it during the sleep.
+                    {
+                        let cache = DB_CACHE.read().await;
+                        if let Some(db) = cache.get(&cache_key) {
+                            return Ok(db.clone());
+                        }
+                    }
+                    let db = try_open_and_bootstrap(&db_path, branch).await?;
+                    let mut cache = DB_CACHE.write().await;
+                    // Double-check after acquiring write lock.
+                    if let Some(existing) = cache.get(&cache_key) {
+                        return Ok(existing.clone());
+                    }
+                    cache.insert(cache_key, db.clone());
+                    Ok(db)
                 } else {
-                    return Err(open_err);
+                    Err(open_err)
                 }
             }
-        };
-
-        let mut cache = DB_CACHE.write().await;
-        cache.insert(cache_key, db.clone());
-
-        Ok(db)
+        }
     }
 
     /// Create the DB directory, open the `SurrealKV` connection, select the
-    /// namespace/database, and apply the schema.  Extracted so crash-recovery
-    /// can retry without duplicating the open logic.
+    /// namespace/database, and apply the schema.  Extracted so the open logic
+    /// stays in one place.
     async fn try_open_and_bootstrap(db_path: &PathBuf, branch: &str) -> Result<Db, EngramError> {
         fs::create_dir_all(db_path).map_err(|e| {
             EngramError::from(SystemError::DatabaseError {
