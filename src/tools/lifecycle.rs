@@ -17,6 +17,7 @@ use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::file_tracker::detect_offline_changes;
 use crate::services::hydration::{detect_stale_since, hydrate_code_graph, hydrate_workspace};
+use crate::tools::doctor::get_health_report_for_daemon;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceBinding {
@@ -36,9 +37,8 @@ pub struct DaemonStatus {
     pub memory_bytes: u64,
     pub model_loaded: bool,
     pub model_name: Option<String>,
-    /// Structured diagnostic health report (029-F WS-2).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health: Option<HealthReport>,
+    /// Structured diagnostic health report covering all 8 failure modes (029-F WS-2).
+    pub health: HealthReport,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -170,6 +170,8 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         None
     };
 
+    let health = get_health_report_for_daemon(state).await.unwrap_or_default();
+
     Ok(DaemonStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.uptime_seconds(),
@@ -178,7 +180,7 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         memory_bytes,
         model_loaded,
         model_name,
-        health: None,
+        health,
     })
 }
 
