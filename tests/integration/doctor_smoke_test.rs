@@ -1,9 +1,7 @@
 //! Integration test for the `doctor --smoke` full-handshake round-trip.
 //!
 //! Exercises [`engram::tools::doctor::run_smoke_test`] end-to-end.
-//! In the **red phase** this test panics at the `todo!()` stub — that is the
-//! expected failure that confirms the harness is correctly wired before
-//! 029.004.003-T implements the body.
+//! A regression here means the daemon IPC handshake or smoke-test logic broke.
 
 use std::fs;
 
@@ -12,9 +10,7 @@ use engram::tools::doctor::run_smoke_test;
 /// A full shim→daemon handshake smoke test must pass cleanly for a valid
 /// git-backed workspace.
 ///
-/// Red phase: panics at `todo!()` stub in `run_smoke_test`.
-/// Green phase (029.004.003-T): daemon spawns, handshake succeeds,
-/// result.passed == true.
+/// Daemon spawns, handshake succeeds, result.passed == true.
 #[tokio::test]
 async fn doctor_smoke_exercises_full_handshake() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");

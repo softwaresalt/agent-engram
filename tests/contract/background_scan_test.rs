@@ -5,10 +5,7 @@
 //! - `WorkspaceBinding` includes `pending_scan` field
 //! - `set_workspace` returns within 500 ms (bind latency only; heavy work is async)
 //! - `get_workspace_status` includes `scan_status` field
-//!
-//! **Red phase**: `pending_scan` serialises as `false` and `scan_status`
-//! serialises as `null` — both assertions that check for active scan state
-//! fail. Latency and field-presence tests may pass early.
+//! - `scan_status` reflects an active or completed scan after `set_workspace`
 
 use std::fs;
 use std::sync::Arc;

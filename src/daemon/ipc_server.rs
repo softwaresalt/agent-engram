@@ -86,6 +86,7 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
     {
         use std::fs::DirBuilder;
         use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt as _;
         DirBuilder::new()
             .mode(0o700)
             .recursive(true)
@@ -96,6 +97,24 @@ fn ipc_endpoint_impl(workspace: &Path) -> Result<String, EngramError> {
                     reason: format!("cannot create private socket directory: {e}"),
                 })
             })?;
+        // Verify the directory has exactly 0o700 permissions.  If another
+        // process pre-created the directory with insecure permissions, refuse
+        // to use it rather than trusting a potentially-compromised path.
+        let meta = std::fs::metadata(&dir).map_err(|e| {
+            EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                address: dir.clone(),
+                reason: format!("cannot stat private socket directory: {e}"),
+            })
+        })?;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o700 {
+            return Err(EngramError::Ipc(DomainIpcError::ConnectionFailed {
+                address: dir.clone(),
+                reason: format!(
+                    "private socket directory has insecure permissions {mode:#o}; expected 0o700"
+                ),
+            }));
+        }
     }
 
     let fallback = format!("{dir}/engram.sock");

@@ -168,7 +168,8 @@ fn derive_overall(checks: &[HealthCheck]) -> HealthStatus {
         .iter()
         .fold(HealthStatus::Green, |worst, c| match (worst, c.status) {
             (_, HealthStatus::Red) | (HealthStatus::Red, _) => HealthStatus::Red,
-            (_, HealthStatus::Yellow) | (HealthStatus::Yellow, _) => HealthStatus::Yellow,
+            (_, HealthStatus::Yellow | HealthStatus::Unknown)
+            | (HealthStatus::Yellow | HealthStatus::Unknown, _) => HealthStatus::Yellow,
             _ => worst,
         })
 }

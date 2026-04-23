@@ -4,9 +4,6 @@
 //! - `get_daemon_status` exposes a `telemetry` object.
 //! - `telemetry` contains the four reliability counter fields.
 //! - All counter values start at zero for a fresh daemon state.
-//!
-//! Red-phase: these tests fail until `ReliabilityCounters` is wired into
-//! `DaemonStatus` and returned from `get_daemon_status`.
 
 use std::sync::Arc;
 

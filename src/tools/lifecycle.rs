@@ -15,7 +15,6 @@ use crate::db::workspace::{
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::health::{HealthReport, ScanProgress};
-use crate::models::metrics::MetricsConfig;
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
@@ -184,17 +183,8 @@ pub async fn set_workspace(
     let canonical_bg = canonical.clone();
     let data_dir_bg = data_dir.clone();
     let branch_bg = branch.clone();
-    let ws_metrics = ws_config.metrics.clone();
     let _task = tokio::spawn(async move {
-        background_db_hydration(
-            state_bg,
-            canonical_bg,
-            data_dir_bg,
-            branch_bg,
-            ws_metrics,
-            cancel_rx,
-        )
-        .await;
+        background_db_hydration(state_bg, canonical_bg, data_dir_bg, branch_bg, cancel_rx).await;
     });
 
     Ok(WorkspaceBinding {
@@ -219,7 +209,6 @@ async fn background_db_hydration(
     canonical: PathBuf,
     data_dir: PathBuf,
     branch: String,
-    metrics_config: MetricsConfig,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     macro_rules! check_cancel {
@@ -261,8 +250,9 @@ async fn background_db_hydration(
 
     let cg_queries = CodeGraphQueries::new(db);
 
-    let _ = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await;
-    let _ = crate::services::metrics::initialize(&canonical, &branch, &metrics_config).await;
+    if let Err(e) = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await {
+        tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
+    }
 
     check_cancel!();
 
@@ -296,6 +286,7 @@ async fn background_db_hydration(
     // Trigger a code-graph re-index when offline changes were found.
     // Guarded by the try_start_indexing flag so concurrent indexing is prevented.
     if offline_count > 0 && state.try_start_indexing() {
+        check_cancel!();
         if let (Some(snapshot), Some(ws_config)) = (
             state.snapshot_workspace().await,
             state.workspace_config().await,
@@ -338,9 +329,13 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         None
     };
 
-    let health = get_health_report_for_daemon(state)
-        .await
-        .unwrap_or_default();
+    let health = match get_health_report_for_daemon(state).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "get_daemon_status: health report failed; using default");
+            HealthReport::default()
+        }
+    };
 
     let rc = state.reliability_counters();
     let telemetry = ReliabilitySnapshot {

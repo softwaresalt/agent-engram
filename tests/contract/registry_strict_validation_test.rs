@@ -4,8 +4,6 @@
 //! - missing non-optional source → returns `Err` with remediation hint
 //! - known renamed path → returns `Err` with migration suggestion
 //! - optional missing source → returns `Ok` (no error emitted)
-//!
-//! **Red phase**: all calls panic at the `todo!()` stub.
 
 use std::fs;
 
