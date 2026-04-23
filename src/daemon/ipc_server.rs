@@ -431,7 +431,7 @@ pub async fn run_with_shutdown(
         let ttl_init = Arc::clone(&ttl);
         let tx_init = Arc::clone(&shutdown_tx);
         tokio::spawn(async move {
-            match crate::tools::lifecycle::set_workspace(state_init.as_ref(), workspace_str).await {
+            match crate::tools::lifecycle::set_workspace(Arc::clone(&state_init), workspace_str).await {
                 Ok(_) => {
                     info!("workspace hydration complete — daemon ready to serve");
                     // T049 / S046: Reset idle deadline from "daemon ready", not

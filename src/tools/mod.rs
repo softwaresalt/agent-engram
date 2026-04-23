@@ -3,6 +3,8 @@
 //! The `dispatch` function routes tool names to handler functions in
 //! the `lifecycle`, `read`, and `write` submodules.
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -138,7 +140,7 @@ pub async fn dispatch(
                         reason: e.to_string(),
                     })
                 })?;
-            let inner = lifecycle::set_workspace(state.as_ref(), parsed.path).await?;
+            let inner = lifecycle::set_workspace(Arc::clone(&state), parsed.path).await?;
             serde_json::to_value(inner).map_err(|e| {
                 EngramError::System(SystemError::DatabaseError {
                     reason: format!("failed to serialize response: {e}"),

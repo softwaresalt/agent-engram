@@ -1,5 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 use uuid::Uuid;
@@ -11,6 +13,7 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::models::metrics::MetricsConfig;
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::{AppState, WorkspaceSnapshot};
 use crate::services::config::parse_config;
@@ -67,7 +70,7 @@ pub struct CodeGraphStats {
 }
 
 pub async fn set_workspace(
-    state: &AppState,
+    state: Arc<AppState>,
     path: String,
 ) -> Result<WorkspaceBinding, EngramError> {
     validate_workspace_path(&path)?;
@@ -95,6 +98,7 @@ pub async fn set_workspace(
             }));
         }
     }
+
     let data_dir = resolve_data_dir(&canonical);
 
     if !state.can_bind_workspace(&workspace_id).await {
@@ -103,35 +107,13 @@ pub async fn set_workspace(
         }));
     }
 
+    // Fast metadata hydration: reads .engram/ files but does not open the DB.
     let hydration = hydrate_workspace(&canonical).await?;
 
-    // Connect to DB and hydrate code graph from .engram/code-graph/ JSONL files (FR-132)
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
-    let _cg_result = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await?;
-
-    // Detect files changed while the daemon was offline and emit a summary.
-    // This is best-effort: I/O failures for individual files are already logged
-    // inside `detect_offline_changes` as warnings, so we only surface a
-    // tracing event here rather than aborting workspace binding.
-    match detect_offline_changes(&canonical, &cg_queries).await {
-        Ok(changes) if !changes.is_empty() => {
-            tracing::info!(
-                count = changes.len(),
-                "set_workspace: offline changes detected — re-indexing recommended"
-            );
-        }
-        Ok(_) => {
-            tracing::debug!("set_workspace: no offline changes detected");
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "set_workspace: offline change detection failed");
-        }
-    }
-
-    // Load and validate workspace config BEFORE committing the snapshot.
-    // If config validation fails, we must not leave the workspace partially bound.
+    // Parse workspace config synchronously (fast: reads a single TOML file).
     let ws_config = parse_config(&canonical)?;
+
+    // Initialise metrics sink (spawns a channel + background writer, no DB).
     crate::services::metrics::initialize(&canonical, &branch, &ws_config.metrics).await?;
 
     let snapshot = WorkspaceSnapshot {
@@ -147,15 +129,102 @@ pub async fn set_workspace(
     };
 
     state.set_workspace(snapshot).await?;
-    state.set_workspace_config(Some(ws_config)).await;
+    state.set_workspace_config(Some(ws_config.clone())).await;
     crate::services::query_stats::reset_timing();
+
+    // Queue a background scan immediately. The DB connect + hydrate +
+    // offline-change detection are moved off the hot path so that
+    // set_workspace returns well within the 500 ms bind-latency SLA
+    // (029-F WS-6). The `pending_scan` field signals to the caller
+    // that background work has been scheduled.
+    let initial_progress = ScanProgress {
+        running: true,
+        files_scanned: 0,
+        files_total: 0,
+        last_completed_at: None,
+    };
+    state.set_scan_progress(Some(initial_progress)).await;
+
+    let state_bg = Arc::clone(&state);
+    let canonical_bg = canonical.clone();
+    let data_dir_bg = data_dir.clone();
+    let branch_bg = branch.clone();
+    let ws_metrics = ws_config.metrics.clone();
+    let _task = tokio::spawn(async move {
+        background_db_hydration(
+            state_bg,
+            canonical_bg,
+            data_dir_bg,
+            branch_bg,
+            ws_metrics,
+        )
+        .await;
+    });
 
     Ok(WorkspaceBinding {
         workspace_id,
         path: canonical.display().to_string(),
         hydrated: true,
-        pending_scan: false,
+        pending_scan: true,
     })
+}
+
+/// Background DB hydration task spawned by [`set_workspace`].
+///
+/// Connects to SurrealDB, hydrates the code graph from JSONL files, and runs
+/// offline-change detection — all off the bind-latency hot path. Updates
+/// [`AppState::scan_progress`] when complete (029-F WS-6).
+async fn background_db_hydration(
+    state: Arc<AppState>,
+    canonical: PathBuf,
+    data_dir: PathBuf,
+    branch: String,
+    metrics_config: MetricsConfig,
+) {
+    let db = match connect_db(&data_dir, &branch).await {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!(error = %e, "background_db_hydration: DB connect failed");
+            state
+                .set_scan_progress(Some(ScanProgress {
+                    running: false,
+                    files_scanned: 0,
+                    files_total: 0,
+                    last_completed_at: Some(Utc::now().to_rfc3339()),
+                }))
+                .await;
+            return;
+        }
+    };
+    let cg_queries = CodeGraphQueries::new(db);
+
+    let _ = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await;
+    let _ = crate::services::metrics::initialize(&canonical, &branch, &metrics_config).await;
+
+    let offline_count = match detect_offline_changes(&canonical, &cg_queries).await {
+        Ok(changes) => {
+            if !changes.is_empty() {
+                tracing::info!(
+                    count = changes.len(),
+                    "background_db_hydration: offline changes detected"
+                );
+            }
+            changes.len() as u64
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "background_db_hydration: offline change detection failed");
+            0
+        }
+    };
+
+    state
+        .set_scan_progress(Some(ScanProgress {
+            running: false,
+            files_scanned: offline_count,
+            files_total: offline_count,
+            last_completed_at: Some(Utc::now().to_rfc3339()),
+        }))
+        .await;
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
@@ -230,7 +299,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             stale_files: stale_now,
             connection_count: state.active_connections(),
             code_graph,
-            scan_status: None,
+            scan_status: state.scan_progress_snapshot().await,
         });
     }
 

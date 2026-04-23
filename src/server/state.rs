@@ -24,6 +24,7 @@ use tokio::sync::RwLock;
 use crate::config::StaleStrategy;
 use crate::errors::WorkspaceError;
 use crate::models::config::WorkspaceConfig;
+use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
 use crate::services::hydration::FileFingerprint;
 
@@ -99,6 +100,9 @@ pub struct AppState {
     watcher_event_count: AtomicU64,
     /// Timestamp of the most recently seen file-watcher event.
     last_watcher_event: RwLock<Option<DateTime<Utc>>>,
+    /// Background offline-change scan progress (029-F WS-6).
+    /// `None` until the first scan is queued after a `set_workspace` call.
+    scan_progress: RwLock<Option<ScanProgress>>,
 }
 
 impl AppState {
@@ -132,6 +136,7 @@ impl AppState {
             tool_call_count: AtomicU64::new(0),
             watcher_event_count: AtomicU64::new(0),
             last_watcher_event: RwLock::new(None),
+            scan_progress: RwLock::new(None),
         }
     }
 
@@ -350,6 +355,18 @@ impl AppState {
             .await
             .map(|dt| dt.to_rfc3339());
         (count, last)
+    }
+    // ── Background scan (029-F WS-6) ──────────────────────────────────────────
+
+    /// Store or clear the current background scan progress snapshot.
+    pub async fn set_scan_progress(&self, progress: Option<ScanProgress>) {
+        *self.scan_progress.write().await = progress;
+    }
+
+    /// Return a clone of the current scan progress, or `None` when no scan
+    /// has been queued since startup.
+    pub async fn scan_progress_snapshot(&self) -> Option<ScanProgress> {
+        self.scan_progress.read().await.clone()
     }
 }
 
