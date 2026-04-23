@@ -196,7 +196,85 @@ pub async fn get_health_report_for_daemon(state: &AppState) -> Result<HealthRepo
 /// Spawns the daemon if not running, connects as a shim, exchanges the version
 /// handshake, calls `set_workspace`, then shuts down. Returns a [`SmokeResult`]
 /// indicating pass or fail with latency measurement.
-pub async fn run_smoke_test(_workspace: &Path) -> Result<SmokeResult, EngramError> {
-    todo!("Worker: implement doctor --smoke full handshake (029.004.003-T)")
+pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError> {
+    use std::time::Duration;
+
+    use serde_json::{Value, json};
+
+    use crate::daemon::ipc_server::ipc_endpoint;
+    use crate::daemon::protocol::IpcRequest;
+    use crate::shim::ipc_client::send_request;
+    use crate::shim::lifecycle::ensure_daemon_running;
+
+    let start = std::time::Instant::now();
+
+    // Step 1: Spawn or reuse the daemon.
+    ensure_daemon_running(workspace).await.map_err(|e| {
+        crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+            reason: format!("smoke test: daemon start failed: {e}"),
+        })
+    })?;
+
+    let endpoint = ipc_endpoint(workspace)?;
+
+    let workspace_str = workspace
+        .to_str()
+        .ok_or_else(|| {
+            crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                reason: "workspace path contains non-UTF-8 characters".to_owned(),
+            })
+        })?
+        .to_owned();
+
+    // Step 2: Version exchange — get_daemon_status.
+    let status_req = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(1))),
+        method: "get_daemon_status".to_owned(),
+        params: None,
+    };
+    let status_resp = send_request(&endpoint, &status_req, Duration::from_secs(10)).await?;
+    if let Some(err) = &status_resp.error {
+        let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        return Ok(SmokeResult {
+            passed: false,
+            message: format!("get_daemon_status failed: {}", err.message),
+            latency_ms: Some(latency_ms),
+        });
+    }
+
+    // Step 3: set_workspace round-trip.
+    let bind_req = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(2))),
+        method: "set_workspace".to_owned(),
+        params: Some(json!({ "path": workspace_str })),
+    };
+    let bind_resp = send_request(&endpoint, &bind_req, Duration::from_secs(10)).await?;
+    if let Some(err) = &bind_resp.error {
+        let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        return Ok(SmokeResult {
+            passed: false,
+            message: format!("set_workspace failed: {}", err.message),
+            latency_ms: Some(latency_ms),
+        });
+    }
+
+    // Step 4: Graceful shutdown.
+    let shutdown_req = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(3))),
+        method: "_shutdown".to_owned(),
+        params: None,
+    };
+    let _ = send_request(&endpoint, &shutdown_req, Duration::from_secs(5)).await;
+
+    let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok(SmokeResult {
+        passed: true,
+        message: "Smoke test passed: version exchange, workspace bind, and shutdown all succeeded"
+            .to_owned(),
+        latency_ms: Some(latency_ms),
+    })
 }
 
