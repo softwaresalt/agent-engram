@@ -229,21 +229,20 @@ impl AppState {
 
     /// Atomically snapshot the active workspace binding and config for use at dispatch entry.
     ///
-    /// Both locks are acquired sequentially and released before returning. The returned
-    /// [`DispatchSnapshot`] is a fully owned clone so that concurrent [`AppState::set_workspace_config`]
-    /// calls cannot alter the policy that was in effect when the snapshot was taken.
+    /// Both read locks are held simultaneously while cloning, in a consistent order
+    /// (`active_workspace` then `workspace_config`), so that a concurrent
+    /// [`AppState::set_workspace`] or [`AppState::set_workspace_config`] call cannot produce
+    /// a mismatched workspace/config pair from different points in time. Both guards are
+    /// dropped at the end of this function.
     ///
     /// Returns `None` when no workspace is bound; `set_workspace` must be called first.
     /// When a workspace is bound but no config has been loaded, the snapshot uses
     /// [`WorkspaceConfig::default`] so that dispatch proceeds with policy disabled.
     pub async fn snapshot_dispatch_context(&self) -> Option<DispatchSnapshot> {
-        let workspace = self.active_workspace.read().await.clone()?;
-        let config = self
-            .workspace_config
-            .read()
-            .await
-            .clone()
-            .unwrap_or_default();
+        let workspace_guard = self.active_workspace.read().await;
+        let config_guard = self.workspace_config.read().await;
+        let workspace = workspace_guard.clone()?;
+        let config = config_guard.clone().unwrap_or_default();
         Some(DispatchSnapshot { workspace, config })
     }
 
