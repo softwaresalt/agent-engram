@@ -149,6 +149,11 @@ pub struct AppState {
     scan_cancel: RwLock<Option<tokio::sync::watch::Sender<bool>>>,
     /// Lock-free process-level reliability counters (029-F WS-8).
     reliability: ReliabilityCounters,
+    /// Set to `true` once `background_db_hydration` has run to completion
+    /// (success, failure, or cancellation).  `_health` gates "ready" on this
+    /// flag so that polling clients (shim, test harness) wait until initial
+    /// data load is done before issuing real tool calls.
+    hydration_ready: AtomicBool,
 }
 
 impl AppState {
@@ -185,6 +190,7 @@ impl AppState {
             scan_progress: RwLock::new(None),
             scan_cancel: RwLock::new(None),
             reliability: ReliabilityCounters::default(),
+            hydration_ready: AtomicBool::new(false),
         }
     }
 
@@ -440,6 +446,18 @@ impl AppState {
     /// acquiring any locks (all fields are `AtomicU64`).
     pub fn reliability_counters(&self) -> &ReliabilityCounters {
         &self.reliability
+    }
+
+    /// Mark the initial background DB hydration as complete (success, failure,
+    /// or cancellation).  The `_health` handler gates the "ready" status on
+    /// this flag so clients wait until data is loaded before issuing queries.
+    pub fn set_hydration_ready(&self) {
+        self.hydration_ready.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` once [`set_hydration_ready`] has been called.
+    pub fn is_hydration_ready(&self) -> bool {
+        self.hydration_ready.load(Ordering::Acquire)
     }
 }
 

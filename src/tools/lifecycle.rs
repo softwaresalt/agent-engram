@@ -234,6 +234,7 @@ async fn background_db_hydration(
                         last_completed_at: Some(Utc::now().to_rfc3339()),
                     }))
                     .await;
+                state.set_hydration_ready();
                 return;
             }
         };
@@ -251,6 +252,7 @@ async fn background_db_hydration(
                     last_completed_at: Some(Utc::now().to_rfc3339()),
                 }))
                 .await;
+            state.set_hydration_ready();
             return;
         }
     };
@@ -320,6 +322,8 @@ async fn background_db_hydration(
         }
         state.finish_indexing().await;
     }
+
+    state.set_hydration_ready();
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {

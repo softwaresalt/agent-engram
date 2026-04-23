@@ -282,7 +282,7 @@ async fn process_request(
             // the shim keeps polling rather than treating the daemon as healthy
             // before it can serve real tool calls.
             let snapshot = state.snapshot_workspace().await;
-            let status = if snapshot.is_some() {
+            let status = if snapshot.is_some() && state.is_hydration_ready() {
                 "ready"
             } else {
                 "starting"
