@@ -16,6 +16,7 @@ use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::metrics::MetricsConfig;
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::{AppState, WorkspaceSnapshot};
+use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
 use crate::services::file_tracker::detect_offline_changes;
@@ -145,6 +146,10 @@ pub async fn set_workspace(
     };
     state.set_scan_progress(Some(initial_progress)).await;
 
+    // Cancel any stale scan from a prior set_workspace call, then register
+    // a fresh cancellation receiver for this generation.
+    let cancel_rx = state.begin_scan_generation().await;
+
     let state_bg = Arc::clone(&state);
     let canonical_bg = canonical.clone();
     let data_dir_bg = data_dir.clone();
@@ -157,6 +162,7 @@ pub async fn set_workspace(
             data_dir_bg,
             branch_bg,
             ws_metrics,
+            cancel_rx,
         )
         .await;
     });
@@ -174,13 +180,35 @@ pub async fn set_workspace(
 /// Connects to SurrealDB, hydrates the code graph from JSONL files, and runs
 /// offline-change detection — all off the bind-latency hot path. Updates
 /// [`AppState::scan_progress`] when complete (029-F WS-6).
+///
+/// Checks `cancel_rx` at each major step; when `true` is signalled by
+/// [`AppState::begin_scan_generation`], the task abandons its work (029-F WS-6
+/// CancellationToken requirement).
 async fn background_db_hydration(
     state: Arc<AppState>,
     canonical: PathBuf,
     data_dir: PathBuf,
     branch: String,
     metrics_config: MetricsConfig,
+    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) {
+    macro_rules! check_cancel {
+        () => {
+            if *cancel_rx.borrow_and_update() {
+                tracing::info!("background_db_hydration: scan cancelled by new generation");
+                state
+                    .set_scan_progress(Some(ScanProgress {
+                        running: false,
+                        files_scanned: 0,
+                        files_total: 0,
+                        last_completed_at: Some(Utc::now().to_rfc3339()),
+                    }))
+                    .await;
+                return;
+            }
+        };
+    }
+
     let db = match connect_db(&data_dir, &branch).await {
         Ok(db) => db,
         Err(e) => {
@@ -196,10 +224,15 @@ async fn background_db_hydration(
             return;
         }
     };
+
+    check_cancel!();
+
     let cg_queries = CodeGraphQueries::new(db);
 
     let _ = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await;
     let _ = crate::services::metrics::initialize(&canonical, &branch, &metrics_config).await;
+
+    check_cancel!();
 
     let offline_count = match detect_offline_changes(&canonical, &cg_queries).await {
         Ok(changes) => {
@@ -217,6 +250,8 @@ async fn background_db_hydration(
         }
     };
 
+    check_cancel!();
+
     state
         .set_scan_progress(Some(ScanProgress {
             running: false,
@@ -225,6 +260,36 @@ async fn background_db_hydration(
             last_completed_at: Some(Utc::now().to_rfc3339()),
         }))
         .await;
+
+    // Trigger a code-graph re-index when offline changes were found.
+    // Guarded by the try_start_indexing flag so concurrent indexing is prevented.
+    if offline_count > 0 && state.try_start_indexing() {
+        if let (Some(snapshot), Some(ws_config)) = (
+            state.snapshot_workspace().await,
+            state.workspace_config().await,
+        ) {
+            let ws_path = PathBuf::from(&snapshot.path);
+            match sync_code_graph(
+                &ws_path,
+                &snapshot.data_dir,
+                &snapshot.branch,
+                &ws_config.code_graph,
+            )
+            .await
+            {
+                Ok(result) => tracing::info!(
+                    files_added = result.files_added,
+                    files_modified = result.files_modified,
+                    "background_db_hydration: post-scan re-index complete"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "background_db_hydration: post-scan re-index failed"
+                ),
+            }
+        }
+        state.finish_indexing().await;
+    }
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {

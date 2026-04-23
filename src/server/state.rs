@@ -103,6 +103,9 @@ pub struct AppState {
     /// Background offline-change scan progress (029-F WS-6).
     /// `None` until the first scan is queued after a `set_workspace` call.
     scan_progress: RwLock<Option<ScanProgress>>,
+    /// Cancellation sender for the current background scan generation (029-F WS-6).
+    /// Replaced on each new `set_workspace` call; sending `true` cancels the stale scan.
+    scan_cancel: RwLock<Option<tokio::sync::watch::Sender<bool>>>,
 }
 
 impl AppState {
@@ -137,6 +140,7 @@ impl AppState {
             watcher_event_count: AtomicU64::new(0),
             last_watcher_event: RwLock::new(None),
             scan_progress: RwLock::new(None),
+            scan_cancel: RwLock::new(None),
         }
     }
 
@@ -367,6 +371,24 @@ impl AppState {
     /// has been queued since startup.
     pub async fn scan_progress_snapshot(&self) -> Option<ScanProgress> {
         self.scan_progress.read().await.clone()
+    }
+
+    /// Begin a new scan generation.
+    ///
+    /// Cancels any in-flight background scan from the previous generation by
+    /// sending `true` on the old cancel channel, then registers a fresh
+    /// channel for the new scan.
+    ///
+    /// Returns a `Receiver<bool>` that the new scan task should watch; when
+    /// it yields `true` the task should abandon its work.
+    pub async fn begin_scan_generation(&self) -> tokio::sync::watch::Receiver<bool> {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut cancel = self.scan_cancel.write().await;
+        if let Some(old_tx) = cancel.take() {
+            let _ = old_tx.send(true);
+        }
+        *cancel = Some(tx);
+        rx
     }
 }
 
