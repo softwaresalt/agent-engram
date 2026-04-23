@@ -316,21 +316,19 @@ async fn c018_07_denied_metrics_event_carries_agent_role() {
 
     assert!(result.is_err(), "call must be denied");
 
-    // THEN the recorded UsageEvent carries agent_role = "rogue-agent"
+    // THEN the recorded UsageEvent carries agent_role = "rogue-agent".
+    // Filter by all three criteria to avoid matching a concurrent test's denied
+    // event that shares the same tool_name but has no agent_role.
     let events = metrics::recent_events();
-    let denied_event = events
-        .iter()
-        .find(|e| e.tool_name == "list_symbols" && e.outcome == "denied");
+    let denied_event = events.iter().find(|e| {
+        e.tool_name == "list_symbols"
+            && e.outcome == "denied"
+            && e.agent_role.as_deref() == Some("rogue-agent")
+    });
     assert!(
         denied_event.is_some(),
-        "denied call must record a metrics event"
-    );
-    assert_eq!(
-        denied_event
-            .expect("just asserted Some")
-            .agent_role
-            .as_deref(),
-        Some("rogue-agent"),
-        "denied metrics event must carry the agent_role from _meta"
+        "denied metrics event must carry agent_role=\"rogue-agent\"; \
+         got {} event(s): {events:?}",
+        events.len()
     );
 }
