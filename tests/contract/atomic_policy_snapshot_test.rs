@@ -25,9 +25,7 @@ use engram::tools;
 /// Returns both the `Arc<AppState>` and the `TempDir` handle.  The caller
 /// MUST hold the `TempDir` for the duration of the test — dropping it
 /// deletes the workspace.
-async fn setup_workspace_with_policy(
-    policy: PolicyConfig,
-) -> (Arc<AppState>, tempfile::TempDir) {
+async fn setup_workspace_with_policy(policy: PolicyConfig) -> (Arc<AppState>, tempfile::TempDir) {
     let workspace = tempfile::tempdir().expect("tempdir");
     let git_dir = workspace.path().join(".git");
     fs::create_dir_all(&git_dir).expect("create .git");
@@ -236,11 +234,7 @@ async fn c018_05_concurrent_config_flip_does_not_bypass_policy() {
     flipper.await.expect("flipper must complete");
 
     // WHEN policy is evaluated against the SNAPSHOT (not the live config)
-    let eval = policy::evaluate(
-        &snapshot.config.policy,
-        Some("anonymous"),
-        "list_symbols",
-    );
+    let eval = policy::evaluate(&snapshot.config.policy, Some("anonymous"), "list_symbols");
 
     // THEN it is still denied — the snapshot captured deny-all before the flip
     assert!(

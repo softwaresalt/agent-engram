@@ -28,6 +28,20 @@ use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
 use crate::services::hydration::FileFingerprint;
 
+/// Atomic point-in-time snapshot of workspace binding and config taken at dispatch entry.
+///
+/// Both fields are captured under a single logical read so that a concurrent
+/// `set_workspace_config` call cannot change the policy that was checked at
+/// the start of a tool call. See TASK-018 for full context.
+#[derive(Clone, Debug)]
+pub struct DispatchSnapshot {
+    /// Clone of the active workspace binding at snapshot time.
+    pub workspace: WorkspaceSnapshot,
+    /// Clone of the active workspace config at snapshot time.
+    /// Defaults to [`WorkspaceConfig::default`] when no config has been loaded.
+    pub config: WorkspaceConfig,
+}
+
 /// Lock-free process-level reliability counters for the daemon (029-F WS-8).
 ///
 /// Counters are `AtomicU64` so increments are allocation-free on the hot path.
@@ -211,6 +225,26 @@ impl AppState {
 
     pub async fn snapshot_workspace(&self) -> Option<WorkspaceSnapshot> {
         self.active_workspace.read().await.clone()
+    }
+
+    /// Atomically snapshot the active workspace binding and config for use at dispatch entry.
+    ///
+    /// Both locks are acquired sequentially and released before returning. The returned
+    /// [`DispatchSnapshot`] is a fully owned clone so that concurrent [`AppState::set_workspace_config`]
+    /// calls cannot alter the policy that was in effect when the snapshot was taken.
+    ///
+    /// Returns `None` when no workspace is bound; `set_workspace` must be called first.
+    /// When a workspace is bound but no config has been loaded, the snapshot uses
+    /// [`WorkspaceConfig::default`] so that dispatch proceeds with policy disabled.
+    pub async fn snapshot_dispatch_context(&self) -> Option<DispatchSnapshot> {
+        let workspace = self.active_workspace.read().await.clone()?;
+        let config = self
+            .workspace_config
+            .read()
+            .await
+            .clone()
+            .unwrap_or_default();
+        Some(DispatchSnapshot { workspace, config })
     }
 
     pub async fn set_workspace(&self, snapshot: WorkspaceSnapshot) -> Result<(), WorkspaceError> {
