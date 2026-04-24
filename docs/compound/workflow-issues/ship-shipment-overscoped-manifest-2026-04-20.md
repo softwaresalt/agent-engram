@@ -142,3 +142,7 @@ Implementation plan: `docs/exec-plans/2026-04-20-shipment-integrity-plan.md`
 * ✅ Stage scope guard — Stage Step 5.5/step 3.0 prevents over-inclusion at harvest assembly time
 * ✅ `fix backlogit_ship_shipment manifest reconciliation` — upstream issue submitted as
   [softwaresalt/backlogit#63](https://github.com/softwaresalt/backlogit/issues/63) in shipment 010-S
+* ✅ `pre-archived classification spec gap` — `shipment-reconcile` SKILL.md and schema updated in
+  shipment 010-S to add `pre-archived` as a distinct classification (separate from `matched`),
+  covering items already archived by a prior shipment; `expected_status: active` added as valid
+  enum for intake checks on already-claimed shipments (commit `0897e22`)

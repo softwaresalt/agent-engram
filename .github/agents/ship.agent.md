@@ -113,8 +113,9 @@ build work begins:
 5. Record `shipment_id` as the session scope. All build execution and PR scope is bounded
    by this shipment.
 6. **Intake reconciliation check**: Invoke `shipment-reconcile` with `mode: pre` and
-   `expected_status: queued`. This verifies every manifest item is present in
-   `.backlogit/queue/` with `status: queued`, and scans for orphan items. A `RECONCILE_FAIL`
+   `expected_status: queued` (or `active` if the shipment was already claimed in a prior
+   session and items are `active`). This verifies every manifest item is present in
+   `.backlogit/queue/` with the expected status, and scans for orphan items. A `RECONCILE_FAIL`
    here means Stage swept non-harvest items into the manifest; reconcile before proceeding
    to Step 1. (Lock is not held at intake — this is a lightweight early-warning check only.)
 
