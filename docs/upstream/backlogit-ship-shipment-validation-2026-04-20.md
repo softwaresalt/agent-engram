@@ -5,7 +5,9 @@ tool: backlogit
 affected_operation: backlogit_ship_shipment
 severity: high
 discovered_in: shipment 003-S
-status: draft
+status: submitted
+upstream_issue: https://github.com/softwaresalt/backlogit/issues/63
+submitted_in: shipment 010-S (2026-04-23)
 ---
 
 # Upstream Issue: `backlogit_ship_shipment` Lacks Per-Item State Validation

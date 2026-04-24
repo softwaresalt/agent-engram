@@ -36,14 +36,15 @@ Every item in the manifest is classified as one of:
 
 | Classification | Meaning |
 |---|---|
-| `matched` | Queue/archive file present AND status matches `expected_status` |
+| `matched` | Queue file present AND status matches `expected_status` |
+| `pre-archived` | No queue file found but archive file exists — item was already archived before this shipment ran; treated as valid |
 | `missing` | No queue or archive file found for this manifest item |
 | `status-mismatch` | File present but declared status does not match `expected_status` |
 | `orphan` | Queue file declares this `shipment_id` in its frontmatter but is NOT in the manifest |
 
 The report ends with a `recommendation`:
 
-* `PROCEED` — all items matched; no action needed
+* `PROCEED` — all items are `matched` or `pre-archived`; no action needed
 * `HALT — operator reconcile required` — one or more missing, status-mismatch, or orphan items
 
 ## Behavioral Constraints
@@ -74,8 +75,11 @@ The report ends with a `recommendation`:
 
 3. **Check each manifest item**:
    * Attempt to locate the file at `.backlogit/queue/{id}.*`
-   * Read its frontmatter and compare `status` to `expected_status`
-   * Classify as `matched`, `missing`, or `status-mismatch`
+   * If found, read its frontmatter and compare `status` to `expected_status`
+     — classify as `matched` or `status-mismatch`
+   * If NOT found in queue, check `.backlogit/archive/{id}.*`
+     — if archive file exists, classify as `pre-archived` (valid; item already shipped)
+     — if no file in either location, classify as `missing`
 
 4. **Orphan scan**:
    Scan `.backlogit/queue/` for any files whose YAML frontmatter declares
@@ -86,7 +90,7 @@ The report ends with a `recommendation`:
    `docs/exec-plans/2026-04-20-shipment-reconcile-schema.md`.
 
 6. **Gate decision**:
-   * If all items are `matched` and no orphans exist → `recommendation: PROCEED`
+   * If all items are `matched` or `pre-archived` and no orphans exist → `recommendation: PROCEED`
    * If any `missing`, `status-mismatch`, or `orphan` items exist →
      `recommendation: HALT — operator reconcile required`
    * On `HALT`: emit the report path, release the lock, and halt with
