@@ -245,7 +245,9 @@ fn extract_cpp_inline_methods(
             "template_declaration" => {
                 // `template<typename T> T method(…) { … }` inside a class body.
                 for j in 0..child.child_count() {
-                    let Some(inner) = child.child(j) else { continue };
+                    let Some(inner) = child.child(j) else {
+                        continue;
+                    };
                     if inner.kind() == "function_definition" {
                         extract_and_qualify_method(inner, source, class_name, symbols, edges);
                     }

@@ -80,9 +80,7 @@ fn req(id: i64, method: &str, params: Option<Value>) -> IpcRequest {
 
 /// Extract the `engram_code` from an IPC error's `data` field.
 fn engram_code(error_data: &Option<Value>) -> Option<i64> {
-    error_data
-        .as_ref()
-        .and_then(|d| d["engram_code"].as_i64())
+    error_data.as_ref().and_then(|d| d["engram_code"].as_i64())
 }
 
 /// Poll `list_symbols` via IPC until the expected symbol appears or timeout.
@@ -92,10 +90,7 @@ fn engram_code(error_data: &Option<Value>) -> Option<i64> {
 /// - Empty `symbols` array (indexing not yet complete)
 ///
 /// Returns the full `symbols` array from the first successful non-empty response.
-async fn poll_for_symbol(
-    endpoint: &str,
-    expected_name: &str,
-) -> Vec<Value> {
+async fn poll_for_symbol(endpoint: &str, expected_name: &str) -> Vec<Value> {
     let deadline = std::time::Instant::now() + POLL_TIMEOUT;
     let mut delay = POLL_START;
     let mut attempt: u32 = 0;
@@ -109,8 +104,8 @@ async fn poll_for_symbol(
             &req(attempt as i64, "list_symbols", Some(json!({}))),
             IPC_TIMEOUT,
         )
-            .await
-            .unwrap_or_else(|e| panic!("list_symbols IPC failed on attempt {attempt}: {e}"));
+        .await
+        .unwrap_or_else(|e| panic!("list_symbols IPC failed on attempt {attempt}: {e}"));
 
         // Retry on IndexInProgress
         if let Some(ref error) = response.error {
@@ -195,10 +190,7 @@ func repeat_str(s: String, count: Int) -> String {
 
     let symbols = poll_for_symbol(&endpoint, "greet").await;
 
-    let names: Vec<&str> = symbols
-        .iter()
-        .filter_map(|s| s["name"].as_str())
-        .collect();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
 
     assert!(
         names.iter().any(|n| n.contains("greet")),
@@ -266,10 +258,7 @@ int multiply(int a, int b) {
 
     let symbols = poll_for_symbol(&endpoint, "add").await;
 
-    let names: Vec<&str> = symbols
-        .iter()
-        .filter_map(|s| s["name"].as_str())
-        .collect();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
 
     assert!(
         names.iter().any(|n| n.contains("add")),
@@ -346,10 +335,7 @@ int square(int x) {
     // Both free functions and inline methods should be indexed.
     let symbols = poll_for_symbol(&endpoint, "add").await;
 
-    let names: Vec<&str> = symbols
-        .iter()
-        .filter_map(|s| s["name"].as_str())
-        .collect();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
 
     // The inline method is expected as "Calculator::add"; fall back to plain "add".
     assert!(

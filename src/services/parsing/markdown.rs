@@ -18,9 +18,7 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as CmarkParser, Tag, TagEnd};
 
-use super::{
-    ExtractedClass, ExtractedEdge, ExtractedFunction, ExtractedSymbol, ParseResult,
-};
+use super::{ExtractedClass, ExtractedEdge, ExtractedFunction, ExtractedSymbol, ParseResult};
 
 /// Parse a Markdown document and extract headings, code blocks, and links.
 ///
@@ -31,6 +29,7 @@ use super::{
 /// # Errors
 ///
 /// Never errors; always returns `Ok(ParseResult)`.
+#[allow(clippy::unnecessary_wraps)]
 pub(super) fn parse_markdown_source(
     source: &str,
 ) -> Result<ParseResult, crate::errors::EngramError> {
@@ -126,6 +125,7 @@ pub(super) fn parse_markdown_source(
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Convert a byte offset within `source` to a 1-based line number.
+#[allow(clippy::naive_bytecount)]
 fn byte_offset_to_line(source: &str, byte_offset: usize) -> u32 {
     let capped = byte_offset.min(source.len());
     let newlines = source.as_bytes()[..capped]

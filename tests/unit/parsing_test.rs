@@ -94,10 +94,7 @@ fn test_cpp_inline_tree_debug() {
         "class Ops { Ops operator+(Ops o) { return o; } };",
         "class with operator",
     );
-    dump_cpp(
-        "class W { W(int i) {} ~W() {} };",
-        "class with ctor/dtor",
-    );
+    dump_cpp("class W { W(int i) {} ~W() {} };", "class with ctor/dtor");
 }
 
 #[test]
@@ -685,7 +682,6 @@ void print_point(struct Point *p) {
 
 #[test]
 fn test_cpp_parsing() {
-
     let source = r#"
 #include <string>
 
@@ -849,7 +845,10 @@ class Calculator {
         ExtractedSymbol::Function(f) if f.name.contains("add") => Some(f),
         _ => None,
     });
-    assert!(func.is_some(), "expected 'add' inline method to be extracted");
+    assert!(
+        func.is_some(),
+        "expected 'add' inline method to be extracted"
+    );
     let name = &func.unwrap().name;
     assert_eq!(
         name, "Calculator::add",
@@ -988,9 +987,7 @@ fn test_markdown_link_extracted_as_imports_edge() {
         })
         .collect();
     assert!(
-        import_paths
-            .iter()
-            .any(|p| p.contains("example.com/docs")),
+        import_paths.iter().any(|p| p.contains("example.com/docs")),
         "expected Imports edge for 'https://example.com/docs'; got: {import_paths:?}"
     );
 }

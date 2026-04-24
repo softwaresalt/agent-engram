@@ -60,9 +60,7 @@ fn req(id: i64, method: &str, params: Option<Value>) -> IpcRequest {
 }
 
 fn engram_code(error_data: &Option<Value>) -> Option<i64> {
-    error_data
-        .as_ref()
-        .and_then(|d| d["engram_code"].as_i64())
+    error_data.as_ref().and_then(|d| d["engram_code"].as_i64())
 }
 
 /// Poll `list_symbols` via IPC until at least one symbol appears (or timeout).
@@ -177,10 +175,7 @@ async fn t030_003_markdown_heading_and_code_block_indexed_via_ipc() {
 
     let symbols = poll_for_symbols(&endpoint, "Getting Started").await;
 
-    let names: Vec<&str> = symbols
-        .iter()
-        .filter_map(|s| s["name"].as_str())
-        .collect();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
 
     assert!(
         names.iter().any(|n| n.contains("Getting Started")),
