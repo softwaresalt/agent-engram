@@ -1114,6 +1114,7 @@ fn language_from_path(path: &Path) -> String {
             "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => "cpp",
             "swift" => "swift",
             "kt" | "kts" => "kotlin",
+            "md" => "markdown",
             _ => ext,
         })
         .unwrap_or("unknown")

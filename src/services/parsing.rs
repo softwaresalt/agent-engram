@@ -11,6 +11,7 @@ mod csharp;
 mod go_lang;
 mod javascript;
 mod kotlin;
+mod markdown;
 mod python;
 mod rust;
 mod swift;
@@ -45,6 +46,8 @@ pub enum Language {
     Swift,
     /// Kotlin (`.kt`, `.kts`)
     Kotlin,
+    /// Markdown (`.md`)
+    Markdown,
 }
 
 impl Language {
@@ -63,6 +66,7 @@ impl Language {
             Language::Cpp => "cpp",
             Language::Swift => "swift",
             Language::Kotlin => "kotlin",
+            Language::Markdown => "markdown",
         }
     }
 }
@@ -83,6 +87,7 @@ impl TryFrom<&str> for Language {
             "cpp" => Ok(Language::Cpp),
             "swift" => Ok(Language::Swift),
             "kotlin" => Ok(Language::Kotlin),
+            "markdown" => Ok(Language::Markdown),
             _ => Err(EngramError::CodeGraph(CodeGraphError::ParseFailed {
                 reason: format!("unsupported language: {value}"),
             })),
@@ -224,6 +229,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult, Eng
         Language::Cpp => cpp::parse_cpp_source(source),
         Language::Swift => swift::parse_swift_source(source),
         Language::Kotlin => kotlin::parse_kotlin_source(source),
+        Language::Markdown => markdown::parse_markdown_source(source),
     }
 }
 

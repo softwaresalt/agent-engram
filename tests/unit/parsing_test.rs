@@ -880,3 +880,159 @@ public:
         "expected constructor/destructor to be extracted, got {func_count} functions"
     );
 }
+
+// ── Markdown parser (T030.003-C) ──────────────────────────────────────────────
+
+/// ATX heading `# Title` must be extracted as an `ExtractedClass` whose name
+/// matches the heading text.
+#[test]
+fn test_markdown_heading_extracted_as_class() {
+    let source = "# Introduction\n\nSome text here.\n";
+    let result = parse_source(source, Language::Markdown).unwrap();
+    let classes: Vec<&str> = result
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            if let ExtractedSymbol::Class(c) = s {
+                Some(c.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        classes.iter().any(|n| *n == "Introduction"),
+        "expected class 'Introduction' from H1; got: {classes:?}"
+    );
+}
+
+/// Multiple ATX headings at different levels must each produce an
+/// `ExtractedClass` symbol.
+#[test]
+fn test_markdown_multiple_heading_levels() {
+    let source = "# Top\n\n## Second\n\n### Third\n";
+    let result = parse_source(source, Language::Markdown).unwrap();
+    let class_names: Vec<&str> = result
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            if let ExtractedSymbol::Class(c) = s {
+                Some(c.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        class_names.len(),
+        3,
+        "expected 3 heading-classes; got: {class_names:?}"
+    );
+    assert!(class_names.contains(&"Top"), "missing 'Top'");
+    assert!(class_names.contains(&"Second"), "missing 'Second'");
+    assert!(class_names.contains(&"Third"), "missing 'Third'");
+}
+
+/// A fenced code block must be extracted as an `ExtractedFunction`.
+#[test]
+fn test_markdown_fenced_code_extracted_as_function() {
+    let source = "# Demo\n\n```\nlet x = 1;\n```\n";
+    let result = parse_source(source, Language::Markdown).unwrap();
+    let func_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Function(_)))
+        .count();
+    assert!(
+        func_count >= 1,
+        "expected ≥1 Function from fenced code block; got {func_count}"
+    );
+}
+
+/// A fenced code block with a language hint must produce an `ExtractedFunction`
+/// whose `signature` contains the language identifier.
+#[test]
+fn test_markdown_fenced_code_language_in_signature() {
+    let source = "# Example\n\n```rust\nfn hello() {}\n```\n";
+    let result = parse_source(source, Language::Markdown).unwrap();
+    let func = result.symbols.iter().find_map(|s| {
+        if let ExtractedSymbol::Function(f) = s {
+            Some(f)
+        } else {
+            None
+        }
+    });
+    let func = func.expect("expected an ExtractedFunction for the fenced code block");
+    assert!(
+        func.signature.contains("rust"),
+        "expected 'rust' in signature; got: {:?}",
+        func.signature
+    );
+}
+
+/// An inline link `[text](url)` must produce an `ExtractedEdge::Imports` whose
+/// `import_path` is the link URL.
+#[test]
+fn test_markdown_link_extracted_as_imports_edge() {
+    let source = "See [the docs](https://example.com/docs) for details.\n";
+    let result = parse_source(source, Language::Markdown).unwrap();
+    let import_paths: Vec<&str> = result
+        .edges
+        .iter()
+        .filter_map(|e| {
+            if let ExtractedEdge::Imports { import_path } = e {
+                Some(import_path.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        import_paths
+            .iter()
+            .any(|p| p.contains("example.com/docs")),
+        "expected Imports edge for 'https://example.com/docs'; got: {import_paths:?}"
+    );
+}
+
+/// A heading must report the correct 1-based start line number.
+#[test]
+fn test_markdown_heading_line_numbers() {
+    let source = "# First\n\nSome text.\n\n## Second\n";
+    let result = parse_source(source, Language::Markdown).unwrap();
+    let line_starts: Vec<u32> = result
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            if let ExtractedSymbol::Class(c) = s {
+                Some(c.line_start)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        line_starts.contains(&1),
+        "expected line_start 1 for '# First'; got: {line_starts:?}"
+    );
+    assert!(
+        line_starts.contains(&5),
+        "expected line_start 5 for '## Second'; got: {line_starts:?}"
+    );
+}
+
+/// An empty Markdown document must produce no symbols and no edges.
+#[test]
+fn test_markdown_empty_no_symbols() {
+    let result = parse_source("", Language::Markdown).unwrap();
+    assert!(
+        result.symbols.is_empty(),
+        "expected no symbols for empty doc; got: {:?}",
+        result.symbols
+    );
+    assert!(
+        result.edges.is_empty(),
+        "expected no edges for empty doc; got: {:?}",
+        result.edges
+    );
+}
