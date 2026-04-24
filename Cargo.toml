@@ -529,6 +529,10 @@ path = "tests/integration/stale_pid_recovery_test.rs"
 name = "integration_workspace_id_drift"
 path = "tests/integration/workspace_id_drift_test.rs"
 
+[[test]]
+name = "integration_lang_ipc_indexing"
+path = "tests/integration/lang_ipc_indexing_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
