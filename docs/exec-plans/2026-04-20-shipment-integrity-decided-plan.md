@@ -39,6 +39,9 @@ fragile.
 | U-10 | `docs/exec-plans/2026-04-20-shipment-integrity-verification.md` | 003-S replay proof — 27 items would have been halted; 23 valid |
 | U-11 | `docs/exec-plans/2026-04-20-shipment-reconcile-schema.md` | Report schema (YAML/JSON): `matched`, `missing`, `orphan`, `status-mismatch`, `pre-archived` |
 | U-12 | (merged into U-2) | Single-writer lock on `{shipment_id}.md` during Ship Step 6; lock path fixed to `.md` (not `.S.md`) |
+| U-13 *(010-S)* | `.github/skills/shipment-reconcile/SKILL.md` | `pre-archived` classification: items found in archive but not queue are valid; distinct from `matched` so they remain visible in reports |
+| U-14 *(010-S)* | `docs/exec-plans/2026-04-20-shipment-reconcile-schema.md` | Added `summary.pre_archived` counter and `pre-archived` to classification table and examples |
+| U-15 *(010-S)* | `docs/upstream/backlogit-ship-shipment-validation-2026-04-20.md` | Status updated to `submitted`; upstream issue filed at softwaresalt/backlogit#63 |
 
 ## Key Constraints
 
@@ -46,8 +49,11 @@ fragile.
   `backlogit_*` tools, then re-invokes Ship Step 6.
 * **`expected_status` parameter** — single `pre` mode handles both intake (`queued`) and
   pre-ship (`done`); no hidden `--intake` variant.
-* **Pre-mode checks queue only** — archive fallback was removed during Copilot review;
-  fallback would allow pre-archived items to silently pass as `matched`.
+* **Pre-mode `pre-archived` classification** — archive fallback is permitted but ONLY to
+  produce a distinct `pre-archived` classification (never `matched`). Items found in archive
+  but not queue are surfaced explicitly in the report. This resolves the original concern
+  about silent passage: `pre-archived` items are visible and identifiable, and PROCEED is
+  still safe because they were already shipped. Implemented in shipment 010-S.
 * **`git restore` is conditional** — only run when `git status` shows archive deletions
   (the `backlogit_ship_shipment` deletion quirk).
 
@@ -59,10 +65,6 @@ fragile.
 
 ## Known Follow-Up
 
-* **Pre-mode `pre-archived` spec gap**: items already in archive before `backlogit_ship_shipment`
-  is called are classified as `missing` (no queue file). Should be `pre-archived` (valid). This
-  edge case surfaced during 004-S itself. Stash entry warranted.
-* **Dogfood validation**: verify reconcile gates function correctly during 005-S and 006-S
-  (stash `CC8DD4AF`; 3-shipment validation window).
-* **Upstream escalation**: forward `docs/upstream/backlogit-ship-shipment-validation-2026-04-20.md`
-  to backlogit maintainers (stash `73DD2A8D`).
+* ~~**Pre-mode `pre-archived` spec gap**~~ — resolved in shipment 010-S (U-13/U-14 above).
+* ~~**Dogfood validation**~~ — reconcile gates verified during shipments 010-S (stash `CC8DD4AF`).
+* ~~**Upstream escalation**~~ — filed as [softwaresalt/backlogit#63](https://github.com/softwaresalt/backlogit/issues/63) in shipment 010-S (stash `73DD2A8D`).

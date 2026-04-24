@@ -14,6 +14,7 @@ the archive + restore steps complete.
 * **Ship Step 6** (mandatory): pre-mode immediately before `backlogit_ship_shipment`;
   post-mode immediately after the `git restore .backlogit/archive/` step.
 * **Ship Step 0.5** (sanity check): pre-mode at intake with `expected_status: queued`
+  (or `active` if the shipment was already claimed in a prior session)
   to catch Stage-side over-inclusion before any build work begins.
 * **Ad-hoc audit**: any time an operator suspects manifest drift.
 
@@ -23,7 +24,7 @@ the archive + restore steps complete.
 |---|---|---|---|
 | `mode` | yes | `pre` \| `post` | Controls which check phase runs |
 | `shipment_id` | yes | e.g. `004-S` | The shipment to reconcile |
-| `expected_status` | pre-mode only | `queued` \| `done` | `queued` for intake checks; `done` for pre-ship checks |
+| `expected_status` | pre-mode only | `queued` \| `active` \| `done` | `queued` for fresh intake; `active` when shipment already claimed in a prior session; `done` for pre-ship check |
 | `merge_commit_sha` | post-mode only | git SHA | The merge commit that closed the PR |
 
 ## Output
@@ -34,16 +35,20 @@ A structured **reconciliation report** (see
 
 Every item in the manifest is classified as one of:
 
-| Classification | Meaning |
-|---|---|
-| `matched` | Queue/archive file present AND status matches `expected_status` |
-| `missing` | No queue or archive file found for this manifest item |
-| `status-mismatch` | File present but declared status does not match `expected_status` |
-| `orphan` | Queue file declares this `shipment_id` in its frontmatter but is NOT in the manifest |
+| Classification | Pre-Mode Meaning | Post-Mode Meaning |
+|---|---|---|
+| `matched` | Queue file present AND declared status matches `expected_status` | Archive file present for this item |
+| `pre-archived` | No queue file found but archive file exists — item already archived before this shipment ran; treated as valid | N/A (all items are expected in archive; use `matched` / `missing`) |
+| `missing` | No queue or archive file found for this manifest item | Archive file not found for this manifest item |
+| `status-mismatch` | Queue file present but declared status does not match `expected_status` | N/A (post-mode does not check status fields) |
+| `orphan` | Queue file declares this `shipment_id` in its frontmatter but is NOT in the manifest | N/A (post-mode does not scan queue files) |
+
+> Classification semantics are mode-dependent. Pre-mode checks the queue
+> for status correctness; post-mode checks the archive for file presence only.
 
 The report ends with a `recommendation`:
 
-* `PROCEED` — all items matched; no action needed
+* `PROCEED` — all items are `matched` or `pre-archived`; no action needed
 * `HALT — operator reconcile required` — one or more missing, status-mismatch, or orphan items
 
 ## Behavioral Constraints
@@ -74,8 +79,11 @@ The report ends with a `recommendation`:
 
 3. **Check each manifest item**:
    * Attempt to locate the file at `.backlogit/queue/{id}.*`
-   * Read its frontmatter and compare `status` to `expected_status`
-   * Classify as `matched`, `missing`, or `status-mismatch`
+   * If found, read its frontmatter and compare `status` to `expected_status`
+     — classify as `matched` or `status-mismatch`
+   * If NOT found in queue, check `.backlogit/archive/{id}.*`
+     — if archive file exists, classify as `pre-archived` (valid; item already shipped)
+     — if no file in either location, classify as `missing`
 
 4. **Orphan scan**:
    Scan `.backlogit/queue/` for any files whose YAML frontmatter declares
@@ -86,7 +94,7 @@ The report ends with a `recommendation`:
    `docs/exec-plans/2026-04-20-shipment-reconcile-schema.md`.
 
 6. **Gate decision**:
-   * If all items are `matched` and no orphans exist → `recommendation: PROCEED`
+   * If all items are `matched` or `pre-archived` and no orphans exist → `recommendation: PROCEED`
    * If any `missing`, `status-mismatch`, or `orphan` items exist →
      `recommendation: HALT — operator reconcile required`
    * On `HALT`: emit the report path, release the lock, and halt with
@@ -143,7 +151,7 @@ may be running Ship for this shipment. Resolve manually and re-invoke Ship Step 
 ## Quality Criteria
 
 * `mode: pre` runs before every `backlogit_ship_shipment` call in Ship Step 6
-* `mode: pre` with `expected_status: queued` runs at Ship Step 0.5 intake
+* `mode: pre` with `expected_status: queued` (or `active` for already-claimed shipments) runs at Ship Step 0.5 intake
 * `mode: post` runs after every archive + restore sequence in Ship Step 6
 * All four item classifications are represented in the schema
 * Lock is acquired before pre-mode and released after post-mode (or on any halt)

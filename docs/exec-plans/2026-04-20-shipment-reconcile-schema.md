@@ -22,11 +22,12 @@ produced by the `shipment-reconcile` skill. Reports are stored at:
 shipment_id: "004-S"
 mode: pre                          # pre | post
 timestamp: "2026-04-20T14:32:00Z" # ISO 8601
-expected_status: done              # pre-mode only; omit for post-mode
+expected_status: done              # pre-mode only; omit for post-mode; queued | active | done
 merge_commit_sha: ""               # post-mode only; git SHA of the merge commit
 summary:
   total: 13
   matched: 13
+  pre_archived: 0
   missing: 0
   status_mismatch: 0
   orphan: 0
@@ -41,10 +42,11 @@ recommendation: PROCEED            # PROCEED | HALT — operator reconcile requi
 | `shipment_id` | string | always | The shipment being reconciled (e.g. `004-S`) |
 | `mode` | enum | always | `pre` or `post` |
 | `timestamp` | ISO 8601 | always | When the reconciliation ran |
-| `expected_status` | enum | pre-mode only | `queued` (intake check) or `done` (pre-ship check) |
+| `expected_status` | enum | pre-mode only | `queued` (fresh intake), `active` (intake when shipment already claimed), or `done` (pre-ship check) |
 | `merge_commit_sha` | git SHA | post-mode only | SHA of the merge commit that closed the PR |
 | `summary.total` | int | always | Total items in the manifest |
 | `summary.matched` | int | always | Items that passed both presence and status checks |
+| `summary.pre_archived` | int | always | Items with no queue file but an existing archive file; treated as valid |
 | `summary.missing` | int | always | Items with no queue or archive file |
 | `summary.status_mismatch` | int | always | Items present but with wrong status |
 | `summary.orphan` | int | always | Queue items declaring this shipment_id but absent from manifest |
@@ -61,6 +63,7 @@ recommendation: PROCEED            # PROCEED | HALT — operator reconcile requi
 | 002.001-T    | matched        | .backlogit/queue/002.001-T.md    | —            | done  | done |
 | 002.002-T    | missing        | —                                 | —            | —     | done |
 | 002.003-T    | status-mismatch| .backlogit/queue/002.003-T.md    | —            | queued| done |
+| 002.004-T    | pre-archived   | —                                 | .backlogit/archive/002.004-T.md | done  | done |
 | 002.010-T    | orphan         | .backlogit/queue/002.010-T.md    | —            | done  | (not in manifest) |
 ```
 
@@ -69,7 +72,7 @@ recommendation: PROCEED            # PROCEED | HALT — operator reconcile requi
 | Column | Description |
 |---|---|
 | `ID` | Backlog item ID |
-| `Classification` | `matched`, `missing`, `status-mismatch`, or `orphan` |
+| `Classification` | `matched`, `pre-archived`, `missing`, `status-mismatch`, or `orphan` |
 | `Queue Path` | Path to the queue file, or `—` if not found |
 | `Archive Path` | Path to the archive file (post-mode), or `—` if not yet archived |
 | `Declared Status` | The `status:` field read from the item's frontmatter (or `—` if file missing) |
@@ -140,6 +143,7 @@ git restore .backlogit/archive/
 | Classification | Detection Condition |
 |---|---|
 | `matched` | File exists at `.backlogit/queue/{id}.*` AND `status` in frontmatter equals `expected_status` |
+| `pre-archived` | No file at `.backlogit/queue/{id}.*` but file exists at `.backlogit/archive/{id}.*`; treated as valid |
 | `missing` | No file found at `.backlogit/queue/{id}.*` or `.backlogit/archive/{id}.*` |
 | `status-mismatch` | File exists at `.backlogit/queue/{id}.*` but `status` does not equal `expected_status` |
 | `orphan` | File exists at `.backlogit/queue/{any}.*` with `shipment_id: {this_shipment_id}` in frontmatter but ID is NOT in manifest `items` list |
