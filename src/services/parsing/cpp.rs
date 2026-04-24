@@ -1,12 +1,15 @@
 //! Tree-sitter C++ grammar parser.
 //!
-//! Extracts free functions and out-of-line member functions, class and struct
-//! declarations, and `#include` edges from C++ source files.  Inline methods
-//! defined inside a class body are not extracted at this level.
+//! Extracts free functions, out-of-line member functions, inline member
+//! functions (methods, constructors, destructors, operator overloads,
+//! inline template methods), class and struct declarations, and `#include`
+//! edges from C++ source files.
 //!
 //! # Node kinds used (tree-sitter-cpp 0.23.4)
 //!
-//! - `function_definition` (free + out-of-line member) — name via `declarator` chain
+//! - `function_definition` (free, out-of-line, inline) — name via `declarator` chain
+//!   → [`super::ExtractedSymbol::Function`]
+//! - `template_declaration` wrapping `function_definition` inside a class body
 //!   → [`super::ExtractedSymbol::Function`]
 //! - `class_specifier` at top level OR `declaration` whose `type` field is a
 //!   `class_specifier` or `struct_specifier` with a body
@@ -87,10 +90,20 @@ fn extract_cpp_declarations(
                             if type_node.child_by_field_name("body").is_some() =>
                         {
                             if let Some(cls) = extract_cpp_class(type_node, source) {
+                                let class_name = cls.name.clone();
                                 edges.push(ExtractedEdge::Defines {
                                     symbol_name: cls.name.clone(),
                                 });
                                 symbols.push(ExtractedSymbol::Class(cls));
+                                if let Some(body) = type_node.child_by_field_name("body") {
+                                    extract_cpp_inline_methods(
+                                        body,
+                                        source,
+                                        &class_name,
+                                        symbols,
+                                        edges,
+                                    );
+                                }
                             }
                         }
                         _ => {}
@@ -103,10 +116,14 @@ fn extract_cpp_declarations(
                 if child.child_by_field_name("body").is_some() =>
             {
                 if let Some(cls) = extract_cpp_class(child, source) {
+                    let class_name = cls.name.clone();
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: cls.name.clone(),
                     });
                     symbols.push(ExtractedSymbol::Class(cls));
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_cpp_inline_methods(body, source, &class_name, symbols, edges);
+                    }
                 }
             }
             "namespace_definition" => {
@@ -189,6 +206,7 @@ fn extract_cpp_class(node: Node<'_>, source: &str) -> Option<ExtractedClass> {
 fn cpp_name_from_declarator(node: Node<'_>, source: &str) -> Option<String> {
     match node.kind() {
         "identifier"
+        | "field_identifier"
         | "qualified_identifier"
         | "type_identifier"
         | "destructor_name"
@@ -203,5 +221,57 @@ fn cpp_name_from_declarator(node: Node<'_>, source: &str) -> Option<String> {
             cpp_name_from_declarator(inner, source)
         }
         _ => None,
+    }
+}
+
+/// Walk the `field_declaration_list` body node of a class or struct and extract
+/// every inline `function_definition` (including those wrapped in a
+/// `template_declaration`).  The extracted function name is qualified as
+/// `ClassName::method` unless the declarator already contains `::`.
+fn extract_cpp_inline_methods(
+    body: Node<'_>,
+    source: &str,
+    class_name: &str,
+    symbols: &mut Vec<ExtractedSymbol>,
+    edges: &mut Vec<ExtractedEdge>,
+) {
+    // Use index-based access to avoid cursor reuse issues.
+    for i in 0..body.child_count() {
+        let Some(child) = body.child(i) else { continue };
+        match child.kind() {
+            "function_definition" => {
+                extract_and_qualify_method(child, source, class_name, symbols, edges);
+            }
+            "template_declaration" => {
+                // `template<typename T> T method(…) { … }` inside a class body.
+                for j in 0..child.child_count() {
+                    let Some(inner) = child.child(j) else { continue };
+                    if inner.kind() == "function_definition" {
+                        extract_and_qualify_method(inner, source, class_name, symbols, edges);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract a `function_definition` node and prepend `ClassName::` to its name
+/// if the declarator does not already contain `::`.
+fn extract_and_qualify_method(
+    node: Node<'_>,
+    source: &str,
+    class_name: &str,
+    symbols: &mut Vec<ExtractedSymbol>,
+    edges: &mut Vec<ExtractedEdge>,
+) {
+    if let Some(mut func) = extract_cpp_function(node, source) {
+        if !func.name.contains("::") {
+            func.name = format!("{class_name}::{}", func.name);
+        }
+        edges.push(ExtractedEdge::Defines {
+            symbol_name: func.name.clone(),
+        });
+        symbols.push(ExtractedSymbol::Function(func));
     }
 }

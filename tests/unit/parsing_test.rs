@@ -9,6 +9,97 @@ use engram::services::parsing::{
     ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source,
 };
 
+/// Debug helper: dump the raw tree-sitter node kinds from a C++ class body.
+///
+/// Run with `cargo test test_cpp_inline_tree_debug -- --nocapture` to see output.
+#[test]
+fn test_cpp_inline_tree_debug() {
+    fn dump_cpp(source: &str, label: &str) {
+        use tree_sitter::Parser;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_cpp::LANGUAGE.into())
+            .expect("C++ grammar load");
+        let tree = parser.parse(source, None).expect("parse");
+        let root = tree.root_node();
+        eprintln!("=== {label} ===");
+        eprintln!("root kind: {}", root.kind());
+        for i in 0..root.child_count() {
+            let Some(c) = root.child(i) else { continue };
+            eprintln!("  [{}] kind={} named={}", i, c.kind(), c.is_named());
+            if c.kind().contains("class")
+                || c.kind().contains("struct")
+                || c.kind() == "declaration"
+            {
+                if let Some(body) = c.child_by_field_name("body") {
+                    eprintln!("    BODY field kind: {}", body.kind());
+                    for j in 0..body.child_count() {
+                        let Some(bc) = body.child(j) else { continue };
+                        eprintln!(
+                            "      BODY[{j}] kind={} text={:?}",
+                            bc.kind(),
+                            &source[bc.byte_range()]
+                        );
+                        // Descend one more level for complex nodes
+                        for k in 0..bc.child_count() {
+                            let Some(bcc) = bc.child(k) else { continue };
+                            eprintln!(
+                                "        [{k}] kind={} field={:?} text={:?}",
+                                bcc.kind(),
+                                bc.field_name_for_child(k as u32),
+                                &source[bcc.byte_range()]
+                            );
+                        }
+                    }
+                } else {
+                    eprintln!("    NO 'body' field on {}", c.kind());
+                    for j in 0..c.child_count() {
+                        let Some(cc) = c.child(j) else { continue };
+                        eprintln!("    CHILD[{j}] kind={}", cc.kind());
+                    }
+                }
+                if c.kind() == "declaration" {
+                    if let Some(ty) = c.child_by_field_name("type") {
+                        eprintln!("    type field kind: {}", ty.kind());
+                        if let Some(body2) = ty.child_by_field_name("body") {
+                            eprintln!("      type.body kind: {}", body2.kind());
+                            for j in 0..body2.child_count() {
+                                let Some(bc) = body2.child(j) else { continue };
+                                eprintln!(
+                                    "        type.BODY[{j}] kind={} text={:?}",
+                                    bc.kind(),
+                                    &source[bc.byte_range()]
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    dump_cpp(
+        "class Calculator { int add(int a, int b) { return a + b; } };",
+        "class with int method",
+    );
+    dump_cpp(
+        "struct Point { int sum() { return 1; } };",
+        "struct with int method",
+    );
+    dump_cpp(
+        r#"class Foo { std::string greet() { return "hi"; } };"#,
+        "class with std::string method",
+    );
+    dump_cpp(
+        "class Ops { Ops operator+(Ops o) { return o; } };",
+        "class with operator",
+    );
+    dump_cpp(
+        "class W { W(int i) {} ~W() {} };",
+        "class with ctor/dtor",
+    );
+}
+
 #[test]
 fn extracts_top_level_function() {
     let source = r#"
@@ -591,10 +682,10 @@ void print_point(struct Point *p) {
 }
 
 // ── D-1/D-2: C++ parser (027.010-T / 027.011-T) ─────────────────────────────
-// FAIL until D-1 implements real extraction in cpp.rs.
 
 #[test]
 fn test_cpp_parsing() {
+
     let source = r#"
 #include <string>
 
@@ -639,5 +730,153 @@ int free_function() {
             .iter()
             .any(|e| matches!(e, ExtractedEdge::Imports { .. })),
         "expected Imports edge for #include"
+    );
+}
+
+// ── E-1 to E-5: C++ inline member extraction (030.002-C) ─────────────────────
+
+/// Inline methods declared inside a class body must be extracted with a
+/// `ClassName::method` qualified name.
+#[test]
+fn test_cpp_inline_method_in_class() {
+    let source = r#"
+#include <string>
+
+class Greeter {
+public:
+    std::string name;
+    std::string greet() {
+        return "Hello, " + name;
+    }
+    int count() const {
+        return 42;
+    }
+};
+"#;
+    let result = parse_source(source, Language::Cpp).unwrap();
+    let func_names: Vec<&str> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Function(f) => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        func_names.iter().any(|n| n.contains("greet")),
+        "expected 'greet' inline method, got: {func_names:?}"
+    );
+    assert!(
+        func_names.iter().any(|n| n.contains("count")),
+        "expected 'count' inline method, got: {func_names:?}"
+    );
+    let qualified: Vec<&&str> = func_names.iter().filter(|n| n.contains("::")).collect();
+    assert!(
+        !qualified.is_empty(),
+        "at least one inline method must have a qualified name (ClassName::method), got: {func_names:?}"
+    );
+}
+
+/// Struct inline methods must also be extracted.
+#[test]
+fn test_cpp_inline_struct_method() {
+    let source = r#"
+struct Point {
+    int x;
+    int y;
+    int sum() {
+        return x + y;
+    }
+};
+"#;
+    let result = parse_source(source, Language::Cpp).unwrap();
+    let funcs: Vec<&str> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Function(f) => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        funcs.iter().any(|n| n.contains("sum")),
+        "expected 'sum' struct inline method, got: {funcs:?}"
+    );
+}
+
+/// Inline operator overloads must be extracted with their operator token name.
+#[test]
+fn test_cpp_inline_operator_overload() {
+    let source = r#"
+class MyInt {
+    int val;
+public:
+    MyInt operator+(const MyInt& other) {
+        return MyInt();
+    }
+    bool operator==(const MyInt& other) const {
+        return val == other.val;
+    }
+};
+"#;
+    let result = parse_source(source, Language::Cpp).unwrap();
+    let func_names: Vec<&str> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Function(f) => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        func_names.iter().any(|n| n.contains("operator")),
+        "expected operator overload to be extracted, got: {func_names:?}"
+    );
+}
+
+/// Inline methods must use the exact `ClassName::method` qualified name format.
+#[test]
+fn test_cpp_inline_method_qualified_name_format() {
+    let source = r#"
+class Calculator {
+    int add(int a, int b) {
+        return a + b;
+    }
+};
+"#;
+    let result = parse_source(source, Language::Cpp).unwrap();
+    let func = result.symbols.iter().find_map(|s| match s {
+        ExtractedSymbol::Function(f) if f.name.contains("add") => Some(f),
+        _ => None,
+    });
+    assert!(func.is_some(), "expected 'add' inline method to be extracted");
+    let name = &func.unwrap().name;
+    assert_eq!(
+        name, "Calculator::add",
+        "inline method must use fully qualified name ClassName::method"
+    );
+}
+
+/// Constructors and destructors defined inline in a class body must be extracted.
+#[test]
+fn test_cpp_inline_constructor_destructor() {
+    let source = r#"
+class Widget {
+    int id;
+public:
+    Widget(int i) : id(i) {}
+    ~Widget() {}
+};
+"#;
+    let result = parse_source(source, Language::Cpp).unwrap();
+    // Constructors/destructors appear as function_definition inside the class body.
+    let func_count = result
+        .symbols
+        .iter()
+        .filter(|s| matches!(s, ExtractedSymbol::Function(_)))
+        .count();
+    assert!(
+        func_count >= 1,
+        "expected constructor/destructor to be extracted, got {func_count} functions"
     );
 }
