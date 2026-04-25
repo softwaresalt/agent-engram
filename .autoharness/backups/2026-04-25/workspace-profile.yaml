@@ -19,7 +19,7 @@ languages:
     file_count: 87  # src/*.rs
   secondary:
     - name: Markdown
-      file_count: 718  # git-tracked .md files only (excludes untracked/generated)
+      file_count: 487
       purpose: documentation, agent instructions, skills, backlog artifacts
     - name: PowerShell
       file_count: 4
@@ -52,7 +52,7 @@ frameworks:
     purpose: embedded graph database, per-workspace namespace
   - name: tree-sitter
     version: "0.25"
-    purpose: code graph parsing (multi-language: Rust, Python, JS, TS, Go, C#, C, C++, Swift)
+    purpose: code graph parsing (multi-language: Rust, Python, JS, TS, Go, C#, C, C++, Swift, Kotlin, Markdown)
   - name: tree-sitter-rust
     version: "0.23"
     purpose: Rust language grammar for tree-sitter
@@ -156,10 +156,8 @@ test:
   total_test_files: 102
   dev_dependencies:
     - proptest: "1"
+    - tempfile: "3"
     - tokio-test: "0.4"
-    - rayon: ">=1.0, <1.11"  # dev-dependency pin for parallel test execution
-  notes:
-    - "tempfile 3 is a production dependency (used in daemon lockfile management), not dev-only"
 
 # =============================================================================
 # Lint
@@ -264,7 +262,6 @@ structure:
     root: "docs/"
     subdirectories:
       - adrs          # 17 Architecture Decision Records
-      - archive       # compacted and archived artifacts
       - closure       # closure reports
       - compound      # compound knowledge
       - decisions     # decision records
@@ -295,8 +292,6 @@ structure:
     - "release.toml"
     - "start.ps1"
     - "agent-engram.code-workspace"
-    - ".gitmodules"         # hve-core submodule
-    - ".mcp.json"           # MCP server configuration
 
 # =============================================================================
 # Runtime Surfaces

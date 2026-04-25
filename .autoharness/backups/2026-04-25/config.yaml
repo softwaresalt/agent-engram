@@ -29,12 +29,12 @@ backlog:
     feature: "F"
     chore: "C"
     task: "T"
-    spike: "SP"
+    spike: "S"
     deliberation: "D"
     bug: "B"
     epic: "E"
     subtask: "ST"
-    shipment: "S"
+    shipment: "SH"
 
 # Long-lived knowledge artifact directories
 docs:

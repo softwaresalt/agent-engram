@@ -4,7 +4,7 @@
 
 schema_version: "1.0.0"
 installed_at: "2025-07-23"
-tuned_at: "2026-04-24"
+tuned_at: "2026-04-25"
 installer_version: "autoharness-cli"
 preset: full
 primary_stack_pack: rust-mcp-daemon
@@ -232,13 +232,7 @@ verification:
   unresolved_count: 0
   note: "27 {{...}} in compound/deliberate SKILL.md are runtime document templates, not unresolved variables"
   last_tune_applied:
-    - "TUNE-001: fix-ci/SKILL.md regenerated from template"
-    - "TUNE-002: workflow-policies.md regenerated from template"
-    - "TUNE-003: constitution.instructions.md regenerated from template"
-    - "TUNE-004: git-merge.instructions.md regenerated from template"
-    - "TUNE-005: stage.agent.md regenerated from template"
-    - "TUNE-006: ship.agent.md regenerated from template"
-    - "TUNE-007: shipment-reconcile skill added to manifest"
-    - "TUNE-008: cp-review-fix.prompt.md tracked as preserved artifact"
-    - "TUNE-009: stack packs updated to reflect workspace composition"
-    - "TUNE-010: stale deprecated agent references removed from manifest"
+    - "TUNE-001: suffix_map spike/shipment values corrected (spike: SP, shipment: S)"
+    - "TUNE-002: shipment-reconcile SKILL.md regenerated (lock-path bug fix + Model Routing)"
+    - "TUNE-003: workspace-profile corrected (tempfile, tree-sitter langs, markdown count, docs/archive)"
+    - "TUNE-004: suffix_map correction propagated to .backlogit/config.yml"
