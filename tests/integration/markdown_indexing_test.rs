@@ -85,16 +85,15 @@ async fn poll_for_symbols(endpoint: &str, hint: &str) -> Vec<Value> {
 
         if let Some(ref error) = response.error {
             if engram_code(error.data.as_ref()) == Some(ERR_INDEX_IN_PROGRESS) {
-                assert!(std::time::Instant::now() < deadline,
+                assert!(
+                    std::time::Instant::now() < deadline,
                     "list_symbols still returning IndexInProgress after {POLL_TIMEOUT:?}; \
                      hint: {hint}"
                 );
                 delay = (delay * 2).min(POLL_CAP);
                 continue;
             }
-            panic!(
-                "list_symbols returned unexpected error on attempt {attempt}: {error:?}"
-            );
+            panic!("list_symbols returned unexpected error on attempt {attempt}: {error:?}");
         }
 
         let symbols = response
@@ -108,7 +107,8 @@ async fn poll_for_symbols(endpoint: &str, hint: &str) -> Vec<Value> {
             return symbols;
         }
 
-        assert!(std::time::Instant::now() < deadline,
+        assert!(
+            std::time::Instant::now() < deadline,
             "list_symbols returned no symbols after {POLL_TIMEOUT:?} ({attempt} attempts); \
              hint: {hint}"
         );

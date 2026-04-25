@@ -1,6 +1,7 @@
 $autoharness_home = (autoharness home)
 $global_agents_src = "$autoharness_home\.github\agents"
 $local_agents = ".github\local-agents"
+$local_copilot = ".\.copilot"
 
 # Inject global agents into .github/local-agents (non-destructive — skip if already present)
 # This is the directory the CLI scans for agents alongside .github/agents.
@@ -18,14 +19,15 @@ $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE) {
     $env:COPILOT_EXE
 } else {
+    (Get-Command "copilot" -ErrorAction SilentlyContinue).Source ??
     (Get-Command "copilot.exe" -ErrorAction SilentlyContinue).Source
 }
 
 if (-not $copilotExe) {
-    throw "Unable to locate copilot.exe. Set COPILOT_EXE or add copilot.exe to PATH."
+    throw "Unable to locate copilot or copilot.exe. Set COPILOT_EXE or add copilot to PATH."
 }
 
-& $copilotExe
+& $copilotExe @args
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
 # Uncomment to run Claude Code with workspace-local state directories.

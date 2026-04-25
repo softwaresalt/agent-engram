@@ -60,13 +60,11 @@ pub(super) fn parse_markdown_source(
             }
 
             // ── Heading end ────────────────────────────────────────────────
-            Event::End(TagEnd::Heading(_)) => {
-                if in_heading {
-                    in_heading = false;
-                    let name = heading_text.trim().to_owned();
-                    if !name.is_empty() {
-                        emit_heading(source, heading_start_byte, range.end, name, &mut symbols);
-                    }
+            Event::End(TagEnd::Heading(_)) if in_heading => {
+                in_heading = false;
+                let name = heading_text.trim().to_owned();
+                if !name.is_empty() {
+                    emit_heading(source, heading_start_byte, range.end, name, &mut symbols);
                 }
             }
 
