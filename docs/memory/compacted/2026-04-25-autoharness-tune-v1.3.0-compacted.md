@@ -37,7 +37,7 @@ Full harness tune pass aligning workspace to autoharness v1.3.0 templates.
 ### Key files changed
 
 | Area | Change |
-|---|---|
+| --- | --- |
 | `.autoharness/backlog-registry.yaml` | +5 ops: list/get/resolve_checkpoint, poll/ack_hook_events |
 | `.github/agents/stage.agent.md` `.github/agents/ship.agent.md` | Surgically patched with 3 new v1.3.0 sections |
 | 9 skills regenerated | deliberate, spike, shipment-reconcile, harvest, review, plan-review, compact-context, harness-architect, build-feature |

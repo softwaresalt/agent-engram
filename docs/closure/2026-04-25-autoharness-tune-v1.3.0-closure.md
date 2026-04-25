@@ -9,8 +9,6 @@ status: READY
 owner: softwaresalt
 ---
 
-# Closure: autoharness v1.3.0 tune + CI lint fix
-
 ## Summary
 
 Re-tuned the installed agent harness to align with autoharness v1.3.0 template
@@ -27,7 +25,7 @@ blocked CI (Rust 1.95 with `--all-targets`).
 ## Invariants to Preserve
 
 | Invariant | Status |
-|---|---|
+| --- | --- |
 | Markdown parsing behaviour unchanged | ✅ lint fix only, no logic change |
 | All test suites pass | ✅ `cargo test` green |
 | MCP tool contract unchanged | ✅ no protocol changes |
@@ -43,7 +41,7 @@ production environment to gate. All items below apply to the development
 harness only.
 
 | Check | Result |
-|---|---|
+| --- | --- |
 | No schema migrations | ✅ n/a |
 | No feature flags to set | ✅ n/a |
 | No environment variable changes required | ✅ `ENGRAM_DATA_DIR` is set in `start.ps1` |
@@ -73,7 +71,7 @@ in the next binary build.
 ## Risky Action Record
 
 | Action | Risk | Approval | Result |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Regenerate 9 skills from v1.3.0 templates | moderate | Operator (tune-harness session) | applied — all 11 customized files intentionally preserved |
 | Fix `collapsible_match` in production parser | moderate | Implicit in CI gate | applied — lint fix only, no behavioural change verified by test suite |
 | Merge with `--admin` to bypass review-required policy | moderate | Operator explicit "Merge approved" | applied |
@@ -142,7 +140,7 @@ of all regenerated files for reference during any manual reversal.
 ## Follow-Up Items
 
 | # | Item | Priority |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Disable `allow_rebase_merge` on the repository (GitHub Settings → General → Pull Requests) to fully satisfy P-009 | medium |
 | 2 | Fix `.mcp.json` workspace paths: `D:\GitHub\` → `D:\Source\GitHub\` | low |
 | 3 | Remove or externalize Tavily API key from `.mcp.json` | medium |
