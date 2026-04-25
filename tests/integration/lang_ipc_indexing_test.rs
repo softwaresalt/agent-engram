@@ -79,8 +79,8 @@ fn req(id: i64, method: &str, params: Option<Value>) -> IpcRequest {
 }
 
 /// Extract the `engram_code` from an IPC error's `data` field.
-fn engram_code(error_data: &Option<Value>) -> Option<i64> {
-    error_data.as_ref().and_then(|d| d["engram_code"].as_i64())
+fn engram_code(error_data: Option<&Value>) -> Option<i64> {
+    error_data.and_then(|d| d["engram_code"].as_i64())
 }
 
 /// Poll `list_symbols` via IPC until the expected symbol appears or timeout.
@@ -101,7 +101,7 @@ async fn poll_for_symbol(endpoint: &str, expected_name: &str) -> Vec<Value> {
 
         let response = send_request(
             endpoint,
-            &req(attempt as i64, "list_symbols", Some(json!({}))),
+            &req(i64::from(attempt), "list_symbols", Some(json!({}))),
             IPC_TIMEOUT,
         )
         .await
@@ -109,20 +109,17 @@ async fn poll_for_symbol(endpoint: &str, expected_name: &str) -> Vec<Value> {
 
         // Retry on IndexInProgress
         if let Some(ref error) = response.error {
-            if engram_code(&error.data) == Some(ERR_INDEX_IN_PROGRESS) {
-                if std::time::Instant::now() >= deadline {
-                    panic!(
-                        "list_symbols still returning IndexInProgress after {POLL_TIMEOUT:?}; \
-                         expected symbol: {expected_name}"
-                    );
-                }
+            if engram_code(error.data.as_ref()) == Some(ERR_INDEX_IN_PROGRESS) {
+                assert!(std::time::Instant::now() < deadline,
+                    "list_symbols still returning IndexInProgress after {POLL_TIMEOUT:?}; \
+                     expected symbol: {expected_name}"
+                );
                 delay = (delay * 2).min(POLL_CAP);
                 continue;
             }
             // Any other error is a hard failure.
             panic!(
-                "list_symbols returned unexpected error on attempt {attempt}: {:?}",
-                error
+                "list_symbols returned unexpected error on attempt {attempt}: {error:?}"
             );
         }
 
@@ -138,12 +135,10 @@ async fn poll_for_symbol(endpoint: &str, expected_name: &str) -> Vec<Value> {
         }
 
         // Empty result — indexing may still be running.
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "list_symbols returned no symbols after {POLL_TIMEOUT:?} ({attempt} attempts); \
-                 expected symbol: {expected_name}"
-            );
-        }
+        assert!(std::time::Instant::now() < deadline,
+            "list_symbols returned no symbols after {POLL_TIMEOUT:?} ({attempt} attempts); \
+             expected symbol: {expected_name}"
+        );
         delay = (delay * 2).min(POLL_CAP);
     }
 }
@@ -235,7 +230,7 @@ async fn t030_001_c_function_indexed_via_ipc() {
     write_source(
         ws,
         "src/math.c",
-        r#"
+        r"
 #include <stddef.h>
 
 /* Add two integers and return their sum. */
@@ -247,7 +242,7 @@ int add(int a, int b) {
 int multiply(int a, int b) {
     return a * b;
 }
-"#,
+",
     );
 
     let harness = DaemonHarness::spawn_for_workspace(ws, Duration::from_secs(15))
@@ -304,7 +299,7 @@ async fn t030_001_cpp_inline_method_indexed_via_ipc() {
     write_source(
         ws,
         "src/calc.cpp",
-        r#"
+        r"
 /// A simple calculator class.
 class Calculator {
 public:
@@ -323,7 +318,7 @@ public:
 int square(int x) {
     return x * x;
 }
-"#,
+",
     );
 
     let harness = DaemonHarness::spawn_for_workspace(ws, Duration::from_secs(15))
