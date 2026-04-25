@@ -51,11 +51,6 @@ Use these operations for all backlog interactions. The operation names are abstr
 | Log telemetry | `backlogit_log_telemetry` | Write agent telemetry events |
 | Save memory | `backlogit_save_memory` | Persist agent continuity state |
 | Create checkpoint | `backlogit_create_checkpoint` | Save session state checkpoint |
-| List checkpoints | `backlogit_list_checkpoints` | List active checkpoints for recovery |
-| Get checkpoint | `backlogit_get_checkpoint` | Retrieve a specific checkpoint |
-| Resolve checkpoint | `backlogit_resolve_checkpoint` | Mark a stale checkpoint as resolved |
-| Poll hook events | `backlogit_poll_hook_events` | Poll unacknowledged hook signals |
-| Ack hook events | `backlogit_ack_hook_events` | Acknowledge processed hook events |
 | Get queue | `backlogit_get_queue` | Prioritized ready-work selection |
 | Add dependency | `backlogit_add_dependency` | Wire task execution ordering |
 | Track commit | `backlogit_track_commit` | Associate commits with task IDs |

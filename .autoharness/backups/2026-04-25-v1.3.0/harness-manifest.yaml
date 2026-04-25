@@ -4,7 +4,7 @@
 
 schema_version: "1.0.0"
 installed_at: "2025-07-23"
-tuned_at: "2026-04-25T12:34:00-07:00"
+tuned_at: "2026-04-25"
 installer_version: "autoharness-cli"
 preset: full
 primary_stack_pack: rust-mcp-daemon
@@ -140,10 +140,6 @@ artifacts:
       source: templates/instructions/continuous-learning.instructions.md.tmpl
     - path: .github/instructions/adversarial-review.instructions.md
       source: templates/instructions/adversarial-review.instructions.md.tmpl
-    - path: .github/instructions/backlogit-sql-schema.instructions.md
-      source: templates/instructions/backlogit-sql-schema.instructions.md.tmpl
-    - path: .github/instructions/backlogit-yaml-header-tooling.instructions.md
-      source: templates/instructions/backlogit-yaml-header-tooling.instructions.md.tmpl
 
   skills:
     - path: .github/skills/build-feature/SKILL.md
@@ -234,11 +230,9 @@ preserved_artifacts:
 verification:
   template_variable_sweep: PASS
   unresolved_count: 0
-  note: "15 {{...}} in deliberate SKILL.md are runtime document templates, not unresolved variables"
+  note: "27 {{...}} in compound/deliberate SKILL.md are runtime document templates, not unresolved variables"
   last_tune_applied:
-    - "TUNE-001: backlog-registry updated with 5 new operations (list/get/resolve checkpoint, poll/ack hook events)"
-    - "TUNE-002: stage.agent.md patched with session-start recovery protocol, hook event consumption, expanded checkpoints"
-    - "TUNE-003: ship.agent.md patched with session-start recovery protocol, hook event consumption, expanded checkpoints"
-    - "TUNE-004: installed backlogit-sql-schema.instructions.md and backlogit-yaml-header-tooling.instructions.md (new)"
-    - "TUNE-005: regenerated 9 skills and 4 instructions from v1.3.0 templates"
-    - "TUNE-006: backlog-integration.instructions.md updated with new checkpoint/hook operations"
+    - "TUNE-001: suffix_map spike/shipment values corrected (spike: SP, shipment: S)"
+    - "TUNE-002: shipment-reconcile SKILL.md regenerated (lock-path bug fix + Model Routing)"
+    - "TUNE-003: workspace-profile corrected (tempfile, tree-sitter langs, markdown count, docs/archive)"
+    - "TUNE-004: suffix_map correction propagated to .backlogit/config.yml"

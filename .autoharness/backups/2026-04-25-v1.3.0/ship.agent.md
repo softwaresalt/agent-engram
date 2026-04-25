@@ -386,44 +386,6 @@ Memory, learnings capture, and documentation hygiene are built-in workflow steps
 1. Scan `docs/memory/` for the most recent memory or checkpoint file relevant to the current feature or chore context.
 2. If a relevant memory file exists, restore context: completed items, branch context, PR status, and prior build decisions.
 
-### Session-start recovery protocol
-
-When checkpoint recovery operations are available through the installed backlog registry:
-
-**SESSION_START**
-1. Call `backlogit_list_checkpoints` with `consumer_id: "ship"`, `status: "active"`, and `max_age_hours: 168`.
-2. If no active checkpoints are returned, continue with a fresh start.
-3. If active checkpoints exist, present checkpoint summaries to the operator: phase, shipment or feature context, tasks completed, resume hint, and validation status.
-
-**RECOVERY_DECISION**
-1. Surface quarantined checkpoints (entries with validation errors) as warnings instead of silently skipping them.
-2. Ask whether to resume from a specific checkpoint or start fresh.
-3. If the operator chooses resume, load the selected checkpoint with `backlogit_get_checkpoint`.
-4. If the operator chooses fresh, resolve stale checkpoints with `backlogit_resolve_checkpoint` and continue to shipment validation.
-
-**RESUME_FROM_CHECKPOINT**
-1. If `backlogit_get_checkpoint` returns an error or invalid payload, warn and fall back to a fresh start.
-2. Restore the recorded phase, shipment or feature context, task IDs, branch state, and next-step intent from the selected checkpoint.
-3. Resolve all other still-active checkpoints from prior sessions with `backlogit_resolve_checkpoint`.
-4. Resume from the recorded phase instead of restarting execution from scratch.
-
-**FRESH_START**
-1. Resolve any active checkpoints left over from prior sessions with `backlogit_resolve_checkpoint`.
-2. Continue with normal shipment validation.
-
-### Hook event consumption
-
-When the `backlogit` capability pack is installed and the registry advertises hook polling operations, poll for unacknowledged signals before shipment validation using `backlogit_poll_hook_events` with `consumer_id: "ship"`.
-
-Treat concrete `events` as higher-priority signals than the raw work queue. After processing them, acknowledge only the highest `seq` from the concrete `events` array with `backlogit_ack_hook_events`. Never acknowledge `derived_signals`, and skip the ack call entirely when no concrete events are returned.
-
-Skip gracefully when the hook queue is empty or the underlying queue file does not yet exist. Never fail the session on a missing hook queue file.
-
-| Signal | Expected response |
-|---|---|
-| `post_merge_closure` | Trigger the post-merge closure protocol immediately for the referenced shipment. |
-| `feature_review_ready` | Note that the referenced feature has cleared review and is eligible for shipment pick-up in the next session. |
-
 ### Mid-session checkpoints
 
 Write a checkpoint to `docs/memory/` after any of these milestones:
@@ -435,7 +397,7 @@ Write a checkpoint to `docs/memory/` after any of these milestones:
 
 Each checkpoint captures: items completed, items blocked, branch state, decisions with rationale, errors encountered and how they were resolved, and next steps.
 
-When the `backlogit` capability pack is installed and `backlogit_create_checkpoint` is available, also persist a phase-tagged structured checkpoint through backlogit. Include shipment or feature IDs, completed and blocked item IDs, branch state, next step, and a `resume_hint` specific enough for a later recovery decision.
+When the `backlogit` capability pack is installed and checkpoint operations are supported, also persist a compact structured checkpoint through backlogit.
 
 ### Learnings capture
 
