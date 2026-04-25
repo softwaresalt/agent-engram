@@ -36,7 +36,7 @@ Agents must read this file at each declared gate point and enforce the relevant 
 | Field      | Value                                                        |
 |------------|--------------------------------------------------------------|
 | Policy ID  | P-002                                                        |
-| Applies To | `ship` (consumer; harness-architect skill is the producer) |
+| Applies To | `ship` (consumer), `harness-architect` (producer) |
 | Gate Point | Queue building (Step 2) and task claiming (Step 3)           |
 
 **Statement**: The ship agent may only claim and implement a task after the harness-architect has confirmed that the test harness compiles and all tests fail in the red phase.
@@ -78,7 +78,7 @@ Agents must read this file at each declared gate point and enforce the relevant 
 | Field      | Value                       |
 |------------|-----------------------------|
 | Policy ID  | P-004                       |
-| Applies To | `ship` (via harness-architect skill)         |
+| Applies To | `harness-architect`         |
 | Gate Point | Operator Approval Gate      |
 
 **Statement**: The harness-architect must confirm the red phase (all harness tests compile and fail with expected markers) before the `harness-ready` label is applied.
@@ -134,75 +134,26 @@ If the impl-plan output does not contain a `Requires plan hardening` conclusion,
 
 ## P-007: Backlogit Archive Integrity After Shipment
 
-**Applies when**: `true` is true and `backlogit` is `backlogit`.
+| Field      | Value                                                    |
+|------------|----------------------------------------------------------|
+| Policy ID  | P-007                                                    |
+| Applies To | `ship`                                                   |
+| Gate Point | Post-merge closure (Step 6, after `backlogit_ship_shipment`) |
 
-**Scope**: Ensures archive files are not silently lost after `backlogit_ship_shipment` runs during Ship Step 6 post-merge closure in backlogit workspaces.
+**Statement**: After calling `backlogit_ship_shipment`, the ship agent must verify that all archived item files are present on disk before committing the backlogit state. `backlogit_ship_shipment` moves files from `queue/` to `archive/` but then deletes the `archive/` copies from disk as an internal cleanup step, leaving the working tree out of sync with the index.
 
-**Precondition**: `backlogit_ship_shipment` has been invoked with a merge commit SHA, archiving the shipment's queue items.
+**Precondition**: `backlogit_ship_shipment` has been called and returned successfully.
 
-**Gate Point**: Ship Step 6, immediately after `backlogit_ship_shipment` completes and before the backlog state is committed.
+**Required Action**:
 
-**Required Check**: Run `git status -- ".backlogit/archive/"` and inspect for working-tree deletions. A known backlogit archival quirk may move files to the archive directory and then delete the archive copies from the working tree.
+1. Run `git status -- ".backlogit/archive/"` and inspect the output.
+2. If any archive file shows as a working-tree deletion (status `D` in second column), restore it: `git restore .backlogit/archive/`.
+3. Stage the corrected state: `git add .backlogit/`.
+4. Commit before proceeding.
 
-**Postcondition**: All archive files for the shipped items exist in `.backlogit/archive/` with no working-tree deletions reported by `git status`.
+**Postcondition**: All archived item markdown files are present on disk, tracked in the index, and committed. No `.backlogit/archive/` file appears as deleted in `git status`.
 
-**Violation Action**:
-
-1. Run `git restore .backlogit/archive/` to recover deleted archive files
-2. Re-verify with `git status -- ".backlogit/archive/"` — confirm no deletions remain
-3. Stage the restored files: `git add .backlogit/archive/`
-4. Proceed to the commit step only after verification passes
-5. If restoration fails, halt and prompt the operator. Broadcast a P-005 violation event.
-
----
-
-## P-008: Markdown Conformance
-
-**Applies when**: The workspace contains Markdown files (universal).
-
-| Field      | Value                                    |
-|------------|------------------------------------------|
-| Policy ID  | P-008                                    |
-| Applies To | All agents that generate or commit Markdown |
-| Gate Point | Ship Step 5 (pre-commit, before PR creation) |
-
-**Statement**: All generated and committed Markdown files MUST conform to a strict heading
-hierarchy enforced by markdownlint rules MD001, MD025, and MD041. A single H1 per file,
-no skipped heading levels, and a top-level heading as the first non-empty line are required.
-
-**Precondition**: `markdownlint` is available in the workspace (installed via markdownlint-cli
-or equivalent). The workspace has a `.markdownlint.json` config enabling MD001, MD025, MD041.
-
-**Postcondition**: `markdownlint "**/*.md"` exits 0 with no violations reported for any
-staged or committed Markdown file.
-
-**Violation Action**: Halt. Fix the heading hierarchy violation in the offending file and
-re-run markdownlint before committing. Do not suppress or disable the rules.
-
----
-
-## P-009: Merge-Commit-Only (No Squash or Rebase Merge)
-
-| Field      | Value                                    |
-|------------|------------------------------------------|
-| Policy ID  | P-009                                    |
-| Applies To | `ship`                                   |
-| Gate Point | Ship Step 5 pre-merge (before any merge action) |
-
-**Statement**: All pull request merges MUST use merge commits. Squash merge and rebase merge
-are expressly forbidden. This preserves the full development history, individual commit
-attribution, and bisect-friendly history.
-
-**Precondition**: The pull request merge strategy is configured as "Create a merge commit"
-(GitHub: `merge` method, not `squash` or `rebase`).
-
-**Postcondition**: The merge creates a merge commit with two parents, preserving the feature
-branch's commit history.
-
-**Violation Action**: Halt. Do NOT proceed with the merge. Instruct the operator to change
-the repository merge strategy to "Create a merge commit" (GitHub Settings → General →
-Pull Requests → uncheck "Allow squash merging" and "Allow rebase merging"). Broadcast a
-P-005 violation event.
+**Violation Action**: Do not commit `.backlogit/` state with deleted archive files. Restore first, then commit.
 
 ---
 
@@ -210,8 +161,6 @@ P-005 violation event.
 
 | Version | Date         | Change           | Reason                     |
 |---------|--------------|------------------|----------------------------|
-| 1.0.0   | 2026-04-24     | Initial registry | Generated by autoharness   |
-| 1.1.0   | 2026-04-24     | Added P-006      | Plan hardening gate enforcement |
-| 1.2.0   | 2026-04-24     | Added P-007      | Backlogit archive integrity after shipment |
-| 1.3.0   | 2026-04-24     | Added P-008      | Markdown conformance enforcement |
-| 1.4.0   | 2026-04-24     | Added P-009      | Merge-commit-only policy |
+| 1.0.0   | 2026-04-13     | Initial registry | Generated by autoharness   |
+| 1.1.0   | 2026-04-13     | Added P-006      | Plan hardening gate enforcement |
+| 1.2.0   | 2026-04-15     | Added P-007      | Backlogit archive integrity guard after `backlogit_ship_shipment` |

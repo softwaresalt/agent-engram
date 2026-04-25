@@ -4,7 +4,7 @@
 # =============================================================================
 
 schema_version: "1.0.0"
-generated_at: "2026-04-13T22:15:00Z"
+generated_at: "2026-04-25T02:50:00Z"
 workspace_path: "D:\\Source\\GitHub\\agent-engram"
 
 # =============================================================================
@@ -16,7 +16,7 @@ languages:
     version: "1.85"
     edition: "2024"
     toolchain: stable
-    file_count: 68  # src/*.rs
+    file_count: 87  # src/*.rs
   secondary:
     - name: Markdown
       file_count: 487
@@ -51,8 +51,8 @@ frameworks:
     features: ["kv-surrealkv"]
     purpose: embedded graph database, per-workspace namespace
   - name: tree-sitter
-    version: "0.24"
-    purpose: code graph parsing (Rust source files)
+    version: "0.25"
+    purpose: code graph parsing (multi-language: Rust, Python, JS, TS, Go, C#, C, C++, Swift, Kotlin, Markdown)
   - name: tree-sitter-rust
     version: "0.23"
     purpose: Rust language grammar for tree-sitter
@@ -80,6 +80,12 @@ frameworks:
     optional: true
     feature_flag: git-graph
     purpose: git commit history graph indexing
+  - name: cozo
+    version: "0.7"
+    features: ["storage-sqlite"]
+    optional: true
+    feature_flag: cozo-backend
+    purpose: CozoDB embedded graph database (migration target)
   - name: interprocess
     version: "2"
     features: ["tokio"]
@@ -111,9 +117,11 @@ build:
   check_command: "cargo check"
   release_command: "cargo build --release"
   features:
-    default: ["embeddings"]
+    default: ["embeddings", "surreal-backend"]
     optional:
       - embeddings
+      - surreal-backend
+      - cozo-backend
       - git-graph
       - legacy-sse
       - otlp-export
@@ -131,21 +139,21 @@ test:
   tiers:
     - name: contract
       path: "tests/contract/"
-      file_count: 22
+      file_count: 26
       purpose: MCP tool response contract verification
     - name: integration
       path: "tests/integration/"
-      file_count: 39
+      file_count: 50
       purpose: end-to-end flows with real DB/IPC
     - name: unit
       path: "tests/unit/"
-      file_count: 21
+      file_count: 24
       purpose: isolated logic, property-based tests (proptest)
     - name: helpers
       path: "tests/helpers/"
-      file_count: 1
+      file_count: 2
       purpose: shared test harness utilities
-  total_test_files: 82
+  total_test_files: 102
   dev_dependencies:
     - proptest: "1"
     - tempfile: "3"
@@ -233,23 +241,23 @@ structure:
     modules:
       - config      # Config struct (port, timeout, data_dir, log_format) via clap
       - daemon      # IPC server, lockfile, protocol, TTL, watcher, debounce
-      - db          # SurrealDB connect, schema bootstrap, queries, workspace hashing
+      - db          # SurrealDB + CozoDB backends, schema bootstrap, queries, workspace hashing
       - errors      # EngramError enum, u16 error codes
       - installer   # Install/update/uninstall commands, templates
-      - models      # Domain models (CodeFile, Function, Class, Interface, etc.)
+      - models      # Domain models (CodeFile, Function, Class, Interface, Policy, etc.)
       - server      # Router, SSE handler, MCP handler, state (legacy-sse feature)
-      - services    # Business logic (code_graph, hydration, dehydration, search, etc.)
-      - shim        # Stdio shim: IPC client, transport, tools catalog
-      - tools       # MCP tool dispatch: lifecycle, read, write
-    source_file_count: 68
+      - services    # Business logic (code_graph, hydration, dehydration, search, parsing/*, etc.)
+      - shim        # Stdio shim: IPC client, transport, tools catalog, lifecycle, pidfile
+      - tools       # MCP tool dispatch: lifecycle, read, write, doctor
+    source_file_count: 87
   test_layout:
     root: "tests/"
     tiers:
-      - contract    # 22 files — MCP tool contract tests
-      - integration # 39 files — end-to-end flows
-      - unit        # 21 files — isolated logic, proptest
-      - helpers     # 1 file — shared test utilities
-    test_file_count: 82
+      - contract    # 26 files — MCP tool contract tests
+      - integration # 50 files — end-to-end flows
+      - unit        # 24 files — isolated logic, proptest
+      - helpers     # 2 files — shared test utilities
+    test_file_count: 102
   doc_layout:
     root: "docs/"
     subdirectories:
@@ -261,6 +269,7 @@ structure:
       - memory        # session memory
       - research      # research documents
       - reviews       # code reviews
+      - upstream      # upstream tool issue documentation
     key_files:
       - "docs/architecture.md"
       - "docs/configuration.md"

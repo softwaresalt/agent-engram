@@ -111,21 +111,11 @@ instead of silently stalling if operator input is needed.
 When the `agent-engram` capability pack is installed, also follow
 `.github/instructions/agent-engram.instructions.md`: prefer indexed search for related modules,
 symbols, and prior context before falling back to broader file scans while shaping the backlog.
-Agent-engram provides code-level context (symbols, modules, dependencies); use the skill-search
-tool separately when looking for harness skills by keyword — these are complementary, not competing.
 
 When the `backlogit` capability pack is installed, also follow
 `.github/instructions/backlogit.instructions.md`: use query-driven lookup when inspecting existing
 backlog state, and plan to record explicit dependency edges during decomposition rather than leaving
 execution order implicit.
-
-### Validation Boundary
-
-Stage validates **intake and planning state**: stash entries are classified, groups are
-coherent, deliberation decisions are captured, and plans are reviewed before harvest.
-Stage does NOT execute implementation, run builds, or create PRs — that is Ship's
-responsibility. Stage's output is a well-formed backlog with an optional shipment ready
-for Ship to claim.
 
 ### Step 1: Stash Triage and Entry Classification
 
@@ -196,20 +186,6 @@ contextually consistent batch of work that should ship together as one covering 
    implicit covering feature.
 
 **Skip this step entirely** for feature-shaped entries — they proceed directly to Step 2.
-
-### Step 1.8: Learnings Retrieval
-
-Before deliberation begins, invoke the **learnings-researcher** subagent to surface relevant
-prior solutions from the compound library (`docs/compound/`). Pass the proposed covering
-feature scope (for task-shaped groups) or the feature/epic/chore title (for feature-shaped
-entries) as the search query.
-
-If the researcher returns `confidence: high` or `confidence: medium` results, include the
-`relevant_solutions` summary in the deliberation context so the deliberate skill can
-reference prior art. If `confidence: low` or no results, proceed without prior learnings.
-
-This step operates at Tier 1 (Fast/Cheap) and does not block the pipeline if the compound
-library is empty or missing.
 
 ### Step 2: Deliberation
 
@@ -365,9 +341,9 @@ When the `backlogit` capability pack is installed and the registry advertises
 `features.shipments: true`, assemble the shipment artifact immediately after harvest
 completes. This is the final act of Stage — the shipment ID is the handoff token to Ship.
 
-1. **Check for an existing shipment in `queued` status** that already covers the
-   harvested feature scope using `backlogit_list_shipments`. If one already exists for this
-   feature, add the newly harvested tasks to it rather than creating a duplicate.
+1. **Check for an existing queued shipment** that already covers the harvested feature scope
+   using `backlogit_list_shipments`. If one already exists for this feature, add the newly
+   harvested tasks to it rather than creating a duplicate.
 
 2. **Create the shipment** (when none exists):
    * Use `backlogit_create_shipment` with a title derived from the covering feature title
@@ -378,14 +354,13 @@ completes. This is the final act of Stage — the shipment ID is the handoff tok
    * Record the resulting `shipment_id` as the session output token.
    * Broadcast `[STAGE] Created shipment: {shipment_id} — "{title}"`.
 
-3. **Scope guard (mandatory first step)**: Record the exact list of IDs returned by the
-   immediately preceding harvest invocation as `harvest_ids`. This is the canonical scope
-   for shipment assembly. `backlogit_add_to_shipment` MUST ONLY be called for items that
-   appear in `harvest_ids`. Pre-existing queue items NOT emitted by this harvest MUST be
-   excluded, even if they appear un-assigned and ready. Never expand scope by searching the
-   queue for unassigned items — use only the ID list the harvest step returned.
-
-4. **Add remaining items in parent-first, dependency order** using `backlogit_add_to_shipment`:
+3. **Add remaining items in parent-first, dependency order** using `backlogit_add_to_shipment`:
+   0. **Scope guard (mandatory first step)**: Record the exact list of IDs returned by the
+      immediately preceding harvest invocation as `harvest_ids`. This is the canonical scope
+      for shipment assembly. `backlogit_add_to_shipment` MUST ONLY be called for items that
+      appear in `harvest_ids`. Pre-existing queue items NOT emitted by this harvest MUST be
+      excluded, even if they appear un-assigned and ready. Never expand scope by searching the
+      queue for unassigned items — use only the ID list the harvest step returned.
    a. Ensure the covering feature is already present in the shipment before adding children;
       when the shipment was just created, this is satisfied by including the feature in the
       initial `items` list instead of re-adding it.
@@ -394,10 +369,10 @@ completes. This is the final act of Stage — the shipment ID is the handoff tok
    d. If an item cannot be added (duplicate, already assigned to another shipment, or
       blocked), skip it and record the reason. Do not abort assembly over a single skipped item.
 
-5. **Verify the manifest** by reading back the shipment using `backlogit_get_shipment` and
+4. **Verify the manifest** by reading back the shipment using `backlogit_get_shipment` and
    confirming the item count matches the harvested hierarchy. Report any discrepancies.
 
-6. **Record `shipment_id`** in the session memory checkpoint and the session summary as the
+5. **Record `shipment_id`** in the session memory checkpoint and the session summary as the
    authoritative handoff to the Ship agent.
 
 When the `agent-intercom` capability pack is installed, broadcast:
@@ -406,29 +381,6 @@ When the `agent-intercom` capability pack is installed, broadcast:
 
 **Guardrail**: Do not assemble a shipment if the harvest step produced no items or produced
 items with unresolved P-003 violations. Halt and report before creating an empty shipment.
-
-### Step 5.6: Archive Consumed Stash Entries
-
-After shipment assembly (or after harvest if shipments are not supported), archive
-every stash entry that was consumed during this session — i.e., entries that were
-triaged, routed through deliberation/planning, and promoted to backlog items.
-
-1. Collect the list of stash entry IDs that were consumed (tracked since Step 1 via
-   traceability).
-2. For each consumed stash entry:
-   * When `backlogit` is the installed backlog tool: invoke `backlogit_move_item` with
-     the stash entry ID to move it from the stash to the archive.
-   * When `backlog-md` is the installed backlog tool: invoke `backlogit_move_item` with
-     the consumed entry ID to complete and archive it.
-   * When no backlog tool is installed: strike through the entry in
-     `.backlogit/queue/.stash.md` with the promotion target ID.
-3. Do NOT archive stash entries that were deferred (not selected for this session) — they
-   remain active for future triage.
-4. When the `agent-intercom` capability pack is installed, broadcast
-   `[STAGE] Archived {count} consumed stash entries`.
-
-This step prevents stale entry accumulation across sessions. Each consumed entry carries
-a forward reference to the backlog item it became, preserving traceability.
 
 ### Step 6: Summary
 
@@ -511,7 +463,6 @@ When the `agent-intercom` capability pack is installed:
 | Harvest complete | `broadcast` | `success` | `[STAGE] Backlog ready: {feature_count} features, {task_count} tasks, {subtask_count} subtasks` |
 | Shipment assembling | `broadcast` | `info` | `[STAGE] Assembling shipment for: {feature_id} "{feature_title}"` |
 | Shipment ready | `broadcast` | `success` | `[STAGE] Shipment ready: {shipment_id} — {feature_id} + {task_count} tasks → hand off to Ship` |
-| Stash archived | `broadcast` | `info` | `[STAGE] Archived {count} consumed stash entries` |
 | Session complete | `broadcast` | `success` | `[STAGE] Complete: {shipment_count} shipment(s) ready, {deferred_count} entries deferred` |
 
 Grouping proposal broadcasts MUST include each proposed grouping's covering feature title,
@@ -543,7 +494,6 @@ Write a checkpoint to `docs/memory/` after any of these milestones:
 * plan passes or fails the review gate
 * harvest creates backlog items
 * shipment assembly completes (record the shipment_id)
-* stash archival completes (record consumed entry IDs and promotion targets)
 
 Each checkpoint captures: stash IDs processed, artifact IDs created, decisions with rationale, and next steps.
 

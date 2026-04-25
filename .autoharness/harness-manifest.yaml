@@ -4,13 +4,15 @@
 
 schema_version: "1.0.0"
 installed_at: "2025-07-23"
-tuned_at: "2026-04-14"
+tuned_at: "2026-04-24"
 installer_version: "autoharness-cli"
 preset: full
-primary_stack_pack: mcp-server
+primary_stack_pack: rust-mcp-daemon
 stack_packs:
-  - mcp-server
-  - cli-tool
+  - rust-mcp-daemon
+  - rust-surrealdb-embedded
+  - rust-tree-sitter
+  - github-actions-ci
 
 capability_packs:
   - agent-intercom
@@ -46,8 +48,6 @@ artifacts:
       source: templates/foundation/constitution.instructions.md.tmpl
     - path: .backlogit/config.yml
       source: templates/backlog/config.yml.tmpl
-    - path: .backlogit/queue/.stash.md
-      source: templates/backlog/stash.md.tmpl
     - path: start.ps1
       source: templates/scripts/start.ps1.tmpl
     - path: start.sh
@@ -184,6 +184,8 @@ artifacts:
       source: templates/skills/safety-modes/SKILL.md.tmpl
     - path: .github/skills/skill-search/SKILL.md
       source: templates/skills/skill-search/SKILL.md.tmpl
+    - path: .github/skills/shipment-reconcile/SKILL.md
+      source: templates/skills/shipment-reconcile/SKILL.md.tmpl
     - path: .github/skills/spike/SKILL.md
       source: templates/skills/spike/SKILL.md.tmpl
 
@@ -215,13 +217,6 @@ artifacts:
 preserved_artifacts:
   agents:
     - .github/agents/rust-mcp-expert.agent.md
-  deprecated_agents:
-    - .github/agents/deprecated/backlog-harvester.agent.md
-    - .github/agents/deprecated/build-orchestrator.agent.md
-    - .github/agents/deprecated/doc-ops.agent.md
-    - .github/agents/deprecated/harness-architect.agent.md
-    - .github/agents/deprecated/memory.agent.md
-    - .github/agents/deprecated/pr-review.agent.md
   review_personas:
     - .github/agents/review/mcp-protocol-reviewer.agent.md
     - .github/agents/review/rust-safety-reviewer.agent.md
@@ -229,8 +224,21 @@ preserved_artifacts:
   instructions:
     - .github/instructions/rust.instructions.md
     - .github/instructions/rust-mcp-server.instructions.md
+  prompts:
+    - .github/prompts/cp-review-fix.prompt.md
 
 verification:
   template_variable_sweep: PASS
   unresolved_count: 0
   note: "27 {{...}} in compound/deliberate SKILL.md are runtime document templates, not unresolved variables"
+  last_tune_applied:
+    - "TUNE-001: fix-ci/SKILL.md regenerated from template"
+    - "TUNE-002: workflow-policies.md regenerated from template"
+    - "TUNE-003: constitution.instructions.md regenerated from template"
+    - "TUNE-004: git-merge.instructions.md regenerated from template"
+    - "TUNE-005: stage.agent.md regenerated from template"
+    - "TUNE-006: ship.agent.md regenerated from template"
+    - "TUNE-007: shipment-reconcile skill added to manifest"
+    - "TUNE-008: cp-review-fix.prompt.md tracked as preserved artifact"
+    - "TUNE-009: stack packs updated to reflect workspace composition"
+    - "TUNE-010: stale deprecated agent references removed from manifest"

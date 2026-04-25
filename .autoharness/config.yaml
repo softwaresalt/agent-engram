@@ -12,8 +12,8 @@ schema_version: "1.0.0"
 preset: full
 
 # Additive stack classification used for composition
-primary_stack_pack: mcp-server
-stack_packs: ["mcp-server", "cli-tool"]
+primary_stack_pack: rust-mcp-daemon
+stack_packs: ["rust-mcp-daemon", "rust-surrealdb-embedded", "rust-tree-sitter", "github-actions-ci"]
 
 # Explicit artifact-class layers selected for installation
 install_layers: ["foundation", "instructions", "workflow", "review", "runtime", "backlog", "knowledge", "overlays"]

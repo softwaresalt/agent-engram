@@ -1,0 +1,147 @@
+---
+description: "Detect CI pipeline failures and review comments, reproduce and fix locally, push and poll until clean"
+---
+
+## Fix CI
+
+Detect CI failures and code review comments on the current branch's PR, reproduce and fix errors locally, address review comments, run all quality gates, then push and poll until the pipeline passes.
+
+## When to Use
+
+Invoke when CI checks fail on a PR, or when automated review comments need to be addressed. Typically invoked by the ship agent after push.
+
+## Inputs
+
+* `pr_number`: (Optional) PR number to check. Auto-detected from current branch if omitted.
+* `max_iterations`: (Optional, default 5) Maximum fix-push-poll cycles.
+
+## Output
+
+* All CI checks passing
+* All review comments addressed or explicitly declined
+
+## Required Protocol
+
+When the `agent-intercom` capability pack is installed, follow
+`.github/instructions/agent-intercom.instructions.md`: establish heartbeat / ping visibility before
+the first reproduction loop, broadcast failing-check and fixed-check milestones, and use the
+intercom clarification / approval path if a repair would require destructive action or explicit
+operator judgment.
+
+When the `agent-engram` capability pack is installed, follow
+`.github/instructions/agent-engram.instructions.md`: verify the engram surface is available before
+relying on indexed search, and prefer code-graph or impact-analysis lookup while diagnosing the CI
+failure set.
+
+### Step 1: Identify the PR
+
+Determine the PR number from the current branch. If no PR exists, halt.
+
+### Step 2: Check CI Status
+
+Query CI pipeline status. Identify which checks are failing:
+
+For GitHub-hosted repositories, follow `.github/instructions/github-pr-automation.instructions.md`
+Part 2 for CI check polling (§2.2), back-off cadence (§2.3), and failure
+detail extraction via check-run annotations (§2.5).
+
+**CI Pipeline Order** (fix in this order):
+
+1. Format check (`cargo fmt --all -- --check`)
+2. Lint (`cargo clippy -- -D warnings -D clippy::pedantic`)
+3. Test (`cargo test`)
+
+### Step 3: Check Review Comments
+
+Query for automated review comments (Copilot, bot reviewers). Categorize each:
+
+For GitHub-hosted repositories, follow `.github/instructions/github-pr-automation.instructions.md`
+Part 1 (§1.3) for comment categorization and the complete Copilot Review
+comment lifecycle.
+
+* **Valid**: The comment identifies a real issue → apply fix
+* **Partial**: The comment is partially correct → apply relevant parts, reply with explanation
+* **Invalid**: The comment is incorrect → decline with rationale
+
+### Step 4: Reproduce Locally
+
+Run the failing CI steps locally in order:
+
+1. `cargo fmt --all -- --check` → if fails, run `cargo fmt --all`
+2. `cargo clippy -- -D warnings -D clippy::pedantic` → fix violations
+3. `cargo test` → fix failing tests
+
+### Step 5: Fix
+
+Apply fixes for each failure. Use workspace search tools to understand context before modifying code.
+
+When the `agent-engram` capability pack is installed, prefer `list_symbols`, `map_code`,
+`impact_analysis`, and `query_memory` before broader grep or raw file scans.
+
+### Step 6: Address Review Comments
+
+For each review comment:
+
+* Valid: Apply the suggested fix or an equivalent resolution
+* Partial: Apply relevant parts, reply explaining what was not applied and why
+* Invalid: Reply with a clear rationale for declining
+
+For GitHub-hosted repositories, after addressing each comment:
+
+1. Reply to the review thread per `.github/instructions/github-pr-automation.instructions.md`
+   §1.5 using the appropriate reply template (fixed / declined / partial).
+2. Resolve bot-authored threads via GraphQL per §1.6.
+3. Never resolve threads authored by human reviewers.
+
+### Step 7: Local Quality Gate
+
+Run the full quality gate sequence:
+
+```text
+cargo fmt --all -- --check
+cargo clippy -- -D warnings -D clippy::pedantic
+cargo test
+```
+
+All gates must pass before pushing.
+
+### Step 8: Push and Poll
+
+1. Commit fixes with a `fix:` conventional commit message
+2. Push to the branch
+3. Poll CI status until all checks pass or `max_iterations` is exhausted.
+   For GitHub-hosted repositories, follow the polling cadence and timeout
+   protocol in `.github/instructions/github-pr-automation.instructions.md` §2.3 and §2.7.
+4. When CI is green, invoke `runtime-verification` if runtime surfaces were affected or the PR explicitly requires runtime evidence
+5. Update or append the operational validation section in the PR description so the next handoff includes monitoring and rollback expectations
+
+## Circuit Breakers
+
+* Maximum `max_iterations` fix-push-poll cycles (default 5; skill-managed exception per `circuit-breaker.instructions.md`)
+* If 3 consecutive iterations fail on the **same check**, halt and report
+  (this pre-empts the 5-cycle limit to surface systematic check-specific problems early)
+* If the same check fails twice in a row without a clear diagnosis, invoke `safety-modes` in `investigate-first` mode before applying further fixes
+
+## Behavioral Constraints
+
+* No subagent spawning (leaf executor)
+* Fix CI failures in pipeline order (format → lint → test)
+* Do not modify tests to make them pass unless the test itself is wrong
+* Use workspace search tools before grep for understanding context
+
+## Resumption Protocol
+
+If the skill is interrupted (context overflow, session timeout, or operator
+halt), write a checkpoint to `docs/memory/` capturing: current iteration
+count, which CI checks have passed, which are still failing, and the fix
+attempt in progress. On re-invocation, check for an existing checkpoint. If
+found, resume from the recorded iteration rather than restarting from scratch.
+If the Local Quality Gate (Step 7) times out after the configured stall
+timeout, checkpoint the fix attempt and report to the operator rather than
+silently retrying.
+
+## Model Routing
+
+This skill operates at **Tier 2 (Standard)** — CI failure diagnosis and fix application.
+
+Generated by autoharness | Template: fix-ci/SKILL.md.tmpl

@@ -105,27 +105,27 @@ When the `backlogit` capability pack is installed and the registry advertises
 When `shipment_id` is provided as input (as produced by Stage), validate it before any
 build work begins:
 
-1. Load the shipment using `backlogit_get_shipment`. Confirm it is in `queued` or `active` status.
+1. Load the shipment using `backlogit_get_shipment`. Confirm it is `queued` or `active`.
 2. Confirm the shipment has explicit item membership (feature + tasks).
 3. Verify no item in the shipment is missing a covering feature parent.
-4. If the shipment is still in `queued` status, claim it using `backlogit_claim_shipment` before
+4. If the shipment is still `queued`, claim it using `backlogit_claim_shipment` before
    build work begins. Broadcast `[SHIP] Shipment claimed: {shipment_id}`.
 5. Record `shipment_id` as the session scope. All build execution and PR scope is bounded
    by this shipment.
 6. **Intake reconciliation check**: Invoke `shipment-reconcile` with `mode: pre` and
-   `expected_status: queued` (or `active` if already claimed).
-   This verifies every manifest item is present in `.backlogit/queue/` with the
-   expected status, and scans for orphan items. A `RECONCILE_FAIL` here means Stage swept
-   non-harvest items into the manifest; reconcile before proceeding to Step 1. (Lock is not
-   held at intake — this is a lightweight early-warning check only.)
+   `expected_status: queued` (or `active` if the shipment was already claimed in a prior
+   session and items are `active`). This verifies every manifest item is present in
+   `.backlogit/queue/` with the expected status, and scans for orphan items. A `RECONCILE_FAIL`
+   here means Stage swept non-harvest items into the manifest; reconcile before proceeding
+   to Step 1. (Lock is not held at intake — this is a lightweight early-warning check only.)
 
 **Fallback path — direct invocation without a Stage-prepared shipment**:
 
 When `shipment_id` is not provided (Ship invoked directly by the operator):
 
-1. List existing shipments in `queued` status using `backlogit_list_shipments` to
-   check for one that already covers the intended feature scope. If found, record its ID and
-   proceed as primary path.
+1. List existing `queued` shipments using `backlogit_list_shipments` to check for one that
+   already covers the intended feature scope. If found, record its ID and proceed as primary
+   path.
 2. If no suitable shipment exists, request one from the operator or confirm that direct
    assembly is intended before continuing.
 3. If the operator confirms direct assembly, create the shipment:
@@ -141,17 +141,6 @@ When `shipment_id` is not provided (Ship invoked directly by the operator):
 
 When the `agent-intercom` capability pack is also installed, broadcast each sub-step with
 its outcome.
-
-After claiming the shipment via either path, the intake reconciliation check from
-primary-path step 6 applies — run it if it was not already executed above.
-
-### Validation Boundary
-
-Ship validates **execution-ready state**: backlog items exist, shipment is well-formed,
-items have covering features, and the workspace compiles. Ship does NOT re-triage,
-re-classify, or re-group stash entries — that is Stage's responsibility. If Ship detects
-structural issues that require re-grouping (e.g., missing covering feature, orphaned tasks),
-it halts and requests that Stage be run first.
 
 ### Step 1: Pre-Flight Checks
 
@@ -230,7 +219,7 @@ When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Invoki
 
 Invoke the **review** skill in `mode:report-only` against the changed files. If P0/P1 findings are reported, fix them before proceeding.
 
-When the `adversarial-review` capability pack is installed, Ship invokes the **adversarial-review** agent in place of the standard review skill, with `mode: report-only` and `reviewers: 3`. HIGH-confidence consensus findings block the gate identically to standard review P0/P1 findings. MEDIUM-confidence findings are advisory but must be acknowledged in the task completion note.
+When the `adversarial-review` capability pack is installed, invoke the **adversarial-review** agent instead with `mode: report-only` and `reviewers: 3`. HIGH-confidence consensus findings block the gate identically to standard review P0/P1 findings. MEDIUM-confidence findings are advisory but must be acknowledged in the task completion note.
 
 #### Step 4.5: Complete Task
 
@@ -260,7 +249,7 @@ After all tasks in the queue are complete:
 6. Invoke **operational-closure** to produce release-readiness, monitoring, rollback, and follow-up artifacts
 7. **Stash follow-up items**: If the closure artifact or runtime-verification report identified follow-up tasks, stash every follow-up so it is visible to the Stage agent:
    * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using `backlogit_create_item` with `artifact_type: "stash"`, `title` from the follow-up summary, `description` linking to the closure artifact, and `status: "queued"`. After creation, re-read each entry to confirm it persisted correctly.
-   * When `backlog-md` is the installed backlog tool, create a follow-up item using `backlogit_create_item` with `title` from the follow-up summary, `description` linking to the closure artifact, `status: "queued"`, and `labels: ["stash", "follow-up"]`.
+   * When `backlog-md` is the installed backlog tool, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path} Labels: stash, follow-up`.
    * When no backlog tool is installed, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path}`.
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Stashed {count} follow-up item(s): {summary_list}` listing each item's title.
 8. Push the feature or chore branch
@@ -268,16 +257,6 @@ After all tasks in the queue are complete:
 10. Present the pull request state to the operator when the branch is reviewable
 11. **Never merge automatically. Await explicit user approval before any merge.**
     * When the `agent-intercom` capability pack is installed, broadcast `[WAIT] Awaiting user merge approval` and use the intercom clarification flow if unresolved operator guidance is needed before merge.
-12. **Pre-merge strategy guardrail (P-009)**: Before executing any merge, verify the PR is
-    configured to use a merge commit strategy (not squash or rebase).
-    * On GitHub: confirm the active merge button is "Create a merge commit" — not
-      "Squash and merge" or "Rebase and merge".
-    * If squash or rebase merge is the only available option, halt immediately. Broadcast
-      a P-009 violation: "Squash/rebase merge detected — merge commit required (P-009)."
-      Record a P-005 policy violation event (`violation_policy: P-009`, `gate: Ship Step 5`,
-      `action: halted`). Instruct the operator to update repository settings (GitHub Settings
-      → General → Pull Requests → uncheck "Allow squash merging" and "Allow rebase merging")
-      before proceeding.
 
 ### Step 6: Post-Merge Closure (mandatory after user-approved merge)
 
@@ -285,51 +264,48 @@ When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Post-m
 
 After the user approves merge:
 
-1. **Close the shipment** (when `true` is true):
-   a. **Pre-archive reconciliation gate (mandatory)**: Invoke the `shipment-reconcile`
-      skill with `mode: pre`, `shipment_id`, and `expected_status: done`.
-      This acquires the single-writer lock on `.backlogit/queue/{shipment_id}.md`
-      (via the `file-lock` skill) and verifies that every manifest item is present in
-      queue with `status: done`, and scans for orphan items.
+1. **Close the shipment** (when the `backlogit` capability pack is installed and `features.shipments` is true):
+   0. **Pre-archive reconciliation gate (mandatory)**:
+      * Invoke the `shipment-reconcile` skill with `mode: pre`, `shipment_id`, and
+        `expected_status: done`. This acquires the single-writer lock on
+        `.backlogit/queue/{shipment_id}.md` (via the `file-lock` skill) and verifies
+        that every manifest item is present in queue with `status: done`, and scans for
+        orphan items (queue files declaring this `shipment_id` that are NOT in the manifest).
       * If the skill returns `RECONCILE_FAIL`: halt and surface the reconciliation report
-        to the operator. Do NOT proceed to step 1.b.
-      * If the skill returns `PROCEED`: continue. The lock remains held until post-mode
-        completes in step 1.d.
-   b. Call `backlogit_ship_shipment` with the merge commit SHA. This archives all queue
-      items (feature + tasks) to `.backlogit/archive/`.
-   c. **Verify archive integrity (P-007)**: Run `git status -- ".backlogit/archive/"`.
+        to the operator. Do NOT proceed to step 1.a until the operator resolves the
+        discrepancies and re-invokes Ship Step 6.
+      * If the skill returns `PROCEED`: continue to step 1.a. The lock remains held until
+        post-mode completes in step 1.c.
+   a. Call `backlogit_ship_shipment` with the merge commit SHA. This archives all
+      queue items (feature + tasks) to `.backlogit/archive/`.
+   b. **Verify archive integrity (P-007)**: Run `git status -- ".backlogit/archive/"`.
       If any archive files appear as working-tree deletions, restore them immediately:
-      `git restore .backlogit/archive/`. See P-007 in workflow-policies for the
-      full verification and violation protocol.
-   d. **Post-archive reconciliation**: Invoke `shipment-reconcile` with `mode: post` and
-      `merge_commit_sha`. If the skill returns `HALT — restore archives`, run
-      `git restore .backlogit/archive/` before step 1.e.
+      `git restore .backlogit/archive/`. Do not skip this check — `backlogit_ship_shipment`
+      deletes archive files from disk after moving them internally.
+   c. **Post-archive reconciliation**: Invoke `shipment-reconcile` with `mode: post` and
+      `merge_commit_sha`. This verifies that every manifest item has an archive file and
+      detects any files deleted by `backlogit_ship_shipment`. Attach the resulting
+      reconciliation report to the closure artifact. If the skill returns
+      `HALT — restore archives`, run `git restore .backlogit/archive/` before step 1.d.
       The lock is released by the skill at the end of post-mode.
-   e. Commit the backlog state in two separate terminal commands:
-      `git add .backlogit/`
-      `git commit -m "chore: archive {shipment_id} backlog artifacts"`
+   d. Commit the backlogit state: `git add .backlogit/ && git commit -m "chore: archive {shipment_id} backlog artifacts"`
+
 2. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`.
 3. Evaluate whether documentation or compound learnings need updates for the shipped scope:
    * `docs/ARCHITECTURE.md` for structural changes
    * `AGENTS.md` for agent or skill changes
-   * `docs/research/` for graduated design decisions
+   * `docs/decisions/` for graduated design decisions
    * `docs/research/` for requirement updates
 4. Apply documentation updates directly (knowledge graduation).
 5. If the shipped work superseded, duplicated, or invalidated existing learnings in `docs/compound/`, invoke **compound-refresh** so stale entries are classified as keep / update / consolidate / replace / delete using evidence from the shipped work and closure artifacts. When evidence is incomplete, mark entries stale rather than rewriting them blindly.
 6. **Stash follow-up items**: If the post-merge closure artifact identified follow-up tasks (monitoring gaps, deferred scope, documentation debt, or any action not covered by the shipped work), stash every follow-up:
    * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using `backlogit_create_item` with `artifact_type: "stash"`, `title` from the follow-up summary, `description` linking to the closure artifact, and `status: "queued"`. After creation, re-read each entry to confirm it persisted correctly.
-   * When `backlog-md` is the installed backlog tool, create a follow-up item using `backlogit_create_item` with `title` from the follow-up summary, `description` linking to the closure artifact, `status: "queued"`, and `labels: ["stash", "follow-up"]`.
+   * When `backlog-md` is the installed backlog tool, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path} Labels: stash, follow-up`.
    * When no backlog tool is installed, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path}`.
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Stashed {count} follow-up item(s) from post-merge closure: {summary_list}` listing each item's title.
-7. **Archive stale deliberation and stash artifacts**: After the shipped work is merged, archive backlog artifacts that informed this work and are now complete:
-   * **Deliberation items**: Search the backlog for deliberation artifacts (type suffix `D`) that were consumed during the Stage→Ship pipeline for this shipment. Use `backlogit_search_items` to find deliberation items linked to the shipped feature or chore, then invoke `backlogit_move_item` for each to move them from queue to archive.
-   * **Consumed follow-up tasks created by Ship**: If Step 5 of the pre-merge closure (or a prior Ship session) created follow-up tasks that were subsequently consumed by Stage and shipped in this cycle, verify they have been archived. If any remain in active state, complete them using `backlogit_move_item`.
-   * **Spike artifacts**: Search for spike items (type suffix `S`) that were consumed during the deliberation or planning phase for this shipment. Archive them using the same mechanism as deliberation items.
-   * Preserve the decision content: deliberation and spike knowledge artifacts in `docs/decisions/` are **not** removed — only the backlog work-item wrappers in the queue are archived. The knowledge persists; the workflow item is retired.
-   * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Archived {count} stale deliberation/stash/spike items from shipped work`.
-8. **Mandatory**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints, finalize any decided-plans, and compact closure artifacts. This is required because built-in AI assistant memory features do not write to the repository's `docs/` directory — compact-context is the mechanism that ensures durable persistence.
-9. When the `continuous-learning` capability pack is installed, invoke the **learn** skill with `scope: recent` to cluster observations accumulated during this session into instincts. If any instinct has reached the promotion threshold (`3`), invoke the **evolve** skill in `mode: propose` for each mature instinct and include the proposal paths in the session summary.
-10. When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Session complete: {outcome}`.
+7. **Mandatory**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints, finalize any decided-plans, and compact closure artifacts. This is required because built-in AI assistant memory features do not write to the repository's `docs/` directory — compact-context is the mechanism that ensures durable persistence.
+8. When the `continuous-learning` capability pack is installed, invoke the **learn** skill with `scope: recent` to cluster observations accumulated during this session into instincts. If any instinct has reached the promotion threshold (`3`), invoke the **evolve** skill in `mode: propose` for each mature instinct and include the proposal paths in the session summary.
+9. When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Session complete: {outcome}`.
 
 ## Circuit Breakers
 
@@ -372,7 +348,6 @@ When the `agent-intercom` capability pack is installed:
 | Merge approval wait | `broadcast` | `warning` | `[WAIT] Awaiting user merge approval` |
 | Post-merge closure | `broadcast` | `info` | `[SHIP] Post-merge closure and knowledge graduation` |
 | Follow-ups stashed (post-merge) | `broadcast` | `info` | `[SHIP] Stashed {count} follow-up item(s) from post-merge closure: {summary_list}` |
-| Stale artifacts archived | `broadcast` | `info` | `[SHIP] Archived {count} stale deliberation/stash/spike items from shipped work` |
 | Session complete | `broadcast` | `success` | `[SHIP] Session complete: {outcome}` |
 
 Use `transmit` when a blocked condition, risky rollback, or merge decision needs explicit operator attention.
