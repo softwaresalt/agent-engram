@@ -14,13 +14,14 @@ if (Test-Path $global_agents_src) {
 }
 
 $env:COPILOT_HOME = $local_copilot
-$env:ENGRAM_DATA_DIR = ".\.engram"   # Uncomment when the agent-engram capability pack is active
+$env:ENGRAM_DATA_DIR = ".\.engram"
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE) {
     $env:COPILOT_EXE
 } else {
-    (Get-Command "copilot" -ErrorAction SilentlyContinue).Source ??
-    (Get-Command "copilot.exe" -ErrorAction SilentlyContinue).Source
+    $cmd = Get-Command "copilot" -ErrorAction SilentlyContinue
+    if ($cmd) { $cmd.Source }
+    else { (Get-Command "copilot.exe" -ErrorAction SilentlyContinue).Source }
 }
 
 if (-not $copilotExe) {

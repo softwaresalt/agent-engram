@@ -237,12 +237,11 @@ When the `backlogit` capability pack is installed and `create_task` is available
 6. If `linked_parent_work_item` was provided, set `parent_id` to link the spike to its
   feature or chore
 
-When `backlog-md` is the installed backlog tool:
-
-* If promoting to queue, create a spike item using `backlogit_create_item` with
-  `title` from the goal question (shortened to 5-10 words),
-  `description` linking to the findings artifact path,
-  `status: "done"`, and `labels: ["spike"]`.
+When `backlog-md` is the installed backlog tool, create a queue entry directly
+using the backlog tool's create operation (refer to the installed registry for
+the exact command name and parameters) with `title` from the goal question
+(shortened to 5-10 words), `description` linking to the findings artifact path,
+`status: "done"`, and `labels: ["spike"]`.
 
 When no backlog tool is available:
 
