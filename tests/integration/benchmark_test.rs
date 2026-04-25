@@ -60,7 +60,9 @@ fn t101_idle_memory_under_100mb() {
 /// T099: Benchmark `query_memory` latency (target: < 50ms).
 ///
 /// Measures keyword-only search time (no embeddings) across a moderate corpus.
+/// Skipped in debug builds where unoptimised code cannot meet the threshold.
 #[test]
+#[cfg_attr(debug_assertions, ignore = "performance test requires --release build")]
 fn t099_query_memory_under_50ms() {
     use engram::services::search::{SearchCandidate, hybrid_search};
 

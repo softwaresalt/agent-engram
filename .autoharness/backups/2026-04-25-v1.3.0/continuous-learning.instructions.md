@@ -13,9 +13,9 @@ explicit solved problems.
 
 Store continuous-learning state under `.autoharness/continuous-learning/`:
 
-* `observations/` — normalized observation records
-* `instincts/` — clustered recurring patterns with evidence trails
-* `learned/` — promotion metadata for evolved instructions or skills
+* `observations/`: normalized observation records
+* `instincts/`: clustered recurring patterns with evidence trails
+* `learned/`: promotion metadata for evolved instructions or skills
 
 Treat this directory as harness-managed state.
 

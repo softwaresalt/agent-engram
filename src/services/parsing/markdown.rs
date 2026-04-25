@@ -60,13 +60,11 @@ pub(super) fn parse_markdown_source(
             }
 
             // ── Heading end ────────────────────────────────────────────────
-            Event::End(TagEnd::Heading(_)) => {
-                if in_heading {
-                    in_heading = false;
-                    let name = heading_text.trim().to_owned();
-                    if !name.is_empty() {
-                        emit_heading(source, heading_start_byte, range.end, name, &mut symbols);
-                    }
+            Event::End(TagEnd::Heading(_)) if in_heading => {
+                in_heading = false;
+                let name = heading_text.trim().to_owned();
+                if !name.is_empty() {
+                    emit_heading(source, heading_start_byte, range.end, name, &mut symbols);
                 }
             }
 
@@ -82,20 +80,18 @@ pub(super) fn parse_markdown_source(
             }
 
             // ── Code-block end ─────────────────────────────────────────────
-            Event::End(TagEnd::CodeBlock) => {
-                if in_code {
-                    in_code = false;
-                    block_counter += 1;
-                    emit_code_block(
-                        source,
-                        code_start_byte,
-                        range.end,
-                        &code_lang,
-                        &code_body,
-                        block_counter,
-                        &mut symbols,
-                    );
-                }
+            Event::End(TagEnd::CodeBlock) if in_code => {
+                in_code = false;
+                block_counter += 1;
+                emit_code_block(
+                    source,
+                    code_start_byte,
+                    range.end,
+                    &code_lang,
+                    &code_body,
+                    block_counter,
+                    &mut symbols,
+                );
             }
 
             // ── Text: accumulate into active container ─────────────────────

@@ -119,8 +119,7 @@ If `${input:dry_run}` is `false`:
 1. Query the backlog first to avoid duplicate root features.
    Use `backlogit_list_items` or `backlogit_search_items` to check for existing
    items with matching titles.
-2. Create the root feature via `backlogit_create_item` or
-   `backlogit add`.
+2. Create the root feature via `backlogit_create_item`.
 3. Create one task per implementation unit under that feature.
 4. Create granular subtasks under each task.
 5. Wire dependencies when the backlog tool supports dependency operations
@@ -140,8 +139,6 @@ If `${input:dry_run}` is `false`:
 
 * Do not modify the plan file.
 * Do not skip duplicate checks.
-* Do not create shipment artifacts from this skill. Shipment assembly
-  happens downstream in Stage (Step 5.5) or Ship (fallback path).
 * Keep descriptions self-contained enough for the next executor to act
   without reopening the plan for basic context.
 

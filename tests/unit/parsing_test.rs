@@ -46,7 +46,7 @@ fn test_cpp_inline_tree_debug() {
                             eprintln!(
                                 "        [{k}] kind={} field={:?} text={:?}",
                                 bcc.kind(),
-                                bc.field_name_for_child(k as u32),
+                                bc.field_name_for_child(u32::try_from(k).unwrap_or(u32::MAX)),
                                 &source[bcc.byte_range()]
                             );
                         }
@@ -900,7 +900,7 @@ fn test_markdown_heading_extracted_as_class() {
         })
         .collect();
     assert!(
-        classes.iter().any(|n| *n == "Introduction"),
+        classes.contains(&"Introduction"),
         "expected class 'Introduction' from H1; got: {classes:?}"
     );
 }

@@ -59,8 +59,8 @@ fn req(id: i64, method: &str, params: Option<Value>) -> IpcRequest {
     }
 }
 
-fn engram_code(error_data: &Option<Value>) -> Option<i64> {
-    error_data.as_ref().and_then(|d| d["engram_code"].as_i64())
+fn engram_code(error_data: Option<&Value>) -> Option<i64> {
+    error_data.and_then(|d| d["engram_code"].as_i64())
 }
 
 /// Poll `list_symbols` via IPC until at least one symbol appears (or timeout).
@@ -77,27 +77,23 @@ async fn poll_for_symbols(endpoint: &str, hint: &str) -> Vec<Value> {
 
         let response = send_request(
             endpoint,
-            &req(attempt as i64, "list_symbols", Some(json!({}))),
+            &req(i64::from(attempt), "list_symbols", Some(json!({}))),
             IPC_TIMEOUT,
         )
         .await
         .unwrap_or_else(|e| panic!("list_symbols IPC failed on attempt {attempt}: {e}"));
 
         if let Some(ref error) = response.error {
-            if engram_code(&error.data) == Some(ERR_INDEX_IN_PROGRESS) {
-                if std::time::Instant::now() >= deadline {
-                    panic!(
-                        "list_symbols still returning IndexInProgress after {POLL_TIMEOUT:?}; \
-                         hint: {hint}"
-                    );
-                }
+            if engram_code(error.data.as_ref()) == Some(ERR_INDEX_IN_PROGRESS) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "list_symbols still returning IndexInProgress after {POLL_TIMEOUT:?}; \
+                     hint: {hint}"
+                );
                 delay = (delay * 2).min(POLL_CAP);
                 continue;
             }
-            panic!(
-                "list_symbols returned unexpected error on attempt {attempt}: {:?}",
-                error
-            );
+            panic!("list_symbols returned unexpected error on attempt {attempt}: {error:?}");
         }
 
         let symbols = response
@@ -111,12 +107,11 @@ async fn poll_for_symbols(endpoint: &str, hint: &str) -> Vec<Value> {
             return symbols;
         }
 
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "list_symbols returned no symbols after {POLL_TIMEOUT:?} ({attempt} attempts); \
-                 hint: {hint}"
-            );
-        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "list_symbols returned no symbols after {POLL_TIMEOUT:?} ({attempt} attempts); \
+             hint: {hint}"
+        );
         delay = (delay * 2).min(POLL_CAP);
     }
 }

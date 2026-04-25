@@ -532,44 +532,6 @@ Memory and context compaction are built-in workflow hygiene, not optional standa
 1. Scan `docs/memory/` for the most recent memory or checkpoint file relevant to the current stash or feature context.
 2. If a relevant memory file exists, restore context from it: prior triage decisions, deliberation state, plan paths, and backlog IDs created.
 
-### Session-start recovery protocol
-
-When checkpoint recovery operations are available through the installed backlog registry:
-
-**SESSION_START**
-1. Call `backlogit_list_checkpoints` with `consumer_id: "stage"`, `status: "active"`, and `max_age_hours: 168`.
-2. If no active checkpoints are returned, continue with a fresh start.
-3. If active checkpoints exist, present checkpoint summaries to the operator: phase, feature context, resume hint, and validation status.
-
-**RECOVERY_DECISION**
-1. Surface quarantined checkpoints (entries with validation errors) as warnings instead of silently skipping them.
-2. Ask whether to resume from a specific checkpoint or start fresh.
-3. If the operator chooses resume, load the selected checkpoint with `backlogit_get_checkpoint`.
-4. If the operator chooses fresh, resolve stale checkpoints with `backlogit_resolve_checkpoint` and continue to stash processing.
-
-**RESUME_FROM_CHECKPOINT**
-1. If `backlogit_get_checkpoint` returns an error or invalid payload, warn and fall back to a fresh start.
-2. Restore the recorded phase, feature context, artifact IDs, plan path, and next-step intent from the selected checkpoint.
-3. Resolve all other still-active checkpoints from prior sessions with `backlogit_resolve_checkpoint`.
-4. Resume from the recorded phase instead of restarting triage from scratch.
-
-**FRESH_START**
-1. Resolve any active checkpoints left over from prior sessions with `backlogit_resolve_checkpoint`.
-2. Continue with normal stash triage.
-
-### Hook event consumption
-
-When the `backlogit` capability pack is installed and the registry advertises hook polling operations, poll for unacknowledged signals before stash triage using `backlogit_poll_hook_events` with `consumer_id: "stage"`.
-
-Treat concrete `events` as higher-priority signals than the raw stash queue. After processing them, acknowledge only the highest `seq` from the concrete `events` array with `backlogit_ack_hook_events`. Never acknowledge `derived_signals`, and skip the ack call entirely when no concrete events are returned.
-
-Skip gracefully when the hook queue is empty or the underlying queue file does not yet exist. Never fail the session on a missing hook queue file.
-
-| Signal | Expected response |
-|---|---|
-| `feature_review_ready` | Promote the referenced feature to the top of triage, check whether a plan already exists, and route directly to the review gate when one does. |
-| `blocked_stale` | Surface the blocked item as an urgent unblocking candidate and include the stale reason in the session triage summary. |
-
 ### Mid-session checkpoints
 
 Write a checkpoint to `docs/memory/` after any of these milestones:
@@ -585,7 +547,7 @@ Write a checkpoint to `docs/memory/` after any of these milestones:
 
 Each checkpoint captures: stash IDs processed, artifact IDs created, decisions with rationale, and next steps.
 
-When the `backlogit` capability pack is installed and `backlogit_create_checkpoint` is available, also persist a phase-tagged structured checkpoint through backlogit. Include the current phase, relevant stash or feature IDs, created artifact IDs, next step, and a `resume_hint` specific enough for a later recovery decision.
+When the `backlogit` capability pack is installed and checkpoint operations are supported, also persist a compact structured checkpoint through backlogit.
 
 ### Session end
 

@@ -10,9 +10,8 @@ options, recommendation, and backlog-link targets. The artifact feeds directly
 into `impl-plan` for technical planning or into the backlog queue as a stashed
 work item for future pursuit.
 
-This skill replaces the earlier `brainstorm` entry point with a richer protocol
-that adds explicit research synthesis, option comparison, and queue/stash
-linkage.
+This skill provides a structured protocol with explicit research synthesis,
+option comparison, and queue/stash linkage.
 
 ## When to Use
 
@@ -189,12 +188,6 @@ When the `backlogit` capability pack is installed and the backlog tool supports
 * Status set to `queued`
 * Labels include `deliberation-outcome`
 * Reference the artifact path in the description or a comment
-
-When `backlog-md` is the installed backlog tool, create a queue entry using
-the backlog tool's create operation (refer to the installed registry for the
-exact command name) with `title` derived from the deliberation topic,
-`description` linking to the decision artifact path,
-`status: "queued"`, and `labels: ["deliberation-outcome"]`.
 
 When no backlog tool is available, append a structured entry to
 `.backlogit/queue/.stash.md`:
