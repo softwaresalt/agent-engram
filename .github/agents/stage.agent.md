@@ -674,6 +674,7 @@ from the recorded next step rather than restarting the pipeline.
 * Never promote to plan without the operator's explicit confirmation of the deliberation outcome
 * Never synthesize a covering feature title without deliberation — the deliberate skill must validate the group's scope first
 * Never assemble a shipment from a harvest that produced no items or has unresolved P-003 violations
+* Never skip shipment assembly (Step 5.5) when `backlogit` is installed and `features.shipments: true` — the shipment ID is the mandatory handoff token to Ship
 * Never add a child task to a shipment before its covering feature has been added
 * Do not write application code; produce decision, findings, or backlog artifacts only
 * Use workspace search tools before file-based search for codebase discovery; when `agent-engram` is installed, prefer the engram-first path

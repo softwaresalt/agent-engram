@@ -4,7 +4,7 @@
 
 schema_version: "1.0.0"
 installed_at: "2025-07-23"
-tuned_at: "2026-04-26T12:44:00-07:00"
+tuned_at: "2026-04-26T16:52:00-07:00"
 installer_version: "autoharness-cli-1.3.2"
 preset: full
 primary_stack_pack: rust-mcp-daemon
@@ -247,3 +247,11 @@ verification:
     - "TUNE-015: architecture-doc.instructions.md — regenerated from v1.3.2 template"
     - "TUNE-016: continuous-learning.instructions.md — regenerated from v1.3.2 template"
     - "TUNE-017: updated workspace file for .github/local-agents/ discoverability and reconciled auto-* agent placement"
+    - "TUNE-018: copilot-instructions.md — added Durable Knowledge Layout section (new in v1.3.2 template)"
+    - "TUNE-019: copilot-instructions.md — added 65% capacity checkpoint and phase-based checkpoint guidance to Session Memory"
+    - "TUNE-020: copilot-instructions.md — added Remote Operator Integration section (new in v1.3.2 template)"
+    - "TUNE-021: copilot-instructions.md — added Backlog Workflow Expectations section (new in v1.3.2 template)"
+    - "TUNE-022: copilot-instructions.md — updated tree-sitter 0.24→0.25, test counts 22/39/21→26/50/24, last-updated date"
+    - "TUNE-023: stage.agent.md — added 'Never skip shipment assembly' behavioral constraint from template"
+    - "TUNE-024: ship.agent.md — aligned Source Artifact Cleanup with v1.3.2 template (direct tool calls vs comment-based)"
+    - "TUNE-025: workspace-profile.yaml — quoted C# in tree-sitter purpose to fix YAML syntax error"

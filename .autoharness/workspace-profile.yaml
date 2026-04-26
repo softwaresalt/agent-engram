@@ -52,7 +52,7 @@ frameworks:
     purpose: embedded graph database, per-workspace namespace
   - name: tree-sitter
     version: "0.25"
-    purpose: code graph parsing (multi-language: Rust, Python, JS, TS, Go, C#, C, C++, Swift)
+    purpose: "code graph parsing (multi-language: Rust, Python, JS, TS, Go, C#, C, C++, Swift)"
   - name: tree-sitter-rust
     version: "0.23"
     purpose: Rust language grammar for tree-sitter
