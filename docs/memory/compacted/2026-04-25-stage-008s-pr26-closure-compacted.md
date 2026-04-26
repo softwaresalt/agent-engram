@@ -62,7 +62,7 @@ All threads resolved via GraphQL. CI green (cozo: 49s, surreal: 7m34s). Merged w
 | Decision | Context |
 | --- | --- |
 | stash.jsonl schema: `{id,priority,kind,text,created_at}` | Backlogit MCP fields (title/artifact_type/status) are incompatible — use `text` for description, `kind` for type |
-| Table separators: always `\| --- \| --- \|` | Compact `\|---|---|\` triggers Copilot false-positive about double-pipe columns |
+| Table separators: always `\| --- \| --- \|` | Compact `|---|---|` triggers Copilot false-positive about double-pipe columns |
 | H1 + frontmatter title: is a violation | Markdown style guide: when frontmatter has `title:`, no H1 heading |
 | Branch protection requires PR for all commits to main | Even docs-only closure artifacts must go through PR |
 | `--admin` merge needed | Branch protection enforced even when owner is the reviewer |

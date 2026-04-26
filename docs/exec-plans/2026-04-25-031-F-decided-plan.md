@@ -26,7 +26,7 @@ All four units ship together in one shipment (008-S) because Units 1 and 3 inter
 
 ## Constraints
 
-- All 4 units are markdown/instruction/policy only — no Rust production code. `cargo test` harness enforcement (Principle II) does not apply. Test-first is satisfied by the Plan Hardening observability checkpoints (post-merge agent-behavior signals) and acceptance criteria on the feature file.
+- **Principle II (Test-First) — documented justified deviation**: All 4 units produce markdown/instruction/policy files only; no Rust production code is added or modified. The `cargo test` enforcement path provides no meaningful coverage for instruction/skill/policy authorship. Concrete verification replacing test harnesses: (1) Plan Hardening observability checkpoints — post-merge agent-behavior signals monitored over a 2-week window; (2) acceptance criteria on 031-F verifiable by operator review before Ship claims the shipment. This deviation is explicitly documented per Constitution Governance requirements (Constitution §Governance "Conflict resolution").
 - Unit 4 policy additions must cross-reference and defer to the constitution as authoritative; `workflow-policies.md` operationalizes but does not override.
 - Unit 3 POC: refactor one named cheap-subagent skill only; measure context-size delta before expanding.
 - Out of scope: cross-agent telemetry surfaces, enforcement automation for new policies.
