@@ -1,5 +1,6 @@
 ---
 type: stage-session
+title: "Stage Session: Group A — Repository Config & Policy Compliance"
 timestamp: 2026-04-25T21:49:00-07:00
 agent: stage
 phase: complete

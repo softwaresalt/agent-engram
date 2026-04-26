@@ -1,6 +1,6 @@
 ---
 title: "Repository configuration and policy compliance cleanup"
-description: "Deliberation on grouping 4 task-shaped stash entries into a single covering feature for repo config hygiene and PR merge policy enforcement"
+description: "Deliberation on grouping 4 task-shaped stash entries into a single covering chore for repo config hygiene and PR merge policy enforcement"
 topic: "Group A — repo config and policy compliance cleanup"
 depth: "lightweight"
 decision_status: "decided"
@@ -60,9 +60,9 @@ No relevant prior learnings found for these topics.
 
 ## Options Evaluated
 
-### Option A: Single covering feature — all 4 items together
+### Option A: Single covering chore — all 4 items together
 
-**Description**: Group all 4 entries under one covering feature titled
+**Description**: Group all 4 entries under one covering chore titled
 "Repository configuration and policy compliance cleanup." Ship as one PR.
 
 - **Pros**: Minimizes shipment overhead; all items are small and non-code; natural single-PR scope
@@ -93,7 +93,7 @@ No relevant prior learnings found for these topics.
 
 ## Decision
 
-**Chosen: Option A — single covering feature.**
+**Chosen: Option A — single covering chore.**
 
 Rationale: All 4 items are small, non-code config/policy fixes. The domain
 overlap (repo-level hygiene) is strong enough to justify a single covering
@@ -101,7 +101,7 @@ feature. Splitting into two features doubles pipeline overhead for no meaningful
 risk reduction. The combined scope still fits comfortably within a single PR
 and review cycle.
 
-**Covering feature title**: "Repository configuration and policy compliance cleanup"
+**Covering chore title**: "Repository configuration and policy compliance cleanup"
 
 **Confirmed task scope**:
 1. Document branch protection enforcement policy and add guardrails

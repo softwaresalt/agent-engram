@@ -1,5 +1,4 @@
 ---
-title: "Repository configuration and policy compliance cleanup"
 source: "docs/decisions/2026-04-25-repo-config-policy-cleanup-deliberation.md"
 stash_ids:
   - 4CE7A279
@@ -51,8 +50,8 @@ Four accumulated repository hygiene items need resolution:
 **Files affected**: None (GitHub UI change)
 
 The operator must navigate to GitHub Settings → General → Pull Requests and
-uncheck "Allow rebase merging." This cannot be automated by the agent and must
-complete before Unit 2 can note the settings change in P-009.
+uncheck "Allow rebase merging." This cannot be automated by the agent. Unit 1 completion is required before
+the P-009 compliance note can be updated from "action required" to "verified".
 
 **Acceptance criteria**:
 - `gh api /repos/softwaresalt/agent-engram --jq '.allow_rebase_merge'` returns `false`
@@ -135,7 +134,7 @@ Unit 1 (disable rebase merge) ──► Unit 2 (add P-010 + P-009 note)
 Unit 3 (config template + local fix) ─────┘ (parallel with Unit 2)
 ```
 
-Unit 1 must complete before Unit 2 can note the settings change in P-009.
+Unit 1 must complete before the P-009 compliance note can be updated from "action required" to "verified".
 Unit 3 is independent and can execute in parallel with Units 1-2.
 
 ## Decisions and Rationale

@@ -231,11 +231,13 @@ P-005 violation event.
 branch with `git checkout -b {branch_name}` (or `git switch -c {branch_name}`), broadcast a
 P-005 violation event, and resume work on the feature branch.
 
-**Operator-assisted fallback**: If the environment blocks branch creation commands (e.g.,
-due to IDE or CLI security policies), request operator assistance to create the branch
-manually, or use `skip_policy: P-010` with explicit operator approval recorded in the PR
-description. The `skip_policy: P-010` escape is only valid when all commits are pushed to a
-dedicated feature branch (never directly to `main` on the remote).
+**Operator-assisted fallback**: If the environment blocks `git checkout` or `git switch`
+commands (e.g., due to IDE or CLI security policies), the agent may commit locally on
+the `main` branch provided all pushes target a dedicated remote feature branch (e.g.,
+`git push origin main:stage/012-S-feature`). The local branch name does not matter in
+this scenario — what matters is that the remote destination is a feature branch, never
+`origin/main` directly. Document with `skip_policy: P-010` and record explicit operator
+approval in the PR description.
 
 ---
 
