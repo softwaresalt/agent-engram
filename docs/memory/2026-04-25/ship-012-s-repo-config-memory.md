@@ -56,10 +56,11 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 - **PR #28**: https://github.com/softwaresalt/agent-engram/pull/28 — OPEN
 - **Branch**: `stage/012-S-repo-config-policy` → `main`
-- **Head commit**: `fbd334a` (closure artifact)
-- **CI**: ✅ both checks pass (cozo-backend 48s, surreal-backend 7m57s)
-- **Review**: ✅ 1 P1 found and fixed (a6fbb96); no remaining findings
-- **Copilot review**: requested but bot login not found; relies on CI + manual review
+- **Head commit**: `be6da88` (address copilot review comments)
+- **CI**: ✅ both checks pass (cozo-backend 51s, surreal-backend 7m57s) on `be6da88`
+- **Review (automated)**: ✅ 1 P1 found and fixed (a6fbb96); all 8 Copilot inline comments addressed (be6da88)
+- **Copilot review comment replies**: PR comment #4321439501 posted summarizing all fixes
+- **Thread resolution**: GraphQL blocked by environment security policy — manual resolution needed
 - **Awaiting**: operator merge approval
 
 ## Decisions
@@ -78,14 +79,11 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 ## Next Steps
 
-1. ⏳ Wait for `cargo test` to complete
-2. Commit all changes with message: `chore(build): add mcp config template, add P-010 branch policy`
-3. Push to `stage/012-S-repo-config-policy` via `git push origin main:stage/012-S-repo-config-policy`
-4. Invoke **review** skill in report-only mode
-5. Invoke **pr-lifecycle** skill to create PR
-6. Await operator merge approval
-7. **Operator action still pending**: Disable rebase merge in GitHub Settings (033.001-T)
-8. After merge: post-merge closure, compact-context
+1. ✅ All 8 Copilot review comments addressed (be6da88)
+2. ✅ CI passing on head commit (cozo 51s, surreal 7m57s)
+3. **Awaiting operator merge approval** for PR #28
+4. **Operator action still pending**: Disable rebase merge in GitHub Settings (033.001-T)
+5. After merge: run post-merge closure (Ship Step 6) — archive shipment, compound-refresh, compact-context
 
 ## Open Issues
 
