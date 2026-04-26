@@ -1,6 +1,6 @@
 ---
 title: "backlogit_ship_shipment creates only the shipment archive file, not individual item archive files"
-description: "backlogit_ship_shipment moves the shipment record to archive but does NOT create individual archive files for feature/task manifest items — they must be created manually"
+description: "backlogit_ship_shipment (MCP tool) moves the shipment record to archive but does NOT create individual archive files for feature/task manifest items — they must be created manually. NOTE: the CLI backlogit shipment ship DOES create individual archive files (observed in 012-S, 2026-04-26)."
 problem_type: "shipment archive drift"
 category: "workflow-issues"
 component: "backlogit shipment closure"
@@ -9,10 +9,12 @@ resolution_type: "workaround"
 severity: "high"
 message: "post-mode reconcile: ARCHIVE_MISSING for manifest items after backlogit_ship_shipment — only {shipment-id}.md appears under .backlogit/archive/"
 file_path: ".backlogit/archive/"
+stale_note: "Potentially partially stale. As of 2026-04-26 (shipment 012-S), the CLI command `backlogit shipment ship` DID create individual archive files (033.002-T.md, 033.003-T.md, 012-S.md) as new untracked files. This entry's behavior was observed via the MCP tool `backlogit_ship_shipment` in 001-S. The MCP vs CLI behavior may differ, or the tool may have been updated. Verify before creating archive files manually when using the CLI."
 citations:
   - "docs/closure/2026-04-23-001-S-toctou-fix-closure.md"
   - "docs/compound/workflow-issues/ship-shipment-overscoped-manifest-2026-04-20.md"
   - "shipment 001-S post-merge closure, 2026-04-23"
+  - "shipment 012-S post-merge closure, 2026-04-26 (CLI: individual archive files WERE created)"
 tags:
   - "backlogit"
   - "shipment"
