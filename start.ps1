@@ -1,6 +1,7 @@
 $autoharness_home = (autoharness home)
-$global_agents_src = "$autoharness_home\.github\agents"
-$local_agents = ".github\local-agents"
+$workspace_root = Split-Path -Parent $PSCommandPath
+$global_agents_src = Join-Path $autoharness_home ".github\agents"
+$local_agents = Join-Path $workspace_root ".github\local-agents"
 
 # This keeps generated copies out of the tracked .github/agents directory.
 if (Test-Path $global_agents_src) {
@@ -19,8 +20,8 @@ if (Test-Path $global_agents_src) {
     }
 }
 
-$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { ".\.copilot" }
-$env:ENGRAM_DATA_DIR = ".\.engram"   # Keep agent-engram state workspace-local by default
+$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $workspace_root ".copilot" }
+$env:ENGRAM_DATA_DIR = Join-Path $workspace_root ".engram"   # Keep agent-engram state workspace-local by default
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE_PATH) {
     $env:COPILOT_EXE_PATH

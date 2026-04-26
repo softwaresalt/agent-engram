@@ -41,10 +41,10 @@ This branch does not modify Rust source files or test files. The diff is limited
 ## PR state
 
 * PR URL: <https://github.com/softwaresalt/agent-engram/pull/30>
-* Draft: yes
+* Draft: no
 * Base branch: `main`
 * Head branch: `chore/autoharness-tune-2026-04-26`
-* CI: rerunning after review-fix commit `bc9df10`
+* CI: passing after review-fix commit `3fd0e56`
 * Copilot review request via `gh pr edit --add-reviewer copilot` was unavailable in this environment
 
 ## Review follow-up
@@ -60,9 +60,9 @@ This branch does not modify Rust source files or test files. The diff is limited
 * Updated `.autoharness/harness-manifest.yaml` so the TUNE-017 note matches the current branch strategy
 * Replied to each Copilot comment after push and resolved all 7 review threads via `gh api graphql`
 * Identified and fixed 4 follow-up Copilot comments after a later review pass
+* Marked PR #30 ready for review after the follow-up fixes landed
 
 ## Next step
 
-Address the 4 open Copilot follow-up threads on `start.ps1` and this memory file,
-then push the fixes, reply on each thread, resolve them with `gh api graphql`,
-and move PR #30 to the merge approval gate.
+Push the script-root path fix, reply to any new Copilot review threads, resolve them
+with `gh api graphql`, and then move PR #30 to the merge approval gate.
