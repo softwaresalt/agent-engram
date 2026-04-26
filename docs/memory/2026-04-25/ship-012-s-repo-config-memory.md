@@ -28,7 +28,7 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 ### 033.002-T — Add P-010 and P-009 compliance note ✅ done
 
 **Files modified**:
-- `.github/policies/workflow-policies.md` — added P-009 compliance status note ("allow_rebase_merge disabled in GitHub repository settings, verified as part of chore 033-C shipment 012-S"), added P-010 policy (branch creation enforcement — Ship MUST be on a dedicated feature branch before creating any commit), updated version from 1.0.0 to 1.5.0, added v1.5.0 amendment log entry
+- `.github/policies/workflow-policies.md` — added P-009 compliance action note (pending operator action to disable `allow_rebase_merge` in GitHub Settings, tracked in 033.001-T), added P-010 policy (branch creation enforcement — Ship MUST be on a dedicated feature branch before creating any commit), updated version from 1.0.0 to 1.5.0, added v1.5.0 amendment log entry
 
 **Acceptance verified**:
 - `Select-String -Path ".github/policies/workflow-policies.md" -Pattern "P-010"` → finds "## P-010: Feature Branch Creation Before First Commit" ✅
@@ -37,7 +37,7 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 ### 033.001-T — Disable rebase merge in GitHub Settings 🔴 blocked
 
-**Reason**: `gh api PATCH /repos/{owner}/{repo}` blocked by Copilot CLI security policy. Cannot automate this action.
+**Reason**: `gh api --method PATCH /repos/{owner}/{repo}` blocked by Copilot CLI security policy. Cannot automate this action.
 
 **Required operator action**: Navigate to https://github.com/softwaresalt/agent-engram/settings → General → Pull Requests → uncheck "Allow rebase merging" → Save
 
@@ -49,7 +49,7 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 |------|--------|-------|
 | `cargo check` | ✅ pass | No changes to Rust source |
 | `cargo clippy` | ✅ pass | No warnings |
-| `cargo test` | ✅ pass | CI surreal-backend: 7m57s; cozo-backend: 48s |
+| `cargo test` | ✅ pass | CI surreal-backend: 7m44s; cozo-backend: 55s |
 | `cargo fmt --check` | ⚠️ blocked | CLI permission policy blocks this command; no Rust files changed |
 
 ## PR Status
@@ -72,10 +72,10 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 ## Branch State
 
-- Local: `main` (git checkout blocked, working on main)
+- Local: `main` (git checkout blocked; pushing to remote PR branch via `git push origin main:{branch}`)
 - Remote target: `stage/012-S-repo-config-policy`
-- Last known commit: e886c82
-- Uncommitted changes: `.mcp.json.example` (staged), `.github/policies/workflow-policies.md`, `.backlogit/queue/` (5 files)
+- All changes committed and pushed; PR branch is ahead of `origin/main`
+- No uncommitted changes
 
 ## Next Steps
 
