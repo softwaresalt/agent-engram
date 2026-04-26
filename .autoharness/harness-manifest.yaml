@@ -246,4 +246,4 @@ verification:
     - "TUNE-014: shipment-reconcile SKILL.md — regenerated from v1.3.2 template"
     - "TUNE-015: architecture-doc.instructions.md — regenerated from v1.3.2 template"
     - "TUNE-016: continuous-learning.instructions.md — regenerated from v1.3.2 template"
-    - "TUNE-017: removed misplaced auto-* agents from .github/agents/, updated workspace file for .github/local-agents/ discoverability"
+    - "TUNE-017: updated workspace file for .github/local-agents/ discoverability and reconciled auto-* agent placement"

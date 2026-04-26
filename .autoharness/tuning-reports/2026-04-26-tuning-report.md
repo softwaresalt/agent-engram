@@ -1,8 +1,8 @@
 ---
 type: tuning-report
 generated_at: "2026-04-26T12:44:00-07:00"
-workspace: "D:\\Source\\GitHub\\agent-engram"
-autoharness_home: "C:\\Users\\derek.williams\\AppData\\Roaming\\uv\\tools\\autoharness\\Lib\\site-packages\\autoharness\\data"
+workspace: "<WORKSPACE_ROOT>"
+autoharness_home: "<AUTOHARNESS_HOME>"
 autoharness_version: "1.3.2"
 manifest_installed_at: "2025-07-23"
 previous_tune: "2026-04-25T12:34:00-07:00"
@@ -92,9 +92,9 @@ All workspace counts match the installed profile — no structural drift detecte
 ### TUNE-012: Ship Agent — Source Artifact Cleanup Rewrite (P1)
 
 **Artifact**: `.github/agents/ship.agent.md`
-**Issue**: Template v1.3.2 rewrote Step 6 point 7 from "Archive stale deliberation and stash artifacts" (broad heuristic search) to "Source artifact cleanup" (targeted lookup using `custom_fields.source_stash_id` and `custom_fields.source_deliberation_id`). The new approach is more precise and avoids archiving unrelated artifacts.
-**Change**: Replace the existing Step 7 content with the targeted cleanup approach.
-**Impact**: More reliable post-merge cleanup; no risk of archiving unrelated deliberation/spike items.
+**Issue**: Template v1.3.2 rewrote Step 6 point 7 from "Archive stale deliberation and stash artifacts" (broad heuristic search) to "Source artifact cleanup". The installed backlog registry does not expose dedicated stash-removal or deliberation-archive operations, so the cleanup text must stay aligned with supported operations and verifiable `references`/`custom_fields` links.
+**Change**: Replace the existing Step 7 content with a targeted cleanup approach that records source stash IDs and deliberation references through supported backlog comments and closure artifacts.
+**Impact**: More reliable post-merge cleanup guidance without referencing unavailable backlog operations.
 
 ### TUNE-013: PR-Lifecycle Skill — Branch Retention + Post-Merge Guidance (P2)
 
