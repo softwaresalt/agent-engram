@@ -195,8 +195,8 @@ attribution, and bisect-friendly history.
 
 > **Compliance action required**: Disable `allow_rebase_merge` in the GitHub repository
 > settings (Settings → General → Pull Requests → uncheck "Allow rebase merging").
-> Tracked as task 033.001-T in shipment 012-S. Verify via `gh api GET /repos/{owner}/{repo}`
-> and confirm `allow_rebase_merge: false` once the operator completes this action.
+> Tracked as task 033.001-T in shipment 012-S. Verify once the operator completes this
+> action: `gh api /repos/{owner}/{repo} --jq '.allow_rebase_merge'` should return `false`.
 
 **Precondition**: The pull request merge strategy is configured as "Create a merge commit"
 (GitHub: `merge` method, not `squash` or `rebase`).
@@ -227,7 +227,15 @@ P-005 violation event.
 
 **Postcondition**: All commits for the current feature or chore are on a dedicated branch. The branch name should follow the convention `{type}/{id}-{slug}` (e.g., `feat/033-repo-config-cleanup`).
 
-**Violation Action**: Halt immediately. Do not create any commit on `main`. Create a feature branch with `git checkout -b {branch_name}`, broadcast a P-005 violation event, and resume work on the feature branch.
+**Violation Action**: Halt immediately. Do not create any commit on `main`. Create a feature
+branch with `git checkout -b {branch_name}` (or `git switch -c {branch_name}`), broadcast a
+P-005 violation event, and resume work on the feature branch.
+
+**Operator-assisted fallback**: If the environment blocks branch creation commands (e.g.,
+due to IDE or CLI security policies), request operator assistance to create the branch
+manually, or use `skip_policy: P-010` with explicit operator approval recorded in the PR
+description. The `skip_policy: P-010` escape is only valid when all commits are pushed to a
+dedicated feature branch (never directly to `main` on the remote).
 
 ---
 

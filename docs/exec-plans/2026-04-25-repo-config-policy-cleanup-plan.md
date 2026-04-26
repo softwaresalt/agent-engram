@@ -91,7 +91,7 @@ the authoritative enforcement surface.
 
 **Acceptance criteria**:
 - `workflow-policies.md` contains P-010 with Applies To, Gate Point, Statement, Precondition, Postcondition, and Violation Action fields
-- P-009 section notes rebase merge setting is disabled (with `gh api` verification command)
+- P-009 section includes compliance action note documenting the requirement to disable `allow_rebase_merge` (pending operator action in 033.001-T)
 - Amendment log updated
 - `Select-String -Path ".github/policies/workflow-policies.md" -Pattern "P-010"` finds the policy
 
@@ -154,7 +154,7 @@ Unit 3 is independent and can execute in parallel with Units 1-2.
 |---|---|---|
 | `.mcp.json` path change breaks MCP servers | Low | Verify paths exist; test MCP connectivity after edit |
 | Operator forgets to disable rebase merge | Low | PR description includes verification command |
-| P-010 too restrictive for hotfix scenarios | Low | Policy includes operator override via `skip_policy: P-010` |
+| P-010 too restrictive for hotfix scenarios | Low | Policy documents operator-assisted fallback and `skip_policy: P-010` escape with explicit approval |
 
 ## Plan Hardening Signals
 

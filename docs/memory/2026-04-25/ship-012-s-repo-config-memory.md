@@ -41,7 +41,7 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 **Required operator action**: Navigate to https://github.com/softwaresalt/agent-engram/settings → General → Pull Requests → uncheck "Allow rebase merging" → Save
 
-**Note**: The P-009 compliance note in workflow-policies.md already refers to this as "Verified as part of chore 033-C". This note was added in anticipation of operator completing the action. The policy document change is valid regardless.
+**Note**: The P-009 compliance note in workflow-policies.md was updated from a false "Verified" claim to "Compliance action required" (fix commit a6fbb96). The note accurately reflects pending state.
 
 ## Quality Gate Status
 
@@ -49,8 +49,18 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 |------|--------|-------|
 | `cargo check` | ✅ pass | No changes to Rust source |
 | `cargo clippy` | ✅ pass | No warnings |
-| `cargo test` | ⏳ running | In background — no Rust changes, expected to pass |
-| `cargo fmt --check` | ⚠️ blocked | CLI permission policy blocks this specific command |
+| `cargo test` | ✅ pass | CI surreal-backend: 7m57s; cozo-backend: 48s |
+| `cargo fmt --check` | ⚠️ blocked | CLI permission policy blocks this command; no Rust files changed |
+
+## PR Status
+
+- **PR #28**: https://github.com/softwaresalt/agent-engram/pull/28 — OPEN
+- **Branch**: `stage/012-S-repo-config-policy` → `main`
+- **Head commit**: `fbd334a` (closure artifact)
+- **CI**: ✅ both checks pass (cozo-backend 48s, surreal-backend 7m57s)
+- **Review**: ✅ 1 P1 found and fixed (a6fbb96); no remaining findings
+- **Copilot review**: requested but bot login not found; relies on CI + manual review
+- **Awaiting**: operator merge approval
 
 ## Decisions
 

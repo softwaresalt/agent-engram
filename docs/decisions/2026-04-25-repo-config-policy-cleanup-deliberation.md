@@ -45,7 +45,7 @@ do not warrant full feature pipelines. Grouped together they form a coherent
 
 - `ENGRAM_WORKSPACE` points to `D:\\GitHub\\agent-engram` — incorrect (should be `D:\\Source\\GitHub\\agent-engram`)
 - `BACKLOGIT_WORKSPACE` points to `D:\\GitHub\\agent-engram` — same issue
-- Tavily MCP server URL contains a plaintext API key: `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`
+- Tavily MCP server URL contains a plaintext API key: `tvly-dev-***REDACTED***` (key has been rotated)
 - Both issues were flagged as known follow-ups in the v1.3.0 tune closure
 
 ### Branch protection / merge strategy
