@@ -273,7 +273,7 @@ After all tasks in the queue are complete:
     conflicts, and breaking the Ship pipeline's assumption of single-branch scope.
 12. **Never merge automatically. Await explicit user approval before any merge.**
     * When the `agent-intercom` capability pack is installed, broadcast `[WAIT] Awaiting user merge approval` and use the intercom clarification flow if unresolved operator guidance is needed before merge.
-12. **Pre-merge strategy guardrail (P-009)**: Before executing any merge, verify the PR is
+13. **Pre-merge strategy guardrail (P-009)**: Before executing any merge, verify the PR is
     configured to use a merge commit strategy (not squash or rebase).
     * On GitHub: confirm the active merge button is "Create a merge commit" — not
       "Squash and merge" or "Rebase and merge".

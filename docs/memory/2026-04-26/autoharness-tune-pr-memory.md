@@ -5,15 +5,12 @@ branch: chore/autoharness-tune-2026-04-26
 pr: 30
 status: blocked
 ---
-
-# Autoharness tune PR memory
-
 ## Completed work
 
 * Applied the autoharness v1.3.2 tune-up on `chore/autoharness-tune-2026-04-26`
 * Committed and pushed:
   * `d2e4665` - harness tune-up across Stage, Ship, PR lifecycle, workspace discovery, and manifest/report artifacts
-  * `4191fbe` - tracked pre-existing workspace/startup state plus backup snapshots and Auto-* agents
+  * `4191fbe` - tracked pre-existing workspace/startup state plus backup snapshots
 * Opened draft PR [#30](https://github.com/softwaresalt/agent-engram/pull/30)
 * Confirmed `cargo fmt --all -- --check` passes
 * Confirmed `cargo clippy -- -D warnings -D clippy::pedantic` passes

@@ -16,7 +16,7 @@ if (Test-Path $global_agents_src) {
 if (-not $env:COPILOT_HOME) {
     $env:COPILOT_HOME = $local_copilot
 }
-$env:ENGRAM_DATA_DIR = ".\.engram"   # Uncomment when the agent-engram capability pack is active
+$env:ENGRAM_DATA_DIR = ".\.engram"   # Keep agent-engram data workspace-local by default
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE) {
     $env:COPILOT_EXE
@@ -27,7 +27,7 @@ $copilotExe = if ($env:COPILOT_EXE) {
 }
 
 if (-not $copilotExe) {
-    throw "Unable to locate copilot or copilot.exe. Set COPILOT_EXE or add Copilot to PATH."
+    throw "Unable to locate copilot or copilot.exe. Set COPILOT_EXE or add 'copilot' to PATH."
 }
 
 & $copilotExe @args
