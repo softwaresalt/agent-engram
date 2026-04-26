@@ -47,8 +47,21 @@ This branch does not modify Rust source files or test files. The diff is limited
 * Draft: yes
 * Base branch: `main`
 * Head branch: `chore/autoharness-tune-2026-04-26`
-* CI: started on PR creation
+* CI: rerunning after review-fix commit `bc9df10`
 * Copilot review request via `gh pr edit --add-reviewer copilot` was unavailable in this environment
+
+## Review follow-up
+
+* Addressed 7 Copilot review comments in commit `bc9df10`
+* Fixed `start.ps1` to:
+  * default `COPILOT_HOME` to the workspace-local `.copilot` directory
+  * inject generated agents into `.github/local-agents/`
+  * preserve CLI argument passthrough with `@args`
+* Clarified `.github/instructions/architecture-doc.instructions.md` so `docs/research/` has a single unambiguous purpose statement
+* Rewrote `.github/agents/ship.agent.md` source-artifact cleanup guidance to use only supported backlog operations and existing `references` links
+* Redacted machine-specific absolute paths from `.autoharness/tuning-reports/2026-04-26-tuning-report.md`
+* Updated `.autoharness/harness-manifest.yaml` so the TUNE-017 note matches the current branch strategy
+* Replied to each Copilot comment after push and resolved all 7 review threads via `gh api graphql`
 
 ## Next step
 
