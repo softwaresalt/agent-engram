@@ -25,7 +25,7 @@ shipment: 012-S
 
 1. Merge PR #29 (use Create a merge commit)
 2. Disable rebase merge: GitHub Settings → General → Pull Requests (stash 8897FD50)
-3. Rotate Tavily API key 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 via Tavily dashboard (stash A75C7326)
+3. Rotate Tavily API key `tvly-dev-***REDACTED***` via Tavily dashboard (stash A75C7326)
 
 ## Files Modified This Session
 
