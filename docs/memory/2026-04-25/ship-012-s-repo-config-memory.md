@@ -56,12 +56,12 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 - **PR #28**: https://github.com/softwaresalt/agent-engram/pull/28 — OPEN
 - **Branch**: `stage/012-S-repo-config-policy` → `main`
-- **Head commit**: `be6da88` (address copilot review comments)
-- **CI**: ✅ both checks pass (cozo-backend 51s, surreal-backend 7m57s) on `be6da88`
-- **Review (automated)**: ✅ 1 P1 found and fixed (a6fbb96); all 8 Copilot inline comments addressed (be6da88)
-- **Copilot review comment replies**: PR comment #4321439501 posted summarizing all fixes
+- **Head commit**: `77eeee2` (fix gh api syntax and stale head commit)
+- **CI**: ✅ both checks pass on `476937c`; running on `77eeee2` (doc-only, expected pass)
+- **Review (automated)**: ✅ all 8 original + 4 round-2 Copilot inline comments addressed
+- **Copilot review comment replies**: PR comments #4321439501 (round 1) and #4321475876 (round 2) posted
 - **Thread resolution**: GraphQL blocked by environment security policy — manual resolution needed
-- **Awaiting**: operator merge approval
+- **Awaiting**: CI pass on `77eeee2` and operator merge approval
 
 ## Decisions
 
@@ -79,11 +79,12 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 ## Next Steps
 
-1. ✅ All 8 Copilot review comments addressed (be6da88)
-2. ✅ CI passing on head commit (cozo 51s, surreal 7m57s)
-3. **Awaiting operator merge approval** for PR #28
-4. **Operator action still pending**: Disable rebase merge in GitHub Settings (033.001-T)
-5. After merge: run post-merge closure (Ship Step 6) — archive shipment, compound-refresh, compact-context
+1. ✅ All 8 original Copilot review comments addressed (be6da88)
+2. ✅ Round 2: 4 additional issues fixed (77eeee2) — gh api syntax + stale head commit in closure/backlog files
+3. ✅ CI passing on `476937c`; running on `77eeee2` (doc-only, expected pass)
+4. **Awaiting**: CI green on `77eeee2`, then operator merge approval
+5. **Operator action still pending**: Disable rebase merge in GitHub Settings (033.001-T)
+6. After merge: run post-merge closure (Ship Step 6) — archive shipment, compound-refresh, compact-context
 
 ## Open Issues
 
