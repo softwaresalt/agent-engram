@@ -55,9 +55,7 @@ uncheck "Allow rebase merging." This cannot be automated by the agent and must
 complete before Unit 2 can note the settings change in P-009.
 
 **Acceptance criteria**:
-- `gh api repos/softwaresalt/agent-engram --jq '.allow_rebase_merge'` returns `false`
-
-**Tests**: `gh api` verification command.
+- `gh api /repos/softwaresalt/agent-engram --jq '.allow_rebase_merge'` returns `false`
 
 ### Unit 2: Add P-010 branch creation enforcement policy
 
