@@ -7,7 +7,8 @@
 	"settings": {
 		"chat.agentFilesLocations": {
 			//"lib/hve-core/.github/agents": true,
-			".github/agents": true
+			".github/agents": true,
+			".github/local-agents": true
 		},
 		"chat.promptFilesLocations": {
 			"lib/hve-core/.github/prompts": true,
@@ -70,7 +71,8 @@
         },
         "Get-Item": true,
         "Get-Size": true,
-        "Resolve-Path": true
+        "Resolve-Path": true,
+        "Out-Null": true
     },
 	"powershell.cwd": "agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,
