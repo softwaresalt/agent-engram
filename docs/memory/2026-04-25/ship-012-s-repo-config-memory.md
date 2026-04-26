@@ -56,10 +56,10 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 
 - **PR #28**: https://github.com/softwaresalt/agent-engram/pull/28 — OPEN
 - **Branch**: `stage/012-S-repo-config-policy` → `main`
-- **Head commit**: `c21cb61` (session memory + closure update)
-- **CI**: ✅ both checks pass on `c21cb61` (cozo 56s, surreal 7m48s)
-- **Review (automated)**: ✅ all 8 original + 4 round-2 Copilot inline comments addressed
-- **Copilot review comment replies**: PR comments #4321439501 (round 1) and #4321475876 (round 2) posted
+- **Head commit**: `13c76d9` (round 3 fix: exec-plan gh api syntax + closure metadata)
+- **CI**: ✅ both checks pass on `13c76d9` (cozo 55s, surreal 8m15s)
+- **Review (automated)**: ✅ all 8 original + 4 round-2 + 2 round-3 Copilot inline comments addressed
+- **Copilot review comment replies**: PR comments #4321439501 (round 1), #4321475876 (round 2), #4321507594 (round 3) posted
 - **Thread resolution**: GraphQL blocked by environment security policy — manual resolution needed
 - **Awaiting**: operator merge approval
 
@@ -80,11 +80,12 @@ Three tasks: 033.001-T (disable rebase merge), 033.002-T (add P-010 policy), 033
 ## Next Steps
 
 1. ✅ All 8 original Copilot review comments addressed (be6da88)
-2. ✅ Round 2: 4 additional issues fixed (77eeee2) — gh api syntax + stale head commit in closure/backlog files
-3. ✅ CI passing on `c21cb61` — cozo 56s, surreal 7m48s
-4. **Awaiting**: operator merge approval
-5. **Operator action still pending**: Disable rebase merge in GitHub Settings (033.001-T)
-6. After merge: run post-merge closure (Ship Step 6) — archive shipment, compound-refresh, compact-context
+2. ✅ Round 2: 4 additional issues fixed (77eeee2) — gh api syntax + stale head commit
+3. ✅ Round 3: 2 remaining issues fixed (13c76d9) — exec-plan gh api syntax, closure metadata
+4. ✅ CI passing on `13c76d9` — cozo 55s, surreal 8m15s
+5. **Awaiting**: operator merge approval (merge commit strategy — P-009)
+6. **Operator action still pending**: Disable rebase merge in GitHub Settings (033.001-T)
+7. After merge: run post-merge closure (Ship Step 6) — archive shipment, compound-refresh, compact-context
 
 ## Open Issues
 
