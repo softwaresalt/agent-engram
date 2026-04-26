@@ -36,8 +36,8 @@ Four accumulated repository hygiene items need resolution:
 
 | Requirement | Source | Implementation Unit |
 |---|---|---|
-| Prevent direct-to-main commits by Ship | 4CE7A279 | Unit 1 |
-| Disable rebase merge in GitHub settings | stash-001 | Unit 2 |
+| Prevent direct-to-main commits by Ship | 4CE7A279 | Unit 2 |
+| Disable rebase merge in GitHub settings | stash-001 | Unit 1 |
 | Fix local `.mcp.json` workspace paths | stash-002 | Unit 3 |
 | Externalize Tavily API key from `.mcp.json` | stash-003 | Unit 3 |
 | Provide onboarding template for `.mcp.json` | implied | Unit 3 |
@@ -76,8 +76,9 @@ workflow policy registry:
 - **Violation action**: Halt. Create a feature branch from `main` before
   proceeding. Broadcast a P-005 violation event.
 
-Also add a note to the P-009 section confirming that `allow_rebase_merge` has
-been disabled in GitHub repository settings (verified via Unit 1).
+Also add a compliance action note to the P-009 section documenting the requirement
+to disable `allow_rebase_merge` in GitHub settings (pending operator completion of
+Unit 1, tracked as 033.001-T).
 
 Update the amendment log with version bump.
 
@@ -188,6 +189,6 @@ No runtime surfaces are changed by this work. All changes are documentation,
 policy, and local configuration.
 
 **Post-merge verification**:
-- Confirm `gh api repos/softwaresalt/agent-engram --jq '.allow_rebase_merge'` returns `false`
+- Confirm `gh api /repos/softwaresalt/agent-engram --jq '.allow_rebase_merge'` returns `false`
 - Confirm `.mcp.json.example` is present in the repository
 - Confirm `workflow-policies.md` contains P-010

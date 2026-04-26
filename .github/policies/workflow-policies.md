@@ -196,7 +196,7 @@ attribution, and bisect-friendly history.
 > **Compliance action required**: Disable `allow_rebase_merge` in the GitHub repository
 > settings (Settings → General → Pull Requests → uncheck "Allow rebase merging").
 > Tracked as task 033.001-T in shipment 012-S. Verify once the operator completes this
-> action: `gh api /repos/{owner}/{repo} --jq '.allow_rebase_merge'` should return `false`.
+> action: `gh api /repos/softwaresalt/agent-engram --jq '.allow_rebase_merge'` should return `false`.
 
 **Precondition**: The pull request merge strategy is configured as "Create a merge commit"
 (GitHub: `merge` method, not `squash` or `rebase`).
@@ -219,15 +219,15 @@ P-005 violation event.
 | Applies To | `ship`                                   |
 | Gate Point | Ship Step 1 pre-flight                   |
 
-**Statement**: Ship MUST verify it is on a dedicated feature branch before creating any commit. Direct commits to `main` are forbidden. This ensures every unit of work goes through the PR review process and maintains a clean, traceable commit history.
+**Statement**: Ship MUST verify it is on a dedicated feature branch before creating any commit. Direct commits to the default branch (typically `main`) or any release branch are forbidden. This ensures every unit of work goes through the PR review process and maintains a clean, traceable commit history.
 
 **Background**: Policy added after shipment 007-S was committed directly to `main` without a feature branch or PR (stash `4CE7A279`). Branch protection rules were bypassed. This policy formalizes the required workflow.
 
-**Precondition**: `git branch --show-current` returns a branch name other than `main` (or the repository's default branch).
+**Precondition**: `git branch --show-current` returns a branch name other than `main` (or the repository's configured default branch). The check is against the **current local branch** — not the remote default.
 
 **Postcondition**: All commits for the current feature or chore are on a dedicated branch. The branch name should follow the convention `{type}/{id}-{slug}` (e.g., `feat/033-repo-config-cleanup`).
 
-**Violation Action**: Halt immediately. Do not create any commit on `main`. Create a feature
+**Violation Action**: Halt immediately. Do not create any commit on the default branch. Create a feature
 branch with `git checkout -b {branch_name}` (or `git switch -c {branch_name}`), broadcast a
 P-005 violation event, and resume work on the feature branch.
 
