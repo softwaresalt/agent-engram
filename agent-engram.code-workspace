@@ -7,7 +7,8 @@
 	"settings": {
 		"chat.agentFilesLocations": {
 			//"lib/hve-core/.github/agents": true,
-			".github/agents": true
+			".github/agents": true,
+			".github/local-agents": true
 		},
 		"chat.promptFilesLocations": {
 			"lib/hve-core/.github/prompts": true,
