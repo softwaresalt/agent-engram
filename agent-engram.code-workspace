@@ -71,7 +71,8 @@
         },
         "Get-Item": true,
         "Get-Size": true,
-        "Resolve-Path": true
+        "Resolve-Path": true,
+        "Out-Null": true
     },
 	"powershell.cwd": "agent-engram",
     "github.copilot.chat.advanced.workspace.codeSearchExternalIngest.enabled": true,

@@ -1,34 +1,32 @@
 $autoharness_home = (autoharness home)
 $global_agents_src = "$autoharness_home\.github\agents"
-$local_agents = ".github\local-agents"
-$local_copilot = ".\.copilot"
+$workspace_agents = ".github\agents"
 
-# Inject global agents into .github/local-agents (non-destructive — skip if already present)
-# This is the directory the CLI scans for agents alongside .github/agents.
+# Inject global agents into .github/agents (non-destructive — skip if already present)
+# This keeps workspace-visible agents in the standard repository agent directory.
 if (Test-Path $global_agents_src) {
-    New-Item -ItemType Directory -Path $local_agents -Force | Out-Null
+    New-Item -ItemType Directory -Path $workspace_agents -Force | Out-Null
     Get-ChildItem "$global_agents_src\*.agent.md" | ForEach-Object {
-        $dest = Join-Path $local_agents $_.Name
+        $dest = Join-Path $workspace_agents $_.Name
         if (-not (Test-Path $dest)) { Copy-Item $_.FullName $dest }
     }
 }
 
-$env:COPILOT_HOME = $local_copilot
-$env:ENGRAM_DATA_DIR = ".\.engram"
+$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { "" }
+$env:ENGRAM_DATA_DIR = ".\.engram"   # Uncomment when the agent-engram capability pack is active
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE) {
     $env:COPILOT_EXE
 } else {
-    $cmd = Get-Command "copilot" -ErrorAction SilentlyContinue
-    if ($cmd) { $cmd.Source }
-    else { (Get-Command "copilot.exe" -ErrorAction SilentlyContinue).Source }
+    (Get-Command "copilot.exe" -ErrorAction SilentlyContinue).Source
 }
 
 if (-not $copilotExe) {
-    throw "Unable to locate copilot or copilot.exe. Set COPILOT_EXE or add copilot to PATH."
+    throw "Unable to locate copilot.exe. Set COPILOT_EXE or add copilot.exe to PATH."
 }
 
-& $copilotExe @args
+& $copilotExe
+
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
 # Uncomment to run Claude Code with workspace-local state directories.
