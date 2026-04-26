@@ -59,9 +59,10 @@ This branch does not modify Rust source files or test files. The diff is limited
 * Redacted machine-specific absolute paths from `.autoharness/tuning-reports/2026-04-26-tuning-report.md`
 * Updated `.autoharness/harness-manifest.yaml` so the TUNE-017 note matches the current branch strategy
 * Replied to each Copilot comment after push and resolved all 7 review threads via `gh api graphql`
+* Identified and fixed 4 follow-up Copilot comments after a later review pass
 
 ## Next step
 
-Triage the failing `integration_graph_vector_rehydration` test independently of this
-harness-only branch. After that test is either fixed or confirmed as an accepted
-baseline issue, update PR #30 and continue the PR lifecycle to the merge approval gate.
+Address the 4 open Copilot follow-up threads on `start.ps1` and this memory file,
+then push the fixes, reply on each thread, resolve them with `gh api graphql`,
+and move PR #30 to the merge approval gate.

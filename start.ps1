@@ -1,9 +1,10 @@
 $autoharness_home = (autoharness home)
 $global_agents_src = "$autoharness_home\.github\agents"
-$local_agents = ".github\agents"
+$local_agents = ".github\local-agents"
 
 # This keeps generated copies out of the tracked .github/agents directory.
 if (Test-Path $global_agents_src) {
+    New-Item -ItemType Directory -Path $local_agents -Force | Out-Null
     Get-ChildItem "$global_agents_src\*.agent.md" | ForEach-Object {
         $dest = Join-Path $local_agents $_.Name
         $sourceFile = $_
@@ -19,7 +20,7 @@ if (Test-Path $global_agents_src) {
 }
 
 $env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { ".\.copilot" }
-$env:ENGRAM_DATA_DIR = ".\.engram"   # Uncomment when the agent-engram capability pack is active
+$env:ENGRAM_DATA_DIR = ".\.engram"   # Keep agent-engram state workspace-local by default
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE_PATH) {
     $env:COPILOT_EXE_PATH
