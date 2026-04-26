@@ -193,9 +193,10 @@ re-run markdownlint before committing. Do not suppress or disable the rules.
 are expressly forbidden. This preserves the full development history, individual commit
 attribution, and bisect-friendly history.
 
-> **Compliance status**: `allow_rebase_merge` has been disabled in the GitHub repository
-> settings (Settings → General → Pull Requests → "Allow rebase merging" unchecked).
-> Verified as part of chore 033-C (shipment 012-S).
+> **Compliance action required**: Disable `allow_rebase_merge` in the GitHub repository
+> settings (Settings → General → Pull Requests → uncheck "Allow rebase merging").
+> Tracked as task 033.001-T in shipment 012-S. Verify via `gh api GET /repos/{owner}/{repo}`
+> and confirm `allow_rebase_merge: false` once the operator completes this action.
 
 **Precondition**: The pull request merge strategy is configured as "Create a merge commit"
 (GitHub: `merge` method, not `squash` or `rebase`).
@@ -239,4 +240,4 @@ P-005 violation event.
 | 1.2.0   | 2026-04-24     | Added P-007      | Backlogit archive integrity after shipment |
 | 1.3.0   | 2026-04-24     | Added P-008      | Markdown conformance enforcement |
 | 1.4.0   | 2026-04-24     | Added P-009      | Merge-commit-only policy |
-| 1.5.0   | 2026-04-25     | Added P-010; P-009 compliance note | Branch creation enforcement; rebase merge disabled |
+| 1.5.0   | 2026-04-25     | Added P-010; P-009 compliance action note | Branch creation enforcement; document rebase merge disable requirement |
