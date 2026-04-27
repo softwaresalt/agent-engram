@@ -1,9 +1,9 @@
 ---
 title: tree-sitter Grammar ABI Constraint and TSX Grammar Dispatch
 date: 2026-04-15
-updated: 2026-04-21
+updated: 2026-04-27
 category: build-errors
-tags: [tree-sitter, grammar, abi, tsx, parsing, swift]
+tags: [tree-sitter, grammar, abi, tsx, parsing, swift, sql]
 ---
 
 ## Problem
@@ -30,14 +30,17 @@ When adding TSX support to the multi-language parser:
 - Exception: `tree-sitter-swift = "=0.7.1"` emits ABI 15 and requires the
   0.25 runtime. Pin to exact version to prevent silent upgrades.
 
-## ABI Table (confirmed as of 2026-04-21)
+## ABI Table (confirmed as of 2026-04-27)
 
 | tree-sitter version | Accepted grammar ABI | Grammar crate version to pin     |
 |---------------------|----------------------|----------------------------------|
 | 0.24.x              | 13–14                | 0.23.x                           |
-| 0.25.x              | 13–15                | 0.23.x (most); `=0.7.1` (swift)  |
+| 0.25.x              | 13–15                | 0.23.x (most); `=0.7.1` (swift); `0.3` (sequel) |
 
 **Project baseline**: tree-sitter `0.25` (upgraded from 0.24 in shipment 005-S).
+
+**SQL/sequel**: `tree-sitter-sequel 0.3` emits ABI 15, compatible with tree-sitter 0.25.
+Add as `tree-sitter-sequel = "0.3"` in `Cargo.toml`.
 
 **Kotlin blocked**: `tree-sitter-kotlin 0.3.x` targets tree-sitter 0.20–0.22 and
 is incompatible with 0.25. `kotlin.rs` is a no-op stub; activate when a
@@ -46,7 +49,9 @@ is incompatible with 0.25. `kotlin.rs` is a no-op stub; activate when a
 ## Related
 
 - `src/services/parsing/typescript.rs` — `parse_tsx_source` using `LANGUAGE_TSX`
-- `src/services/parsing.rs` — `Language::Tsx` variant and dispatch
-- `Cargo.toml` — grammar crate pins at `"0.23"` (most), `"=0.7.1"` (swift)
+- `src/services/parsing/sql.rs` — `parse_sql_source` using tree-sitter-sequel 0.3
+- `src/services/parsing.rs` — `Language::Tsx`, `Language::Sql` variants and dispatch
+- `Cargo.toml` — grammar crate pins at `"0.23"` (most), `"=0.7.1"` (swift), `"0.3"` (sequel)
 - Session: 026-F multi-language parsing (2026-04-15)
 - Shipment 005-S (2026-04-21) — tree-sitter upgraded to 0.25; swift, c, cpp parsers added
+- Shipment 013-S (2026-04-27) — SQL parser added via tree-sitter-sequel 0.3
