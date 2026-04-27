@@ -12,10 +12,13 @@ evidence:
 ## Problem
 
 When a closure artifact documents a rollback using `git revert <sha>`, the command
-is incomplete if `<sha>` is a merge commit. Running it without flags causes two issues:
+is incomplete if `<sha>` is a merge commit. Two distinct failure modes exist:
 
-1. Git aborts with: `error: commit <sha> is a merge but no -m option was given`
-2. Even if it did not error, Git would open an editor to capture the revert commit message
+1. Omitting `-m`: Git aborts immediately with:
+   `error: commit <sha> is a merge but no -m option was given`
+   No editor is opened — the command simply fails.
+2. Providing `-m 1` but omitting `--no-edit`: Git opens an interactive editor for
+   the revert commit message, making the command non-scriptable.
 
 ## Solution
 
@@ -31,9 +34,16 @@ git push origin main
 
 ## When This Applies
 
-Whenever a closure artifact's rollback procedure references a merge commit SHA.
-All PRs in this repo use merge commits (P-009), so every closure artifact's rollback
-command should use this form.
+When a closure artifact's rollback procedure references a merge commit SHA. Not every
+rollback targets a merge commit — single-commit fixes produce non-merge SHAs that can
+be reverted with plain `git revert`. Identify the commit type first:
+
+* `git show --no-patch --format="%P" <sha>` — if output has two SHAs (two parents),
+  it is a merge commit; use `--no-edit -m 1`.
+* If output has one SHA (one parent), it is a regular commit; plain `git revert` works.
+
+In this repo, the top-level feature/chore PR merge commits are always merge commits
+(P-009), so rollbacks of those always need `--no-edit -m 1`.
 
 ## Detection
 

@@ -2,7 +2,7 @@
 title: PR #31 merge — autoharness v1.3.2 post-merge closure
 date: 2026-04-27
 branch: main
-status: done
+status: complete
 ---
 
 ## Completed work
@@ -33,7 +33,7 @@ status: done
 ## Recurring pattern noted
 
 The `git revert <merge-sha>` → `git revert --no-edit -m 1 <merge-sha>` fix has now
-appeared across 3 closure artifacts (PR #34, PR #35, PR #36, PR #31). Worth capturing
+appeared across 4 closure artifacts (PR #34, PR #35, PR #36, PR #31). Worth capturing
 as a compound learning.
 
 ## Open items
