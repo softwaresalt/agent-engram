@@ -25,10 +25,8 @@ status: active
 
 ## Open items
 
-* Commit and push the closure artifact on the post-merge branch
-* Open the closure PR so the post-merge record can be reviewed independently
+None — closure PR #31 is open and awaiting merge approval.
 
 ## Next step
 
-Stage the closure docs, commit them on the post-merge branch, push, and create
-the closure PR.
+Await operator merge approval for PR #31.

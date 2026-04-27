@@ -109,7 +109,7 @@ workspace-local startup behavior, agent discovery, or harness file loading.
 ## Rollback Procedure
 
 ```text
-git revert 3a0def0de9ace050a8035d0a904a0083ad062f18
+git revert --no-edit -m 1 3a0def0de9ace050a8035d0a904a0083ad062f18
 git push origin main
 ```
 
