@@ -1,4 +1,4 @@
-//! IPC end-to-end indexing verification for Swift, C, and C++ (T030.001-C).
+//! IPC end-to-end indexing verification for Swift, C, C++, and SQL.
 //!
 //! Each test:
 //! 1. Creates an isolated workspace with a `.engram/config.toml` that enables
@@ -357,6 +357,47 @@ int square(int x) {
     // the daemon may store the symbol under the unqualified name.  What matters
     // is that the tool call itself did not panic or return a transport error.
     let _ = map_resp;
+
+    drop(harness);
+}
+
+// ── 034.005-T: SQL IPC end-to-end ────────────────────────────────────────────
+
+/// Spawn a daemon with a SQL source file and verify the table is indexed.
+///
+/// Scenario: SQL `CREATE TABLE users` is written to `src/schema.sql` with
+/// `supported_languages = ["sql"]` in the config. After indexing, `list_symbols`
+/// must return a symbol whose name contains `users`.
+#[tokio::test]
+async fn t034_005_sql_create_table_indexed_via_ipc() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let ws = workspace.path();
+
+    let git_dir = ws.join(".git");
+    std::fs::create_dir_all(&git_dir).expect("create .git");
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+
+    write_lang_config(ws, "sql");
+    write_source(
+        ws,
+        "src/schema.sql",
+        "CREATE TABLE users (id INT, name VARCHAR(255));\nCREATE TABLE orders (id INT, user_id INT);\n",
+    );
+
+    let harness = DaemonHarness::spawn_for_workspace(ws, Duration::from_secs(15))
+        .await
+        .expect("daemon must spawn and become ready");
+
+    let endpoint = harness.ipc_path().to_str().expect("UTF-8 path").to_owned();
+
+    let symbols = poll_for_symbol(&endpoint, "users").await;
+
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+
+    assert!(
+        names.iter().any(|n| n.contains("users")),
+        "list_symbols must return the `users` symbol; got: {names:?}"
+    );
 
     drop(harness);
 }
