@@ -2,7 +2,9 @@ $autoharness_home = (autoharness home)
 $global_agents_src = "$autoharness_home\.github\agents"
 $local_agents = ".github\agents"
 
-# This keeps generated copies out of the tracked .github/agents directory.
+# Copies global autoharness agents into .github/agents (tracked; workspace-discoverable).
+# To keep them gitignored instead, change this to ".github\local-agents" and update
+# chat.agentFilesLocations in the workspace settings file to include that path.
 if (Test-Path $global_agents_src) {
     Get-ChildItem "$global_agents_src\*.agent.md" | ForEach-Object {
         $dest = Join-Path $local_agents $_.Name
@@ -18,8 +20,8 @@ if (Test-Path $global_agents_src) {
     }
 }
 
-$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { ".\.copilot" }
-$env:ENGRAM_DATA_DIR = ".\.engram"   # Uncomment when the agent-engram capability pack is active
+$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $PSScriptRoot ".copilot" }
+$env:ENGRAM_DATA_DIR = if ($env:ENGRAM_DATA_DIR) { $env:ENGRAM_DATA_DIR } else { Join-Path $PSScriptRoot ".engram" }
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE_PATH) {
     $env:COPILOT_EXE_PATH
@@ -34,7 +36,7 @@ if (-not $copilotExe) {
     throw "Unable to locate Copilot CLI. Set COPILOT_EXE_PATH (or COPILOT_EXE for backward compatibility) or add 'copilot' to PATH."
 }
 
-& $copilotExe
+& $copilotExe @args
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────

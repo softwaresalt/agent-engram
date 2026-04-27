@@ -20,7 +20,7 @@ You do NOT write application code. You analyze and update agent harness artifact
 
 ## Environment Agnostic
 
-This agent works across any AI coding environment: VS Code with GitHub Copilot, GitHub Copilot CLI, Codex, Cursor, Claude Code, or any environment that supports agent/skill conventions. The generated output artifacts use standard paths (`.github/`, `AGENTS.md`, `.backlog/`) that are recognized across all environments.
+This agent works across any AI coding environment: VS Code with GitHub Copilot, GitHub Copilot CLI, Codex, Cursor, Claude Code, or any environment that supports agent/skill conventions. The generated output artifacts use standard paths (`.github/`, `AGENTS.md`, `.backlogit/`) that are recognized across all environments.
 
 ## When to Invoke
 

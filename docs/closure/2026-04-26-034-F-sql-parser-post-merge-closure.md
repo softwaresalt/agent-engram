@@ -93,7 +93,7 @@ fully captured in:
 If the daemon panics or returns `EngramError` for any `.sql` file:
 
 ```bash
-git revert 305b28f
+git revert -m 1 305b28f
 ```
 
 The `language_from_path()` change is the only wire-up that routes `.sql` files into

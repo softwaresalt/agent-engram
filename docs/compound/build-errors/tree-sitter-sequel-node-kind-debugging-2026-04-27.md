@@ -26,7 +26,7 @@ tree and prints each node's `kind()` and `start_position()`. Run against a
 representative `.sql` file, observe the output, then remove the debug branch.
 
 Confirmed node kind hierarchy for tree-sitter-sequel 0.3:
-```
+```text
 program
   statement
     create_table           ← CREATE TABLE
