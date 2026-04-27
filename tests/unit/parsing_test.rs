@@ -6,7 +6,7 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
 use engram::services::parsing::{
-    ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source,
+    ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source, parse_sql_source,
 };
 
 /// Debug helper: dump the raw tree-sitter node kinds from a C++ class body.
@@ -1032,4 +1032,205 @@ fn test_markdown_empty_no_symbols() {
         "expected no edges for empty doc; got: {:?}",
         result.edges
     );
+}
+
+// ── SQL parsing tests (034.002-T core + 034.003-T secondary) ─────────────────
+
+/// CREATE TABLE must produce an `ExtractedSymbol::Class` with the table name.
+#[test]
+fn test_sql_create_table() {
+    let source = "CREATE TABLE users (id INT, name VARCHAR(255));";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let classes: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Class(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(classes.len(), 1, "expected exactly one Class symbol");
+    assert_eq!(classes[0].name, "users", "class name must match table name");
+    assert!(classes[0].line_start >= 1);
+}
+
+/// CREATE FUNCTION must produce an `ExtractedSymbol::Function`.
+#[test]
+fn test_sql_create_function() {
+    let source = "CREATE FUNCTION get_user(id INT) RETURNS VARCHAR AS BEGIN RETURN ''ok''; END;";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let funcs: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Function(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(funcs.len(), 1, "expected exactly one Function symbol");
+    assert_eq!(funcs[0].name, "get_user");
+}
+
+/// Multi-statement SQL must extract all symbols.
+#[test]
+fn test_sql_multi_statement() {
+    let source = "\nCREATE TABLE orders (id INT);\nCREATE FUNCTION total_orders() RETURNS INT AS BEGIN RETURN 0; END;\n";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let classes: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Class(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let funcs: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Function(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert!(!classes.is_empty(), "must extract at least one Class");
+    assert!(!funcs.is_empty(), "must extract at least one Function");
+}
+
+/// Empty SQL source must return an empty `ParseResult` without error.
+#[test]
+fn test_sql_empty_file() {
+    let result = parse_sql_source("").expect("empty SQL must not error");
+    assert!(
+        result.symbols.is_empty(),
+        "expected no symbols for empty SQL; got: {:?}",
+        result.symbols
+    );
+}
+
+/// CREATE VIEW must produce an `ExtractedSymbol::Class`.
+#[test]
+fn test_sql_create_view() {
+    let source = "CREATE VIEW active_users AS SELECT id FROM users WHERE active = 1;";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let classes: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Class(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(classes.len(), 1, "CREATE VIEW must produce one Class");
+    assert_eq!(classes[0].name, "active_users");
+}
+
+/// CREATE PROCEDURE syntax is not supported by tree-sitter-sequel 0.3 (parses as ERROR node).
+/// This test verifies graceful degradation: no panic, zero symbols extracted.
+#[test]
+fn test_sql_create_procedure() {
+    let source =
+        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
+    let result = parse_sql_source(source).expect("SQL parse must not panic on unsupported syntax");
+    let funcs: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| match s {
+            ExtractedSymbol::Function(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    // Grammar limitation: CREATE PROCEDURE is not parsed by tree-sitter-sequel 0.3.
+    assert_eq!(
+        funcs.len(),
+        0,
+        "unsupported CREATE PROCEDURE syntax must produce no Function symbols (graceful degradation)"
+    );
+}
+
+/// INSERT INTO must produce at least one `ExtractedEdge::References` edge.
+#[test]
+fn test_sql_insert_reference() {
+    let source = "INSERT INTO orders (id, total) VALUES (1, 100);";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let refs: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| matches!(e, ExtractedEdge::References { .. }))
+        .collect();
+    assert!(
+        !refs.is_empty(),
+        "INSERT INTO must produce at least one References edge"
+    );
+}
+
+/// SELECT FROM must produce at least one `ExtractedEdge::References` edge.
+#[test]
+fn test_sql_select_reference() {
+    let source = "SELECT id, name FROM users WHERE active = 1;";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let refs: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| matches!(e, ExtractedEdge::References { .. }))
+        .collect();
+    assert!(
+        !refs.is_empty(),
+        "SELECT FROM must produce at least one References edge"
+    );
+}
+
+/// Debug helper: dump the raw tree-sitter node kinds from a SQL CREATE TABLE.
+///
+/// Run with `cargo test test_sql_tree_debug -- --nocapture` to see output.
+#[test]
+fn test_sql_tree_debug() {
+    fn dump(node: tree_sitter::Node<'_>, depth: usize) {
+        println!(
+            "{}{} [{}-{}]",
+            "  ".repeat(depth),
+            node.kind(),
+            node.start_position().row + 1,
+            node.end_position().row + 1
+        );
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            dump(child, depth + 1);
+        }
+    }
+    use tree_sitter::Parser;
+    let source =
+        "CREATE TABLE users (id INT); SELECT id FROM users; INSERT INTO orders (id) VALUES (1);";
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_sequel::LANGUAGE.into())
+        .expect("load SQL grammar");
+    let tree = parser.parse(source, None).expect("parse SQL");
+    dump(tree.root_node(), 0);
+}
+
+/// Debug helper: dump CREATE PROCEDURE node kinds.
+#[test]
+fn test_sql_procedure_debug() {
+    fn dump(node: tree_sitter::Node<'_>, depth: usize) {
+        println!(
+            "{}{} [{}-{}]",
+            "  ".repeat(depth),
+            node.kind(),
+            node.start_position().row + 1,
+            node.end_position().row + 1
+        );
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            dump(child, depth + 1);
+        }
+    }
+    use tree_sitter::Parser;
+    let source =
+        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_sequel::LANGUAGE.into())
+        .expect("load SQL grammar");
+    let tree = parser.parse(source, None).expect("parse SQL");
+    dump(tree.root_node(), 0);
 }

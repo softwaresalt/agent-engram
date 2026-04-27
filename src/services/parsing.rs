@@ -14,6 +14,7 @@ mod kotlin;
 mod markdown;
 mod python;
 mod rust;
+mod sql;
 mod swift;
 mod typescript;
 
@@ -44,6 +45,8 @@ pub enum Language {
     Cpp,
     /// Swift (`.swift`)
     Swift,
+    /// SQL (`.sql`)
+    Sql,
     /// Kotlin (`.kt`, `.kts`)
     Kotlin,
     /// Markdown (`.md`)
@@ -65,6 +68,7 @@ impl Language {
             Language::C => "c",
             Language::Cpp => "cpp",
             Language::Swift => "swift",
+            Language::Sql => "sql",
             Language::Kotlin => "kotlin",
             Language::Markdown => "markdown",
         }
@@ -86,6 +90,7 @@ impl TryFrom<&str> for Language {
             "c" => Ok(Language::C),
             "cpp" => Ok(Language::Cpp),
             "swift" => Ok(Language::Swift),
+            "sql" => Ok(Language::Sql),
             "kotlin" => Ok(Language::Kotlin),
             "markdown" => Ok(Language::Markdown),
             _ => Err(EngramError::CodeGraph(CodeGraphError::ParseFailed {
@@ -195,6 +200,13 @@ pub enum ExtractedEdge {
         /// Name of the defined symbol.
         symbol_name: String,
     },
+    /// A SQL statement references a named schema object (table, view, or function).
+    References {
+        /// Name of the referencing statement or context (e.g., the containing object).
+        source: String,
+        /// Name of the referenced schema object.
+        target: String,
+    },
 }
 
 /// Result of parsing a single source file.
@@ -228,6 +240,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult, Eng
         Language::C => c::parse_c_source(source),
         Language::Cpp => cpp::parse_cpp_source(source),
         Language::Swift => swift::parse_swift_source(source),
+        Language::Sql => sql::parse_sql_source(source),
         Language::Kotlin => kotlin::parse_kotlin_source(source),
         Language::Markdown => markdown::parse_markdown_source(source),
     }
@@ -243,6 +256,19 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult, Eng
 /// Returns an error string if tree-sitter fails to parse the source.
 pub fn parse_rust_source(source: &str) -> Result<ParseResult, String> {
     rust::parse_rust_source(source)
+}
+
+/// Parse a SQL source file and extract symbols and edges.
+///
+/// This function is synchronous and CPU-bound. Callers should run it via
+/// `tokio::task::spawn_blocking` to avoid blocking the async runtime.
+///
+/// # Errors
+///
+/// Returns [`crate::errors::EngramError`] if the grammar cannot be loaded or
+/// tree-sitter fails to produce a valid parse tree.
+pub fn parse_sql_source(source: &str) -> Result<ParseResult, crate::errors::EngramError> {
+    sql::parse_sql_source(source)
 }
 
 /// Get the text of a tree-sitter node from the source.
