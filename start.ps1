@@ -1,11 +1,11 @@
 $autoharness_home = (autoharness home)
-$workspace_root = Split-Path -Parent $PSCommandPath
-$global_agents_src = Join-Path $autoharness_home ".github\agents"
-$local_agents = Join-Path $workspace_root ".github\local-agents"
+$global_agents_src = "$autoharness_home\.github\agents"
+$local_agents = ".github\agents"
 
-# This keeps generated copies out of the tracked .github/agents directory.
+# Copies global autoharness agents into .github/agents (tracked; workspace-discoverable).
+# To keep them gitignored instead, change this to ".github\local-agents" and update
+# chat.agentFilesLocations in the workspace settings file to include that path.
 if (Test-Path $global_agents_src) {
-    New-Item -ItemType Directory -Path $local_agents -Force | Out-Null
     Get-ChildItem "$global_agents_src\*.agent.md" | ForEach-Object {
         $dest = Join-Path $local_agents $_.Name
         $sourceFile = $_
@@ -20,8 +20,8 @@ if (Test-Path $global_agents_src) {
     }
 }
 
-$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $workspace_root ".copilot" }
-$env:ENGRAM_DATA_DIR = Join-Path $workspace_root ".engram"   # Keep agent-engram state workspace-local by default
+$env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $PSScriptRoot ".copilot" }
+$env:ENGRAM_DATA_DIR = if ($env:ENGRAM_DATA_DIR) { $env:ENGRAM_DATA_DIR } else { Join-Path $PSScriptRoot ".engram" }
 $env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE_PATH) {
     $env:COPILOT_EXE_PATH
