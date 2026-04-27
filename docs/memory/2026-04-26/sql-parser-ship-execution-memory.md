@@ -8,8 +8,6 @@ branch: feature/034-F-sql-parser
 pr: "35"
 ---
 
-# SQL Parser Ship Execution Memory
-
 ## Tasks completed
 
 - 034.001-T: Cargo.toml dep, Language::Sql, ExtractedEdge::References, sql.rs stub, code_graph.rs no-op arms, language_from_path

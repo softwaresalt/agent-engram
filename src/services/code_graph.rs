@@ -888,7 +888,7 @@ pub async fn sync_workspace(
             }
         }
 
-        // ── Delete old concerns edges before relinking(prevent duplicates) ──
+        // ── Delete old concerns edges before relinking (prevent duplicates) ──
         for edge in &enriched_concerns {
             let _ = queries
                 .delete_concerns_edges_for_symbol(&edge.symbol_table, &edge.symbol_id)

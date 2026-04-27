@@ -7,7 +7,11 @@
 //! Top-level structure: `program` > `statement` > actual statement node.
 //!
 //! - `create_table` / `create_view` → [`super::ExtractedSymbol::Class`]
-//! - `create_function` / `create_procedure` → [`super::ExtractedSymbol::Function`]
+//! - `create_function` → [`super::ExtractedSymbol::Function`]
+//! - `CREATE PROCEDURE` is currently unsupported by tree-sitter-sequel 0.3 and
+//!   parses as `ERROR` rather than `create_procedure`; the matcher for
+//!   `create_procedure` is retained for forward compatibility with future
+//!   grammar support
 //! - `from` (SELECT from-clause, sibling inside `statement`)
 //!   and `insert` > `object_reference` → [`super::ExtractedEdge::References`]
 //!
