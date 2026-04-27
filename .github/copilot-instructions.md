@@ -107,7 +107,7 @@ tokens proportional to file size.
 | `docs/memory/` | Session memory and checkpoints |
 | `docs/closure/` | Review, runtime verification, and closure artifacts |
 | `docs/research/` | Graduated architecture and design rationale |
-| `docs/product-specs/` | Product-oriented requirements |
+
 
 ## Session Memory Requirements
 
@@ -231,7 +231,7 @@ The `ping-loop.prompt.md` prompt is available in `.github/prompts/` for sustaine
 When `agent-engram` is available:
 
 * Verify workspace binding before relying on indexed results.
-* If the workspace is not bound or indexed, run `sync_workspace` or the workspace's equivalent freshness operation before searching.
+* If the workspace is not yet indexed, run `index_workspace` (or `set_workspace` then `index_workspace`) for initial setup. Use `sync_workspace` for incremental re-indexing of an already-indexed workspace.
 * Fall back to grep, glob, or direct file reads only when indexed results are unavailable or insufficient.
 
 ## Backlog Workflow Expectations

@@ -253,5 +253,5 @@ verification:
     - "TUNE-021: copilot-instructions.md — added Backlog Workflow Expectations section (new in v1.3.2 template)"
     - "TUNE-022: copilot-instructions.md — updated tree-sitter 0.24→0.25, test counts 22/39/21→26/50/24, last-updated date"
     - "TUNE-023: stage.agent.md — added 'Never skip shipment assembly' behavioral constraint from template"
-    - "TUNE-024: ship.agent.md — aligned Source Artifact Cleanup with v1.3.2 template (direct tool calls vs comment-based)"
+    - "TUNE-024: ship.agent.md — aligned Source Artifact Cleanup to use backlogit_append_comment for traceability (backlogit_stash_remove/backlogit_archive_item not in registry)"
     - "TUNE-025: workspace-profile.yaml — quoted C# in tree-sitter purpose to fix YAML syntax error"

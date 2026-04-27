@@ -34,7 +34,7 @@ Second tune pass on 2026-04-26 — addresses schema contract failures surfaced b
 | ID | File | Finding | Resolution |
 |---|---|---|---|
 | TUNE-022 | copilot-instructions.md | tree-sitter 0.24 → actual 0.25; test counts 22/39/21 → actual 26/50/24; last-updated 2026-04-13 | Updated all three |
-| TUNE-024 | ship.agent.md | Source Artifact Cleanup used indirect comment-based flow; template uses direct `backlogit_stash_remove` / `backlogit_archive_item` | Aligned with template |
+| TUNE-024 | ship.agent.md | Source Artifact Cleanup referenced `backlogit_stash_remove` / `backlogit_archive_item` which are not in the installed registry | Updated to use `backlogit_append_comment`-based traceability approach |
 
 ### P2 — Profile Syntax
 
