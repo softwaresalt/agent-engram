@@ -25,12 +25,12 @@ Completed post-merge closure for feature 034-F (SQL file indexing via tree-sitte
 6. **Shipment-reconcile pre-mode** — PROCEED (all 6 items `matched: done`, 0 orphans)
 7. **Backlogit archival** — 013-S + 034-F + 5 tasks moved queue → archive (commit `3500c1a`)
 8. **Shipment-reconcile post-mode** — PROCEED (all 7 archive files present, 0 deletions)
-9. **ARCHITECTURE.md updated** — SQL added to Language enum and Multi-Language Parsing section
+9. **`docs/architecture.md` updated** — SQL added to Language enum and Multi-Language Parsing section
 10. **Post-merge closure artifact** — `docs/closure/2026-04-26-034-F-sql-parser-post-merge-closure.md`
 
 ## Files Modified
 
-- `docs/ARCHITECTURE.md` — Language enum + Multi-Language Parsing section updated
+- `docs/architecture.md` — Language enum + Multi-Language Parsing section updated
 - `docs/closure/2026-04-26-034-F-sql-parser-post-merge-closure.md` — NEW
 - `docs/decisions/2026-04-26-sql-parser-deliberation.md` — table separator fix
 - `docs/exec-plans/2026-04-26-sql-parser-plan.md` — 5 table separator fixes

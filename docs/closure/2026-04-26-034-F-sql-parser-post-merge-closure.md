@@ -4,20 +4,23 @@ date: 2026-04-26
 mode: post-merge
 feature: 034-F
 shipment: 013-S
-merge_commit: 305b28f
+feature_pr_merge_commit: 305b28f
+stage_pr_merge_commit: aedc3e0
 stage_branch: stage/034-F-sql-parser
-pr: 35
+pr_35: 35
+pr_34: 34
 owner: ship-agent
 ---
 
 ## Merge Summary
 
 PR #35 (`feature/034-F-sql-parser` → `stage/034-F-sql-parser`) merged as commit `305b28f`.
+PR #34 (`stage/034-F-sql-parser` → `main`) merged as commit `aedc3e0`.
 All 6 shipment items archived (013-S + 034-F + 034.001-T through 034.005-T).
 
 Pre- and post-mode shipment reconciliation passed cleanly (no orphans, no missing items,
-no archive deletions). Copilot review comments on PR #34 (stage PR) addressed in commit
-`cd78274` / `539bd0a` (table separator style, API key redaction, timestamp correction).
+no archive deletions). Copilot review comments on PR #34 (stage PR) addressed in commits
+`cd78274`, `edbaa06`.
 
 ---
 
@@ -40,9 +43,9 @@ Reconcile reports: `.backlogit/reconcile/013-S-pre-20260426T201500.md` (PROCEED)
 
 ## Knowledge Graduation
 
-### ARCHITECTURE.md
+### architecture.md
 
-Updated `docs/ARCHITECTURE.md`:
+Updated `docs/architecture.md`:
 
 - `Language` enum entry updated in the Parsing service table to include `Sql` and `sql.rs`
 - Multi-Language Parsing section updated with SQL grammar facts:
@@ -121,5 +124,6 @@ pre-merge closure and remain actionable:
 
 ## Post-Merge Closure Decision
 
-**CLOSED** — shipment archived, knowledge graduated, follow-ups stashed, ARCHITECTURE.md
-updated. Stage PR #34 has Copilot review comments addressed and is ready for merge to `main`.
+**CLOSED** — shipment archived, knowledge graduated, follow-ups stashed, `docs/architecture.md`
+updated. PR #34 (`stage/034-F-sql-parser` → `main`) merged as `aedc3e0`.
+Post-merge closure PR #36 (`post-merge/034-F-sql-parser` → `main`) awaiting operator approval.
