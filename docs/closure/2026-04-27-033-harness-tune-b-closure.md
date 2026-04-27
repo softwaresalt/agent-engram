@@ -16,8 +16,8 @@ All changes were to harness meta-artifacts only — no production Rust code was 
 ## Change Inventory
 
 | File | Change |
-|---|---|
-| `.github/copilot-instructions.md` | Added Durable Knowledge Layout, Remote Operator Integration, Backlog Workflow Expectations sections; fixed `sync_workspace` vs `index_workspace` guidance; removed non-existent `docs/product-specs/` row |
+| --- | --- |
+| `.github/copilot-instructions.md` |Added Durable Knowledge Layout, Remote Operator Integration, Backlog Workflow Expectations sections; fixed `sync_workspace` vs `index_workspace` guidance; removed non-existent `docs/product-specs/` row |
 | `.github/agents/stage.agent.md` | Added "Never skip shipment assembly" behavioral constraint |
 | `.github/agents/ship.agent.md` | Step 6.7 Source Artifact Cleanup: replaced `backlogit_stash_remove`/`backlogit_archive_item` (not in registry) with `backlogit_append_comment`-based traceability approach |
 | `.autoharness/workspace-profile.yaml` | Quoted `C#` in tree-sitter purpose to fix YAML syntax error |
@@ -70,7 +70,7 @@ version of `ship.agent.md` step 6.7 from before commit `4086cb0`.
 ## Rollback Procedure
 
 ```bash
-git revert 7dc21df  # Reverts the merge commit
+git revert --no-edit -m 1 7dc21df  # Reverts the merge commit using parent 1 as mainline
 ```
 
 Or target specific files:

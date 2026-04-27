@@ -41,8 +41,8 @@ All 9 threads replied to and resolved via `gh api graphql`.
 ## Files Modified (PR #33)
 
 | File | Change |
-|---|---|
-| `.github/copilot-instructions.md` | New sections; fixed sync_workspace guidance; removed product-specs row |
+| --- | --- |
+| `.github/copilot-instructions.md` | New sections;fixed sync_workspace guidance; removed product-specs row |
 | `.github/agents/stage.agent.md` | Added "Never skip shipment assembly" constraint |
 | `.github/agents/ship.agent.md` | Step 6.7 aligned to backlogit_append_comment |
 | `.autoharness/workspace-profile.yaml` | YAML syntax fix for C# |

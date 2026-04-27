@@ -24,7 +24,7 @@ retirement, without requiring non-existent mutation operations.
 
 Pattern used in ship.agent.md step 6.7 after fix:
 
-```
+```text
 For each shipped top-level item:
   - Read custom_fields.source_stash_id
   - If present: record in closure artifact + append comment via backlogit_append_comment
