@@ -6,7 +6,7 @@ trigger: operator-requested
 scope: schema-contract-drift + stale-data
 ---
 
-# Tuning Report 2026-04-26-b
+## Tuning Report 2026-04-26-b
 
 Second tune pass on 2026-04-26 — addresses schema contract failures surfaced by
 `autoharness verify-workspace` and stale data points in copilot-instructions.md.
