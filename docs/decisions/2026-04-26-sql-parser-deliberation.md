@@ -117,7 +117,7 @@ compatibility, and symbol mapping.
 ## Risks and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Grammar update breaks ABI | Low | Medium | Pin to `0.3`, same as other grammars |
 | SQL dialect edge cases in extraction | Low | Low | Start with CREATE/SELECT; expand later |
 | Regression in existing parsers | Low | High | Run full test suite before merge |

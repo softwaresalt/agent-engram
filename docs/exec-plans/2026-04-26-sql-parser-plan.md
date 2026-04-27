@@ -20,7 +20,7 @@ provides an exact pattern to follow. Swift was the most recent addition
 ## Requirements Trace
 
 | Requirement | Implementation |
-|---|---|
+| --- | --- |
 | SQL files indexed during workspace sync | Wire `"sql"` into `language_from_path()` in `code_graph.rs` |
 | CREATE TABLE/VIEW → Class symbol | Tree-sitter query in `sql.rs` |
 | CREATE FUNCTION/PROCEDURE → Function symbol | Tree-sitter query in `sql.rs` |
@@ -147,7 +147,7 @@ Unit 4 can proceed after Unit 1 + Unit 2.
 ## Decisions and Rationale
 
 | Decision | Rationale |
-|---|---|
+| --- | --- |
 | Follow swift.rs pattern exactly | 12 parsers use this pattern; consistency reduces review risk |
 | Map CREATE TABLE/VIEW to Class | Tables and views are named schema objects analogous to classes |
 | Map CREATE FUNCTION/PROCEDURE to Function | Direct semantic match |
@@ -157,7 +157,7 @@ Unit 4 can proceed after Unit 1 + Unit 2.
 ## Risks and Caveats
 
 | Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | tree-sitter-sequel node names differ from spike assumptions | Low | Medium | Verify actual node names via `tree-sitter-sequel` grammar before writing queries |
 | SQL dialect edge cases (T-SQL, BigQuery) in extraction | Low | Low | Start with ANSI CREATE/SELECT; dialect extensions are additive |
 | Build time increase from new grammar crate | Low | Low | One grammar adds ~5s to clean build; acceptable |
@@ -187,7 +187,7 @@ additive internal parser. Standard quality gates (fmt → clippy → test) suffi
 ## Constitution Check
 
 | Principle | Status |
-|---|---|
+| --- | --- |
 | I. Safety-First Rust | ✅ No unsafe, Result returns, clippy pedantic |
 | II. Test-First | ✅ Unit 3 before Unit 2 |
 | III. Workspace Isolation | ✅ No file-system operations |
@@ -299,7 +299,7 @@ declarations in `parsing.rs`.
 ### Severity Adjustment Log
 
 | Original | Adjusted | Rationale |
-|---|---|---|
+| --- | --- | --- |
 | Learnings Researcher P0 (ABI) | P3 | Prior spike verified ABI 15 compatible with tree-sitter 0.25 |
 | Constitution Reviewer P1 (observability) | P2 | Existing parsers have no tracing spans; consistent with codebase |
 | Learnings Researcher P1 (enum dispatch) | P2 | Merged with Architecture P2; plan already addresses enum wiring in Unit 1 |

@@ -25,7 +25,7 @@ Ran the full Stage lifecycle for stash entry `8AC6828D` (SQL parser feature) thr
 ## Artifacts Created
 
 | Artifact | Path |
-|---|---|
+| --- | --- |
 | Deliberation | `docs/decisions/2026-04-26-sql-parser-deliberation.md` |
 | Implementation plan | `docs/exec-plans/2026-04-26-sql-parser-plan.md` |
 | Feature | `.backlogit/queue/034-F.md` |
