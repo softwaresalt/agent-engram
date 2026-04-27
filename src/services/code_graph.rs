@@ -403,7 +403,8 @@ pub async fn index_workspace(
                 ExtractedEdge::Imports { .. } => {
                     result.cross_file_edges_dropped += 1;
                 }
-                ExtractedEdge::Defines { .. } => {}
+                // SQL references are cross-object (deferred for future graph linkage).
+                ExtractedEdge::Defines { .. } | ExtractedEdge::References { .. } => {}
             }
         }
 
@@ -882,11 +883,12 @@ pub async fn sync_workspace(
                 ExtractedEdge::Imports { .. } => {
                     result.cross_file_edges_dropped += 1;
                 }
-                ExtractedEdge::Defines { .. } => {}
+                // SQL references are cross-object (deferred for future graph linkage).
+                ExtractedEdge::Defines { .. } | ExtractedEdge::References { .. } => {}
             }
         }
 
-        // ── Delete old concerns edges before relinking (prevent duplicates) ──
+        // ── Delete old concerns edges before relinking(prevent duplicates) ──
         for edge in &enriched_concerns {
             let _ = queries
                 .delete_concerns_edges_for_symbol(&edge.symbol_table, &edge.symbol_id)
@@ -1113,6 +1115,7 @@ fn language_from_path(path: &Path) -> String {
             "c" | "h" => "c",
             "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => "cpp",
             "swift" => "swift",
+            "sql" => "sql",
             "kt" | "kts" => "kotlin",
             "md" => "markdown",
             _ => ext,
