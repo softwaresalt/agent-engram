@@ -1,6 +1,6 @@
 # agent-engram Development Guidelines
 
-Last updated: 2026-04-13
+Last updated: 2026-04-26
 
 Agent Engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded SurrealDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS). The project enforces strict safety (forbid unsafe, deny unwrap/expect), test-first development with three test tiers, and comprehensive observability via structured tracing.
 
@@ -16,7 +16,7 @@ Agent Engram is a local-first Model Context Protocol daemon providing code graph
 | CI              | GitHub Actions           | GitHub Actions CI: fmt → clippy → test → audit; release builds cross-platform (Linux, Windows, macOS)                          |
 | MCP SDK      | rmcp 1.1                  | JSON-RPC 2.0 via IPC transport            |
 | Database     | SurrealDB 2 (embedded)    | Per-workspace namespace via SHA-256 hash  |
-| Code Parsing | tree-sitter 0.24          | Rust source file indexing                 |
+| Code Parsing | tree-sitter 0.25          | Rust source file indexing                 |
 | CLI          | clap 4                    | `ENGRAM_` env prefix                      |
 | Tracing      | tracing 0.1               | JSON or pretty format                     |
 
@@ -37,9 +37,9 @@ src/
   shim/               # Stdio shim: IPC client, transport, catalog
   tools/              # MCP tool dispatch
 tests/
-  contract/           # MCP tool contract tests (22 files)
-  integration/        # End-to-end flows (39 files)
-  unit/               # Isolated logic + proptest (21 files)
+  contract/           # MCP tool contract tests (26 files)
+  integration/        # End-to-end flows (50 files)
+  unit/               # Isolated logic + proptest (24 files)
   helpers/            # Shared test utilities
 ```
 
@@ -80,9 +80,9 @@ All fallible operations return `Result<T, EngramError>`. `EngramError` wraps dom
 
 * TDD required: write tests first, verify they fail, then implement
 * Test tiers in `tests/` directory:
-  * `contract/` — MCP tool response contract verification (22 files)
-  * `integration/` — end-to-end flows with real DB/IPC (39 files)
-  * `unit/` — isolated logic tests, property-based tests with proptest (21 files)
+  * `contract/` — MCP tool response contract verification (26 files)
+  * `integration/` — end-to-end flows with real DB/IPC (50 files)
+  * `unit/` — isolated logic tests, property-based tests with proptest (24 files)
 
 ## Search Strategy
 
@@ -97,9 +97,23 @@ tokens proportional to file size.
 2. Otherwise use workspace-indexed tools (if available): semantic search, symbol lookup, call graphs
 3. File-based fallback: grep, glob, view — only when indexed results are insufficient
 
+## Durable Knowledge Layout
+
+| Path | Purpose |
+|---|---|
+| `docs/compound/` | Reusable learnings and hard-won fixes |
+| `docs/exec-plans/` | Implementation plans |
+| `docs/decisions/` | Durable decisions and investigation outputs |
+| `docs/memory/` | Session memory and checkpoints |
+| `docs/closure/` | Review, runtime verification, and closure artifacts |
+| `docs/research/` | Graduated architecture and design rationale |
+
+
 ## Session Memory Requirements
 
 * Working agent sessions MUST persist output to `docs/memory/` before the session ends — do NOT rely on built-in AI assistant memory features, which write to their own managed locations.
+* When the context window reaches approximately 65% capacity, checkpoint current work before continuing.
+* For long sessions, save memory checkpoints after completing each phase or major task group.
 * Content to capture: task IDs completed, files modified, decisions and rationale, failed approaches, open questions, and next steps.
 * File convention: `docs/memory/{YYYY-MM-DD}/{descriptive-slug}-memory.md`
 * After writing memory, invoke the **compact-context** skill to consolidate stale checkpoints and finalize decided-plans. This is a mandatory workflow step, not advisory.
@@ -198,5 +212,35 @@ When the workspace enabled the `adversarial-review` capability pack:
 * assemble consensus-weighted findings (HIGH / MEDIUM / LOW confidence)
 * treat HIGH-confidence P0/P1 findings as gate-blocking
 * feed remediation queue entries into backlog
+
+## Remote Operator Integration
+
+### agent-intercom
+
+When `agent-intercom` is available:
+
+* Call `ping` at the start of any multi-step session to confirm liveness.
+* Broadcast progress at meaningful phase transitions — do not broadcast every trivial step.
+* Route approval for destructive actions through the intercom approval workflow before executing.
+* If intercom becomes unreachable mid-task, warn that operator visibility is degraded and continue only with safe, non-destructive work.
+
+The `ping-loop.prompt.md` prompt is available in `.github/prompts/` for sustained heartbeat sessions when the pack is installed.
+
+### agent-engram
+
+When `agent-engram` is available:
+
+* Verify workspace binding before relying on indexed results.
+* If the workspace is not yet indexed, run `index_workspace` (or `set_workspace` then `index_workspace`) for initial setup. Use `sync_workspace` for incremental re-indexing of an already-indexed workspace.
+* Fall back to grep, glob, or direct file reads only when indexed results are unavailable or insufficient.
+
+## Backlog Workflow Expectations
+
+When a backlog tool is active in the workspace:
+
+* prefer queue-aware and dependency-aware operations over prose-only sequencing when the tool surface supports them
+* use comments, checkpoints, and commit-tracking operations when they add traceability
+* refresh the backlog index or query cache after out-of-band edits before trusting query results
+* avoid inventing parallel markdown trackers outside the configured backlog tool surface
 
 Generated by autoharness | Template: copilot-instructions.md.tmpl
