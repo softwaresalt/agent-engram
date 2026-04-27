@@ -1184,6 +1184,19 @@ fn test_sql_select_reference() {
 /// Run with `cargo test test_sql_tree_debug -- --nocapture` to see output.
 #[test]
 fn test_sql_tree_debug() {
+    fn dump(node: tree_sitter::Node<'_>, depth: usize) {
+        println!(
+            "{}{} [{}-{}]",
+            "  ".repeat(depth),
+            node.kind(),
+            node.start_position().row + 1,
+            node.end_position().row + 1
+        );
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            dump(child, depth + 1);
+        }
+    }
     use tree_sitter::Parser;
     let source =
         "CREATE TABLE users (id INT); SELECT id FROM users; INSERT INTO orders (id) VALUES (1);";
@@ -1192,6 +1205,12 @@ fn test_sql_tree_debug() {
         .set_language(&tree_sitter_sequel::LANGUAGE.into())
         .expect("load SQL grammar");
     let tree = parser.parse(source, None).expect("parse SQL");
+    dump(tree.root_node(), 0);
+}
+
+/// Debug helper: dump CREATE PROCEDURE node kinds.
+#[test]
+fn test_sql_procedure_debug() {
     fn dump(node: tree_sitter::Node<'_>, depth: usize) {
         println!(
             "{}{} [{}-{}]",
@@ -1205,12 +1224,6 @@ fn test_sql_tree_debug() {
             dump(child, depth + 1);
         }
     }
-    dump(tree.root_node(), 0);
-}
-
-/// Debug helper: dump CREATE PROCEDURE node kinds.
-#[test]
-fn test_sql_procedure_debug() {
     use tree_sitter::Parser;
     let source =
         "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
@@ -1219,18 +1232,5 @@ fn test_sql_procedure_debug() {
         .set_language(&tree_sitter_sequel::LANGUAGE.into())
         .expect("load SQL grammar");
     let tree = parser.parse(source, None).expect("parse SQL");
-    fn dump(node: tree_sitter::Node<'_>, depth: usize) {
-        println!(
-            "{}{} [{}-{}]",
-            "  ".repeat(depth),
-            node.kind(),
-            node.start_position().row + 1,
-            node.end_position().row + 1
-        );
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            dump(child, depth + 1);
-        }
-    }
     dump(tree.root_node(), 0);
 }
