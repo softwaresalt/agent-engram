@@ -96,7 +96,7 @@ When the closure process reveals durable knowledge:
 
 When the `backlogit` capability pack is installed, record source-artifact traceability so the closure report is the system of record:
 
-* Read `custom_fields.source_stash_id` for each top-level closed item. If present, note the stash ID in the closure artifact so the originating stash entry can be retired.
+* Read `custom_fields.source_stash_id` for each top-level closed item. If present, note the stash ID in the closure artifact for manual retirement. No automated stash-retirement operation exists in the installed registry — recording the ID preserves traceability.
 * Read `custom_fields.source_deliberation_id` for each top-level closed item. If present, note the deliberation ID and any associated `references` paths in the closure artifact so deliberation follow-up remains traceable.
 * Record both found and absent fields — a missing `source_stash_id` or `source_deliberation_id` is normal for non-stash-originated work items.
 

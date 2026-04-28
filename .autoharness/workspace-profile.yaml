@@ -366,6 +366,9 @@ conventions:
 harness_recommendations:
   preset: full  # full (closest to rust-mcp-daemon; workspace-specific stack pack)
   capability_packs:
+    - agent-intercom
+    - agent-engram
+    - backlogit
     - strict-safety
     - release-observability
     - adversarial-review
