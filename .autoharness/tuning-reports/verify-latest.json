@@ -1,0 +1,597 @@
+{
+  "mode": "verify-workspace",
+  "workspace_path": "D:\\Source\\GitHub\\agent-engram",
+  "autoharness_home": "C:\\Users\\derek.williams\\AppData\\Roaming\\uv\\tools\\autoharness\\Lib\\site-packages\\autoharness\\data",
+  "staging_dir": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\staging",
+  "strict_schema_blockers": [
+    {
+      "kind": "invalid-manifest-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\harness-manifest.yaml",
+      "contract": "harness-manifest",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "<root>: 'autoharness_version' is a required property"
+    },
+    {
+      "kind": "invalid-manifest-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\harness-manifest.yaml",
+      "contract": "harness-manifest",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "<root>: 'profile_hash' is a required property"
+    },
+    {
+      "kind": "invalid-manifest-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\harness-manifest.yaml",
+      "contract": "harness-manifest",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "<root>: 'primitives_installed' is a required property"
+    },
+    {
+      "kind": "invalid-manifest-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\harness-manifest.yaml",
+      "contract": "harness-manifest",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "artifacts: {'foundation': [{'path': 'AGENTS.md', 'source': 'templates/foundation/AGENTS.md.tmpl'}, {'path': '.github/copilot-instructions.md', 'source': 'templates/foundation/copilot-instructions.md.tmpl'}, {'path': '.github/instructions/constitution.instructions.md', 'source': 'templates/foundation/constitution.instructions.md.tmpl'}, {'path': '.backlogit/config.yml', 'source': 'templates/backlog/config.yml.tmpl'}, {'path': 'start.ps1', 'source': 'templates/scripts/start.ps1.tmpl'}, {'path': 'start.sh', 'source': 'templates/scripts/start.sh.tmpl'}, {'path': '.autoharness/config.yaml', 'source': 'templates/harness-config.yaml.tmpl'}], 'agents': [{'path': '.github/agents/stage.agent.md', 'source': 'templates/agents/stage.agent.md.tmpl'}, {'path': '.github/agents/ship.agent.md', 'source': 'templates/agents/ship.agent.md.tmpl'}, {'path': '.github/agents/prompt-builder.agent.md', 'source': 'templates/agents/prompt-builder.agent.md.tmpl'}, {'path': '.github/agents/rust-engineer.agent.md', 'source': 'templates/agents/language-engineer.agent.md.tmpl', 'note': 'renamed from language-engineer to rust-engineer'}, {'path': '.github/agents/adversarial-review.agent.md', 'source': 'templates/agents/adversarial-review.agent.md.tmpl'}, {'path': '.github/agents/research/learnings-researcher.agent.md', 'source': 'templates/agents/research/learnings-researcher.agent.md.tmpl'}, {'path': '.github/agents/review/architecture-strategist.agent.md', 'source': 'templates/agents/review/architecture-strategist.agent.md.tmpl'}, {'path': '.github/agents/review/constitution-reviewer.agent.md', 'source': 'templates/agents/review/constitution-reviewer.agent.md.tmpl'}, {'path': '.github/agents/review/scope-boundary-auditor.agent.md', 'source': 'templates/agents/review/scope-boundary-auditor.agent.md.tmpl'}, {'path': '.github/agents/review/rust-reviewer.agent.md', 'source': 'templates/agents/review/technology-reviewer.agent.md.tmpl', 'note': 'renamed from technology-reviewer to rust-reviewer'}, {'path': '.github/agents/review/concurrency-reviewer.agent.md', 'source': 'templates/agents/review/concurrency-reviewer.agent.md.tmpl'}, {'path': '.github/agents/review/agent-native-parity-reviewer.agent.md', 'source': 'templates/agents/review/agent-native-parity-reviewer.agent.md.tmpl'}], 'policies': [{'path': '.github/policies/workflow-policies.md', 'source': 'templates/policies/workflow-policies.md.tmpl'}], 'prompts': [{'path': '.github/prompts/ping-loop.prompt.md', 'source': 'templates/prompts/ping-loop.prompt.md.tmpl'}, {'path': '.github/prompts/stage-grouping-analysis.prompt.md', 'source': 'templates/prompts/stage-grouping-analysis.prompt.md.tmpl'}], 'instructions': [{'path': '.github/instructions/technology-rust.instructions.md', 'source': 'templates/instructions/technology.instructions.md.tmpl', 'note': 'renamed from technology to technology-rust'}, {'path': '.github/instructions/commit-message.instructions.md', 'source': 'templates/instructions/commit-message.instructions.md.tmpl'}, {'path': '.github/instructions/markdown.instructions.md', 'source': 'templates/instructions/markdown.instructions.md.tmpl'}, {'path': '.github/instructions/writing-style.instructions.md', 'source': 'templates/instructions/writing-style.instructions.md.tmpl'}, {'path': '.github/instructions/git-merge.instructions.md', 'source': 'templates/instructions/git-merge.instructions.md.tmpl'}, {'path': '.github/instructions/pull-request.instructions.md', 'source': 'templates/instructions/pull-request.instructions.md.tmpl'}, {'path': '.github/instructions/prompt-builder.instructions.md', 'source': 'templates/instructions/prompt-builder.instructions.md.tmpl'}, {'path': '.github/instructions/circuit-breaker.instructions.md', 'source': 'templates/instructions/circuit-breaker.instructions.md.tmpl'}, {'path': '.github/instructions/concurrency.instructions.md', 'source': 'templates/instructions/concurrency.instructions.md.tmpl'}, {'path': '.github/instructions/architecture-doc.instructions.md', 'source': 'templates/instructions/architecture-doc.instructions.md.tmpl'}, {'path': '.github/instructions/ci-security.instructions.md', 'source': 'templates/instructions/ci-security.instructions.md.tmpl'}, {'path': '.github/instructions/workflows.instructions.md', 'source': 'templates/instructions/workflows.instructions.md.tmpl'}, {'path': '.github/instructions/mcp-server.instructions.md', 'source': 'templates/instructions/mcp-server.instructions.md.tmpl'}, {'path': '.github/instructions/github-pr-automation.instructions.md', 'source': 'templates/instructions/github-pr-automation.instructions.md.tmpl'}, {'path': '.github/instructions/backlog-integration.instructions.md', 'source': 'templates/instructions/backlog-integration.instructions.md.tmpl'}, {'path': '.github/instructions/agent-intercom.instructions.md', 'source': 'templates/instructions/agent-intercom.instructions.md.tmpl'}, {'path': '.github/instructions/agent-engram.instructions.md', 'source': 'templates/instructions/agent-engram.instructions.md.tmpl'}, {'path': '.github/instructions/backlogit.instructions.md', 'source': 'templates/instructions/backlogit.instructions.md.tmpl'}, {'path': '.github/instructions/strict-safety.instructions.md', 'source': 'templates/instructions/strict-safety.instructions.md.tmpl'}, {'path': '.github/instructions/release-observability.instructions.md', 'source': 'templates/instructions/release-observability.instructions.md.tmpl'}, {'path': '.github/instructions/continuous-learning.instructions.md', 'source': 'templates/instructions/continuous-learning.instructions.md.tmpl'}, {'path': '.github/instructions/adversarial-review.instructions.md', 'source': 'templates/instructions/adversarial-review.instructions.md.tmpl'}, {'path': '.github/instructions/backlogit-sql-schema.instructions.md', 'source': 'templates/instructions/backlogit-sql-schema.instructions.md.tmpl'}, {'path': '.github/instructions/backlogit-yaml-header-tooling.instructions.md', 'source': 'templates/instructions/backlogit-yaml-header-tooling.instructions.md.tmpl'}], 'skills': [{'path': '.github/skills/build-feature/SKILL.md', 'source': 'templates/skills/build-feature/SKILL.md.tmpl'}, {'path': '.github/skills/compact-context/SKILL.md', 'source': 'templates/skills/compact-context/SKILL.md.tmpl'}, {'path': '.github/skills/compound/SKILL.md', 'source': 'templates/skills/compound/SKILL.md.tmpl'}, {'path': '.github/skills/compound-refresh/SKILL.md', 'source': 'templates/skills/compound-refresh/SKILL.md.tmpl'}, {'path': '.github/skills/deliberate/SKILL.md', 'source': 'templates/skills/deliberate/SKILL.md.tmpl'}, {'path': '.github/skills/evolve/SKILL.md', 'source': 'templates/skills/evolve/SKILL.md.tmpl'}, {'path': '.github/skills/file-lock/SKILL.md', 'source': 'templates/skills/file-lock/SKILL.md.tmpl'}, {'path': '.github/skills/fix-ci/SKILL.md', 'source': 'templates/skills/fix-ci/SKILL.md.tmpl'}, {'path': '.github/skills/harness-architect/SKILL.md', 'source': 'templates/skills/harness-architect/SKILL.md.tmpl'}, {'path': '.github/skills/harvest/SKILL.md', 'source': 'templates/skills/harvest/SKILL.md.tmpl'}, {'path': '.github/skills/impl-plan/SKILL.md', 'source': 'templates/skills/impl-plan/SKILL.md.tmpl'}, {'path': '.github/skills/learn/SKILL.md', 'source': 'templates/skills/learn/SKILL.md.tmpl'}, {'path': '.github/skills/observe/SKILL.md', 'source': 'templates/skills/observe/SKILL.md.tmpl'}, {'path': '.github/skills/operational-closure/SKILL.md', 'source': 'templates/skills/operational-closure/SKILL.md.tmpl'}, {'path': '.github/skills/plan-harden/SKILL.md', 'source': 'templates/skills/plan-harden/SKILL.md.tmpl'}, {'path': '.github/skills/plan-review/SKILL.md', 'source': 'templates/skills/plan-review/SKILL.md.tmpl'}, {'path': '.github/skills/pr-lifecycle/SKILL.md', 'source': 'templates/skills/pr-lifecycle/SKILL.md.tmpl'}, {'path': '.github/skills/review/SKILL.md', 'source': 'templates/skills/review/SKILL.md.tmpl'}, {'path': '.github/skills/runtime-verification/SKILL.md', 'source': 'templates/skills/runtime-verification/SKILL.md.tmpl'}, {'path': '.github/skills/safety-modes/SKILL.md', 'source': 'templates/skills/safety-modes/SKILL.md.tmpl'}, {'path': '.github/skills/skill-search/SKILL.md', 'source': 'templates/skills/skill-search/SKILL.md.tmpl'}, {'path': '.github/skills/shipment-reconcile/SKILL.md', 'source': 'templates/skills/shipment-reconcile/SKILL.md.tmpl'}, {'path': '.github/skills/spike/SKILL.md', 'source': 'templates/skills/spike/SKILL.md.tmpl'}], 'scripts': [{'path': 'scripts/acquire_lock.ps1', 'source': 'templates/skills/file-lock/scripts/acquire_lock.ps1'}, {'path': 'scripts/acquire_lock.sh', 'source': 'templates/skills/file-lock/scripts/acquire_lock.sh'}, {'path': 'scripts/release_lock.ps1', 'source': 'templates/skills/file-lock/scripts/release_lock.ps1'}, {'path': 'scripts/release_lock.sh', 'source': 'templates/skills/file-lock/scripts/release_lock.sh'}, {'path': 'scripts/search.ps1', 'source': 'templates/skills/skill-search/scripts/search.ps1'}, {'path': 'scripts/search.sh', 'source': 'templates/skills/skill-search/scripts/search.sh'}], 'config': [{'path': '.autoharness/workspace-profile.yaml', 'note': 'generated by workspace-discovery skill'}, {'path': '.autoharness/backlog-registry.yaml', 'note': 'copied from templates/backlog/registries/backlogit.registry.yaml'}, {'path': '.autoharness/harness-manifest.yaml', 'note': 'this file'}, {'path': '.gitignore', 'note': 'updated with lock file patterns'}]} is not of type 'array'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "agent_native.mcp_transport: 'stdio-ipc' is not one of ['stdio', 'sse', 'streamable-http', None]"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "agent_native.recommended_reviewer: 'rust-mcp-expert' is not of type 'boolean'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "backlog_tool.features: ['stash (deferred work items)', 'deliberation (decision artifacts)', 'shipments (release management)', 'hooks (event-driven automation)', 'checkpoints (session state)', 'telemetry (token usage tracking)', 'SQL queries against index', 'dependency graph with cycle detection', 'semantic links between artifacts', 'archive for completed items'] is not of type 'object'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "backlog_tool.tool_type: 'mcp-server' is not one of ['mcp', 'cli', 'both', None]"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "ci.pipeline_steps: {'ci': [{'name': 'fmt', 'command': 'cargo fmt --all -- --check'}, {'name': 'clippy', 'command': 'cargo clippy --all-targets -- -D warnings -D clippy::pedantic'}, {'name': 'test', 'command': 'cargo test --all-targets'}, {'name': 'audit', 'command': 'cargo audit', 'continue_on_error': True}], 'release': [{'name': 'quality-gates', 'steps': ['fmt', 'clippy', 'test']}, {'name': 'changelog', 'tool': 'git-cliff'}, {'name': 'cross-platform-build', 'targets': ['x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin', 'x86_64-apple-darwin']}, {'name': 'publish-github-release', 'tool': 'softprops/action-gh-release'}]} is not of type 'array'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "existing_harness.artifacts: {'agents': {'directory': '.github/agents/', 'count': 10, 'items': ['backlog-harvester.agent.md', 'build-orchestrator.agent.md', 'doc-ops.agent.md', 'harness-architect.agent.md', 'memory.agent.md', 'pr-review.agent.md', 'prompt-builder.agent.md', 'rust-engineer.agent.md', 'rust-mcp-expert.agent.md', 'research/learnings-researcher.agent.md'], 'subagent_directories': ['review/']}, 'skills': {'directory': '.github/skills/', 'count': 8, 'items': ['build-feature', 'compact-context', 'compound', 'fix-ci', 'impl-plan', 'plan-review', 'review']}, 'instructions': {'directory': '.github/instructions/', 'count': 10, 'items': ['commit-message.instructions.md', 'constitution.instructions.md', 'git-merge.instructions.md', 'markdown.instructions.md', 'prompt-builder.instructions.md', 'pull-request.instructions.md', 'rust-mcp-server.instructions.md', 'rust.instructions.md', 'workflows.instructions.md', 'writing-style.instructions.md']}, 'prompts': {'directory': '.github/prompts/', 'count': 1, 'items': ['ping-loop.prompt.md']}, 'policies': {'directory': '.github/policies/', 'count': 1, 'items': ['workflow-policies.md']}, 'copilot_instructions': {'path': '.github/copilot-instructions.md', 'exists': True}, 'agents_md': {'path': 'AGENTS.md', 'exists': True, 'sections': ['Core Principles (I through IX)', 'Technical Constraints', 'Quality Gates', 'Code Style and Conventions', 'Development Workflow', 'Feature Pipeline', 'Remote Approval Workflow', 'Terminal Command Execution Policy', 'Session Completion']}} is not of type 'array'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "frameworks: [{'name': 'axum', 'version': '0.7', 'purpose': 'HTTP server, SSE transport (legacy-sse feature)'}, {'name': 'tokio', 'version': '1', 'features': ['full'], 'purpose': 'async runtime'}, {'name': 'rmcp', 'version': '1.1', 'features': ['server', 'transport-io'], 'purpose': 'MCP SDK for JSON-RPC 2.0 / stdio transport'}, {'name': 'surrealdb', 'version': '2', 'features': ['kv-surrealkv'], 'purpose': 'embedded graph database, per-workspace namespace'}, {'name': 'tree-sitter', 'version': '0.25', 'purpose': 'code graph parsing (multi-language: Rust, Python, JS, TS, Go, C#, C, C++, Swift)'}, {'name': 'tree-sitter-rust', 'version': '0.23', 'purpose': 'Rust language grammar for tree-sitter'}, {'name': 'serde', 'version': '1', 'features': ['derive'], 'purpose': 'serialization/deserialization'}, {'name': 'clap', 'version': '4', 'features': ['derive', 'env'], 'purpose': 'CLI argument parsing with ENGRAM_ env prefix'}, {'name': 'fastembed', 'version': '5', 'optional': True, 'feature_flag': 'embeddings', 'purpose': 'embedding generation for semantic search'}, {'name': 'similar', 'version': '2', 'purpose': 'structured diff merge during dehydration'}, {'name': 'pulldown-cmark', 'version': '0.10', 'purpose': 'markdown parsing for .engram/ files'}, {'name': 'git2', 'version': '0.19', 'optional': True, 'feature_flag': 'git-graph', 'purpose': 'git commit history graph indexing'}, {'name': 'cozo', 'version': '0.7', 'features': ['storage-sqlite'], 'optional': True, 'feature_flag': 'cozo-backend', 'purpose': 'CozoDB embedded graph database (migration target)'}, {'name': 'interprocess', 'version': '2', 'features': ['tokio'], 'purpose': 'IPC via named pipes (Windows) / Unix domain sockets'}, {'name': 'notify', 'version': '9.0.0-rc.2', 'purpose': 'file system watcher for incremental sync'}] is not of type 'object'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.capability_packs.2: 'mcp-protocol-fidelity' is not one of ['agent-intercom', 'agent-engram', 'backlogit', 'browser-verification', 'continuous-learning', 'strict-safety', 'release-observability', 'adversarial-review']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.capability_packs.3: 'test-first-development' is not one of ['agent-intercom', 'agent-engram', 'backlogit', 'browser-verification', 'continuous-learning', 'strict-safety', 'release-observability', 'adversarial-review']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.0: {'layer': 'base', 'description': 'Core Rust project with cargo build/test/clippy/fmt'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.0: {'layer': 'base', 'description': 'Core Rust project with cargo build/test/clippy/fmt'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.1: {'layer': 'ci', 'description': 'GitHub Actions CI with fmt → clippy → test → audit pipeline'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.1: {'layer': 'ci', 'description': 'GitHub Actions CI with fmt → clippy → test → audit pipeline'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.2: {'layer': 'agents', 'description': 'Custom agents (backlog-harvester, build-orchestrator, etc.)'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.2: {'layer': 'agents', 'description': 'Custom agents (backlog-harvester, build-orchestrator, etc.)'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.3: {'layer': 'skills', 'description': 'Skills (deliberate, build-feature, review, etc.)'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.3: {'layer': 'skills', 'description': 'Skills (deliberate, build-feature, review, etc.)'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.4: {'layer': 'instructions', 'description': 'Instructions (Rust, MCP, constitution, commit-message, etc.)'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.4: {'layer': 'instructions', 'description': 'Instructions (Rust, MCP, constitution, commit-message, etc.)'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.5: {'layer': 'policies', 'description': 'Workflow policies (single-feature completion, etc.)'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.5: {'layer': 'policies', 'description': 'Workflow policies (single-feature completion, etc.)'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.6: {'layer': 'mcp-tooling', 'description': 'MCP server integrations (engram, backlogit, agent-intercom)'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.install_layers.6: {'layer': 'mcp-tooling', 'description': 'MCP server integrations (engram, backlogit, agent-intercom)'} is not one of ['foundation', 'instructions', 'workflow', 'review', 'runtime', 'backlog', 'knowledge', 'overlays']"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.preset: 'rust-mcp-daemon' is not one of ['starter', 'standard', 'full', None]"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "harness_recommendations.recommendation_reasons: ['Rust 2024 edition with strict safety enforced at crate and workspace level', 'MCP daemon with IPC transport — agent-native project requiring protocol fidelity', 'Three-tier test suite (contract/integration/unit) with 82 test files and proptest', 'Extensive agent harness already in place (10 agents, 8 skills, 10 instructions)', 'Backlogit and agent-intercom MCP integrations configured and operational', 'Mature CI pipeline with release automation via cargo-release and git-cliff'] is not of type 'object'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "languages.primary: {'name': 'Rust', 'version': '1.85', 'edition': '2024', 'toolchain': 'stable', 'file_count': 87} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "languages.secondary.0: {'name': 'Markdown', 'file_count': 718, 'purpose': 'documentation, agent instructions, skills, backlog artifacts'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "languages.secondary.1: {'name': 'PowerShell', 'file_count': 4, 'purpose': 'build scripts, local runner'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "languages.secondary.2: {'name': 'TOML', 'file_count': 5, 'purpose': 'cargo config, release config, rust-toolchain'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "languages.secondary.3: {'name': 'YAML', 'file_count': '~5', 'purpose': 'CI workflows, backlogit config, engram registry'} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "runtime_surfaces.browser_tooling: False is not of type 'array'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "runtime_surfaces.deployment_manifests: False is not of type 'array'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "structure.doc_layout: {'root': 'docs/', 'subdirectories': ['adrs', 'archive', 'closure', 'compound', 'decisions', 'exec-plans', 'memory', 'research', 'reviews', 'upstream'], 'key_files': ['docs/architecture.md', 'docs/configuration.md', 'docs/quickstart.md', 'docs/mcp-tool-reference.md', 'docs/troubleshooting.md', 'docs/log-observation-guide.md'], 'adr_count': 17} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "structure.source_layout: {'root': 'src/', 'binary': 'src/bin/engram.rs', 'library': 'src/lib.rs', 'modules': ['config', 'daemon', 'db', 'errors', 'installer', 'models', 'server', 'services', 'shim', 'tools'], 'source_file_count': 87} is not of type 'string'"
+    },
+    {
+      "kind": "invalid-profile-schema",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "contract": "workspace-profile",
+      "observed_version": "1.0.0",
+      "current_version": "1.0.0",
+      "message": "structure.test_layout: {'root': 'tests/', 'tiers': ['contract', 'integration', 'unit', 'helpers'], 'test_file_count': 102} is not of type 'string'"
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "foundation",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "agents",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "policies",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "prompts",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "instructions",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "skills",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "scripts",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    },
+    {
+      "kind": "malformed-artifact-entry",
+      "path": "config",
+      "message": "Manifest artifact entry is not an object; expected {path, checksum, template, primitive}. Skipping."
+    }
+  ],
+  "warning_instances": 8,
+  "blockers": [],
+  "rendered": [],
+  "skipped": [],
+  "unresolved": [],
+  "checksum_scan": [],
+  "schema_contracts": {
+    "manifest": {
+      "kind": "manifest",
+      "contract_name": "harness-manifest",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\harness-manifest.yaml",
+      "schema_file": "harness-manifest.schema.json",
+      "compatibility_model": "versioned-contract",
+      "current_version": "1.0.0",
+      "known_versions": [
+        "0.9.0",
+        "1.0.0"
+      ],
+      "observed_version": "1.0.0",
+      "status": "current"
+    },
+    "config": {
+      "kind": "config",
+      "contract_name": "harness-config",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\config.yaml",
+      "schema_file": "harness-config.schema.json",
+      "compatibility_model": "versioned-contract",
+      "current_version": "1.0.0",
+      "known_versions": [
+        "0.9.0",
+        "1.0.0"
+      ],
+      "observed_version": "1.0.0",
+      "status": "current"
+    },
+    "profile": {
+      "kind": "profile",
+      "contract_name": "workspace-profile",
+      "path": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\workspace-profile.yaml",
+      "schema_file": "workspace-profile.schema.json",
+      "compatibility_model": "versioned-contract",
+      "current_version": "1.0.0",
+      "known_versions": [
+        "0.9.0",
+        "1.0.0"
+      ],
+      "observed_version": "1.0.0",
+      "status": "current"
+    }
+  },
+  "migration_proposals": [],
+  "targeted_checks": {
+    "agent_intercom_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\agent-intercom.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "review_intercom_workflow": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\skills\\review\\SKILL.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "agent_engram_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\agent-engram.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "backlogit_instruction_guidance": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\backlogit.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "backlogit_sql_schema_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\backlogit-sql-schema.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "backlogit_yaml_header_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\backlogit-yaml-header-tooling.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "agents_metadata_catalog_guidance": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\AGENTS.md",
+      "ok": false,
+      "missing": [
+        "backlogit_get_metadata_catalog",
+        "backlogit_export_command_map"
+      ],
+      "order_violations": []
+    },
+    "ship_source_artifact_cleanup": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\agents\\ship.agent.md",
+      "ok": false,
+      "missing": [
+        "source_deliberation_id",
+        "backlogit_stash_remove",
+        "backlogit_archive_item"
+      ],
+      "order_violations": []
+    },
+    "closure_source_artifact_cleanup": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\skills\\operational-closure\\SKILL.md",
+      "ok": false,
+      "missing": [
+        "Source artifact cleanup",
+        "source_stash_id",
+        "source_deliberation_id"
+      ],
+      "order_violations": []
+    },
+    "strict_safety_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\strict-safety.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "release_observability_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\release-observability.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "continuous_learning_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\continuous-learning.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "adversarial_review_instruction": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\instructions\\adversarial-review.instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "copilot_durable_knowledge_layout": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\copilot-instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "copilot_session_memory_guidance": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\copilot-instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "copilot_remote_operator_guidance": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\copilot-instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "copilot_backlog_workflow_expectations": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\copilot-instructions.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "stage_shipment_determinism": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\agents\\stage.agent.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "ship_branch_management": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\agents\\ship.agent.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "pr_lifecycle_branch_retention": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\skills\\pr-lifecycle\\SKILL.md",
+      "ok": true,
+      "missing": [],
+      "order_violations": []
+    },
+    "auto_tune_learning_loop_contract": {
+      "path": "D:\\Source\\GitHub\\agent-engram\\.github\\agents\\auto-tune.agent.md",
+      "ok": false,
+      "missing": [
+        "learning_signals{}"
+      ],
+      "order_violations": []
+    }
+  },
+  "learning_signals": {
+    "compound_patterns": [
+      {
+        "pattern_type": "component_hotspot",
+        "key": "backlogit shipment closure",
+        "evidence_count": 3,
+        "evidence_refs": [
+          "docs/compound/workflow-issues/backlogit-ship-blocked-child-expansion-2026-04-26.md",
+          "docs/compound/workflow-issues/backlogit-shipment-ship-force-releases-covering-feature-2026-04-22.md",
+          "docs/compound/workflow-issues/ship-shipment-no-item-archive-files-2026-04-23.md"
+        ],
+        "affected_artifacts": [
+          ".github/agents/auto-tune.agent.md",
+          ".github/skills/tune-harness/SKILL.md"
+        ],
+        "suggested_action": "Review harness coverage for hotspot component 'backlogit shipment closure'."
+      },
+      {
+        "pattern_type": "cross_cutting_tags",
+        "key": "rust",
+        "evidence_count": 5,
+        "evidence_refs": [
+          "docs/compound/best-practices/pub-visibility-for-external-test-harness-2026-04-20.md",
+          "docs/compound/build-errors/string-add-string-ref-type-error-2026-04-20.md",
+          "docs/compound/concurrency-issues/rwlock-toctou-temporary-guard-lifetime-2026-04-23.md",
+          "docs/compound/workflow-issues/ci-rust-version-gap-clippy-lints-2026-04-20.md",
+          "docs/compound/workflow-issues/mutually-exclusive-features-no-default-features-2026-04-20.md"
+        ],
+        "affected_artifacts": [
+          ".github/agents/auto-tune.agent.md",
+          ".github/skills/tune-harness/SKILL.md"
+        ],
+        "suggested_action": "Consider a cross-cutting instruction or review rule for tag 'rust'."
+      }
+    ],
+    "promotion_candidates": [],
+    "observation_patterns": [],
+    "closure_patterns": []
+  },
+  "report_paths": {
+    "json": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\staging\\verify-workspace-report.json",
+    "markdown": "D:\\Source\\GitHub\\agent-engram\\.autoharness\\staging\\verify-workspace-report.md"
+  }
+}

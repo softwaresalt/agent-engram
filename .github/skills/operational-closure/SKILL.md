@@ -92,6 +92,14 @@ When the closure process reveals durable knowledge:
 * Update documentation if the release process or architecture knowledge changed
 * Add tuning proposals if the harness lacked a needed safety mode, verification pattern, or reviewer
 
+### Step 5: Source artifact cleanup
+
+When the `backlogit` capability pack is installed, record source-artifact traceability so the closure report is the system of record:
+
+* Read `custom_fields.source_stash_id` for each top-level closed item. If present, note the stash ID in the closure artifact so the originating stash entry can be retired.
+* Read `custom_fields.source_deliberation_id` for each top-level closed item. If present, note the deliberation ID and any associated `references` paths in the closure artifact so deliberation follow-up remains traceable.
+* Record both found and absent fields — a missing `source_stash_id` or `source_deliberation_id` is normal for non-stash-originated work items.
+
 ## Why This Skill Exists
 
 Operational closure is the compositional bridge from code production to safe absorption. It makes runtime verification actionable, keeps PRs honest about monitoring expectations, and turns release outcomes into future harness improvements.
