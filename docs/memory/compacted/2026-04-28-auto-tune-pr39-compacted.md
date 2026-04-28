@@ -36,8 +36,9 @@ checks via TUNE-026..031. CI green, Copilot review (5 comments) addressed, PR #3
 2. **15 deferred schema blockers** — structural type mismatches in `workspace-profile.yaml`
    require workspace-discovery regeneration via Auto-MergeInstall, not manual fixing. No
    agent behavior impact. Deferred.
-3. **Tuning report JSON files gitignored** — these embed `derek.williams` in `autoharness_home`
-   path; `.autoharness/tuning-reports/*.json` added to `.gitignore`.
+3. **Tuning report JSON files gitignored** — these embed a machine-specific user path
+   in `autoharness_home` (e.g., `C:\Users\<user>\...`); `.autoharness/tuning-reports/*.json`
+   added to `.gitignore`.
 
 ## Verify Results
 
