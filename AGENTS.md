@@ -110,6 +110,7 @@ When the `backlogit` capability pack is installed, agents MUST also follow
 * persist session continuity through backlogit memory / checkpoint operations
 * record meaningful comments and commit associations for traceability
 * refresh the backlog index after out-of-band edits before trusting query results
+* use `backlogit_get_metadata_catalog` and `backlogit_export_command_map` to discover available operations before querying unfamiliar surfaces
 
 ### Capability Overlay — browser-verification
 

@@ -364,27 +364,24 @@ conventions:
 # Harness Recommendations
 # =============================================================================
 harness_recommendations:
-  preset: rust-mcp-daemon
+  preset: full  # full (closest to rust-mcp-daemon; workspace-specific stack pack)
   capability_packs:
-    - strict-safety       # forbid(unsafe_code), clippy pedantic deny, unwrap/expect deny
-    - release-observability  # tracing, opentelemetry (optional), release workflow
-    - mcp-protocol-fidelity  # MCP SDK, tool contracts, protocol compliance
-    - test-first-development # TDD, contract/integration/unit tiers, proptest
+    - agent-intercom
+    - agent-engram
+    - backlogit
+    - strict-safety
+    - release-observability
+    - adversarial-review
+    - continuous-learning
   install_layers:
-    - layer: base
-      description: "Core Rust project with cargo build/test/clippy/fmt"
-    - layer: ci
-      description: "GitHub Actions CI with fmt → clippy → test → audit pipeline"
-    - layer: agents
-      description: "Custom agents (backlog-harvester, build-orchestrator, etc.)"
-    - layer: skills
-      description: "Skills (deliberate, build-feature, review, etc.)"
-    - layer: instructions
-      description: "Instructions (Rust, MCP, constitution, commit-message, etc.)"
-    - layer: policies
-      description: "Workflow policies (single-feature completion, etc.)"
-    - layer: mcp-tooling
-      description: "MCP server integrations (engram, backlogit, agent-intercom)"
+    - foundation
+    - instructions
+    - workflow
+    - review
+    - runtime
+    - backlog
+    - knowledge
+    - overlays
   project_description: >
     Agent Engram is a local-first Model Context Protocol daemon providing
     code graph indexing, symbol navigation, and semantic search for AI coding
@@ -478,7 +475,7 @@ agent_native:
   mcp_sdk_present: true
   mcp_sdk: rmcp
   mcp_sdk_version: "1.1"
-  mcp_transport: stdio-ipc  # primary IPC; legacy-sse behind feature flag
+  mcp_transport: stdio  # primary: IPC via named pipe (custom transport, closest enum: stdio)
   tool_handler_locations:
     - "src/tools/mod.rs"      # dispatch(state, method, params)
     - "src/tools/lifecycle.rs" # set_workspace, get_daemon_status, get_workspace_status
@@ -499,7 +496,7 @@ agent_native:
     - "Tools catalog in shim/tools_catalog.rs"
     - "IPC protocol tests in tests/contract/ipc_protocol_test.rs"
   user_agent_parity_required: true
-  recommended_reviewer: rust-mcp-expert
+  recommended_reviewer: true  # rust-mcp-expert (custom review persona)
 
 # =============================================================================
 # Existing Harness
@@ -582,7 +579,7 @@ backlog_tool:
   detected: true
   tool_name: backlogit
   directory: ".backlogit/"
-  tool_type: mcp-server
+  tool_type: mcp  # mcp-server (MCP-native backlog tool)
   mcp_registered: true
   mcp_config_paths:
     - ".vscode/mcp.json"       # server name: backlog
@@ -611,16 +608,16 @@ backlog_tool:
     - deliberation (prefix: D)
     - shipment (prefix: S)
   features:
-    - stash (deferred work items)
-    - deliberation (decision artifacts)
-    - shipments (release management)
-    - hooks (event-driven automation)
-    - checkpoints (session state)
-    - telemetry (token usage tracking)
-    - SQL queries against index
-    - dependency graph with cycle detection
-    - semantic links between artifacts
-    - archive for completed items
+    stash: true
+    deliberation: true
+    shipments: true
+    hooks: true
+    checkpoints: true
+    telemetry: true
+    sql_query: true
+    dependencies: true
+    semantic_links: true
+    archive: true
 
 # =============================================================================
 # VS Code

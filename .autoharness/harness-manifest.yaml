@@ -3,9 +3,12 @@
 # This file tracks all artifacts installed by autoharness for drift detection and tuning.
 
 schema_version: "1.0.0"
+autoharness_version: "1.3.2"
 installed_at: "2025-07-23"
-tuned_at: "2026-04-26T16:52:00-07:00"
+tuned_at: "2026-04-28T12:21:00-07:00"
 installer_version: "autoharness-cli-1.3.2"
+profile_hash: ""
+primitives_installed: []
 preset: full
 primary_stack_pack: rust-mcp-daemon
 stack_packs:
@@ -255,3 +258,9 @@ verification:
     - "TUNE-023: stage.agent.md — added 'Never skip shipment assembly' behavioral constraint from template"
     - "TUNE-024: ship.agent.md — aligned Source Artifact Cleanup to use backlogit_append_comment for traceability (backlogit_stash_remove/backlogit_archive_item not in registry)"
     - "TUNE-025: workspace-profile.yaml — quoted C# in tree-sitter purpose to fix YAML syntax error"
+    - "TUNE-026: auto-tune.agent.md — added learning_signals{} to Step 5 verify-workspace output consumption"
+    - "TUNE-027: ship.agent.md — added source_deliberation_id field read, deprecated backlogit_stash_remove/backlogit_archive_item note"
+    - "TUNE-028: operational-closure SKILL.md — added Step 5 Source Artifact Cleanup (source_stash_id, source_deliberation_id)"
+    - "TUNE-029: AGENTS.md — added backlogit_get_metadata_catalog and backlogit_export_command_map to backlogit overlay"
+    - "TUNE-030: harness-manifest.yaml — added autoharness_version, profile_hash, primitives_installed required fields; bumped tuned_at"
+    - "TUNE-031: workspace-profile.yaml — fixed enum violations: mcp_transport, recommended_reviewer, tool_type, features type, harness_recommendations.preset and capability_packs and install_layers"
