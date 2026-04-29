@@ -71,6 +71,51 @@ If code changed outside the expected indexing flow, or the daemon reports stale 
 2. Use `index_workspace` only when a full rebuild is actually needed.
 3. Treat stale results as suspect until freshness is restored.
 
+## Verifying File Indexed
+
+Before treating any engram result as authoritative for a specific file, verify that file
+is present in the index. This prevents citing stale or hallucinated data from files the
+file-watcher has not yet processed.
+
+### When verification is required
+
+Perform the check before any of these actions:
+
+* Citing a specific file's contents as evidence in a plan, decision, or review
+* Passing file-derived context to a subagent as source material
+* Making claims about a file's current structure, symbols, or dependencies based on
+  engram-indexed data
+
+Verification is **not** required for broad conceptual discovery (e.g., "find all files that
+implement X") — only for file-specific authoritative citation.
+
+### Verification procedure
+
+1. Call `query_memory` or `list_symbols` with the file path as a filter.
+2. **Positive result** (file is indexed): proceed to cite the result.
+3. **Negative result** (file absent or stale):
+   a. Call `sync_workspace` to trigger an incremental re-index.
+   b. Re-query using `query_memory` or `list_symbols`.
+   c. If still absent after sync, fall back to reading the file directly with `view`.
+   d. Do **not** cite engram results for that file as authoritative after two negative responses.
+
+### Examples
+
+**Positive — file is indexed, safe to cite:**
+```
+list_symbols(path: ".github/instructions/agent-engram.instructions.md")
+→ returns: ["Workspace Lifecycle Protocol", "Search Protocol", "Fallback Protocol"]
+→ safe to cite indexed data for this file
+```
+
+**Negative — file not yet indexed, fallback required:**
+```
+list_symbols(path: ".github/skills/new-skill/SKILL.md")
+→ returns: [] (empty — file not yet in index)
+→ call sync_workspace, re-query
+→ still empty → use view tool directly; do not cite engram for this file
+```
+
 ## Data Ownership Rule
 
 Treat `.engram/` artifacts as tool-managed state. Do not hand-edit generated registry, code-graph,

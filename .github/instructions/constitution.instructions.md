@@ -118,6 +118,8 @@ When the workspace enables the `agent-engram` capability pack, agents MUST use t
 engram workflow for indexed search, workspace binding and status checks, code-graph traversal,
 and freshness verification. Agents MUST prefer engram MCP tools over file-based search for
 context-related discovery, MUST refresh or verify stale index state before trusting query results,
+MUST verify a file is indexed before citing engram results for that specific file as authoritative
+(see "Verifying File Indexed" in `.github/instructions/agent-engram.instructions.md`),
 and MUST not hand-edit tool-managed `.engram/` artifacts as a substitute for lifecycle or sync
 operations.
 
