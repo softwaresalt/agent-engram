@@ -28,7 +28,7 @@ sources:
 | 033.001-T: code graph wiring + reresolve | ✅ archived |
 | 033-F: SQL Parser Enhancements feature | ✅ archived |
 | 013-S: shipment | ✅ shipped |
-| 033.003-T: CREATE PROCEDURE (upstream blocked) | ⏳ deferred as queued |
+| 033.003-T: CREATE PROCEDURE (upstream blocked) | ⏳ deferred as 033.005-T (renamed to avoid ID collision with archived mcp-json task) |
 
 ### Key Decisions
 

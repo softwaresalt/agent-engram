@@ -19,7 +19,7 @@ Shipment 013-S shipped three tasks under 033-F (SQL Parser Enhancements):
 | 033.004-T | Add references relation table and DB edge operations | ✅ Done |
 | 033.002-T | Parse multi-schema table references (schema.table syntax) | ✅ Done |
 | 033.001-T | Wire References edges into code graph with Class node resolution | ✅ Done |
-| 033.003-T | CREATE PROCEDURE support (upstream grammar) | ⏳ Deferred (blocked) |
+| 033.003-T | CREATE PROCEDURE support (upstream grammar) | ⏳ Deferred — renamed 033.005-T |
 
 **Files changed**: 14 files, +841 / -52 lines
 
@@ -121,7 +121,7 @@ No `backlogit_stash_remove` available in registry — stash IDs F15C561F and 823
 | FU-1 | Batch-UPDATE optimization for `reresolve_references_edges` (currently N+1 round-trips) | low |
 | FU-2 | Add INDEX on `target` field in `references` schema | low |
 | FU-3 | DRY refactor of inline reference-resolution logic between `index_workspace` and `sync_workspace` | low |
-| FU-4 | 033.003-T: CREATE PROCEDURE support when tree-sitter-sequel grammar updates | blocked (upstream) |
+| FU-4 | 033.005-T: CREATE PROCEDURE support when tree-sitter-sequel grammar updates (renamed from 033.003-T to resolve ID collision) | blocked (upstream) |
 | FU-5 | Full Class node resolution for SQL references (currently falls back to raw string) | medium |
 
 ## Risky Action Record

@@ -1,10 +1,10 @@
 ---
-title: "Rust 1.95 Clippy Lints Missing from Rust 1.85 Local Toolchain"
-description: "CI uses Rust 1.95 which has manual_contains, doc_markdown, and unnecessary_map_or lints not present in local Rust 1.85"
+title: "Clippy Lints Missing from Rust 1.85 Local Toolchain When CI `stable` Resolved to Rust 1.95"
+description: "CI uses Rust `stable`, which resolved to 1.95 at the time and had manual_contains, doc_markdown, and unnecessary_map_or lints not present in local Rust 1.85"
 problem_type: "workflow_issue"
 category: "workflow-issues"
 component: "tests/unit/parsing_test.rs, tests/contract/references_edge_test.rs"
-root_cause: "CI pins Rust 1.95 stable but local development uses 1.85; three new lints were introduced between these versions and only appear on CI"
+root_cause: "CI uses Rust `stable`, which resolved to 1.95 at the time, while local development used 1.85; three new lints were introduced between these versions and only appeared on CI"
 resolution_type: "code_fix"
 severity: "medium"
 message: "clippy::manual_contains, clippy::doc_markdown, clippy::unnecessary_map_or"
@@ -29,7 +29,7 @@ CI fails with clippy lints that don't fire locally, causing wasted push-fix-push
 
 ## Root Cause
 
-The CI workflow pins `stable` Rust which resolves to 1.95 at time of this task.
+The CI workflow uses `stable` Rust which resolved to 1.95 at the time of this task.
 Local development was using 1.85. These three lints were introduced (or promoted
 to deny-level) between 1.85 and 1.95.
 
