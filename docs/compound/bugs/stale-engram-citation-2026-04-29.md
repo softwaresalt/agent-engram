@@ -24,8 +24,6 @@ references:
 created_at: 2026-04-29
 ---
 
-# Stale Engram Citation Produces Hallucinated Symbol References
-
 ## Symptom
 
 Agent cites a function, section, or field from a file that was recently created or
