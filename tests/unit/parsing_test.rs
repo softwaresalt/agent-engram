@@ -1294,7 +1294,7 @@ fn test_sql_schema_qualified_from() {
         "SELECT FROM must produce at least one References edge"
     );
     assert!(
-        refs.iter().any(|t| *t == "public.users"),
+        refs.contains(&"public.users"),
         "References edge target must be 'public.users' for schema-qualified FROM clause; got: {refs:?}"
     );
 }
@@ -1323,7 +1323,7 @@ fn test_sql_schema_qualified_insert() {
         "INSERT INTO must produce at least one References edge"
     );
     assert!(
-        refs.iter().any(|t| *t == "dbo.orders"),
+        refs.contains(&"dbo.orders"),
         "References edge target must be 'dbo.orders' for schema-qualified INSERT; got: {refs:?}"
     );
 }
@@ -1349,11 +1349,11 @@ fn test_sql_mixed_references() {
         })
         .collect();
     assert!(
-        refs.iter().any(|t| *t == "users"),
+        refs.contains(&"users"),
         "simple table name 'users' must be captured; got: {refs:?}"
     );
     assert!(
-        refs.iter().any(|t| *t == "public.orders"),
+        refs.contains(&"public.orders"),
         "qualified table name 'public.orders' must be captured; got: {refs:?}"
     );
 }
@@ -1383,7 +1383,7 @@ fn test_sql_schema_qualified_create() {
         "CREATE TABLE must produce at least one Class symbol"
     );
     assert!(
-        classes.iter().any(|n| *n == "public.users"),
+        classes.contains(&"public.users"),
         "Class symbol name must be 'public.users' for schema-qualified CREATE TABLE; got: {classes:?}"
     );
 }
