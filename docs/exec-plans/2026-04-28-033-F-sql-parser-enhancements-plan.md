@@ -88,6 +88,13 @@ If multiple classes share the same name (unlikely but possible across languages)
 the first match wins — this is acceptable for a code navigation tool where ambiguity
 is expected.
 
+**Qualified-name fallback** (deliberation Finding 2): When the target is
+schema-qualified (e.g., `"public.users"`), `get_class_by_name("public.users")`
+may return `None` if the class was registered as just `"users"`. The resolution
+logic MUST attempt a fallback: split on `.` and try the last segment. If the
+fallback also fails, treat as unresolved (self-referencing edge with
+`qualified_name`).
+
 **Files**: `src/services/code_graph.rs`
 
 **Tests**: Integration test in `tests/integration/` that:
@@ -145,12 +152,20 @@ failing tests, implement.
 Unit 1 (DB schema + edge operations)
   ↓
 Unit 2 (code graph wiring — depends on Unit 1 for edge creation)
-  ↓
-Unit 3 (parser dotted identifiers — can start in parallel with Unit 2,
-         but integration tests need Unit 2 for end-to-end verification)
+
+Unit 3 (parser dotted identifiers — independent, no upstream dependency)
 ```
 
-Preferred execution order: Unit 1 → Unit 2 → Unit 3.
+Per deliberation Finding 1: Unit 3 is a pure parser-layer change that emits
+qualified identifier strings. It does NOT depend on Unit 2's graph wiring.
+Units 1+2 and Unit 3 can execute in parallel.
+
+Per deliberation Finding 2: Unit 2's resolution logic must handle qualified
+names (e.g., `"public.users"`) by attempting a fallback lookup on the last
+segment when the full qualified name does not match. This is a missing
+acceptance criterion added post-deliberation.
+
+Preferred execution order: Unit 1 → Unit 2, with Unit 3 in parallel.
 
 Unit 3's parser-only changes and unit tests are independent of Units 1–2 and
 could be developed concurrently, but the integration verification requires
