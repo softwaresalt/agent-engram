@@ -1,7 +1,7 @@
 //! Contract tests for the `references` relation edge — 033.004-T.
 //!
 //! Verifies that `create_references_edge` creates a persisted edge in the
-//! SurrealDB `references` table and can be queried back.
+//! `SurrealDB` `references` table and can be queried back.
 //!
 //! # Harness status
 //!
@@ -29,7 +29,7 @@ fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
 
 /// 033.004-T: `create_references_edge` must persist a resolved (file → class) edge.
 ///
-/// After implementation, creates an edge from a code_file node to a class node
+/// After implementation, creates an edge from a `code_file` node to a class node
 /// and verifies it can be queried from the `references` table.
 ///
 /// **Harness**: panics with `unimplemented!` until 033.004-T is complete.
@@ -90,7 +90,7 @@ async fn contract_create_references_edge_unresolved() {
     );
     let qn = rows[0].get("qualified_name");
     assert!(
-        qn.map_or(false, |v| v.as_str() == Some("nonexistent_table")),
+        qn.is_some_and(|v| v.as_str() == Some("nonexistent_table")),
         "qualified_name must be 'nonexistent_table'; got: {qn:?}"
     );
 }

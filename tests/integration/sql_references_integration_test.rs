@@ -1,7 +1,7 @@
 //! Integration tests for SQL References edge graph wiring — 033.001-T.
 //!
 //! Indexes temporary SQL workspaces via `code_graph::index_workspace` and
-//! verifies that `references` edges are correctly persisted in SurrealDB for:
+//! verifies that `references` edges are correctly persisted in `SurrealDB` for:
 //!
 //! * Resolved edges: SQL file references a class that was indexed from a CREATE TABLE
 //! * Unresolved edges: SQL file references a table that has no corresponding Class node
@@ -33,7 +33,7 @@ fn write_file(dir: &Path, rel: &str, content: &str) {
     fs::write(full, content).expect("write_file");
 }
 
-/// Helper: derive a deterministic (data_dir, branch) pair from a workspace path.
+/// Helper: derive a deterministic (`data_dir`, `branch`) pair from a workspace path.
 fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
     let canon = path
         .canonicalize()
