@@ -74,17 +74,17 @@ async fn contract_set_workspace_pending_scan_true_when_offline_changes_exist() {
     );
 }
 
-/// `set_workspace` must return within 500 ms (bind latency SLA).
+/// `set_workspace` must return within the bind-latency SLA.
 /// Heavy post-bind work (DB connect, hydration, scan) runs asynchronously.
 ///
-/// Note: the production SLA target is 500 ms under `--release` builds.
+/// The production SLA target is 500 ms under `--release` builds.
 /// Debug-build CI uses a relaxed 2 000 ms threshold to account for
 /// unoptimised code paths and shared-runner variability.
 ///
 /// Red phase: timing passes (the stub is fast), but this is the standing SLA
 /// that must be maintained through all green-phase implementation.
 #[tokio::test]
-async fn contract_set_workspace_returns_within_500ms() {
+async fn contract_set_workspace_returns_within_bind_sla() {
     // Production SLA: 500 ms. Relaxed for debug-build CI.
     let sla_ms: u128 = if cfg!(debug_assertions) { 2_000 } else { 500 };
 

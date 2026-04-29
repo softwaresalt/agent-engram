@@ -4,7 +4,7 @@ date: 2026-04-28
 feature: 033-F
 shipment: 013-S
 source: ".backlogit/queue/033-F.md"
-tasks: [033.001-T, 033.002-T, 033.003-T]
+tasks: [033.004-T, 033.001-T, 033.002-T]
 ---
 
 ## Problem Frame
@@ -58,8 +58,8 @@ excluded from this plan.
 
 **Tests**: Unit tests in `tests/unit/` verifying edge creation and cleanup round-trip.
 
-**Execution posture**: Test-first. Write a contract test that creates a `references`
-edge and reads it back, then implement.
+**Execution posture**: Test-first. Write a contract test (requires a DB instance)
+that creates a `references` edge and reads it back, then implement.
 
 **Estimated scope**: 2 files modified (queries + schema), ~40 lines added per backend.
 
