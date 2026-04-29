@@ -1,9 +1,9 @@
 ---
+name: Rust MCP Expert
 description: "Expert assistant for Rust MCP server development using the rmcp SDK with tokio async runtime"
-name: "Rust MCP Expert"
-maturity: "stable"
+maturity: stable
 model_routing: "Tier 2 (Standard)"
-subagent_depth: 0
+subagent_depth: 2
 tools: []
 ---
 

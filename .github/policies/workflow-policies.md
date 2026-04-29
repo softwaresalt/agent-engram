@@ -241,6 +241,102 @@ approval in the PR description.
 
 ---
 
+## P-011: Decomposition Policy
+
+| Field      | Value                                    |
+|------------|------------------------------------------|
+| Policy ID  | P-011                                    |
+| Applies To | `stage`, `ship`                          |
+| Gate Point | Stage Step 3 (harvest), Ship Step 0.5 (intake) |
+
+**Statement**: All work must follow the canonical decomposition chain before
+implementation begins. The chain is: Stash → Deliberation → Implementation Plan →
+Feature (or Chore) → Tasks → Subtasks. Skipping levels or implementing bare tasks
+without a covering feature is forbidden.
+
+**Decomposition chain**:
+
+```text
+Stash entry (idea/observation)
+  → Deliberate or Spike (WHAT and WHY)
+    → Implementation Plan (HOW)
+      → Feature or Chore (top-level release unit)
+        → Tasks (2-hour, single-domain units)
+          → Subtasks (optional; only when a task has parallel internal steps)
+```
+
+**Preconditions**:
+
+1. Every task must reference a parent feature or chore via `parent_id`.
+2. Every feature or chore must reference either an implementation plan or a deliberation artifact in its `references` field.
+3. Tasks must satisfy the 2-Hour Rule, Width Isolation, and Atomic Milestone constraints (see Constitution Principle II / Task Granularity).
+
+**Bypass conditions** (must be documented):
+
+* **Hot-fix**: A P0 production defect may skip deliberation if the root cause is unambiguous and the change is fewer than 3 lines. Record `skip_policy: P-011, reason: hotfix` in the commit message.
+* **Spike-only**: A spike that produces no code may skip feature creation and harvest directly to a compound learning.
+* **Operator override**: Operator explicitly states `skip_policy: P-011` with rationale in the session.
+
+**Postcondition**: Every task claiming `active` status has a traceable path through the decomposition chain to a deliberation or implementation plan artifact.
+
+**Violation Action**: Halt. Do not claim or implement orphaned tasks. Request Stage to generate the missing decomposition chain artifacts. Broadcast a P-005 violation event with `violation_policy: P-011`.
+
+**Examples**:
+
+```text
+✓ Valid:
+  031-F (refs: impl-plan) → 031.001-C → 031.001.001-T
+
+✗ Invalid — task without covering feature:
+  031.001.001-T (no parent_id, no feature reference)
+
+✗ Invalid — task referencing only a stash entry (skipped deliberation/plan):
+  031.001.001-T (refs: stash/2B842D59 only)
+```
+
+---
+
+## P-012: Branch-Per-Feature
+
+| Field      | Value                                    |
+|------------|------------------------------------------|
+| Policy ID  | P-012                                    |
+| Applies To | `ship`                                   |
+| Gate Point | Ship Step 1 pre-flight                   |
+
+**Statement**: Each feature or chore release unit MUST be developed on a dedicated branch.
+One branch per release unit. Do not combine unrelated features or chores on the same branch.
+
+**Branch naming convention**: `{type}/{id}-{slug}` where `{type}` is one of:
+`feature`, `fix`, `chore`, `docs`, `refactor`. Example: `feature/031-F-harness-hardening`.
+
+**Post-merge closure branch convention**: `post-merge/{feature_slug}`. Example:
+`post-merge/031-F-harness-hardening`.
+
+**Precondition**: `git branch --show-current` returns a name matching the branch naming
+convention for the current release unit. The branch must not be `main` or any shared
+integration branch.
+
+**Postcondition**: All commits for the release unit are on the dedicated branch. The PR
+is opened from that branch into `main`.
+
+**Exception list** (must be documented):
+
+| Exception | Condition | Required documentation |
+|---|---|---|
+| Shared research branch | Spike produces only docs, no code changes to production paths | `skip_policy: P-012, reason: spike-docs-only` in commit |
+| Post-merge closure only | Changes touch only `docs/`, `.backlogit/archive/`, `docs/compound/` | Standard post-merge branch protocol applies; P-012 is satisfied by the `post-merge/` branch |
+| Operator-authorized exception | Operator explicitly states reason | `skip_policy: P-012, reason: <operator-reason>` in PR description |
+
+**Violation Action**: Halt. Do not continue committing to the wrong branch. See P-010
+for the creation-before-commit precondition. Broadcast a P-005 violation event with
+`violation_policy: P-012`.
+
+**Relationship to P-010**: P-010 requires a non-`main` branch before the first commit.
+P-012 extends that by requiring the branch to be dedicated to a single release unit.
+
+---
+
 ## Amendment Log
 
 | Version | Date         | Change           | Reason                     |
@@ -251,3 +347,4 @@ approval in the PR description.
 | 1.3.0   | 2026-04-24     | Added P-008      | Markdown conformance enforcement |
 | 1.4.0   | 2026-04-24     | Added P-009      | Merge-commit-only policy |
 | 1.5.0   | 2026-04-25     | Added P-010; P-009 compliance action note | Branch creation enforcement; document rebase merge disable requirement |
+| 1.6.0   | 2026-04-29     | Added P-011, P-012 | Decomposition chain integrity and branch-per-feature formalized (031-F/008-S) |

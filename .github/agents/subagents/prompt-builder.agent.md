@@ -4,7 +4,7 @@ description: "Phase-based prompt engineering assistant for creating and validati
 maturity: stable
 tools: vscode, execute, read, edit, search
 model_routing: "Tier 1 (Fast/Cheap)"
-subagent_depth: 0
+subagent_depth: 2
 ---
 
 # Prompt Builder

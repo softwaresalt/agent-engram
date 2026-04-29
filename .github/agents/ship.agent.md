@@ -156,9 +156,10 @@ it halts and requests that Stage be run first.
 ### Step 1: Pre-Flight Checks
 
 1. **P-001 Gate**: Check that no other top-level release units (features or chores) are `Active` in the backlog
-2. **Verify compilation**: Run `cargo check` to confirm the project builds
-3. **Re-read constitution**: Load `.github/instructions/constitution.instructions.md` Principles I, II, IV
-4. If the task has elevated blast radius, uncertain root cause, or destructive potential, invoke **safety-modes** in the appropriate mode before modifying code
+2. **P-010 / P-012 Gate**: Verify current branch is a dedicated feature branch (not `main`). Branch must follow `{type}/{id}-{slug}` convention per P-010 and P-012 in `.github/policies/workflow-policies.md`.
+3. **Verify compilation**: Run `cargo check` to confirm the project builds
+4. **Re-read constitution**: Load `.github/instructions/constitution.instructions.md` Principles I, II, IV
+5. If the task has elevated blast radius, uncertain root cause, or destructive potential, invoke **safety-modes** in the appropriate mode before modifying code
 
 ### Step 2: Harness Generation (P-002 / P-004)
 
@@ -240,6 +241,7 @@ When the `adversarial-review` capability pack is installed, Ship invokes the **a
 4. Write a memory checkpoint to `docs/memory/`
 5. If the task required 3+ attempts, invoke the compound skill to capture learnings
 6. When the `continuous-learning` capability pack is installed, invoke the **observe** skill for any recurring patterns encountered during the task — repeated review findings, recurring build failures, operator corrections, or workarounds that kept appearing. Skip if the task was routine.
+7. **Bug capture**: If any defect was discovered during build or review (regardless of whether it was fixed inline), invoke the **observe** skill with `source: bug` to write a compound bug entry to `docs/compound/bugs/`. Include the symptom, root cause (if known), and a reference to the task ID. This ensures every discovered defect enters the CE learning loop immediately, even when it is resolved in the same session.
 
 If the `agent-intercom` capability pack is installed, broadcast task completion and any blocked / retry conditions.
 
@@ -256,7 +258,7 @@ After all tasks in the queue are complete:
 4. If CI or automated review comments fail:
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Invoking fix-ci for shipment PR` before invoking the skill.
    * Invoke the **fix-ci** skill before proceeding.
-5. If the changed work touches runtime surfaces, invoke **runtime-verification** with the affected surfaces
+5. If the changed work touches runtime surfaces, invoke **runtime-verification** with the affected surfaces. If runtime-verification surfaces any defects (unexpected behavior, regression, or environment failure), invoke the **observe** skill with `source: bug` to capture each defect in `docs/compound/bugs/` before proceeding.
 6. Invoke **operational-closure** to produce release-readiness, monitoring, rollback, and follow-up artifacts
 7. **Stash follow-up items**: If the closure artifact or runtime-verification report identified follow-up tasks, stash every follow-up so it is visible to the Stage agent:
    * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using `backlogit_create_item` with `artifact_type: "stash"`, `title` from the follow-up summary, `description` linking to the closure artifact, and `status: "queued"`. After creation, re-read each entry to confirm it persisted correctly.

@@ -333,17 +333,19 @@ Record review findings so the harvested backlog carries the right context.
 
 ### Step 5: Harvest (Decomposition)
 
-#### Step 5.0: P-003 Validation
+#### Step 5.0: P-003 / P-011 Validation
 
-Before creating any backlog entries, validate the decomposition chain:
+Before creating any backlog entries, validate the decomposition chain per P-003 and
+P-011 (`.github/policies/workflow-policies.md`):
 
 1. Source document exists at declared path
 2. Plan references source document
 3. Sub-epic candidates reference plan and the top-level feature or chore work item
 4. Task candidates reference parent sub-epic
 5. Every task includes at least one acceptance criterion
+6. No task is orphaned (all tasks have a `parent_id` tracing to a feature or chore)
 
-If any check fails, halt with a P-003 violation broadcast.
+If any check fails, halt with a P-003 or P-011 violation broadcast.
 
 #### Step 5.1: Create Top-Level Release Unit
 

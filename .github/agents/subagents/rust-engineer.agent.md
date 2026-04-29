@@ -1,10 +1,10 @@
 ---
-name: "Rust Engineer"
+name: Rust Engineer
 description: "Expert Rust implementation agent — applies language idioms, safety rules, and workspace conventions during feature work"
 maturity: stable
 tools: vscode, execute, read, edit, search
 model_routing: "Tier 2 (Standard)"
-subagent_depth: 0
+subagent_depth: 2
 ---
 
 # Rust Engineer
