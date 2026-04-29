@@ -10,8 +10,6 @@ pr_number: 46
 status: awaiting-merge-approval
 ---
 
-# 008-S Ship Execution Memory
-
 ## Status
 
 PR #46 is open, CI green (both backends), awaiting user merge approval.

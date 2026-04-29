@@ -22,7 +22,15 @@ original: "docs/archive/memory/2026-04-29-008-S-ship-execution-memory.md"
 
 ## Commits
 
-d4a000a 031.001.001-T | 59d9b99 031.001.002-T | b8218c6 031.002.001-T | cad8fd4 031.004.001-T | b7844e2 031.002.002-T | 4a3960c 031.003.001-T | f42f3ca 031.004.002-T | 9f6dbdc 031.003.002-T | 4a77831 fix(docs) H1 removal
+* `d4a000a` `031.001.001-T`
+* `59d9b99` `031.001.002-T`
+* `b8218c6` `031.002.001-T`
+* `cad8fd4` `031.004.001-T`
+* `b7844e2` `031.002.002-T`
+* `4a3960c` `031.003.001-T`
+* `f42f3ca` `031.004.002-T`
+* `9f6dbdc` `031.003.002-T`
+* `4a77831` `fix(docs) H1 removal`
 
 ## Post-Merge Closure
 

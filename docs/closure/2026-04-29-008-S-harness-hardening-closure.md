@@ -39,13 +39,16 @@ content production, and decomposition/branch policy. All 8 tasks landed in PR #4
 
 ## Runtime Surfaces Affected
 
-None. All 21 changed files are markdown artifacts (instructions, skills, agents, policies, decisions, docs). No Rust source changed, no binary behavior altered.
+No Rust/binary runtime surfaces changed. All 21 changed files are markdown artifacts (instructions, skills, agents, policies, decisions, docs), but those instruction/skill/policy artifacts do affect agent-harness runtime behavior at execution time.
 
 ## Runtime Verification
 
 **Verdict**: PASS (structural)
 
-Documentation-only change. No runtime surfaces changed. Verification is structural:
+No Rust/binary runtime surfaces changed. All 21 changed files are markdown artifacts
+(instructions, skills, agents, policies, decisions, docs), but those instruction/skill/policy
+artifacts do affect agent-harness runtime behavior at execution time. In other words: no compiled
+code paths changed, while agent-consumed harness guidance surfaces did. Verification is structural:
 
 - All modified instruction/skill/policy files are syntactically valid markdown
 - No `cargo test` targets exist for markdown content — harness exception applied per plan Constitution Check
@@ -112,8 +115,9 @@ compound, ship, or stage to confirm the new protocols are followed. No automated
 ## Rollback Trigger
 
 N/A for documentation-only. If a new protocol proves counterproductive (e.g., engram
-verification step causes unnecessary agent stalls), revert via `git revert 567cd51` which
-will re-open PR #46 changes for removal.
+verification step causes unnecessary agent stalls), revert via
+`git revert -m 1 567cd51571a1048e07a4addeaff02ac5e96680de` which will re-open PR #46
+changes for removal.
 
 ## Rollback Procedure
 
@@ -133,7 +137,8 @@ compound, ship, stage). Owner: repository maintainer.
 |---|---|
 | `source_stash_id` | Not present in 031-F — item did not originate from stash |
 | Deliberation | `docs/decisions/2026-04-21-031-F-harness-hardening-deliberation.md` (`decision_status: decided`, `promoted_to: plan`) |
-| Execution plan | `docs/exec-plans/2026-04-21-031-F-harness-hardening-plan.md` (plan-review PASS) |
+| Execution plan | `docs/archive/plans/2026-04-21-031-F-harness-hardening-plan.md` (plan-review PASS) |
+| Decided plan | `docs/exec-plans/2026-04-29-031-F-harness-hardening-decided-plan.md` |
 
 ## Follow-Up Items
 

@@ -18,7 +18,7 @@ date: 2026-04-29
 | Target skill for file-first | learnings-researcher in `compound/SKILL.md` |
 | Branch discipline | P-012 in `workflow-policies.md`; exception list covers docs-only and hotfix |
 | Decomposition policy | P-011 in `workflow-policies.md`; research → plan → feature → task pipeline is universal |
-| Bug format in policy files | MUST NOT include H1 heading when frontmatter `title:` is set (Copilot review finding) |
+| Bug entry format in `docs/compound/bugs/` | MUST NOT include H1 heading when frontmatter `title:` is set (Copilot review finding) |
 
 ## Implementation Units and Outputs
 
