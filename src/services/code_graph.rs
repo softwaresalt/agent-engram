@@ -453,10 +453,10 @@ pub async fn index_workspace(
     // Files are processed in filesystem order. A reference to `public.users`
     // may be processed before the `users` class is created, leaving a self-loop.
     // Now that all symbols exist, retry resolution for those edges.
-    let reresloved = queries.reresolve_references_edges().await?;
-    if reresloved > 0 {
+    let reresolved = queries.reresolve_references_edges().await?;
+    if reresolved > 0 {
         debug!(
-            count = reresloved,
+            count = reresolved,
             "code graph: re-resolved deferred references edges"
         );
     }

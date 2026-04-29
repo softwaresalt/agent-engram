@@ -935,6 +935,18 @@ impl CodeGraphQueries {
                 .await
                 .map_err(map_db_err)?;
         } else {
+            // Guard against future callers passing arbitrary table names into
+            // the interpolated DELETE query.  Only known TYPE RELATION edge tables
+            // are permitted; any other value returns an EngramError rather than
+            // executing an unintended query.
+            const ALLOWED_EDGE_TABLES: &[&str] =
+                &["calls", "imports", "defines", "inherits_from", "concerns"];
+            if !ALLOWED_EDGE_TABLES.contains(&edge_table) {
+                return Err(crate::errors::SystemError::InvalidParams {
+                    reason: format!("delete_edges_from_file: unknown edge table '{edge_table}'"),
+                }
+                .into());
+            }
             let from = Thing::from((
                 "code_file",
                 file_id.strip_prefix("code_file:").unwrap_or(file_id),
