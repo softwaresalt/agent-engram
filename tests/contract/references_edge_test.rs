@@ -41,18 +41,15 @@ async fn contract_create_references_edge_resolved() {
     let q = CodeGraphQueries::new(db.clone());
 
     // Stub: panics until 033.004-T implements the method.
-    q.create_references_edge(
-        "code_file:abc",
-        "class:def",
-        "class",
-        Some("users"),
-    )
-    .await
-    .expect("create_references_edge must succeed for resolved target (033.004-T)");
+    q.create_references_edge("code_file:abc", "class:def", Some("users"))
+        .await
+        .expect("create_references_edge must succeed for resolved target (033.004-T)");
 
     // Verify the edge persists in the `references` table.
+    // SELECT specific fields to avoid `id: Thing` which serde_json::Value cannot deserialize
+    // in SurrealDB 2.6 (Thing uses an Id enum that serde_content presents as visit_enum).
     let mut resp = db
-        .query("SELECT * FROM `references` LIMIT 10")
+        .query("SELECT source, target, qualified_name FROM `references` LIMIT 10")
         .await
         .expect("query references table");
     let rows: Vec<serde_json::Value> = resp.take(0).expect("deserialize");
@@ -77,14 +74,9 @@ async fn contract_create_references_edge_unresolved() {
     let q = CodeGraphQueries::new(db.clone());
 
     // Stub: panics until 033.004-T implements the method.
-    q.create_references_edge(
-        "code_file:abc",
-        "code_file:abc",
-        "code_file",
-        Some("nonexistent_table"),
-    )
-    .await
-    .expect("create_references_edge must succeed for unresolved target (033.004-T)");
+    q.create_references_edge("code_file:abc", "code_file:abc", Some("nonexistent_table"))
+        .await
+        .expect("create_references_edge must succeed for unresolved target (033.004-T)");
 
     // After implementation: verify qualified_name is stored on the edge.
     let mut resp = db
@@ -117,14 +109,9 @@ async fn contract_delete_references_edges_from_file() {
     let q = CodeGraphQueries::new(db.clone());
 
     // Create an edge first (panics until 033.004-T is implemented).
-    q.create_references_edge(
-        "code_file:file1",
-        "class:users",
-        "class",
-        Some("users"),
-    )
-    .await
-    .expect("setup: create_references_edge");
+    q.create_references_edge("code_file:file1", "class:users", Some("users"))
+        .await
+        .expect("setup: create_references_edge");
 
     // Delete edges for file1.
     q.delete_edges_from_file("references", "code_file:file1")

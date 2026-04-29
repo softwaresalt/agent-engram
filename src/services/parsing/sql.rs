@@ -99,16 +99,20 @@ fn extract_sql_top_level(
 
 /// Extract the name from a CREATE TABLE/VIEW/FUNCTION/PROCEDURE node.
 ///
-/// Names live in `object_reference` > `identifier` (first occurrence).
+/// Names live in `object_reference` > `identifier` children joined with `.`
+/// to support schema-qualified names like `public.users`.
 fn extract_sql_name(node: Node<'_>, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "object_reference" {
             let mut inner = child.walk();
-            for id_node in child.children(&mut inner) {
-                if id_node.kind() == "identifier" {
-                    return Some(super::node_text(id_node, source));
-                }
+            let parts: Vec<String> = child
+                .children(&mut inner)
+                .filter(|n| n.kind() == "identifier")
+                .map(|n| super::node_text(n, source))
+                .collect();
+            if !parts.is_empty() {
+                return Some(parts.join("."));
             }
         }
     }
@@ -160,7 +164,9 @@ fn extract_sql_function(node: Node<'_>, source: &str) -> Option<ExtractedFunctio
 
 /// Extract table references from a `from` clause node.
 ///
-/// Structure: `from` > `relation` > `object_reference` > `identifier`.
+/// Structure: `from` > `relation` > `object_reference` > `identifier` children.
+/// All `identifier` children are joined with `.` to capture schema-qualified
+/// names such as `public.users` (033.002-T).
 fn extract_from_references(node: Node<'_>, source: &str, edges: &mut Vec<ExtractedEdge>) {
     let mut cursor = node.walk();
     for relation in node.children(&mut cursor) {
@@ -171,17 +177,17 @@ fn extract_from_references(node: Node<'_>, source: &str, edges: &mut Vec<Extract
         for obj_ref in relation.children(&mut rel_cursor) {
             if obj_ref.kind() == "object_reference" {
                 let mut id_cursor = obj_ref.walk();
-                for id_node in obj_ref.children(&mut id_cursor) {
-                    if id_node.kind() == "identifier" {
-                        let target = super::node_text(id_node, source);
-                        if !target.is_empty() {
-                            edges.push(ExtractedEdge::References {
-                                source: "select".to_owned(),
-                                target,
-                            });
-                        }
-                        break;
-                    }
+                let parts: Vec<String> = obj_ref
+                    .children(&mut id_cursor)
+                    .filter(|n| n.kind() == "identifier")
+                    .map(|n| super::node_text(n, source))
+                    .collect();
+                if !parts.is_empty() {
+                    let target = parts.join(".");
+                    edges.push(ExtractedEdge::References {
+                        source: "select".to_owned(),
+                        target,
+                    });
                 }
             }
         }
@@ -190,24 +196,26 @@ fn extract_from_references(node: Node<'_>, source: &str, edges: &mut Vec<Extract
 
 /// Extract the target table reference from an `insert` node.
 ///
-/// Structure: `insert` > `object_reference` > `identifier`.
+/// Structure: `insert` > `object_reference` > `identifier` children joined with `.`
+/// to support schema-qualified targets such as `dbo.orders` (033.002-T).
 fn extract_insert_references(node: Node<'_>, source: &str, edges: &mut Vec<ExtractedEdge>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "object_reference" {
             let mut id_cursor = child.walk();
-            for id_node in child.children(&mut id_cursor) {
-                if id_node.kind() == "identifier" {
-                    let target = super::node_text(id_node, source);
-                    if !target.is_empty() {
-                        edges.push(ExtractedEdge::References {
-                            source: "insert".to_owned(),
-                            target,
-                        });
-                    }
-                    return;
-                }
+            let parts: Vec<String> = child
+                .children(&mut id_cursor)
+                .filter(|n| n.kind() == "identifier")
+                .map(|n| super::node_text(n, source))
+                .collect();
+            if !parts.is_empty() {
+                let target = parts.join(".");
+                edges.push(ExtractedEdge::References {
+                    source: "insert".to_owned(),
+                    target,
+                });
             }
+            return;
         }
     }
 }

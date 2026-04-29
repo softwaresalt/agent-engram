@@ -63,10 +63,18 @@ async fn sql_references_resolved_to_class_node() {
     let ws = tmp.path();
 
     // File 1: defines the `users` class.
-    write_file(ws, "schema.sql", "CREATE TABLE users (id INT, name VARCHAR(255));");
+    write_file(
+        ws,
+        "schema.sql",
+        "CREATE TABLE users (id INT, name VARCHAR(255));",
+    );
 
     // File 2: references `users` via SELECT FROM.
-    write_file(ws, "queries.sql", "SELECT id, name FROM users WHERE active = 1;");
+    write_file(
+        ws,
+        "queries.sql",
+        "SELECT id, name FROM users WHERE active = 1;",
+    );
 
     let config = sql_graph_config();
     let (data_dir, branch) = test_db_params(ws);
@@ -75,12 +83,18 @@ async fn sql_references_resolved_to_class_node() {
         .await
         .expect("index_workspace must succeed");
 
-    assert!(result.errors.is_empty(), "no indexing errors expected; got: {:?}", result.errors);
+    assert!(
+        result.errors.is_empty(),
+        "no indexing errors expected; got: {:?}",
+        result.errors
+    );
 
     // Query the `references` table for any edge.
+    // Use explicit field selection to avoid `id: Thing` which serde_json::Value
+    // cannot deserialize in SurrealDB 2.6 (Id enum → visit_enum → rejected).
     let db = connect_db(&data_dir, &branch).await.expect("connect_db");
     let mut resp = db
-        .query("SELECT * FROM `references` LIMIT 20")
+        .query("SELECT source, target, qualified_name FROM `references` LIMIT 20")
         .await
         .expect("query references table");
     let rows: Vec<serde_json::Value> = resp.take(0).expect("deserialize");
@@ -116,7 +130,11 @@ async fn sql_references_unresolved_stays_in_graph() {
         .await
         .expect("index_workspace must succeed");
 
-    assert!(result.errors.is_empty(), "no indexing errors expected; got: {:?}", result.errors);
+    assert!(
+        result.errors.is_empty(),
+        "no indexing errors expected; got: {:?}",
+        result.errors
+    );
 
     // The unresolved edge must still be persisted with qualified_name set.
     let db = connect_db(&data_dir, &branch).await.expect("connect_db");
@@ -152,7 +170,11 @@ async fn sql_references_qualified_name_fallback() {
     let ws = tmp.path();
 
     // File 1: defines the `users` class under unqualified name.
-    write_file(ws, "schema.sql", "CREATE TABLE users (id INT, name VARCHAR(255));");
+    write_file(
+        ws,
+        "schema.sql",
+        "CREATE TABLE users (id INT, name VARCHAR(255));",
+    );
 
     // File 2: references `public.users` — should fall back to `users` class.
     write_file(
@@ -168,12 +190,17 @@ async fn sql_references_qualified_name_fallback() {
         .await
         .expect("index_workspace must succeed");
 
-    assert!(result.errors.is_empty(), "no indexing errors expected; got: {:?}", result.errors);
+    assert!(
+        result.errors.is_empty(),
+        "no indexing errors expected; got: {:?}",
+        result.errors
+    );
 
     // After implementation: verify a resolved edge exists (pointing to the users class).
+    // Use explicit fields to avoid `id: Thing` deserialization failure with serde_json::Value.
     let db = connect_db(&data_dir, &branch).await.expect("connect_db");
     let mut resp = db
-        .query("SELECT * FROM `references` LIMIT 10")
+        .query("SELECT source, target, qualified_name FROM `references` LIMIT 10")
         .await
         .expect("query references table");
     let rows: Vec<serde_json::Value> = resp.take(0).expect("deserialize");
@@ -184,10 +211,10 @@ async fn sql_references_qualified_name_fallback() {
     );
 
     // The edge should point to a class node, not a code_file (resolved).
-    let in_val = rows[0].get("in").and_then(|v| v.as_str()).unwrap_or("");
-    let out_val = rows[0].get("out").and_then(|v| v.as_str()).unwrap_or("");
+    let target_val = rows[0].get("target").and_then(|v| v.as_str()).unwrap_or("");
+    let source_val = rows[0].get("source").and_then(|v| v.as_str()).unwrap_or("");
     assert!(
-        out_val.starts_with("class:"),
-        "qualified-name fallback: resolved edge must point to class node; got in={in_val:?} out={out_val:?}"
+        target_val.starts_with("class:"),
+        "qualified-name fallback: resolved edge must point to class node; got source={source_val:?} target={target_val:?}"
     );
 }
