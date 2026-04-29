@@ -786,9 +786,13 @@ impl CodeGraphQueries {
         &self,
         _source_id: &str,
         _target_id: &str,
-        _target_table: &str,
         _qualified_name: Option<&str>,
     ) -> Result<(), EngramError> {
+        Err(backend_err())
+    }
+
+    /// Stub — not yet implemented.
+    pub async fn reresolve_references_edges(&self) -> Result<usize, EngramError> {
         Err(backend_err())
     }
 
