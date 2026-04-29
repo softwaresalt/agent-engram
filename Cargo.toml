@@ -538,6 +538,16 @@ path = "tests/integration/lang_ipc_indexing_test.rs"
 name = "integration_markdown_indexing"
 path = "tests/integration/markdown_indexing_test.rs"
 
+[[test]]
+name = "integration_sql_references"
+path = "tests/integration/sql_references_integration_test.rs"
+required-features = ["surreal-backend"]
+
+[[test]]
+name = "contract_references_edge"
+path = "tests/contract/references_edge_test.rs"
+required-features = ["surreal-backend"]
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

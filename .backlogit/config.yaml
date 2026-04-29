@@ -16,6 +16,11 @@ artifact_types:
         allowed_children:
             - task
             - review
+    spike:
+        prefix: SP
+        suffix: -SP
+        name_format: '{NNN}{suffix}'
+        allowed_children: []
     chore:
         prefix: C
         suffix: -C

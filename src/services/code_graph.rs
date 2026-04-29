@@ -211,6 +211,9 @@ pub async fn index_workspace(
         queries.delete_classes_by_file(&rel_path).await?;
         queries.delete_interfaces_by_file(&rel_path).await?;
         queries.delete_edges_from_file("defines", &file_id).await?;
+        queries
+            .delete_edges_from_file("references", &file_id)
+            .await?;
 
         // ── Collect symbols for embedding ───────────────────────────
         let token_limit = config.embedding.token_limit;
@@ -403,8 +406,30 @@ pub async fn index_workspace(
                 ExtractedEdge::Imports { .. } => {
                     result.cross_file_edges_dropped += 1;
                 }
-                // SQL references are cross-object (deferred for future graph linkage).
-                ExtractedEdge::Defines { .. } | ExtractedEdge::References { .. } => {}
+                // Defines edge already handled during symbol upsert.
+                ExtractedEdge::Defines { .. } => {}
+                // SQL References: resolve target to a Class node or self-loop (033.001-T).
+                ExtractedEdge::References { target, .. } => {
+                    let class_id = match queries.get_class_by_name(target).await? {
+                        Some(c) => Some(c.id),
+                        None if target.contains('.') => {
+                            // Schema-qualified fallback: "public.users" → try "users".
+                            let last = target.rsplit('.').next().unwrap_or(target.as_str());
+                            queries.get_class_by_name(last).await?.map(|c| c.id)
+                        }
+                        None => None,
+                    };
+                    if let Some(resolved_id) = class_id {
+                        queries
+                            .create_references_edge(&file_id, &resolved_id, Some(target))
+                            .await?;
+                    } else {
+                        queries
+                            .create_references_edge(&file_id, &file_id, Some(target))
+                            .await?;
+                    }
+                    result.edges_created += 1;
+                }
             }
         }
 
@@ -422,6 +447,18 @@ pub async fn index_workspace(
             );
         }
         debug!(path = %rel_path, "code graph: indexed file");
+    }
+
+    // ── Post-pass: re-resolve unresolved references edges ───────────
+    // Files are processed in filesystem order. A reference to `public.users`
+    // may be processed before the `users` class is created, leaving a self-loop.
+    // Now that all symbols exist, retry resolution for those edges.
+    let reresolved = queries.reresolve_references_edges().await?;
+    if reresolved > 0 {
+        debug!(
+            count = reresolved,
+            "code graph: re-resolved deferred references edges"
+        );
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -462,6 +499,8 @@ pub struct SyncResult {
     pub concerns_relinked: usize,
     /// Number of `concerns` edges orphaned and removed (FR-112).
     pub concerns_orphaned: usize,
+    /// Number of edge records created (defines, references, concerns).
+    pub edges_created: usize,
     /// Number of cross-file import/call edges dropped (deferred to future phase).
     pub cross_file_edges_dropped: usize,
     /// Per-file errors encountered (non-fatal).
@@ -531,6 +570,7 @@ pub async fn sync_workspace(
         symbols_reused: 0,
         concerns_relinked: 0,
         concerns_orphaned: 0,
+        edges_created: 0,
         cross_file_edges_dropped: 0,
         errors: Vec::new(),
         duration_ms: 0,
@@ -676,6 +716,9 @@ pub async fn sync_workspace(
         queries.delete_classes_by_file(&rel_path).await?;
         queries.delete_interfaces_by_file(&rel_path).await?;
         queries.delete_edges_from_file("defines", &file_id).await?;
+        queries
+            .delete_edges_from_file("references", &file_id)
+            .await?;
 
         // ── Build map of old symbols by (name, body_hash) for reuse ─
         let old_sym_map: HashMap<(String, String), &crate::db::queries::SymbolIdentity> =
@@ -883,8 +926,30 @@ pub async fn sync_workspace(
                 ExtractedEdge::Imports { .. } => {
                     result.cross_file_edges_dropped += 1;
                 }
-                // SQL references are cross-object (deferred for future graph linkage).
-                ExtractedEdge::Defines { .. } | ExtractedEdge::References { .. } => {}
+                // Defines edge already handled during symbol upsert.
+                ExtractedEdge::Defines { .. } => {}
+                // SQL References: resolve target to a Class node or self-loop (033.001-T).
+                ExtractedEdge::References { target, .. } => {
+                    let class_id = match queries.get_class_by_name(target).await? {
+                        Some(c) => Some(c.id),
+                        None if target.contains('.') => {
+                            // Schema-qualified fallback: "public.users" → try "users".
+                            let last = target.rsplit('.').next().unwrap_or(target.as_str());
+                            queries.get_class_by_name(last).await?.map(|c| c.id)
+                        }
+                        None => None,
+                    };
+                    if let Some(resolved_id) = class_id {
+                        queries
+                            .create_references_edge(&file_id, &resolved_id, Some(target))
+                            .await?;
+                    } else {
+                        queries
+                            .create_references_edge(&file_id, &file_id, Some(target))
+                            .await?;
+                    }
+                    result.edges_created += 1;
+                }
             }
         }
 
@@ -913,6 +978,17 @@ pub async fn sync_workspace(
             result.files_modified += 1;
         }
         debug!(path = %rel_path, "code graph sync: re-indexed file");
+    }
+
+    // ── Post-pass: re-resolve unresolved references edges ───────────
+    // Same ordering issue as index_workspace: a reference may be processed
+    // before its target class exists. Re-resolve self-loops now all symbols exist.
+    let reresolved = queries.reresolve_references_edges().await?;
+    if reresolved > 0 {
+        debug!(
+            count = reresolved,
+            "code graph sync: re-resolved deferred references edges"
+        );
     }
 
     // ── Record sync summary ──────────────────────────────────────────

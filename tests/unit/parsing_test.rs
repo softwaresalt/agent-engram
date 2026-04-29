@@ -1234,3 +1234,156 @@ fn test_sql_procedure_debug() {
     let tree = parser.parse(source, None).expect("parse SQL");
     dump(tree.root_node(), 0);
 }
+
+// ── Schema-qualified name tests (033.002-T) ────────────────────────────────
+
+/// Debug helper: dump tree-sitter nodes for a schema-qualified FROM clause.
+///
+/// Run with `cargo test test_sql_qualified_tree_debug -- --nocapture` to inspect
+/// whether tree-sitter-sequel 0.3 emits a dotted token or sibling identifiers for
+/// `public.users`.
+#[test]
+fn test_sql_qualified_tree_debug() {
+    fn dump(node: tree_sitter::Node<'_>, source: &str, depth: usize) {
+        let text = node.utf8_text(source.as_bytes()).unwrap_or("?");
+        println!(
+            "{}{} [{}-{}] {:?}",
+            "  ".repeat(depth),
+            node.kind(),
+            node.start_position().row + 1,
+            node.end_position().row + 1,
+            text
+        );
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            dump(child, source, depth + 1);
+        }
+    }
+    use tree_sitter::Parser;
+    let source = "SELECT id FROM public.users; INSERT INTO dbo.orders (id) VALUES (1);";
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_sequel::LANGUAGE.into())
+        .expect("load SQL grammar");
+    let tree = parser.parse(source, None).expect("parse SQL");
+    dump(tree.root_node(), source, 0);
+}
+
+/// 033.002-T: `FROM public.users` must produce a References edge with target
+/// `"public.users"` — not just `"public"`.
+///
+/// **Red phase**: fails until the schema-qualified name fix is applied, because the
+/// current parser breaks after the first identifier child and captures only `"public"`.
+#[test]
+fn test_sql_schema_qualified_from() {
+    let source = "SELECT id, name FROM public.users WHERE active = 1;";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let refs: Vec<_> = result
+        .edges
+        .iter()
+        .filter_map(|e| {
+            if let ExtractedEdge::References { target, .. } = e {
+                Some(target.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        !refs.is_empty(),
+        "SELECT FROM must produce at least one References edge"
+    );
+    assert!(
+        refs.contains(&"public.users"),
+        "References edge target must be 'public.users' for schema-qualified FROM clause; got: {refs:?}"
+    );
+}
+
+/// 033.002-T: `INSERT INTO dbo.orders` must produce a References edge with target
+/// `"dbo.orders"` — not just `"dbo"`.
+///
+/// **Red phase**: fails until the schema-qualified name fix is applied.
+#[test]
+fn test_sql_schema_qualified_insert() {
+    let source = "INSERT INTO dbo.orders (id, total) VALUES (1, 100);";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let refs: Vec<_> = result
+        .edges
+        .iter()
+        .filter_map(|e| {
+            if let ExtractedEdge::References { target, .. } = e {
+                Some(target.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        !refs.is_empty(),
+        "INSERT INTO must produce at least one References edge"
+    );
+    assert!(
+        refs.contains(&"dbo.orders"),
+        "References edge target must be 'dbo.orders' for schema-qualified INSERT; got: {refs:?}"
+    );
+}
+
+/// 033.002-T: mixing simple and schema-qualified table names in one SQL statement
+/// must produce correct targets for both.
+///
+/// **Red phase**: the qualified name `"public.orders"` is captured as `"public"` until the
+/// fix is applied, so the second assertion fails.
+#[test]
+fn test_sql_mixed_references() {
+    let source = "SELECT u.id, o.total FROM users u JOIN public.orders o ON u.id = o.user_id;";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let refs: Vec<_> = result
+        .edges
+        .iter()
+        .filter_map(|e| {
+            if let ExtractedEdge::References { target, .. } = e {
+                Some(target.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        refs.contains(&"users"),
+        "simple table name 'users' must be captured; got: {refs:?}"
+    );
+    assert!(
+        refs.contains(&"public.orders"),
+        "qualified table name 'public.orders' must be captured; got: {refs:?}"
+    );
+}
+
+/// 033.002-T: `CREATE TABLE public.users` must produce a Class symbol with name
+/// `"public.users"` — not just `"public"`.
+///
+/// **Red phase**: fails until the schema-qualified name fix is applied, because
+/// `extract_sql_name` breaks after the first identifier child.
+#[test]
+fn test_sql_schema_qualified_create() {
+    let source = "CREATE TABLE public.users (id INT, name VARCHAR(255));";
+    let result = parse_sql_source(source).expect("SQL parse must succeed");
+    let classes: Vec<_> = result
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            if let ExtractedSymbol::Class(c) = s {
+                Some(c.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        !classes.is_empty(),
+        "CREATE TABLE must produce at least one Class symbol"
+    );
+    assert!(
+        classes.contains(&"public.users"),
+        "Class symbol name must be 'public.users' for schema-qualified CREATE TABLE; got: {classes:?}"
+    );
+}

@@ -813,23 +813,151 @@ impl CodeGraphQueries {
         Ok(())
     }
 
+    /// Create a `references` edge from a source code file to a target node.
+    ///
+    /// Used to persist SQL table reference relationships in the code graph.
+    /// The caller supplies the target record id directly via `target_id`.
+    /// When the reference could not be resolved to a more specific node,
+    /// callers may preserve the raw referenced name in `qualified_name`.
+    ///
+    /// The `references` table is a plain SCHEMAFULL table (not TYPE RELATION)
+    /// with explicit `source` / `target` string fields.  This avoids the
+    /// SurrealDB v2.6 bug where RELATE silently drops edges when a SCHEMAFULL
+    /// OUT record does not yet exist, and keeps the table rows serialisable
+    /// as `serde_json::Value` (TYPE RELATION `in`/`out` produce undeserializable
+    /// internal enum variants).
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty))]
+    pub async fn create_references_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        qualified_name: Option<&str>,
+    ) -> Result<(), EngramError> {
+        let source = if source_id.starts_with("code_file:") {
+            source_id.to_owned()
+        } else {
+            format!("code_file:{source_id}")
+        };
+        let target = target_id.to_owned();
+        self.db
+            .query(
+                "CREATE `references` SET source = $source, target = $target, \
+                 qualified_name = $qn",
+            )
+            .bind(("source", source))
+            .bind(("target", target))
+            .bind(("qn", qualified_name.map(ToOwned::to_owned)))
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    /// Re-resolve unresolved `references` edges after all symbols have been indexed.
+    ///
+    /// Files are processed in filesystem order during indexing. A SQL reference
+    /// to `public.users` may be processed before the `users` class is created,
+    /// leaving a self-loop edge (`target = source`). This method queries those
+    /// unresolved edges and attempts to resolve them now that all symbols exist.
+    ///
+    /// Returns the number of edges promoted from unresolved to resolved.
+    #[tracing::instrument(skip(self), fields(query_type = "reresolve_references"))]
+    pub async fn reresolve_references_edges(&self) -> Result<usize, EngramError> {
+        // Query all self-loop edges that have a qualified_name to re-resolve.
+        let mut resp = self
+            .db
+            .query(
+                "SELECT source, qualified_name FROM `references` \
+                 WHERE target = source AND qualified_name IS NOT NULL",
+            )
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(map_db_err)?;
+
+        let mut resolved_count = 0_usize;
+        for row in rows {
+            let Some(source) = row.get("source").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(qn) = row.get("qualified_name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let qn_owned = qn.to_owned();
+            let source_owned = source.to_owned();
+
+            let class_id = match self.get_class_by_name(&qn_owned).await? {
+                Some(c) => Some(c.id),
+                None if qn_owned.contains('.') => {
+                    let last = qn_owned.rsplit('.').next().unwrap_or(qn_owned.as_str());
+                    self.get_class_by_name(last).await?.map(|c| c.id)
+                }
+                None => None,
+            };
+
+            if let Some(new_target) = class_id {
+                self.db
+                    .query(
+                        "UPDATE `references` SET target = $new_target \
+                         WHERE source = $source AND target = $source \
+                         AND qualified_name = $qn",
+                    )
+                    .bind(("new_target", new_target))
+                    .bind(("source", source_owned))
+                    .bind(("qn", qn_owned))
+                    .await
+                    .map_err(map_db_err)?;
+                resolved_count += 1;
+            }
+        }
+
+        Ok(resolved_count)
+    }
+
     /// Delete all edges of a given type originating from a code file.
+    ///
+    /// For the `references` table (plain SCHEMAFULL, not TYPE RELATION) the
+    /// source field is `source`; all other edge tables use the TYPE RELATION
+    /// `in` field.
     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_edges_from_file(
         &self,
         edge_table: &str,
         file_id: &str,
     ) -> Result<(), EngramError> {
-        let from = Thing::from((
-            "code_file",
-            file_id.strip_prefix("code_file:").unwrap_or(file_id),
-        ));
-        let query = format!("DELETE FROM {edge_table} WHERE in = $from");
-        self.db
-            .query(&query)
-            .bind(("from", from))
-            .await
-            .map_err(map_db_err)?;
+        let file_id_str = if file_id.starts_with("code_file:") {
+            file_id.to_owned()
+        } else {
+            format!("code_file:{file_id}")
+        };
+        if edge_table == "references" {
+            self.db
+                .query("DELETE FROM `references` WHERE source = $src")
+                .bind(("src", file_id_str))
+                .await
+                .map_err(map_db_err)?;
+        } else {
+            // Guard against future callers passing arbitrary table names into
+            // the interpolated DELETE query.  Only known TYPE RELATION edge tables
+            // are permitted; any other value returns an EngramError rather than
+            // executing an unintended query.
+            const ALLOWED_EDGE_TABLES: &[&str] =
+                &["calls", "imports", "defines", "inherits_from", "concerns"];
+            if !ALLOWED_EDGE_TABLES.contains(&edge_table) {
+                return Err(crate::errors::SystemError::InvalidParams {
+                    reason: format!("delete_edges_from_file: unknown edge table '{edge_table}'"),
+                }
+                .into());
+            }
+            let from = Thing::from((
+                "code_file",
+                file_id.strip_prefix("code_file:").unwrap_or(file_id),
+            ));
+            let query = format!("DELETE FROM `{edge_table}` WHERE in = $from");
+            self.db
+                .query(&query)
+                .bind(("from", from))
+                .await
+                .map_err(map_db_err)?;
+        }
         Ok(())
     }
 

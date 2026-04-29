@@ -782,6 +782,21 @@ impl CodeGraphQueries {
     }
 
     /// Stub — not yet implemented.
+    pub async fn create_references_edge(
+        &self,
+        _source_id: &str,
+        _target_id: &str,
+        _qualified_name: Option<&str>,
+    ) -> Result<(), EngramError> {
+        Err(backend_err())
+    }
+
+    /// Stub — not yet implemented.
+    pub async fn reresolve_references_edges(&self) -> Result<usize, EngramError> {
+        Err(backend_err())
+    }
+
+    /// Stub — not yet implemented.
     pub async fn delete_edges_from_file(
         &self,
         _edge_table: &str,

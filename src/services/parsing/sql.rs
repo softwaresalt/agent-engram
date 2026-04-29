@@ -12,7 +12,9 @@
 //!   parses as `ERROR` rather than `create_procedure`; the matcher for
 //!   `create_procedure` is retained for forward compatibility with future
 //!   grammar support
-//! - `from` (SELECT from-clause, sibling inside `statement`)
+//! - `from` (SELECT from-clause, sibling inside `statement`),
+//!   including JOIN clauses (`join`, `cross_join`, `lateral_join`,
+//!   `lateral_cross_join`)
 //!   and `insert` > `object_reference` → [`super::ExtractedEdge::References`]
 //!
 //! Names are extracted from the first `object_reference` > `identifier` child.
@@ -99,16 +101,20 @@ fn extract_sql_top_level(
 
 /// Extract the name from a CREATE TABLE/VIEW/FUNCTION/PROCEDURE node.
 ///
-/// Names live in `object_reference` > `identifier` (first occurrence).
+/// Names live in `object_reference` > `identifier` children joined with `.`
+/// to support schema-qualified names like `public.users`.
 fn extract_sql_name(node: Node<'_>, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "object_reference" {
             let mut inner = child.walk();
-            for id_node in child.children(&mut inner) {
-                if id_node.kind() == "identifier" {
-                    return Some(super::node_text(id_node, source));
-                }
+            let parts: Vec<String> = child
+                .children(&mut inner)
+                .filter(|n| n.kind() == "identifier")
+                .map(|n| super::node_text(n, source))
+                .collect();
+            if !parts.is_empty() {
+                return Some(parts.join("."));
             }
         }
     }
@@ -160,29 +166,47 @@ fn extract_sql_function(node: Node<'_>, source: &str) -> Option<ExtractedFunctio
 
 /// Extract table references from a `from` clause node.
 ///
-/// Structure: `from` > `relation` > `object_reference` > `identifier`.
+/// Handles both direct `relation` children and JOIN children (`join`,
+/// `cross_join`, `lateral_join`, `lateral_cross_join`), each of which
+/// also contains a `relation` > `object_reference` subtree (033.002-T).
 fn extract_from_references(node: Node<'_>, source: &str, edges: &mut Vec<ExtractedEdge>) {
     let mut cursor = node.walk();
-    for relation in node.children(&mut cursor) {
-        if relation.kind() != "relation" {
-            continue;
-        }
-        let mut rel_cursor = relation.walk();
-        for obj_ref in relation.children(&mut rel_cursor) {
-            if obj_ref.kind() == "object_reference" {
-                let mut id_cursor = obj_ref.walk();
-                for id_node in obj_ref.children(&mut id_cursor) {
-                    if id_node.kind() == "identifier" {
-                        let target = super::node_text(id_node, source);
-                        if !target.is_empty() {
-                            edges.push(ExtractedEdge::References {
-                                source: "select".to_owned(),
-                                target,
-                            });
-                        }
-                        break;
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "relation" => {
+                extract_relation_reference(child, source, edges);
+            }
+            // JOIN variants each embed a `relation` for the joined table.
+            "join" | "cross_join" | "lateral_join" | "lateral_cross_join" => {
+                let mut join_cursor = child.walk();
+                for join_child in child.children(&mut join_cursor) {
+                    if join_child.kind() == "relation" {
+                        extract_relation_reference(join_child, source, edges);
                     }
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Push a `References` edge for the `object_reference` inside a `relation` node.
+fn extract_relation_reference(relation: Node<'_>, source: &str, edges: &mut Vec<ExtractedEdge>) {
+    let mut rel_cursor = relation.walk();
+    for obj_ref in relation.children(&mut rel_cursor) {
+        if obj_ref.kind() == "object_reference" {
+            let mut id_cursor = obj_ref.walk();
+            let parts: Vec<String> = obj_ref
+                .children(&mut id_cursor)
+                .filter(|n| n.kind() == "identifier")
+                .map(|n| super::node_text(n, source))
+                .collect();
+            if !parts.is_empty() {
+                let target = parts.join(".");
+                edges.push(ExtractedEdge::References {
+                    source: "select".to_owned(),
+                    target,
+                });
             }
         }
     }
@@ -190,24 +214,26 @@ fn extract_from_references(node: Node<'_>, source: &str, edges: &mut Vec<Extract
 
 /// Extract the target table reference from an `insert` node.
 ///
-/// Structure: `insert` > `object_reference` > `identifier`.
+/// Structure: `insert` > `object_reference` > `identifier` children joined with `.`
+/// to support schema-qualified targets such as `dbo.orders` (033.002-T).
 fn extract_insert_references(node: Node<'_>, source: &str, edges: &mut Vec<ExtractedEdge>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "object_reference" {
             let mut id_cursor = child.walk();
-            for id_node in child.children(&mut id_cursor) {
-                if id_node.kind() == "identifier" {
-                    let target = super::node_text(id_node, source);
-                    if !target.is_empty() {
-                        edges.push(ExtractedEdge::References {
-                            source: "insert".to_owned(),
-                            target,
-                        });
-                    }
-                    return;
-                }
+            let parts: Vec<String> = child
+                .children(&mut id_cursor)
+                .filter(|n| n.kind() == "identifier")
+                .map(|n| super::node_text(n, source))
+                .collect();
+            if !parts.is_empty() {
+                let target = parts.join(".");
+                edges.push(ExtractedEdge::References {
+                    source: "insert".to_owned(),
+                    target,
+                });
             }
+            return;
         }
     }
 }
