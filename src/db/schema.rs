@@ -98,6 +98,10 @@ DEFINE FIELD OVERWRITE created_at ON TABLE defines TYPE datetime DEFAULT time::n
 DEFINE TABLE IF NOT EXISTS concerns SCHEMALESS TYPE RELATION;
 DEFINE FIELD OVERWRITE linked_by ON TABLE concerns TYPE string;
 DEFINE FIELD OVERWRITE created_at ON TABLE concerns TYPE datetime DEFAULT time::now();
+
+DEFINE TABLE IF NOT EXISTS `references` SCHEMALESS TYPE RELATION;
+DEFINE FIELD OVERWRITE qualified_name ON TABLE `references` TYPE option<string>;
+DEFINE FIELD OVERWRITE created_at ON TABLE `references` TYPE datetime DEFAULT time::now();
 "#;
 
 /// File hash table — stores SHA-256 content hashes for tracked workspace files.

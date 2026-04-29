@@ -813,6 +813,25 @@ impl CodeGraphQueries {
         Ok(())
     }
 
+    /// Create a `references` edge from a source code file to a target node.
+    ///
+    /// Used to persist SQL table reference relationships in the code graph.
+    /// When the target is resolved to a Class node, `target_table` is `"class"`.
+    /// When unresolved, `target_table` is `"code_file"` and the source file
+    /// references itself, with `qualified_name` holding the raw target string.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty))]
+    pub async fn create_references_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        target_table: &str,
+        qualified_name: Option<&str>,
+    ) -> Result<(), EngramError> {
+        // TODO(033.004-T): implement references edge creation
+        let _ = (source_id, target_id, target_table, qualified_name);
+        unimplemented!("033.004-T: create_references_edge not yet implemented")
+    }
+
     /// Delete all edges of a given type originating from a code file.
     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_edges_from_file(
