@@ -23,7 +23,7 @@ status: "complete"
 
 | Item | Title | Status |
 |---|---|---|
-| 033.003-T | CREATE PROCEDURE support (upstream grammar) | queued (deferred — blocked upstream) |
+| 033.005-T | CREATE PROCEDURE support (upstream grammar) | queued (deferred — blocked upstream) |
 
 ### Branch State
 
@@ -39,13 +39,13 @@ status: "complete"
 
 3. **`SELECT *` banned in SurrealDB queries**: `id:Thing` causes serde_json deserialization failure on non-empty tables. All queries must use explicit field selection.
 
-4. **033.003-T kept as queued (not blocked)**: Changed from `blocked` to `queued` to unblock `backlogit_ship_shipment`. Task is genuinely deferred pending upstream tree-sitter-sequel grammar update.
+4. **033.005-T deferred (renamed from 033.003-T)**: Renamed to avoid ID collision with archived 012-S mcp-json task; changed from `blocked` to `queued` to unblock `backlogit_ship_shipment`. Task is genuinely deferred pending upstream tree-sitter-sequel grammar update.
 
 5. **P-007 archive integrity**: `backlogit_ship_shipment` deleted `033.003-T.md` from archive (naming collision with prior task). Restored with `git restore .backlogit/archive/`. Queue stale files for 033.001-T and 033.002-T manually removed.
 
 ### Known Gotchas
 
-- **Naming collision in backlogit**: `033.003-T` in the queue (CREATE PROCEDURE task) and `033.003-T` in the archive (mcp-json task from 012-S) have the same ID. The SQL index gets confused when both exist. The queue version was renamed/moved to `queued` status to unblock shipment.
+- **Historical naming collision (resolved)**: `033.003-T` in the queue (CREATE PROCEDURE task) conflicted with `033.003-T` in the archive (mcp-json task from 012-S). Resolved by renaming the CREATE PROCEDURE task to `033.005-T` in this closure PR.
 - **`backlogit shipment ship` validates ALL children of feature by parent_id**, not just manifest items. Any blocked child of the feature blocks the shipment.
 - **Rust 1.95 vs 1.85 clippy drift**: CI has `manual_contains`, `doc_markdown`, `unnecessary_map_or` lints not present locally. Run `cargo clippy --all-targets` locally to catch them.
 

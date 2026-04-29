@@ -39,7 +39,7 @@ sources:
 5. **`reresolve_references_edges` post-pass** — global scope (re-resolves all self-loops), acceptable for correctness-first at workspace scale
 6. **False dependency removed**: 033.002-T (parser) is independent of 033.001-T (graph wiring) — deliberation finding applied
 7. **Qualified-name fallback**: 033.001-T resolution tries `public.users`, then falls back to `users` — deliberation finding applied
-8. **033.003-T deferred**: moved `blocked` → `queued` to unblock `backlogit_ship_shipment` (ship cmd validates all parent_id children)
+8. **033.005-T deferred**: renamed from 033.003-T, then moved `blocked` → `queued` to unblock `backlogit_ship_shipment` (ship cmd validates all parent_id children)
 
 ### Stage Lifecycle Summary
 
@@ -70,7 +70,7 @@ sources:
 ### Known Gotchas for Future Sessions
 
 - backlogit `shipment ship` validates ALL children of feature by `parent_id`, not just manifest items
-- Naming collision: 033.003-T exists in both archive (012-S mcp-json task) and queue (CREATE PROCEDURE task)
+- Historical naming collision during ship: archived `033.003-T` (012-S mcp-json task) conflicted with the then-queued CREATE PROCEDURE task, which was renamed to `033.005-T`
 - Rust 1.95 vs 1.85 clippy drift: run `cargo clippy --all-targets` locally
 
 ### Follow-Up Stash

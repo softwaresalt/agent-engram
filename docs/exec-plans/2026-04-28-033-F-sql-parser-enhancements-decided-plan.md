@@ -51,7 +51,7 @@ SQL parser shipped in 034-F emits `References` edges with raw identifier strings
 
 - `TYPE RELATION` schema — silently drops edges; rejected
 - `SELECT *` in queries — breaks serde_json on non-empty SurrealDB tables; rejected
-- 033.003-T (CREATE PROCEDURE) — blocked on upstream tree-sitter-sequel grammar; deferred
+- 033.005-T (CREATE PROCEDURE) — blocked on upstream tree-sitter-sequel grammar; deferred
 - Batch-UPDATE for reresolve — deferred to stash 8C651D9F
 - `INDEX ON target` — deferred to stash E145945C
 - DRY refactor of resolution logic — deferred to stash DA9D4948
