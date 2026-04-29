@@ -1,191 +1,330 @@
 ---
-title: "031-F Shipment 008-S — Agent Harness Workflow Hardening"
-description: "Implementation plan for engram file-load verification, bug capture, file-first content, decomposition policy"
-source_document: "docs/decisions/2026-04-21-031-F-harness-hardening-deliberation.md"
-shipment: "008-S"
-covering_feature: "031-F"
-requires_plan_hardening: yes
-plan_review_attempts: 1
+title: "031-F Agent Harness Engram-Aware Workflow Hardening — Execution Plan"
+description: "Implementation plan for four cross-cutting harness improvements: file-load verification, bug logging, file-first content production, and workflow policy formalization"
+source: "docs/decisions/2026-04-21-031-F-harness-hardening-deliberation.md"
+feature_id: "031-F"
+shipment_id: "008-S"
 ---
 
-## Source
+## Problem Frame
 
-This plan operationalizes the deliberation at `docs/decisions/2026-04-21-031-F-harness-hardening-deliberation.md`, Option α (single harness-wide shipment with required plan hardening).
+Agents in this workspace exhibit four recurring protocol gaps:
 
-## Primary Objective
+1. **File-load verification gap** — agents treat engram results as authoritative for files not yet indexed, producing hallucinated references and stale citations.
+2. **Bug capture gap** — discovered defects scatter across PR comments, memory files, and session notes with no structured ingestion surface.
+3. **Context burn in cheap subagents** — Tier 1 subagents receive full documents in context when query-mediated retrieval would suffice, violating Constitution Principle X.
+4. **Decomposition and branch discipline gap** — the research → plan → feature → task pipeline and one-branch-per-feature discipline are followed by convention but not enforced by policy.
 
-Close four cross-cutting harness gaps that operationalize Constitution Principle X (Agent Context Efficiency) and tighten quality of agent-produced work: file-load verification, structured bug capture, file-first subagent context, and explicit workflow policy.
+All four gaps touch the instruction/skill/policy layer of the agent harness. They interact: file-first content production (3) depends on file-load verification (1); bug capture (2) feeds the compound learning loop that all agents already use.
+
+## Requirements Trace
+
+| Deliberation Requirement | Implementation Unit |
+|---|---|
+| "verify file indexed before treating as authoritative" | 031.001-C (031.001.001-T, 031.001.002-T) |
+| "structured bug capture surface that feeds CE learning loop" | 031.002-C (031.002.001-T, 031.002.002-T) |
+| "write to file first, retrieve via engram" | 031.003-C (031.003.001-T, 031.003.002-T) |
+| "formalize decomposition and branch-per-feature as policy" | 031.004-C (031.004.001-T, 031.004.002-T) |
 
 ## Implementation Units
 
-### Unit 1 — Engram file-load verification protocol (031.001-C)
+### Unit 1: File-Load Verification Protocol (031.001-C)
 
-* Document the verification protocol in `.github/instructions/agent-engram.instructions.md`.
-* Wire the protocol into `deliberate`, `impl-plan`, and `spike` skill SKILL.md files where they cite source files as evidence.
-* **Touched files**: 1 instruction file + 3 skill files.
+**Purpose**: Give agents a concrete, testable protocol for verifying that a file is present in the engram index before citing it.
 
-### Unit 2 — Structured bug capture (031.002-C)
+#### Task 031.001.001-T — Document file-load verification protocol
 
-* Decide bug capture format (file-based vs. backlog artifact-type vs. compound entry); document in `docs/decisions/`.
-* Wire capture into `observe` skill and ship-agent review/runtime-verification flow.
-* Update `compound-refresh` skill to merge bug observations.
-* **Touched files**: 1 decision doc + 1 example bug + ~3 skill files.
+* **Files affected**: `.github/instructions/agent-engram.instructions.md`, `.github/instructions/constitution.instructions.md` (cross-reference)
+* **Changes**: Add "Verifying file indexed" subsection with positive/negative examples, retry/sync pattern, and when-required guidance.
+* **Verification**: Instruction file renders correctly; cross-reference to constitution overlay is present.
+* **Execution posture**: Documentation-first.
 
-### Unit 3 — File-first content production (031.003-C)
+#### Task 031.001.002-T — Add file-load verification to skill protocols
 
-* Document the file-first + query-mediated context protocol.
-* Refactor one named cheap-subagent skill to use it as proof-of-concept; record context-size delta.
-* **Touched files**: 1 instruction or skill file + 1 refactored skill.
-* **Sequencing dependency**: requires Unit 1's verification protocol.
+* **Files affected**: `.github/skills/deliberate/SKILL.md`, `.github/skills/impl-plan/SKILL.md`, `.github/skills/spike/SKILL.md`
+* **Changes**: Insert verification step into each skill's research phase (before citing source files as evidence).
+* **Verification**: Each skill file has an explicit numbered step referencing the protocol.
+* **Execution posture**: Documentation-first.
 
-### Unit 4 — Workflow policy (031.004-C)
+### Unit 2: Structured Bug Logging (031.002-C)
 
-* Add "Decomposition Policy" + "Branch Discipline" sections to `.github/policies/workflow-policies.md`.
-* Cross-reference from constitution + ship + stage agents.
-* **Touched files**: 1 policy file + ~3 cross-referencing files.
+**Purpose**: Create a consistent format and ingestion surface for bug discoveries so they feed the continuous-learning loop.
 
-## Sequencing
+#### Task 031.002.001-T — Define bug capture format and storage location
 
-* Units 1, 2, 4 may proceed in parallel.
-* Unit 3 starts after Unit 1's protocol task (031.001.001-T) completes.
+* **Files affected**: `docs/decisions/` (new decision artifact), potentially `docs/compound/` schema
+* **Changes**: Decide between `docs/bugs/`, backlog `-B` artifact, or compound entry with `type: bug`. Document chosen format with frontmatter schema.
+* **Verification**: Decision artifact created; at least one example bug captured.
+* **Execution posture**: Decision-first (mini-deliberation within the task).
 
-## Plan Hardening
+#### Task 031.002.002-T — Wire bug capture into agent workflows and learning loop
 
-### Rollback triggers
+* **Files affected**: `.github/skills/observe/SKILL.md`, `.github/agents/ship.agent.md` (or equivalent ship skill references)
+* **Changes**: Add "capture as bug" category to observe skill; reference bug capture in ship's review and runtime-verification flow; document how captured bugs flow into the compound/learn/evolve pipeline (observe → learn clustering → compound promotion) so bugs feed the continuous-learning loop.
+* **Verification**: Observe skill recognizes bug observations; ship flow references bug capture; learning-loop integration path is documented with explicit entry point.
+* **Execution posture**: Documentation-first.
 
-| Trigger | Threshold | Action |
-|---|---|---|
-| Post-merge agent observation reveals confused or degraded behavior | Any single occurrence with reasonable causal link to a Unit | Revert that unit's chore via PR revert; capture as bug record |
-| Bug-capture format reveals friction or ambiguity in first 2 weeks | Documented operator complaint | Revisit Unit 2 format decision |
-| File-first protocol increases task time materially | Unit 3 POC shows >20% latency or token regression | Revert Unit 3 only; reassess scope |
-| Workflow policy generates exception requests in first 2 shipments | Any | Refine policy via 031.004 follow-up; do not auto-revert |
+### Unit 3: File-First Content Production (031.003-C)
 
-### Observability checkpoints
+**Purpose**: Reduce context burn in cheap subagents by formalizing a write-to-file, retrieve-via-query protocol.
 
-* **Post-merge observation window**: 2 weeks of normal Stage + Ship operation.
-* **Agent-behavior signals to monitor**: false-authoritative engram citations (Unit 1 effective?), bug records produced per shipment (Unit 2 adopted?), subagent context size in skill telemetry (Unit 3 effective?), exception requests against new policies (Unit 4 fit?).
-* **Reporting**: capture observation findings as a closure note for 008-S; if signals require action, generate follow-up backlog items.
+**Dependency**: Requires 031.001-C (file-load verification) to be complete first, since file-first protocol references the verification step.
 
-### Approval gates
+#### Task 031.003.001-T — Define file-first production protocol
 
-* Each chore's PR-equivalent review requires explicit acknowledgment that operator-facing language in instructions is non-misleading.
-* Unit 4 (policy) requires explicit operator approval before merge — policy changes have higher legitimacy bar than instruction additions.
+* **Files affected**: New instruction file or dedicated section in existing instructions
+* **Changes**: Document protocol for write-then-query workflow; include guidance on when full-document inclusion is appropriate vs. when query-mediated retrieval is required.
+* **Verification**: Protocol documented with explicit thresholds; references file-load verification.
+* **Execution posture**: Documentation-first.
 
-### Backout plan
+#### Task 031.003.002-T — Apply file-first protocol to learnings-researcher skill
 
-Each unit is self-contained at the file level. Revert the chore's commits; instructions/skills/policies revert to pre-merge state. No data migration, no protocol surface affected, no runtime state to recover.
+* **Files affected**: `.github/skills/compound/SKILL.md` (learnings-researcher subagent prompt section)
+* **Changes**: Refactor learnings-researcher subagent invocation to use file-first + query-mediated context delivery instead of passing full compound library content inline.
+* **Success criterion**: Measured context reduction of ≥30% for the learnings-researcher subagent invocation compared to baseline (documented in commit message).
+* **Verification**: Before/after context size comparison documented; skill quality criteria still met; learnings-researcher still finds relevant compound entries.
+* **Execution posture**: Characterization-first (measure before, refactor, measure after).
+
+### Unit 4: Workflow Policy Formalization (031.004-C)
+
+**Purpose**: Convert implicit conventions into explicit, enforceable policy.
+
+#### Task 031.004.001-T — Document decomposition policy
+
+* **Files affected**: `.github/policies/workflow-policies.md` (or AGENTS.md)
+* **Changes**: Add "Decomposition Policy" section with thresholds, examples, and spike bypass rules.
+* **Verification**: Policy section added with ≥2 anchoring examples; cross-referenced from constitution.
+* **Execution posture**: Documentation-first.
+
+#### Task 031.004.002-T — Document branch-per-feature policy
+
+* **Files affected**: `.github/policies/workflow-policies.md`, `.github/agents/ship.agent.md`, `.github/agents/stage.agent.md`
+* **Changes**: Add "Branch Discipline" section with exception list; cross-reference from both primary agents.
+* **Verification**: Policy section added; exception list present; agent cross-references in place.
+* **Execution posture**: Documentation-first.
+
+## Dependency Graph
+
+```text
+031.001.001-T ─┬─→ 031.001.002-T
+               └─→ 031.003.001-T → 031.003.002-T
+
+031.002.001-T → 031.002.002-T
+
+031.004.001-T → 031.004.002-T
+```
+
+**Parallel lanes**:
+- Lane A: 031.001-C → 031.003-C (sequential; 031.003 requires all of 031.001-C complete)
+- Lane B: 031.002-C (independent)
+- Lane C: 031.004-C (sequential; 031.004.002-T cross-references policy introduced by 031.004.001-T)
+
+Lanes B and C can execute in parallel with Lane A. Within Lane A, 031.003-C must wait for 031.001-C (both tasks). Within Lane C, 031.004.002-T must wait for 031.004.001-T.
+
+## Decisions and Rationale
+
+| Decision | Rationale |
+|---|---|
+| Single shipment for all 4 chores | They share the instruction/skill/policy surface; splitting increases merge friction without reducing risk. |
+| 031.003 depends on 031.001 | File-first protocol explicitly references the verification protocol; implementing in wrong order creates broken references. |
+| Bug format left as task-level decision | Multiple viable options; forcing a choice at plan level would over-constrain. Task 031.002.001-T produces a micro-deliberation. |
+| Branch-per-feature in policy, not constitution | Policy is easier to amend than constitution principles; exceptions are expected. |
+
+## Risks and Caveats
+
+| Risk | Mitigation |
+|---|---|
+| Instruction changes alter agent behavior unexpectedly | Post-merge observation window (7 days); rollback = revert instruction files |
+| Bug capture format chosen poorly | Task 031.002.001-T forces a decision artifact first; format can be revised before wiring |
+| File-first protocol creates over-fetch from engram | 031.003.002-T validates with real subagent; measures context delta |
+| Workflow policy is contested | 031.004 allows "rejected with rationale" outcome |
 
 ## Constitution Check
 
-| Unit | Principles Served | Notes |
+| Principle | Compliance | Notes |
 |---|---|---|
-| Unit 1 — File-load verification | X (Context Efficiency) | Makes engram-first retrieval verifiable before agents treat results as authoritative |
-| Unit 2 — Bug capture | V (Structured Observability) | Gives bug discoveries a persistent, structured capture surface |
-| Unit 3 — File-first content | X (Context Efficiency) | Reduces context burn by routing large outputs through file + query-mediated retrieval |
-| Unit 4 — Workflow policy | IX (Git-Friendly Persistence), Development Workflow | Formalizes implicit decomposition + branch discipline into enforceable policy |
+| II. Test-First Development | **Justified exception** | All units produce documentation artifacts (instructions, skills, policies), not production Rust code. No `cargo test` targets exist for markdown content. Verification is structural (cross-references resolve, quality criteria intact) rather than test-binary. |
+| Task Granularity — 2-Hour Rule | ✓ | Each task scoped to 1-2 file edits with clear single-domain focus. |
+| Task Granularity — Width Isolation | ✓ | Each task targets one skill domain (instruction authoring OR policy writing OR skill modification). |
+| Task Granularity — Fewer than 3 files | **Justified deviation** | 031.001.002-T (3 skill files) and 031.004.002-T (3 files) each touch 3 files. These are mechanically identical changes (insert one subsection/cross-reference) applied across cohesive surface groups. Splitting would create artificial 1-file tasks with redundant context loading. |
+| Task Granularity — Atomic Milestone | ✓ | Each task produces a verifiable state: instruction subsection present, cross-reference resolves, policy section added. |
+| III. Workspace Isolation | ✓ | All file paths resolve within workspace root. |
+| IV. CLI Containment | ✓ | No files created outside cwd. |
+| VI. Single Responsibility | ✓ | No new dependencies added. |
+| IX. Git-Friendly Persistence | ✓ | All outputs are markdown with YAML frontmatter. |
+| X. Context Efficiency | ✓ | Unit 3 directly operationalizes this principle. |
 
-**Principle II (Test-First) applicability**: All four units produce markdown instruction, skill, and policy files — no Rust production code. The standard Principle II enforcement (`cargo test` harness) does not apply. Test-first is satisfied by the Plan Hardening observability checkpoints (post-merge agent-behavior signals) and the acceptance criteria on the feature file. No justified violations.
+## Plan Hardening Signals (REQUIRED)
 
-## Self-Review Against Plan-Review Criteria
+| Signal | Present? | Justification |
+|---|---|---|
+| Public API, schema, or contract change | No | No production code API changes |
+| Security, auth, permission, or compliance-sensitive | No | Policy/instruction layer only |
+| Migration, backfill, destructive data/config action | No | Additive documentation changes; no data migration |
+| External integration, operator checkpoint, or external dependency | No | Internal harness only |
+| High runtime, rollout, or rollback risk | **Yes** | Cross-cutting instruction/skill/policy changes affect all agent behavior post-merge |
 
-* Source document referenced: yes.
-* Acceptance criteria traceable: yes.
-* Plan Hardening section present: yes (above).
-* 2-hour rule: each task scoped to small file edits.
-* Width isolation: each task is single-skill (instructions edit, skill protocol update, policy doc, or refactor of one named skill).
-* Out-of-scope explicit: cross-agent telemetry surfaces (deferred); enforcement automation for the new policies (deferred — policies are documented, not auto-enforced in this scope).
+**Requires plan hardening: yes**
 
-**Self-review verdict**: PASS, but plan-hardening attention should be re-validated by formal `plan-review` skill before Ship claims this shipment, given the divergence acknowledged in `docs/memory/2026-04-21/stage-groups-bcd-staging-memory.md`.
+Hardening required because cross-cutting harness changes affect agent behavior globally. Rollback is straightforward (revert affected files) but the blast radius is wide (all agents read instruction and skill files).
 
-## Requires plan hardening
+## Runtime Verification and Closure
 
-yes — embedded above.
+### Changed runtime surfaces
+
+All changes are to agent-consumed instruction, skill, and policy files. The "runtime" is agent behavior — not a deployed service.
+
+### Verification approach
+
+1. **Post-merge observation window**: 7 calendar days after merge. During this period, monitor agent sessions for:
+   - Agents successfully invoking file-load verification before citing engram results
+   - Bug observations captured through the new structured surface
+   - Cheap subagents receiving query results instead of full documents
+   - Branch-per-feature policy correctly enforced by Ship agent
+
+2. **Rollback trigger**: If agents repeatedly fail to follow new protocols (3+ consecutive session failures attributable to instruction changes), revert the affected instruction/skill files.
+
+3. **Rollback procedure**: `git revert <merge_commit>` — all changes are additive markdown; revert is clean.
+
+### Closure artifacts
+
+- **Closure artifact path**: `docs/closure/{YYYY-MM-DD}-008-S-closure.md`
+- **Monitoring plan**: Track agent session success rate for 7 days post-merge
+- **Monitoring method**: Count session memory files written to `docs/memory/` that reach the summary step; compare to total sessions initiated
+- **Baseline**: Current agent session completion rate (establish from last 10 sessions pre-merge)
+- **Alert threshold**: <70% completion rate for 3 consecutive sessions
+- **Owner**: Operator
+- **Validation window**: 7 calendar days post-merge
+- **Rollback trigger**: 3+ consecutive agent session failures tied to new instruction content
+- **Observation method**: Review `docs/memory/` files daily during window; grep for circuit-breaker trips attributable to instruction parsing or protocol confusion
+
+## Plan Hardening
+
+### Hardening Required: Yes
+
+**Trigger**: Cross-cutting harness changes (instruction files, skill protocols, and workflow policies) affect all agent behavior globally. While individually each change is additive documentation, the collective blast radius spans every agent session post-merge.
+
+### Risk Triggers and Protected Invariants
+
+| Risk Trigger | Protected Invariant |
+|---|---|
+| Instruction file changes read by all agents | Agents must not regress on existing protocols (engram search preference, TDD, commit conventions) |
+| Skill protocol modifications (deliberate, impl-plan, spike) | Skill quality criteria and output format must remain intact |
+| Workflow policy additions | Existing ship/stage sequencing must not break |
+| File-first protocol introduces new query pattern | Engram daemon must handle increased query load without degradation |
+
+### Reinforcing Context Consulted
+
+- `.github/instructions/agent-engram.instructions.md` — existing engram protocol (additive change)
+- `.github/instructions/constitution.instructions.md` — Principle X (Context Efficiency) already mandates query-mediated retrieval; this work operationalizes it
+- `.github/policies/workflow-policies.md` — P-010 (branch creation) already partially covers branch discipline; 031.004 extends it
+- `docs/compound/workflow-issues/` — no prior incidents from instruction-file changes (clean track record)
+
+### Risky Actions
+
+| ProposedAction | ActionRisk | Approval |
+|---|---|---|
+| Add verification subsection to `agent-engram.instructions.md` | low | Not required — additive, non-breaking |
+| Modify 3 skill SKILL.md files (deliberate, impl-plan, spike) | moderate | Not required — inserting step into existing protocols |
+| Add bug capture wiring to observe skill and ship agent | moderate | Not required — additive category recognition |
+| File-first protocol: new instruction or section | moderate | Not required — new guidance, does not remove existing behavior |
+| Refactor one Tier 1 skill to file-first delivery | moderate | Preferred — validates protocol end-to-end before broader adoption |
+| Add decomposition + branch policy to workflow-policies.md | moderate | Preferred — policy additions affect all future sessions |
+
+### Deepened Verification
+
+**Pre-merge verification (per task)**:
+1. Each modified instruction/skill/policy file must pass `cargo fmt --all -- --check` (for any embedded code examples) and markdown lint
+2. Cross-references must resolve (no broken internal links)
+3. Each skill file must still satisfy its own Quality Criteria section after modification
+
+**Post-merge verification (behavioral)**:
+1. Run one full Stage+Ship cycle on a small task after merge
+2. Confirm agents invoke file-load verification when citing engram results
+3. Confirm observe skill recognizes bug-category observations
+4. Confirm cheap subagent receives query results, not full document (measure context tokens)
+5. Confirm Ship agent checks branch-per-feature policy at pre-flight
+
+### Rollback Procedure
+
+**Trigger**: 3+ consecutive agent session failures attributable to new instruction content within the 7-day observation window.
+
+**Procedure**:
+1. `git revert <merge_commit>` — all changes are additive markdown; revert produces a clean inverse
+2. Push revert to main
+3. Verify next agent session completes without the failure pattern
+4. Create a backlog item for the failed protocol with findings from the failure
+
+**Coupling**: No data migration, no schema change, no external integration. Revert is fully self-contained.
+
+### Monitoring Signals
+
+| Signal | Source | Healthy Baseline | Alert Threshold |
+|---|---|---|---|
+| Agent session completion rate | Session memory files in `docs/memory/` | >90% sessions reach summary step | <70% for 3 consecutive sessions |
+| File-load verification invocations | Agent session logs (grep for `sync_workspace` or `list_symbols` before citations) | Present in engram-using sessions | Absent in 3+ consecutive sessions |
+| Context token usage in Tier 1 subagents | Before/after comparison (031.003.002-T measurement) | Reduction vs. baseline | Increase vs. baseline |
+
+### Operator Checkpoints
+
+1. **After 031.002.001-T** (bug format decision): Operator reviews the chosen format before wiring proceeds in 031.002.002-T
+2. **After 031.003.002-T** (file-first validation): Operator reviews context-size comparison before considering broader adoption
+3. **After merge**: Operator monitors 7-day observation window
+
+### Unresolved Decisions
+
+None — all remaining decisions are scoped to individual tasks (bug format in 031.002.001-T, skill selection in 031.003.002-T) and do not block plan review.
+
+<!-- plan-hardening-applied: 2026-04-29 -->
 
 ## Plan Review
 
-**Reviewed**: 2026-04-25
-**Gate decision**: ADVISORY
-**Plan hardening required**: yes (satisfied — hardening section present)
+### Gate Decision: PASS (after revision)
 
-### Findings
+**Initial review**: FAIL — 5 P1 findings, 2 P2 findings.
+**Revision applied**: Addressed all P1 findings inline. Re-evaluated gate.
+**Final decision**: PASS — all P1 items resolved; remaining P2 items are advisory.
 
-#### P0 — Blocking
+### Plan Hardening Requirement
 
-None.
+Required: **Yes** (cross-cutting harness changes).
+Satisfied: **Yes** — `## Plan Hardening` section present with risk triggers, risky actions, monitoring signals, rollback procedure, and operator checkpoints.
 
-#### P1 — High Impact
+### Findings (Initial Review)
 
-None.
+#### P1 — Resolved
 
-#### P2 — Moderate
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | Missing Constitution Check section | Added `## Constitution Check` mapping all units against principles with justified deviations. |
+| 2 | Task granularity: 031.001.002-T and 031.004.002-T touch 3 files each | Justified in Constitution Check: mechanically identical edits across cohesive surface groups. Splitting creates artificial overhead. |
+| 3 | 031.003.002-T not atomic: unnamed target skill, no success threshold | Pinned to learnings-researcher skill in compound SKILL.md. Added explicit ≥30% context reduction success criterion. |
+| 4 | 031.002-C: bug capture doesn't explicitly wire into compound/learn/evolve loop | Expanded 031.002.002-T scope and verification to include learning-loop integration path documentation. |
+| 5 | Runtime verification/closure lacks explicit closure artifact path, baseline, observation method | Enriched closure section with artifact path, monitoring method, baseline source, and observation method. |
 
-1. **Missing Constitution Check section** — Constitution Governance (line 297–299 of `constitution.instructions.md`) requires every implementation plan to include a `## Constitution Check` section that maps proposed work against constitutional principles and documents any justified violations. The plan has a `Self-Review Against Plan-Review Criteria` section but no formal `Constitution Check`. The plan should add a brief section mapping each unit to the principles it operationalizes (especially I, II, V, IX, X) and documenting why Principle II (Test-First) is satisfied for markdown-only chores (no Rust production code, so `cargo test` harness does not apply; acceptance criteria are verifiable through agent-behavior observation in the Plan Hardening observation window).
+#### P2 — Advisory (accepted as-is)
 
-2. **Backlogit dependency for 031.003-C → 031.001-C is not wired** — The plan documents that Unit 3 depends on Unit 1 (`031.003-C` requires `031.001.001-T`), and the chore title includes "Depends on 031.001-C." However, the backlogit dependency graph has no edge between these items. When Ship claims work from the queue, it could pick up `031.003.001-T` or `031.003.002-T` before `031.001.001-T` completes if the ordering isn't enforced. Wire the dependency via `backlogit_add_dependency(031.003-C, 031.001-C)` before harvest/claim.
+| # | Finding | Disposition |
+|---|---|---|
+| 6 | Dependency graph inconsistency (Unit 3 prose vs. graph; 031.004 edges) | Fixed: graph now shows 031.004.001-T → 031.004.002-T edge; prose aligned to require full 031.001-C for Unit 3. |
+| 7 | Scope boundary: 031.002.001-T loose storage decision; 031.004.002-T may overlap P-010 | Accepted: 031.002.001-T is intentionally a micro-deliberation (decision-first posture). 031.004.002-T extends P-010 rather than replacing it. |
 
-#### P3 — Advisory
+### Reviewer Personas
 
-1. **Principle II (Test-First) applicability not explicitly addressed** — All four units produce markdown instruction, skill, and policy files rather than Rust code. The constitution's Test-First principle is scoped to features and chores, but the enforcement mechanism (`cargo test`) does not apply to markdown changes. The plan should add one sentence in the Constitution Check section stating that test-first is satisfied by the Plan Hardening observability checkpoints (post-merge agent-behavior signals) and the acceptance criteria on the feature file, rather than by Rust test harnesses.
+| Persona | Findings |
+|---|---|
+| Constitution Reviewer | P1 #1 (missing constitution check), P1 #2 (granularity) |
+| Scope Boundary Auditor | P1 #3 (atomicity), P2 #7 (scope looseness) |
+| Learnings Researcher | P1 #4 (incomplete requirement trace) |
+| Rust Reviewer | N/A — no production Rust code in scope |
+| Architecture Strategist | P2 #6 (dependency graph) |
+| Agent-Native Parity Reviewer | P1 #5 (closure completeness) |
 
-2. **Unit 4 overlap with existing constitution text** — The constitution's Development Workflow section already states "Branch per release unit" (item 3) and Task Granularity rules. Unit 4 (031.004-C) adds "Decomposition Policy" and "Branch Discipline" sections to `workflow-policies.md`. The plan should note that these policy additions must be consistent with — and cross-reference — the existing constitutional text to avoid normative divergence. The plan's cross-reference step ("from constitution + ship + stage agents") partially addresses this, but the direction of authority (constitution is authoritative, policy operationalizes) should be explicit.
+### Runtime Verification and Closure Readiness
 
-3. **031.001.002-T touches 3 skill files** — The 2-hour heuristic recommends fewer than 3 files modified per task. This task adds the same verification protocol reference to `deliberate`, `impl-plan`, and `spike` SKILL.md files. The changes are formulaic so this is acceptable, but if the protocol requires per-skill adaptation, consider splitting into per-skill subtasks.
+✓ Monitoring plan present with signals, baselines, and thresholds.
+✓ Rollback trigger defined with named metric and threshold.
+✓ Validation window and owner specified.
+✓ Closure artifact path declared.
 
-### Persona Reports
-
-#### Constitution Reviewer
-
-All four units align with their stated constitutional basis. Unit 1 and Unit 3 directly operationalize **Principle X (Agent Context Efficiency)** by making engram-first retrieval and file-first production explicit protocols. Unit 2 supports **Principle V (Structured Observability)** by giving bug discoveries a persistent, structured capture surface. Unit 4 formalizes implicit practices from the constitution's Development Workflow section into enforceable policy.
-
-**Gap found**: The plan lacks the `## Constitution Check` section that the constitution's Governance section requires of every implementation plan. This is procedural rather than substantive — the plan clearly understands which principles it serves — but formal compliance requires the section to exist so reviewers can verify the mapping and see any justified deviations documented.
-
-**Principle II applicability**: These chores produce no Rust production code. The standard Principle II enforcement (harness-architect red phase → build-feature green phase) does not apply because there is nothing for `cargo test` to exercise. The plan's observability checkpoints in the Plan Hardening section serve as the functional equivalent of test verification for instruction/policy changes. This should be stated explicitly.
-
-No constitutional violations found. No principles are contradicted.
-
-#### Scope Boundary Auditor
-
-**2-hour rule**: All 8 tasks (across 4 chores) are within bounds. Each involves 1–3 file edits of modest scope — instruction sections, skill protocol additions, policy document sections. The largest task (031.002.002-T — wire bug capture into 3 skill files) is ~1.5 hours of effort, well within the 2-hour ceiling.
-
-**Width isolation**: Each task targets a single skill domain. 031.001.002-T touches 3 SKILL.md files but the domain is "protocol wiring" (the same verification snippet added to each). 031.002.002-T similarly wires a single capture surface across multiple skills. Neither task mixes documentation with code or infrastructure concerns. Satisfactory.
-
-**Scope boundaries**: The plan explicitly defers cross-agent telemetry surfaces and enforcement automation. No scope creep detected. Each unit addresses exactly one of the four operator concerns from the deliberation.
-
-**YAGNI**: Unit 3's proof-of-concept approach (refactor one named skill, measure delta) is appropriately conservative rather than attempting a workspace-wide refactor.
-
-No scope violations found.
-
-#### Learnings Researcher
-
-Reviewed all compound learnings in `docs/compound/`:
-
-- `best-practices/` (2 entries): No overlap with this plan's scope.
-- `build-errors/` (4 entries): No overlap — these address Rust compilation, not instruction files.
-- `concurrency-issues/` (1 entry): No overlap.
-- `test-failures/` (3 entries): No overlap.
-- `workflow-issues/` (5 entries): The `ship-shipment-overscoped-manifest` and `ship-shipment-no-item-archive-files` entries document backlogit shipment closure pitfalls that affect shipment 008-S (this plan's shipment). The plan does not need to address these directly — they are handled by the `shipment-reconcile` skill at Ship Step 6 — but the operator should be aware that 008-S closure will require the standard reconciliation gates.
-
-**No ignored solutions**: No compound entry addresses engram file-load verification, structured bug capture, file-first content production, or decomposition policy. This plan is establishing new operational patterns, not re-solving known problems.
-
-**No repeated mistakes**: The plan avoids the pattern documented in `ship-shipment-overscoped-manifest` (speculative manifest assembly) by keeping the shipment scope to exactly the 4 chores identified in the deliberation.
-
-No learnings-related findings.
-
-#### Architecture Strategist
-
-**Cohesion**: The 4 implementation units share a common theme (operationalizing Constitution Principle X and tightening agent workflow quality) and operate on the same layer (harness instruction/skill/policy files). The deliberation's Option α (single coherent shipment) is well-justified: the units interact (Unit 1 enables Unit 3; Unit 2 feeds the same compound learning pipeline that Unit 3 consumes), and reviewing them together provides better coherence assurance than reviewing 4 independent PRs against overlapping instruction surfaces.
-
-**Dependency chain**: The sequencing is correct — Unit 3 depends on Unit 1's verification protocol, and Units 1, 2, 4 are independent. However, **the dependency is not wired in the backlogit dependency graph** (confirmed via `backlogit_get_dependencies` on 031.003-C, which returned null). This is a concrete operational gap: Ship's queue-aware work selection could violate the sequencing constraint. The Stage agent or operator should wire `backlogit_add_dependency(031.003-C, 031.001-C)` before the shipment is claimed.
-
-**Parallel execution**: Units 1, 2, 4 touch disjoint file sets (engram instructions vs. observe/compound skills vs. workflow-policies.md). No merge friction expected. Unit 3 intentionally waits for Unit 1. The plan's sequencing model is sound for single-agent execution within a shipment.
-
-**Backout safety**: Each unit is file-level self-contained with no data migration, schema change, or runtime state dependency. Revert-by-commit is clean. The Plan Hardening rollback triggers are appropriate — per-unit revert rather than all-or-nothing.
-
-### Recommendation
-
-**ADVISORY — approve with two amendments before Ship claims the shipment:**
-
-1. Add a brief `## Constitution Check` section to the plan, mapping Units 1–4 to the constitutional principles they serve and noting that Principle II is satisfied by behavioral observation rather than `cargo test`.
-2. Wire the backlogit dependency `031.003-C → 031.001-C` via `backlogit_add_dependency` so Ship's queue selection respects the sequencing constraint.
-
-Both amendments are low-effort (minutes, not hours) and can be applied during shipment intake without re-triggering plan review. No structural changes to the plan are needed.
+<!-- plan-review-applied: 2026-04-29 -->
