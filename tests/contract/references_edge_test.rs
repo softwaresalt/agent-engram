@@ -57,6 +57,22 @@ async fn contract_create_references_edge_resolved() {
         !rows.is_empty(),
         "references table must contain at least one edge after create_references_edge"
     );
+    let row = &rows[0];
+    assert_eq!(
+        row.get("source").and_then(|v| v.as_str()),
+        Some("code_file:abc"),
+        "source field must match the supplied source_id"
+    );
+    assert_eq!(
+        row.get("target").and_then(|v| v.as_str()),
+        Some("class:def"),
+        "target field must match the supplied target_id"
+    );
+    assert_eq!(
+        row.get("qualified_name").and_then(|v| v.as_str()),
+        Some("users"),
+        "qualified_name field must match the supplied qualified_name"
+    );
 }
 
 /// 033.004-T: `create_references_edge` must persist an unresolved (file → file) edge.
@@ -120,7 +136,7 @@ async fn contract_delete_references_edges_from_file() {
 
     // After deletion, the edge must not be present.
     let mut resp = db
-        .query("SELECT * FROM `references` LIMIT 10")
+        .query("SELECT source, target, qualified_name FROM `references` LIMIT 10")
         .await
         .expect("query references table");
     let rows: Vec<serde_json::Value> = resp.take(0).expect("deserialize");

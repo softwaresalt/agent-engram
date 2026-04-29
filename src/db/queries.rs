@@ -816,9 +816,9 @@ impl CodeGraphQueries {
     /// Create a `references` edge from a source code file to a target node.
     ///
     /// Used to persist SQL table reference relationships in the code graph.
-    /// When the target is resolved to a Class node, `target_table` is `"class"`.
-    /// When unresolved, `target_table` is `"code_file"` and the source file
-    /// references itself, with `qualified_name` holding the raw target string.
+    /// The caller supplies the target record id directly via `target_id`.
+    /// When the reference could not be resolved to a more specific node,
+    /// callers may preserve the raw referenced name in `qualified_name`.
     ///
     /// The `references` table is a plain SCHEMAFULL table (not TYPE RELATION)
     /// with explicit `source` / `target` string fields.  This avoids the
