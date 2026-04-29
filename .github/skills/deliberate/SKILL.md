@@ -101,6 +101,12 @@ Use workspace search tools to understand:
 * Precedents — how similar problems were solved before
 * Constraints imposed by the current architecture
 
+**File-load verification** (when `agent-engram` is installed): Before citing any file's
+contents as evidence, verify the file is indexed per the protocol in
+`.github/instructions/agent-engram.instructions.md` ("Verifying File Indexed").
+Use `list_symbols` or `query_memory` with the file path; if absent, call `sync_workspace`
+and re-query before falling back to direct `view`.
+
 #### Step 2.3: External Research (Deep only)
 
 For `deep` scope, investigate beyond the codebase:

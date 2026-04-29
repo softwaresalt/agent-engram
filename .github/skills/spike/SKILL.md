@@ -127,6 +127,13 @@ When the `agent-engram` capability pack is installed, follow
 related modules, symbols, and prior context before falling back to broader file
 scans.
 
+**File-load verification** (when `agent-engram` is installed): Before citing
+any file's contents as evidence in the findings, verify the file is indexed
+per the protocol in `.github/instructions/agent-engram.instructions.md`
+("Verifying File Indexed"). Use `list_symbols` or `query_memory` with the
+file path; if absent, call `sync_workspace` and re-query before falling back
+to direct `view`.
+
 #### Step 2.3: Hands-On Investigation
 
 Execute the investigation approach:
