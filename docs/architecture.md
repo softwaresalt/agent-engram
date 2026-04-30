@@ -194,7 +194,7 @@ Agent ──► flush_state() ──► Write handler
                                   │
                             dehydrate_workspace()
                             serialize code graph → .engram/code-graph/
-                            write .engram/.version = "3.0.0"
+                            write .engram/.version = "4.0.0"
                             update .engram/.lastflush
 ```
 
@@ -263,7 +263,7 @@ flush_state() (MCP tool call) or graceful shutdown
     │
     ├── dehydrate_workspace()
     │   ├── serialize code graph → .engram/code-graph/ JSONL
-    │   ├── write .engram/.version = "3.0.0"
+    │   ├── write .engram/.version = "4.0.0"
     │   └── update file mtime records
     │
     └── update last_flush timestamp in snapshot
@@ -288,7 +288,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | CozoDB Queries | `src/db/cozo_queries.rs` | Datalog/CozoScript CRUD for code_file, function, class, interface relations; counts; symbol search by name. Returns `Ok(vec![])` for symbol-not-found (not `Err`) to support `impact_analysis` contract. |
 | CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
-| Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `3.0.0`. |
+| Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `4.0.0`. |
 | Code Graph | `src/services/code_graph.rs` | Orchestrates tree-sitter indexing: walks workspace files, dispatches per-language parsers, upserts symbol and edge records, manages incremental sync and impact traversal. |
 | Parsing | `src/services/parsing/` | Multi-language tree-sitter parsers. `parsing.rs` defines the `Language` enum (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp, Swift, Kotlin, C, Cpp, Sql) and dispatches to per-language submodules (`rust.rs`, `python.rs`, `typescript.rs`, `javascript.rs`, `go_lang.rs`, `csharp.rs`, `swift.rs`, `kotlin.rs`, `c.rs`, `cpp.rs`, `sql.rs`). |
 | Content Registry | `src/services/ingestion.rs` | Process indexed workspace content for embedding. Error codes 11xxx. |
@@ -435,7 +435,7 @@ All shared mutable state lives in `src/server/state.rs` under `AppState`:
 |---|---|---|
 | `active_workspace` | `RwLock<Option<WorkspaceSnapshot>>` | Current workspace path and metadata; readers take a shared lock, writers take an exclusive lock |
 | `indexing_in_progress` | `AtomicBool` | Guards against concurrent indexing runs; a second `index_workspace` call while indexing is active returns an error immediately |
-| `hydration_ready` | `AtomicBool` | Set to `true` once background DB hydration completes at startup |
+| `hydration_ready` | `AtomicBool` | Set to `true` once workspace hydration completes; cleared and re-set on each `set_workspace` call |
 | `active_connections` | `AtomicUsize` | **SSE-transport only** — tracks live SSE streaming clients; never incremented by IPC connections |
 
 ### Concurrent Request Safety

@@ -13,11 +13,13 @@
 //! Out of scope: `active_connections` counter and `RateLimiter` — both are
 //! SSE-transport concerns (US5/T091, FR-025/T118) and do not apply to IPC.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use engram::daemon::protocol::IpcRequest;
 use engram::shim::ipc_client::send_request;
 use serde_json::{Value, json};
+use tokio::sync::Barrier;
 
 #[path = "../helpers/mod.rs"]
 mod helpers;
@@ -28,8 +30,8 @@ use helpers::DaemonHarness;
 ///
 /// Three tokio tasks each open an independent IPC connection and issue a
 /// `_health` request simultaneously. The daemon's accept loop must handle all
-/// three correctly: valid JSON response, `status` field present, no cross-
-/// contamination between connections.
+/// three correctly: valid JSON response, `status` field present, response `id`
+/// matches request `id`, no cross-contamination between connections.
 ///
 /// This is the lightest concurrent scenario — `_health` is handled entirely
 /// within the IPC server layer without touching `tools::dispatch`.
@@ -57,6 +59,7 @@ async fn s_cs1_three_concurrent_health_checks_succeed() {
         .collect();
 
     for (i, task) in tasks.into_iter().enumerate() {
+        let req_id = u32::try_from(i + 1).expect("index fits u32");
         let resp = task
             .await
             .expect("concurrent health task must not panic")
@@ -66,6 +69,12 @@ async fn s_cs1_three_concurrent_health_checks_succeed() {
             resp.error.is_none(),
             "health check {i} must not return an IPC error: {:?}",
             resp.error
+        );
+
+        assert_eq!(
+            resp.id,
+            Value::Number(serde_json::Number::from(req_id)),
+            "health response {i} id must match request id {req_id}"
         );
 
         let body = resp
@@ -87,8 +96,9 @@ async fn s_cs1_three_concurrent_health_checks_succeed() {
 /// S-CS2: Two concurrent `get_daemon_status` calls return consistent state.
 ///
 /// Two tokio tasks issue `get_daemon_status` simultaneously. Both must succeed
-/// and their `protocol_version` fields must be identical — proving no response
-/// cross-contamination between the two IPC connections.
+/// and their `version` fields must be identical — proving no response
+/// cross-contamination between the two IPC connections. Response `id` fields
+/// must match the originating request `id`.
 ///
 /// `get_daemon_status` reads `AppState` atomics and the `RwLock`-guarded
 /// workspace snapshot. This test verifies that concurrent reads of shared
@@ -118,6 +128,7 @@ async fn s_cs2_concurrent_get_daemon_status_consistent_state() {
 
     let mut bodies = Vec::new();
     for (i, task) in tasks.into_iter().enumerate() {
+        let req_id = u32::try_from(i + 1).expect("index fits u32");
         let resp = task
             .await
             .expect("concurrent status task must not panic")
@@ -127,6 +138,12 @@ async fn s_cs2_concurrent_get_daemon_status_consistent_state() {
             resp.error.is_none(),
             "get_daemon_status {i} must not return an IPC error: {:?}",
             resp.error
+        );
+
+        assert_eq!(
+            resp.id,
+            Value::Number(serde_json::Number::from(req_id)),
+            "status response {i} id must match request id {req_id}"
         );
 
         let body = resp
@@ -156,10 +173,14 @@ async fn s_cs2_concurrent_get_daemon_status_consistent_state() {
 
 /// S-CS3: Concurrent `set_workspace` + `get_daemon_status` produces coherent state.
 ///
-/// `set_workspace` triggers workspace hydration and may set
-/// `indexing_in_progress`. Issuing `get_daemon_status` concurrently exercises
+/// `set_workspace` triggers workspace hydration and clears then re-sets
+/// `hydration_ready`. Issuing `get_daemon_status` concurrently exercises
 /// the shared `AppState` under a write + read race. Both calls must succeed
 /// without panics, and each response must be a coherent JSON object.
+///
+/// A `Barrier(2)` ensures both tasks dispatch their IPC requests from a
+/// deterministically synchronised point — both connections are guaranteed to
+/// be in-flight simultaneously at the daemon.
 ///
 /// This is the heaviest concurrent scenario and the primary characterization
 /// for 001-F: proving the daemon's async concurrency model holds under load.
@@ -177,11 +198,16 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
         .expect("UTF-8 path")
         .to_owned();
 
+    let barrier = Arc::new(Barrier::new(2));
+
     let ep_set = endpoint.clone();
     let ep_status = endpoint.clone();
     let path = workspace_path.clone();
+    let b_set = Arc::clone(&barrier);
+    let b_status = Arc::clone(&barrier);
 
     let h_set = tokio::spawn(async move {
+        b_set.wait().await;
         let req = IpcRequest {
             jsonrpc: "2.0".to_owned(),
             id: Some(Value::Number(serde_json::Number::from(1))),
@@ -192,10 +218,7 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
     });
 
     let h_status = tokio::spawn(async move {
-        // Yield once to maximise the chance that both tasks are scheduled
-        // before either completes — this is cooperative concurrency within
-        // a single tokio thread, not a hard synchronization barrier.
-        tokio::task::yield_now().await;
+        b_status.wait().await;
         let req = IpcRequest {
             jsonrpc: "2.0".to_owned(),
             id: Some(Value::Number(serde_json::Number::from(2))),
@@ -219,12 +242,17 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
         "get_daemon_status must succeed under concurrent set_workspace: {status_result:?}"
     );
 
-    // Each response must be a coherent object — no corrupt JSON, no missing fields.
+    // Each response must be coherent — correct id, no corrupt JSON, required fields present.
     let set_resp = set_result.unwrap();
     assert!(
         set_resp.error.is_none(),
         "set_workspace must not return an IPC error: {:?}",
         set_resp.error
+    );
+    assert_eq!(
+        set_resp.id,
+        Value::Number(serde_json::Number::from(1_u32)),
+        "set_workspace response id must match request id 1"
     );
     let set_body = set_resp
         .result
@@ -240,6 +268,11 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
         "get_daemon_status must not return an IPC error: {:?}",
         status_resp.error
     );
+    assert_eq!(
+        status_resp.id,
+        Value::Number(serde_json::Number::from(2_u32)),
+        "get_daemon_status response id must match request id 2"
+    );
     let status_body = status_resp
         .result
         .expect("get_daemon_status must have a result body");
@@ -247,4 +280,101 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
         status_body.get("version").is_some(),
         "get_daemon_status must return a 'version' field: {status_body}"
     );
+}
+
+/// S-CS4: Concurrent `index_workspace` calls are serialised by `indexing_in_progress`.
+///
+/// Two shim connections issue `index_workspace` simultaneously after a prior
+/// `set_workspace`. The daemon's `try_start_indexing()` AtomicBool
+/// compare-exchange ensures only one proceeds; the concurrent caller receives
+/// error code 7003 (`IndexInProgress`).
+///
+/// A `Barrier(2)` ensures both IPC requests depart from a deterministically
+/// synchronised point. On a near-empty workspace the first indexing pass may
+/// complete before the second call arrives; in that case both succeed, which
+/// is also correct — the test accepts either outcome.
+#[tokio::test]
+async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
+    let harness = DaemonHarness::spawn(Duration::from_secs(30))
+        .await
+        .expect("daemon must start for concurrent indexing test");
+
+    let endpoint = harness.ipc_path().to_str().expect("UTF-8 path").to_owned();
+    let workspace_path = harness
+        .workspace
+        .path()
+        .to_str()
+        .expect("UTF-8 path")
+        .to_owned();
+
+    // Establish workspace before issuing concurrent index calls.
+    let set_req = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(0_u32))),
+        method: "set_workspace".to_owned(),
+        params: Some(json!({ "path": workspace_path })),
+    };
+    let set_resp = send_request(&endpoint, &set_req, Duration::from_secs(30))
+        .await
+        .expect("IpcClient transport error on set_workspace");
+    assert!(
+        set_resp.error.is_none(),
+        "set_workspace must succeed before indexing test: {:?}",
+        set_resp.error
+    );
+
+    let barrier = Arc::new(Barrier::new(2));
+
+    let tasks: Vec<_> = (1_u32..=2)
+        .map(|i| {
+            let ep = endpoint.clone();
+            let b = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                b.wait().await;
+                let req = IpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: Some(Value::Number(serde_json::Number::from(i))),
+                    method: "index_workspace".to_owned(),
+                    params: Some(json!({})),
+                };
+                send_request(&ep, &req, Duration::from_secs(60)).await
+            })
+        })
+        .collect();
+
+    let mut results = Vec::new();
+    for (i, task) in tasks.into_iter().enumerate() {
+        let resp = task
+            .await
+            .expect("concurrent indexing task must not panic")
+            .unwrap_or_else(|e| panic!("index_workspace {i} must complete: {e}"));
+        results.push(resp);
+    }
+
+    let error_count = results.iter().filter(|r| r.error.is_some()).count();
+    let success_count = results.iter().filter(|r| r.error.is_none()).count();
+
+    if error_count == 1 {
+        // Expected race: one call gets IndexInProgress — code 7003 is stored
+        // in error.data["engram_code"] (wire code is always -32603).
+        let err_resp = results.iter().find(|r| r.error.is_some()).unwrap();
+        let err = err_resp.error.as_ref().unwrap();
+        let engram_code = err
+            .data
+            .as_ref()
+            .and_then(|d| d.get("engram_code"))
+            .and_then(serde_json::Value::as_u64);
+        assert_eq!(
+            engram_code,
+            Some(7003),
+            "concurrent index must fail with IndexInProgress (7003), got: {:?}",
+            err
+        );
+    } else {
+        // Both succeeded — near-empty workspace indexed before second call arrived.
+        assert_eq!(
+            success_count, 2,
+            "both index_workspace calls must complete: {results:?}"
+        );
+    }
 }
