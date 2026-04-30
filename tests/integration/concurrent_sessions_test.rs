@@ -8,7 +8,7 @@
 //! IPC connection. Each connection reads one request, dispatches through
 //! `tools::dispatch`, and writes the response. These tests verify that the
 //! daemon handles simultaneous connections correctly under the `AppState`
-//! concurrency model (RwLock + AtomicBool primitives).
+//! concurrency model (`RwLock` + `AtomicBool` primitives).
 //!
 //! Out of scope: `active_connections` counter and `RateLimiter` — both are
 //! SSE-transport concerns (US5/T091, FR-025/T118) and do not apply to IPC.
@@ -285,7 +285,7 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
 /// S-CS4: Concurrent `index_workspace` calls are serialised by `indexing_in_progress`.
 ///
 /// Two shim connections issue `index_workspace` simultaneously after a prior
-/// `set_workspace`. The daemon's `try_start_indexing()` AtomicBool
+/// `set_workspace`. The daemon's `try_start_indexing()` `AtomicBool`
 /// compare-exchange ensures only one proceeds; the concurrent caller receives
 /// error code 7003 (`IndexInProgress`).
 ///
@@ -367,8 +367,7 @@ async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
         assert_eq!(
             engram_code,
             Some(7003),
-            "concurrent index must fail with IndexInProgress (7003), got: {:?}",
-            err
+            "concurrent index must fail with IndexInProgress (7003), got: {err:?}"
         );
     } else {
         // Both succeeded — near-empty workspace indexed before second call arrived.
