@@ -1,11 +1,21 @@
 //! CozoScript schema definitions for the CozoDB backend.
 //!
 //! Phase 2 (U2.1) — relation-creation constants and bootstrap execution.
+//! Phase 3 (U3.x) — edge tables, content record, file hash.
+//! Phase 4 (U4.x) — HNSW vector indexes.
 //!
 //! Three-table layout per symbol type (function / class / interface):
 //!  * `*_meta`      — identity and source-position fields (key lookups)
 //!  * `*_code`      — raw body text (separate to avoid over-fetching)
 //!  * `*_embedding` — float vector (isolated for KNN efficiency)
+//!
+//! Edge tables (composite-key deduplication):
+//!  * `calls_edge`          — function→function call
+//!  * `imports_edge`        — file→file import (includes import_path in key)
+//!  * `defines_edge`        — file→symbol containment
+//!  * `inherits_from_edge`  — class/interface inheritance
+//!  * `concerns_edge`       — task→symbol cross-region link
+//!  * `references_edge`     — source→target qualified-name reference
 
 use std::collections::BTreeMap;
 
@@ -47,6 +57,16 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         CREATE_INTERFACE_EMBEDDING,
         CREATE_IMPORT_NODE,
         CREATE_COMMIT_NODE,
+        // Phase 3: edge tables
+        CREATE_CALLS_EDGE,
+        CREATE_IMPORTS_EDGE,
+        CREATE_DEFINES_EDGE,
+        CREATE_INHERITS_FROM_EDGE,
+        CREATE_CONCERNS_EDGE,
+        CREATE_REFERENCES_EDGE,
+        // Phase 3: auxiliary tables
+        CREATE_CONTENT_RECORD,
+        CREATE_FILE_HASH,
     ];
 
     for script in &scripts {
@@ -62,6 +82,33 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
                     continue;
                 }
                 return Err(map_db_err(format!("schema bootstrap: {e}")));
+            }
+        }
+    }
+
+    // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
+    // storage backend does not support vector indexes. Suppress only known-benign
+    // failures; warn on unexpected ones so regressions remain visible.
+    let hnsw_scripts = [
+        HNSW_FUNCTION_EMBEDDING,
+        HNSW_CLASS_EMBEDDING,
+        HNSW_INTERFACE_EMBEDDING,
+    ];
+    for script in &hnsw_scripts {
+        if let Err(e) = cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable)
+        {
+            let msg = e.to_string().to_lowercase();
+            let is_known_benign = msg.contains("empty")
+                || msg.contains("no rows")
+                || msg.contains("unsupported")
+                || msg.contains("not support")
+                || msg.contains("vector index")
+                || msg.contains("hnsw")
+                || msg.contains("already exists");
+            if !is_known_benign {
+                tracing::warn!(
+                    "unexpected HNSW index creation failure during schema bootstrap: {e}"
+                );
             }
         }
     }
@@ -230,5 +277,161 @@ pub const CREATE_COMMIT_NODE: &str = r#"
     message: String,
     parent_hashes: [String],
     changes: [String],
+}
+"#;
+
+// ── Phase 3: Edge tables ───────────────────────────────────────────────────
+
+/// CozoScript `:create` for `calls_edge` — function-to-function call.
+///
+/// Key: `(from, to)` composite — one entry per unique caller/callee pair.
+pub const CREATE_CALLS_EDGE: &str = r#"
+:create calls_edge {
+    from: String,
+    to: String
+    =>
+    created_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `imports_edge` — file-level import dependency.
+///
+/// Key: `(from, to, import_path)` — import_path in the key allows multiple
+/// imports of the same target via different aliases without colliding.
+pub const CREATE_IMPORTS_EDGE: &str = r#"
+:create imports_edge {
+    from: String,
+    to: String,
+    import_path: String
+    =>
+    created_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `defines_edge` — file-to-symbol containment.
+///
+/// Key: `(from, to)` — one edge per (file, symbol) pair.
+pub const CREATE_DEFINES_EDGE: &str = r#"
+:create defines_edge {
+    from: String,
+    to: String
+    =>
+    symbol_table: String,
+    created_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `inherits_from_edge` — class/interface inheritance.
+///
+/// Key: `(from, to)` — one edge per (child, parent) pair.
+pub const CREATE_INHERITS_FROM_EDGE: &str = r#"
+:create inherits_from_edge {
+    from: String,
+    to: String
+    =>
+    from_table: String,
+    to_table: String,
+    created_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `concerns_edge` — cross-region task-to-symbol link.
+///
+/// Key: `(task_id, symbol_id)` — one edge per (task, symbol) pair.
+pub const CREATE_CONCERNS_EDGE: &str = r#"
+:create concerns_edge {
+    task_id: String,
+    symbol_id: String
+    =>
+    symbol_table: String,
+    linked_by: String,
+    created_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `references_edge` — qualified-name reference.
+///
+/// Key: `(from, to, qualified_name)` — qualified_name in the key allows
+/// multiple reference types to the same target from the same source.
+pub const CREATE_REFERENCES_EDGE: &str = r#"
+:create references_edge {
+    from: String,
+    to: String,
+    qualified_name: String
+    =>
+    created_at: String,
+}
+"#;
+
+// ── Phase 3: Auxiliary tables ──────────────────────────────────────────────
+
+/// CozoScript `:create` for `content_record` — ingested workspace content.
+///
+/// Key: `file_path` — one record per file path (unique constraint).
+pub const CREATE_CONTENT_RECORD: &str = r#"
+:create content_record {
+    file_path: String
+    =>
+    id: String,
+    content_type: String,
+    content_hash: String,
+    content: String,
+    source_path: String,
+    file_size_bytes: Int,
+    ingested_at: String,
+    embedding: [Float],
+}
+"#;
+
+/// CozoScript `:create` for `file_hash` — content-hash cache for change detection.
+///
+/// Key: `file_path` — one entry per workspace-relative file path.
+pub const CREATE_FILE_HASH: &str = r#"
+:create file_hash {
+    file_path: String
+    =>
+    content_hash: String,
+    size_bytes: Int,
+    recorded_at: String,
+}
+"#;
+
+// ── Phase 4: HNSW vector indexes ──────────────────────────────────────────
+
+/// CozoScript `::hnsw create` for `function_embedding` cosine index.
+///
+/// Created at bootstrap; errors on empty tables are silently suppressed.
+pub const HNSW_FUNCTION_EMBEDDING: &str = r#"
+::hnsw create function_embedding:embedding_hnsw {
+    fields: [embedding],
+    dim: 384,
+    distance: Cosine,
+    m: 50,
+    ef_construction: 20,
+    index_filter: length(embedding) == 384,
+}
+"#;
+
+/// CozoScript `::hnsw create` for `class_embedding` cosine index.
+pub const HNSW_CLASS_EMBEDDING: &str = r#"
+::hnsw create class_embedding:embedding_hnsw {
+    fields: [embedding],
+    dim: 384,
+    distance: Cosine,
+    m: 50,
+    ef_construction: 20,
+    index_filter: length(embedding) == 384,
+}
+"#;
+
+/// CozoScript `::hnsw create` for `interface_embedding` cosine index.
+pub const HNSW_INTERFACE_EMBEDDING: &str = r#"
+::hnsw create interface_embedding:embedding_hnsw {
+    fields: [embedding],
+    dim: 384,
+    distance: Cosine,
+    m: 50,
+    ef_construction: 20,
+    index_filter: length(embedding) == 384,
 }
 "#;
