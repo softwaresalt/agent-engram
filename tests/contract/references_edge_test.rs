@@ -176,7 +176,7 @@ async fn contract_references_target_index_exists() {
 /// 035.002-T: `reresolve_references_edges` must batch class lookups.
 ///
 /// Creates 3 self-loop edges across 2 distinct sources but with 2 distinct
-/// qualified_names for class nodes that exist, so `unique_names.len() == 2`.
+/// `qualified_names` for class nodes that exist, so `unique_names.len() == 2`.
 /// A fourth edge uses a name with no matching class (stays unresolved).
 ///
 /// Red phase: fails until `reresolve_references_edges` returns `ReresolveResult`
@@ -394,21 +394,21 @@ async fn contract_resolve_reference_target_heuristics() {
     );
 
     // Bracket-quoted: "[Users]" → strip quotes → "Users".
-    let id_bq = q
+    let id_bracket = q
         .resolve_reference_target("[Users]")
         .await
         .expect("resolve bracket-quoted")
         .expect("035.004-T: bracket-quoted identifier must resolve after stripping quotes");
     assert_eq!(
-        id_ci, id_bq,
+        id_ci, id_bracket,
         "035.004-T: bracket-quoted identifier must resolve to same class as plain name"
     );
 }
 
 /// 035.004-T: contract test verifying case-insensitive edge re-resolution.
 ///
-/// Creates a Class named "Users" (PascalCase) and a self-loop reference with
-/// qualified_name = "users" (lowercase). After `reresolve_references_edges`,
+/// Creates a Class named "Users" (`PascalCase`) and a self-loop reference with
+/// `qualified_name` = "users" (lowercase). After `reresolve_references_edges`,
 /// the edge must point to the "Users" class node.
 #[test]
 async fn contract_reresolve_case_insensitive_resolution() {
