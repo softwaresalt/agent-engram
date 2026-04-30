@@ -4,7 +4,7 @@
 //! tables (code_file, function, class, interface, code edges, content records,
 //! and commit nodes).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,23 @@ pub fn record_query_metrics(
 }
 
 // ── Shared Row Types ───────────────────────────────────────────────────
+
+/// Result returned by [`CodeGraphQueries::reresolve_references_edges`].
+///
+/// Carries both the resolution count and the number of initial batch
+/// class-lookup round-trips so callers can verify batch behaviour in tests.
+/// This metric does not include any per-edge fallback lookups that may occur
+/// after the initial batch query for quoted or case-insensitive names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReresolveResult {
+    /// Number of self-loop edges promoted to a resolved Class node.
+    pub resolved: usize,
+    /// Number of initial batch class-lookup database round-trips issued.
+    ///
+    /// Batch implementations emit ≤ 1 round-trip regardless of edge count.
+    /// This value excludes any later per-edge fallback resolution queries.
+    pub lookups: usize,
+}
 
 /// Internal row type for COUNT() aggregate queries.
 #[derive(Deserialize)]
@@ -190,6 +207,13 @@ impl ClassRow {
             summary: self.summary,
         }
     }
+}
+
+/// Minimal row for batch class-name → ID lookups.
+#[derive(Deserialize)]
+struct ClassNameIdRow {
+    id: Thing,
+    name: String,
 }
 
 /// Internal row type for deserializing interface records from SurrealDB.
@@ -605,6 +629,77 @@ impl CodeGraphQueries {
         Ok(rows.into_iter().next().map(ClassRow::into_class))
     }
 
+    /// Look up a class by name, case-insensitively.
+    ///
+    /// Scans all class names and compares lowercased values in Rust to avoid
+    /// relying on SurrealDB function behaviour in WHERE predicates, which is
+    /// unreliable in the embedded KV engine.
+    ///
+    /// Returns the `class:`-prefixed node ID string, or `None` if not found.
+    #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
+    pub(crate) async fn get_class_by_name_ci(
+        &self,
+        name: &str,
+    ) -> Result<Option<String>, EngramError> {
+        let name_lower = name.to_lowercase();
+        let mut response = self
+            .db
+            .query("SELECT id, name FROM class")
+            .await
+            .map_err(map_db_err)?;
+        let rows: Vec<ClassNameIdRow> = response.take(0).map_err(map_db_err)?;
+        Ok(rows
+            .into_iter()
+            .find(|r| r.name.to_lowercase() == name_lower)
+            .map(|r| format!("class:{}", r.id.id.to_raw())))
+    }
+
+    /// Resolve a qualified reference name to a Class node ID.
+    ///
+    /// Resolution chain (first match wins):
+    /// 1. Exact match on all candidate forms (input, last schema segment, stripped)
+    /// 2. Case-insensitive fallback across the same candidate forms
+    ///
+    /// Candidate forms derived from `qualified_name`:
+    /// - The input as-is
+    /// - Last segment for schema-qualified names (`"public.users"` → `"users"`)
+    /// - SQL quote-stripped form (`"\"Users\""` → `"Users"`, `"[dbo]"` → `"dbo"`)
+    /// - Stripped last segment (`"public.\"Users\""` → `"Users"`)
+    ///
+    /// Returns the `class:`-prefixed node ID string, or `None` if unresolvable.
+    pub async fn resolve_reference_target(
+        &self,
+        qualified_name: &str,
+    ) -> Result<Option<String>, EngramError> {
+        // Build ordered unique candidate list.
+        let last_segment = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
+        let stripped = strip_sql_quotes(qualified_name);
+        let stripped_last = strip_sql_quotes(last_segment);
+
+        let mut candidates: Vec<&str> = Vec::with_capacity(4);
+        for c in [qualified_name, last_segment, stripped, stripped_last] {
+            if !candidates.contains(&c) {
+                candidates.push(c);
+            }
+        }
+
+        // 1. Exact match in priority order.
+        for &candidate in &candidates {
+            if let Some(c) = self.get_class_by_name(candidate).await? {
+                return Ok(Some(c.id));
+            }
+        }
+
+        // 2. Case-insensitive fallback across the same candidates.
+        for &candidate in &candidates {
+            if let Some(id) = self.get_class_by_name_ci(candidate).await? {
+                return Ok(Some(id));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Delete all classes in a given file.
     #[tracing::instrument(skip(self), fields(query_type = tracing::field::Empty, table = tracing::field::Empty, result_count = tracing::field::Empty))]
     pub async fn delete_classes_by_file(&self, file_path: &str) -> Result<(), EngramError> {
@@ -859,9 +954,10 @@ impl CodeGraphQueries {
     /// leaving a self-loop edge (`target = source`). This method queries those
     /// unresolved edges and attempts to resolve them now that all symbols exist.
     ///
-    /// Returns the number of edges promoted from unresolved to resolved.
+    /// Returns a [`ReresolveResult`] with the resolved count and the number of
+    /// class-lookup round-trips (≤ 1 for the batch implementation).
     #[tracing::instrument(skip(self), fields(query_type = "reresolve_references"))]
-    pub async fn reresolve_references_edges(&self) -> Result<usize, EngramError> {
+    pub async fn reresolve_references_edges(&self) -> Result<ReresolveResult, EngramError> {
         // Query all self-loop edges that have a qualified_name to re-resolve.
         let mut resp = self
             .db
@@ -873,8 +969,18 @@ impl CodeGraphQueries {
             .map_err(map_db_err)?;
         let rows: Vec<serde_json::Value> = resp.take(0).map_err(map_db_err)?;
 
-        let mut resolved_count = 0_usize;
-        for row in rows {
+        if rows.is_empty() {
+            return Ok(ReresolveResult {
+                resolved: 0,
+                lookups: 0,
+            });
+        }
+
+        // Collect edge data and unique qualified names.
+        let mut edge_data: Vec<(String, String)> = Vec::new();
+        let mut unique_names: HashSet<String> = HashSet::new();
+
+        for row in &rows {
             let Some(source) = row.get("source").and_then(|v| v.as_str()) else {
                 continue;
             };
@@ -882,15 +988,54 @@ impl CodeGraphQueries {
                 continue;
             };
             let qn_owned = qn.to_owned();
-            let source_owned = source.to_owned();
 
-            let class_id = match self.get_class_by_name(&qn_owned).await? {
-                Some(c) => Some(c.id),
-                None if qn_owned.contains('.') => {
-                    let last = qn_owned.rsplit('.').next().unwrap_or(qn_owned.as_str());
-                    self.get_class_by_name(last).await?.map(|c| c.id)
-                }
-                None => None,
+            // Include schema-qualified fallback in the batch names so we avoid
+            // additional round-trips for names like "public.users".
+            let last = qn_owned.rsplit('.').next().unwrap_or(&qn_owned).to_owned();
+            let stripped = strip_sql_quotes(&qn_owned).to_owned();
+            let stripped_last = strip_sql_quotes(&last).to_owned();
+
+            for variant in [&qn_owned, &last, &stripped, &stripped_last] {
+                unique_names.insert(variant.clone());
+            }
+            edge_data.push((source.to_owned(), qn_owned));
+        }
+
+        // Single batch lookup: resolve all unique names in one query.
+        let batch_names: Vec<String> = unique_names.into_iter().collect();
+        let mut batch_resp = self
+            .db
+            .query("SELECT name, id FROM class WHERE name IN $names")
+            .bind(("names", batch_names))
+            .await
+            .map_err(map_db_err)?;
+        let batch_rows: Vec<ClassNameIdRow> = batch_resp.take(0).map_err(map_db_err)?;
+
+        // Build resolution map: name → class_id string.
+        let resolution_map: HashMap<String, String> = batch_rows
+            .into_iter()
+            .map(|r| (r.name, format!("class:{}", r.id.id.to_raw())))
+            .collect();
+
+        // 1 batch lookup regardless of edge count.
+        let lookups = 1_usize;
+
+        // Per-edge UPDATE for each resolvable edge.
+        let mut resolved_count = 0_usize;
+        for (source, qn) in edge_data {
+            // Try exact match first, then schema-qualified last-segment fallback.
+            // If both batch lookups miss, apply the full heuristic resolver for
+            // any remaining case (quote-stripping, CI, or schema-qualified CI/quote).
+            let last = qn.rsplit('.').next().unwrap_or(&qn);
+            let class_id = if let Some(id) = resolution_map.get(&qn) {
+                Some(id.clone())
+            } else if let Some(id) = resolution_map.get(last) {
+                Some(id.clone())
+            } else {
+                // Batch map miss: apply quote-stripping and case-insensitive heuristics
+                // via the full resolver (Unit 4). Covers schema-qualified quoted names
+                // like `public."Users"` and case-insensitive schema-qualified names.
+                self.resolve_reference_target(&qn).await?
             };
 
             if let Some(new_target) = class_id {
@@ -901,15 +1046,18 @@ impl CodeGraphQueries {
                          AND qualified_name = $qn",
                     )
                     .bind(("new_target", new_target))
-                    .bind(("source", source_owned))
-                    .bind(("qn", qn_owned))
+                    .bind(("source", source))
+                    .bind(("qn", qn))
                     .await
                     .map_err(map_db_err)?;
                 resolved_count += 1;
             }
         }
 
-        Ok(resolved_count)
+        Ok(ReresolveResult {
+            resolved: resolved_count,
+            lookups,
+        })
     }
 
     /// Delete all edges of a given type originating from a code file.
@@ -3271,6 +3419,29 @@ impl CodeGraphQueries {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+}
+
+// ── SQL identifier utilities ───────────────────────────────────────────────
+
+/// Strip surrounding SQL quote characters from an identifier string.
+///
+/// Handles three SQL quoting conventions:
+/// * ANSI double-quotes: `"Users"` → `Users`
+/// * T-SQL bracket notation: `[dbo]` → `dbo`
+/// * Backtick quoting (MySQL / SurrealDB): `` `Users` `` → `Users`
+///
+/// Returns the original string unchanged if it is not surrounded by recognised
+/// quote characters.
+pub(crate) fn strip_sql_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    if len < 2 {
+        return s;
+    }
+    match (bytes[0], bytes[len - 1]) {
+        (b'"', b'"') | (b'`', b'`') | (b'[', b']') => &s[1..len - 1],
+        _ => s,
     }
 }
 
