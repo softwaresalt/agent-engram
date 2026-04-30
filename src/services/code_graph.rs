@@ -410,18 +410,10 @@ pub async fn index_workspace(
                 ExtractedEdge::Defines { .. } => {}
                 // SQL References: resolve target to a Class node or self-loop (033.001-T).
                 ExtractedEdge::References { target, .. } => {
-                    let class_id = match queries.get_class_by_name(target).await? {
-                        Some(c) => Some(c.id),
-                        None if target.contains('.') => {
-                            // Schema-qualified fallback: "public.users" → try "users".
-                            let last = target.rsplit('.').next().unwrap_or(target.as_str());
-                            queries.get_class_by_name(last).await?.map(|c| c.id)
-                        }
-                        None => None,
-                    };
-                    if let Some(resolved_id) = class_id {
+                    let resolved_id = queries.resolve_reference_target(target).await?;
+                    if let Some(class_id) = resolved_id {
                         queries
-                            .create_references_edge(&file_id, &resolved_id, Some(target))
+                            .create_references_edge(&file_id, &class_id, Some(target))
                             .await?;
                     } else {
                         queries
@@ -454,9 +446,9 @@ pub async fn index_workspace(
     // may be processed before the `users` class is created, leaving a self-loop.
     // Now that all symbols exist, retry resolution for those edges.
     let reresolved = queries.reresolve_references_edges().await?;
-    if reresolved > 0 {
+    if reresolved.resolved > 0 {
         debug!(
-            count = reresolved,
+            count = reresolved.resolved,
             "code graph: re-resolved deferred references edges"
         );
     }
@@ -930,18 +922,10 @@ pub async fn sync_workspace(
                 ExtractedEdge::Defines { .. } => {}
                 // SQL References: resolve target to a Class node or self-loop (033.001-T).
                 ExtractedEdge::References { target, .. } => {
-                    let class_id = match queries.get_class_by_name(target).await? {
-                        Some(c) => Some(c.id),
-                        None if target.contains('.') => {
-                            // Schema-qualified fallback: "public.users" → try "users".
-                            let last = target.rsplit('.').next().unwrap_or(target.as_str());
-                            queries.get_class_by_name(last).await?.map(|c| c.id)
-                        }
-                        None => None,
-                    };
-                    if let Some(resolved_id) = class_id {
+                    let resolved_id = queries.resolve_reference_target(target).await?;
+                    if let Some(class_id) = resolved_id {
                         queries
-                            .create_references_edge(&file_id, &resolved_id, Some(target))
+                            .create_references_edge(&file_id, &class_id, Some(target))
                             .await?;
                     } else {
                         queries
@@ -984,9 +968,9 @@ pub async fn sync_workspace(
     // Same ordering issue as index_workspace: a reference may be processed
     // before its target class exists. Re-resolve self-loops now all symbols exist.
     let reresolved = queries.reresolve_references_edges().await?;
-    if reresolved > 0 {
+    if reresolved.resolved > 0 {
         debug!(
-            count = reresolved,
+            count = reresolved.resolved,
             "code graph sync: re-resolved deferred references edges"
         );
     }
