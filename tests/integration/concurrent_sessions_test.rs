@@ -79,7 +79,7 @@ async fn s_cs1_three_concurrent_health_checks_succeed() {
 
         let body = resp
             .result
-            .expect("health check {i} must have a result body");
+            .unwrap_or_else(|| panic!("health check {i} must have a result body"));
 
         assert!(
             body.get("status").is_some(),
@@ -148,7 +148,7 @@ async fn s_cs2_concurrent_get_daemon_status_consistent_state() {
 
         let body = resp
             .result
-            .expect("get_daemon_status {i} must have a result body");
+            .unwrap_or_else(|| panic!("get_daemon_status {i} must have a result body"));
 
         assert!(
             body.get("version").is_some(),
@@ -344,10 +344,19 @@ async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
 
     let mut results = Vec::new();
     for (i, task) in tasks.into_iter().enumerate() {
+        let req_id = u32::try_from(i + 1).expect("index fits u32");
         let resp = task
             .await
             .expect("concurrent indexing task must not panic")
             .unwrap_or_else(|e| panic!("index_workspace {i} must complete: {e}"));
+
+        // Response id must echo the request id regardless of success or failure.
+        assert_eq!(
+            resp.id,
+            Value::Number(serde_json::Number::from(req_id)),
+            "index_workspace {i} response id must match request id {req_id}"
+        );
+
         results.push(resp);
     }
 

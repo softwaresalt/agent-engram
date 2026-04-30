@@ -422,7 +422,7 @@ The engram daemon is designed for safe concurrent access by multiple shim client
 Each IPC connection is fully stateless from the daemon's perspective:
 
 1. The daemon's accept loop (`src/daemon/ipc_server.rs`) spawns a new `tokio::spawn` task per accepted connection via `handle_connection()`.
-2. Each connection reads exactly one JSON-RPC request, dispatches through `tools::dispatch()`, writes the response, and closes.
+2. Each connection reads exactly one JSON-RPC request. Internal commands (`_health`, `_shutdown`) are handled directly in `ipc_server.rs`; all other methods dispatch through `tools::dispatch()`. The response is written and the connection closes.
 3. Connections share `AppState` via `Arc<AppState>` — cloned cheaply per connection task.
 
 This design means any number of shim clients can connect and issue requests simultaneously without serialisation at the connection level.
@@ -451,7 +451,7 @@ Because each IPC request is handled in an independent task sharing `Arc<AppState
 Multiple AI coding agents (or multiple shim instances from the same agent) can connect to the daemon concurrently without coordination:
 
 - Read-only operations (search, query, symbol lookup) are fully parallel.
-- `set_workspace` from one agent will briefly block concurrent readers but resolves in microseconds.
+- `set_workspace` holds the `AppState` write lock only during the atomic snapshot swap (microseconds), so concurrent read operations are blocked only briefly. The full `set_workspace` call (hydration, config parse) runs asynchronously after the snapshot swap.
 - `index_workspace` / `sync_workspace` is serialised: the first caller proceeds, subsequent callers receive an immediate `indexing_in_progress` error and should retry after a short back-off.
 
 ### SSE-Transport Exclusions
