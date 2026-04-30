@@ -24,7 +24,7 @@ Four gaps in the SQL reference-resolution subsystem identified during 013-S clos
 - `IF NOT EXISTS` makes the DDL idempotent on existing workspaces
 
 ### Unit 2: Batch lookup
-- Added `ReresolveResult { resolved, batch_hits, fallback_hits }` return struct to expose lookup counts for testing
+- Added `ReresolveResult { resolved, lookups }` return struct to expose lookup counts for testing (`resolved`: edges promoted to a resolved class node; `lookups`: batch DB round-trips issued, ≤ 1 for batch path)
 - Batch pre-compute collects all 4 name variants per class: raw, last-segment, stripped, stripped-last
 - Reduces lookup round-trips from O(N) to O(1) batch + per-edge fallback only for cache misses
 - Per-edge UPDATE still N (unavoidable without SurrealDB stored procedures)

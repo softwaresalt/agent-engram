@@ -112,7 +112,7 @@ batch path on a real SQL workspace (detectable via per-edge fallback counter exc
 
 ## Rollback Procedure
 
-Revert commit `0e4e79a` (`git revert 0e4e79a`) and rebuild. The index DDL change
+Revert commit `0e4e79a` (`git revert -m 1 0e4e79a`) and rebuild. The `-m 1` flag is required because `0e4e79a` is a merge commit. The index DDL change
 is idempotent; no reverse migration is required. Existing `references` data is
 unaffected by reverting the Rust code.
 
