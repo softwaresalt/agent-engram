@@ -1,4 +1,4 @@
-//! Benchmark tests for CozoDB Phase 3-4 operations (Task U0.5).
+//! Benchmark tests for `CozoDB` Phase 3-4 operations (Task U0.5).
 //!
 //! These tests are decorated with `#[ignore]` so they do NOT run during
 //! `cargo test`.  Run them individually via:
@@ -49,7 +49,7 @@ fn make_fn(index: usize) -> Function {
 /// All functions are pre-inserted, then 499 sequential `create_calls_edge`
 /// calls form a linear call chain.  Must complete in under 60 seconds.
 #[tokio::test]
-#[ignore]
+#[ignore = "slow benchmark — run with --ignored"]
 async fn bench_bulk_edge_creation_500() {
     const N: usize = 500;
     let (_tmp, db) = make_db().await;
@@ -65,8 +65,8 @@ async fn bench_bulk_edge_creation_500() {
     let start = Instant::now();
     for i in 0..N - 1 {
         let caller = format!("function:bench_fn_{i:05}");
-        let callee = format!("function:bench_fn_{:05}", i + 1);
-        q.create_calls_edge(&caller, &callee)
+        let target_fn = format!("function:bench_fn_{:05}", i + 1);
+        q.create_calls_edge(&caller, &target_fn)
             .await
             .expect("bench create_calls_edge");
     }
@@ -85,7 +85,7 @@ async fn bench_bulk_edge_creation_500() {
 /// 50 kNN queries are executed against those vectors.
 /// Must complete in under 30 seconds.
 #[tokio::test]
-#[ignore]
+#[ignore = "slow benchmark — run with --ignored"]
 async fn bench_vector_search_50_queries() {
     const SYMBOLS: usize = 100;
     const QUERIES: usize = 50;

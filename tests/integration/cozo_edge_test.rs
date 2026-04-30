@@ -1,4 +1,4 @@
-//! Integration tests for CozoDB edge CRUD and BFS graph traversal
+//! Integration tests for `CozoDB` edge CRUD and BFS graph traversal
 //! (Tasks U3.2, U3.3, U3.4, U3.5).
 //!
 //! Covers:
@@ -24,7 +24,7 @@ async fn make_db() -> (TempDir, engram::db::Db) {
 }
 
 fn make_function(id: &str, file_path: &str) -> Function {
-    let name = id.split(':').last().unwrap_or(id).to_owned();
+    let name = id.split(':').next_back().unwrap_or(id).to_owned();
     Function {
         id: id.to_owned(),
         name: name.clone(),

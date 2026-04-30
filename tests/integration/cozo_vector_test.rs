@@ -1,8 +1,8 @@
-//! Integration tests for CozoDB HNSW vector search and embedding management
+//! Integration tests for `CozoDB` HNSW vector search and embedding management
 //! (Tasks U4.1–U4.5).
 //!
 //! Covers:
-//!  - `vector_search_symbols_native` — returns Vec<(f32, SymbolMatch)>
+//!  - `vector_search_symbols_native` — returns Vec<(f32, `SymbolMatch`)>
 //!  - `vector_search_symbols` — returns Vec<SymbolMatch>
 //!  - `upsert_content_record`, `select_content_records`, `update_content_record_embedding`,
 //!    `delete_content_record_by_path`

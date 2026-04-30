@@ -1,4 +1,4 @@
-//! Integration tests for symbol lookup parity with the SurrealDB backend
+//! Integration tests for symbol lookup parity with the `SurrealDB` backend
 //! (Task U3.6).
 //!
 //! Covers:

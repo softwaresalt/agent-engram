@@ -1,6 +1,6 @@
 //! Unit tests for the `derive_edge_id` free function (U3.1).
 //!
-//! Verifies the deterministic edge-ID derivation used by the CozoDB edge
+//! Verifies the deterministic edge-ID derivation used by the `CozoDB` edge
 //! CRUD methods to ensure stable, canonical IDs across sessions.
 //!
 //! Requires the `cozo-backend` feature:

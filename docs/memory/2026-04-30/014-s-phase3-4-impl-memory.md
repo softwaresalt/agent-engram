@@ -1,4 +1,10 @@
-# Session Memory: Shipment 014-S Phase 3-4 Implementation
+---
+title: "Session Memory: Shipment 014-S Phase 3-4 Implementation"
+date: 2026-04-30
+session: 014-S-phase3-4-impl
+branch: chore/014-s-cozodb-migration-phase-3-4
+pr: 53
+---
 
 **Date**: 2026-04-30  
 **Branch**: `chore/014-s-cozodb-migration-phase-3-4`  

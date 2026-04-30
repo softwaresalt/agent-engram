@@ -456,6 +456,7 @@ impl CodeGraphQueries {
             ("imports", "imports_edge"),
             ("defines", "defines_edge"),
             ("inherits_from", "inherits_from_edge"),
+            ("concerns", "concerns_edge"),
         ] {
             edges.extend(self.edges_from_table(kind, table).await?);
         }
@@ -1047,7 +1048,13 @@ impl CodeGraphQueries {
         Ok(())
     }
 
-    /// Return an empty `ReresolveResult` — full implementation deferred to later phase.
+    /// Return an empty `ReresolveResult`.
+    ///
+    /// The SurrealDB backend uses this to fix self-loop `references` edges produced
+    /// when a symbol references itself before it has been assigned its final ID.
+    /// In the CozoDB backend, `references_edge` includes `qualified_name` as part of
+    /// its composite key, which prevents such self-loops from colliding — so there is
+    /// nothing to re-resolve. Returning zero counts is correct behavior here.
     pub async fn reresolve_references_edges(&self) -> Result<ReresolveResult, EngramError> {
         Ok(ReresolveResult {
             resolved: 0,
@@ -1140,7 +1147,7 @@ impl CodeGraphQueries {
 
     /// Delete all edges touching any symbol that belongs to `file_path`.
     pub async fn clear_file_graph(&self, file_path: &str) -> Result<(), EngramError> {
-        // Collect all symbol IDs for this file.
+        // Collect all symbol IDs for this file across all symbol tables.
         let mut symbol_ids: Vec<String> = Vec::new();
         for table in &["function_meta", "class_meta", "interface_meta"] {
             let script = format!("?[id] := *{table} {{ id, file_path }}, file_path = $file_path");
@@ -1155,21 +1162,64 @@ impl CodeGraphQueries {
             }
         }
 
-        // Add the file_node id too (path == file_path here).
-        symbol_ids.push(file_path.to_owned());
+        // Look up the file node ID (keyed by path) so we can clear file-level edges.
+        let file_node_id = {
+            let script = r#"?[id] := *file_node { path, id }, path = $path"#;
+            let mut p = BTreeMap::new();
+            p.insert("path".to_owned(), DataValue::from(file_path));
+            let r = self
+                .db
+                .run_script(script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            r.rows.first().map(|row| extract_str(row, 0))
+        };
 
-        for sid in &symbol_ids {
+        // Build the full set of node IDs whose edges need clearing.
+        let mut all_ids = symbol_ids.clone();
+        if let Some(ref fid) = file_node_id {
+            all_ids.push(fid.clone());
+        }
+
+        // Delete all edges touching these nodes (propagate errors).
+        for sid in &all_ids {
             for et in &[
                 "calls_edge",
                 "imports_edge",
                 "defines_edge",
                 "inherits_from_edge",
                 "references_edge",
+                "concerns_edge",
             ] {
-                let _ = self.delete_outgoing_edges(et, sid).await;
-                let _ = self.delete_incoming_edges(et, sid).await;
+                self.delete_outgoing_edges(et, sid).await?;
+                self.delete_incoming_edges(et, sid).await?;
             }
         }
+
+        // Delete symbol rows for all symbols belonging to this file.
+        for sid in &symbol_ids {
+            let prefix = sid.split(':').next().unwrap_or("");
+            let tables: Option<(&str, &str, &str)> = match prefix {
+                "fn" | "function" => {
+                    Some(("function_meta", "function_code", "function_embedding"))
+                }
+                "class" => Some(("class_meta", "class_code", "class_embedding")),
+                "iface" | "interface" => {
+                    Some(("interface_meta", "interface_code", "interface_embedding"))
+                }
+                _ => None,
+            };
+            if let Some((meta_tbl, code_tbl, embed_tbl)) = tables {
+                for tbl in &[meta_tbl, code_tbl, embed_tbl] {
+                    let del = format!("?[id] <- [[$id]] :rm {tbl} {{ id }}");
+                    let mut p = BTreeMap::new();
+                    p.insert("id".to_owned(), DataValue::from(sid.as_str()));
+                    self.db
+                        .run_script(&del, p, ScriptMutability::Mutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1604,8 +1654,36 @@ impl CodeGraphQueries {
                 )
                 .await
             }
+            "code_file" => {
+                // file_node lookup by `id` column (used when edge endpoints store node IDs).
+                let script = r#"
+?[path, id, language] := *file_node { path, id, language }, id = $id
+"#;
+                let mut p = BTreeMap::new();
+                p.insert("id".to_owned(), DataValue::from(node_id));
+                let r = self
+                    .db
+                    .run_script(script, p, ScriptMutability::Immutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+                if r.rows.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(SymbolMatch {
+                    table: "file".to_owned(),
+                    id: extract_str(&r.rows[0], 1),
+                    name: extract_str(&r.rows[0], 0),
+                    file_path: extract_str(&r.rows[0], 0),
+                    line_start: None,
+                    line_end: None,
+                    signature: None,
+                    body: String::new(),
+                    embed_type: None,
+                    summary: None,
+                    embedding: vec![],
+                }))
+            }
             _ => {
-                // file_node path lookup.
+                // file_node path lookup (when node_id is the raw path).
                 let script = r#"
 ?[path, id, language] := *file_node { path, id, language }, path = $path
 "#;
@@ -1798,7 +1876,8 @@ impl CodeGraphQueries {
         limit: usize,
         edge_types: &[&str],
     ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
-        const ALLOWED: &[&str] = &["calls", "imports", "defines", "inherits_from", "references"];
+        // Code edge types supported for hybrid traversal (matches SurrealDB defaults).
+        const ALLOWED: &[&str] = &["calls", "imports", "defines", "inherits_from", "concerns"];
         for et in edge_types {
             if !ALLOWED.contains(et) {
                 return Err(EngramError::from(SystemError::DatabaseError {
@@ -1808,8 +1887,24 @@ impl CodeGraphQueries {
         }
 
         let bfs = self.bfs_impl(root_id, max_depth, limit * 4).await?;
-        let mut scored: Vec<(f32, SymbolMatch)> = bfs
-            .neighbors
+
+        // Filter BFS neighbors to those reachable via the requested edge types.
+        let neighbors = if edge_types.is_empty() {
+            bfs.neighbors
+        } else {
+            let allowed_nodes: std::collections::HashSet<String> = bfs
+                .edges
+                .iter()
+                .filter(|e| edge_types.contains(&e.edge_type.as_str()))
+                .flat_map(|e| [e.from.clone(), e.to.clone()])
+                .collect();
+            bfs.neighbors
+                .into_iter()
+                .filter(|n| allowed_nodes.contains(&n.id))
+                .collect()
+        };
+
+        let mut scored: Vec<(f32, SymbolMatch)> = neighbors
             .into_iter()
             .map(|m| {
                 let score = if m.embedding.is_empty() {
@@ -2228,11 +2323,19 @@ impl CodeGraphQueries {
         &self,
         node: &crate::models::CommitNode,
     ) -> Result<(), EngramError> {
-        let changes: Vec<DataValue> = node
+        let changes = node
             .changes
             .iter()
-            .map(|c| DataValue::from(serde_json::to_string(c).unwrap_or_default().as_str()))
-            .collect();
+            .map(|c| {
+                serde_json::to_string(c)
+                    .map(|s| DataValue::from(s.as_str()))
+                    .map_err(|e| {
+                        EngramError::from(SystemError::DatabaseError {
+                            reason: format!("commit change serialization failed: {e}"),
+                        })
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let parent_hashes: Vec<DataValue> = node
             .parent_hashes
             .iter()
@@ -2300,7 +2403,7 @@ impl CodeGraphQueries {
         Ok(r.rows
             .iter()
             .filter(|row| {
-                let ts = extract_i64(row, 6);
+                let ts = extract_i64(row, 5);
                 since_ts.is_none_or(|s| ts >= s) && until_ts.is_none_or(|u| ts <= u)
             })
             .take(lim)
@@ -2432,13 +2535,20 @@ impl CodeGraphQueries {
 
     // ── Private helpers ───────────────────────────────────────────
 
-    /// Collect all edges from an edge table where `from = node_id`.
+    /// Collect all edges from an edge table.
     async fn edges_from_table(
         &self,
         kind: &str,
         table: &str,
     ) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
-        let script = format!("?[from, to, created_at] := *{table} {{ from, to, created_at }}");
+        let script = if table == "concerns_edge" {
+            // concerns_edge key: task_id, symbol_id, symbol_table, linked_by
+            "?[from, to, created_at] := *concerns_edge { task_id, symbol_id, linked_by, created_at }, from = task_id, to = symbol_id".to_owned()
+        } else if table == "imports_edge" {
+            format!("?[from, to, import_path, created_at] := *{table} {{ from, to, import_path, created_at }}")
+        } else {
+            format!("?[from, to, created_at] := *{table} {{ from, to, created_at }}")
+        };
         let r = self
             .db
             .run_script(&script, BTreeMap::new(), ScriptMutability::Immutable)
@@ -2447,23 +2557,63 @@ impl CodeGraphQueries {
             "imports" => CodeEdgeType::Imports,
             "defines" => CodeEdgeType::Defines,
             "inherits_from" => CodeEdgeType::InheritsFrom,
+            "concerns" => CodeEdgeType::Concerns,
             _ => CodeEdgeType::Calls,
         };
-        Ok(r.rows
-            .iter()
-            .map(|row| crate::models::CodeEdge {
-                edge_type: edge_type.clone(),
-                from: extract_str(row, 0),
-                to: extract_str(row, 1),
-                import_path: None,
-                linked_by: None,
-                created_at: extract_str(row, 2),
-            })
-            .collect())
+        if table == "imports_edge" {
+            Ok(r.rows
+                .iter()
+                .map(|row| crate::models::CodeEdge {
+                    edge_type: edge_type.clone(),
+                    from: extract_str(row, 0),
+                    to: extract_str(row, 1),
+                    import_path: {
+                        let s = extract_str(row, 2);
+                        if s.is_empty() { None } else { Some(s) }
+                    },
+                    linked_by: None,
+                    created_at: extract_str(row, 3),
+                })
+                .collect())
+        } else {
+            Ok(r.rows
+                .iter()
+                .map(|row| crate::models::CodeEdge {
+                    edge_type: edge_type.clone(),
+                    from: extract_str(row, 0),
+                    to: extract_str(row, 1),
+                    import_path: None,
+                    linked_by: None,
+                    created_at: extract_str(row, 2),
+                })
+                .collect())
+        }
     }
 
-    /// Delete all rows in `table` where `from = node_id`.
+    /// Delete all rows in `table` where the source node matches `node_id`.
     async fn delete_outgoing_edges(&self, table: &str, node_id: &str) -> Result<(), EngramError> {
+        if table == "concerns_edge" {
+            // concerns_edge uses task_id/symbol_id rather than from/to.
+            let get = "?[task_id, symbol_id] := *concerns_edge { task_id, symbol_id }, task_id = $task_id";
+            let mut p = BTreeMap::new();
+            p.insert("task_id".to_owned(), DataValue::from(node_id));
+            let r = self
+                .db
+                .run_script(get, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let tid = extract_str(row, 0);
+                let sid = extract_str(row, 1);
+                let del = "?[task_id, symbol_id] <- [[$task_id, $symbol_id]] :rm concerns_edge { task_id, symbol_id }";
+                let mut dp = BTreeMap::new();
+                dp.insert("task_id".to_owned(), DataValue::from(tid.as_str()));
+                dp.insert("symbol_id".to_owned(), DataValue::from(sid.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+            return Ok(());
+        }
         let get = format!("?[from, to] := *{table} {{ from, to }}, from = $from");
         let mut p = BTreeMap::new();
         p.insert("from".to_owned(), DataValue::from(node_id));
@@ -2478,13 +2628,37 @@ impl CodeGraphQueries {
             let mut dp = BTreeMap::new();
             dp.insert("from".to_owned(), DataValue::from(from.as_str()));
             dp.insert("to".to_owned(), DataValue::from(to.as_str()));
-            let _ = self.db.run_script(&del, dp, ScriptMutability::Mutable);
+            self.db
+                .run_script(&del, dp, ScriptMutability::Mutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
         }
         Ok(())
     }
 
-    /// Delete all rows in `table` where `to = node_id`.
+    /// Delete all rows in `table` where the target node matches `node_id`.
     async fn delete_incoming_edges(&self, table: &str, node_id: &str) -> Result<(), EngramError> {
+        if table == "concerns_edge" {
+            // concerns_edge uses task_id/symbol_id rather than from/to.
+            let get = "?[task_id, symbol_id] := *concerns_edge { task_id, symbol_id }, symbol_id = $symbol_id";
+            let mut p = BTreeMap::new();
+            p.insert("symbol_id".to_owned(), DataValue::from(node_id));
+            let r = self
+                .db
+                .run_script(get, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let tid = extract_str(row, 0);
+                let sid = extract_str(row, 1);
+                let del = "?[task_id, symbol_id] <- [[$task_id, $symbol_id]] :rm concerns_edge { task_id, symbol_id }";
+                let mut dp = BTreeMap::new();
+                dp.insert("task_id".to_owned(), DataValue::from(tid.as_str()));
+                dp.insert("symbol_id".to_owned(), DataValue::from(sid.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+            return Ok(());
+        }
         let get = format!("?[from, to] := *{table} {{ from, to }}, to = $to");
         let mut p = BTreeMap::new();
         p.insert("to".to_owned(), DataValue::from(node_id));
@@ -2499,18 +2673,32 @@ impl CodeGraphQueries {
             let mut dp = BTreeMap::new();
             dp.insert("from".to_owned(), DataValue::from(from.as_str()));
             dp.insert("to".to_owned(), DataValue::from(to.as_str()));
-            let _ = self.db.run_script(&del, dp, ScriptMutability::Mutable);
+            self.db
+                .run_script(&del, dp, ScriptMutability::Mutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
         }
         Ok(())
     }
 
-    /// BFS implementation — iterative multi-hop traversal in Rust.
+    /// BFS implementation — iterative multi-hop traversal.
+    ///
+    /// Matches SurrealDB backend behavior: bidirectional traversal over code edges
+    /// (calls/imports/defines/inherits_from/concerns), excludes references edges,
+    /// and only enqueues a node when it resolves to a known symbol.
     async fn bfs_impl(
         &self,
         root_id: &str,
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
+        const CODE_EDGE_TABLES: &[(&str, &str)] = &[
+            ("calls", "calls_edge"),
+            ("imports", "imports_edge"),
+            ("defines", "defines_edge"),
+            ("inherits_from", "inherits_from_edge"),
+            ("concerns", "concerns_edge"),
+        ];
+
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut neighbors: Vec<SymbolMatch> = Vec::new();
         let mut edges: Vec<BfsEdge> = Vec::new();
@@ -2518,57 +2706,85 @@ impl CodeGraphQueries {
         visited.insert(root_id.to_owned());
         let mut truncated = false;
 
-        for _ in 0..max_depth {
+        'outer: for _ in 0..max_depth {
             if frontier.is_empty() {
                 break;
             }
             let mut next_frontier = Vec::new();
             for node in &frontier {
-                for (et, tbl) in &[
-                    ("calls", "calls_edge"),
-                    ("imports", "imports_edge"),
-                    ("defines", "defines_edge"),
-                    ("inherits_from", "inherits_from_edge"),
-                    ("references", "references_edge"),
-                ] {
-                    let script = format!("?[from, to] := *{tbl} {{ from, to }}, from = $from");
+                for (et, tbl) in CODE_EDGE_TABLES {
+                    // Build outgoing/incoming query scripts — concerns_edge uses
+                    // task_id/symbol_id keys rather than the standard from/to columns.
+                    let (out_script, in_script) = if *tbl == "concerns_edge" {
+                        (
+                            "?[from, to] := *concerns_edge { task_id, symbol_id }, task_id = $node, from = task_id, to = symbol_id".to_owned(),
+                            "?[from, to] := *concerns_edge { task_id, symbol_id }, symbol_id = $node, from = task_id, to = symbol_id".to_owned(),
+                        )
+                    } else {
+                        (
+                            format!("?[from, to] := *{tbl} {{ from, to }}, from = $node"),
+                            format!("?[from, to] := *{tbl} {{ from, to }}, to = $node"),
+                        )
+                    };
+
+                    // Outgoing edges: node → target
                     let mut p = BTreeMap::new();
-                    p.insert("from".to_owned(), DataValue::from(node.as_str()));
+                    p.insert("node".to_owned(), DataValue::from(node.as_str()));
                     let r = self
                         .db
-                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .run_script(&out_script, p, ScriptMutability::Immutable)
                         .map_err(|e| map_db_err(e.to_string()))?;
                     for row in &r.rows {
                         let target = extract_str(row, 1);
-                        edges.push(BfsEdge {
-                            edge_type: (*et).to_owned(),
-                            from: node.clone(),
-                            to: target.clone(),
-                        });
-                        if !visited.contains(&target) {
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        if let Ok(Some(sym)) = self.resolve_symbol(&target).await {
                             if neighbors.len() >= max_nodes {
                                 truncated = true;
-                                break;
+                                break 'outer;
                             }
+                            edges.push(BfsEdge {
+                                edge_type: (*et).to_owned(),
+                                from: node.clone(),
+                                to: target.clone(),
+                            });
                             visited.insert(target.clone());
-                            if let Ok(Some(sym)) = self.resolve_symbol(&target).await {
-                                neighbors.push(sym);
-                            }
+                            neighbors.push(sym);
                             next_frontier.push(target);
                         }
                     }
-                    if truncated {
-                        break;
+
+                    // Incoming edges: source → node (reverse direction)
+                    let mut p2 = BTreeMap::new();
+                    p2.insert("node".to_owned(), DataValue::from(node.as_str()));
+                    let r2 = self
+                        .db
+                        .run_script(&in_script, p2, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r2.rows {
+                        let source = extract_str(row, 0);
+                        if visited.contains(&source) {
+                            continue;
+                        }
+                        if let Ok(Some(sym)) = self.resolve_symbol(&source).await {
+                            if neighbors.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*et).to_owned(),
+                                from: source.clone(),
+                                to: node.clone(),
+                            });
+                            visited.insert(source.clone());
+                            neighbors.push(sym);
+                            next_frontier.push(source);
+                        }
                     }
-                }
-                if truncated {
-                    break;
                 }
             }
             frontier = next_frontier;
-            if truncated {
-                break;
-            }
         }
 
         Ok(BfsResult {

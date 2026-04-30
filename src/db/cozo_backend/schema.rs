@@ -87,14 +87,32 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     }
 
     // Phase 4: HNSW vector indexes.  Creation may fail on empty tables or when
-    // the storage backend does not support vector indexes — errors are suppressed.
+    // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
+    // storage backend does not support vector indexes. Suppress only known-benign
+    // failures; warn on unexpected ones so regressions remain visible.
     let hnsw_scripts = [
         HNSW_FUNCTION_EMBEDDING,
         HNSW_CLASS_EMBEDDING,
         HNSW_INTERFACE_EMBEDDING,
     ];
     for script in &hnsw_scripts {
-        let _ = cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable);
+        if let Err(e) =
+            cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable)
+        {
+            let msg = e.to_string().to_lowercase();
+            let is_known_benign = msg.contains("empty")
+                || msg.contains("no rows")
+                || msg.contains("unsupported")
+                || msg.contains("not support")
+                || msg.contains("vector index")
+                || msg.contains("hnsw")
+                || msg.contains("already exists");
+            if !is_known_benign {
+                tracing::warn!(
+                    "unexpected HNSW index creation failure during schema bootstrap: {e}"
+                );
+            }
+        }
     }
 
     Ok(())
@@ -392,7 +410,7 @@ pub const HNSW_FUNCTION_EMBEDDING: &str = r#"
     distance: Cosine,
     m: 50,
     ef_construction: 20,
-    index_filter: !is_null(embedding),
+    index_filter: length(embedding) == 384,
 }
 "#;
 
@@ -404,7 +422,7 @@ pub const HNSW_CLASS_EMBEDDING: &str = r#"
     distance: Cosine,
     m: 50,
     ef_construction: 20,
-    index_filter: !is_null(embedding),
+    index_filter: length(embedding) == 384,
 }
 "#;
 
@@ -416,6 +434,6 @@ pub const HNSW_INTERFACE_EMBEDDING: &str = r#"
     distance: Cosine,
     m: 50,
     ef_construction: 20,
-    index_filter: !is_null(embedding),
+    index_filter: length(embedding) == 384,
 }
 "#;
