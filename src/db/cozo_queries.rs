@@ -1410,7 +1410,28 @@ impl CodeGraphQueries {
             ("class", "class_meta"),
             ("interface", "interface_meta"),
         ] {
-            let script = format!(
+            // COUNT first, then delete — CozoDB :rm does not reliably return
+            // one row per deleted record; use a separate SELECT for the count.
+            let count_script = format!(
+                r#"?[task_id, symbol_id] :=
+    *concerns_edge {{ task_id, symbol_id, symbol_table }},
+    task_id = $task_id,
+    symbol_table = "{tbl}",
+    *{meta_tbl} {{ id: symbol_id, name }},
+    name = $name"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("task_id".to_owned(), DataValue::from(task_id));
+            p.insert("name".to_owned(), DataValue::from(symbol_name));
+            let count_r = self
+                .db
+                .run_script(&count_script, p.clone(), ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            let count = count_r.rows.len();
+            if count == 0 {
+                continue;
+            }
+            let del_script = format!(
                 r#"?[task_id, symbol_id] :=
     *concerns_edge {{ task_id, symbol_id, symbol_table }},
     task_id = $task_id,
@@ -1419,14 +1440,10 @@ impl CodeGraphQueries {
     name = $name
 :rm concerns_edge {{ task_id, symbol_id }}"#
             );
-            let mut p = BTreeMap::new();
-            p.insert("task_id".to_owned(), DataValue::from(task_id));
-            p.insert("name".to_owned(), DataValue::from(symbol_name));
-            let r = self
-                .db
-                .run_script(&script, p, ScriptMutability::Mutable)
+            self.db
+                .run_script(&del_script, p, ScriptMutability::Mutable)
                 .map_err(|e| map_db_err(e.to_string()))?;
-            deleted += r.rows.len();
+            deleted += count;
         }
         Ok(deleted)
     }
@@ -1581,7 +1598,7 @@ impl CodeGraphQueries {
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
-        self.bfs_impl(root_id, max_depth, max_nodes).await
+        self.bfs_impl(root_id, max_depth, max_nodes, &[]).await
     }
 
     /// Resolve a symbol node ID to its full metadata (across all symbol types).
@@ -1592,8 +1609,8 @@ impl CodeGraphQueries {
             "class"
         } else if node_id.starts_with("iface:") {
             "interface"
-        } else if node_id.starts_with("file:") {
-            "file"
+        } else if node_id.starts_with("code_file:") || node_id.starts_with("file:") {
+            "code_file"
         } else {
             // Try all symbol tables.
             for (tbl, meta_tbl, code_tbl, embed_tbl) in &[
@@ -1890,23 +1907,12 @@ impl CodeGraphQueries {
             }
         }
 
-        let bfs = self.bfs_impl(root_id, max_depth, limit * 4).await?;
+        let bfs = self
+            .bfs_impl(root_id, max_depth, limit * 4, edge_types)
+            .await?;
 
-        // Filter BFS neighbors to those reachable via the requested edge types.
-        let neighbors = if edge_types.is_empty() {
-            bfs.neighbors
-        } else {
-            let allowed_nodes: std::collections::HashSet<String> = bfs
-                .edges
-                .iter()
-                .filter(|e| edge_types.contains(&e.edge_type.as_str()))
-                .flat_map(|e| [e.from.clone(), e.to.clone()])
-                .collect();
-            bfs.neighbors
-                .into_iter()
-                .filter(|n| allowed_nodes.contains(&n.id))
-                .collect()
-        };
+        // BFS already filtered to allowed edge types during traversal.
+        let neighbors = bfs.neighbors;
 
         let mut scored: Vec<(f32, SymbolMatch)> = neighbors
             .into_iter()
@@ -1931,7 +1937,7 @@ impl CodeGraphQueries {
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
-        self.bfs_impl(root_id, max_depth, max_nodes).await
+        self.bfs_impl(root_id, max_depth, max_nodes, &[]).await
     }
 
     // ── Embedding updates ─────────────────────────────────────────
@@ -2546,8 +2552,8 @@ impl CodeGraphQueries {
         table: &str,
     ) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
         let script = if table == "concerns_edge" {
-            // concerns_edge key: task_id, symbol_id, symbol_table, linked_by
-            "?[from, to, created_at] := *concerns_edge { task_id, symbol_id, linked_by, created_at }, from = task_id, to = symbol_id".to_owned()
+            // concerns_edge key: task_id, symbol_id. Includes linked_by in projection.
+            "?[from, to, linked_by, created_at] := *concerns_edge { task_id, symbol_id, linked_by, created_at }, from = task_id, to = symbol_id".to_owned()
         } else if table == "imports_edge" {
             format!(
                 "?[from, to, import_path, created_at] := *{table} {{ from, to, import_path, created_at }}"
@@ -2578,6 +2584,22 @@ impl CodeGraphQueries {
                         if s.is_empty() { None } else { Some(s) }
                     },
                     linked_by: None,
+                    created_at: extract_str(row, 3),
+                })
+                .collect())
+        } else if table == "concerns_edge" {
+            // [from, to, linked_by, created_at]
+            Ok(r.rows
+                .iter()
+                .map(|row| crate::models::CodeEdge {
+                    edge_type: edge_type.clone(),
+                    from: extract_str(row, 0),
+                    to: extract_str(row, 1),
+                    import_path: None,
+                    linked_by: {
+                        let s = extract_str(row, 2);
+                        if s.is_empty() { None } else { Some(s) }
+                    },
                     created_at: extract_str(row, 3),
                 })
                 .collect())
@@ -2614,6 +2636,55 @@ impl CodeGraphQueries {
                 let mut dp = BTreeMap::new();
                 dp.insert("task_id".to_owned(), DataValue::from(tid.as_str()));
                 dp.insert("symbol_id".to_owned(), DataValue::from(sid.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+            return Ok(());
+        }
+        if table == "imports_edge" {
+            // imports_edge composite key: (from, to, import_path).
+            let get =
+                "?[from, to, import_path] := *imports_edge { from, to, import_path }, from = $from";
+            let mut p = BTreeMap::new();
+            p.insert("from".to_owned(), DataValue::from(node_id));
+            let r = self
+                .db
+                .run_script(get, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let ip = extract_str(row, 2);
+                let del = "?[from, to, import_path] <- [[$from, $to, $ip]] :rm imports_edge { from, to, import_path }";
+                let mut dp = BTreeMap::new();
+                dp.insert("from".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("ip".to_owned(), DataValue::from(ip.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+            return Ok(());
+        }
+        if table == "references_edge" {
+            // references_edge composite key: (from, to, qualified_name).
+            let get = "?[from, to, qualified_name] := *references_edge { from, to, qualified_name }, from = $from";
+            let mut p = BTreeMap::new();
+            p.insert("from".to_owned(), DataValue::from(node_id));
+            let r = self
+                .db
+                .run_script(get, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let qn = extract_str(row, 2);
+                let del = "?[from, to, qualified_name] <- [[$from, $to, $qn]] :rm references_edge { from, to, qualified_name }";
+                let mut dp = BTreeMap::new();
+                dp.insert("from".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("qn".to_owned(), DataValue::from(qn.as_str()));
                 self.db
                     .run_script(del, dp, ScriptMutability::Mutable)
                     .map_err(|e| map_db_err(e.to_string()))?;
@@ -2665,6 +2736,55 @@ impl CodeGraphQueries {
             }
             return Ok(());
         }
+        if table == "imports_edge" {
+            // imports_edge composite key: (from, to, import_path).
+            let get =
+                "?[from, to, import_path] := *imports_edge { from, to, import_path }, to = $to";
+            let mut p = BTreeMap::new();
+            p.insert("to".to_owned(), DataValue::from(node_id));
+            let r = self
+                .db
+                .run_script(get, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let ip = extract_str(row, 2);
+                let del = "?[from, to, import_path] <- [[$from, $to, $ip]] :rm imports_edge { from, to, import_path }";
+                let mut dp = BTreeMap::new();
+                dp.insert("from".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("ip".to_owned(), DataValue::from(ip.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+            return Ok(());
+        }
+        if table == "references_edge" {
+            // references_edge composite key: (from, to, qualified_name).
+            let get = "?[from, to, qualified_name] := *references_edge { from, to, qualified_name }, to = $to";
+            let mut p = BTreeMap::new();
+            p.insert("to".to_owned(), DataValue::from(node_id));
+            let r = self
+                .db
+                .run_script(get, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let qn = extract_str(row, 2);
+                let del = "?[from, to, qualified_name] <- [[$from, $to, $qn]] :rm references_edge { from, to, qualified_name }";
+                let mut dp = BTreeMap::new();
+                dp.insert("from".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("qn".to_owned(), DataValue::from(qn.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+            return Ok(());
+        }
         let get = format!("?[from, to] := *{table} {{ from, to }}, to = $to");
         let mut p = BTreeMap::new();
         p.insert("to".to_owned(), DataValue::from(node_id));
@@ -2691,11 +2811,15 @@ impl CodeGraphQueries {
     /// Matches SurrealDB backend behavior: bidirectional traversal over code edges
     /// (calls/imports/defines/inherits_from/concerns), excludes references edges,
     /// and only enqueues a node when it resolves to a known symbol.
+    ///
+    /// `allowed_edge_types`: if non-empty, only edges whose type label is in this
+    /// slice are traversed. Pass an empty slice to traverse all edge types.
     async fn bfs_impl(
         &self,
         root_id: &str,
         max_depth: usize,
         max_nodes: usize,
+        allowed_edge_types: &[&str],
     ) -> Result<BfsResult, EngramError> {
         const CODE_EDGE_TABLES: &[(&str, &str)] = &[
             ("calls", "calls_edge"),
@@ -2719,6 +2843,10 @@ impl CodeGraphQueries {
             let mut next_frontier = Vec::new();
             for node in &frontier {
                 for (et, tbl) in CODE_EDGE_TABLES {
+                    // Skip tables not in the allowed set when a filter is supplied.
+                    if !allowed_edge_types.is_empty() && !allowed_edge_types.contains(et) {
+                        continue;
+                    }
                     // Build outgoing/incoming query scripts — concerns_edge uses
                     // task_id/symbol_id keys rather than the standard from/to columns.
                     let (out_script, in_script) = if *tbl == "concerns_edge" {

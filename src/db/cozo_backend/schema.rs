@@ -86,7 +86,6 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         }
     }
 
-    // Phase 4: HNSW vector indexes.  Creation may fail on empty tables or when
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
     // storage backend does not support vector indexes. Suppress only known-benign
     // failures; warn on unexpected ones so regressions remain visible.
