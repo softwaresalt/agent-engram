@@ -808,6 +808,23 @@ impl CodeGraphQueries {
     }
 
     /// Stub — not yet implemented.
+    #[allow(dead_code)]
+    pub(crate) async fn get_class_by_name_ci(
+        &self,
+        _name: &str,
+    ) -> Result<Option<String>, EngramError> {
+        Err(backend_err())
+    }
+
+    /// Stub — not yet implemented.
+    pub async fn resolve_reference_target(
+        &self,
+        _qualified_name: &str,
+    ) -> Result<Option<String>, EngramError> {
+        Err(backend_err())
+    }
+
+    /// Stub — not yet implemented.
     pub async fn delete_edges_from_file(
         &self,
         _edge_table: &str,
