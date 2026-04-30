@@ -61,6 +61,17 @@ pub fn record_query_metrics(
 // SurrealDB dependencies.  They will be deduplicated into a shared types
 // module during Phase 2+ refactoring.
 
+/// Result returned by [`CodeGraphQueries::reresolve_references_edges`].
+///
+/// Mirrors the type from the SurrealDB `queries` module for API compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReresolveResult {
+    /// Number of self-loop edges promoted to a resolved Class node.
+    pub resolved: usize,
+    /// Number of class-lookup database round-trips issued.
+    pub lookups: usize,
+}
+
 /// Information about a `concerns` edge targeting a symbol.
 #[derive(Debug, Clone)]
 pub struct ConcernsEdgeInfo {
@@ -792,7 +803,7 @@ impl CodeGraphQueries {
     }
 
     /// Stub — not yet implemented.
-    pub async fn reresolve_references_edges(&self) -> Result<usize, EngramError> {
+    pub async fn reresolve_references_edges(&self) -> Result<ReresolveResult, EngramError> {
         Err(backend_err())
     }
 
