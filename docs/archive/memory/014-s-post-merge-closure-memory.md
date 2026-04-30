@@ -32,7 +32,7 @@ merge commit `84296ff` on 2026-04-30.
 
 - `.backlogit/` — 14 modified archives, 1 new shipment archive (014-S.md), queue/014-S.md deleted
 - `.backlogit/reconcile/` — 2 new reconcile reports (pre-step6, post-step6)
-- `docs/ARCHITECTURE.md` — CozoDB schema table, Implementation Status, module description
+- `docs/architecture.md` — CozoDB schema table, Implementation Status, module description
 - `docs/closure/2026-04-30-014-s-cozodb-phase3-4-closure.md` — operational closure
 - `docs/closure/2026-04-30-014-s-compound-refresh.md` — compound refresh report
 - `docs/compound/build-errors/cozo-backend-api-parity-stub-required-2026-04-29.md` — updated

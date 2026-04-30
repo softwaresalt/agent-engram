@@ -42,7 +42,7 @@ PR #53 is open, CI green, all Copilot review threads resolved. Awaiting operator
    - Run `shipment-reconcile` post-mode
    - Commit backlog archival
    - `operational-closure` in `post-merge` mode
-   - Knowledge graduation: `docs/ARCHITECTURE.md`, `docs/research/`
+   - Knowledge graduation: `docs/architecture.md`, `docs/research/`
    - `compound-refresh`, `compact-context`
    - Push closure branch, create closure PR
    - Await operator approval for closure PR

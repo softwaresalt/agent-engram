@@ -22,7 +22,7 @@ Post-merge closure complete on branch `post-merge/014-s-cozodb-migration-phase-3
 **Phase 3 — Edge + Traversal Parity** (`001.004-C` + 6 tasks):
 - 6 edge tables in CozoDB schema: `calls_edge`, `imports_edge`, `defines_edge`,
   `inherits_from_edge`, `concerns_edge`, `references_edge`
-- Edge CRUD: upsert, delete, list for all 5 edge kinds
+- Edge CRUD: upsert, delete, list for all 6 edge kinds
 - `concerns_edge` specialty: keyed `(task_id, symbol_id)` — not `(from, to)`
 - Recursive Datalog BFS traversal via `bfs_impl` with in-traversal `allowed_edge_types` filtering
 - Symbol identity lookups, graph neighborhood, impact analysis
@@ -81,7 +81,7 @@ Post-merge closure complete on branch `post-merge/014-s-cozodb-migration-phase-3
 
 ## Architecture Changes
 
-`docs/ARCHITECTURE.md` updated:
+`docs/architecture.md` updated:
 - CozoDB schema table: 12 → 20 relations (added all edge tables + aux tables)
 - Phase 3+ Roadmap → Implementation Status table (all 4 phases complete)
 - `CozoDB Queries` module description updated to reflect full Phase 3-4 implementation
