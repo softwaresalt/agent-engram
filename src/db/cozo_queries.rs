@@ -1771,6 +1771,10 @@ impl CodeGraphQueries {
             }
         }
 
+        // Sort by name then node_type for deterministic pagination, matching
+        // the SurrealDB backend's `ORDER BY name ASC` behaviour.
+        symbols.sort_by(|a, b| a.name.cmp(&b.name).then(a.node_type.cmp(&b.node_type)));
+
         let total_count = symbols.len();
         let start = filter.offset.min(total_count);
         let end = (start + filter.limit).min(total_count);
@@ -1797,10 +1801,12 @@ impl CodeGraphQueries {
         Ok(scored.into_iter().map(|(_, m)| m).collect())
     }
 
-    /// Vector search — returns (score, match) pairs using linear scan fallback.
+    /// Vector search — returns (score, match) pairs using a full linear scan.
     ///
-    /// Attempts HNSW first; falls back to full linear scan on any error
-    /// (HNSW may be unavailable on empty tables or unsupported backends).
+    /// Performs a full linear scan across all symbol embedding tables and computes
+    /// cosine similarity against `query_embedding`. HNSW indexes exist in the
+    /// schema but are not explicitly invoked here; CozoDB may use them internally
+    /// for query planning, but callers should not assume HNSW acceleration.
     pub async fn vector_search_symbols_native(
         &self,
         query_embedding: &[f32],
