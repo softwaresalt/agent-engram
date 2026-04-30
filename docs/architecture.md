@@ -410,3 +410,59 @@ Key Datalog patterns used in `src/db/cozo_queries.rs`:
 ### Phase 3+ Roadmap
 
 Graph edge CRUD (call/ref edges), BFS/DFS traversal, HNSW vector KNN search, and bulk-read operations are deferred to Phase 3 (`68E3719F`). The stubs in `src/db/cozo_queries.rs` return `Err(EngramError::Backend(...))` until implemented.
+
+---
+
+## Concurrency Model
+
+The engram daemon is designed for safe concurrent access by multiple shim clients simultaneously. This section documents the concurrency architecture, `AppState` synchronisation primitives, and operational boundaries.
+
+### Stateless Per-Connection Protocol
+
+Each IPC connection is fully stateless from the daemon's perspective:
+
+1. The daemon's accept loop (`src/daemon/ipc_server.rs`) spawns a new `tokio::spawn` task per accepted connection via `handle_connection()`.
+2. Each connection reads exactly one JSON-RPC request, dispatches through `tools::dispatch()`, writes the response, and closes.
+3. Connections share `AppState` via `Arc<AppState>` — cloned cheaply per connection task.
+
+This design means any number of shim clients can connect and issue requests simultaneously without serialisation at the connection level.
+
+### AppState Synchronisation Primitives
+
+All shared mutable state lives in `src/server/state.rs` under `AppState`:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `active_workspace` | `RwLock<Option<WorkspaceSnapshot>>` | Current workspace path and metadata; readers take a shared lock, writers take an exclusive lock |
+| `indexing_in_progress` | `AtomicBool` | Guards against concurrent indexing runs; a second `index_workspace` call while indexing is active returns an error immediately |
+| `hydration_ready` | `AtomicBool` | Set to `true` once background DB hydration completes at startup |
+| `active_connections` | `AtomicUsize` | **SSE-transport only** — tracks live SSE streaming clients; never incremented by IPC connections |
+
+### Concurrent Request Safety
+
+Because each IPC request is handled in an independent task sharing `Arc<AppState>`, the following invariants hold:
+
+- **Read-heavy paths** (`get_daemon_status`, `_health`, query tools): acquire `active_workspace.read()`, which allows unlimited concurrent readers.
+- **Write paths** (`set_workspace`): acquire `active_workspace.write()`, which blocks until all active readers release. The write is brief — a snapshot swap, not an indexing operation.
+- **Indexing** is serialised by `indexing_in_progress`. Concurrent `index_workspace` or `sync_workspace` calls from multiple agents are safe: the second call returns an error rather than running a duplicate pass.
+
+### Multi-Agent Usage
+
+Multiple AI coding agents (or multiple shim instances from the same agent) can connect to the daemon concurrently without coordination:
+
+- Read-only operations (search, query, symbol lookup) are fully parallel.
+- `set_workspace` from one agent will briefly block concurrent readers but resolves in microseconds.
+- `index_workspace` / `sync_workspace` is serialised: the first caller proceeds, subsequent callers receive an immediate `indexing_in_progress` error and should retry after a short back-off.
+
+### SSE-Transport Exclusions
+
+The following fields and methods in `AppState` are **SSE-transport concerns only** and are never exercised by IPC connections:
+
+| Symbol | Location | Purpose |
+|---|---|---|
+| `active_connections` | `AppState` | Live SSE client counter |
+| `register_connection()` | `AppState` | SSE connection registration and rate-limit check entry point |
+| `increment_connections()` | `AppState` | Called only from `register_connection()` |
+| `check_rate_limit()` | `AppState` | Per-IP SSE rate limiter (FR-025 / T118) |
+
+IPC connections do not call `register_connection()` and are not counted in `active_connections`. The `active_connections` value returned by `get_daemon_status` reflects SSE clients, not IPC connections.
