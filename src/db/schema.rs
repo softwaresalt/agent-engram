@@ -104,6 +104,7 @@ DEFINE FIELD OVERWRITE source ON TABLE `references` TYPE string ASSERT $value !=
 DEFINE FIELD OVERWRITE target ON TABLE `references` TYPE string ASSERT $value != '';
 DEFINE FIELD OVERWRITE qualified_name ON TABLE `references` TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS references_source ON TABLE `references` COLUMNS source;
+DEFINE INDEX IF NOT EXISTS references_target ON TABLE `references` COLUMNS target;
 "#;
 
 /// File hash table — stores SHA-256 content hashes for tracked workspace files.
