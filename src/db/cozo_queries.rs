@@ -2210,21 +2210,25 @@ impl CodeGraphQueries {
     }
 
     /// Update the embedding on an existing content record (keyed by `record_id` = `file_path`).
+    /// Update the embedding for a content record identified by its `id` column.
+    ///
+    /// Looks up the record by `id` (not `file_path`) to match the shared query API
+    /// and Surreal-backend semantics where callers pass the record's UUID/hash id.
     pub async fn update_content_record_embedding(
         &self,
         record_id: &str,
         embedding: Vec<f32>,
     ) -> Result<(), EngramError> {
-        // Read existing record first to satisfy the full PUT contract.
+        // Look up by `id` column (not the `file_path` key) to match caller semantics.
         let get = r#"
 ?[file_path, id, content_type, content_hash, content, source_path,
   file_size_bytes, ingested_at] :=
     *content_record { file_path, id, content_type, content_hash, content,
                       source_path, file_size_bytes, ingested_at },
-    file_path = $file_path
+    id = $id
 "#;
         let mut gp = BTreeMap::new();
-        gp.insert("file_path".to_owned(), DataValue::from(record_id));
+        gp.insert("id".to_owned(), DataValue::from(record_id));
         let existing = self
             .db
             .run_script(get, gp, ScriptMutability::Immutable)
@@ -2233,6 +2237,7 @@ impl CodeGraphQueries {
             return Ok(()); // nothing to update
         }
         let row = &existing.rows[0];
+        let file_path = extract_str(row, 0);
         let emb_dv = DataValue::List(
             embedding
                 .iter()
@@ -2249,11 +2254,8 @@ impl CodeGraphQueries {
 }
 "#;
         let mut p = BTreeMap::new();
-        p.insert("file_path".to_owned(), DataValue::from(record_id));
-        p.insert(
-            "id".to_owned(),
-            DataValue::from(extract_str(row, 1).as_str()),
-        );
+        p.insert("file_path".to_owned(), DataValue::from(file_path.as_str()));
+        p.insert("id".to_owned(), DataValue::from(record_id));
         p.insert(
             "ct".to_owned(),
             DataValue::from(extract_str(row, 2).as_str()),
