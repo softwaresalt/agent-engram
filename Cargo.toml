@@ -519,6 +519,31 @@ path = "tests/integration/cozo_crud_test.rs"
 required-features = ["cozo-backend"]
 
 [[test]]
+name = "unit_cozo_edge_id"
+path = "tests/unit/cozo_edge_id_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_edge"
+path = "tests/integration/cozo_edge_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_symbol_lookup"
+path = "tests/integration/cozo_symbol_lookup_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_vector"
+path = "tests/integration/cozo_vector_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_benchmark"
+path = "tests/integration/cozo_benchmark_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
 name = "integration_cozo_dual_backend_sweep"
 path = "tests/integration/cozo_dual_backend_sweep_test.rs"
 
