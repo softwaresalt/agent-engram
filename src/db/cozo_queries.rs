@@ -1,10 +1,10 @@
-//! CozoDB query implementations — Phase 2 CRUD and count operations.
+//! CozoDB query implementations — Phase 2–4 CRUD, edge, traversal, and vector operations.
 //!
 //! Provides the same public API as the SurrealDB `queries.rs` module so that
 //! call sites compile under `--features cozo-backend` without modification.
-//! Methods that are fully implemented target the three-table vertical partition
-//! layout defined in `cozo_backend::schema`.  Remaining methods return a
-//! "not yet implemented" error and will be filled in Phase 3+.
+//! Methods target the three-table vertical partition layout defined in
+//! `cozo_backend::schema` for node types, plus the six edge tables added in
+//! Phase 3 and the HNSW vector indexes added in Phase 4.
 
 #![allow(clippy::unused_async)]
 #![allow(clippy::missing_errors_doc)]
@@ -15,10 +15,12 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use cozo::{DataValue, Num, ScriptMutability};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
+use crate::models::code_edge::CodeEdgeType;
 
 pub use crate::models::FileHashRecord;
 
@@ -219,14 +221,56 @@ pub struct SymbolListResult {
     pub has_more: bool,
 }
 
-// ── Stub error helper ─────────────────────────────────────────────────────
+// ── Private helpers ───────────────────────────────────────────────────────
 
-fn backend_err() -> EngramError {
-    EngramError::from(SystemError::DatabaseError {
-        reason: "CozoDB backend not yet implemented; \
-                 use surreal-backend feature until Phase 3+"
-            .into(),
-    })
+/// Compute a deterministic edge identifier from two node IDs.
+///
+/// Uses SHA-256(from + ":" + to) and returns the first 16 hex chars.
+/// Visibility is `pub(crate)` so unit tests can call it directly.
+#[allow(dead_code)]
+pub(crate) fn edge_id(from: &str, to: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(from.as_bytes());
+    hasher.update(b":");
+    hasher.update(to.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(&result[..8])
+}
+
+/// Build a canonical edge identifier from an edge type and its component parts.
+///
+/// Format: `"{edge_type}:{parts.join("|")}"`.
+/// Used as the stable, human-readable ID for edge CRUD operations.
+///
+/// # Examples
+/// ```
+/// use engram::db::queries::derive_edge_id;
+/// assert_eq!(derive_edge_id("calls", &["fn:a", "fn:b"]), "calls:fn:a|fn:b");
+/// ```
+pub fn derive_edge_id(edge_type: &str, parts: &[&str]) -> String {
+    format!("{}:{}", edge_type, parts.join("|"))
+}
+
+/// Return the current UTC timestamp as an RFC 3339 string.
+fn now_utc_str() -> String {
+    Utc::now().to_rfc3339()
+}
+
+/// Compute cosine similarity between two equal-length f32 slices.
+///
+/// Returns 0.0 when either vector has zero magnitude.
+#[allow(clippy::cast_precision_loss)]
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if mag_a == 0.0 || mag_b == 0.0 {
+        return 0.0;
+    }
+    dot / (mag_a * mag_b)
 }
 
 // ── CodeGraphQueries ──────────────────────────────────────────────────────
@@ -329,29 +373,93 @@ impl CodeGraphQueries {
 
     /// Stub — list all code files (not yet implemented).
     pub async fn list_code_files(&self) -> Result<Vec<crate::models::CodeFile>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[path, id, language, size_bytes, content_hash, last_indexed_at] :=
+    *file_node { path, id, language, size_bytes, content_hash, last_indexed_at }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|r| crate::models::CodeFile {
+                path: extract_str(r, 0),
+                id: extract_str(r, 1),
+                language: extract_str(r, 2),
+                size_bytes: u64::try_from(extract_i64(r, 3).max(0)).unwrap_or(0),
+                content_hash: extract_str(r, 4),
+                last_indexed_at: extract_str(r, 5),
+            })
+            .collect())
     }
 
     // ── Bulk read helpers ─────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// List all function records.
     pub async fn all_functions(&self) -> Result<Vec<crate::models::Function>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash,
+  token_count, embed_type, summary, body, embedding] :=
+    *function_meta { id, name, file_path, line_start, line_end, signature,
+                     docstring, body_hash, token_count, embed_type, summary },
+    *function_code { id, body },
+    *function_embedding { id, embedding }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result.rows.iter().map(|r| row_to_function(r)).collect())
     }
 
-    /// Stub — not yet implemented.
+    /// List all class records.
     pub async fn all_classes(&self) -> Result<Vec<crate::models::Class>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash,
+  token_count, embed_type, summary, body, embedding] :=
+    *class_meta { id, name, file_path, line_start, line_end, docstring,
+                  body_hash, token_count, embed_type, summary },
+    *class_code { id, body },
+    *class_embedding { id, embedding }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result.rows.iter().map(|r| row_to_class(r)).collect())
     }
 
-    /// Stub — not yet implemented.
+    /// List all interface records.
     pub async fn all_interfaces(&self) -> Result<Vec<crate::models::Interface>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash,
+  token_count, embed_type, summary, body, embedding] :=
+    *interface_meta { id, name, file_path, line_start, line_end, docstring,
+                      body_hash, token_count, embed_type, summary },
+    *interface_code { id, body },
+    *interface_embedding { id, embedding }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result.rows.iter().map(|r| row_to_interface(r)).collect())
     }
 
-    /// Stub — not yet implemented.
+    /// List all code edges from all edge tables (excludes `references_edge`).
     pub async fn all_code_edges(&self) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
-        Err(backend_err())
+        let mut edges = Vec::new();
+        for (kind, table) in &[
+            ("calls", "calls_edge"),
+            ("imports", "imports_edge"),
+            ("defines", "defines_edge"),
+            ("inherits_from", "inherits_from_edge"),
+        ] {
+            edges.extend(self.edges_from_table(kind, table).await?);
+        }
+        Ok(edges)
     }
 
     // ── function CRUD ─────────────────────────────────────────────
@@ -624,9 +732,33 @@ impl CodeGraphQueries {
         Ok(Some(row_to_class(&result.rows[0])))
     }
 
-    /// Stub — not yet implemented.
-    pub async fn delete_classes_by_file(&self, _file_path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete all class records for a given file path.
+    pub async fn delete_classes_by_file(&self, file_path: &str) -> Result<(), EngramError> {
+        // Get IDs first, then delete from all 3 tables.
+        let s = r#"
+?[id] := *class_meta { id, file_path }, file_path = $file_path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        let ids = self
+            .db
+            .run_script(s, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &ids.rows {
+            let id = extract_str(row, 0);
+            for del in &[
+                r#"?[id] <- [[$id]] :rm class_meta { id }"#,
+                r#"?[id] <- [[$id]] :rm class_code { id }"#,
+                r#"?[id] <- [[$id]] :rm class_embedding { id }"#,
+            ] {
+                let mut dp = BTreeMap::new();
+                dp.insert("id".to_owned(), DataValue::from(id.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     // ── interface CRUD ────────────────────────────────────────────
@@ -739,272 +871,1037 @@ impl CodeGraphQueries {
         Ok(Some(row_to_interface(&result.rows[0])))
     }
 
-    /// Stub — not yet implemented.
-    pub async fn delete_interfaces_by_file(&self, _file_path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete all interface records for a given file path.
+    pub async fn delete_interfaces_by_file(&self, file_path: &str) -> Result<(), EngramError> {
+        let s = r#"
+?[id] := *interface_meta { id, file_path }, file_path = $file_path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        let ids = self
+            .db
+            .run_script(s, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &ids.rows {
+            let id = extract_str(row, 0);
+            for del in &[
+                r#"?[id] <- [[$id]] :rm interface_meta { id }"#,
+                r#"?[id] <- [[$id]] :rm interface_code { id }"#,
+                r#"?[id] <- [[$id]] :rm interface_embedding { id }"#,
+            ] {
+                let mut dp = BTreeMap::new();
+                dp.insert("id".to_owned(), DataValue::from(id.as_str()));
+                self.db
+                    .run_script(del, dp, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     // ── Edge CRUD ──────────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Upsert a function-to-function call edge.
+    #[allow(clippy::similar_names)]
     pub async fn create_calls_edge(
         &self,
-        _caller_id: &str,
-        _callee_id: &str,
+        caller_id: &str,
+        callee_id: &str,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let script = r#"
+?[from, to, created_at] <- [[$from, $to, $created_at]]
+:put calls_edge { from, to => created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(caller_id));
+        p.insert("to".to_owned(), DataValue::from(callee_id));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Upsert a file-to-file import edge.
+    #[allow(clippy::similar_names)]
     pub async fn create_imports_edge(
         &self,
-        _importer_id: &str,
-        _imported_id: &str,
-        _import_path: &str,
+        importer_id: &str,
+        imported_id: &str,
+        import_path: &str,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let script = r#"
+?[from, to, import_path, created_at] <- [[$from, $to, $import_path, $created_at]]
+:put imports_edge { from, to, import_path => created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(importer_id));
+        p.insert("to".to_owned(), DataValue::from(imported_id));
+        p.insert("import_path".to_owned(), DataValue::from(import_path));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Upsert a file-to-symbol defines edge.
     pub async fn create_defines_edge(
         &self,
-        _file_id: &str,
-        _symbol_table: &str,
-        _symbol_id: &str,
+        file_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let script = r#"
+?[from, to, symbol_table, created_at] <- [[$from, $to, $symbol_table, $created_at]]
+:put defines_edge { from, to => symbol_table, created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(file_id));
+        p.insert("to".to_owned(), DataValue::from(symbol_id));
+        p.insert("symbol_table".to_owned(), DataValue::from(symbol_table));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Upsert a class/interface inheritance edge.
     pub async fn create_inherits_edge(
         &self,
-        _child_table: &str,
-        _child_id: &str,
-        _parent_table: &str,
-        _parent_id: &str,
+        child_table: &str,
+        child_id: &str,
+        parent_table: &str,
+        parent_id: &str,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let script = r#"
+?[from, to, from_table, to_table, created_at] <-
+    [[$from, $to, $from_table, $to_table, $created_at]]
+:put inherits_from_edge { from, to => from_table, to_table, created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(child_id));
+        p.insert("to".to_owned(), DataValue::from(parent_id));
+        p.insert("from_table".to_owned(), DataValue::from(child_table));
+        p.insert("to_table".to_owned(), DataValue::from(parent_table));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Upsert a task-to-symbol concerns edge.
     pub async fn create_concerns_edge(
         &self,
-        _task_id: &str,
-        _symbol_table: &str,
-        _symbol_id: &str,
-        _linked_by: &str,
+        task_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
+        linked_by: &str,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let script = r#"
+?[task_id, symbol_id, symbol_table, linked_by, created_at] <-
+    [[$task_id, $symbol_id, $symbol_table, $linked_by, $created_at]]
+:put concerns_edge { task_id, symbol_id => symbol_table, linked_by, created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("task_id".to_owned(), DataValue::from(task_id));
+        p.insert("symbol_id".to_owned(), DataValue::from(symbol_id));
+        p.insert("symbol_table".to_owned(), DataValue::from(symbol_table));
+        p.insert("linked_by".to_owned(), DataValue::from(linked_by));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Upsert a qualified-name reference edge.
     pub async fn create_references_edge(
         &self,
-        _source_id: &str,
-        _target_id: &str,
-        _qualified_name: Option<&str>,
+        source_id: &str,
+        target_id: &str,
+        qualified_name: Option<&str>,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let qn = qualified_name.unwrap_or("");
+        let script = r#"
+?[from, to, qualified_name, created_at] <-
+    [[$from, $to, $qualified_name, $created_at]]
+:put references_edge { from, to, qualified_name => created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(source_id));
+        p.insert("to".to_owned(), DataValue::from(target_id));
+        p.insert("qualified_name".to_owned(), DataValue::from(qn));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Return an empty `ReresolveResult` — full implementation deferred to later phase.
     pub async fn reresolve_references_edges(&self) -> Result<ReresolveResult, EngramError> {
-        Err(backend_err())
+        Ok(ReresolveResult {
+            resolved: 0,
+            lookups: 0,
+        })
     }
 
-    /// Stub — not yet implemented.
-    #[allow(dead_code)]
-    pub(crate) async fn get_class_by_name_ci(
-        &self,
-        _name: &str,
-    ) -> Result<Option<String>, EngramError> {
-        Err(backend_err())
+    /// Look up a class ID by case-insensitive name match.
+    pub async fn get_class_by_name_ci(&self, name: &str) -> Result<Option<String>, EngramError> {
+        let name_lower = name.to_lowercase();
+        let script = r#"
+?[id, name] := *class_meta { id, name }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result.rows.iter().find_map(|r| {
+            let n = extract_str(r, 1);
+            if n.to_lowercase() == name_lower {
+                Some(extract_str(r, 0))
+            } else {
+                None
+            }
+        }))
     }
 
-    /// Stub — not yet implemented.
+    /// Attempt to resolve a qualified name to a symbol ID.
+    ///
+    /// Searches function, class, and interface meta tables for a name match.
     pub async fn resolve_reference_target(
         &self,
-        _qualified_name: &str,
+        qualified_name: &str,
     ) -> Result<Option<String>, EngramError> {
-        Err(backend_err())
+        // Check functions.
+        let script = r#"?[id] := *function_meta { id, name }, name = $name"#;
+        let mut p = BTreeMap::new();
+        p.insert("name".to_owned(), DataValue::from(qualified_name));
+        let r = self
+            .db
+            .run_script(script, p.clone(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if !r.rows.is_empty() {
+            return Ok(Some(extract_str(&r.rows[0], 0)));
+        }
+        // Check classes.
+        let script2 = r#"?[id] := *class_meta { id, name }, name = $name"#;
+        let r2 = self
+            .db
+            .run_script(script2, p.clone(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if !r2.rows.is_empty() {
+            return Ok(Some(extract_str(&r2.rows[0], 0)));
+        }
+        // Check interfaces.
+        let script3 = r#"?[id] := *interface_meta { id, name }, name = $name"#;
+        let r3 = self
+            .db
+            .run_script(script3, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if !r3.rows.is_empty() {
+            return Ok(Some(extract_str(&r3.rows[0], 0)));
+        }
+        Ok(None)
     }
 
-    /// Stub — not yet implemented.
+    /// Delete all outgoing edges from `file_id` in the given edge table.
+    ///
+    /// `edge_table` must be one of: `calls`, `imports`, `defines`, `inherits_from`, `references`.
     pub async fn delete_edges_from_file(
         &self,
-        _edge_table: &str,
-        _file_id: &str,
+        edge_table: &str,
+        file_id: &str,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let table_name = match edge_table {
+            "calls" => "calls_edge",
+            "imports" => "imports_edge",
+            "defines" => "defines_edge",
+            "inherits_from" => "inherits_from_edge",
+            "references" => "references_edge",
+            other => {
+                return Err(EngramError::from(SystemError::DatabaseError {
+                    reason: format!("unknown edge table: {other}"),
+                }));
+            }
+        };
+        // Query the key columns for rows where from = file_id, then delete.
+        self.delete_outgoing_edges(table_name, file_id).await
     }
 
-    /// Stub — not yet implemented.
-    pub async fn clear_file_graph(&self, _file_path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete all edges touching any symbol that belongs to `file_path`.
+    pub async fn clear_file_graph(&self, file_path: &str) -> Result<(), EngramError> {
+        // Collect all symbol IDs for this file.
+        let mut symbol_ids: Vec<String> = Vec::new();
+        for table in &["function_meta", "class_meta", "interface_meta"] {
+            let script = format!("?[id] := *{table} {{ id, file_path }}, file_path = $file_path");
+            let mut p = BTreeMap::new();
+            p.insert("file_path".to_owned(), DataValue::from(file_path));
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                symbol_ids.push(extract_str(row, 0));
+            }
+        }
+
+        // Add the file_node id too (path == file_path here).
+        symbol_ids.push(file_path.to_owned());
+
+        for sid in &symbol_ids {
+            for et in &[
+                "calls_edge",
+                "imports_edge",
+                "defines_edge",
+                "inherits_from_edge",
+                "references_edge",
+            ] {
+                let _ = self.delete_outgoing_edges(et, sid).await;
+                let _ = self.delete_incoming_edges(et, sid).await;
+            }
+        }
+        Ok(())
     }
 
     // ── Concerns edge management ──────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Return all concerns edges where the target symbol lives in the given file.
     pub async fn get_concerns_edges_for_file(
         &self,
-        _file_path: &str,
+        file_path: &str,
     ) -> Result<Vec<ConcernsEdgeInfo>, EngramError> {
-        Err(backend_err())
+        let mut out = Vec::new();
+        for (tbl, meta_tbl) in &[
+            ("function", "function_meta"),
+            ("class", "class_meta"),
+            ("interface", "interface_meta"),
+        ] {
+            let script = format!(
+                r#"?[task_id, symbol_id, symbol_table, linked_by, symbol_name, body_hash] :=
+    *concerns_edge {{ task_id, symbol_id, symbol_table, linked_by }},
+    symbol_table = "{tbl}",
+    *{meta_tbl} {{ id: symbol_id, name: symbol_name, file_path: fp, body_hash }},
+    fp = $file_path"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("file_path".to_owned(), DataValue::from(file_path));
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                out.push(ConcernsEdgeInfo {
+                    task_id: extract_str(row, 0),
+                    symbol_table: extract_str(row, 2),
+                    symbol_id: extract_str(row, 1),
+                    symbol_name: extract_str(row, 4),
+                    symbol_body_hash: extract_str(row, 5),
+                    linked_by: extract_str(row, 3),
+                });
+            }
+        }
+        Ok(out)
     }
 
-    /// Stub — not yet implemented.
+    /// Delete all concerns edges pointing to a given symbol.
     pub async fn delete_concerns_edges_for_symbol(
         &self,
-        _symbol_table: &str,
-        _symbol_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
     ) -> Result<usize, EngramError> {
-        Err(backend_err())
+        let select_script = r#"
+?[task_id, symbol_id] :=
+    *concerns_edge { task_id, symbol_id, symbol_table },
+    symbol_table = $symbol_table,
+    symbol_id = $symbol_id
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("symbol_table".to_owned(), DataValue::from(symbol_table));
+        p.insert("symbol_id".to_owned(), DataValue::from(symbol_id));
+        let rows = self
+            .db
+            .run_script(select_script, p.clone(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let count = rows.rows.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        let del_script = r#"
+?[task_id, symbol_id] :=
+    *concerns_edge { task_id, symbol_id, symbol_table },
+    symbol_table = $symbol_table,
+    symbol_id = $symbol_id
+:rm concerns_edge { task_id, symbol_id }
+"#;
+        self.db
+            .run_script(del_script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(count)
     }
 
-    /// Stub — not yet implemented.
+    /// Find symbols matching a name and body hash across all symbol tables.
     pub async fn find_symbols_by_name_and_hash(
         &self,
-        _name: &str,
-        _body_hash: &str,
+        name: &str,
+        body_hash: &str,
     ) -> Result<Vec<SymbolIdentity>, EngramError> {
-        Err(backend_err())
+        let mut out = Vec::new();
+        for (tbl, meta_tbl, embed_tbl) in &[
+            ("function", "function_meta", "function_embedding"),
+            ("class", "class_meta", "class_embedding"),
+            ("interface", "interface_meta", "interface_embedding"),
+        ] {
+            let script = format!(
+                r#"?[id, name, file_path, body_hash, embedding] :=
+    *{meta_tbl} {{ id, name, file_path, body_hash }},
+    name = $name, body_hash = $body_hash,
+    *{embed_tbl} {{ id, embedding }}"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("name".to_owned(), DataValue::from(name));
+            p.insert("body_hash".to_owned(), DataValue::from(body_hash));
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                out.push(SymbolIdentity {
+                    table: (*tbl).to_owned(),
+                    id: extract_str(row, 0),
+                    name: extract_str(row, 1),
+                    file_path: extract_str(row, 2),
+                    body_hash: extract_str(row, 3),
+                    embedding: extract_embedding(row, 4),
+                });
+            }
+        }
+        Ok(out)
     }
 
-    /// Stub — not yet implemented.
+    /// Return all symbol identities (across all types) for a given file.
     pub async fn get_symbol_identities_for_file(
         &self,
-        _file_path: &str,
+        file_path: &str,
     ) -> Result<Vec<SymbolIdentity>, EngramError> {
-        Err(backend_err())
+        let mut out = Vec::new();
+        for (tbl, meta_tbl, embed_tbl) in &[
+            ("function", "function_meta", "function_embedding"),
+            ("class", "class_meta", "class_embedding"),
+            ("interface", "interface_meta", "interface_embedding"),
+        ] {
+            let script = format!(
+                r#"?[id, name, file_path, body_hash, embedding] :=
+    *{meta_tbl} {{ id, name, file_path, body_hash }},
+    file_path = $file_path,
+    *{embed_tbl} {{ id, embedding }}"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("file_path".to_owned(), DataValue::from(file_path));
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                out.push(SymbolIdentity {
+                    table: (*tbl).to_owned(),
+                    id: extract_str(row, 0),
+                    name: extract_str(row, 1),
+                    file_path: extract_str(row, 2),
+                    body_hash: extract_str(row, 3),
+                    embedding: extract_embedding(row, 4),
+                });
+            }
+        }
+        Ok(out)
     }
 
-    /// Stub — not yet implemented.
+    /// Check whether a specific concerns edge already exists.
     pub async fn concerns_edge_exists(
         &self,
-        _task_id: &str,
-        _symbol_table: &str,
-        _symbol_id: &str,
+        task_id: &str,
+        symbol_table: &str,
+        symbol_id: &str,
     ) -> Result<bool, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[count(task_id)] :=
+    *concerns_edge { task_id, symbol_id, symbol_table },
+    task_id = $task_id,
+    symbol_id = $symbol_id,
+    symbol_table = $symbol_table
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("task_id".to_owned(), DataValue::from(task_id));
+        p.insert("symbol_id".to_owned(), DataValue::from(symbol_id));
+        p.insert("symbol_table".to_owned(), DataValue::from(symbol_table));
+        let r = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(extract_count(&r) > 0)
     }
 
-    /// Stub — not yet implemented.
+    /// Delete concerns edges for a task whose target symbol matches the given name.
     pub async fn delete_concerns_by_task_and_symbol_name(
         &self,
-        _task_id: &str,
-        _symbol_name: &str,
+        task_id: &str,
+        symbol_name: &str,
     ) -> Result<usize, EngramError> {
-        Err(backend_err())
+        let mut deleted = 0usize;
+        for (tbl, meta_tbl) in &[
+            ("function", "function_meta"),
+            ("class", "class_meta"),
+            ("interface", "interface_meta"),
+        ] {
+            let script = format!(
+                r#"?[task_id, symbol_id] :=
+    *concerns_edge {{ task_id, symbol_id, symbol_table }},
+    task_id = $task_id,
+    symbol_table = "{tbl}",
+    *{meta_tbl} {{ id: symbol_id, name }},
+    name = $name
+:rm concerns_edge {{ task_id, symbol_id }}"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("task_id".to_owned(), DataValue::from(task_id));
+            p.insert("name".to_owned(), DataValue::from(symbol_name));
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Mutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            deleted += r.rows.len();
+        }
+        Ok(deleted)
     }
 
-    /// Stub — not yet implemented.
+    /// List all concerns edges for a task, with resolved symbol metadata.
     pub async fn list_concerns_for_task(
         &self,
-        _task_id: &str,
+        task_id: &str,
     ) -> Result<Vec<ConcernsLink>, EngramError> {
-        Err(backend_err())
+        let mut out = Vec::new();
+        for (tbl, meta_tbl) in &[
+            ("function", "function_meta"),
+            ("class", "class_meta"),
+            ("interface", "interface_meta"),
+        ] {
+            let script = format!(
+                r#"?[symbol_id, symbol_table, linked_by, symbol_name, file_path] :=
+    *concerns_edge {{ task_id, symbol_id, symbol_table, linked_by }},
+    task_id = $task_id,
+    symbol_table = "{tbl}",
+    *{meta_tbl} {{ id: symbol_id, name: symbol_name, file_path }}"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("task_id".to_owned(), DataValue::from(task_id));
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                out.push(ConcernsLink {
+                    symbol_table: extract_str(row, 1),
+                    symbol_id: extract_str(row, 0),
+                    symbol_name: extract_str(row, 3),
+                    file_path: extract_str(row, 4),
+                    linked_by: extract_str(row, 2),
+                });
+            }
+        }
+        Ok(out)
     }
 
-    /// Stub — not yet implemented.
+    /// Find task IDs that concern any of the given symbol IDs.
     pub async fn find_tasks_for_symbols(
         &self,
-        _symbol_ids: &[String],
+        symbol_ids: &[String],
     ) -> Result<Vec<(String, String)>, EngramError> {
-        Err(backend_err())
+        if symbol_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let script = r#"
+?[task_id, symbol_id] :=
+    *concerns_edge { task_id, symbol_id }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let id_set: std::collections::HashSet<&String> = symbol_ids.iter().collect();
+        Ok(r.rows
+            .iter()
+            .filter_map(|row| {
+                let sid = extract_str(row, 1);
+                if id_set.contains(&sid) {
+                    Some((extract_str(row, 0), sid))
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 
     // ── BFS traversal ─────────────────────────────────────────────
 
-    /// Returns an empty list — symbol search against CozoDB is not yet implemented (Phase 3+).
-    ///
-    /// Returning `Ok(vec![])` lets callers correctly surface `SymbolNotFound` rather
-    /// than a backend error when no match exists.
-    pub async fn find_symbols_by_name(&self, _name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
-        Ok(vec![])
+    /// Search all symbol tables for symbols whose name matches `name`.
+    pub async fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
+        let mut out = Vec::new();
+        for (tbl, meta_tbl, code_tbl, embed_tbl) in &[
+            (
+                "function",
+                "function_meta",
+                "function_code",
+                "function_embedding",
+            ),
+            ("class", "class_meta", "class_code", "class_embedding"),
+            (
+                "interface",
+                "interface_meta",
+                "interface_code",
+                "interface_embedding",
+            ),
+        ] {
+            // Query meta + optionally join code/embed; outer-join style via separate queries.
+            let meta_script = format!(
+                r#"?[id, name, file_path, line_start, line_end, embed_type, summary] :=
+    *{meta_tbl} {{ id, name, file_path, line_start, line_end, embed_type, summary }},
+    name = $name"#
+            );
+            let mut p = BTreeMap::new();
+            p.insert("name".to_owned(), DataValue::from(name));
+            let meta_r = self
+                .db
+                .run_script(&meta_script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for meta_row in &meta_r.rows {
+                let id = extract_str(meta_row, 0);
+                // Attempt to fetch body and embedding, tolerate miss
+                let body = {
+                    let s = format!("?[body] := *{code_tbl} {{ id, body }}, id = $id");
+                    let mut cp = BTreeMap::new();
+                    cp.insert("id".to_owned(), DataValue::from(id.as_str()));
+                    self.db
+                        .run_script(&s, cp, ScriptMutability::Immutable)
+                        .ok()
+                        .and_then(|r| r.rows.into_iter().next())
+                        .map_or_else(String::new, |r| extract_str(&r, 0))
+                };
+                let embedding = {
+                    let s = format!("?[embedding] := *{embed_tbl} {{ id, embedding }}, id = $id");
+                    let mut ep = BTreeMap::new();
+                    ep.insert("id".to_owned(), DataValue::from(id.as_str()));
+                    self.db
+                        .run_script(&s, ep, ScriptMutability::Immutable)
+                        .ok()
+                        .and_then(|r| r.rows.into_iter().next())
+                        .map_or_else(Vec::new, |r| extract_embedding(&r, 0))
+                };
+                out.push(SymbolMatch {
+                    table: (*tbl).to_owned(),
+                    id,
+                    name: extract_str(meta_row, 1),
+                    file_path: extract_str(meta_row, 2),
+                    line_start: Some(extract_u32(meta_row, 3)),
+                    line_end: Some(extract_u32(meta_row, 4)),
+                    signature: None,
+                    body,
+                    embed_type: extract_opt_str(meta_row, 5),
+                    summary: extract_opt_str(meta_row, 6),
+                    embedding,
+                });
+            }
+        }
+        Ok(out)
     }
 
-    /// Stub — not yet implemented.
+    /// BFS neighborhood traversal up to `max_depth` hops from `root_id`.
+    ///
+    /// Implemented as iterative multi-hop Rust BFS — one batch of 1-hop
+    /// queries per depth level (avoids recursive Datalog complexity).
     pub async fn bfs_neighborhood(
         &self,
-        _root_id: &str,
-        _max_depth: usize,
-        _max_nodes: usize,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
-        Err(backend_err())
+        self.bfs_impl(root_id, max_depth, max_nodes).await
     }
 
-    /// Stub — not yet implemented.
-    pub async fn resolve_symbol(&self, _node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
-        Err(backend_err())
+    /// Resolve a symbol node ID to its full metadata (across all symbol types).
+    pub async fn resolve_symbol(&self, node_id: &str) -> Result<Option<SymbolMatch>, EngramError> {
+        let prefix = if node_id.starts_with("fn:") {
+            "function"
+        } else if node_id.starts_with("class:") {
+            "class"
+        } else if node_id.starts_with("iface:") {
+            "interface"
+        } else if node_id.starts_with("file:") {
+            "file"
+        } else {
+            // Try all symbol tables.
+            for (tbl, meta_tbl, code_tbl, embed_tbl) in &[
+                (
+                    "function",
+                    "function_meta",
+                    "function_code",
+                    "function_embedding",
+                ),
+                ("class", "class_meta", "class_code", "class_embedding"),
+                (
+                    "interface",
+                    "interface_meta",
+                    "interface_code",
+                    "interface_embedding",
+                ),
+            ] {
+                if let Some(m) = self
+                    .resolve_from_table(node_id, tbl, meta_tbl, code_tbl, embed_tbl)
+                    .await?
+                {
+                    return Ok(Some(m));
+                }
+            }
+            return Ok(None);
+        };
+
+        match prefix {
+            "function" => {
+                self.resolve_from_table(
+                    node_id,
+                    "function",
+                    "function_meta",
+                    "function_code",
+                    "function_embedding",
+                )
+                .await
+            }
+            "class" => {
+                self.resolve_from_table(
+                    node_id,
+                    "class",
+                    "class_meta",
+                    "class_code",
+                    "class_embedding",
+                )
+                .await
+            }
+            "interface" => {
+                self.resolve_from_table(
+                    node_id,
+                    "interface",
+                    "interface_meta",
+                    "interface_code",
+                    "interface_embedding",
+                )
+                .await
+            }
+            _ => {
+                // file_node path lookup.
+                let script = r#"
+?[path, id, language] := *file_node { path, id, language }, path = $path
+"#;
+                let mut p = BTreeMap::new();
+                p.insert("path".to_owned(), DataValue::from(node_id));
+                let r = self
+                    .db
+                    .run_script(script, p, ScriptMutability::Immutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+                if r.rows.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(SymbolMatch {
+                    table: "file".to_owned(),
+                    id: extract_str(&r.rows[0], 1),
+                    name: extract_str(&r.rows[0], 0),
+                    file_path: extract_str(&r.rows[0], 0),
+                    line_start: None,
+                    line_end: None,
+                    signature: None,
+                    body: String::new(),
+                    embed_type: None,
+                    summary: None,
+                    embedding: vec![],
+                }))
+            }
+        }
     }
 
     // ── Symbol listing ────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// List symbols matching `filter`, with pagination.
     pub async fn list_symbols(
         &self,
-        _filter: &SymbolFilter,
+        filter: &SymbolFilter,
     ) -> Result<SymbolListResult, EngramError> {
-        Err(backend_err())
+        let mut symbols = Vec::new();
+
+        let types: Vec<(&str, &str)> = match filter.node_type.as_deref() {
+            Some("function") => vec![("function", "function_meta")],
+            Some("class") => vec![("class", "class_meta")],
+            Some("interface") => vec![("interface", "interface_meta")],
+            _ => vec![
+                ("function", "function_meta"),
+                ("class", "class_meta"),
+                ("interface", "interface_meta"),
+            ],
+        };
+
+        for (kind, tbl) in &types {
+            let fp_clause = filter
+                .file_path
+                .as_deref()
+                .map(|_| ", file_path = $file_path")
+                .unwrap_or("");
+            let script = format!(
+                "?[id, name, file_path, line_start, line_end] := *{tbl} {{ id, name, file_path, line_start, line_end }}{fp_clause}"
+            );
+            let mut p = BTreeMap::new();
+            if let Some(fp) = &filter.file_path {
+                p.insert("file_path".to_owned(), DataValue::from(fp.as_str()));
+            }
+            let r = self
+                .db
+                .run_script(&script, p, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let name = extract_str(row, 1);
+                if let Some(prefix) = &filter.name_prefix {
+                    if !name.starts_with(prefix.as_str()) {
+                        continue;
+                    }
+                }
+                symbols.push(SymbolListEntry {
+                    name,
+                    node_type: (*kind).to_owned(),
+                    file_path: extract_str(row, 2),
+                    line_start: {
+                        let v = extract_u32(row, 3);
+                        if v == 0 { None } else { Some(v) }
+                    },
+                    line_end: {
+                        let v = extract_u32(row, 4);
+                        if v == 0 { None } else { Some(v) }
+                    },
+                });
+            }
+        }
+
+        let total_count = symbols.len();
+        let start = filter.offset.min(total_count);
+        let end = (start + filter.limit).min(total_count);
+        let has_more = end < total_count;
+        Ok(SymbolListResult {
+            symbols: symbols[start..end].to_vec(),
+            total_count,
+            has_more,
+        })
     }
 
     // ── Vector search ─────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Vector search — returns ranked symbol matches (score stripped).
     pub async fn vector_search_symbols(
         &self,
-        _query_embedding: &[f32],
-        _limit: usize,
+        query_embedding: &[f32],
+        limit: usize,
     ) -> Result<Vec<SymbolMatch>, EngramError> {
-        Err(backend_err())
+        let mut scored = self
+            .vector_search_symbols_native(query_embedding, limit)
+            .await?;
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored.into_iter().map(|(_, m)| m).collect())
     }
 
-    /// Stub — not yet implemented.
+    /// Vector search — returns (score, match) pairs using linear scan fallback.
+    ///
+    /// Attempts HNSW first; falls back to full linear scan on any error
+    /// (HNSW may be unavailable on empty tables or unsupported backends).
     pub async fn vector_search_symbols_native(
         &self,
-        _query_embedding: &[f32],
-        _limit: usize,
+        query_embedding: &[f32],
+        limit: usize,
     ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
-        Err(backend_err())
+        // Try linear scan across all three embedding tables.
+        let mut scored = Vec::new();
+        for (tbl, meta_tbl, code_tbl, embed_tbl) in &[
+            (
+                "function",
+                "function_meta",
+                "function_code",
+                "function_embedding",
+            ),
+            ("class", "class_meta", "class_code", "class_embedding"),
+            (
+                "interface",
+                "interface_meta",
+                "interface_code",
+                "interface_embedding",
+            ),
+        ] {
+            let script = format!(
+                r#"?[id, name, file_path, line_start, line_end, embed_type, summary, body, embedding] :=
+    *{meta_tbl} {{ id, name, file_path, line_start, line_end, embed_type, summary }},
+    *{code_tbl} {{ id, body }},
+    *{embed_tbl} {{ id, embedding }}"#
+            );
+            let r = self
+                .db
+                .run_script(&script, BTreeMap::new(), ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let emb = extract_embedding(row, 8);
+                if emb.is_empty() {
+                    continue;
+                }
+                let score = cosine_similarity(query_embedding, &emb);
+                scored.push((
+                    score,
+                    SymbolMatch {
+                        table: (*tbl).to_owned(),
+                        id: extract_str(row, 0),
+                        name: extract_str(row, 1),
+                        file_path: extract_str(row, 2),
+                        line_start: Some(extract_u32(row, 3)),
+                        line_end: Some(extract_u32(row, 4)),
+                        signature: None,
+                        body: extract_str(row, 7),
+                        embed_type: extract_opt_str(row, 5),
+                        summary: extract_opt_str(row, 6),
+                        embedding: emb,
+                    },
+                ));
+            }
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
     }
 
-    /// Stub — not yet implemented.
+    /// Hybrid graph + vector search from a root node.
+    ///
+    /// Expands the BFS neighborhood up to `max_depth`, then re-ranks
+    /// the discovered neighbors by cosine similarity to `query_embedding`.
     pub async fn hybrid_graph_vector_search(
         &self,
-        _root_id: &str,
-        _max_depth: usize,
-        _query_embedding: &[f32],
-        _limit: usize,
-        _edge_types: &[&str],
+        root_id: &str,
+        max_depth: usize,
+        query_embedding: &[f32],
+        limit: usize,
+        edge_types: &[&str],
     ) -> Result<Vec<(f32, SymbolMatch)>, EngramError> {
-        Err(backend_err())
+        const ALLOWED: &[&str] = &["calls", "imports", "defines", "inherits_from", "references"];
+        for et in edge_types {
+            if !ALLOWED.contains(et) {
+                return Err(EngramError::from(SystemError::DatabaseError {
+                    reason: format!("unknown edge type: {et}"),
+                }));
+            }
+        }
+
+        let bfs = self.bfs_impl(root_id, max_depth, limit * 4).await?;
+        let mut scored: Vec<(f32, SymbolMatch)> = bfs
+            .neighbors
+            .into_iter()
+            .map(|m| {
+                let score = if m.embedding.is_empty() {
+                    0.0_f32
+                } else {
+                    cosine_similarity(query_embedding, &m.embedding)
+                };
+                (score, m)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
     }
 
-    /// Stub — not yet implemented.
+    /// Graph neighborhood — alias for `bfs_neighborhood`.
     pub async fn graph_neighborhood(
         &self,
-        _root_id: &str,
-        _max_depth: usize,
-        _max_nodes: usize,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
-        Err(backend_err())
+        self.bfs_impl(root_id, max_depth, max_nodes).await
     }
 
     // ── Embedding updates ─────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Update the embedding vector for a symbol (function, class, or interface).
+    ///
+    /// Detects the target table from the ID prefix (`fn:`, `class:`, `iface:`).
     pub async fn update_symbol_embedding(
         &self,
-        _sym_id: &str,
-        _embedding: Vec<f32>,
+        sym_id: &str,
+        embedding: Vec<f32>,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let table = if sym_id.starts_with("fn:") || sym_id.starts_with("function:") {
+            "function_embedding"
+        } else if sym_id.starts_with("class:") {
+            "class_embedding"
+        } else if sym_id.starts_with("iface:") || sym_id.starts_with("interface:") {
+            "interface_embedding"
+        } else {
+            return Err(EngramError::from(SystemError::DatabaseError {
+                reason: format!("cannot determine embedding table for id: {sym_id}"),
+            }));
+        };
+        let emb_dv = DataValue::List(
+            embedding
+                .iter()
+                .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
+                .collect(),
+        );
+        let script =
+            format!("?[id, embedding] <- [[$id, $embedding]] :put {table} {{ id, embedding }}");
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(sym_id));
+        p.insert("embedding".to_owned(), emb_dv);
+        self.db
+            .run_script(&script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Delete embedding rows whose vector is empty (zero-length list).
+    ///
+    /// Returns the count of removed rows.
     pub async fn gc_corrupted_embeddings(&self) -> Result<usize, EngramError> {
-        Err(backend_err())
+        let mut count = 0usize;
+        for tbl in &[
+            "function_embedding",
+            "class_embedding",
+            "interface_embedding",
+        ] {
+            let query = format!(
+                "?[id] := *{tbl} {{ id, embedding }}, emb_len = length(embedding), emb_len = 0"
+            );
+            let r = self
+                .db
+                .run_script(&query, BTreeMap::new(), ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &r.rows {
+                let id = extract_str(row, 0);
+                let del = format!("?[id] <- [[$id]] :rm {tbl} {{ id }}");
+                let mut p = BTreeMap::new();
+                p.insert("id".to_owned(), DataValue::from(id.as_str()));
+                self.db
+                    .run_script(&del, p, ScriptMutability::Mutable)
+                    .map_err(|e| map_db_err(e.to_string()))?;
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     // ── Count queries ─────────────────────────────────────────────
@@ -1055,121 +1952,673 @@ impl CodeGraphQueries {
         Ok(extract_count(&result))
     }
 
-    /// Stub — not yet implemented.
+    /// Return the total number of code edges (calls + imports + defines + inherits_from).
+    ///
+    /// The `references_edge` table is intentionally excluded for SurrealDB parity.
     pub async fn count_code_edges(&self) -> Result<u64, EngramError> {
-        Err(backend_err())
+        let mut total = 0u64;
+        for tbl in &[
+            "calls_edge",
+            "imports_edge",
+            "defines_edge",
+            "inherits_from_edge",
+        ] {
+            let script = format!("?[count(from)] := *{tbl} {{ from }}");
+            let r = self
+                .db
+                .run_script(&script, BTreeMap::new(), ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            total += extract_count(&r);
+        }
+        Ok(total)
     }
 
     // ── Bulk concerns ─────────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// List all concerns edges for multiple tasks, grouped by task ID.
     pub async fn list_concerns_for_tasks(
         &self,
-        _task_ids: &[String],
+        task_ids: &[String],
     ) -> Result<HashMap<String, Vec<ConcernsLink>>, EngramError> {
-        Err(backend_err())
+        if task_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut map: HashMap<String, Vec<ConcernsLink>> = HashMap::new();
+        for tid in task_ids {
+            let links = self.list_concerns_for_task(tid).await?;
+            if !links.is_empty() {
+                map.insert(tid.clone(), links);
+            }
+        }
+        Ok(map)
     }
 
     // ── Content record queries ────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Upsert a `ContentRecord` into the `content_record` table.
     pub async fn upsert_content_record(
         &self,
-        _record: &crate::models::ContentRecord,
+        record: &crate::models::ContentRecord,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[file_path, id, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, embedding] <-
+    [[$file_path, $id, $content_type, $content_hash, $content, $source_path,
+      $file_size_bytes, $ingested_at, $embedding]]
+:put content_record {
+    file_path => id, content_type, content_hash, content, source_path,
+    file_size_bytes, ingested_at, embedding
+}
+"#;
+        let emb_dv = DataValue::List(
+            record
+                .embedding
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
+                .collect(),
+        );
+        let mut p = BTreeMap::new();
+        p.insert(
+            "file_path".to_owned(),
+            DataValue::from(record.file_path.as_str()),
+        );
+        p.insert("id".to_owned(), DataValue::from(record.id.as_str()));
+        p.insert(
+            "content_type".to_owned(),
+            DataValue::from(record.content_type.as_str()),
+        );
+        p.insert(
+            "content_hash".to_owned(),
+            DataValue::from(record.content_hash.as_str()),
+        );
+        p.insert(
+            "content".to_owned(),
+            DataValue::from(record.content.as_str()),
+        );
+        p.insert(
+            "source_path".to_owned(),
+            DataValue::from(record.source_path.as_str()),
+        );
+        p.insert(
+            "file_size_bytes".to_owned(),
+            DataValue::Num(Num::Int(
+                i64::try_from(record.file_size_bytes).unwrap_or(i64::MAX),
+            )),
+        );
+        p.insert(
+            "ingested_at".to_owned(),
+            DataValue::from(record.ingested_at.to_rfc3339().as_str()),
+        );
+        p.insert("embedding".to_owned(), emb_dv);
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Return all content records, optionally filtered by `content_type`.
     pub async fn select_content_records(
         &self,
-        _content_type: Option<&str>,
+        content_type: Option<&str>,
     ) -> Result<Vec<crate::models::ContentRecord>, EngramError> {
-        Err(backend_err())
+        let ct_clause = content_type
+            .map(|_| ", content_type = $content_type")
+            .unwrap_or("");
+        let script = format!(
+            r#"?[file_path, id, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, embedding] :=
+    *content_record {{ file_path, id, content_type, content_hash, content,
+                      source_path, file_size_bytes, ingested_at, embedding }}{ct_clause}"#
+        );
+        let mut p = BTreeMap::new();
+        if let Some(ct) = content_type {
+            p.insert("content_type".to_owned(), DataValue::from(ct));
+        }
+        let result = self
+            .db
+            .run_script(&script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                let ingested_str = extract_str(row, 7);
+                let ingested_at = chrono::DateTime::parse_from_rfc3339(&ingested_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                let emb = extract_embedding(row, 8);
+                Ok(crate::models::ContentRecord {
+                    file_path: extract_str(row, 0),
+                    id: extract_str(row, 1),
+                    content_type: extract_str(row, 2),
+                    content_hash: extract_str(row, 3),
+                    content: extract_str(row, 4),
+                    source_path: extract_str(row, 5),
+                    file_size_bytes: u64::try_from(extract_i64(row, 6).max(0)).unwrap_or(0),
+                    ingested_at,
+                    embedding: if emb.is_empty() { None } else { Some(emb) },
+                })
+            })
+            .collect()
     }
 
-    /// Stub — not yet implemented.
+    /// Update the embedding on an existing content record (keyed by `record_id` = `file_path`).
     pub async fn update_content_record_embedding(
         &self,
-        _record_id: &str,
-        _embedding: Vec<f32>,
+        record_id: &str,
+        embedding: Vec<f32>,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        // Read existing record first to satisfy the full PUT contract.
+        let get = r#"
+?[file_path, id, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at] :=
+    *content_record { file_path, id, content_type, content_hash, content,
+                      source_path, file_size_bytes, ingested_at },
+    file_path = $file_path
+"#;
+        let mut gp = BTreeMap::new();
+        gp.insert("file_path".to_owned(), DataValue::from(record_id));
+        let existing = self
+            .db
+            .run_script(get, gp, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if existing.rows.is_empty() {
+            return Ok(()); // nothing to update
+        }
+        let row = &existing.rows[0];
+        let emb_dv = DataValue::List(
+            embedding
+                .iter()
+                .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
+                .collect(),
+        );
+        let put = r#"
+?[file_path, id, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, embedding] <-
+    [[$file_path, $id, $ct, $ch, $content, $sp, $fsb, $ia, $embedding]]
+:put content_record {
+    file_path => id, content_type, content_hash, content, source_path,
+    file_size_bytes, ingested_at, embedding
+}
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(record_id));
+        p.insert(
+            "id".to_owned(),
+            DataValue::from(extract_str(row, 1).as_str()),
+        );
+        p.insert(
+            "ct".to_owned(),
+            DataValue::from(extract_str(row, 2).as_str()),
+        );
+        p.insert(
+            "ch".to_owned(),
+            DataValue::from(extract_str(row, 3).as_str()),
+        );
+        p.insert(
+            "content".to_owned(),
+            DataValue::from(extract_str(row, 4).as_str()),
+        );
+        p.insert(
+            "sp".to_owned(),
+            DataValue::from(extract_str(row, 5).as_str()),
+        );
+        p.insert(
+            "fsb".to_owned(),
+            DataValue::Num(Num::Int(extract_i64(row, 6))),
+        );
+        p.insert(
+            "ia".to_owned(),
+            DataValue::from(extract_str(row, 7).as_str()),
+        );
+        p.insert("embedding".to_owned(), emb_dv);
+        self.db
+            .run_script(put, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
-    pub async fn delete_content_record_by_path(&self, _file_path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete a content record by its file path.
+    pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+        let script = r#"
+?[file_path] <- [[$file_path]]
+:rm content_record { file_path }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Vector search over content records — linear scan with cosine ranking.
+    ///
+    /// Returns `Ok(vec![])` (not an error) when no content records are present,
+    /// so that `unified_search` degrades gracefully.
     pub async fn vector_search_content_native(
         &self,
-        _query_embedding: &[f32],
-        _limit: usize,
-        _content_type: Option<&str>,
+        query_embedding: &[f32],
+        limit: usize,
+        content_type: Option<&str>,
     ) -> Result<Vec<(f32, crate::models::ContentRecord)>, EngramError> {
-        Err(backend_err())
+        let records = self.select_content_records(content_type).await?;
+        let mut scored: Vec<(f32, crate::models::ContentRecord)> = records
+            .into_iter()
+            .filter_map(|rec| {
+                let emb = rec.embedding.as_deref()?;
+                if emb.is_empty() {
+                    return None;
+                }
+                let score = cosine_similarity(query_embedding, emb);
+                Some((score, rec))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
     }
 
     // ── Commit node queries ───────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Upsert a `CommitNode`, serializing `changes` as JSON strings.
     pub async fn upsert_commit_node(
         &self,
-        _node: &crate::models::CommitNode,
+        node: &crate::models::CommitNode,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let changes: Vec<DataValue> = node
+            .changes
+            .iter()
+            .map(|c| DataValue::from(serde_json::to_string(c).unwrap_or_default().as_str()))
+            .collect();
+        let parent_hashes: Vec<DataValue> = node
+            .parent_hashes
+            .iter()
+            .map(|h| DataValue::from(h.as_str()))
+            .collect();
+        let script = r#"
+?[id, hash, short_hash, author_name, author_email, timestamp, message,
+  parent_hashes, changes] <-
+    [[$id, $hash, $short_hash, $author_name, $author_email, $timestamp,
+      $message, $parent_hashes, $changes]]
+:put commit_node {
+    id => hash, short_hash, author_name, author_email, timestamp, message,
+    parent_hashes, changes
+}
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(node.id.as_str()));
+        p.insert("hash".to_owned(), DataValue::from(node.hash.as_str()));
+        p.insert(
+            "short_hash".to_owned(),
+            DataValue::from(node.short_hash.as_str()),
+        );
+        p.insert(
+            "author_name".to_owned(),
+            DataValue::from(node.author_name.as_str()),
+        );
+        p.insert(
+            "author_email".to_owned(),
+            DataValue::from(node.author_email.as_str()),
+        );
+        p.insert(
+            "timestamp".to_owned(),
+            DataValue::Num(Num::Int(node.timestamp.timestamp())),
+        );
+        p.insert("message".to_owned(), DataValue::from(node.message.as_str()));
+        p.insert("parent_hashes".to_owned(), DataValue::List(parent_hashes));
+        p.insert("changes".to_owned(), DataValue::List(changes));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Return commits whose timestamp falls in `[since, until]`.
     pub async fn select_commits_by_date_range(
         &self,
-        _since: Option<&DateTime<Utc>>,
-        _until: Option<&DateTime<Utc>>,
-        _limit: u32,
+        since: Option<&DateTime<Utc>>,
+        until: Option<&DateTime<Utc>>,
+        limit: u32,
     ) -> Result<Vec<crate::models::CommitNode>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, hash, short_hash, author_name, author_email, timestamp, message,
+  parent_hashes, changes] :=
+    *commit_node { id, hash, short_hash, author_name, author_email, timestamp,
+                   message, parent_hashes, changes }
+:order -timestamp
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let since_ts = since.map(DateTime::timestamp);
+        let until_ts = until.map(DateTime::timestamp);
+        let lim = usize::try_from(limit).unwrap_or(usize::MAX);
+        Ok(r.rows
+            .iter()
+            .filter(|row| {
+                let ts = extract_i64(row, 6);
+                since_ts.is_none_or(|s| ts >= s) && until_ts.is_none_or(|u| ts <= u)
+            })
+            .take(lim)
+            .map(|row| row_to_commit_node(row))
+            .collect())
     }
 
-    /// Stub — not yet implemented.
+    /// Return commits that changed `file_path` (scans `changes` JSON strings).
     pub async fn select_commits_by_file_path(
         &self,
-        _file_path: &str,
-        _limit: u32,
+        file_path: &str,
+        limit: u32,
     ) -> Result<Vec<crate::models::CommitNode>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[id, hash, short_hash, author_name, author_email, timestamp, message,
+  parent_hashes, changes] :=
+    *commit_node { id, hash, short_hash, author_name, author_email, timestamp,
+                   message, parent_hashes, changes }
+:order -timestamp
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let lim = usize::try_from(limit).unwrap_or(usize::MAX);
+        Ok(r.rows
+            .iter()
+            .filter(|row| {
+                // changes column is a list of JSON strings — scan for file_path.
+                match row.get(8) {
+                    Some(DataValue::List(v)) => v.iter().any(|dv| {
+                        if let DataValue::Str(s) = dv {
+                            s.contains(file_path)
+                        } else {
+                            false
+                        }
+                    }),
+                    _ => false,
+                }
+            })
+            .take(lim)
+            .map(|row| row_to_commit_node(row))
+            .collect())
     }
 
-    /// Stub — not yet implemented.
+    /// Return the hash of the most recently indexed commit, or `None`.
     pub async fn latest_indexed_commit_hash(&self) -> Result<Option<String>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[hash, timestamp] := *commit_node { hash, timestamp }
+:order -timestamp
+:limit 1
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows.first().map(|row| extract_str(row, 0)))
     }
 
     // ── File hash queries ─────────────────────────────────────────
 
-    /// Stub — not yet implemented.
+    /// Upsert a file hash record.
     pub async fn upsert_file_hash(
         &self,
-        _file_path: &str,
-        _content_hash: &str,
-        _size_bytes: u64,
+        file_path: &str,
+        content_hash: &str,
+        size_bytes: u64,
     ) -> Result<(), EngramError> {
-        Err(backend_err())
+        let ts = now_utc_str();
+        let script = r#"
+?[file_path, content_hash, size_bytes, recorded_at] <-
+    [[$file_path, $content_hash, $size_bytes, $recorded_at]]
+:put file_hash { file_path => content_hash, size_bytes, recorded_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        p.insert("content_hash".to_owned(), DataValue::from(content_hash));
+        p.insert(
+            "size_bytes".to_owned(),
+            DataValue::Num(Num::Int(i64::try_from(size_bytes).unwrap_or(i64::MAX))),
+        );
+        p.insert("recorded_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
     }
 
-    /// Stub — not yet implemented.
+    /// Return all file hash records.
     pub async fn get_all_file_hashes(&self) -> Result<Vec<FileHashRecord>, EngramError> {
-        Err(backend_err())
+        let script = r#"
+?[file_path, content_hash, size_bytes, recorded_at] :=
+    *file_hash { file_path, content_hash, size_bytes, recorded_at }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        r.rows
+            .iter()
+            .map(|row| {
+                let ts_str = extract_str(row, 3);
+                let recorded_at = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                Ok(FileHashRecord {
+                    file_path: extract_str(row, 0),
+                    content_hash: extract_str(row, 1),
+                    size_bytes: u64::try_from(extract_i64(row, 2).max(0)).unwrap_or(0),
+                    recorded_at,
+                })
+            })
+            .collect()
     }
 
-    /// Stub — not yet implemented.
-    pub async fn delete_file_hash_by_path(&self, _file_path: &str) -> Result<(), EngramError> {
-        Err(backend_err())
+    /// Delete a file hash record by file path.
+    pub async fn delete_file_hash_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+        let script = r#"
+?[file_path] <- [[$file_path]]
+:rm file_hash { file_path }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    // ── Private helpers ───────────────────────────────────────────
+
+    /// Collect all edges from an edge table where `from = node_id`.
+    async fn edges_from_table(
+        &self,
+        kind: &str,
+        table: &str,
+    ) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
+        let script = format!("?[from, to, created_at] := *{table} {{ from, to, created_at }}");
+        let r = self
+            .db
+            .run_script(&script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let edge_type = match kind {
+            "imports" => CodeEdgeType::Imports,
+            "defines" => CodeEdgeType::Defines,
+            "inherits_from" => CodeEdgeType::InheritsFrom,
+            _ => CodeEdgeType::Calls,
+        };
+        Ok(r.rows
+            .iter()
+            .map(|row| crate::models::CodeEdge {
+                edge_type: edge_type.clone(),
+                from: extract_str(row, 0),
+                to: extract_str(row, 1),
+                import_path: None,
+                linked_by: None,
+                created_at: extract_str(row, 2),
+            })
+            .collect())
+    }
+
+    /// Delete all rows in `table` where `from = node_id`.
+    async fn delete_outgoing_edges(&self, table: &str, node_id: &str) -> Result<(), EngramError> {
+        let get = format!("?[from, to] := *{table} {{ from, to }}, from = $from");
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(node_id));
+        let r = self
+            .db
+            .run_script(&get, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &r.rows {
+            let from = extract_str(row, 0);
+            let to = extract_str(row, 1);
+            let del = format!("?[from, to] <- [[$from, $to]] :rm {table} {{ from, to }}");
+            let mut dp = BTreeMap::new();
+            dp.insert("from".to_owned(), DataValue::from(from.as_str()));
+            dp.insert("to".to_owned(), DataValue::from(to.as_str()));
+            let _ = self.db.run_script(&del, dp, ScriptMutability::Mutable);
+        }
+        Ok(())
+    }
+
+    /// Delete all rows in `table` where `to = node_id`.
+    async fn delete_incoming_edges(&self, table: &str, node_id: &str) -> Result<(), EngramError> {
+        let get = format!("?[from, to] := *{table} {{ from, to }}, to = $to");
+        let mut p = BTreeMap::new();
+        p.insert("to".to_owned(), DataValue::from(node_id));
+        let r = self
+            .db
+            .run_script(&get, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &r.rows {
+            let from = extract_str(row, 0);
+            let to = extract_str(row, 1);
+            let del = format!("?[from, to] <- [[$from, $to]] :rm {table} {{ from, to }}");
+            let mut dp = BTreeMap::new();
+            dp.insert("from".to_owned(), DataValue::from(from.as_str()));
+            dp.insert("to".to_owned(), DataValue::from(to.as_str()));
+            let _ = self.db.run_script(&del, dp, ScriptMutability::Mutable);
+        }
+        Ok(())
+    }
+
+    /// BFS implementation — iterative multi-hop traversal in Rust.
+    async fn bfs_impl(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<BfsResult, EngramError> {
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut neighbors: Vec<SymbolMatch> = Vec::new();
+        let mut edges: Vec<BfsEdge> = Vec::new();
+        let mut frontier: Vec<String> = vec![root_id.to_owned()];
+        visited.insert(root_id.to_owned());
+        let mut truncated = false;
+
+        for _ in 0..max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next_frontier = Vec::new();
+            for node in &frontier {
+                for (et, tbl) in &[
+                    ("calls", "calls_edge"),
+                    ("imports", "imports_edge"),
+                    ("defines", "defines_edge"),
+                    ("inherits_from", "inherits_from_edge"),
+                    ("references", "references_edge"),
+                ] {
+                    let script = format!("?[from, to] := *{tbl} {{ from, to }}, from = $from");
+                    let mut p = BTreeMap::new();
+                    p.insert("from".to_owned(), DataValue::from(node.as_str()));
+                    let r = self
+                        .db
+                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r.rows {
+                        let target = extract_str(row, 1);
+                        edges.push(BfsEdge {
+                            edge_type: (*et).to_owned(),
+                            from: node.clone(),
+                            to: target.clone(),
+                        });
+                        if !visited.contains(&target) {
+                            if neighbors.len() >= max_nodes {
+                                truncated = true;
+                                break;
+                            }
+                            visited.insert(target.clone());
+                            if let Ok(Some(sym)) = self.resolve_symbol(&target).await {
+                                neighbors.push(sym);
+                            }
+                            next_frontier.push(target);
+                        }
+                    }
+                    if truncated {
+                        break;
+                    }
+                }
+                if truncated {
+                    break;
+                }
+            }
+            frontier = next_frontier;
+            if truncated {
+                break;
+            }
+        }
+
+        Ok(BfsResult {
+            neighbors,
+            edges,
+            truncated,
+        })
+    }
+
+    /// Resolve a symbol from a specific table by ID.
+    async fn resolve_from_table(
+        &self,
+        node_id: &str,
+        tbl: &str,
+        meta_tbl: &str,
+        code_tbl: &str,
+        embed_tbl: &str,
+    ) -> Result<Option<SymbolMatch>, EngramError> {
+        let script = format!(
+            r#"?[id, name, file_path, line_start, line_end, embed_type, summary, body, embedding] :=
+    *{meta_tbl} {{ id, name, file_path, line_start, line_end, embed_type, summary }},
+    id = $id,
+    *{code_tbl} {{ id, body }},
+    *{embed_tbl} {{ id, embedding }}"#
+        );
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(node_id));
+        let r = self
+            .db
+            .run_script(&script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if r.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &r.rows[0];
+        Ok(Some(SymbolMatch {
+            table: tbl.to_owned(),
+            id: extract_str(row, 0),
+            name: extract_str(row, 1),
+            file_path: extract_str(row, 2),
+            line_start: Some(extract_u32(row, 3)),
+            line_end: Some(extract_u32(row, 4)),
+            signature: None,
+            body: extract_str(row, 7),
+            embed_type: extract_opt_str(row, 5),
+            summary: extract_opt_str(row, 6),
+            embedding: extract_embedding(row, 8),
+        }))
     }
 }
-
-// ── Row extraction helpers ────────────────────────────────────────────────
 
 fn extract_str(row: &[DataValue], col: usize) -> String {
     match row.get(col) {
@@ -1281,5 +2730,45 @@ fn row_to_interface(row: &[DataValue]) -> crate::models::Interface {
         summary: extract_str(row, 9),
         body: extract_str(row, 10),
         embedding: extract_embedding(row, 11),
+    }
+}
+
+fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
+    // columns: id(0), hash(1), short_hash(2), author_name(3), author_email(4),
+    //          timestamp(5), message(6), parent_hashes(7), changes(8)
+    let ts = extract_i64(row, 5);
+    let timestamp = chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let parent_hashes = match row.get(7) {
+        Some(DataValue::List(v)) => v
+            .iter()
+            .filter_map(|dv| match dv {
+                DataValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+    let changes = match row.get(8) {
+        Some(DataValue::List(v)) => v
+            .iter()
+            .filter_map(|dv| match dv {
+                DataValue::Str(s) => serde_json::from_str::<crate::models::ChangeRecord>(s).ok(),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+    crate::models::CommitNode {
+        id: extract_str(row, 0),
+        hash: extract_str(row, 1),
+        short_hash: extract_str(row, 2),
+        author_name: extract_str(row, 3),
+        author_email: extract_str(row, 4),
+        timestamp,
+        message: extract_str(row, 6),
+        parent_hashes,
+        changes,
     }
 }
