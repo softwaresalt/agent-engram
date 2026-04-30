@@ -6,10 +6,7 @@ pr: 49
 merge_commit: 0e4e79a
 status: shipped
 session_checkpoints:
-  - 006-016-s-claimed-ship-execution-s.md
-  - 007-016-s-unit-implementation-debu.md
-  - 008-016-s-tests-green-pr-ready.md
-  - 009-016-s-merged-post-merge-starti.md
+  - docs/memory/2026-04-29/008-S-post-merge-closure-session-memory.md
 ---
 
 ## Outcome

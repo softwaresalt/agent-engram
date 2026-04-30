@@ -132,7 +132,7 @@ unaffected by reverting the Rust code.
 
 The following hard-won discoveries warrant capture:
 
-1. **`cargo clippy --all-targets` vs without**: CI runs with `--all-targets`; local runs without it will miss pedantic violations in test files. Always run `cargo clippy -- -D warnings -D clippy::pedantic --all-targets` locally before pushing.
+1. **`cargo clippy --all-targets` vs without**: CI runs with `--all-targets`; local runs without it will miss pedantic violations in test files. Always run `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` locally before pushing.
 2. **cozo-backend API parity**: Every `pub(crate)` method added to `surreal-backend queries.rs` needs a stub in `cozo_queries.rs`; unused stubs need `#[allow(dead_code)]`.
 3. **SurrealDB `string::lowercase()` in WHERE clauses**: Does not filter correctly server-side — use Rust-side lowercasing after full-table scan.
 4. **Candidates-list pattern for quoted identifier resolution**: Build `Vec<(input, last-segment, stripped, stripped-last)>`, dedup in order, then try exact then CI across all — handles all schema-qualified and bracket-quoted combos.

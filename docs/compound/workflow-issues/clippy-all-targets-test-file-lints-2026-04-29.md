@@ -57,12 +57,19 @@ Added `--all-targets` to local pre-push clippy invocations. Fixed the specific v
 
 ## Prevention
 
-**Always run `--all-targets` before pushing:**
+**Always run `--all-targets` before pushing.** The `cargo lint` alias in `.cargo/config.toml`
+already includes `--all-targets --all-features`, so running `cargo lint` is sufficient:
+
+```bash
+cargo lint
+# expands to: cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic
+```
+
+Alternatively, run the full form directly:
 
 ```bash
 cargo clippy --all-targets -- -D warnings -D clippy::pedantic
 ```
 
-The `cargo lint` alias in `.cargo/config.toml` should include `--all-targets` to make
-this the default. Any test file with `///` doc comments or similar-looking variable
+Any test file with `///` doc comments or similar-looking variable
 names should be checked explicitly.
