@@ -76,16 +76,18 @@ pub fn record_query_metrics(
 
 /// Result returned by [`CodeGraphQueries::reresolve_references_edges`].
 ///
-/// Carries both the resolution count and the number of class-lookup
-/// round-trips so callers can verify batch behaviour in tests.
+/// Carries both the resolution count and the number of initial batch
+/// class-lookup round-trips so callers can verify batch behaviour in tests.
+/// This metric does not include any per-edge fallback lookups that may occur
+/// after the initial batch query for quoted or case-insensitive names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReresolveResult {
     /// Number of self-loop edges promoted to a resolved Class node.
     pub resolved: usize,
-    /// Number of class-lookup database round-trips issued.
+    /// Number of initial batch class-lookup database round-trips issued.
     ///
-    /// Batch implementations emit ≤ 1 round-trip regardless of edge count;
-    /// N+1 implementations emit one round-trip per edge.
+    /// Batch implementations emit ≤ 1 round-trip regardless of edge count.
+    /// This value excludes any later per-edge fallback resolution queries.
     pub lookups: usize,
 }
 
@@ -655,38 +657,46 @@ impl CodeGraphQueries {
     /// Resolve a qualified reference name to a Class node ID.
     ///
     /// Resolution chain (first match wins):
-    /// 1. Exact name match (`class` table, case-sensitive)
-    /// 2. Schema-qualified fallback: `"public.users"` → try `"users"` (last segment)
-    /// 3. SQL quote stripping: `"\"Users\""` → `"Users"`, `"[dbo]"` → `"dbo"`
-    /// 4. Case-insensitive fallback via [`get_class_by_name_ci`]
+    /// 1. Exact match on all candidate forms (input, last schema segment, stripped)
+    /// 2. Case-insensitive fallback across the same candidate forms
+    ///
+    /// Candidate forms derived from `qualified_name`:
+    /// - The input as-is
+    /// - Last segment for schema-qualified names (`"public.users"` → `"users"`)
+    /// - SQL quote-stripped form (`"\"Users\""` → `"Users"`, `"[dbo]"` → `"dbo"`)
+    /// - Stripped last segment (`"public.\"Users\""` → `"Users"`)
     ///
     /// Returns the `class:`-prefixed node ID string, or `None` if unresolvable.
     pub async fn resolve_reference_target(
         &self,
         qualified_name: &str,
     ) -> Result<Option<String>, EngramError> {
-        // 1. Exact match.
-        if let Some(c) = self.get_class_by_name(qualified_name).await? {
-            return Ok(Some(c.id));
-        }
-        // 2. Schema-qualified fallback: "public.users" → "users".
-        if qualified_name.contains('.') {
-            let last = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
-            if let Some(c) = self.get_class_by_name(last).await? {
-                return Ok(Some(c.id));
-            }
-        }
-        // 3. Strip surrounding SQL quotes and retry exact match.
+        // Build ordered unique candidate list.
+        let last_segment = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
         let stripped = strip_sql_quotes(qualified_name);
-        if stripped != qualified_name {
-            if let Some(c) = self.get_class_by_name(stripped).await? {
+        let stripped_last = strip_sql_quotes(last_segment);
+
+        let mut candidates: Vec<&str> = Vec::with_capacity(4);
+        for c in [qualified_name, last_segment, stripped, stripped_last] {
+            if !candidates.contains(&c) {
+                candidates.push(c);
+            }
+        }
+
+        // 1. Exact match in priority order.
+        for &candidate in &candidates {
+            if let Some(c) = self.get_class_by_name(candidate).await? {
                 return Ok(Some(c.id));
             }
         }
-        // 4. Case-insensitive fallback.
-        if let Some(id) = self.get_class_by_name_ci(qualified_name).await? {
-            return Ok(Some(id));
+
+        // 2. Case-insensitive fallback across the same candidates.
+        for &candidate in &candidates {
+            if let Some(id) = self.get_class_by_name_ci(candidate).await? {
+                return Ok(Some(id));
+            }
         }
+
         Ok(None)
     }
 
@@ -981,12 +991,13 @@ impl CodeGraphQueries {
 
             // Include schema-qualified fallback in the batch names so we avoid
             // additional round-trips for names like "public.users".
-            if qn_owned.contains('.') {
-                if let Some(last) = qn_owned.rsplit('.').next() {
-                    unique_names.insert(last.to_owned());
-                }
+            let last = qn_owned.rsplit('.').next().unwrap_or(&qn_owned).to_owned();
+            let stripped = strip_sql_quotes(&qn_owned).to_owned();
+            let stripped_last = strip_sql_quotes(&last).to_owned();
+
+            for variant in [&qn_owned, &last, &stripped, &stripped_last] {
+                unique_names.insert(variant.clone());
             }
-            unique_names.insert(qn_owned.clone());
             edge_data.push((source.to_owned(), qn_owned));
         }
 
@@ -1013,17 +1024,17 @@ impl CodeGraphQueries {
         let mut resolved_count = 0_usize;
         for (source, qn) in edge_data {
             // Try exact match first, then schema-qualified last-segment fallback.
+            // If both batch lookups miss, apply the full heuristic resolver for
+            // any remaining case (quote-stripping, CI, or schema-qualified CI/quote).
+            let last = qn.rsplit('.').next().unwrap_or(&qn);
             let class_id = if let Some(id) = resolution_map.get(&qn) {
                 Some(id.clone())
-            } else if qn.contains('.') {
-                qn.rsplit('.')
-                    .next()
-                    .and_then(|last| resolution_map.get(last))
-                    .cloned()
+            } else if let Some(id) = resolution_map.get(last) {
+                Some(id.clone())
             } else {
                 // Batch map miss: apply quote-stripping and case-insensitive heuristics
-                // via the full resolver (Unit 4). These are rare paths not worth
-                // including in the batch pre-computation.
+                // via the full resolver (Unit 4). Covers schema-qualified quoted names
+                // like `public."Users"` and case-insensitive schema-qualified names.
                 self.resolve_reference_target(&qn).await?
             };
 

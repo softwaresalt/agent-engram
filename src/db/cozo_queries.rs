@@ -64,11 +64,16 @@ pub fn record_query_metrics(
 /// Result returned by [`CodeGraphQueries::reresolve_references_edges`].
 ///
 /// Mirrors the type from the SurrealDB `queries` module for API compatibility.
+/// `lookups` counts the initial batch round-trip only; per-edge fallback queries
+/// are not included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReresolveResult {
     /// Number of self-loop edges promoted to a resolved Class node.
     pub resolved: usize,
-    /// Number of class-lookup database round-trips issued.
+    /// Number of initial batch class-lookup database round-trips issued.
+    ///
+    /// Batch implementations emit ≤ 1 round-trip regardless of edge count.
+    /// This value excludes any later per-edge fallback resolution queries.
     pub lookups: usize,
 }
 
