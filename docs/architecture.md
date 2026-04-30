@@ -194,7 +194,7 @@ Agent ──► flush_state() ──► Write handler
                                   │
                             dehydrate_workspace()
                             serialize code graph → .engram/code-graph/
-                            write .engram/.version = "3.0.0"
+                            write .engram/.version = "4.0.0"
                             update .engram/.lastflush
 ```
 
@@ -263,7 +263,7 @@ flush_state() (MCP tool call) or graceful shutdown
     │
     ├── dehydrate_workspace()
     │   ├── serialize code graph → .engram/code-graph/ JSONL
-    │   ├── write .engram/.version = "3.0.0"
+    │   ├── write .engram/.version = "4.0.0"
     │   └── update file mtime records
     │
     └── update last_flush timestamp in snapshot
@@ -288,7 +288,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | CozoDB Queries | `src/db/cozo_queries.rs` | Datalog/CozoScript CRUD for code_file, function, class, interface relations; counts; symbol search by name. Returns `Ok(vec![])` for symbol-not-found (not `Err`) to support `impact_analysis` contract. |
 | CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
-| Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `3.0.0`. |
+| Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `4.0.0`. |
 | Code Graph | `src/services/code_graph.rs` | Orchestrates tree-sitter indexing: walks workspace files, dispatches per-language parsers, upserts symbol and edge records, manages incremental sync and impact traversal. |
 | Parsing | `src/services/parsing/` | Multi-language tree-sitter parsers. `parsing.rs` defines the `Language` enum (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp, Swift, Kotlin, C, Cpp, Sql) and dispatches to per-language submodules (`rust.rs`, `python.rs`, `typescript.rs`, `javascript.rs`, `go_lang.rs`, `csharp.rs`, `swift.rs`, `kotlin.rs`, `c.rs`, `cpp.rs`, `sql.rs`). |
 | Content Registry | `src/services/ingestion.rs` | Process indexed workspace content for embedding. Error codes 11xxx. |
@@ -410,3 +410,59 @@ Key Datalog patterns used in `src/db/cozo_queries.rs`:
 ### Phase 3+ Roadmap
 
 Graph edge CRUD (call/ref edges), BFS/DFS traversal, HNSW vector KNN search, and bulk-read operations are deferred to Phase 3 (`68E3719F`). The stubs in `src/db/cozo_queries.rs` return `Err(EngramError::Backend(...))` until implemented.
+
+---
+
+## Concurrency Model
+
+The engram daemon is designed for safe concurrent access by multiple shim clients simultaneously. This section documents the concurrency architecture, `AppState` synchronisation primitives, and operational boundaries.
+
+### Stateless Per-Connection Protocol
+
+Each IPC connection is fully stateless from the daemon's perspective:
+
+1. The daemon's accept loop (`src/daemon/ipc_server.rs`) spawns a new `tokio::spawn` task per accepted connection via `handle_connection()`.
+2. Each connection reads exactly one JSON-RPC request. Internal commands (`_health`, `_shutdown`) are handled directly in `ipc_server.rs`; all other methods dispatch through `tools::dispatch()`. The response is written and the connection closes.
+3. Connections share `AppState` via `Arc<AppState>` — cloned cheaply per connection task.
+
+This design means any number of shim clients can connect and issue requests simultaneously without serialisation at the connection level.
+
+### AppState Synchronisation Primitives
+
+All shared mutable state lives in `src/server/state.rs` under `AppState`:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `active_workspace` | `RwLock<Option<WorkspaceSnapshot>>` | Current workspace path and metadata; readers take a shared lock, writers take an exclusive lock |
+| `indexing_in_progress` | `AtomicBool` | Guards against concurrent indexing runs; a second `index_workspace` call while indexing is active returns an error immediately |
+| `hydration_ready` | `AtomicBool` | Set to `true` once workspace hydration completes; cleared and re-set on each `set_workspace` call |
+| `active_connections` | `AtomicUsize` | **SSE-transport only** — tracks live SSE streaming clients; never incremented by IPC connections |
+
+### Concurrent Request Safety
+
+Because each IPC request is handled in an independent task sharing `Arc<AppState>`, the following invariants hold:
+
+- **Read-heavy paths** (`get_daemon_status`, `_health`, query tools): acquire `active_workspace.read()`, which allows unlimited concurrent readers.
+- **Write paths** (`set_workspace`): acquire `active_workspace.write()`, which blocks until all active readers release. The write is brief — a snapshot swap, not an indexing operation.
+- **Indexing** is serialised by `indexing_in_progress`. Concurrent `index_workspace` or `sync_workspace` calls from multiple agents are safe: the second call returns an error rather than running a duplicate pass.
+
+### Multi-Agent Usage
+
+Multiple AI coding agents (or multiple shim instances from the same agent) can connect to the daemon concurrently without coordination:
+
+- Read-only operations (search, query, symbol lookup) are fully parallel.
+- `set_workspace` holds the `AppState` write lock only during the atomic snapshot swap (microseconds), so concurrent read operations are blocked only briefly. The full `set_workspace` call (hydration, config parse) runs asynchronously after the snapshot swap.
+- `index_workspace` / `sync_workspace` is serialised: the first caller proceeds, subsequent callers receive an immediate `indexing_in_progress` error and should retry after a short back-off.
+
+### SSE-Transport Exclusions
+
+The following fields and methods in `AppState` are **SSE-transport concerns only** and are never exercised by IPC connections:
+
+| Symbol | Location | Purpose |
+|---|---|---|
+| `active_connections` | `AppState` | Live SSE client counter |
+| `register_connection()` | `AppState` | SSE connection registration and rate-limit check entry point |
+| `increment_connections()` | `AppState` | Called only from `register_connection()` |
+| `check_rate_limit()` | `AppState` | Per-IP SSE rate limiter (FR-025 / T118) |
+
+IPC connections do not call `register_connection()` and are not counted in `active_connections`. The `active_connections` value returned by `get_daemon_status` reflects SSE clients, not IPC connections.

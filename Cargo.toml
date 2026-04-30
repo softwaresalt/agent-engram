@@ -351,6 +351,10 @@ name = "integration_registry_missing_source"
 path = "tests/integration/registry_missing_source_test.rs"
 
 [[test]]
+name = "integration_concurrent_sessions"
+path = "tests/integration/concurrent_sessions_test.rs"
+
+[[test]]
 name = "integration_multi_session_resume"
 path = "tests/integration/multi_session_resume_test.rs"
 
