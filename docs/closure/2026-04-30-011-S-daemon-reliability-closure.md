@@ -42,17 +42,17 @@ Four concurrent IPC session tests:
 | Test | Scenario | Assertion |
 |------|----------|-----------|
 | s_cs1 | 3 concurrent `_health` calls | No response corruption; each response id matches request id |
-| s_cs2 | 3 concurrent `get_daemon_status` calls | Consistent daemon state; each response id matches |
-| s_cs3 | `set_workspace` + 3 concurrent status reads via Barrier | Lifecycle serialization holds during concurrent reads |
+| s_cs2 | 2 concurrent `get_daemon_status` calls | Consistent daemon state; each response id matches |
+| s_cs3 | `set_workspace` + 1 concurrent `get_daemon_status` call via Barrier | Lifecycle serialization holds during concurrent read |
 | s_cs4 | 2 concurrent `index_workspace` calls | Either serializes (error 7003 in `error.data["engram_code"]`) or both succeed on a fast workspace |
 
-Uses `tokio::sync::Barrier` for deterministic simultaneous dispatch. No `sleep`-based timing.
+Uses `tokio::sync::Barrier` for deterministic simultaneous dispatch in `s_cs3` and `s_cs4`. No `sleep`-based timing.
 
 ### `docs/architecture.md` — Concurrency Model section (appended)
 
 Documents:
 - Per-connection `tokio::spawn` accept model
-- `AppState` lock hierarchy: `RwLock<WorkspaceState>` (read-mostly), `AtomicBool indexing_in_progress` (write-exclusive)
+- `AppState` lock hierarchy: `RwLock<Option<WorkspaceSnapshot>>` (read-mostly), `AtomicBool indexing_in_progress` (write-exclusive)
 - `hydration_ready` lifecycle: cleared on `set_workspace` start, re-set after hydration completes
 - Internal command bypass: `_health` and `_shutdown` handled directly in `ipc_server.rs`, all other methods through `tools::dispatch()`
 - Schema version `4.0.0` (was `3.0.0` in 3 places — corrected)
@@ -111,7 +111,7 @@ If a future PR modifies the IPC accept loop or `AppState` locking:
 ## Failure Signals
 
 - s_cs1/s_cs2: response id mismatch → response cross-contamination in IPC layer
-- s_cs3: `workspace_status` returns wrong state after `set_workspace` → lifecycle race
+- s_cs3: `get_daemon_status` returns wrong state after `set_workspace` → lifecycle race
 - s_cs4: both calls fail (neither 7003 nor success) → indexing serialization broken
 
 ## Rollback Trigger
