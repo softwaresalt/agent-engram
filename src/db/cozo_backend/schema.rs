@@ -96,8 +96,7 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         HNSW_INTERFACE_EMBEDDING,
     ];
     for script in &hnsw_scripts {
-        if let Err(e) =
-            cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable)
+        if let Err(e) = cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable)
         {
             let msg = e.to_string().to_lowercase();
             let is_known_benign = msg.contains("empty")

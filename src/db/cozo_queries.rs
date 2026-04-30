@@ -1199,9 +1199,7 @@ impl CodeGraphQueries {
         for sid in &symbol_ids {
             let prefix = sid.split(':').next().unwrap_or("");
             let tables: Option<(&str, &str, &str)> = match prefix {
-                "fn" | "function" => {
-                    Some(("function_meta", "function_code", "function_embedding"))
-                }
+                "fn" | "function" => Some(("function_meta", "function_code", "function_embedding")),
                 "class" => Some(("class_meta", "class_code", "class_embedding")),
                 "iface" | "interface" => {
                     Some(("interface_meta", "interface_code", "interface_embedding"))
@@ -2545,7 +2543,9 @@ impl CodeGraphQueries {
             // concerns_edge key: task_id, symbol_id, symbol_table, linked_by
             "?[from, to, created_at] := *concerns_edge { task_id, symbol_id, linked_by, created_at }, from = task_id, to = symbol_id".to_owned()
         } else if table == "imports_edge" {
-            format!("?[from, to, import_path, created_at] := *{table} {{ from, to, import_path, created_at }}")
+            format!(
+                "?[from, to, import_path, created_at] := *{table} {{ from, to, import_path, created_at }}"
+            )
         } else {
             format!("?[from, to, created_at] := *{table} {{ from, to, created_at }}")
         };
