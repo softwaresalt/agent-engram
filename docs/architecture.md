@@ -350,9 +350,9 @@ compile_error!("surreal-backend and cozo-backend are mutually exclusive");
 The default build uses CozoDB:
 
 ```bash
-cargo build   # cozo-backend (default)
-cargo test    # cozo-backend (default)
-cargo clippy  # cozo-backend (default)
+cargo build                                          # cozo-backend (default)
+cargo test                                           # cozo-backend (default)
+cargo clippy -- -D warnings -D clippy::pedantic      # cozo-backend (default)
 ```
 
 To build or test with the legacy SurrealDB backend, disable defaults:

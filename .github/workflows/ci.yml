@@ -22,15 +22,15 @@ jobs:
             features: "--no-default-features --features cozo-backend,embeddings"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy,rustfmt
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: fmt
         if: matrix.backend == 'surreal-backend'
@@ -45,24 +45,19 @@ jobs:
 
       - name: test (cozo-backend)
         if: matrix.backend == 'cozo-backend'
-        # Known pre-existing issues in cozo-backend that cannot be resolved
-        # in this PR (tracked for follow-up in stash):
-        #
-        # 1. SQLite panic under concurrent load: cozo-0.7.6 contains an
-        #    `unwrap()` in storage/sqlite.rs:49 that panics when multiple daemon
-        #    processes open SQLite concurrently.  Surfaces in
-        #    integration_concurrent_sessions tests (s_cs1, s_cs4).
-        #    Stash: U015-FLK1 — upgrade cozo or switch to WAL mode.
-        #
-        # 2. Daemon spawn latency: CozoDB/SQLite schema bootstrap is slower than
-        #    SurrealDB; spawn timeouts in shim_lifecycle_test are increased to
-        #    30 s to accommodate this.  Stash: U015-FLK2 — optimise boot path.
-        #
-        # --test-threads 1 reduces within-binary concurrency to lower contention.
-        # continue-on-error allows the job to report but not block the PR while
-        # the upstream cozo issue is investigated.
+        # Non-advisory: run all cozo-backend tests except the two tests that
+        # panic due to a known upstream bug in cozo-0.7.6 (U015-FLK1).
+        # See "test (cozo-backend, advisory)" step below for those tests.
+        run: cargo test ${{ matrix.features }} --all-targets -- --test-threads 1 --skip s_cs1_three_concurrent_health_checks_succeed --skip s_cs4_concurrent_indexing_serialised_by_in_progress_flag
+
+      - name: test (cozo-backend, advisory)
+        if: matrix.backend == 'cozo-backend'
+        # Advisory: integration_concurrent_sessions tests s_cs1 and s_cs4 fail
+        # due to an upstream `unwrap()` panic in cozo-0.7.6 storage/sqlite.rs:49
+        # under concurrent daemon load (U015-FLK1). This cannot be fixed here;
+        # tracked for follow-up (upgrade cozo or switch to WAL mode).
         continue-on-error: true
-        run: cargo test ${{ matrix.features }} --all-targets -- --test-threads 1
+        run: cargo test ${{ matrix.features }} --test integration_concurrent_sessions -- --test-threads 1
 
       - name: audit
         if: matrix.backend == 'surreal-backend'

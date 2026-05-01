@@ -1,8 +1,8 @@
 //! Integration test: `CozoDB` cold-restart round-trip (Task 001.006.004-T — U5.4).
 //!
 //! Verifies that the `CozoDB` backend survives a cold restart: code graph data
-//! dehydrated to JSONL files survives a data-directory deletion and is fully
-//! restored after reconnect + hydrate.
+//! dehydrated to JSONL files survives deletion of the `CozoDB` on-disk directory
+//! and is fully restored after reconnect + hydrate from the preserved JSONL artifacts.
 //!
 //! Run with the default features (or explicitly):
 //!   `cargo test --test integration_cozo_cold_restart`
