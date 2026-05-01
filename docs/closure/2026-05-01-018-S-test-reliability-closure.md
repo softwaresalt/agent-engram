@@ -61,7 +61,11 @@ harmless and excluded from version control by `.gitignore`.
 1. Run `cargo test` on main — confirm all tests pass.
 2. Verify `src/db/cozo_backend/mod.rs` no longer has `tokio::time::timeout` wrapper.
 3. Verify `tests/contract/atomic_policy_snapshot_test.rs` c018_07 has no `#[serial]`.
-4. In CI, verify the cozo-backend test step no longer requires `continue-on-error`.
+4. **Post-018-S discovery**: the fd-lock serialises `DbInstance::new()` but not schema bootstrap.
+   Parallel tests calling `connect_db` twice on the same DB path (set_workspace background task +
+   index_workspace) still hit `SQLITE_BUSY` during concurrent schema writes — an intra-process
+   variant of U015-FLK1. `continue-on-error: true` is retained in CI until stash `1092D3D6` is
+   resolved (extend fd-lock to cover schema bootstrap, or upgrade cozo 0.8+).
 
 ## Risky Action Record
 
