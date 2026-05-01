@@ -21,7 +21,7 @@ jobs:
             cozo_advisory: false
           - backend: cozo-backend
             features: "--no-default-features --features cozo-backend,embeddings"
-            cozo_advisory: true
+            cozo_advisory: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,7 +47,6 @@ jobs:
 
       - name: test (cozo-backend)
         if: matrix.backend == 'cozo-backend'
-        continue-on-error: true
         run: cargo test ${{ matrix.features }} --all-targets
 
       - name: audit

@@ -67,7 +67,7 @@ Ship agent / @softwaresalt — 7-day observation window from merge date.
 | --- | --- |
 | Window duration | 7 days from PR merge |
 | Owner | @softwaresalt |
-| Start condition | PR A merged to main |
+| Start condition | PR #60 merged to main |
 | End condition | 7 days elapsed with no regression reports |
 | Active signals | CI green on `main`; no issue reports on daemon startup or query failures |
 
@@ -91,8 +91,8 @@ During the window, watch for:
 
 ## Rollback Procedure
 
-**ProposedAction**: Revert Cargo.toml default feature  
-**ActionRisk**: moderate (reverts production default; surreal-backend is still present and tested)  
+**ProposedAction**: Revert Cargo.toml default feature<br>
+**ActionRisk**: moderate (reverts production default; surreal-backend is still present and tested)<br>
 **ActionResult**: planned
 
 Steps:

@@ -15,7 +15,7 @@ Agent Engram is a local-first Model Context Protocol daemon providing code graph
 | Format          | rustfmt             | `cargo fmt --all -- --check`                  |
 | CI              | GitHub Actions           | GitHub Actions CI: fmt → clippy → test → audit; release builds cross-platform (Linux, Windows, macOS)                          |
 | MCP SDK      | rmcp 1.1                  | JSON-RPC 2.0 via IPC transport            |
-| Database     | CozoDB 0.7 (embedded, SQLite storage) | Per-workspace path-based isolation (`{data_dir}/cozo/{branch}/engram.db`); `surreal-backend` available as non-default feature |
+| Database     | CozoDB 0.7 (embedded, SQLite storage) | Per-workspace path-based isolation (`{data_dir}/cozo/{branch_safe}/engram.db`); `surreal-backend` available as non-default feature |
 | Code Parsing | tree-sitter 0.25          | Rust source file indexing                 |
 | CLI          | clap 4                    | `ENGRAM_` env prefix                      |
 | Tracing      | tracing 0.1               | JSON or pretty format                     |

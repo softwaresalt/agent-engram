@@ -4,14 +4,13 @@
 //! the `SurrealDB` backend: connect → bootstrap → upsert → read → count →
 //! delete, all without error.
 //!
-//! Tests are gated on the `cozo-backend` feature.  Under the default
-//! `surreal-backend` build this file compiles but contains no runnable
-//! tests; under `--no-default-features --features cozo-backend` all tests
-//! run and are expected to FAIL until Phase 2 is complete.
+//! Tests are gated on the `cozo-backend` feature.  Since `cozo-backend` is now
+//! the default, all tests run under a plain `cargo test` invocation.  To run
+//! against the non-default `surreal-backend`, use
+//! `--no-default-features --features surreal-backend,embeddings`.
 //!
-//! CI invocation (advisory axis):
-//!   `cargo test --no-default-features --features cozo-backend`
-//!              `--test integration_cozo_dual_backend_sweep`
+//! CI invocation:
+//!   `cargo test --test integration_cozo_dual_backend_sweep`
 
 #[cfg(feature = "cozo-backend")]
 mod sweep {
@@ -110,7 +109,7 @@ mod sweep {
     //
     // Behavioral sweep verifying that CozoDB query results satisfy the same
     // acceptance criteria as the MCP-level contracts: symbol names/types,
-    // edge topology, impact-analysis scoping, and vector-search shape.
+    // edge topology, and vector-search shape.
 
     /// `list_symbols`-equivalent: symbols inserted and retrieved by file have
     /// the same names and types regardless of indexing order.

@@ -284,7 +284,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | Write Tools | `src/tools/write.rs` | Mutating MCP tools: `flush_state`, `index_workspace`, `sync_workspace`. |
 | Daemon Tools | `src/tools/daemon.rs` | Daemon-specific tool implementations. |
 | DB Layer | `src/db/` | CozoDB connection management (default), `CodeGraphQueries` struct, workspace hashing and canonicalization. SurrealDB backend under `src/db/` root files (non-default, `surreal-backend` feature). CozoDB backend under `src/db/cozo_backend/`. |
-| CozoDB Backend | `src/db/cozo_backend/` | Feature-gated CozoDB backend. `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (Arc<DbInstance>), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
+| CozoDB Backend | `src/db/cozo_backend/` | Default CozoDB backend (enabled by default; `surreal-backend` remains available as a non-default feature). `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (Arc<DbInstance>), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
 | CozoDB Queries | `src/db/cozo_queries.rs` | Full Phase 3-4 implementation: Datalog/CozoScript CRUD for all 20 relations; edge mutations for 6 edge kinds (calls, imports, defines, inherits_from, references, concerns); BFS/DFS traversal via `bfs_impl` with in-traversal `allowed_edge_types` filtering; HNSW vector search; hybrid graph+vector search; symbol identity lookups; `concerns_edge` specialty queries (keyed on `task_id`/`symbol_id`). All MCP tool paths return `Result<T, EngramError>`; `symbol-not-found` returns `Ok(vec![])`. |
 | CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
@@ -303,7 +303,7 @@ flush_state() (MCP tool call) or graceful shutdown
 
 ### Embedded Database
 
-Engram uses CozoDB in embedded mode (backed by SQLite) rather than a network database. Each workspace gets its own isolated database stored under `{ENGRAM_DATA_DIR}/{workspace_hash}/cozo/{branch}/engram.db`. This eliminates external dependencies and makes the daemon self-contained. The legacy `surreal-backend` feature remains available for comparison but is no longer the default.
+Engram uses CozoDB in embedded mode (backed by SQLite) rather than a network database. Each workspace gets its own isolated database stored under `{data_dir}/cozo/{branch_safe}/engram.db`, where `data_dir` defaults to `{workspace}/.engram` (or `ENGRAM_DATA_DIR` if set) and `branch_safe` is the sanitized Git branch name. This eliminates external dependencies and makes the daemon self-contained. The legacy `surreal-backend` feature remains available for comparison but is no longer the default.
 
 ### Code Graph as Primary Data Model
 
@@ -374,7 +374,7 @@ where `data_dir` is resolved by `resolve_data_dir`:
 - Default: `{workspace_root}/.engram`
 - Override: the value of the `ENGRAM_DATA_DIR` environment variable
 
-and `branch_safe` is the Git branch name with `/`, `\`, and `:` replaced by `_`.
+and `branch_safe` is the Git branch name sanitized for filesystem use: `/` is replaced by `__` (double-underscore) via `resolve_git_branch` → `sanitize_branch_for_path`, and any remaining `\` or `:` characters are replaced by `_` inside `connect_db`.
 
 ### CozoDB Schema
 
