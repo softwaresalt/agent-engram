@@ -7,8 +7,6 @@ title: CozoDB Migration Phases 5-7 — Scope, Ordering, and Timing
 status: decided
 ---
 
-# CozoDB Migration Phases 5-7 Deliberation
-
 ## Problem Frame
 
 Phases 1-4 of the CozoDB migration shipped (PR #15, PR #53). The `cozo-backend`
@@ -60,7 +58,9 @@ Current state:
   SurrealDB" — this is stale and needs updating.
 
 **Actual remaining work**:
-1. Update doc comments in `dehydration.rs` to be backend-neutral
+1. Update doc comments in `dehydration.rs` and `hydration.rs` to be backend-neutral
+   (`dehydration.rs` line 1 still references SurrealDB; `hydration.rs` module doc still
+   mentions loading into/upserting into SurrealDB)
 2. Write an integration test: delete CozoDB data dir → call `hydrate_workspace` →
    call `dehydrate_code_graph` → verify nodes survive the round-trip
 3. Verify `connect_db` creates a fresh CozoDB instance on missing path (it does — the
@@ -192,7 +192,7 @@ explicitly call out the default-flip in its description.
 
 ### U6.2: Documentation Updates
 
-Update `ARCHITECTURE.md`, `AGENTS.md`, `.github/copilot-instructions.md`:
+Update `docs/architecture.md`, `AGENTS.md`, `.github/copilot-instructions.md`:
 - Change "SurrealDB 2 (embedded)" to "CozoDB (embedded, SQLite storage)" in
   technology table
 - Update "Per-workspace namespace via SHA-256 hash" to reflect CozoDB's path-based
