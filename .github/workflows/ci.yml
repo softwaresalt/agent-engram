@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -43,19 +45,26 @@ jobs:
         if: matrix.backend == 'surreal-backend'
         run: cargo test ${{ matrix.features }} --all-targets
 
+      - name: Install cargo-nextest
+        if: matrix.backend == 'cozo-backend'
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+
       - name: test (cozo-backend)
         if: matrix.backend == 'cozo-backend'
-        # Advisory: cozo-0.7.6 has a known upstream `unwrap()` panic in
-        # storage/sqlite.rs:49 that fires when multiple test-binary processes
-        # open the same SQLite database concurrently (U015-FLK1).  All test
-        # binaries that spawn a CozoDB daemon are affected; the instability is
-        # not isolated to a single binary, so a stable/advisory split is not
-        # achievable without upgrading CozoDB or serialising binary execution.
+        # nextest --test-threads 1 serialises all test executions globally,
+        # preventing concurrent CozoDB SQLite access across test binaries.
+        # Excludes s_cs1/s_cs4: those tests intentionally exercise concurrent
+        # daemon access and trigger the upstream cozo-0.7.6 SQLite panic (U015-FLK1);
+        # they are run separately below as advisory.
+        run: cargo nextest run ${{ matrix.features }} --test-threads 1 -E 'not (test(s_cs1_three_concurrent_health_checks_succeed) or test(s_cs4_concurrent_indexing_serialised_by_in_progress_flag))'
+
+      - name: test (cozo-backend, advisory)
+        if: matrix.backend == 'cozo-backend'
+        # Advisory: s_cs1 and s_cs4 intentionally test concurrent daemon access;
+        # the upstream cozo-0.7.6 SQLite panic fires by design (U015-FLK1).
         # Tracked for follow-up: upgrade cozo or switch to WAL mode.
-        #
-        # --test-threads 1 reduces within-binary concurrency (U015-FLK2 mitigation).
         continue-on-error: true
-        run: cargo test ${{ matrix.features }} --all-targets -- --test-threads 1
+        run: cargo nextest run ${{ matrix.features }} -E 'test(s_cs1_three_concurrent_health_checks_succeed) or test(s_cs4_concurrent_indexing_serialised_by_in_progress_flag)'
 
       - name: audit
         if: matrix.backend == 'surreal-backend'
