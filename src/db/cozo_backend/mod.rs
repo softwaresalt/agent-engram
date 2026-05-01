@@ -5,7 +5,7 @@
 
 pub mod schema;
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use crate::errors::{EngramError, SystemError};
 
@@ -106,30 +106,32 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
     // SQLite lock contention).  The lock is held only during `DbInstance::new`;
     // CozoDB's own SQLite WAL handles concurrent access after the handle is open.
     //
-    // `spawn_blocking` + `tokio::time::timeout` are required because
-    // `fd_lock::RwLock::write()` blocks the calling thread and must not run on
-    // the async executor.  This matches the plan-review R1 advisory.
-    let db = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::task::spawn_blocking(move || -> Result<cozo::DbInstance, EngramError> {
-            let lock_file = std::fs::OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .truncate(false)
-                .open(&lock_path)
-                .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
-            let mut file_lock = fd_lock::RwLock::new(lock_file);
-            // Blocks until the exclusive lock is acquired; released on `_guard` drop.
-            let _guard = file_lock
-                .write()
-                .map_err(|e| map_db_err(format!("cannot acquire CozoDB lock: {e}")))?;
-            cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
-                .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))
-        }),
-    )
+    // `spawn_blocking` is required because `fd_lock::RwLock::write()` blocks
+    // the calling thread and must not run on the async executor.  No external
+    // timeout is applied: the OS-level lock acquisition is fast (microseconds
+    // once any peer has finished opening their DbInstance), and wrapping
+    // `spawn_blocking` in `tokio::time::timeout` would leave the blocking thread
+    // running after the caller received an error — a resource leak with no
+    // recovery path.  If the lock is somehow held indefinitely (e.g. process
+    // crash without lock release), the OS automatically releases advisory locks
+    // when the holding process exits.
+    let db = tokio::task::spawn_blocking(move || -> Result<cozo::DbInstance, EngramError> {
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
+        let mut file_lock = fd_lock::RwLock::new(lock_file);
+        // Blocks until the exclusive lock is acquired; released on `_guard` drop.
+        let _guard = file_lock
+            .write()
+            .map_err(|e| map_db_err(format!("cannot acquire CozoDB lock: {e}")))?;
+        cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
+            .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))
+    })
     .await
-    .map_err(|_| map_db_err("database locked by another process (5 s timeout)"))?
     .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))??;
 
     let cozo_db = CozoDb {

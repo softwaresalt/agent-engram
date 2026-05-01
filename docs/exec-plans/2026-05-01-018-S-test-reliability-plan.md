@@ -63,20 +63,22 @@ panic on SQLite lock contention rather than returning `Err`.
 
 ### Approach
 
-**Option A (preferred): Add process-level file lock before opening CozoDB.**
+**Option A (implemented): Add process-level file lock before opening CozoDB.**
 
-Wrap the `DbInstance::new` call with an advisory file lock (`fs2::FileExt` or
-`fd-lock`) on a `.lock` sidecar file next to the database. This serializes
-concurrent open attempts at the process level, preventing the internal panic.
+Wrap the `DbInstance::new` call with an advisory file lock (`fd-lock`) on a
+`.lock` sidecar file next to the database. This serializes concurrent open
+attempts at the process level, preventing the internal panic.
 
 Steps:
 
-1. Add `fs2` dependency (lightweight, already widely used in the Rust ecosystem)
+1. Add `fd-lock` dependency (already used elsewhere in the workspace)
 2. Before `DbInstance::new`, acquire an exclusive lock on `{db_dir}/engram.db.lock`
-3. If the lock cannot be acquired within 5 seconds, return
-   `EngramError::System(DatabaseError { reason: "database locked by another process" })`
-4. Hold the lock for the lifetime of the `CozoDb` handle (store the `File` in the struct)
-5. On drop, the lock is automatically released
+3. Release the lock immediately after `DbInstance::new` returns (lock held during
+   open only; CozoDB's own SQLite WAL handles concurrent access once the handle is open)
+4. No external timeout is applied — the OS advisory lock is fast to acquire once
+   any peer finishes opening, and wrapping `spawn_blocking` in a timeout would leave
+   the blocking thread running after the caller received an error (resource leak with
+   no recovery path)
 
 **Option B (deferred): Upgrade cozo to 0.8+ if/when it fixes the internal panic.**
 
@@ -86,8 +88,8 @@ Not viable today — cozo 0.8 is not released and 0.7.6 is the latest stable.
 
 | File | Change |
 |---|---|
-| `Cargo.toml` | Add `fs2 = "0.4"` dependency |
-| `src/db/cozo_backend/mod.rs` | Add lock file field to `CozoDb`, lock acquisition in `connect_db`, error path for lock timeout |
+| `Cargo.toml` | Add `fd-lock` dependency |
+| `src/db/cozo_backend/mod.rs` | Add lock acquisition in `connect_db` via `spawn_blocking`; lock released after open |
 
 ### Acceptance Criteria
 
@@ -101,7 +103,7 @@ Not viable today — cozo 0.8 is not released and 0.7.6 is the latest stable.
 
 | Subtask | Scope | Est. |
 |---|---|---|
-| 036.001.001-ST | Add `fs2` dep and lock file struct field + acquisition logic | 1h |
+| 036.001.001-ST | Add `fd-lock` dep and lock acquisition logic in `connect_db` | 1h |
 | 036.001.002-ST | Add unit test for concurrent-open error path | 0.5h |
 | 036.001.003-ST | Verify integration tests pass with lock in place | 0.5h |
 
