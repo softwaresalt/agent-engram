@@ -17,10 +17,10 @@ jobs:
       matrix:
         include:
           - backend: surreal-backend
-            features: "--no-default-features --features surreal-backend"
+            features: "--no-default-features --features surreal-backend,embeddings"
             cozo_advisory: false
           - backend: cozo-backend
-            features: "--no-default-features --features cozo-backend"
+            features: "--no-default-features --features cozo-backend,embeddings"
             cozo_advisory: true
     steps:
       - name: Checkout
