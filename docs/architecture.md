@@ -339,9 +339,9 @@ compile_error!("The `cozo-backend` feature is required; it is the only supported
 Standard build commands:
 
 ```bash
-cargo build                                          # cozo-backend (default)
-cargo test                                           # cozo-backend (default)
-cargo clippy -- -D warnings -D clippy::pedantic      # cozo-backend (default)
+cargo build                                                              # cozo-backend (default)
+cargo test                                                               # cozo-backend (default)
+cargo clippy --all-targets -- -D warnings -D clippy::pedantic           # cozo-backend (default)
 ```
 
 ### CozoDB Storage Path

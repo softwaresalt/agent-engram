@@ -10,8 +10,6 @@ source_artifacts:
   - docs/memory/2026-05-01/017-S-surreal-removal-final-memory.md
 ---
 
-# Compacted Memory: Shipment 017-S — SurrealDB Removal
-
 ## Outcome
 
 Shipped. PR #63 merged (commit `8cd565b`, branch `chore/001.008-C-surreal-removal → main`).
