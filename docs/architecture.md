@@ -285,7 +285,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | Daemon Tools | `src/tools/daemon.rs` | Daemon-specific tool implementations. |
 | DB Layer | `src/db/` | SurrealDB connection management, `CodeGraphQueries` struct, workspace hashing and canonicalization. CozoDB backend under `src/db/cozo_backend/` (feature-gated). |
 | CozoDB Backend | `src/db/cozo_backend/` | Feature-gated CozoDB backend. `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (Arc<DbInstance>), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
-| CozoDB Queries | `src/db/cozo_queries.rs` | Datalog/CozoScript CRUD for code_file, function, class, interface relations; counts; symbol search by name. Returns `Ok(vec![])` for symbol-not-found (not `Err`) to support `impact_analysis` contract. |
+| CozoDB Queries | `src/db/cozo_queries.rs` | Full Phase 3-4 implementation: Datalog/CozoScript CRUD for all 20 relations; edge mutations for 6 edge kinds (calls, imports, defines, inherits_from, references, concerns); BFS/DFS traversal via `bfs_impl` with in-traversal `allowed_edge_types` filtering; HNSW vector search; hybrid graph+vector search; symbol identity lookups; `concerns_edge` specialty queries (keyed on `task_id`/`symbol_id`). All MCP tool paths return `Result<T, EngramError>`; `symbol-not-found` returns `Ok(vec![])`. |
 | CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
 | Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `4.0.0`. |
@@ -367,22 +367,34 @@ This is separate from the SurrealDB path (`{ENGRAM_DATA_DIR}/{workspace_hash}/`)
 
 ### CozoDB Schema
 
-Twelve CozoScript `:create` relations are bootstrapped idempotently at connection time via `run_schema_bootstrap` in `src/db/cozo_backend/schema.rs`:
+Twenty CozoScript `:create` relations are bootstrapped idempotently at connection time via `run_schema_bootstrap` in `src/db/cozo_backend/schema.rs`:
 
 | Relation | Purpose |
 |---|---|
-| `code_file` | Source file nodes |
-| `function` | Function/method symbol nodes |
-| `class` | Class symbol nodes |
-| `interface` | Interface/trait symbol nodes |
-| `call_edge` | Caller→callee edges |
-| `ref_edge` | Reference edges |
-| `content_record` | Indexed content chunks |
-| `commit_node` | Git commit nodes |
-| `commit_edge` | Commit parent edges |
-| `workspace_meta` | Per-workspace configuration |
-| `embedding_vector` | Symbol embedding vectors |
-| `hnsw_index` | HNSW vector index metadata |
+| `file_node` | Source file metadata |
+| `function_meta` | Function/method identity and source-position |
+| `function_code` | Function raw source body |
+| `function_embedding` | Function float vector (384-dim) |
+| `class_meta` | Class identity and source-position |
+| `class_code` | Class raw source body |
+| `class_embedding` | Class float vector (384-dim) |
+| `interface_meta` | Interface/trait identity and source-position |
+| `interface_code` | Interface raw source body |
+| `interface_embedding` | Interface float vector (384-dim) |
+| `import_node` | File-level import entries |
+| `commit_node` | Git commit metadata |
+| `calls_edge` | Function-to-function call edges; key: `(from, to)` |
+| `imports_edge` | File-level import dependency edges; composite key: `(from, to, import_path)` |
+| `defines_edge` | File-to-symbol containment edges; key: `(from, to)` |
+| `inherits_from_edge` | Class/interface inheritance edges; key: `(from, to)` |
+| `concerns_edge` | Cross-region task-to-symbol link; key: `(task_id, symbol_id)` — **not** `(from, to)` |
+| `references_edge` | Qualified-name reference edges; composite key: `(from, to, qualified_name)` |
+| `content_record` | Ingested workspace content chunks with embedding |
+| `file_hash` | Content-hash cache for change detection |
+
+**Important composite-key constraints**: `imports_edge` and `references_edge` require all three fields
+in any `:rm` operation — providing only `(from, to)` will silently no-op. `concerns_edge` uses
+`(task_id, symbol_id)` as its key; never use `from`/`to` column names on this relation.
 
 Schema bootstrap is idempotent: `:create` errors containing "already", "defined", "conflicts", or "existing" are silently ignored.
 
@@ -407,9 +419,22 @@ Key Datalog patterns used in `src/db/cozo_queries.rs`:
 
 `CozoDb` wraps `Arc<cozo::DbInstance>`. CozoDB 0.7's `DbInstance` uses internal `Arc<RwLock<...>>`, making it `Send + Sync` and safe for shared async access without additional locking.
 
-### Phase 3+ Roadmap
+### Implementation Status
 
-Graph edge CRUD (call/ref edges), BFS/DFS traversal, HNSW vector KNN search, and bulk-read operations are deferred to Phase 3 (`68E3719F`). The stubs in `src/db/cozo_queries.rs` return `Err(EngramError::Backend(...))` until implemented.
+Phases 1 through 4 of the CozoDB migration are complete as of Shipment 014-S (merged 2026-04-30):
+
+| Phase | Scope | Status |
+|---|---|---|
+| Phase 1 | Schema bootstrap, basic CRUD (function/class/interface/file_node) | ✅ complete |
+| Phase 2 | Dual-backend architecture, feature flag compile guard, basic query parity | ✅ complete |
+| Phase 3 | Edge CRUD (5 edge kinds), BFS traversal, symbol identity lookups, `concerns_edge` specialty queries | ✅ complete |
+| Phase 4 | HNSW vector index activation, native vector search, hybrid graph+vector single-program search | ✅ complete |
+
+All MCP tool responses are structurally equivalent between `surreal-backend` and `cozo-backend`.
+The `cozo-backend` is production-eligible for local developer use.
+
+**Phase 5 (future)**: Systematic smoke-test comparison of all MCP tool responses between backends
+on a real workspace to certify full production parity. See `docs/closure/2026-04-30-014-s-cozodb-phase3-4-closure.md`.
 
 ---
 

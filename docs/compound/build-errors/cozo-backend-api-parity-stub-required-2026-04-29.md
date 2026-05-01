@@ -1,6 +1,6 @@
 ---
-title: "cozo-backend API Parity: Every pub(crate) Method in queries.rs Needs a Stub in cozo_queries.rs"
-description: "When a new method is added to the surreal-backend queries.rs, the cozo-backend build fails with 'method not found' unless a matching stub is added to cozo_queries.rs"
+title: "cozo-backend API Parity: Every pub(crate) Method in queries.rs Needs a Matching Implementation in cozo_queries.rs"
+description: "When a new method is added to the surreal-backend queries.rs, the cozo-backend build fails with 'method not found' unless a matching implementation (or stub) is added to cozo_queries.rs. As of Shipment 014-S (2026-04-30), cozo_queries.rs has full Phase 3-4 implementations — new methods should be fully implemented, not just stubbed."
 problem_type: "build_failure"
 category: "build-errors"
 component: "src/db/cozo_queries.rs"
@@ -11,12 +11,16 @@ message: "error[E0599]: no method named `resolve_reference_target` found for str
 file_path: "src/db/cozo_queries.rs"
 citations:
   - "https://github.com/softwaresalt/agent-engram/pull/49"
+  - "https://github.com/softwaresalt/agent-engram/pull/53"
   - "docs/closure/2026-04-29-016-S-sql-reference-resolution-closure.md"
+  - "docs/closure/2026-04-30-014-s-cozodb-phase3-4-closure.md"
+updated_at: "2026-04-30"
 tags:
   - "cozo-backend"
   - "api-parity"
   - "dead-code"
   - "allow-dead-code"
+  - "014-S"
   - "016-S"
   - "feature-flags"
 ---
@@ -63,8 +67,13 @@ pub(crate) async fn get_class_by_name_ci(
 ## Prevention
 
 **Rule:** Every `pub(crate)` method added to `src/db/queries.rs` (surreal-backend) must have
-a corresponding stub in `src/db/cozo_queries.rs` (cozo-backend). Run the cozo build locally
-before pushing:
+a corresponding implementation in `src/db/cozo_queries.rs` (cozo-backend). As of Shipment 014-S
+(2026-04-30), `cozo_queries.rs` has full Phase 3-4 implementations for all current methods.
+New methods should be **fully implemented** whenever possible. Stubs returning `Ok(None)`
+or `Err(Backend(...))` are only acceptable for methods that have no meaningful cozo path
+(e.g., `resolve_reference_target` does not re-resolve in the cozo backend by design).
+
+Run the cozo build locally before pushing:
 
 ```bash
 cargo build --features cozo-backend --no-default-features
