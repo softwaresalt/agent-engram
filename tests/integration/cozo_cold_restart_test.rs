@@ -1,6 +1,6 @@
-//! Integration test: CozoDB cold-restart round-trip (Task 001.006.004-T — U5.4).
+//! Integration test: `CozoDB` cold-restart round-trip (Task 001.006.004-T — U5.4).
 //!
-//! Verifies that the CozoDB backend survives a cold restart: code graph data
+//! Verifies that the `CozoDB` backend survives a cold restart: code graph data
 //! dehydrated to JSONL files survives a data-directory deletion and is fully
 //! restored after reconnect + hydrate.
 //!
@@ -11,7 +11,7 @@
 mod cold_restart {
     use tempfile::TempDir;
 
-    /// Connect the CozoDB backend and return a query handle.
+    /// Connect the `CozoDB` backend and return a query handle.
     async fn open_cg(tmp: &TempDir, branch: &str) -> engram::db::queries::CodeGraphQueries {
         let db = engram::db::connect_db(tmp.path(), branch)
             .await
@@ -19,18 +19,18 @@ mod cold_restart {
         engram::db::queries::CodeGraphQueries::new(db)
     }
 
-    /// Simulate a cold restart: close the current DB handle, delete the CozoDB
+    /// Simulate a cold restart: close the current DB handle, delete the `CozoDB`
     /// on-disk files, then reconnect and hydrate from the JSONL dehydration artifacts.
     ///
-    /// Takes `_prev_cg` by value so the `Arc<cozo::DbInstance>` is dropped before
-    /// `remove_dir_all` — required on Windows where SQLite holds the file open.
+    /// Takes `prev_cg` by value so the `Arc<cozo::DbInstance>` is dropped before
+    /// `remove_dir_all` — required on Windows where `SQLite` holds the file open.
     async fn cold_restart(
-        _prev_cg: engram::db::queries::CodeGraphQueries,
+        prev_cg: engram::db::queries::CodeGraphQueries,
         tmp: &TempDir,
         branch: &str,
     ) -> engram::db::queries::CodeGraphQueries {
         // Drop the previous handle first to release the SQLite file lock.
-        drop(_prev_cg);
+        drop(prev_cg);
         // Remove the CozoDB data directory to simulate process restart with empty DB.
         let cozo_dir = tmp.path().join("cozo");
         if cozo_dir.exists() {
@@ -57,7 +57,7 @@ mod cold_restart {
     }
 
     /// Prove that a `code_file` node survives the full cold-restart cycle:
-    /// upsert → dehydrate → delete CozoDB files → reconnect → hydrate → verify node present.
+    /// upsert → dehydrate → delete `CozoDB` files → reconnect → hydrate → verify node present.
     #[tokio::test]
     async fn code_file_survives_cold_restart() {
         let branch = "restart-file";
