@@ -8,6 +8,7 @@
 use std::fs;
 use std::sync::Arc;
 
+use serial_test::serial;
 use serde_json::json;
 use tokio::test;
 
@@ -258,7 +259,16 @@ async fn c018_05_concurrent_config_flip_does_not_bypass_policy() {
 /// RED: The current dispatch returns early on `PolicyDenied` (line ~129)
 /// before reaching the metrics recording block (line ~192), so no event
 /// is recorded for denied calls.
+///
+/// `#[serial]` is required because `metrics::clear_recent_events()` resets a
+/// process-global ledger.  Without isolation, a concurrent test's denied event
+/// can race with the `clear_recent_events` / `recent_events` assertion window,
+/// producing a non-deterministic result.  c018_07 uses a unique three-field
+/// predicate (`tool_name + outcome + agent_role`) that self-isolates without
+/// serialisation; c018_06 has no such unique discriminator, so `#[serial]` is
+/// the correct fix here.
 #[test]
+#[serial]
 async fn c018_06_policy_denied_call_records_metrics_with_denied_outcome() {
     // GIVEN a workspace with deny-all policy and clear metrics ledger
     let (state, _workspace) = setup_workspace_with_policy(deny_all_policy()).await;
