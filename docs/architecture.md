@@ -76,9 +76,9 @@ Engram is a code intelligence MCP daemon. It indexes source files into a queryab
 │  ┌──────────▼──────────────────────────────────────────────────┐    │
 │  │                   Persistence Layer                          │    │
 │  │  ┌─────────────────────────┐  ┌────────────────────────┐   │    │
-│  │  │      SurrealDB          │  │    Workspace Files     │   │    │
-│  │  │  (embedded, per-        │  │  (.engram/config.toml  │   │    │
-│  │  │   workspace SurrealKv)  │  │   .engram/.version     │   │    │
+│  │  │       CozoDB           │  │    Workspace Files     │   │    │
+│  │  │  (embedded SQLite,      │  │  (.engram/config.toml  │   │    │
+│  │  │   per-workspace db)     │  │   .engram/.version     │   │    │
 │  │  │                         │  │   .engram/registry.yaml│   │    │
 │  │  │  • Code graph nodes     │  │   .engram/code-graph/  │   │    │
 │  │  │  • Semantic embeddings  │  │   .engram/.lastflush)  │   │    │
@@ -86,11 +86,11 @@ Engram is a code intelligence MCP daemon. It indexes source files into a queryab
 │  │  │  • Git commit graph     │  │                        │   │    │
 │  │  └─────────────────────────┘  └────────────────────────┘   │    │
 │  │                                                             │    │
-│  │  Alternate backend (feature flag: cozo-backend):           │    │
+│  │  Alternate backend (feature flag: surreal-backend):        │    │
 │  │  ┌─────────────────────────┐                               │    │
-│  │  │        CozoDB           │                               │    │
-│  │  │  (embedded SQLite,      │                               │    │
-│  │  │   Datalog/CozoScript)   │                               │    │
+│  │  │       SurrealDB         │                               │    │
+│  │  │  (embedded SurrealKv,   │                               │    │
+│  │  │   non-default feature)  │                               │    │
 │  │  │                         │                               │    │
 │  │  │  • Code graph nodes     │                               │    │
 │  │  │  • Semantic embeddings  │                               │    │
@@ -155,7 +155,7 @@ Agent ──► index_workspace() ──► Write handler
                            │  • call edges        │
                            └──────────┬──────────┘
                                       │
-                              upsert into SurrealDB
+                              upsert into CozoDB
                               code graph tables
                                       │
                               generate embeddings
@@ -173,7 +173,7 @@ Agent ──► unified_search(query="auth error") ──► Read handler
                                               (nomic-embed-text)
                                                        │
                                            ┌───────────▼───────────┐
-                                           │  SurrealDB ANN search  │
+                                           │  CozoDB ANN search    │
                                            │  (cosine similarity)   │
                                            │                        │
                                            │  default regions:      │
@@ -231,7 +231,7 @@ set_workspace(path) (MCP tool call)
     │   ├── detect stale_files     → compare file mtimes vs DB state
     │   └── record last_flush timestamp
     │
-    ├── connect_db()               → open embedded SurrealDB (SurrealKv)
+    ├── connect_db()               → open embedded CozoDB (SQLite backend)
     │
     ├── hydrate_code_graph()       → load .engram/code-graph/ JSONL
     │   ├── load code file nodes
@@ -251,7 +251,7 @@ set_workspace(path) (MCP tool call)
 Active workspace is available for all tool calls. The `SharedState` (`Arc<AppState>`) holds:
 
 - The current `WorkspaceSnapshot` (path, connection count, file mtimes, code graph stats).
-- A handle to the per-workspace SurrealDB connection.
+- A handle to the per-workspace CozoDB connection (`CodeGraphQueries` wrapping an `Arc<DbInstance>`).
 - The workspace configuration.
 
 Code graph indexing (`index_workspace`, `sync_workspace`) updates symbol tables and regenerates embeddings incrementally.
@@ -283,8 +283,8 @@ flush_state() (MCP tool call) or graceful shutdown
 | Read Tools | `src/tools/read.rs` | All read-only MCP tools: `query_memory`, `unified_search`, `map_code`, `list_symbols`, `impact_analysis`, `get_workspace_statistics`, `query_graph`. |
 | Write Tools | `src/tools/write.rs` | Mutating MCP tools: `flush_state`, `index_workspace`, `sync_workspace`. |
 | Daemon Tools | `src/tools/daemon.rs` | Daemon-specific tool implementations. |
-| DB Layer | `src/db/` | SurrealDB connection management, `CodeGraphQueries` struct, workspace hashing and canonicalization. CozoDB backend under `src/db/cozo_backend/` (feature-gated). |
-| CozoDB Backend | `src/db/cozo_backend/` | Feature-gated CozoDB backend. `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (Arc<DbInstance>), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
+| DB Layer | `src/db/` | CozoDB connection management (default), `CodeGraphQueries` struct, workspace hashing and canonicalization. SurrealDB backend under `src/db/` root files (non-default, `surreal-backend` feature). CozoDB backend under `src/db/cozo_backend/`. |
+| CozoDB Backend | `src/db/cozo_backend/` | Default CozoDB backend (enabled by default; `surreal-backend` remains available as a non-default feature). `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (Arc<DbInstance>), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
 | CozoDB Queries | `src/db/cozo_queries.rs` | Full Phase 3-4 implementation: Datalog/CozoScript CRUD for all 20 relations; edge mutations for 6 edge kinds (calls, imports, defines, inherits_from, references, concerns); BFS/DFS traversal via `bfs_impl` with in-traversal `allowed_edge_types` filtering; HNSW vector search; hybrid graph+vector search; symbol identity lookups; `concerns_edge` specialty queries (keyed on `task_id`/`symbol_id`). All MCP tool paths return `Result<T, EngramError>`; `symbol-not-found` returns `Ok(vec![])`. |
 | CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
@@ -303,7 +303,7 @@ flush_state() (MCP tool call) or graceful shutdown
 
 ### Embedded Database
 
-Engram uses SurrealDB in embedded mode (backed by SurrealKv) rather than a network database. Each workspace gets its own isolated database stored under `ENGRAM_DATA_DIR/{workspace_hash}/`. This eliminates external dependencies and makes the daemon self-contained.
+Engram uses CozoDB in embedded mode (backed by SQLite) rather than a network database. Each workspace gets its own isolated database stored under `{data_dir}/cozo/{branch_safe}/engram.db`, where `data_dir` defaults to `{workspace}/.engram` (or `ENGRAM_DATA_DIR` if set) and `branch_safe` is the sanitized Git branch name. This eliminates external dependencies and makes the daemon self-contained. The legacy `surreal-backend` feature remains available for comparison but is no longer the default.
 
 ### Code Graph as Primary Data Model
 
@@ -315,7 +315,7 @@ The canonical source of truth for the indexed code graph is the `.engram/code-gr
 
 ### Semantic Search via Embeddings
 
-Code symbol names, content records, and commit messages are embedded using the bundled `nomic-embed-text` model at index time. Semantic search (`query_memory`, `unified_search`) performs approximate nearest-neighbor (ANN) search in SurrealDB using cosine similarity, enabling natural-language queries without full-text search indexes.
+Code symbol names, content records, and commit messages are embedded using the bundled `nomic-embed-text` model at index time. Semantic search (`query_memory`, `unified_search`) performs approximate nearest-neighbor (ANN) search in CozoDB using cosine similarity, enabling natural-language queries without full-text search indexes.
 
 ### IPC Transport
 
@@ -325,20 +325,20 @@ The `engram` binary serves dual roles: as the MCP daemon (`engram daemon`) and a
 
 The `Language` enum in `src/services/parsing/` centralises language dispatch. Each variant (Rust, Python, TypeScript, Tsx, JavaScript, Go, CSharp, Swift, C, Cpp, Kotlin, Sql) maps to a dedicated submodule that uses the appropriate tree-sitter grammar. TSX uses `LANGUAGE_TSX` (not `LANGUAGE_TYPESCRIPT`) to correctly parse JSX syntax. Extensions `.jsx` reuse the JavaScript grammar; `.tsx` requires the TSX grammar variant. The project runtime baseline is tree-sitter `0.25`, which accepts grammar ABI 13–15. Existing grammar crates pinned at `"0.23"` emit ABI 14 (compatible). `tree-sitter-swift` must be pinned to `"=0.7.1"` (requires ABI 15, emitted by tree-sitter CLI ≥ 0.25). Kotlin parsing is deferred: `tree-sitter-kotlin 0.3.x` targets tree-sitter 0.20–0.22 and is incompatible with 0.25; `kotlin.rs` is a no-op stub until a compatible crate is published. SQL parsing uses `tree-sitter-sequel 0.3` (ABI 15, compatible with runtime 0.25): `CREATE TABLE`/`CREATE VIEW` → `Class` symbols, `CREATE FUNCTION` → `Function` symbols, `FROM`/`INSERT INTO` targets → `References` edges via `ExtractedEdge::References { source, target }`. Schema-qualified names (e.g., `public.orders`) are captured by joining all `identifier` children of the `object_reference` node. JOIN-referenced tables are extracted from `join`/`cross_join`/`lateral_join`/`lateral_cross_join` child nodes of the `from` node. `CREATE PROCEDURE` is not yet supported by the grammar (produces `ERROR` nodes); the parser degrades gracefully to 0 symbols.
 
-References edges are persisted to a `SCHEMAFULL` SurrealDB table (not `TYPE RELATION`) to avoid silent edge drops when the target class node does not yet exist. When the target class is found in the workspace, the edge is resolved (target = class ID); when not found, the edge is a self-loop on the source file with `qualified_name` capturing the raw identifier for later resolution. A post-pass (`reresolve_references_edges`) re-resolves all self-loop edges after each full index pass to handle forward-reference scenarios where the target file was processed after the source. The re-resolution uses a batch class-name lookup (collecting all unique target names first, then resolving in one pass) to avoid N+1 round-trips. The shared helper `resolve_reference_target` encapsulates resolution heuristics: it builds an ordered candidate list of [raw, last-segment, stripped-quotes, stripped-quotes-last-segment] forms, then tries exact match followed by case-insensitive match across all candidates. This handles schema-qualified names (`public.orders`), double-quoted identifiers (`"Orders"`), and bracket-quoted identifiers (`[Orders]`). The `references` table carries a `references_target` index for efficient post-pass lookups. Note: SurrealDB `string::lowercase()` in WHERE clauses does not filter reliably on the embedded KV backend — case-insensitive matching is performed Rust-side after a full-table fetch.
+References edges are stored in both backends with the same semantic: when the target class is found in the workspace, the edge is resolved (target = class ID); when not found, the edge is a self-loop on the source file with `qualified_name` capturing the raw identifier for later resolution. A post-pass (`reresolve_references_edges`) re-resolves all self-loop edges after each full index pass to handle forward-reference scenarios where the target file was processed after the source. The re-resolution uses a batch class-name lookup (collecting all unique target names first, then resolving in one pass) to avoid N+1 round-trips. The shared helper `resolve_reference_target` encapsulates resolution heuristics: it builds an ordered candidate list of [raw, last-segment, stripped-quotes, stripped-quotes-last-segment] forms, then tries exact match followed by case-insensitive match across all candidates. This handles schema-qualified names (`public.orders`), double-quoted identifiers (`"Orders"`), and bracket-quoted identifiers (`[Orders]`). The `references` table carries an index on the target field for efficient post-pass lookups. In the CozoDB backend (default), case-insensitive matching is performed Rust-side after a targeted lookup. In the legacy `surreal-backend`, `string::lowercase()` in WHERE clauses does not filter reliably on the embedded KV backend — Rust-side matching is also used there.
 
 ---
 
 ## Dual-Backend Architecture
 
-Phase 2 of the CozoDB migration introduced a feature-gated dual-backend design. The two backends are **mutually exclusive** at compile time via Cargo feature flags.
+Phase 2–6 of the CozoDB migration introduced and completed a feature-gated dual-backend design. The two backends are **mutually exclusive** at compile time via Cargo feature flags.
 
 ### Feature Flags
 
 | Feature | Default | Description |
-|---|---|---|
-| `surreal-backend` | ✅ on | SurrealDB embedded (SurrealKv) — stable, production backend |
-| `cozo-backend` | ❌ off | CozoDB embedded (SQLite) — migration target backend |
+| --- | --- | --- |
+| `cozo-backend` | ✅ on | CozoDB embedded (SQLite) — production default since Phase 6 |
+| `surreal-backend` | ❌ off | SurrealDB embedded (SurrealKv) — available as non-default feature |
 
 A `compile_error!` guard in `src/db/mod.rs` prevents both from being active simultaneously:
 
@@ -347,12 +347,19 @@ A `compile_error!` guard in `src/db/mod.rs` prevents both from being active simu
 compile_error!("surreal-backend and cozo-backend are mutually exclusive");
 ```
 
-To build or test with the CozoDB backend, you **must** disable defaults:
+The default build uses CozoDB:
 
 ```bash
-cargo build --no-default-features --features "cozo-backend"
-cargo test  --no-default-features --features "cozo-backend"
-cargo clippy --no-default-features --features "cozo-backend"
+cargo build                                          # cozo-backend (default)
+cargo test                                           # cozo-backend (default)
+cargo clippy -- -D warnings -D clippy::pedantic      # cozo-backend (default)
+```
+
+To build or test with the legacy SurrealDB backend, disable defaults:
+
+```bash
+cargo build --no-default-features --features "surreal-backend,embeddings"
+cargo test  --no-default-features --features "surreal-backend,embeddings"
 ```
 
 ### CozoDB Storage Path
@@ -360,10 +367,14 @@ cargo clippy --no-default-features --features "cozo-backend"
 The CozoDB backend stores its SQLite file at:
 
 ```
-{ENGRAM_DATA_DIR}/{workspace_hash}/cozo.db
+{data_dir}/cozo/{branch_safe}/engram.db
 ```
 
-This is separate from the SurrealDB path (`{ENGRAM_DATA_DIR}/{workspace_hash}/`), so both backends can coexist on disk without conflict during migration development.
+where `data_dir` is resolved by `resolve_data_dir`:
+- Default: `{workspace_root}/.engram`
+- Override: the value of the `ENGRAM_DATA_DIR` environment variable
+
+and `branch_safe` is the Git branch name sanitized for filesystem use: `/` is replaced by `__` (double-underscore) via `resolve_git_branch` → `sanitize_branch_for_path`, and any remaining `\` or `:` characters are replaced by `_` inside `connect_db`.
 
 ### CozoDB Schema
 

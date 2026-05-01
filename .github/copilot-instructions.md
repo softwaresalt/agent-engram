@@ -1,8 +1,8 @@
 # agent-engram Development Guidelines
 
-Last updated: 2026-04-26
+Last updated: 2026-05-01
 
-Agent Engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded SurrealDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS). The project enforces strict safety (forbid unsafe, deny unwrap/expect), test-first development with three test tiers, and comprehensive observability via structured tracing.
+Agent Engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded CozoDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS). The project enforces strict safety (forbid unsafe, deny unwrap/expect), test-first development with three test tiers, and comprehensive observability via structured tracing.
 
 ## Technology Stack
 
@@ -15,7 +15,7 @@ Agent Engram is a local-first Model Context Protocol daemon providing code graph
 | Format          | rustfmt             | `cargo fmt --all -- --check`                  |
 | CI              | GitHub Actions           | GitHub Actions CI: fmt → clippy → test → audit; release builds cross-platform (Linux, Windows, macOS)                          |
 | MCP SDK      | rmcp 1.1                  | JSON-RPC 2.0 via IPC transport            |
-| Database     | SurrealDB 2 (embedded)    | Per-workspace namespace via SHA-256 hash  |
+| Database     | CozoDB 0.7 (embedded, SQLite storage) | Per-workspace path-based isolation (`{data_dir}/cozo/{branch_safe}/engram.db`); `surreal-backend` available as non-default feature |
 | Code Parsing | tree-sitter 0.25          | Rust source file indexing                 |
 | CLI          | clap 4                    | `ENGRAM_` env prefix                      |
 | Tracing      | tracing 0.1               | JSON or pretty format                     |
@@ -28,7 +28,7 @@ src/
   bin/engram.rs       # Binary entrypoint: Config, Router, shutdown
   config/             # Config struct via clap
   daemon/             # IPC server, lockfile, protocol, watcher
-  db/                 # SurrealDB connect, schema, queries
+  db/                 # CozoDB connect, schema, queries
   errors/             # EngramError enum, error codes
   installer/          # Install/update/uninstall commands
   models/             # Domain models

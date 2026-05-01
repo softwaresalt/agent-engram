@@ -66,13 +66,12 @@ serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
 
 [features]
-default = ["embeddings", "surreal-backend"]
+default = ["embeddings", "cozo-backend"]
 embeddings = ["fastembed", "fastembed/ort-download-binaries-native-tls", "fastembed/hf-hub-native-tls"]
 # Database backends — exactly one should be active at a time.
-# surreal-backend: SurrealDB embedded via surrealkv (current default).
+# surreal-backend: SurrealDB embedded via surrealkv (available as non-default feature).
 surreal-backend = ["surrealdb"]
-# cozo-backend: CozoDB embedded via SQLite (target of Phase 1–6 migration).
-# Enable with: cargo build --features cozo-backend --no-default-features ... etc.
+# cozo-backend: CozoDB embedded via SQLite (default since Phase 6 migration).
 cozo-backend = ["cozo"]
 git-graph = ["git2"]
 otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
@@ -541,6 +540,11 @@ required-features = ["cozo-backend"]
 [[test]]
 name = "integration_cozo_benchmark"
 path = "tests/integration/cozo_benchmark_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cozo_cold_restart"
+path = "tests/integration/cozo_cold_restart_test.rs"
 required-features = ["cozo-backend"]
 
 [[test]]

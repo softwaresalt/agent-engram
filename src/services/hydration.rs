@@ -1,4 +1,4 @@
-//! Hydration: load workspace state from `.engram/` files into SurrealDB.
+//! Hydration: load workspace state from `.engram/` files into the active database backend.
 //!
 //! Reads version and flush metadata, collects file modification times, and
 //! loads code-graph JSONL files. Task-specific parsing has been removed; this
@@ -123,7 +123,7 @@ pub struct CodeGraphHydrationResult {
 
 /// Hydrate code graph from `{data_dir}/code-graph/{branch}/` JSONL files (FR-132, FR-135).
 ///
-/// Parses `nodes.jsonl` and `edges.jsonl`, upserting into SurrealDB.
+/// Parses `nodes.jsonl` and `edges.jsonl`, upserting into the active database backend.
 /// Corrupt lines are logged and skipped (FR-135: graceful degradation).
 /// Falls back to the legacy `{path}/.engram/code-graph/` path for schema 3.0.0 workspaces.
 pub async fn hydrate_code_graph(
