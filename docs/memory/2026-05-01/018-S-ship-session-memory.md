@@ -31,31 +31,30 @@ Backlog state commit: 04da4f1
 | File | Change |
 |---|---|
 | `Cargo.toml` | Added `serial_test = "3"` to `[dev-dependencies]` |
-| `tests/contract/atomic_policy_snapshot_test.rs` | Added `use serial_test::serial;` + `#[serial]` on c018_06 |
+| `tests/contract/atomic_policy_snapshot_test.rs` | Added `use serial_test::serial;` + `#[serial]` on c018_06; removed `clear_recent_events()` from c018_07 (self-isolates via unique 3-field predicate) |
 | `tests/integration/concurrent_sessions_test.rs` | Seeded workspace with 20 `.rs` files; removed fallback `else` branch; tightened assertion to exactly 1 IndexInProgress error |
-| `src/db/cozo_backend/mod.rs` | Wrapped `cozo::DbInstance::new` in fd-lock advisory lock via `spawn_blocking` + 5s timeout; added unit test `concurrent_connect_db_does_not_panic` |
+| `src/db/cozo_backend/mod.rs` | Wrapped `cozo::DbInstance::new` in fd-lock advisory lock via `spawn_blocking` + `try_write()` with 5s deadline; added unit test `concurrent_connect_db_does_not_panic` |
 
 ## Decisions and Rationale
 
-### 036.002-T: `#[serial]` applied to c018_06 only (not c018_07)
-Per plan review advisory R4: c018_07 already has a 3-field predicate
-(`tool_name + outcome + agent_role`) that self-isolates from concurrent tests.
-c018_06 lacks a unique discriminator and relies on the process-global
-`RECENT_EVENTS` ledger, so `#[serial]` is the correct and minimal fix.
-Rationale documented in test doc comment per plan review L1 advisory.
+### 036.002-T: `#[serial]` applied to c018_06 only; c018_07 self-isolates
+c018_06 lacks a unique discriminator and calls `clear_recent_events()`, so
+`#[serial]` is required. c018_07 uses a unique 3-field predicate (`tool_name +
+outcome + agent_role`) and no longer calls `clear_recent_events()`, so it runs
+in parallel safely without serialisation.
 
 ### 036.003-T: No timing sleep added
 Per plan review advisory S1: deterministic workspace sizing is preferred over
 timing-based sleeps. 20 seeded `.rs` files (each containing a struct + function)
 are sufficient to make indexing reliably outlast the IPC round-trip.
 
-### 036.001-T: fd-lock instead of fs2
+### 036.001-T: fd-lock with try_write + 5s deadline
 `fd-lock = "4"` is already a project dependency (used in `src/daemon/lockfile.rs`).
-No new dependency was needed. The operator note about checking for a cozo upgrade
-was considered — cozo 0.7.6 remains the latest stable; Option A (file lock) proceeded.
-Used `fd_lock::RwLock::write()` inside `spawn_blocking` + `tokio::time::timeout(5s)`.
-Lock is held only during `DbInstance::new`, then released — CozoDB's own WAL handles
-subsequent concurrent access.
+No new dependency was needed. Used `fd_lock::RwLock::try_write()` in a 50 ms
+polling loop with a 5-second deadline inside `spawn_blocking` — the task itself
+enforces the timeout (no dangling background thread). Lock held only during
+`DbInstance::new`, then released — CozoDB's own WAL handles subsequent concurrent
+access.
 
 ## Quality Gates
 

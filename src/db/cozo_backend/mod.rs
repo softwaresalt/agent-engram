@@ -5,7 +5,11 @@
 
 pub mod schema;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::errors::{EngramError, SystemError};
 
@@ -85,9 +89,9 @@ impl SchemaTarget for CozoDb {
 /// # Errors
 ///
 /// Returns [`EngramError`] when the directory cannot be created, the lock
-/// file cannot be opened, the database open times out (> 5 s) waiting for
-/// the lock, the database cannot be opened, or schema bootstrap fails with
-/// an unexpected error.
+/// file cannot be opened, the advisory lock cannot be acquired within 5 s
+/// (another process is opening the same DB), the database cannot be opened,
+/// or schema bootstrap fails with an unexpected error.
 pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError> {
     let branch_safe = branch.replace(['/', '\\', ':'], "_");
     let db_dir = data_dir.join("cozo").join(&branch_safe);
@@ -106,15 +110,11 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
     // SQLite lock contention).  The lock is held only during `DbInstance::new`;
     // CozoDB's own SQLite WAL handles concurrent access after the handle is open.
     //
-    // `spawn_blocking` is required because `fd_lock::RwLock::write()` blocks
-    // the calling thread and must not run on the async executor.  No external
-    // timeout is applied: the OS-level lock acquisition is fast (microseconds
-    // once any peer has finished opening their DbInstance), and wrapping
-    // `spawn_blocking` in `tokio::time::timeout` would leave the blocking thread
-    // running after the caller received an error — a resource leak with no
-    // recovery path.  If the lock is somehow held indefinitely (e.g. process
-    // crash without lock release), the OS automatically releases advisory locks
-    // when the holding process exits.
+    // `spawn_blocking` is required because all locking and DB-open work must not
+    // run on the async executor.  `try_write()` is used in a polling loop with a
+    // 5-second deadline so the task itself enforces the timeout — there is no
+    // dangling background thread after a timeout return.  50 ms polling interval
+    // keeps CPU overhead negligible while bounding the worst-case latency.
     let db = tokio::task::spawn_blocking(move || -> Result<cozo::DbInstance, EngramError> {
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
@@ -124,10 +124,19 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             .open(&lock_path)
             .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
         let mut file_lock = fd_lock::RwLock::new(lock_file);
-        // Blocks until the exclusive lock is acquired; released on `_guard` drop.
-        let _guard = file_lock
-            .write()
-            .map_err(|e| map_db_err(format!("cannot acquire CozoDB lock: {e}")))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // Poll with try_write so the thread respects the deadline and exits cleanly.
+        let _guard = loop {
+            if let Ok(guard) = file_lock.try_write() {
+                break guard;
+            } else if Instant::now() >= deadline {
+                return Err(map_db_err(
+                    "cannot acquire CozoDB lock: timed out after 5 s \
+                     (another process is opening the same database)",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
         cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
             .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))
     })

@@ -263,9 +263,9 @@ async fn c018_05_concurrent_config_flip_does_not_bypass_policy() {
 /// `#[serial]` is required because `metrics::clear_recent_events()` resets a
 /// process-global ledger.  Without isolation, a concurrent test's denied event
 /// can race with the `clear_recent_events` / `recent_events` assertion window,
-/// producing a non-deterministic result.  Both `c018_06` and `c018_07` are
-/// serialised because either test's `clear_recent_events()` call can erase the
-/// other test's recorded event before the assertion runs.
+/// producing a non-deterministic result.  `c018_07` does not call
+/// `clear_recent_events()` and uses a unique three-field predicate
+/// (`tool_name + outcome + agent_role`) that self-isolates without serialisation.
 #[test]
 #[serial]
 async fn c018_06_policy_denied_call_records_metrics_with_denied_outcome() {
@@ -307,15 +307,13 @@ async fn c018_06_policy_denied_call_records_metrics_with_denied_outcome() {
 ///
 /// RED: Same root cause as C018-06 — denied calls skip the metrics block.
 ///
-/// `#[serial]` is required because this test calls `clear_recent_events()`,
-/// which resets the process-global ledger and can erase `c018_06`'s event if
-/// both run concurrently.
+/// No `#[serial]` or `clear_recent_events()` is needed here: the assertion
+/// filters on all three fields (`tool_name + outcome + agent_role`), making it
+/// immune to events inserted by concurrent tests.
 #[test]
-#[serial]
 async fn c018_07_denied_metrics_event_carries_agent_role() {
-    // GIVEN a workspace with deny-all policy and clear metrics ledger
+    // GIVEN a workspace with deny-all policy
     let (state, _workspace) = setup_workspace_with_policy(deny_all_policy()).await;
-    metrics::clear_recent_events();
 
     // WHEN a tool call from "rogue-agent" is denied
     let result = tools::dispatch(

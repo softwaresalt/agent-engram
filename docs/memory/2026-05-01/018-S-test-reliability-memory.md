@@ -25,13 +25,13 @@ feature_id: "036-F"
 
 ## Key Decisions
 
-1. **036.001-T**: Process-level file lock via `fs2` chosen over cozo upgrade (0.8 not available)
+1. **036.001-T**: Process-level file lock via `fd-lock` chosen over cozo upgrade (0.8 not available); `try_write()` with 5s deadline inside `spawn_blocking`
 2. **036.002-T**: `#[serial]` from `serial_test` crate chosen over nonce-based filtering (simpler)
 3. **036.003-T**: Seed workspace with parseable `.rs` files to force indexing overlap
 
 ## Plan Review Findings (ADVISORY)
 
-- P2: `fs2` lock needs `spawn_blocking` + `tokio::time::timeout` for async context
+- P2: `fd-lock` lock needs `try_write()` + deadline loop inside `spawn_blocking` (not blocking `write()` + external timeout)
 - P2: Consider whether c018_07 already self-isolates via 3-field predicate
 - P2: Document rationale for `#[serial]` vs predicate-expansion approach
 

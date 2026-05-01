@@ -94,8 +94,9 @@ Not viable today — cozo 0.8 is not released and 0.7.6 is the latest stable.
 ### Acceptance Criteria
 
 - [ ] Two concurrent `connect_db` calls to the same path do NOT panic
-- [ ] Second caller receives `DatabaseError` with "locked by another process" message
-- [ ] Lock file is released when `CozoDb` is dropped
+- [ ] Second caller blocks briefly while the first opens the DB, then succeeds once the lock is released
+- [ ] If the advisory lock cannot be acquired within 5 s, `connect_db` returns `DatabaseError` with a "timed out" message
+- [ ] Lock file is released immediately after `DbInstance::new` returns (not on `CozoDb` drop)
 - [ ] Existing single-process tests continue to pass unchanged
 - [ ] `cargo clippy -- -D warnings -D clippy::pedantic` passes
 
