@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - backend: surreal-backend
-            features: ""
+            features: "--no-default-features --features surreal-backend"
             cozo_advisory: false
           - backend: cozo-backend
             features: "--no-default-features --features cozo-backend"
@@ -43,14 +43,12 @@ jobs:
 
       - name: test
         if: matrix.backend == 'surreal-backend'
-        run: cargo test --all-targets
+        run: cargo test ${{ matrix.features }} --all-targets
 
-      - name: test (cozo-backend smoke — advisory until Phase 4)
+      - name: test (cozo-backend)
         if: matrix.backend == 'cozo-backend'
         continue-on-error: true
-        run: >
-          cargo test ${{ matrix.features }}
-          --test integration_dual_backend_smoke
+        run: cargo test ${{ matrix.features }} --all-targets
 
       - name: audit
         if: matrix.backend == 'surreal-backend'
