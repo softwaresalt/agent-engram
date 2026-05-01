@@ -47,7 +47,9 @@ jobs:
 
       - name: test (cozo-backend)
         if: matrix.backend == 'cozo-backend'
-        run: cargo test ${{ matrix.features }} --all-targets
+        # Run tests single-threaded to avoid SQLite lock contention when
+        # multiple contract tests each spawn an engram daemon simultaneously.
+        run: cargo test ${{ matrix.features }} --all-targets -- --test-threads 1
 
       - name: audit
         if: matrix.backend == 'surreal-backend'
