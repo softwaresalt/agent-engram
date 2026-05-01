@@ -55,7 +55,7 @@ fn cosine_similarity_is_deprecated_in_search_rs() {
     }
 }
 
-/// `src/db/queries.rs` no longer exists after SurrealDB removal (Phase 7).
+/// `src/db/queries.rs` no longer exists after `SurrealDB` removal (Phase 7).
 /// This test confirms the file is gone — which trivially satisfies the invariant
 /// that no private `cosine_similarity` helper exists there.
 #[test]

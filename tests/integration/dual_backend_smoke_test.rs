@@ -1,9 +1,10 @@
-//! Smoke tests for the CozoDB backend (formerly dual-backend).
+//! Smoke tests for the `CozoDB` backend (formerly dual-backend).
 //!
 //! Verifies that code-graph count queries compile and run correctly under the
-//! CozoDB backend: `connect_db` succeeds and count queries return `0` on a fresh DB.
+//! `CozoDB` backend: `connect_db` succeeds and count queries return `0` on a fresh DB.
 
 use engram::db::connect_db;
+use engram::db::queries::CodeGraphQueries;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -35,7 +36,6 @@ async fn smoke_connect_db() {
 async fn smoke_empty_count_code_files() {
     let (_workspace, data_dir) = make_workspace();
 
-    use engram::db::queries::CodeGraphQueries;
     let db = connect_db(&data_dir, "main")
         .await
         .expect("connect_db should succeed under cozo-backend");
@@ -52,7 +52,6 @@ async fn smoke_empty_count_code_files() {
 async fn smoke_empty_count_functions() {
     let (_workspace, data_dir) = make_workspace();
 
-    use engram::db::queries::CodeGraphQueries;
     let db = connect_db(&data_dir, "main")
         .await
         .expect("connect_db should succeed under cozo-backend");

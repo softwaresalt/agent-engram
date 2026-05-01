@@ -5,7 +5,7 @@
 //!
 //! Provides [`DaemonHarness`] for spawning an `engram daemon` subprocess in
 //! integration tests. Each instance gets its own [`TempDir`] workspace so
-//! tests never share CozoDB state. The daemon is killed deterministically
+//! tests never share `CozoDB` state. The daemon is killed deterministically
 //! when the harness is dropped.
 //!
 //! # Platform notes

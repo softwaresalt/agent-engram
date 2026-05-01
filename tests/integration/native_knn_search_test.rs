@@ -307,11 +307,11 @@ async fn knn_scores_are_in_valid_range() {
     }
 }
 
-/// The SurrealDB `queries.rs` file must no longer exist — CozoDB migration complete.
+/// The `SurrealDB` `queries.rs` file must no longer exist — `CozoDB` migration complete.
 ///
 /// The old `src/db/queries.rs` held SurrealDB-specific KNN helpers including
 /// `vector::similarity::cosine` SELECT statements. After Phase 7 cleanup the
-/// file is deleted. CozoDB vector search lives in `src/db/cozo_queries.rs`.
+/// file is deleted. `CozoDB` vector search lives in `src/db/cozo_queries.rs`.
 #[test]
 fn surreal_queries_file_removed_after_cozo_migration() {
     let queries_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

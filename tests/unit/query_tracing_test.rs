@@ -1,8 +1,8 @@
-//! Unit tests verifying observability patterns in `CodeGraphQueries` (CozoDB).
+//! Unit tests verifying observability patterns in `CodeGraphQueries` (`CozoDB`).
 //!
 //! Source-level checks verifying that `cozo_queries.rs` retains the
 //! `record_query_metrics` call sites and `SLOW_QUERY_THRESHOLD_MS` constant
-//! that were migrated from the SurrealDB `queries.rs` in Phase 7.
+//! that were migrated from the `SurrealDB` `queries.rs` in Phase 7.
 
 // GIVEN the cozo_queries.rs source (CozoDB implementation after Phase 7)
 // WHEN we inspect it
