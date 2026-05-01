@@ -47,8 +47,10 @@ jobs:
 
       - name: test (cozo-backend)
         if: matrix.backend == 'cozo-backend'
-        # Run tests single-threaded to avoid SQLite lock contention when
-        # multiple contract tests each spawn an engram daemon simultaneously.
+        # Run tests single-threaded within each binary to reduce SQLite lock
+        # contention from concurrent daemon spawns. Each test binary still runs
+        # in parallel; spawn timeouts are set to 30 s to accommodate CozoDB
+        # schema bootstrap on SQLite under CI load.
         run: cargo test ${{ matrix.features }} --all-targets -- --test-threads 1
 
       - name: audit
