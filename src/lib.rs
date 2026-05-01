@@ -2,7 +2,7 @@
 //! semantic search for AI coding assistants.
 //!
 //! This crate exposes library modules used by the `engram` binary. The daemon
-//! manages per-workspace state via an embedded SurrealDB instance backed by
+//! manages per-workspace state via an embedded CozoDB instance backed by
 //! `.engram/` files and serves MCP tool calls over a local IPC channel
 //! (Unix domain socket or Windows named pipe). A lightweight stdio shim
 //! bridges the MCP host to the daemon process.
@@ -56,7 +56,7 @@ static TRACING_INIT: OnceLock<()> = OnceLock::new();
 pub fn init_tracing(format: LogFormat) {
     TRACING_INIT.get_or_init(|| {
         let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("engram=debug,hyper=info,surrealdb=info"));
+            .unwrap_or_else(|_| EnvFilter::new("engram=debug,hyper=info"));
 
         let registry = tracing_subscriber::registry().with(env_filter);
 

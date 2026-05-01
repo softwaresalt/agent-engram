@@ -307,17 +307,19 @@ async fn knn_scores_are_in_valid_range() {
     }
 }
 
-/// `vector_search_symbols_native()` must not import `cosine_similarity` —
-/// scores are DB-computed. This source-level check complements the unit tests.
+/// The SurrealDB `queries.rs` file must no longer exist — CozoDB migration complete.
+///
+/// The old `src/db/queries.rs` held SurrealDB-specific KNN helpers including
+/// `vector::similarity::cosine` SELECT statements. After Phase 7 cleanup the
+/// file is deleted. CozoDB vector search lives in `src/db/cozo_queries.rs`.
 #[test]
-fn native_knn_source_does_not_use_cosine_similarity_import() {
-    let src = include_str!("../../src/db/queries.rs");
+fn surreal_queries_file_removed_after_cozo_migration() {
+    let queries_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("db")
+        .join("queries.rs");
     assert!(
-        !src.contains("use crate::services::search::cosine_similarity"),
-        "queries.rs must not import cosine_similarity after dxo.2.3"
-    );
-    assert!(
-        src.contains("vector::similarity::cosine"),
-        "queries.rs must SELECT vector::similarity::cosine() for DB-native scores"
+        !queries_path.exists(),
+        "src/db/queries.rs must be deleted after Phase 7 CozoDB migration"
     );
 }
