@@ -1,4 +1,4 @@
-//! Hydration: load workspace state from `.engram/` files into SurrealDB.
+//! Hydration: load workspace state from `.engram/` files into the active database backend.
 //!
 //! Reads version and flush metadata, collects file modification times, and
 //! loads code-graph JSONL files. Task-specific parsing has been removed; this

@@ -1,4 +1,4 @@
-//! Dehydration: serialize workspace state from SurrealDB to `.engram/` files.
+//! Dehydration: serialize workspace state to `.engram/` files.
 //!
 //! Produces JSONL code-graph files and backlog JSON that can be committed to
 //! Git. Task-specific serialization (tasks.md, graph.surql, comments.md) has
