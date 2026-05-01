@@ -4,7 +4,7 @@
 //! - S001: Cold start — no daemon running, shim spawns daemon, forwards request, returns response
 //! - S002: Warm start — daemon already running, shim connects and forwards
 //! - S004: Error forwarding — daemon returns tool error, IPC client propagates faithfully
-//! - S005: Cold start completes within 2 seconds
+//! - S005: Cold start completes within 2 s (production SLA; debug budget 30 s)
 //! - S008: Unknown method → method-not-found error forwarded faithfully
 
 use std::time::{Duration, Instant};
@@ -38,7 +38,7 @@ async fn t020_s001_health_check_returns_false_before_daemon_starts() {
     );
 }
 
-/// T020 / S001 + S005: A freshly spawned daemon becomes healthy in under 30 seconds.
+/// T020 / S001 + S005: A freshly spawned daemon becomes healthy within the startup budget.
 ///
 /// The spec's 2-second SLA (S005) applies to a production release build. In
 /// debug test builds — especially when multiple test binaries each spawn a
@@ -47,7 +47,7 @@ async fn t020_s001_health_check_returns_false_before_daemon_starts() {
 /// The 30-second budget accommodates `CozoDB` on a shared CI runner.
 /// Running this test in isolation consistently passes in ≤ 2 s.
 #[tokio::test]
-async fn t020_s001_s005_daemon_becomes_healthy_within_2_seconds() {
+async fn t020_s001_s005_daemon_becomes_healthy_within_startup_timeout() {
     let start = Instant::now();
     let harness = DaemonHarness::spawn(Duration::from_secs(30))
         .await
@@ -56,7 +56,7 @@ async fn t020_s001_s005_daemon_becomes_healthy_within_2_seconds() {
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_secs(30),
-        "daemon must be ready in under 30 s in debug mode (took {elapsed:?}; \
+        "daemon must be ready within the 30 s debug budget (took {elapsed:?}; \
          spec 2 s SLA applies to release builds in isolation)"
     );
 

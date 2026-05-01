@@ -1,6 +1,6 @@
 # agent-engram Development Guidelines
 
-Last updated: 2026-04-26
+Last updated: 2026-05-01
 
 Agent Engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded CozoDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS). The project enforces strict safety (forbid unsafe, deny unwrap/expect), test-first development with three test tiers, and comprehensive observability via structured tracing.
 

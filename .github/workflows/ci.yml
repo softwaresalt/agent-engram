@@ -18,10 +18,8 @@ jobs:
         include:
           - backend: surreal-backend
             features: "--no-default-features --features surreal-backend,embeddings"
-            cozo_advisory: false
           - backend: cozo-backend
             features: "--no-default-features --features cozo-backend,embeddings"
-            cozo_advisory: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4

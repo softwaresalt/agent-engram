@@ -358,8 +358,8 @@ cargo clippy  # cozo-backend (default)
 To build or test with the legacy SurrealDB backend, disable defaults:
 
 ```bash
-cargo build --no-default-features --features "surreal-backend"
-cargo test  --no-default-features --features "surreal-backend"
+cargo build --no-default-features --features "surreal-backend,embeddings"
+cargo test  --no-default-features --features "surreal-backend,embeddings"
 ```
 
 ### CozoDB Storage Path

@@ -5,9 +5,11 @@
 //! delete, all without error.
 //!
 //! Tests are gated on the `cozo-backend` feature.  Since `cozo-backend` is now
-//! the default, all tests run under a plain `cargo test` invocation.  To run
-//! against the non-default `surreal-backend`, use
-//! `--no-default-features --features surreal-backend,embeddings`.
+//! the default, all tests run under a plain `cargo test` invocation.  Because
+//! the entire module is `#[cfg(feature = "cozo-backend")]`, passing
+//! `--no-default-features --features surreal-backend` produces zero test cases.
+//! To run only this suite explicitly:
+//!   `cargo test --no-default-features --features cozo-backend --test integration_cozo_dual_backend_sweep`
 //!
 //! CI invocation:
 //!   `cargo test --test integration_cozo_dual_backend_sweep`
