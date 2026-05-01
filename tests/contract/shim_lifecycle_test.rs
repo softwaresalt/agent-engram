@@ -42,9 +42,9 @@ async fn t020_s001_health_check_returns_false_before_daemon_starts() {
 ///
 /// The spec's 2-second SLA (S005) applies to a production release build. In
 /// debug test builds — especially when multiple test binaries each spawn a
-/// daemon in parallel — the CozoDB/SQLite backend requires more startup time
-/// than SurrealDB (schema bootstrap on SQLite involves more round-trips).
-/// The 30-second budget accommodates CozoDB on a shared CI runner.
+/// daemon in parallel — the `CozoDB`/`SQLite` backend requires more startup time
+/// than `SurrealDB` (schema bootstrap on `SQLite` involves more round-trips).
+/// The 30-second budget accommodates `CozoDB` on a shared CI runner.
 /// Running this test in isolation consistently passes in ≤ 2 s.
 #[tokio::test]
 async fn t020_s001_s005_daemon_becomes_healthy_within_2_seconds() {
