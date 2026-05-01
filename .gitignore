@@ -53,6 +53,9 @@ temp/
 .*.lock
 **/.*.lock
 
+# fd-lock advisory lock sidecar for CozoDB SQLite (transient, OS-managed)
+**/*.db.lock
+
 # Global harness management agents injected by start.ps1 at CLI launch
 # These are copies from the autoharness global install — not workspace-owned.
 .github/local-agents/

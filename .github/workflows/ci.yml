@@ -33,13 +33,6 @@ jobs:
         run: cargo clippy --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic
 
       - name: test
-        # Advisory: cozo-0.7.6 has an unwrap() in open_sqlite_db() that panics
-        # when multiple daemon processes open the same SQLite file concurrently
-        # (U015-FLK1). This affects any test binaries that spawn CozoDB daemons;
-        # the default cargo test runner executes binaries in parallel, causing
-        # non-deterministic "database is locked" panics. A stable split requires
-        # fixing U015-FLK1 upstream. Tracked for follow-up.
-        continue-on-error: true
         run: cargo test --no-default-features --features cozo-backend,embeddings --all-targets
 
       - name: audit

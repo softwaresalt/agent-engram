@@ -1,18 +1,21 @@
 ---
 title: "CozoDB 0.7.6 SQLite Unwrap Panic on Concurrent Daemon Access"
-description: "cozo-0.7.6 panics with 'database is locked' when multiple processes open the same SQLite file concurrently; affects all integration tests spawning CozoDB daemons"
+description: "cozo-0.7.6 panics with 'database is locked' when multiple processes open the same SQLite file concurrently; fixed in 018-S via fd-lock advisory lock in connect_db"
 problem_type: "upstream_bug"
 category: "concurrency-issues"
 component: "db/cozo_backend"
 root_cause: "cozo-0.7.6/src/storage/sqlite.rs:49 calls unwrap() on SQLite open, which panics instead of returning an error when the database is locked"
-resolution_type: "workaround"
+resolution_type: "code_fix"
 severity: "high"
 message: "thread '...' panicked at ...: database is locked"
-file_path: ".github/workflows/ci.yml"
+file_path: "src/db/cozo_backend/mod.rs"
 citations:
   - "docs/closure/2026-05-01-015-s-cozodb-phase5-6-closure.md"
+  - "docs/closure/2026-05-01-018-S-test-reliability-closure.md"
   - ".backlogit/archive/015-S.md"
-  - "docs/memory/2026-05-01/015-s-post-merge-closure-memory.md"
+  - ".backlogit/archive/018-S.md"
+  - "src/db/cozo_backend/mod.rs — connect_db (lines 72-145)"
+supersedes_workaround: "continue-on-error: true in .github/workflows/ci.yml (015-S)"
 tags:
   - "cozo"
   - "sqlite"
@@ -21,6 +24,7 @@ tags:
   - "integration-tests"
   - "CI"
   - "U015-FLK1"
+  - "fd-lock"
 ---
 
 ## Problem
@@ -43,19 +47,36 @@ The error originates in the upstream cozo crate, not project code.
 
 `cozo-0.7.6/src/storage/sqlite.rs:49` uses `unwrap()` on the SQLite open call. When SQLite returns `SQLITE_BUSY` (database locked), the `unwrap()` panics the process rather than propagating an error. This is an upstream defect (tracked as U015-FLK1).
 
-## Resolution
+## Resolution (018-S — permanent fix)
 
-Applied `continue-on-error: true` to the entire cozo-backend test step in CI:
+Applied an advisory `fd-lock` file lock around `DbInstance::new` in `connect_db`
+(`src/db/cozo_backend/mod.rs`):
 
-```yaml
-- name: test (cozo-backend)
-  if: matrix.backend == 'cozo-backend'
-  # Advisory: cozo-0.7.6 has an unwrap() in open_sqlite_db() that panics
-  # when multiple daemon processes open the same SQLite file concurrently
-  # (U015-FLK1). Tracked for follow-up: upgrade cozo or switch to WAL mode.
-  continue-on-error: true
-  run: cargo test ${{ matrix.features }} --all-targets
+```rust
+let lock_path = db_path.with_extension("db.lock");
+let lock_file = std::fs::OpenOptions::new()
+    .write(true).create(true).open(&lock_path)?;
+let mut flock = fd_lock::RwLock::new(lock_file);
+let deadline = Instant::now() + Duration::from_secs(5);
+let _guard = loop {
+    if let Ok(g) = flock.try_write() {
+        break g;
+    }
+    if Instant::now() >= deadline {
+        return Err(EngramError::DatabaseError(...));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+};
+let db = DbInstance::new(...)?;
+// _guard dropped here — lock released after open
 ```
+
+The lock is held only for the duration of `DbInstance::new`. CozoDB's SQLite WAL handles
+concurrent access after the database is open. Returns `Err(EngramError)` on 5-second timeout
+rather than panicking.
+
+**Previous workaround (015-S — superseded):** `continue-on-error: true` on the CI test step.
+Remove this from `.github/workflows/ci.yml` now that 018-S is merged.
 
 **Approaches that did NOT work:**
 - `cargo nextest run --test-threads 1`: Serializes tests globally, but daemon cleanup between tests still leaves SQLite locks briefly held. The failure shifts non-deterministically to whichever test runs next after a daemon teardown. Different test ordering exposes different victims.
@@ -63,7 +84,7 @@ Applied `continue-on-error: true` to the entire cozo-backend test step in CI:
 
 ## Prevention
 
-- When upgrading cozo, verify that the new version handles `SQLITE_BUSY` gracefully (returns `Err` instead of panicking) before removing `continue-on-error`.
+- The `fd-lock` advisory lock in `connect_db` prevents the panic for all callers. When upgrading cozo beyond 0.7.x, verify the new version handles `SQLITE_BUSY` gracefully; if it does, the fd-lock workaround can be removed.
+- Remove `continue-on-error` from CI after confirming the fd-lock fix holds consistently.
 - Enabling SQLite WAL mode (`PRAGMA journal_mode=WAL`) would allow concurrent readers but still requires cozo's error handling to not panic.
-- The stable/advisory CI split is achievable only after fixing U015-FLK1 upstream.
-- Track stash entry `685B097A` for the upgrade/fix work.
+- The `engram.db.lock` sidecar file is OS-managed and transient; add to `.gitignore` if not already excluded.
