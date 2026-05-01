@@ -9,8 +9,8 @@
 //!  - `update_symbol_embedding`
 //!  - `gc_corrupted_embeddings`
 //!
-//! Requires the `cozo-backend` feature:
-//!   `cargo test --no-default-features --features cozo-backend --test integration_cozo_vector`
+//! Run with the default features (or explicitly):
+//!   `cargo test --test integration_cozo_vector`
 
 #[cfg(feature = "cozo-backend")]
 mod vector_tests {
@@ -26,9 +26,9 @@ mod vector_tests {
         (tmp, db)
     }
 
-    /// Build a 384-dimensional unit vector with 1.0 at `dim_index` and 0.0 elsewhere.
+    /// Build a unit vector with 1.0 at `dim_index` and 0.0 elsewhere.
     fn unit_vector(dim_index: usize) -> Vec<f32> {
-        let mut v = vec![0.0_f32; 384];
+        let mut v = vec![0.0_f32; engram::services::embedding::EMBEDDING_DIM];
         v[dim_index] = 1.0_f32;
         v
     }

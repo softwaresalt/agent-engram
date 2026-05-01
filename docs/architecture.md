@@ -367,10 +367,14 @@ cargo test  --no-default-features --features "surreal-backend"
 The CozoDB backend stores its SQLite file at:
 
 ```
-{ENGRAM_DATA_DIR}/{workspace_hash}/cozo/{branch}/engram.db
+{data_dir}/cozo/{branch_safe}/engram.db
 ```
 
-This is separate from the SurrealDB path (`{ENGRAM_DATA_DIR}/{workspace_hash}/`), so both backends can coexist on disk without conflict.
+where `data_dir` is resolved by `resolve_data_dir`:
+- Default: `{workspace_root}/.engram`
+- Override: the value of the `ENGRAM_DATA_DIR` environment variable
+
+and `branch_safe` is the Git branch name with `/`, `\`, and `:` replaced by `_`.
 
 ### CozoDB Schema
 

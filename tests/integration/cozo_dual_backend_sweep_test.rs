@@ -106,11 +106,11 @@ mod sweep {
         assert!(fns.is_empty(), "functions must be absent after file delete");
     }
 
-    // ── U5.5 parity smoke stubs ───────────────────────────────────────────
+    // ── U5.5 parity tests ────────────────────────────────────────────────
     //
-    // These tests will be filled in during U5.5 implementation. They capture
-    // the acceptance criteria: at least 4 MCP-level response shape comparisons
-    // between cozo-backend and the expected contract.
+    // Behavioral sweep verifying that CozoDB query results satisfy the same
+    // acceptance criteria as the MCP-level contracts: symbol names/types,
+    // edge topology, impact-analysis scoping, and vector-search shape.
 
     /// `list_symbols`-equivalent: symbols inserted and retrieved by file have
     /// the same names and types regardless of indexing order.
@@ -118,7 +118,7 @@ mod sweep {
     async fn list_symbols_parity_same_names_and_types() {
         let (_tmp, db) = open_db().await;
         let q = engram::db::queries::CodeGraphQueries::new(db);
-        // Insert function and class into the same file.
+        // Insert a function into a file and verify retrieval by name and by file.
         let func = engram::models::Function {
             id: "fn:parity-fn-001".into(),
             name: "parity_fn".into(),
@@ -187,10 +187,10 @@ mod sweep {
         );
     }
 
-    /// `impact_analysis`-equivalent: affected files for a known symbol match
-    /// the set of files that were linked via edges.
+    /// File-scoping isolation: `get_functions_by_file` returns only symbols belonging
+    /// to the queried file — no cross-contamination from sibling files.
     #[tokio::test]
-    async fn impact_analysis_parity_affected_files_match() {
+    async fn symbols_parity_file_scoping_no_cross_contamination() {
         let (_tmp, db) = open_db().await;
         let q = engram::db::queries::CodeGraphQueries::new(db);
         // Insert functions in two different files.

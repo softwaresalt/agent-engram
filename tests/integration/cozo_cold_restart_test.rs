@@ -4,8 +4,8 @@
 //! dehydrated to JSONL files survives a data-directory deletion and is fully
 //! restored after reconnect + hydrate.
 //!
-//! Requires the `cozo-backend` feature:
-//!   `cargo test --no-default-features --features cozo-backend --test integration_cozo_cold_restart`
+//! Run with the default features (or explicitly):
+//!   `cargo test --test integration_cozo_cold_restart`
 
 #[cfg(feature = "cozo-backend")]
 mod cold_restart {
