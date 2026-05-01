@@ -385,7 +385,8 @@ async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
     // concurrent call to arrive while the first is still in progress.
     // Exactly one call must receive IndexInProgress (code 7003).
     assert_eq!(
-        error_count, 1,
+        error_count,
+        1,
         "exactly one index_workspace call must fail with IndexInProgress; \
          got {error_count} errors out of {} responses: {results:?}",
         results.len()

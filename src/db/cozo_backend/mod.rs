@@ -130,8 +130,7 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
     )
     .await
     .map_err(|_| map_db_err("database locked by another process (5 s timeout)"))?
-    .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))?
-    ?;
+    .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))??;
 
     let cozo_db = CozoDb {
         inner: Arc::new(db),
@@ -181,8 +180,10 @@ mod tests {
         let dir2 = tmpdir.path().to_path_buf();
 
         // Issue two concurrent connect_db calls to the same branch path.
-        let (r1, r2) =
-            tokio::join!(connect_db(&dir1, "test-branch"), connect_db(&dir2, "test-branch"));
+        let (r1, r2) = tokio::join!(
+            connect_db(&dir1, "test-branch"),
+            connect_db(&dir2, "test-branch")
+        );
 
         // Neither call must panic.  Both must succeed because the lock
         // serialises the opens — the second waits for the first to complete.
