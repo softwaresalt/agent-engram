@@ -52,7 +52,9 @@ Shipment 018-S shipped three test-reliability and production-stability fixes:
 ## Deployment / Rollout Path
 
 Merge-only. No migration, no schema change, no config change. The `.lock` sidecar file is
-created on first `connect_db` call and cleaned up automatically by the OS when the process exits.
+created on first `connect_db` call. The advisory lock is released when the file descriptor
+closes (process exit or normal drop), but the sidecar file itself may remain on disk — it is
+harmless and excluded from version control by `.gitignore`.
 
 ## Post-Deploy Checks
 

@@ -1,11 +1,11 @@
 ---
 title: "CozoDB 0.7.6 SQLite Unwrap Panic on Concurrent Daemon Access"
-description: "cozo-0.7.6 panics with 'database is locked' when multiple processes open the same SQLite file concurrently; fixed in 018-S via fd-lock advisory lock in connect_db"
+description: "cozo-0.7.6 panics with 'database is locked' when multiple processes open the same SQLite file concurrently; mitigated in 018-S via fd-lock advisory lock in connect_db"
 problem_type: "upstream_bug"
 category: "concurrency-issues"
 component: "db/cozo_backend"
 root_cause: "cozo-0.7.6/src/storage/sqlite.rs:49 calls unwrap() on SQLite open, which panics instead of returning an error when the database is locked"
-resolution_type: "code_fix"
+resolution_type: "local_mitigation"
 severity: "high"
 message: "thread '...' panicked at ...: database is locked"
 file_path: "src/db/cozo_backend/mod.rs"
@@ -87,4 +87,4 @@ Remove this from `.github/workflows/ci.yml` now that 018-S is merged.
 - The `fd-lock` advisory lock in `connect_db` prevents the panic for all callers. When upgrading cozo beyond 0.7.x, verify the new version handles `SQLITE_BUSY` gracefully; if it does, the fd-lock workaround can be removed.
 - Remove `continue-on-error` from CI after confirming the fd-lock fix holds consistently.
 - Enabling SQLite WAL mode (`PRAGMA journal_mode=WAL`) would allow concurrent readers but still requires cozo's error handling to not panic.
-- The `engram.db.lock` sidecar file is OS-managed and transient; add to `.gitignore` if not already excluded.
+- The `engram.db.lock` sidecar file: the advisory lock is released when the file descriptor closes (on process exit or when `_guard` is dropped). The file itself may remain on disk but is harmless — it is excluded by `.gitignore` and carries no meaningful state after lock release.
