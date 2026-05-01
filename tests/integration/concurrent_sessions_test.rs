@@ -290,9 +290,9 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
 /// error code 7003 (`IndexInProgress`).
 ///
 /// A `Barrier(2)` ensures both IPC requests depart from a deterministically
-/// synchronised point. On a near-empty workspace the first indexing pass may
-/// complete before the second call arrives; in that case both succeed, which
-/// is also correct — the test accepts either outcome.
+/// synchronised point. The workspace is seeded with 20 indexable `.rs` files
+/// before the concurrent calls so that indexing reliably takes longer than the
+/// IPC round-trip, making the race deterministic rather than timing-dependent.
 #[tokio::test]
 async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
     let harness = DaemonHarness::spawn(Duration::from_secs(30))
@@ -306,6 +306,25 @@ async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
         .to_str()
         .expect("UTF-8 path")
         .to_owned();
+
+    // Seed the workspace with 20 indexable Rust source files so the indexer has
+    // enough work to do that both concurrent index_workspace calls reliably overlap.
+    // Each file contains a struct and a function — enough for tree-sitter to parse.
+    // Per plan-review advisory S1: deterministic workspace sizing is preferred over
+    // timing-based sleeps.
+    for i in 0_u32..20 {
+        let src = format!(
+            "/// Auto-generated stub {i} for concurrent indexing test.\n\
+             pub struct Stub{i} {{ pub value: u32 }}\n\
+             /// Returns `x + {i}`.\n\
+             pub fn stub_fn_{i}(x: u32) -> u32 {{ x.saturating_add({i}) }}\n"
+        );
+        std::fs::write(
+            harness.workspace.path().join(format!("stub_{i:02}.rs")),
+            src.as_bytes(),
+        )
+        .unwrap_or_else(|e| panic!("failed to write seed file {i}: {e}"));
+    }
 
     // Establish workspace before issuing concurrent index calls.
     let set_req = IpcRequest {
@@ -361,28 +380,32 @@ async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
     }
 
     let error_count = results.iter().filter(|r| r.error.is_some()).count();
-    let success_count = results.iter().filter(|r| r.error.is_none()).count();
 
-    if error_count == 1 {
-        // Expected race: one call gets IndexInProgress — code 7003 is stored
-        // in error.data["engram_code"] (wire code is always -32603).
-        let err_resp = results.iter().find(|r| r.error.is_some()).unwrap();
-        let err = err_resp.error.as_ref().unwrap();
-        let engram_code = err
-            .data
-            .as_ref()
-            .and_then(|d| d.get("engram_code"))
-            .and_then(serde_json::Value::as_u64);
-        assert_eq!(
-            engram_code,
-            Some(7003),
-            "concurrent index must fail with IndexInProgress (7003), got: {err:?}"
-        );
-    } else {
-        // Both succeeded — near-empty workspace indexed before second call arrived.
-        assert_eq!(
-            success_count, 2,
-            "both index_workspace calls must complete: {results:?}"
-        );
-    }
+    // With a seeded workspace, indexing reliably takes long enough for the
+    // concurrent call to arrive while the first is still in progress.
+    // Exactly one call must receive IndexInProgress (code 7003).
+    assert_eq!(
+        error_count,
+        1,
+        "exactly one index_workspace call must fail with IndexInProgress; \
+         got {error_count} errors out of {} responses: {results:?}",
+        results.len()
+    );
+
+    // Verify the error carries the correct engram error code 7003.
+    let err_resp = results
+        .iter()
+        .find(|r| r.error.is_some())
+        .expect("error response must exist (asserted above)");
+    let err = err_resp.error.as_ref().expect("error field must be Some");
+    let engram_code = err
+        .data
+        .as_ref()
+        .and_then(|d| d.get("engram_code"))
+        .and_then(serde_json::Value::as_u64);
+    assert_eq!(
+        engram_code,
+        Some(7003),
+        "concurrent index must fail with IndexInProgress (7003), got: {err:?}"
+    );
 }
