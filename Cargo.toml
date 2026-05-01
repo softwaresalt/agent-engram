@@ -23,7 +23,6 @@ interprocess = { version = "2", features = ["tokio"] }
 fd-lock = "4"
 notify = "9.0.0-rc.2"
 notify-debouncer-full = "0.7.0"
-surrealdb = { version = "2", features = ["kv-surrealkv"], optional = true }
 cozo = { version = "0.7", features = ["storage-sqlite"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -68,10 +67,7 @@ git2 = { version = "0.19", optional = true, default-features = false }
 [features]
 default = ["embeddings", "cozo-backend"]
 embeddings = ["fastembed", "fastembed/ort-download-binaries-native-tls", "fastembed/hf-hub-native-tls"]
-# Database backends — exactly one should be active at a time.
-# surreal-backend: SurrealDB embedded via surrealkv (available as non-default feature).
-surreal-backend = ["surrealdb"]
-# cozo-backend: CozoDB embedded via SQLite (default since Phase 6 migration).
+# cozo-backend: CozoDB embedded via SQLite.
 cozo-backend = ["cozo"]
 git-graph = ["git2"]
 otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
@@ -201,11 +197,6 @@ name = "integration_embedding"
 path = "tests/integration/embedding_test.rs"
 
 [[test]]
-name = "integration_concurrency"
-path = "tests/integration/concurrency_test.rs"
-required-features = ["surreal-backend"]
-
-[[test]]
 name = "contract_error_codes"
 path = "tests/contract/error_codes_test.rs"
 
@@ -300,10 +291,6 @@ path = "tests/unit/embedding_status_unit_test.rs"
 [[test]]
 name = "unit_cosine_similarity_deprecation"
 path = "tests/unit/cosine_similarity_deprecation_test.rs"
-
-[[test]]
-name = "unit_native_knn_score"
-path = "tests/unit/native_knn_score_test.rs"
 
 [[test]]
 name = "unit_graph_traversal_migration"
@@ -435,18 +422,8 @@ name = "contract_branch_isolation"
 path = "tests/contract/branch_isolation_contract_test.rs"
 
 [[test]]
-name = "integration_branch_isolation"
-path = "tests/integration/branch_isolation_test.rs"
-required-features = ["surreal-backend"]
-
-[[test]]
 name = "integration_file_hash_pipeline"
 path = "tests/integration/file_hash_pipeline_test.rs"
-
-[[test]]
-name = "integration_unified_search"
-path = "tests/integration/unified_search_test.rs"
-required-features = ["surreal-backend"]
 
 [[test]]
 name = "unit_metrics_model"
@@ -570,16 +547,6 @@ path = "tests/integration/lang_ipc_indexing_test.rs"
 [[test]]
 name = "integration_markdown_indexing"
 path = "tests/integration/markdown_indexing_test.rs"
-
-[[test]]
-name = "integration_sql_references"
-path = "tests/integration/sql_references_integration_test.rs"
-required-features = ["surreal-backend"]
-
-[[test]]
-name = "contract_references_edge"
-path = "tests/contract/references_edge_test.rs"
-required-features = ["surreal-backend"]
 
 [[example]]
 name = "cozo_api_spike"
