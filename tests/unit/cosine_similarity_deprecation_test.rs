@@ -55,19 +55,14 @@ fn cosine_similarity_is_deprecated_in_search_rs() {
     }
 }
 
-/// `src/db/queries.rs` must not contain a private duplicate of `cosine_similarity`.
-/// The canonical implementation lives only in `services::search`.
+/// `src/db/queries.rs` no longer exists after `SurrealDB` removal (Phase 7).
+/// This test confirms the file is gone — which trivially satisfies the invariant
+/// that no private `cosine_similarity` helper exists there.
 #[test]
 fn queries_rs_does_not_have_private_cosine_similarity() {
-    // GIVEN the queries module source
-    let src = include_str!("../../src/db/queries.rs");
-
-    // WHEN we search for a private function definition
-    // THEN the duplicate private helper must be gone
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(
-        !src.contains("fn cosine_similarity"),
-        "src/db/queries.rs must not define a private cosine_similarity() helper; \
-         the canonical version lives in services::search and DB-native KNN \
-         handles code similarity"
+        !manifest_dir.join("src/db/queries.rs").exists(),
+        "src/db/queries.rs should have been deleted in Phase 7 (SurrealDB removal)"
     );
 }

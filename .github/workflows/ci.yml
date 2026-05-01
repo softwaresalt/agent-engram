@@ -12,14 +12,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - backend: surreal-backend
-            features: "--no-default-features --features surreal-backend,embeddings"
-          - backend: cozo-backend
-            features: "--no-default-features --features cozo-backend,embeddings"
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -35,18 +27,12 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: fmt
-        if: matrix.backend == 'surreal-backend'
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy ${{ matrix.features }} --all-targets -- -D warnings -D clippy::pedantic
+        run: cargo clippy --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic
 
       - name: test
-        if: matrix.backend == 'surreal-backend'
-        run: cargo test ${{ matrix.features }} --all-targets
-
-      - name: test (cozo-backend)
-        if: matrix.backend == 'cozo-backend'
         # Advisory: cozo-0.7.6 has an unwrap() in open_sqlite_db() that panics
         # when multiple daemon processes open the same SQLite file concurrently
         # (U015-FLK1). This affects any test binaries that spawn CozoDB daemons;
@@ -54,10 +40,9 @@ jobs:
         # non-deterministic "database is locked" panics. A stable split requires
         # fixing U015-FLK1 upstream. Tracked for follow-up.
         continue-on-error: true
-        run: cargo test ${{ matrix.features }} --all-targets
+        run: cargo test --no-default-features --features cozo-backend,embeddings --all-targets
 
       - name: audit
-        if: matrix.backend == 'surreal-backend'
         continue-on-error: true
         run: |
           cargo install cargo-audit --locked

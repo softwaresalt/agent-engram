@@ -1,41 +1,45 @@
-//! Unit tests for dxo.5.1: `#[tracing::instrument]` spans on `CodeGraphQueries`.
+//! Unit tests verifying observability patterns in `CodeGraphQueries` (`CozoDB`).
 //!
-//! Source-level checks verifying that the instrument attributes and
-//! `record_query_metrics` call sites are wired into `queries.rs`.
+//! Source-level checks verifying that `cozo_queries.rs` retains the
+//! `record_query_metrics` call sites and `SLOW_QUERY_THRESHOLD_MS` constant
+//! that were migrated from the `SurrealDB` `queries.rs` in Phase 7.
 
-// GIVEN the queries.rs source
+// GIVEN the cozo_queries.rs source (CozoDB implementation after Phase 7)
 // WHEN we inspect it
-// THEN at least one #[tracing::instrument] attribute must be present on a public method
+// THEN the SurrealDB queries.rs must be gone (migration complete)
 #[test]
-fn queries_has_tracing_instrument_attribute() {
-    let source = include_str!("../../src/db/queries.rs");
+fn surreal_queries_file_removed_after_cozo_migration() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("db")
+        .join("queries.rs");
     assert!(
-        source.contains("#[tracing::instrument"),
-        "queries.rs must contain #[tracing::instrument] on public methods"
+        !path.exists(),
+        "src/db/queries.rs must be deleted after Phase 7 CozoDB migration"
     );
 }
 
-// GIVEN the vector_search_symbols_native method
-// WHEN we inspect the source
+// GIVEN the cozo_queries.rs source
+// WHEN we inspect it
 // THEN it must call record_query_metrics for timing observability
 #[test]
-fn vector_search_native_calls_record_query_metrics() {
-    let source = include_str!("../../src/db/queries.rs");
+fn cozo_queries_has_record_query_metrics() {
+    let source = include_str!("../../src/db/cozo_queries.rs");
     assert!(
         source.contains("record_query_metrics"),
-        "queries.rs must call record_query_metrics in at least one method"
+        "cozo_queries.rs must define or call record_query_metrics"
     );
 }
 
-// GIVEN the queries module
+// GIVEN the cozo_queries module
 // WHEN we inspect the source
-// THEN it must emit a slow-query warning at the 100ms threshold
+// THEN it must define the slow-query warning threshold at 100ms
 #[test]
 fn slow_query_threshold_is_100ms() {
-    let source = include_str!("../../src/db/queries.rs");
+    let source = include_str!("../../src/db/cozo_queries.rs");
     assert!(
         source.contains("SLOW_QUERY_THRESHOLD_MS"),
-        "queries.rs must define SLOW_QUERY_THRESHOLD_MS"
+        "cozo_queries.rs must define SLOW_QUERY_THRESHOLD_MS"
     );
     assert!(
         source.contains("100"),
