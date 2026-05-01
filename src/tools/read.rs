@@ -948,11 +948,12 @@ struct QueryGraphParams {
     params: Option<serde_json::Value>,
 }
 
-/// Execute a sandboxed read-only Datalog query against the workspace graph.
+/// Sandboxed read-only Datalog query tool — stub, not yet implemented (Phase 2 placeholder).
 ///
 /// The query is sanitised by [`crate::services::gate::sanitize_query`] before
-/// execution; any write keyword causes an immediate `QUERY_REJECTED` (4010)
-/// error.
+/// dispatch; write keywords cause an immediate `QUERY_REJECTED` (4010) error.
+/// Currently always returns `GraphQueryError::Invalid` — `CozoDB` query execution
+/// will be wired in Phase 2.
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     use crate::services::gate::sanitize_query;

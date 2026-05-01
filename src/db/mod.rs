@@ -1,4 +1,10 @@
-//! Database layer: CozoDB connection management and query dispatch.
+//! Database layer: `CozoDB` connection management and query dispatch.
+
+#[cfg(not(feature = "cozo-backend"))]
+compile_error!(
+    "The `cozo-backend` feature is required; it is the only supported backend. \
+     Build with: cargo build --features cozo-backend"
+);
 
 /// Workspace hash utilities.
 pub mod workspace;

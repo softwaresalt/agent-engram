@@ -60,8 +60,9 @@ fn cosine_similarity_is_deprecated_in_search_rs() {
 /// that no private `cosine_similarity` helper exists there.
 #[test]
 fn queries_rs_does_not_have_private_cosine_similarity() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(
-        !std::path::Path::new("src/db/queries.rs").exists(),
+        !manifest_dir.join("src/db/queries.rs").exists(),
         "src/db/queries.rs should have been deleted in Phase 7 (SurrealDB removal)"
     );
 }
