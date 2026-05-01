@@ -9,8 +9,6 @@ mode: post-merge
 status: READY
 ---
 
-# Operational Closure: 017-S — SurrealDB Removal
-
 ## Summary
 
 Phase 7 of the CozoDB migration: complete removal of the `SurrealDB` dependency
@@ -29,7 +27,7 @@ across 22 files, ~2,400 Cargo.lock lines removed (transitive deps gone).
 - `cargo build` succeeds with default features (no `--no-default-features` needed)
 - `cargo clippy -- -D warnings -D clippy::pedantic` passes clean
 - All non-flaky tests pass under `--features cozo-backend,embeddings`
-- `--features surreal-backend` produces a clear `compile_error!` diagnostic
+- `cargo build --features surreal-backend` fails at Cargo feature resolution because `surreal-backend` is no longer defined
 - `CozoDB` SQLite path resolves to `{data_dir}/cozo/{branch_safe}/engram.db`
 - All 20 CozoDB schema relations bootstrap idempotently at connection time
 
