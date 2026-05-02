@@ -45,7 +45,10 @@ use engram::daemon::watcher::WatcherConfig;
 #[tokio::test]
 async fn run_with_shutdown_v2_exits_cleanly_on_ttl_expiry() {
     let workspace = tempfile::TempDir::new().expect("temp workspace dir");
-    let workspace_path = workspace.path().canonicalize().expect("canonicalize workspace");
+    let workspace_path = workspace
+        .path()
+        .canonicalize()
+        .expect("canonicalize workspace");
 
     // Minimal git scaffold so the daemon accepts this directory as a workspace.
     let git_dir = workspace_path.join(".git");
