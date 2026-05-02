@@ -33,12 +33,14 @@ jobs:
         run: cargo clippy --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic
 
       - name: test
-        # Advisory: cozo-0.7.6 has an unwrap() in open_sqlite_db() that panics
-        # when multiple daemon processes open the same SQLite file concurrently
-        # (U015-FLK1). This affects any test binaries that spawn CozoDB daemons;
-        # the default cargo test runner executes binaries in parallel, causing
-        # non-deterministic "database is locked" panics. A stable split requires
-        # fixing U015-FLK1 upstream. Tracked for follow-up.
+        # Advisory: cozo-0.7.6 has an unwrap() in open_sqlite_db() that panics when
+        # multiple daemon processes open the same SQLite file concurrently (U015-FLK1).
+        # The fd-lock in connect_db serialises DbInstance::new() to prevent the
+        # multi-process panic, but schema bootstrap still runs after the lock releases.
+        # Parallel tests (e.g. set_workspace + index_workspace on the same DB path)
+        # can hit SQLITE_BUSY during concurrent schema writes — intra-process variant
+        # of U015-FLK1. Tracked in stash C4E8F2A1 (extend fd-lock scope to cover
+        # schema bootstrap) and 1092D3D6 (cozo 0.8+ upgrade).
         continue-on-error: true
         run: cargo test --no-default-features --features cozo-backend,embeddings --all-targets
 

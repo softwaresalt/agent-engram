@@ -294,6 +294,8 @@ flush_state() (MCP tool call) or graceful shutdown
 
 Engram uses `CozoDB` in embedded mode (backed by SQLite) rather than a network database. Each workspace gets its own isolated database stored under `{data_dir}/cozo/{branch_safe}/engram.db`, where `data_dir` defaults to `{workspace}/.engram` (or `ENGRAM_DATA_DIR` if set) and `branch_safe` is the sanitized Git branch name. This eliminates external dependencies and makes the daemon self-contained.
 
+`connect_db` acquires an advisory `fd-lock` file lock (`engram.db.lock`) before calling `DbInstance::new`. This prevents the cozo 0.7.x internal `unwrap()` panic when two processes attempt to open the same SQLite file simultaneously. The lock is acquired via `RwLock::try_write()` in a `spawn_blocking` closure with 50ms polling and a 5-second deadline; it is released immediately after `DbInstance::new` returns (CozoDB's SQLite WAL handles concurrent access at the statement level after the database is open).
+
 ### Code Graph as Primary Data Model
 
 The core data model is the code symbol graph, not a task ledger. Functions, classes, interfaces, and their call/reference relationships are first-class entities. The embedded database serves as a queryable index over this graph, enabling call-graph traversal, impact analysis, and semantic search at low latency.
