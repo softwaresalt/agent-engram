@@ -272,7 +272,10 @@ pub(crate) fn remove_stale_pid_if_dead(run_dir: &Path) -> Result<Option<u32>, En
         }
     }
 
-    info!(pid = pid_file.pid, "removed stale PID file for dead process");
+    info!(
+        pid = pid_file.pid,
+        "removed stale PID file for dead process"
+    );
     Ok(Some(pid_file.pid))
 }
 
@@ -317,10 +320,13 @@ mod tests {
         let content = json!({"pid": 0u32, "start_time_unix": 1u64}).to_string();
         fs::write(run_dir.join("engram.pid"), content).expect("write stale PID file");
 
-        let dead_pid = remove_stale_pid_if_dead(run_dir)
-            .expect("dead PID cleanup must not error");
+        let dead_pid = remove_stale_pid_if_dead(run_dir).expect("dead PID cleanup must not error");
 
-        assert_eq!(dead_pid, Some(0), "must return Some(dead_pid) after cleanup");
+        assert_eq!(
+            dead_pid,
+            Some(0),
+            "must return Some(dead_pid) after cleanup"
+        );
         assert!(
             !run_dir.join("engram.pid").exists(),
             "engram.pid must be removed from disk after stale cleanup"
@@ -343,8 +349,7 @@ mod tests {
         let content = json!({"pid": live_pid, "start_time_unix": 1u64}).to_string();
         fs::write(run_dir.join("engram.pid"), content).expect("write live PID file");
 
-        let result = remove_stale_pid_if_dead(run_dir)
-            .expect("live PID check must not error");
+        let result = remove_stale_pid_if_dead(run_dir).expect("live PID check must not error");
 
         assert!(result.is_none(), "must return None for a live process");
         assert!(

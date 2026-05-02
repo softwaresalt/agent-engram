@@ -868,8 +868,9 @@ pub async fn run_with_shutdown_v2(
     // (no file-change tracking) if the workspace is unusually large.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
     let workspace_for_watcher = workspace_path.clone();
-    let watcher_init_handle =
-        tokio::task::spawn_blocking(move || start_watcher(&workspace_for_watcher, watcher_config, event_tx));
+    let watcher_init_handle = tokio::task::spawn_blocking(move || {
+        start_watcher(&workspace_for_watcher, watcher_config, event_tx)
+    });
     let _watcher_handle =
         match tokio::time::timeout(Duration::from_secs(5), watcher_init_handle).await {
             Ok(Ok(result)) => result.unwrap_or_else(|e| {
