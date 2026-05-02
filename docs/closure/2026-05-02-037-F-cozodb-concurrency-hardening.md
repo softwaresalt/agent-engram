@@ -107,6 +107,19 @@ U015-FLK1 fully resolved; pre-existing unrelated failures documented.
 - Pre-mode: PROCEED (`019-S-pre-20260502.md`)
 - Post-mode: PROCEED (`019-S-post-20260502.md`)
 
+## Source Artifact Cleanup
+
+| Field | Value |
+|---|---|
+| Feature | 037-F |
+| `source_stash_id` | `C4E8F2A1` — stash entry that originated this feature (manual retirement required) |
+| `source_deliberation_id` | `002-D` — deliberation: `docs/decisions/2026-05-01-cozodb-concurrency-hardening-deliberation.md` |
+
+`backlogit_stash_remove` and `backlogit_archive_item` are not available in the installed registry.
+These IDs are recorded here for manual traceability. The deliberation artifact at
+`docs/decisions/2026-05-01-cozodb-concurrency-hardening-deliberation.md` is complete and no
+further action is required.
+
 ## Follow-Up Work (Stash)
 
 Two pre-existing CI failures remain unaddressed. Stash follow-ups:
