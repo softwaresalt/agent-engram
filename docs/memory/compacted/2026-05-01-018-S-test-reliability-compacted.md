@@ -35,7 +35,7 @@ Shipped via PR #66 (merge `d9209db`). All 3 tasks done. Post-merge closure PR #6
 | `tests/contract/atomic_policy_snapshot_test.rs` | `#[serial]` on c018_06 only; removed `clear_recent_events()` from c018_07 (self-isolating 3-field predicate) |
 | `tests/integration/concurrent_sessions_test.rs` | 20 seeded `.rs` files; removed fallback `else`; 1 IndexInProgress assertion |
 | `Cargo.toml` | Added `fd-lock` prod dep (was already in `src/daemon/lockfile.rs`); `serial_test = "3"` dev dep |
-| `.github/workflows/ci.yml` | Removed `continue-on-error: true` from test step (U015-FLK1 fixed) |
+| `.github/workflows/ci.yml` | Retained `continue-on-error: true` on test step (intra-process schema bootstrap race; stash `C4E8F2A1`) |
 | `.gitignore` | Added `**/*.db.lock` for fd-lock sidecar |
 | `docs/architecture.md` | Added fd-lock advisory lock design note to Embedded Database section |
 
@@ -47,7 +47,7 @@ Shipped via PR #66 (merge `d9209db`). All 3 tasks done. Post-merge closure PR #6
 
 3. **Seed 20 files, no sleep** (036.003-T): 20 small `.rs` files (each with a struct + function) make indexing reliably outlast the IPC round-trip. Timing sleeps rejected per plan-review advisory.
 
-4. **CI `continue-on-error` removed** post-merge: U015-FLK1 is permanently fixed; the CI workaround in `.github/workflows/ci.yml` removed during post-merge closure.
+4. **CI `continue-on-error` retained**: The fd-lock fixes the multi-process U015-FLK1 panic. An intra-process schema-bootstrap race was discovered post-ship (parallel tests hitting SQLITE_BUSY after lock release). `continue-on-error: true` is retained until stash `C4E8F2A1` (extend fd-lock scope) or `1092D3D6` (cozo 0.8+ upgrade) resolves the remaining race.
 
 ## Failed Approaches
 

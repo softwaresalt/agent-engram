@@ -19,7 +19,7 @@ status: awaiting_operator_approval
 | 6.2 Operational closure | ✅ | `docs/closure/2026-05-01-018-S-test-reliability-closure.md` |
 | 6.3 Architecture doc update | ✅ | `docs/architecture.md` — fd-lock advisory lock note added |
 | 6.5 Compound refresh | ✅ | `cozodb-sqlite-lock-panic-2026-05-01.md` updated — workaround → permanent fix |
-| 6.5 CI cleanup | ✅ | `continue-on-error` removed from test step in `ci.yml` |
+| 6.5 CI cleanup | ✅ | `continue-on-error` retained on test step — intra-process schema-bootstrap race discovered; stash `C4E8F2A1` tracks fix |
 | 6.5 `.gitignore` update | ✅ | Added `**/*.db.lock` pattern |
 | 6.6 Stash follow-up | ✅ | Stash entry `1092D3D6` — cozo 0.8+ upgrade |
 | 6.8 Closure PR | ✅ | PR #67 created |
@@ -31,11 +31,11 @@ status: awaiting_operator_approval
 
 ## Decisions
 
-- CI `continue-on-error` on the test step was removed immediately as part of 018-S post-merge closure; this was the correct time given the fd-lock fix is on main.
+- CI `continue-on-error` on the test step was initially removed but restored after discovering the intra-process schema-bootstrap race (SQLITE_BUSY when parallel tests hit schema bootstrap after fd-lock releases). Tracked in stash `C4E8F2A1`.
 - `engram.db.lock` (non-hidden fd-lock sidecar) added to `.gitignore` as `**/*.db.lock`.
 - The cozo 0.8+ upgrade tracked as stash `1092D3D6` with priority `medium`.
 
 ## Outstanding
 
 - **PR #67 awaiting operator approval** — no Rust changes, docs/CI only.
-- After merge, run `cargo test` on main to confirm CI passes without `continue-on-error`.
+- `continue-on-error: true` retained; fix tracked in stash `C4E8F2A1`.

@@ -98,6 +98,6 @@ intra-process SQLITE_BUSY variant described above.
   if it does, the fd-lock workaround can be removed.
 - **Do NOT** remove `continue-on-error` from CI until the intra-process schema bootstrap race is
   also resolved (extend fd-lock scope to cover `run_schema_bootstrap`, or upgrade cozo). Tracked:
-  stash `1092D3D6`.
+  stash `C4E8F2A1` (schema-bootstrap lock scope) and `1092D3D6` (cozo 0.8+ upgrade).
 - Enabling SQLite WAL mode (`PRAGMA journal_mode=WAL`) would allow concurrent readers but still requires cozo's error handling to not panic.
 - The `engram.db.lock` sidecar file: the advisory lock is released when the file descriptor closes (on process exit or when `_guard` is dropped). The file itself may remain on disk but is harmless — it is excluded by `.gitignore` and carries no meaningful state after lock release.
