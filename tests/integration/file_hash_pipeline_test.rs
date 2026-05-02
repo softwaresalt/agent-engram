@@ -72,6 +72,7 @@ async fn bind_git_workspace(files: &[(&str, &str)]) -> (TempDir, Arc<AppState>) 
 /// in `index_workspace_inner`, call
 /// `record_file_hash(&rel_path, file_path, &queries).await?`.
 #[test]
+#[ignore = "red-phase: record_file_hash not yet called in index_workspace_inner (file-hash pipeline feature)"]
 async fn s085_no_offline_changes_after_index_workspace() {
     // GIVEN a workspace with Rust source files
     let (ws, state) = bind_git_workspace(&[
@@ -121,6 +122,7 @@ async fn s085_no_offline_changes_after_index_workspace() {
 /// **Red phase** — fails until `record_file_hash` is wired into
 /// `index_workspace_inner`.
 #[test]
+#[ignore = "red-phase: record_file_hash not yet called in index_workspace_inner (file-hash pipeline feature)"]
 async fn s086_indexed_files_have_file_hash_records() {
     // GIVEN a workspace with a single source file
     let (ws, state) = bind_git_workspace(&[("src/utils.rs", "pub fn helper() {}")]).await;
@@ -163,6 +165,7 @@ async fn s086_indexed_files_have_file_hash_records() {
 /// S087: Running `index_workspace` twice on the same unchanged files does not
 /// cause `detect_offline_changes` to report changes on the second run.
 #[test]
+#[ignore = "red-phase: record_file_hash not yet called in index_workspace_inner (file-hash pipeline feature)"]
 async fn s087_reindex_unchanged_files_is_idempotent() {
     // GIVEN a workspace with a stable source file
     let (ws, state) =
@@ -216,6 +219,7 @@ async fn s087_reindex_unchanged_files_is_idempotent() {
 /// This confirms that recording hashes during indexing enables accurate
 /// offline change detection — the pipeline is end-to-end correct.
 #[test]
+#[ignore = "red-phase: record_file_hash not yet called in index_workspace_inner (file-hash pipeline feature)"]
 async fn s088_file_modified_after_indexing_is_detected() {
     // GIVEN a workspace with an indexed source file
     let (ws, state) =

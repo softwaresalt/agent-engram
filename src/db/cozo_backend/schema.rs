@@ -17,7 +17,7 @@
 //!  * `concerns_edge`       — task→symbol cross-region link
 //!  * `references_edge`     — source→target qualified-name reference
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use crate::errors::EngramError;
 
@@ -43,6 +43,11 @@ pub fn run_schema_bootstrap(db: &impl SchemaTarget) -> Result<(), EngramError> {
 }
 
 /// Execute all `:create` scripts against `cozo_db`, ignoring "already exists" errors.
+///
+/// Each script is retried up to 20 times with exponential back-off when
+/// SQLite returns `SQLITE_BUSY` ("database is locked").  This handles the
+/// case where an already-open CozoDB handle is writing (e.g. indexing) when
+/// a second `connect_db` caller reaches schema bootstrap.
 fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     let scripts = [
         CREATE_FILE_NODE,
@@ -70,20 +75,7 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     ];
 
     for script in &scripts {
-        match cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable) {
-            Ok(_) => {}
-            Err(e) => {
-                let msg = e.to_string().to_lowercase();
-                if msg.contains("already")
-                    || msg.contains("defined")
-                    || msg.contains("conflicts")
-                    || msg.contains("existing")
-                {
-                    continue;
-                }
-                return Err(map_db_err(format!("schema bootstrap: {e}")));
-            }
-        }
+        run_script_retrying(cozo_db, script)?;
     }
 
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
@@ -102,6 +94,7 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
                 || msg.contains("no rows")
                 || msg.contains("unsupported")
                 || msg.contains("not support")
+                || msg.contains("invalid option")
                 || msg.contains("vector index")
                 || msg.contains("hnsw")
                 || msg.contains("already exists");
@@ -114,6 +107,40 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     }
 
     Ok(())
+}
+
+/// Run a single CozoDB script, retrying on `SQLITE_BUSY` ("database is locked").
+///
+/// Schema bootstrap scripts are idempotent (`:create` is a no-op when the
+/// relation already exists), so retrying is always safe.  Twenty attempts
+/// with 25 ms → 500 ms exponential back-off gives ≈ 5 s of total retry
+/// headroom, which is more than enough for a concurrent writer to release its
+/// write transaction.
+fn run_script_retrying(cozo_db: &cozo::DbInstance, script: &str) -> Result<(), EngramError> {
+    const MAX_ATTEMPTS: u32 = 20;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        match cozo_db.run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("already")
+                    || msg.contains("defined")
+                    || msg.contains("conflicts")
+                    || msg.contains("existing")
+                {
+                    return Ok(());
+                }
+                if (msg.contains("locked") || msg.contains("busy")) && attempt + 1 < MAX_ATTEMPTS {
+                    let delay_ms = std::cmp::min(25u64 << attempt.min(5), 500);
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                    continue;
+                }
+                return Err(map_db_err(format!("schema bootstrap: {e}")));
+            }
+        }
+    }
+    unreachable!("loop exits via return")
 }
 
 // ── File node ──────────────────────────────────────────────────────────────
