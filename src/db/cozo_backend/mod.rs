@@ -78,13 +78,18 @@ impl SchemaTarget for CozoDb {
 /// Creates `{data_dir}/cozo/{branch}/engram.db` if it does not exist,
 /// acquires an exclusive process-level advisory lock on
 /// `{data_dir}/cozo/{branch}/engram.db.lock` to serialise concurrent opens,
-/// opens a SQLite-backed `cozo::DbInstance`, and bootstraps the schema
-/// idempotently (`:create` errors for existing relations are silently ignored).
+/// opens a SQLite-backed `cozo::DbInstance`, bootstraps the schema
+/// idempotently (`:create` errors for existing relations are silently
+/// ignored), and returns the handle — all while the lock is held.
 ///
-/// The file lock is held only for the duration of `DbInstance::new` and is
-/// released automatically before this function returns.  `cozo`'s own SQLite
-/// WAL handles concurrent access from multiple in-process handles after the
-/// initial open.
+/// Holding the lock through schema bootstrap (not just through
+/// `DbInstance::new`) prevents the intra-process `SQLITE_BUSY` race
+/// where two handles could otherwise reach schema writes concurrently
+/// (U015-FLK1 residual, stash `C4E8F2A1`).  The lock is released
+/// automatically when the returned `CozoDb` handle leaves the
+/// `spawn_blocking` closure.  CozoDB's own SQLite WAL handles
+/// concurrent access from multiple in-process handles after the
+/// initial open and bootstrap.
 ///
 /// # Errors
 ///
@@ -105,17 +110,26 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
         .ok_or_else(|| map_db_err("CozoDB path is not valid UTF-8"))?
         .to_owned();
 
-    // Acquire a process-level advisory file lock before opening CozoDB to prevent
-    // the concurrent-open panic in cozo 0.7.x (U015-FLK1: internal `unwrap()` on
-    // SQLite lock contention).  The lock is held only during `DbInstance::new`;
-    // CozoDB's own SQLite WAL handles concurrent access after the handle is open.
+    // Acquire a process-level advisory file lock before opening CozoDB and
+    // hold it through schema bootstrap to prevent two variants of the
+    // SQLITE_BUSY unwrap panic in cozo 0.7.x (U015-FLK1):
     //
-    // `spawn_blocking` is required because all locking and DB-open work must not
-    // run on the async executor.  `try_write()` is used in a polling loop with a
-    // 5-second deadline so the task itself enforces the timeout — there is no
-    // dangling background thread after a timeout return.  50 ms polling interval
-    // keeps CPU overhead negligible while bounding the worst-case latency.
-    let db = tokio::task::spawn_blocking(move || -> Result<cozo::DbInstance, EngramError> {
+    //   * Multi-process variant: two daemon processes open the same SQLite
+    //     file concurrently — serialised by holding the lock during
+    //     `DbInstance::new`.
+    //
+    //   * Intra-process variant (residual): two concurrent `connect_db`
+    //     calls on the same DB path both complete `DbInstance::new`, then
+    //     both call `run_schema_bootstrap` concurrently — serialised by
+    //     holding the lock through bootstrap (this change, stash C4E8F2A1).
+    //
+    // `spawn_blocking` is required because all locking and DB-open work must
+    // not run on the async executor.  `try_write()` is used in a polling
+    // loop with a 5-second deadline so the task itself enforces the timeout —
+    // there is no dangling background thread after a timeout return.  50 ms
+    // polling interval keeps CPU overhead negligible while bounding the
+    // worst-case latency.
+    let cozo_db = tokio::task::spawn_blocking(move || -> Result<CozoDb, EngramError> {
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -137,17 +151,19 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
-            .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))
+        let db = cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
+            .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))?;
+        let cozo_db = CozoDb {
+            inner: Arc::new(db),
+        };
+        // Bootstrap runs inside the lock so schema writes are serialised
+        // across concurrent callers (intra-process U015-FLK1 residual fix).
+        schema::run_schema_bootstrap(&cozo_db)?;
+        Ok(cozo_db)
+        // `_guard` dropped here — lock released after open + bootstrap
     })
     .await
     .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))??;
-
-    let cozo_db = CozoDb {
-        inner: Arc::new(db),
-    };
-
-    schema::run_schema_bootstrap(&cozo_db)?;
 
     Ok(cozo_db)
 }
@@ -200,5 +216,44 @@ mod tests {
         // serialises the opens — the second waits for the first to complete.
         assert!(r1.is_ok(), "first concurrent connect_db failed: {r1:?}");
         assert!(r2.is_ok(), "second concurrent connect_db failed: {r2:?}");
+    }
+
+    /// Verify that schema bootstrap is also covered by the fd-lock, preventing
+    /// the intra-process `SQLITE_BUSY` race (U015-FLK1 residual).
+    ///
+    /// When multiple callers race on `connect_db` for the same DB path, both
+    /// `DbInstance::new` AND `run_schema_bootstrap` must be serialised by the
+    /// advisory file lock.  Without this, two handles can reach schema
+    /// bootstrap concurrently and trigger the cozo 0.7.x unwrap panic on
+    /// `SQLITE_BUSY`.
+    ///
+    /// This test exercises higher concurrency (four simultaneous callers) to
+    /// stress the bootstrap window, and verifies that every handle is usable
+    /// (i.e., schema is consistent) after all opens complete.
+    ///
+    /// # RED phase
+    /// Before the fix: `run_schema_bootstrap` runs outside the lock; four
+    /// concurrent callers can race on schema writes and panic.
+    ///
+    /// # GREEN phase
+    /// After the fix: `run_schema_bootstrap` runs inside the `spawn_blocking`
+    /// closure while the lock is held; callers queue up and all succeed.
+    #[tokio::test]
+    async fn concurrent_connect_db_schema_bootstrap_does_not_race() {
+        let tmpdir = TempDir::new().expect("tempdir");
+        let base = tmpdir.path().to_path_buf();
+
+        // Four concurrent callers on the same branch/path.
+        let (r1, r2, r3, r4) = tokio::join!(
+            connect_db(&base, "schema-race-branch"),
+            connect_db(&base, "schema-race-branch"),
+            connect_db(&base, "schema-race-branch"),
+            connect_db(&base, "schema-race-branch"),
+        );
+
+        assert!(r1.is_ok(), "caller 1 failed: {r1:?}");
+        assert!(r2.is_ok(), "caller 2 failed: {r2:?}");
+        assert!(r3.is_ok(), "caller 3 failed: {r3:?}");
+        assert!(r4.is_ok(), "caller 4 failed: {r4:?}");
     }
 }

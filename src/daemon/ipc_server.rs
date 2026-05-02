@@ -471,6 +471,14 @@ pub async fn run_with_shutdown(
                         if !state_auto.try_start_indexing() {
                             return;
                         }
+                        // Retry on SQLITE_BUSY: background_db_hydration and this
+                        // auto-sync task both call connect_db concurrently.  The
+                        // fd-lock serialises the open+bootstrap phase, but the
+                        // write transactions from the two resulting handles can
+                        // still race (U015-FLK1 intra-process residual).
+                        // Ten attempts with 50 ms → 500 ms exponential back-off
+                        // give ≈ 3 s of headroom for the hydration writer to
+                        // finish its transaction.
                         let should_flush = 'sync: {
                             let Some(snapshot) = state_auto.snapshot_workspace().await else {
                                 break 'sync false;
@@ -479,28 +487,43 @@ pub async fn run_with_shutdown(
                                 break 'sync false;
                             };
                             let ws_path = std::path::PathBuf::from(&snapshot.path);
-                            match crate::services::code_graph::sync_workspace(
-                                &ws_path,
-                                &snapshot.data_dir,
-                                &snapshot.branch,
-                                &ws_config.code_graph,
-                            )
-                            .await
-                            {
-                                Ok(result) => {
-                                    info!(
-                                        files_added = result.files_added,
-                                        files_modified = result.files_modified,
-                                        files_unchanged = result.files_unchanged,
-                                        "startup auto-sync complete"
-                                    );
-                                    true
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "startup auto-sync failed");
-                                    false
+                            let mut sync_delay = Duration::from_millis(50);
+                            let mut synced = false;
+                            for attempt in 0..10_u32 {
+                                match crate::services::code_graph::sync_workspace(
+                                    &ws_path,
+                                    &snapshot.data_dir,
+                                    &snapshot.branch,
+                                    &ws_config.code_graph,
+                                )
+                                .await
+                                {
+                                    Ok(result) => {
+                                        info!(
+                                            files_added = result.files_added,
+                                            files_modified = result.files_modified,
+                                            files_unchanged = result.files_unchanged,
+                                            "startup auto-sync complete"
+                                        );
+                                        synced = true;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        let msg = e.to_string().to_lowercase();
+                                        if (msg.contains("locked") || msg.contains("busy"))
+                                            && attempt + 1 < 10
+                                        {
+                                            tokio::time::sleep(sync_delay).await;
+                                            sync_delay =
+                                                (sync_delay * 2).min(Duration::from_millis(500));
+                                            continue;
+                                        }
+                                        warn!(error = %e, "startup auto-sync failed");
+                                        break;
+                                    }
                                 }
                             }
+                            synced
                         };
 
                         // ── Registry content ingestion ────────────────────────────

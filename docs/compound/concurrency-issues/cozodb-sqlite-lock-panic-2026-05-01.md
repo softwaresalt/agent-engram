@@ -75,17 +75,18 @@ The lock is held only for the duration of `DbInstance::new`. CozoDB's SQLite WAL
 concurrent access after the database is open. Returns `Err(EngramError)` on 5-second timeout
 rather than panicking.
 
-**Remaining limitation (intra-process variant):** The fd-lock serialises `DbInstance::new()` but
-schema bootstrap (`run_schema_bootstrap`) runs *after* the lock is released. When parallel tests
-call `connect_db` twice on the same DB path (e.g. `set_workspace` background task followed by
-`index_workspace`), both handles may reach schema bootstrap concurrently and hit `SQLITE_BUSY`.
-The fix is to extend the fd-lock scope to cover schema bootstrap (stash `C4E8F2A1`), or upgrade to
-cozo 0.8+ (stash `1092D3D6`). The CI test step retains `continue-on-error: true` until this variant
-is resolved.
+**Intra-process variant (RESOLVED — 037-F, commits e85ee80 + 6f64eb7):** The fd-lock now covers
+both `DbInstance::new()` AND `run_schema_bootstrap` (hold the guard through bootstrap). Additionally,
+the startup auto-sync task in `ipc_server.rs` retries `sync_workspace` up to 10 times with
+50 ms → 500 ms exponential back-off on SQLITE_BUSY, covering the third layer where the two resulting
+handles race on actual write transactions after bootstrap completes.
+
+`continue-on-error: true` is retained in CI due to pre-existing unrelated failures:
+- `integration_graph_vector_rehydration`: startup-index timeout (timing-sensitive on slow CI runners)
+- `integration_query_perf_observability`: timing-stat buckets not populated
 
 **Previous workaround (015-S — superseded for multi-process case):** `continue-on-error: true` on
-the CI test step. The 015-S comment is removed but `continue-on-error: true` is retained for the
-intra-process SQLITE_BUSY variant described above.
+the CI test step. Retained for unrelated pre-existing failures noted above.
 
 **Approaches that did NOT work:**
 - `cargo nextest run --test-threads 1`: Serializes tests globally, but daemon cleanup between tests still leaves SQLite locks briefly held. The failure shifts non-deterministically to whichever test runs next after a daemon teardown. Different test ordering exposes different victims.
@@ -93,11 +94,13 @@ intra-process SQLITE_BUSY variant described above.
 
 ## Prevention
 
-- The `fd-lock` advisory lock in `connect_db` serialises `DbInstance::new()` across processes and
-  threads. When upgrading cozo beyond 0.7.x, verify the new version handles `SQLITE_BUSY` gracefully;
-  if it does, the fd-lock workaround can be removed.
-- **Do NOT** remove `continue-on-error` from CI until the intra-process schema bootstrap race is
-  also resolved (extend fd-lock scope to cover `run_schema_bootstrap`, or upgrade cozo). Tracked:
-  stash `C4E8F2A1` (schema-bootstrap lock scope) and `1092D3D6` (cozo 0.8+ upgrade).
+- The `fd-lock` advisory lock in `connect_db` serialises both `DbInstance::new()` AND
+  `run_schema_bootstrap` across processes and threads (037-F). The startup auto-sync task in
+  `ipc_server.rs` retries on SQLITE_BUSY covering post-bootstrap write races. When upgrading
+  cozo beyond 0.7.x, verify the new version handles `SQLITE_BUSY` gracefully; if it does, both
+  the fd-lock workaround and the retry loops can be removed.
+- **Do NOT** remove `continue-on-error` from CI until the pre-existing
+  `integration_graph_vector_rehydration` and `integration_query_perf_observability` failures are
+  also resolved (separate from U015-FLK1).
 - Enabling SQLite WAL mode (`PRAGMA journal_mode=WAL`) would allow concurrent readers but still requires cozo's error handling to not panic.
 - The `engram.db.lock` sidecar file: the advisory lock is released when the file descriptor closes (on process exit or when `_guard` is dropped). The file itself may remain on disk but is harmless — it is excluded by `.gitignore` and carries no meaningful state after lock release.
