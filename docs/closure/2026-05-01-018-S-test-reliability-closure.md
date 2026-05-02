@@ -10,8 +10,6 @@ branch: staging/018-S-test-reliability
 status: READY
 ---
 
-# Operational Closure: 018-S — Test Reliability and CozoDB Concurrent Stability
-
 ## Summary
 
 Shipment 018-S shipped three test-reliability and production-stability fixes:

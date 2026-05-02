@@ -47,7 +47,7 @@ The error originates in the upstream cozo crate, not project code.
 
 `cozo-0.7.6/src/storage/sqlite.rs:49` uses `unwrap()` on the SQLite open call. When SQLite returns `SQLITE_BUSY` (database locked), the `unwrap()` panics the process rather than propagating an error. This is an upstream defect (tracked as U015-FLK1).
 
-## Resolution (018-S — permanent fix)
+## Resolution (018-S — local mitigation)
 
 Applied an advisory `fd-lock` file lock around `DbInstance::new` in `connect_db`
 (`src/db/cozo_backend/mod.rs`):
@@ -79,8 +79,8 @@ rather than panicking.
 schema bootstrap (`run_schema_bootstrap`) runs *after* the lock is released. When parallel tests
 call `connect_db` twice on the same DB path (e.g. `set_workspace` background task followed by
 `index_workspace`), both handles may reach schema bootstrap concurrently and hit `SQLITE_BUSY`.
-The fix is to extend the fd-lock scope to cover schema bootstrap, or upgrade to cozo 0.8+ (tracked
-in stash entry `1092D3D6`). The CI test step retains `continue-on-error: true` until this variant
+The fix is to extend the fd-lock scope to cover schema bootstrap (stash `C4E8F2A1`), or upgrade to
+cozo 0.8+ (stash `1092D3D6`). The CI test step retains `continue-on-error: true` until this variant
 is resolved.
 
 **Previous workaround (015-S — superseded for multi-process case):** `continue-on-error: true` on
