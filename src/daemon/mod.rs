@@ -12,7 +12,7 @@ pub mod protocol;
 pub mod ttl;
 pub mod watcher;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -211,4 +211,111 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
 
     info!("daemon exiting cleanly");
     Ok(())
+}
+
+/// Check whether `.engram/run/engram.pid` in `run_dir` references a dead process
+/// and, if so, remove the stale file before the daemon acquires its lock.
+///
+/// This runs before [`lockfile::DaemonLock::acquire`] so that a PID file left
+/// behind by a cleanly-exited daemon is cleaned up with a visible log message
+/// rather than silently overwritten on the next successful lock acquisition.
+///
+/// Returns `Some(dead_pid)` when a stale file is detected and removed, `None`
+/// when the PID file does not exist or the recorded process is still alive.
+///
+/// # Errors
+///
+/// Propagates unexpected I/O failures encountered while reading or removing the
+/// file.  A missing file is not an error.
+#[allow(dead_code)]
+pub(crate) fn remove_stale_pid_if_dead(_run_dir: &Path) -> Result<Option<u32>, EngramError> {
+    todo!(
+        "025.003-T: \
+         (1) read run_dir/engram.pid via serde_json; \
+         (2) if file missing return Ok(None); \
+         (3) parse into PidFile; \
+         (4) call PidFile::verify_alive(); if alive return Ok(None); \
+         (5) std::fs::remove_file(pid_path) — ignore NotFound; \
+         (6) info!(pid, \"removed stale PID file for dead process\"); \
+         (7) return Ok(Some(dead_pid)); \
+         see docs/exec-plans/2026-05-02-engram-server-reliability-plan.md Unit 2B"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::remove_stale_pid_if_dead;
+
+    // ── 025.003-T harness ─────────────────────────────────────────────────────
+    //
+    // Red phase: all tests below panic with `todo!("025.003-T: …")`.
+    // Green phase: implementation replaces the stub and each assertion holds.
+
+    /// No `engram.pid` file → `remove_stale_pid_if_dead` must return `Ok(None)`
+    /// without modifying the directory.
+    ///
+    /// **Red phase**: panics with `todo!("025.003-T: …")` — test FAILS.
+    /// **Green phase**: returns `Ok(None)` — test PASSES.
+    #[test]
+    fn remove_stale_pid_noop_when_no_pid_file() {
+        let dir = TempDir::new().expect("temp run dir");
+        let result = remove_stale_pid_if_dead(dir.path())
+            .expect("absent PID file must not produce an error");
+        assert!(result.is_none(), "must return None when no PID file exists");
+    }
+
+    /// A PID file referencing PID 0 (guaranteed dead on every OS) must be
+    /// removed and `Ok(Some(0))` returned.
+    ///
+    /// **Red phase**: panics with `todo!("025.003-T: …")` — test FAILS.
+    /// **Green phase**: removes `engram.pid`, returns `Ok(Some(0))` — test PASSES.
+    #[test]
+    fn remove_stale_pid_cleans_dead_process_pid_file() {
+        let dir = TempDir::new().expect("temp run dir");
+        let run_dir = dir.path();
+
+        // PID 0 is unreachable by sysinfo on all platforms (verify_alive returns false).
+        let content = json!({"pid": 0u32, "start_time_unix": 1u64}).to_string();
+        fs::write(run_dir.join("engram.pid"), content).expect("write stale PID file");
+
+        let dead_pid = remove_stale_pid_if_dead(run_dir)
+            .expect("dead PID cleanup must not error");
+
+        assert_eq!(dead_pid, Some(0), "must return Some(dead_pid) after cleanup");
+        assert!(
+            !run_dir.join("engram.pid").exists(),
+            "engram.pid must be removed from disk after stale cleanup"
+        );
+    }
+
+    /// A PID file referencing the current live process must be left untouched
+    /// and `Ok(None)` returned.
+    ///
+    /// **Red phase**: panics with `todo!("025.003-T: …")` — test FAILS.
+    /// **Green phase**: detects live process, returns `Ok(None)`, leaves file — test PASSES.
+    #[test]
+    fn remove_stale_pid_preserves_live_process_pid_file() {
+        let dir = TempDir::new().expect("temp run dir");
+        let run_dir = dir.path();
+
+        let live_pid = std::process::id();
+        // start_time_unix = 1 (UNKNOWN_START_TIME_UNIX) so verify_alive skips
+        // start-time comparison and relies on process existence alone.
+        let content = json!({"pid": live_pid, "start_time_unix": 1u64}).to_string();
+        fs::write(run_dir.join("engram.pid"), content).expect("write live PID file");
+
+        let result = remove_stale_pid_if_dead(run_dir)
+            .expect("live PID check must not error");
+
+        assert!(result.is_none(), "must return None for a live process");
+        assert!(
+            run_dir.join("engram.pid").exists(),
+            "engram.pid must NOT be removed for a live process"
+        );
+    }
 }

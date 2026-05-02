@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::daemon::protocol::{HealthCheckResult, IpcError as WireError, IpcRequest, IpcResponse};
 use crate::daemon::ttl::TtlTimer;
+use crate::daemon::watcher::WatcherConfig;
 use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
@@ -776,6 +777,40 @@ async fn accept_loop(
             }
         }
     }
+}
+
+/// Run the daemon IPC server using the refactored startup order where the file
+/// watcher is initialised *after* the IPC listener binds.
+///
+/// This is the new entry point introduced by task 025.002-T, replacing
+/// [`run_with_shutdown`]. Unlike its predecessor, this function does **not**
+/// receive an `event_rx` channel from the caller; instead the channel is created
+/// internally immediately after [`bind_listener`] succeeds.  Moving watcher
+/// initialisation past the bind point prevents a slow `ReadDirectoryChangesW`
+/// (Windows) or `inotify_add_watch` (Linux) registration from delaying the
+/// moment the shim can send its first health probe.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] if path validation, lock acquisition, or listener
+/// binding fails.
+pub async fn run_with_shutdown_v2(
+    _workspace: &str,
+    _ttl: Arc<TtlTimer>,
+    _shutdown_tx: Arc<watch::Sender<bool>>,
+    _shutdown_rx: watch::Receiver<bool>,
+    _watcher_config: WatcherConfig,
+) -> Result<(), EngramError> {
+    todo!(
+        "025.002-T: \
+         (1) copy pre-bind setup from run_with_shutdown; \
+         (2) call bind_listener — IPC must be reachable before watcher init; \
+         (3) after bind, create (event_tx, event_rx) channel; \
+         (4) move start_watcher call here, wrapped in tokio::task::spawn_blocking \
+             with a 5-second tokio::time::timeout (graceful-degrade on timeout); \
+         (5) wire event_rx into the auto-sync loop; \
+         see docs/exec-plans/2026-05-02-engram-server-reliability-plan.md Unit 2A"
+    )
 }
 
 #[cfg(test)]
