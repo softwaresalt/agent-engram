@@ -126,3 +126,12 @@ Two pre-existing CI failures remain unaddressed. Stash follow-ups:
 
 1. Fix `integration_graph_vector_rehydration` startup-index timeout (30 s)
 2. Fix `integration_query_perf_observability` timing-stat bucket population
+
+## Readiness
+
+**READY WITH CONDITIONS**
+
+U015-FLK1 is fully resolved. The two listed follow-up failures are pre-existing, unrelated to 037-F,
+and confirmed to fail on a clean `main` before any 037-F changes. They are stashed for a future
+session. The daemon is production-ready for normal (non-stress-test) usage; `continue-on-error: true`
+is intentionally retained in CI to prevent those pre-existing failures from blocking the build.
