@@ -35,8 +35,10 @@ this residual race is resolved.
 
 **Success criteria:**
 
-- `cargo test` passes reliably without `continue-on-error: true`
-- No `SQLITE_BUSY` panics in concurrent `connect_db` scenarios
+- No `SQLITE_BUSY` panics in concurrent `connect_db` scenarios (U015-FLK1 fully resolved)
+- `cargo test` passes for all tests that were previously guarded by U015-FLK1
+- `continue-on-error: true` retained in CI only for pre-existing unrelated failures
+  (not for U015-FLK1-related races)
 - The solution is safe to ship on the current cozo 0.7.6 dependency
 
 ## Research Findings

@@ -113,9 +113,9 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
 ///
 /// Schema bootstrap scripts are idempotent (`:create` is a no-op when the
 /// relation already exists), so retrying is always safe.  Twenty attempts
-/// with 25 ms → 500 ms exponential back-off gives ≈ 5 s of total retry
-/// headroom, which is more than enough for a concurrent writer to release its
-/// write transaction.
+/// with 25 ms → 500 ms exponential back-off gives ≈ 7.8 s of total retry
+/// headroom (25+50+100+200+400+500×15), which is more than enough for a
+/// concurrent writer to release its write transaction.
 fn run_script_retrying(cozo_db: &cozo::DbInstance, script: &str) -> Result<(), EngramError> {
     const MAX_ATTEMPTS: u32 = 20;
 
