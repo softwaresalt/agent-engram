@@ -14,7 +14,7 @@ status: complete
 - [x] Archived `.backlogit/queue/` items to `.backlogit/archive/`: 019-S, 037-F, 037.001-T, 037.002-T, 037.003-T
 - [x] Shipment reconcile — post-mode: PROCEED (all archive files present, no deletions)
 - [x] Operational closure artifact: `docs/closure/2026-05-02-037-F-cozodb-concurrency-hardening.md`
-- [x] ARCHITECTURE.md updated: fd-lock scope, `run_script_retrying`, new "Database Connection Concurrency" subsection
+- [x] `docs/architecture.md` updated: fd-lock scope, `run_script_retrying`, new "Database Connection Concurrency" subsection
 - [x] Stashed 2 follow-up items: `integration_graph_vector_rehydration` timeout fix, `integration_query_perf_observability` stat bucket fix
 - [x] Closure PR #69 created: `chore: post-merge closure for 037-F — CozoDB Concurrency Hardening (019-S)`
 

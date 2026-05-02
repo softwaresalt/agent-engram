@@ -391,7 +391,7 @@ Twenty CozoScript `:create` relations are bootstrapped idempotently at connectio
 in any `:rm` operation — providing only `(from, to)` will silently no-op. `concerns_edge` uses
 `(task_id, symbol_id)` as its key; never use `from`/`to` column names on this relation.
 
-Schema bootstrap is idempotent: `:create` errors containing "already", "defined", "conflicts", or "existing" are silently ignored for all scripts. HNSW index creation additionally ignores "invalid option" errors for forward compatibility with CozoDB versions that do not support all HNSW parameters. Each script is executed via `run_script_retrying`, which retries up to 20 times with exponential back-off on `SQLITE_BUSY` errors.
+Schema bootstrap is idempotent: `:create` errors containing "already", "defined", "conflicts", or "existing" are silently ignored for all scripts. HNSW index creation additionally ignores "invalid option" errors for forward compatibility with CozoDB versions that do not support all HNSW parameters. All `:create` relation scripts are executed via `run_script_retrying`, which retries up to 20 times with exponential back-off on `SQLITE_BUSY` errors. The HNSW index creation step uses a direct `run_script` call and is not retried.
 
 ### Query Language
 

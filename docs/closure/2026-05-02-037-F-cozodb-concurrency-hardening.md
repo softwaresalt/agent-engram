@@ -85,7 +85,7 @@ This is a local-first daemon (no remote deployment). Monitoring is manual:
 ## Rollback Trigger
 
 - **Condition**: Any SQLITE_BUSY panic surfaces after merge in normal (non-test-stress) operation
-- **Trigger**: More than 1 SQLITE_BUSY error in a single daemon session
+- **Trigger**: 1 or more SQLITE_BUSY panics in a single daemon session during normal operation
 - **Procedure**: `git revert 6f64eb7 e85ee80` on a hotfix branch → PR → merge
 
 ## Risky Actions Executed
