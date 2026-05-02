@@ -126,14 +126,18 @@ Ship agent / softwaresalt
 | 036.002-T | `5B1EB1DF` | none | Stash entry: flaky c018_06; record for manual retirement |
 | 036.003-T | `02E87E6E` | none | Stash entry: s_cs4 determinism; record for manual retirement |
 
-Stash IDs 685B097A, 5B1EB1DF, 02E87E6E are recorded for manual retirement. The `.backlogit/stash.jsonl` file was truncated to 0 bytes in commit 0d2b942 (all 3 entries harvested).
+Stash IDs 685B097A, 5B1EB1DF, 02E87E6E are recorded for manual retirement. The `.backlogit/stash.jsonl`
+file was emptied (all 3 entries harvested) in PR #66 commit 0d2b942; this closure PR added two new
+follow-up stash entries (1092D3D6 and C4E8F2A1).
 
 ## Follow-up Items
 
 1. **Upgrade cozo from 0.7 to 0.8+ when available** — the fd-lock workaround can be removed
-   once cozo fixes the internal SQLite panic in `open_sqlite_db()`. Track as stash entry.
-2. **Remove `continue-on-error` from CI cozo-backend step** — now that U015-FLK1 is fixed,
-   the CI workaround in `.github/workflows/` should be cleaned up if present.
+   once cozo fixes the internal SQLite panic in `open_sqlite_db()`. Tracked as stash `1092D3D6`.
+2. **Resolve intra-process schema bootstrap race** — `continue-on-error: true` is retained in
+   CI because the fd-lock only serialises `DbInstance::new()`, not `run_schema_bootstrap`.
+   Extend the lock scope to cover schema bootstrap, or upgrade to cozo 0.8+.
+   Tracked as stash `C4E8F2A1`.
 
 ## Readiness
 
