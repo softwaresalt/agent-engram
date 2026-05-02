@@ -21,7 +21,7 @@ status: complete
 ## Commits on closure branch
 
 - `209b430` — `chore(docs): archive 019-S backlog artifacts and produce closure record`
-- `49f1613` — `docs(adrs): update ARCHITECTURE.md for 037-F CozoDB concurrency model`
+- `49f1613` — `docs(adrs): update docs/architecture.md for 037-F CozoDB concurrency model`
 
 ## Files Modified (closure branch)
 
@@ -43,7 +43,7 @@ status: complete
 
 ## Decisions
 
-- ARCHITECTURE.md updated to reflect extended fd-lock scope (not just `DbInstance::new` but through `run_schema_bootstrap`)
+- `docs/architecture.md` updated to reflect extended fd-lock scope (not just `DbInstance::new` but through `run_schema_bootstrap`)
 - Follow-up CI failures stashed (medium priority) for a future session
 
 ## Open Items

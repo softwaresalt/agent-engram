@@ -7,7 +7,7 @@ pr: "https://github.com/softwaresalt/agent-engram/pull/68"
 branch: feat/037-cozodb-concurrency-hardening
 merged_at: 2026-05-02
 closed_by: Copilot
-status: closed
+status: READY WITH CONDITIONS
 ---
 
 ## Release Summary
