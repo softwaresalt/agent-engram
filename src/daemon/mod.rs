@@ -23,10 +23,9 @@ use tracing::{error, info};
 
 use crate::daemon::lockfile::DaemonLock;
 use crate::daemon::ttl::TtlTimer;
-use crate::daemon::watcher::{WatcherConfig, start_watcher};
+use crate::daemon::watcher::WatcherConfig;
 use crate::db::workspace::load_or_create_workspace_id;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
-use crate::models::WatcherEvent;
 
 /// Operational status of a running daemon instance.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +86,9 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
         })
     })?;
 
+    // ── 1.5. Remove stale PID file if the recorded process is dead ───────────
+    // Must run before DaemonLock::acquire so an orphaned PID file from a
+    // previously-killed daemon does not block the new one from starting.
     let run_dir = workspace_path.join(".engram").join("run");
     std::fs::create_dir_all(&run_dir).map_err(|e| {
         EngramError::Ipc(DomainIpcError::ConnectionFailed {
@@ -94,6 +96,12 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
             reason: e.to_string(),
         })
     })?;
+    match remove_stale_pid_if_dead(&run_dir) {
+        Ok(Some(pid)) => info!(pid, "stale PID file removed; daemon will start normally"),
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "stale PID check failed; continuing startup"),
+    }
+
     let _ = load_or_create_workspace_id(&workspace_path)?;
 
     // ── 2. Acquire lockfile ───────────────────────────────────────────────────
@@ -160,22 +168,15 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
         });
     }
 
-    // ── 7. Start file watcher ─────────────────────────────────────────────────
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WatcherEvent>();
-
+    // ── 7. Build watcher config ───────────────────────────────────────────────
+    //
+    // Watcher initialisation is deferred to run_with_shutdown_v2 which starts it
+    // AFTER the IPC listener binds (025.002-T fix). We only build the config here.
     let watcher_config = WatcherConfig {
         debounce_ms: plugin_config.debounce_ms,
         exclude_patterns: plugin_config.exclude_patterns.clone(),
         watch_patterns: plugin_config.watch_patterns.clone(),
     };
-    let _watcher_handle =
-        start_watcher(&workspace_path, watcher_config, event_tx).unwrap_or_else(|e| {
-            error!(error = %e, "file watcher failed to start; daemon continues degraded");
-            None
-        });
-
-    // event_rx is forwarded to run_with_shutdown which wires up TTL resets,
-    // debounced auto-sync, and auto-flush using the shared AppState.
 
     // ── T080: Workspace-moved detection — check every 60s that workspace still valid ──
     // If the workspace directory is moved or deleted while the daemon is running,
@@ -200,12 +201,13 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     }
 
     // ── 8. Run IPC server ─────────────────────────────────────────────────────
-    ipc_server::run_with_shutdown(
+    info!("startup step 8: entering IPC accept loop (bind happens inside run_with_shutdown_v2)");
+    ipc_server::run_with_shutdown_v2(
         workspace,
         Arc::clone(&ttl),
         Arc::clone(&shutdown_tx),
         shutdown_rx,
-        event_rx,
+        watcher_config,
     )
     .await?;
 
@@ -227,19 +229,51 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
 ///
 /// Propagates unexpected I/O failures encountered while reading or removing the
 /// file.  A missing file is not an error.
-#[allow(dead_code)]
-pub(crate) fn remove_stale_pid_if_dead(_run_dir: &Path) -> Result<Option<u32>, EngramError> {
-    todo!(
-        "025.003-T: \
-         (1) read run_dir/engram.pid via serde_json; \
-         (2) if file missing return Ok(None); \
-         (3) parse into PidFile; \
-         (4) call PidFile::verify_alive(); if alive return Ok(None); \
-         (5) std::fs::remove_file(pid_path) — ignore NotFound; \
-         (6) info!(pid, \"removed stale PID file for dead process\"); \
-         (7) return Ok(Some(dead_pid)); \
-         see docs/exec-plans/2026-05-02-engram-server-reliability-plan.md Unit 2B"
-    )
+/// Remove the stale `engram.pid` file from `run_dir` when its recorded process
+/// is no longer alive.
+///
+/// Returns `Ok(Some(pid))` when the file was found and removed (dead process),
+/// `Ok(None)` when the file does not exist or belongs to a live process, and
+/// `Err(…)` for unexpected I/O failures encountered while reading the file.
+pub(crate) fn remove_stale_pid_if_dead(run_dir: &Path) -> Result<Option<u32>, EngramError> {
+    use crate::shim::pidfile::PidFile;
+
+    let pid_path = run_dir.join("engram.pid");
+    let raw = match std::fs::read_to_string(&pid_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(EngramError::System(
+                crate::errors::SystemError::FlushFailed {
+                    path: format!("{}: {e}", pid_path.display()),
+                },
+            ));
+        }
+    };
+
+    // Corrupt or empty PID file: treat as absent (non-fatal).
+    let pid_file: PidFile = match serde_json::from_str(raw.trim()) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+
+    if pid_file.verify_alive().unwrap_or(false) {
+        return Ok(None); // live process — leave the file untouched
+    }
+
+    // Dead process: remove the stale file.
+    if let Err(e) = std::fs::remove_file(&pid_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                path = %pid_path.display(),
+                error = %e,
+                "failed to remove stale PID file; ignoring"
+            );
+        }
+    }
+
+    info!(pid = pid_file.pid, "removed stale PID file for dead process");
+    Ok(Some(pid_file.pid))
 }
 
 #[cfg(test)]

@@ -52,8 +52,12 @@ async fn run_with_shutdown_v2_exits_cleanly_on_ttl_expiry() {
     std::fs::create_dir_all(&git_dir).expect("create .git");
     std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    // 1-second TTL drives a clean exit without an explicit shutdown signal.
-    let ttl = TtlTimer::new(Duration::from_secs(1));
+    // 10-second TTL: enough for background_db_hydration to finish opening a fresh
+    // SQLite database even on a loaded Windows machine (Defender scans can delay
+    // DbInstance::new + schema bootstrap).  Using 1 s was racy: the hydration
+    // background task held the fd-lock past the TTL deadline, causing the final
+    // flush_all_workspaces connect_db to time out.
+    let ttl = TtlTimer::new(Duration::from_secs(10));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let watcher_config = WatcherConfig {
         debounce_ms: 300,
