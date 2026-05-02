@@ -294,7 +294,7 @@ flush_state() (MCP tool call) or graceful shutdown
 
 Engram uses `CozoDB` in embedded mode (backed by SQLite) rather than a network database. Each workspace gets its own isolated database stored under `{data_dir}/cozo/{branch_safe}/engram.db`, where `data_dir` defaults to `{workspace}/.engram` (or `ENGRAM_DATA_DIR` if set) and `branch_safe` is the sanitized Git branch name. This eliminates external dependencies and makes the daemon self-contained.
 
-`connect_db` acquires an advisory `fd-lock` file lock (`engram.db.lock`) before calling `DbInstance::new`. This prevents the cozo 0.7.x internal `unwrap()` panic when two processes attempt to open the same SQLite file simultaneously. The lock is acquired via `RwLock::try_write()` in a `spawn_blocking` closure with 50ms polling and a 5-second deadline; it is released immediately after `DbInstance::new` returns (CozoDB's SQLite WAL handles concurrent access at the statement level after the database is open).
+`connect_db` acquires an advisory `fd-lock` file lock (`engram.db.lock`) before calling `DbInstance::new` and holds it through `run_schema_bootstrap`. This prevents the cozo 0.7.x internal `unwrap()` panic when two processes (or two tokio tasks in the same process) attempt to open or bootstrap the same SQLite file simultaneously. The lock is acquired via `RwLock::try_write()` in a `spawn_blocking` closure with 50 ms polling and a 5-second deadline; it is released only after schema bootstrap completes. Individual CozoScript bootstrap statements are wrapped in `run_script_retrying`, a 20-attempt exponential back-off helper (25 ms → 500 ms cap, ≈7.8 s worst case) that absorbs residual `SQLITE_BUSY` errors on write transactions (CozoDB's SQLite WAL handles concurrent reads at the statement level after the database is open).
 
 ### Code Graph as Primary Data Model
 
@@ -391,7 +391,7 @@ Twenty CozoScript `:create` relations are bootstrapped idempotently at connectio
 in any `:rm` operation — providing only `(from, to)` will silently no-op. `concerns_edge` uses
 `(task_id, symbol_id)` as its key; never use `from`/`to` column names on this relation.
 
-Schema bootstrap is idempotent: `:create` errors containing "already", "defined", "conflicts", or "existing" are silently ignored.
+Schema bootstrap is idempotent: `:create` errors containing "already", "defined", "conflicts", "existing", or "invalid option" are silently ignored. Each script is executed via `run_script_retrying`, which retries up to 20 times with exponential back-off on `SQLITE_BUSY` errors.
 
 ### Query Language
 
@@ -456,6 +456,17 @@ All shared mutable state lives in `src/server/state.rs` under `AppState`:
 | `indexing_in_progress` | `AtomicBool` | Guards against concurrent indexing runs; a second `index_workspace` call while indexing is active returns an error immediately |
 | `hydration_ready` | `AtomicBool` | Set to `true` once workspace hydration completes; cleared and re-set on each `set_workspace` call |
 | `active_connections` | `AtomicUsize` | **SSE-transport only** — tracks live SSE streaming clients; never incremented by IPC connections |
+
+### Database Connection Concurrency
+
+CozoDB 0.7 uses SQLite as its storage backend, which requires serialised `DbInstance::new` and schema bootstrap calls. Concurrent `connect_db` calls — whether from multiple processes or multiple tokio tasks within the same process — are serialised via an advisory `fd-lock` file lock on `engram.db.lock` held for the duration of both `DbInstance::new` and `run_schema_bootstrap`. Each lock holder gets a clean, fully-bootstrapped `CozoDb` instance before the lock releases.
+
+After both `connect_db` calls complete (one from `background_db_hydration`, one from startup auto-sync), residual `SQLITE_BUSY` errors on write transactions are absorbed by:
+
+- `run_script_retrying` in `schema.rs` — 20-attempt exponential back-off (25 ms → 500 ms, ≈7.8 s worst case) per bootstrap script.
+- The startup auto-sync retry loop in `ipc_server.rs` — 10-attempt exponential back-off (50 ms → 500 ms) on `SQLITE_BUSY` from the auto-sync write transaction.
+
+This three-layer approach (fd-lock scope, schema-level retry, startup retry) resolves U015-FLK1 in engram 037-F.
 
 ### Concurrent Request Safety
 
