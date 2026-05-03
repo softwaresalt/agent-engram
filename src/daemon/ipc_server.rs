@@ -808,7 +808,9 @@ pub async fn run_with_shutdown_v2(
         })
     })?;
 
-    // Ensure .engram/run/ exists before acquiring the lock.
+    // Ensure .engram/run/ exists before binding the listener.
+    // The daemon lock is already held by `daemon::run()` for the entire daemon
+    // lifetime; this function does not acquire it.
     let run_dir = workspace_path.join(".engram").join("run");
     std::fs::create_dir_all(&run_dir).map_err(|e| {
         EngramError::Ipc(DomainIpcError::ConnectionFailed {
