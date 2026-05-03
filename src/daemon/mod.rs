@@ -96,10 +96,8 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
             reason: e.to_string(),
         })
     })?;
-    match remove_stale_pid_if_dead(&run_dir) {
-        Ok(Some(pid)) => info!(pid, "stale PID file removed; daemon will start normally"),
-        Ok(None) => {}
-        Err(e) => tracing::warn!(error = %e, "stale PID check failed; continuing startup"),
+    if let Err(e) = remove_stale_pid_if_dead(&run_dir) {
+        tracing::warn!(error = %e, "stale PID check failed; continuing startup");
     }
 
     let _ = load_or_create_workspace_id(&workspace_path)?;
@@ -215,26 +213,21 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     Ok(())
 }
 
-/// Check whether `.engram/run/engram.pid` in `run_dir` references a dead process
-/// and, if so, remove the stale file before the daemon acquires its lock.
-///
-/// This runs before [`lockfile::DaemonLock::acquire`] so that a PID file left
-/// behind by a cleanly-exited daemon is cleaned up with a visible log message
-/// rather than silently overwritten on the next successful lock acquisition.
-///
-/// Returns `Some(dead_pid)` when a stale file is detected and removed, `None`
-/// when the PID file does not exist or the recorded process is still alive.
-///
-/// # Errors
-///
-/// Propagates unexpected I/O failures encountered while reading or removing the
-/// file.  A missing file is not an error.
 /// Remove the stale `engram.pid` file from `run_dir` when its recorded process
 /// is no longer alive.
 ///
-/// Returns `Ok(Some(pid))` when the file was found and removed (dead process),
-/// `Ok(None)` when the file does not exist or belongs to a live process, and
-/// `Err(…)` for unexpected I/O failures encountered while reading the file.
+/// This runs before [`lockfile::DaemonLock::acquire`] so that a PID file left
+/// behind by a previously-killed daemon is cleaned up before the new daemon
+/// acquires its lock.
+///
+/// Returns `Ok(Some(dead_pid))` when the stale file is found and successfully
+/// deleted, `Ok(None)` when the file is absent, belongs to a live process, or
+/// could not be deleted (deletion failures are logged as warnings).
+///
+/// # Errors
+///
+/// Returns [`EngramError`] on unexpected I/O failures reading the PID file.
+/// A missing PID file is not an error.
 pub(crate) fn remove_stale_pid_if_dead(run_dir: &Path) -> Result<Option<u32>, EngramError> {
     use crate::shim::pidfile::PidFile;
 
@@ -251,10 +244,21 @@ pub(crate) fn remove_stale_pid_if_dead(run_dir: &Path) -> Result<Option<u32>, En
         }
     };
 
-    // Corrupt or empty PID file: treat as absent (non-fatal).
+    // Corrupt or unknown format: treat as absent (non-fatal).
     let pid_file: PidFile = match serde_json::from_str(raw.trim()) {
         Ok(p) => p,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            // Legacy numeric PID file: a bare integer with no JSON wrapper.
+            // start_time_unix of 1 matches the UNKNOWN_START_TIME_UNIX sentinel
+            // used by PidFile::read(), which treats it as "no start-time check".
+            match raw.trim().parse::<u32>() {
+                Ok(pid) => PidFile {
+                    pid,
+                    start_time_unix: 1,
+                },
+                Err(_) => return Ok(None),
+            }
+        }
     };
 
     if pid_file.verify_alive().unwrap_or(false) {
@@ -262,13 +266,20 @@ pub(crate) fn remove_stale_pid_if_dead(run_dir: &Path) -> Result<Option<u32>, En
     }
 
     // Dead process: remove the stale file.
-    if let Err(e) = std::fs::remove_file(&pid_path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    match std::fs::remove_file(&pid_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Already removed by another process between our read and delete —
+            // the file is gone either way; treat as Ok(None).
+            return Ok(None);
+        }
+        Err(e) => {
             tracing::warn!(
                 path = %pid_path.display(),
                 error = %e,
                 "failed to remove stale PID file; ignoring"
             );
+            return Ok(None);
         }
     }
 
@@ -355,6 +366,31 @@ mod tests {
         assert!(
             run_dir.join("engram.pid").exists(),
             "engram.pid must NOT be removed for a live process"
+        );
+    }
+
+    /// A legacy numeric-only PID file (bare `u32` string, no JSON) with a dead
+    /// PID must be removed and `Ok(Some(pid))` returned.
+    #[test]
+    fn remove_stale_pid_cleans_legacy_numeric_pid_file() {
+        let dir = TempDir::new().expect("temp run dir");
+        let run_dir = dir.path();
+
+        // Legacy format: plain integer, no JSON wrapper.
+        // PID 0 is guaranteed dead on every OS.
+        fs::write(run_dir.join("engram.pid"), "0").expect("write legacy numeric PID file");
+
+        let dead_pid =
+            remove_stale_pid_if_dead(run_dir).expect("legacy PID cleanup must not error");
+
+        assert_eq!(
+            dead_pid,
+            Some(0),
+            "must return Some(0) after cleaning up a legacy numeric PID file"
+        );
+        assert!(
+            !run_dir.join("engram.pid").exists(),
+            "engram.pid must be removed after legacy stale PID cleanup"
         );
     }
 }

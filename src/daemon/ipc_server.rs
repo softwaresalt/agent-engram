@@ -792,8 +792,8 @@ async fn accept_loop(
 ///
 /// # Errors
 ///
-/// Returns [`EngramError`] if path validation, lock acquisition, or listener
-/// binding fails.
+/// Returns [`EngramError`] if path validation, run-directory creation, or
+/// listener binding fails.
 pub async fn run_with_shutdown_v2(
     workspace: &str,
     ttl: Arc<TtlTimer>,
@@ -866,30 +866,40 @@ pub async fn run_with_shutdown_v2(
     // thread pool so the tokio executor and the already-bound IPC listener remain
     // responsive.  A 5-second timeout lets the daemon continue in degraded mode
     // (no file-change tracking) if the workspace is unusually large.
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
+    //
+    // The mpsc channel is created inside the blocking task so that `event_tx` is
+    // dropped together with the closure on the timeout/error path.  This prevents
+    // the file-change receive loop from waiting indefinitely when the watcher init
+    // times out and the blocking thread outlives the timeout window.
     let workspace_for_watcher = workspace_path.clone();
     let watcher_init_handle = tokio::task::spawn_blocking(move || {
-        start_watcher(&workspace_for_watcher, watcher_config, event_tx)
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
+        // start_watcher logs its own error/warning details; we only need to
+        // surface the result here.
+        let handle =
+            start_watcher(&workspace_for_watcher, watcher_config, event_tx).unwrap_or(None);
+        handle.map(|h| (h, event_rx))
     });
-    let _watcher_handle =
+    // `_watcher_handle` stays in the outer function scope so the watcher remains
+    // active for the full lifetime of `run_with_shutdown_v2` and is dropped when
+    // the daemon exits, which closes `event_tx` and lets the receive loop end.
+    let (_watcher_handle, maybe_event_rx) =
         match tokio::time::timeout(Duration::from_secs(5), watcher_init_handle).await {
-            Ok(Ok(result)) => result.unwrap_or_else(|e| {
-                error!(error = %e, "file watcher failed to start; daemon continues degraded");
-                None
-            }),
+            Ok(Ok(Some((handle, rx)))) => (Some(handle), Some(rx)),
+            Ok(Ok(None)) => (None, None),
             Ok(Err(join_err)) => {
                 error!(
                     error = %join_err,
                     "watcher spawn_blocking panicked; daemon continues degraded"
                 );
-                None
+                (None, None)
             }
             Err(_timeout) => {
                 warn!(
                     "file watcher initialisation exceeded 5 s deadline; \
                      daemon continues without file-change tracking"
                 );
-                None
+                (None, None)
             }
         };
 
@@ -1054,7 +1064,9 @@ pub async fn run_with_shutdown_v2(
     }
 
     // ── File-change auto-sync loop ────────────────────────────────────────────
-    {
+    // Only spawned when watcher init succeeded; skipped on degraded-mode paths
+    // so the loop does not wait indefinitely for an event_tx that may never send.
+    if let Some(mut event_rx) = maybe_event_rx {
         let state_watcher = Arc::clone(&state);
         let ttl_watcher = Arc::clone(&ttl);
         tokio::spawn(async move {
