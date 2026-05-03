@@ -91,9 +91,42 @@ pub async fn dehydrate_code_graph(
         .map_err(|_| flush_err(&code_graph_dir))?;
 
     let code_files = cg_queries.list_code_files().await?;
-    let functions = cg_queries.all_functions().await?;
-    let classes = cg_queries.all_classes().await?;
-    let interfaces = cg_queries.all_interfaces().await?;
+
+    // Retrieve complete records (INNER JOIN of meta + code + embedding).
+    // When a SQLITE_BUSY error interrupts upsert mid-way, `function_meta` may
+    // have rows while `function_code` / `function_embedding` do not, causing the
+    // INNER JOIN to silently drop those symbols. We detect this by comparing the
+    // INNER-JOIN count to the meta-only count and fill in missing symbols with
+    // empty-body / zero-embedding placeholders so they still appear in nodes.jsonl.
+    let mut functions = cg_queries.all_functions().await?;
+    let fn_meta_count =
+        usize::try_from(cg_queries.count_functions().await.unwrap_or(0)).unwrap_or(0);
+    if functions.len() < fn_meta_count {
+        let metas = cg_queries.all_function_metas().await?;
+        let complete_ids: std::collections::HashSet<String> =
+            functions.iter().map(|f| f.id.clone()).collect();
+        functions.extend(metas.into_iter().filter(|m| !complete_ids.contains(&m.id)));
+    }
+
+    let mut classes = cg_queries.all_classes().await?;
+    let cl_meta_count = usize::try_from(cg_queries.count_classes().await.unwrap_or(0)).unwrap_or(0);
+    if classes.len() < cl_meta_count {
+        let metas = cg_queries.all_class_metas().await?;
+        let complete_ids: std::collections::HashSet<String> =
+            classes.iter().map(|c| c.id.clone()).collect();
+        classes.extend(metas.into_iter().filter(|m| !complete_ids.contains(&m.id)));
+    }
+
+    let mut interfaces = cg_queries.all_interfaces().await?;
+    let iface_meta_count =
+        usize::try_from(cg_queries.count_interfaces().await.unwrap_or(0)).unwrap_or(0);
+    if interfaces.len() < iface_meta_count {
+        let metas = cg_queries.all_interface_metas().await?;
+        let complete_ids: std::collections::HashSet<String> =
+            interfaces.iter().map(|i| i.id.clone()).collect();
+        interfaces.extend(metas.into_iter().filter(|m| !complete_ids.contains(&m.id)));
+    }
+
     let edges = cg_queries.all_code_edges().await?;
 
     let total_nodes = code_files.len() + functions.len() + classes.len() + interfaces.len();
