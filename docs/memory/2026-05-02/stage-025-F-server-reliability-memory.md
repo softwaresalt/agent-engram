@@ -5,6 +5,7 @@ agent: stage
 phase: complete
 feature_context: 025-F
 shipment_id: 020-S
+title: "Stage Session Memory — 025-F Engram Server Reliability"
 ---
 
 ## Session Summary
