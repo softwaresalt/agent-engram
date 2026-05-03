@@ -284,7 +284,7 @@ flush_state() (MCP tool call) or graceful shutdown
 | Git Graph | `src/services/git_graph.rs` | Walk git commit history, index commits as graph nodes, cross-reference with code graph. Error codes 12xxx. |
 | Errors | `src/errors/` | Typed error hierarchy (`EngramError`), error codes (`src/errors/codes.rs`), MCP error serialization. |
 | Installer | `src/installer/` | `engram install/update/uninstall` commands. Creates `.engram/` scaffold and generates agent hook files. |
-| Daemon | `src/daemon/` | IPC server (Unix socket / named pipe), protocol types, daemon spawn/lifecycle management. Socket directory is created with `DirBuilder::mode(0o700)` and the resulting permissions are verified post-create via `fs::metadata` (mode must be `0o700`), because `DirBuilder::mode` does not change permissions on pre-existing directories. |
+| Daemon | `src/daemon/` | IPC server (Unix socket / named pipe), protocol types, daemon spawn/lifecycle management. `daemon::run()` calls `run_with_shutdown_v2` (introduced 025-F), which binds the IPC listener **before** starting the file watcher to prevent `ReadDirectoryChangesW` / `inotify_add_watch` registration latency from delaying the shim health probe. The file watcher is started in `spawn_blocking` with a 5-second timeout after the bind. `remove_stale_pid_if_dead` is called before lock acquisition to clean up PID files left by crashed daemons. Socket directory is created with `DirBuilder::mode(0o700)` and the resulting permissions are verified post-create via `fs::metadata` (mode must be `0o700`), because `DirBuilder::mode` does not change permissions on pre-existing directories. |
 
 ---
 
