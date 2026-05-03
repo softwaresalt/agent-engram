@@ -63,11 +63,25 @@ pub struct FileError {
 /// supported languages and file size, parses via tree-sitter, assigns tiered
 /// embeddings, and persists all nodes and edges to SurrealDB.
 ///
+/// Retries automatically on `SQLITE_BUSY` / `"locked"` errors using
+/// [`run_with_busy_retry`] to tolerate concurrent background DB writes
+/// (e.g. `background_db_hydration` running immediately after `set_workspace`).
+///
 /// # Errors
 ///
 /// Returns `EngramError` on database connection failure or fatal I/O errors.
 /// Per-file parse errors are collected in `IndexResult::errors` (non-fatal).
 pub async fn index_workspace(
+    ws_path: &Path,
+    data_dir: &Path,
+    branch: &str,
+    config: &CodeGraphConfig,
+    force: bool,
+) -> Result<IndexResult, EngramError> {
+    run_with_busy_retry(|| index_workspace_impl(ws_path, data_dir, branch, config, force)).await
+}
+
+async fn index_workspace_impl(
     ws_path: &Path,
     data_dir: &Path,
     branch: &str,
@@ -1254,4 +1268,32 @@ fn find_interface_id(ids: &[(String, String)], name: &str) -> Option<String> {
     ids.iter()
         .find(|(n, _)| n == name)
         .map(|(_, id)| id.clone())
+}
+
+/// Retry an async operation when it fails with `SQLITE_BUSY` or `"locked"`.
+///
+/// Attempts up to 20 times with exponential back-off starting at 25 ms,
+/// capped at 500 ms.  All other errors propagate immediately without retry.
+async fn run_with_busy_retry<F, Fut, T>(f: F) -> Result<T, EngramError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, EngramError>>,
+{
+    const MAX_ATTEMPTS: u32 = 20;
+    let mut delay = std::time::Duration::from_millis(25);
+    for attempt in 0..MAX_ATTEMPTS {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if attempt + 1 < MAX_ATTEMPTS && (msg.contains("locked") || msg.contains("busy")) {
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(std::time::Duration::from_millis(500));
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    unreachable!()
 }
