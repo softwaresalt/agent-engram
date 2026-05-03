@@ -94,7 +94,7 @@ On next daemon startup after merge:
 
 | Signal | Meaning | Action |
 |---|---|---|
-| "Daemon failed to reach Ready state within 2000ms" | bind-first ordering not taking effect | Rollback: `git revert d20ac49` |
+| "Daemon failed to reach Ready state within 2000ms" | bind-first ordering not taking effect | Rollback: `git revert -m 1 d20ac49` |
 | Watcher timeout log on startup | `spawn_blocking` 5s timeout triggered | Investigate workspace size; consider increasing timeout |
 | Panic in `run_with_shutdown_v2` | WatcherHandle scope issue | Check that `_watcher_handle` is not moved into spawned task |
 
@@ -103,7 +103,7 @@ On next daemon startup after merge:
 ## Rollback Procedure
 
 ```bash
-git revert d20ac49
+git revert -m 1 d20ac49
 cargo build --release
 # deploy reverted binary
 ```
