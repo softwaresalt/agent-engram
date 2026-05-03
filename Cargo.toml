@@ -538,6 +538,10 @@ name = "integration_stale_pid_recovery"
 path = "tests/integration/stale_pid_recovery_test.rs"
 
 [[test]]
+name = "integration_daemon_startup_order"
+path = "tests/integration/daemon_startup_order_test.rs"
+
+[[test]]
 name = "integration_workspace_id_drift"
 path = "tests/integration/workspace_id_drift_test.rs"
 
