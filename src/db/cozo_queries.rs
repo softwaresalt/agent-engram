@@ -290,6 +290,42 @@ impl CodeGraphQueries {
         Self { db: db.inner }
     }
 
+    /// Run a mutable script, retrying up to 5 times on `SQLITE_BUSY`.
+    ///
+    /// Each write to the three-table symbol layout (`*_meta`, `*_code`,
+    /// `*_embedding`) can race with a concurrent write transaction.  Five
+    /// attempts with 50 ms → 500 ms exponential back-off give ≈ 1.5 s of
+    /// headroom — enough for `background_db_hydration` to release its
+    /// write lock — without holding up the async executor for long.
+    async fn run_script_busy_retry_mutable(
+        &self,
+        script: &str,
+        params: BTreeMap<String, DataValue>,
+    ) -> Result<cozo::NamedRows, EngramError> {
+        const MAX_ATTEMPTS: u32 = 5;
+        let mut delay = std::time::Duration::from_millis(50);
+        for attempt in 0..MAX_ATTEMPTS {
+            match self
+                .db
+                .run_script(script, params.clone(), ScriptMutability::Mutable)
+            {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    let msg = e.to_string().to_lowercase();
+                    if (msg.contains("locked") || msg.contains("busy"))
+                        && attempt + 1 < MAX_ATTEMPTS
+                    {
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_millis(500));
+                        continue;
+                    }
+                    return Err(map_db_err(e.to_string()));
+                }
+            }
+        }
+        unreachable!()
+    }
+
     // ── code_file CRUD ─────────────────────────────────────────────
 
     /// Insert or replace a code file record.
@@ -448,6 +484,112 @@ impl CodeGraphQueries {
         Ok(result.rows.iter().map(|r| row_to_interface(r)).collect())
     }
 
+    /// List all function records from `function_meta` only, using empty defaults
+    /// for `body` and `embedding`.
+    ///
+    /// Used by dehydration as a fallback when `function_code` or
+    /// `function_embedding` rows are absent due to a partial write (e.g. a
+    /// `SQLITE_BUSY` failure mid-upsert). Callers that need the full body or a
+    /// meaningful embedding should use [`Self::all_functions`] instead.
+    pub async fn all_function_metas(&self) -> Result<Vec<crate::models::Function>, EngramError> {
+        let script = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash,
+  token_count, embed_type, summary] :=
+    *function_meta { id, name, file_path, line_start, line_end, signature,
+                     docstring, body_hash, token_count, embed_type, summary }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|r| crate::models::Function {
+                id: extract_str(r, 0),
+                name: extract_str(r, 1),
+                file_path: extract_str(r, 2),
+                line_start: extract_u32(r, 3),
+                line_end: extract_u32(r, 4),
+                signature: extract_str(r, 5),
+                docstring: extract_opt_str(r, 6),
+                body: String::new(),
+                body_hash: extract_str(r, 7),
+                token_count: extract_u32(r, 8),
+                embed_type: extract_str(r, 9),
+                embedding: vec![0.0_f32; crate::services::embedding::EMBEDDING_DIM],
+                summary: extract_str(r, 10),
+            })
+            .collect())
+    }
+
+    /// List all class records from `class_meta` only, using empty defaults for
+    /// `body` and `embedding`. Dehydration fallback — see [`Self::all_function_metas`].
+    pub async fn all_class_metas(&self) -> Result<Vec<crate::models::Class>, EngramError> {
+        let script = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash,
+  token_count, embed_type, summary] :=
+    *class_meta { id, name, file_path, line_start, line_end, docstring,
+                  body_hash, token_count, embed_type, summary }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|r| crate::models::Class {
+                id: extract_str(r, 0),
+                name: extract_str(r, 1),
+                file_path: extract_str(r, 2),
+                line_start: extract_u32(r, 3),
+                line_end: extract_u32(r, 4),
+                docstring: extract_opt_str(r, 5),
+                body: String::new(),
+                body_hash: extract_str(r, 6),
+                token_count: extract_u32(r, 7),
+                embed_type: extract_str(r, 8),
+                embedding: vec![0.0_f32; crate::services::embedding::EMBEDDING_DIM],
+                summary: extract_str(r, 9),
+            })
+            .collect())
+    }
+
+    /// List all interface records from `interface_meta` only, using empty
+    /// defaults for `body` and `embedding`. Dehydration fallback — see
+    /// [`Self::all_function_metas`].
+    pub async fn all_interface_metas(&self) -> Result<Vec<crate::models::Interface>, EngramError> {
+        let script = r#"
+?[id, name, file_path, line_start, line_end, docstring, body_hash,
+  token_count, embed_type, summary] :=
+    *interface_meta { id, name, file_path, line_start, line_end, docstring,
+                      body_hash, token_count, embed_type, summary }
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|r| crate::models::Interface {
+                id: extract_str(r, 0),
+                name: extract_str(r, 1),
+                file_path: extract_str(r, 2),
+                line_start: extract_u32(r, 3),
+                line_end: extract_u32(r, 4),
+                docstring: extract_opt_str(r, 5),
+                body: String::new(),
+                body_hash: extract_str(r, 6),
+                token_count: extract_u32(r, 7),
+                embed_type: extract_str(r, 8),
+                embedding: vec![0.0_f32; crate::services::embedding::EMBEDDING_DIM],
+                summary: extract_str(r, 9),
+            })
+            .collect())
+    }
+
     /// List all code edges from all edge tables (excludes `references_edge`).
     pub async fn all_code_edges(&self) -> Result<Vec<crate::models::CodeEdge>, EngramError> {
         let mut edges = Vec::new();
@@ -509,9 +651,9 @@ impl CodeGraphQueries {
             DataValue::from(func.embed_type.as_str()),
         );
         p.insert("summary".to_owned(), DataValue::from(func.summary.as_str()));
-        self.db
-            .run_script(meta_script, p, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(meta_script, p)
+            .await
+            .map(|_| ())?;
 
         // Table 2: function_code
         let code_script = r#"
@@ -521,11 +663,9 @@ impl CodeGraphQueries {
         let mut p2 = BTreeMap::new();
         p2.insert("id".to_owned(), DataValue::from(func.id.as_str()));
         p2.insert("body".to_owned(), DataValue::from(func.body.as_str()));
-        self.db
-            .run_script(code_script, p2, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
-
-        // Table 3: function_embedding
+        self.run_script_busy_retry_mutable(code_script, p2)
+            .await
+            .map(|_| ())?;
         let embed_script = r#"
 ?[id, embedding] <- [[$id, $embedding]]
 :put function_embedding { id, embedding }
@@ -539,9 +679,9 @@ impl CodeGraphQueries {
         let mut p3 = BTreeMap::new();
         p3.insert("id".to_owned(), DataValue::from(func.id.as_str()));
         p3.insert("embedding".to_owned(), embedding_dv);
-        self.db
-            .run_script(embed_script, p3, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(embed_script, p3)
+            .await
+            .map(|_| ())?;
 
         Ok(())
     }
@@ -671,9 +811,9 @@ impl CodeGraphQueries {
             "summary".to_owned(),
             DataValue::from(class.summary.as_str()),
         );
-        self.db
-            .run_script(meta, p, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(meta, p)
+            .await
+            .map(|_| ())?;
 
         // Table 2: class_code
         let code_s = r#"
@@ -683,9 +823,9 @@ impl CodeGraphQueries {
         let mut p2 = BTreeMap::new();
         p2.insert("id".to_owned(), DataValue::from(class.id.as_str()));
         p2.insert("body".to_owned(), DataValue::from(class.body.as_str()));
-        self.db
-            .run_script(code_s, p2, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(code_s, p2)
+            .await
+            .map(|_| ())?;
 
         // Table 3: class_embedding
         let embed_s = r#"
@@ -702,9 +842,9 @@ impl CodeGraphQueries {
         let mut p3 = BTreeMap::new();
         p3.insert("id".to_owned(), DataValue::from(class.id.as_str()));
         p3.insert("embedding".to_owned(), emb_dv);
-        self.db
-            .run_script(embed_s, p3, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(embed_s, p3)
+            .await
+            .map(|_| ())?;
 
         Ok(())
     }
@@ -810,9 +950,9 @@ impl CodeGraphQueries {
             "summary".to_owned(),
             DataValue::from(iface.summary.as_str()),
         );
-        self.db
-            .run_script(meta, p, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(meta, p)
+            .await
+            .map(|_| ())?;
 
         // Table 2: interface_code
         let code_s = r#"
@@ -822,9 +962,9 @@ impl CodeGraphQueries {
         let mut p2 = BTreeMap::new();
         p2.insert("id".to_owned(), DataValue::from(iface.id.as_str()));
         p2.insert("body".to_owned(), DataValue::from(iface.body.as_str()));
-        self.db
-            .run_script(code_s, p2, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(code_s, p2)
+            .await
+            .map(|_| ())?;
 
         // Table 3: interface_embedding
         let embed_s = r#"
@@ -841,9 +981,9 @@ impl CodeGraphQueries {
         let mut p3 = BTreeMap::new();
         p3.insert("id".to_owned(), DataValue::from(iface.id.as_str()));
         p3.insert("embedding".to_owned(), emb_dv);
-        self.db
-            .run_script(embed_s, p3, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(embed_s, p3)
+            .await
+            .map(|_| ())?;
 
         Ok(())
     }
@@ -1907,6 +2047,8 @@ impl CodeGraphQueries {
             }
         }
 
+        let start = std::time::Instant::now();
+
         let bfs = self
             .bfs_impl(root_id, max_depth, limit * 4, edge_types)
             .await?;
@@ -1927,6 +2069,10 @@ impl CodeGraphQueries {
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
+        crate::services::query_stats::record_timing(
+            "hybrid_search",
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
         Ok(scored)
     }
 
@@ -1937,7 +2083,13 @@ impl CodeGraphQueries {
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<BfsResult, EngramError> {
-        self.bfs_impl(root_id, max_depth, max_nodes, &[]).await
+        let start = std::time::Instant::now();
+        let result = self.bfs_impl(root_id, max_depth, max_nodes, &[]).await;
+        crate::services::query_stats::record_timing(
+            "graph_traversal",
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+        result
     }
 
     // ── Embedding updates ─────────────────────────────────────────

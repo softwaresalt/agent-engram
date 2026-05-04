@@ -61,13 +61,28 @@ pub struct FileError {
 ///
 /// Uses the `ignore` crate for .gitignore-aware file traversal, filters by
 /// supported languages and file size, parses via tree-sitter, assigns tiered
-/// embeddings, and persists all nodes and edges to SurrealDB.
+/// embeddings, and persists all nodes and edges to CozoDB.
+///
+/// `SQLITE_BUSY` retries are handled at the individual `run_script` level
+/// inside `upsert_function`, `upsert_class`, and `upsert_interface`, so
+/// per-symbol writes retry independently without skipping files whose
+/// `content_hash` was already committed.
 ///
 /// # Errors
 ///
 /// Returns `EngramError` on database connection failure or fatal I/O errors.
 /// Per-file parse errors are collected in `IndexResult::errors` (non-fatal).
 pub async fn index_workspace(
+    ws_path: &Path,
+    data_dir: &Path,
+    branch: &str,
+    config: &CodeGraphConfig,
+    force: bool,
+) -> Result<IndexResult, EngramError> {
+    index_workspace_impl(ws_path, data_dir, branch, config, force).await
+}
+
+async fn index_workspace_impl(
     ws_path: &Path,
     data_dir: &Path,
     branch: &str,
