@@ -247,13 +247,39 @@ async fn assert_rehydrated_graph_and_vector_state(workspace_path: &std::path::Pa
         "restarted daemon must report rehydrated edge count: {status_after}"
     );
 
-    let map_result = send_ok(
-        &endpoint2,
-        5,
-        "map_code",
-        Some(json!({ "symbol_name": "hydrated_vector_anchor" })),
-    )
-    .await;
+    // Retry map_code until daemon 2's auto-index releases the indexing lock.
+    // Rehydration populates symbols from JSONL before the auto-index runs, so
+    // get_workspace_status already shows functions >= 2 while auto-index is still
+    // active.  map_code requires the indexing lock and returns error 7003 while
+    // auto-index is in progress.
+    let map_deadline = Instant::now() + Duration::from_secs(30);
+    let map_result = loop {
+        let request = make_request(
+            5,
+            "map_code",
+            Some(json!({ "symbol_name": "hydrated_vector_anchor" })),
+        );
+        let response = send_request(&endpoint2, &request, Duration::from_secs(20))
+            .await
+            .expect("map_code IPC call failed");
+        if let Some(ref err) = response.error {
+            let code = err
+                .data
+                .as_ref()
+                .and_then(|d| d.get("engram_code"))
+                .and_then(serde_json::Value::as_u64);
+            if code == Some(7003) {
+                assert!(
+                    Instant::now() < map_deadline,
+                    "timed out waiting for auto-index to complete before map_code"
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            panic!("map_code returned unexpected error: {err:?}");
+        }
+        break response.result.expect("map_code missing result");
+    };
     assert_eq!(
         map_result["root"]["name"], "hydrated_vector_anchor",
         "map_code must find the rehydrated symbol after restart"
