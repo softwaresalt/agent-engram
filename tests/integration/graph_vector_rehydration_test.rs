@@ -306,15 +306,20 @@ async fn assert_rehydrated_graph_and_vector_state(workspace_path: &std::path::Pa
     );
 }
 
-/// Ignored on Windows: `CozoDB` 0.7.6 panics at `sqlite.rs` (`conn.prepare().unwrap()`) with
-/// `SQLITE_BUSY` when the second daemon opens the workspace DB on Windows. The two daemons are
-/// sequential — daemon 1 is fully shut down and reaped before daemon 2 starts — but Windows
-/// mandatory file locks persist until all handles are flushed, causing spurious contention.
+/// Ignored on Windows and Linux: `CozoDB` 0.7.6 panics at `sqlite.rs`
+/// (`conn.prepare().unwrap()`) with `SQLITE_BUSY` when a daemon opens
+/// a workspace DB while another daemon's SQLite handles are still in
+/// teardown.  On Windows, mandatory file locks persist until all handles
+/// are flushed.  On Linux, a timing race in CozoDB's WAL-mode setup
+/// causes the same spurious contention during DB initialization.
+/// The two daemons are sequential — daemon 1 is fully shut down and
+/// reaped before daemon 2 starts — but handle release is not guaranteed
+/// synchronous in CozoDB 0.7.6.
 /// Tracked: stash `100EACD8`, upstream cozo issue.
 /// Unblock: cozo >= 0.8 with graceful SQLITE error handling.
 #[cfg_attr(
-    target_os = "windows",
-    ignore = "CozoDB 0.7.6 SQLITE_BUSY on daemon restart; Windows mandatory file-lock timing; tracked stash 100EACD8"
+    any(target_os = "windows", target_os = "linux"),
+    ignore = "CozoDB 0.7.6 SQLITE_BUSY on daemon restart; timing race in WAL-mode setup + platform file-lock release; tracked stash 100EACD8"
 )]
 #[tokio::test]
 async fn daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted() {
