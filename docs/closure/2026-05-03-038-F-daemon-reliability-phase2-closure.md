@@ -6,7 +6,7 @@ pr: 74
 merge_commit: ed62e22
 branch: feat/038-F-daemon-reliability-phase2
 date: 2026-05-03
-status: closed
+status: READY
 ---
 
 ## Summary
