@@ -35,12 +35,11 @@ jobs:
       - name: test
         # U015-FLK1 resolved (037-F): fd-lock covers DbInstance::new() and
         # run_schema_bootstrap(); startup auto-sync retries on SQLITE_BUSY.
-        # continue-on-error retained for pre-existing unrelated failures:
-        #   - integration_graph_vector_rehydration: startup-index timeout (timing-sensitive)
-        #   - integration_query_perf_observability: timing-stat buckets not populated
+        # Subprocess tests that require CozoDB 0.7.6 fix are annotated #[ignore]
+        # (smoke_full_tool_chain_over_ipc, daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted).
+        # Tracked: stash 100EACD8; unblock on cozo >= 0.8.
         # Red-phase tests (s085-s088) marked #[ignore] until record_file_hash
         # is wired into index_workspace_inner.
-        continue-on-error: true
         run: cargo test --no-default-features --features cozo-backend,embeddings --all-targets
 
       - name: audit
