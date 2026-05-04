@@ -308,15 +308,15 @@ async fn assert_rehydrated_graph_and_vector_state(workspace_path: &std::path::Pa
 
 /// Ignored on Windows and Linux: `CozoDB` 0.7.6 panics at `sqlite.rs`
 /// (`conn.prepare().unwrap()`) with `SQLITE_BUSY` when a daemon opens
-/// a workspace DB while another daemon's SQLite handles are still in
+/// a workspace DB while another daemon's `SQLite` handles are still in
 /// teardown.  On Windows, mandatory file locks persist until all handles
-/// are flushed.  On Linux, a timing race in CozoDB's WAL-mode setup
+/// are flushed.  On Linux, a timing race in `CozoDB`'s WAL-mode setup
 /// causes the same spurious contention during DB initialization.
 /// The two daemons are sequential — daemon 1 is fully shut down and
 /// reaped before daemon 2 starts — but handle release is not guaranteed
-/// synchronous in CozoDB 0.7.6.
+/// synchronous in `CozoDB` 0.7.6.
 /// Tracked: stash `100EACD8`, upstream cozo issue.
-/// Unblock: cozo >= 0.8 with graceful SQLITE error handling.
+/// Unblock: cozo >= 0.8 with graceful `SQLITE` error handling.
 #[cfg_attr(
     any(target_os = "windows", target_os = "linux"),
     ignore = "CozoDB 0.7.6 SQLITE_BUSY on daemon restart; timing race in WAL-mode setup + platform file-lock release; tracked stash 100EACD8"
