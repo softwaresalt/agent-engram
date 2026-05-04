@@ -14,7 +14,7 @@
 //! SSE-transport concerns (US5/T091, FR-025/T118) and do not apply to IPC.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use engram::daemon::protocol::IpcRequest;
 use engram::shim::ipc_client::send_request;
@@ -293,6 +293,7 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
 /// synchronised point. The workspace is seeded with 20 indexable `.rs` files
 /// before the concurrent calls so that indexing reliably takes longer than the
 /// IPC round-trip, making the race deterministic rather than timing-dependent.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
     let harness = DaemonHarness::spawn(Duration::from_secs(30))
@@ -341,6 +342,39 @@ async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
         "set_workspace must succeed before indexing test: {:?}",
         set_resp.error
     );
+
+    // Wait for the set_workspace auto-index to complete before issuing concurrent
+    // index_workspace calls.  set_workspace triggers an auto-index that runs in
+    // the background; if it still holds the indexing lock when both explicit
+    // index_workspace calls arrive, both fail with 7003 instead of exactly one.
+    // Poll get_workspace_status until all 20 seeded functions are indexed.
+    let startup_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_req = IpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Value::Number(serde_json::Number::from(99_u32))),
+            method: "get_workspace_status".to_owned(),
+            params: None,
+        };
+        let resp = send_request(&endpoint, &status_req, Duration::from_secs(10))
+            .await
+            .expect("get_workspace_status transport must not fail");
+        if resp.error.is_none() {
+            let funcs = resp
+                .result
+                .as_ref()
+                .and_then(|r| r["code_graph"]["functions"].as_u64())
+                .unwrap_or(0);
+            if funcs >= 20 {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < startup_deadline,
+            "timed out waiting for set_workspace auto-index to finish (20 functions expected)"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 
     let barrier = Arc::new(Barrier::new(2));
 
