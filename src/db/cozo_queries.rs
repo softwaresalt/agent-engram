@@ -17,7 +17,7 @@ use cozo::{DataValue, Num, ScriptMutability};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
@@ -71,11 +71,9 @@ pub fn record_query_metrics(
 // ── Mutable-script retry telemetry (040-F) ───────────────────────────────────
 
 /// Monotonic count of SQLITE_BUSY retries in `run_script_busy_retry_mutable`.
-#[allow(dead_code)]
 static MUTABLE_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Epoch-milliseconds timestamp of the most recent retry; `0` is the sentinel
 /// meaning "no retry has ever occurred".
-#[allow(dead_code)]
 static MUTABLE_LAST_RETRY_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Snapshot of mutable-script SQLITE_BUSY retry telemetry.
@@ -95,7 +93,19 @@ pub struct RetryMetrics {
 /// counter between consecutive calls. Use delta arithmetic, not absolute values,
 /// when detecting new activity.
 pub fn mutable_script_retry_metrics() -> RetryMetrics {
-    todo!("040.001-T: read MUTABLE_RETRY_COUNT and MUTABLE_LAST_RETRY_EPOCH_MS, construct RetryMetrics")
+    let retry_count = MUTABLE_RETRY_COUNT.load(Ordering::Relaxed);
+    let epoch_ms = MUTABLE_LAST_RETRY_EPOCH_MS.load(Ordering::Relaxed);
+    let last_retry_at = (epoch_ms != 0)
+        .then(|| {
+            i64::try_from(epoch_ms)
+                .ok()
+                .and_then(DateTime::from_timestamp_millis)
+        })
+        .flatten();
+    RetryMetrics {
+        retry_count,
+        last_retry_at,
+    }
 }
 
 /// Zero both retry atomics.
@@ -103,7 +113,8 @@ pub fn mutable_script_retry_metrics() -> RetryMetrics {
 /// **For test isolation only.** Do not call in production code.
 #[cfg(test)]
 pub(crate) fn reset_retry_metrics() {
-    todo!("040.001-T: store 0 to MUTABLE_RETRY_COUNT and MUTABLE_LAST_RETRY_EPOCH_MS")
+    MUTABLE_RETRY_COUNT.store(0, Ordering::Relaxed);
+    MUTABLE_LAST_RETRY_EPOCH_MS.store(0, Ordering::Relaxed);
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────
@@ -371,6 +382,10 @@ impl CodeGraphQueries {
                             error = %msg,
                             "SQLITE_BUSY retry: retrying mutable run_script"
                         );
+                        // Record retry telemetry (040.001-T).
+                        MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+                        let now_ms = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
+                        MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
                         tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(std::time::Duration::from_millis(500));
                         continue;

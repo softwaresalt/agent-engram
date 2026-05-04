@@ -1158,9 +1158,15 @@ pub async fn get_evaluation_report(
 ///
 /// Returns `Err` only when serialisation of the [`RetryMetrics`] snapshot fails,
 /// which is not expected in practice.
+#[allow(clippy::unused_async)] // async required by tool-dispatch contract
 pub async fn get_mutable_script_retry_metrics(
     _state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    todo!("040.002-T: call crate::db::mutable_script_retry_metrics() and serialize")
+    let metrics = crate::db::mutable_script_retry_metrics();
+    let last_retry_at = metrics.last_retry_at.map(|dt| dt.to_rfc3339());
+    Ok(json!({
+        "retry_count": metrics.retry_count,
+        "last_retry_at": last_retry_at,
+    }))
 }

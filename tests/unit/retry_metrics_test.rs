@@ -25,5 +25,8 @@ fn t040_001_metrics_has_retry_count_field() {
 fn t040_001_metrics_retry_count_is_u64() {
     let metrics = mutable_script_retry_metrics();
     // u64 is always ≥ 0; this assertion is a type-level smoke test.
-    assert!(metrics.retry_count < u64::MAX, "retry_count must be a valid u64");
+    assert!(
+        metrics.retry_count < u64::MAX,
+        "retry_count must be a valid u64"
+    );
 }
