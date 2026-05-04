@@ -17,3 +17,4 @@ pub mod queries;
 pub mod cozo_backend;
 
 pub use cozo_backend::{Db, connect_db, map_db_err};
+pub use queries::{RetryMetrics, mutable_script_retry_metrics};

@@ -553,6 +553,16 @@ path = "tests/integration/lang_ipc_indexing_test.rs"
 name = "integration_markdown_indexing"
 path = "tests/integration/markdown_indexing_test.rs"
 
+# ── 040-F: SQLITE_BUSY mutable-script retry metrics ──────────────────────────
+
+[[test]]
+name = "unit_retry_metrics"
+path = "tests/unit/retry_metrics_test.rs"
+
+[[test]]
+name = "contract_retry_metrics_tool"
+path = "tests/contract/retry_metrics_tool_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

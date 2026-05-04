@@ -17,6 +17,7 @@ use cozo::{DataValue, Num, ScriptMutability};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicU64;
 
 use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
@@ -65,6 +66,44 @@ pub fn record_query_metrics(
             "query completed"
         );
     }
+}
+
+// ── Mutable-script retry telemetry (040-F) ───────────────────────────────────
+
+/// Monotonic count of SQLITE_BUSY retries in `run_script_busy_retry_mutable`.
+#[allow(dead_code)]
+static MUTABLE_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Epoch-milliseconds timestamp of the most recent retry; `0` is the sentinel
+/// meaning "no retry has ever occurred".
+#[allow(dead_code)]
+static MUTABLE_LAST_RETRY_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of mutable-script SQLITE_BUSY retry telemetry.
+///
+/// Exposed by the `get_mutable_script_retry_metrics` MCP tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct RetryMetrics {
+    /// Monotonic total of retries since the daemon started.
+    pub retry_count: u64,
+    /// Timestamp of the most recent retry, or `None` if no retry has occurred.
+    pub last_retry_at: Option<DateTime<Utc>>,
+}
+
+/// Read the current mutable-script retry metrics from the process-global atomics.
+///
+/// The returned snapshot is point-in-time; concurrent retries may advance the
+/// counter between consecutive calls. Use delta arithmetic, not absolute values,
+/// when detecting new activity.
+pub fn mutable_script_retry_metrics() -> RetryMetrics {
+    todo!("040.001-T: read MUTABLE_RETRY_COUNT and MUTABLE_LAST_RETRY_EPOCH_MS, construct RetryMetrics")
+}
+
+/// Zero both retry atomics.
+///
+/// **For test isolation only.** Do not call in production code.
+#[cfg(test)]
+pub(crate) fn reset_retry_metrics() {
+    todo!("040.001-T: store 0 to MUTABLE_RETRY_COUNT and MUTABLE_LAST_RETRY_EPOCH_MS")
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────
@@ -3296,5 +3335,50 @@ fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
         message: extract_str(row, 6),
         parent_hashes,
         changes,
+    }
+}
+
+// ── Unit tests (040.001-T) ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    /// AC: `retry_count` delta ≥ 1 after a simulated SQLITE_BUSY retry.
+    ///
+    /// Harness phase: `reset_retry_metrics` is a stub (`todo!`) and will panic
+    /// — confirming the red phase.
+    #[test]
+    fn t040_001_retry_count_increments() {
+        reset_retry_metrics();
+        let before = mutable_script_retry_metrics().retry_count;
+        // Simulate the atomic increment that run_script_busy_retry_mutable will perform.
+        MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+        let after = mutable_script_retry_metrics().retry_count;
+        assert!(
+            after.wrapping_sub(before) >= 1,
+            "retry_count must be at least 1 more than baseline; before={before} after={after}"
+        );
+    }
+
+    /// AC: `last_retry_at` is `None` on reset and `Some` after a simulated retry.
+    ///
+    /// Harness phase: `reset_retry_metrics` is a stub (`todo!`) and will panic
+    /// — confirming the red phase.
+    #[test]
+    fn t040_001_last_retry_at_transitions() {
+        reset_retry_metrics();
+        assert!(
+            mutable_script_retry_metrics().last_retry_at.is_none(),
+            "last_retry_at must be None after reset"
+        );
+        let now_ms = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
+        MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
+        assert!(
+            mutable_script_retry_metrics().last_retry_at.is_some(),
+            "last_retry_at must be Some after a simulated retry"
+        );
     }
 }

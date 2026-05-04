@@ -1143,3 +1143,24 @@ pub async fn get_evaluation_report(
         })
     })
 }
+
+// ── 040.002-T: get_mutable_script_retry_metrics ───────────────────────────────
+
+/// Return mutable-script SQLITE_BUSY retry telemetry.
+///
+/// Reads the process-global retry counter and last-retry timestamp accumulated
+/// by `run_script_busy_retry_mutable`. Does not require a workspace to be bound.
+///
+/// Response schema: `{ retry_count: u64, last_retry_at: Option<String> }` where
+/// `last_retry_at` is an RFC-3339 timestamp or `null`.
+///
+/// # Errors
+///
+/// Returns `Err` only when serialisation of the [`RetryMetrics`] snapshot fails,
+/// which is not expected in practice.
+pub async fn get_mutable_script_retry_metrics(
+    _state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    todo!("040.002-T: call crate::db::mutable_script_retry_metrics() and serialize")
+}

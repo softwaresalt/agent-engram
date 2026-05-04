@@ -5,7 +5,7 @@
 //! (IDEs, agents) get accurate schema information before the daemon is ready
 //! and without an extra round-trip.
 //!
-//! All 16 tools registered in [`crate::tools::dispatch`] must appear here.
+//! All 18 tools registered in [`crate::tools::dispatch`] must appear here.
 //! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_dispatch`
 //! unit test so that catalog and dispatch stay in sync.
 
@@ -15,7 +15,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
 /// Total number of tools registered in the dispatch table and this catalog.
-pub const TOOL_COUNT: usize = 17;
+pub const TOOL_COUNT: usize = 18;
 
 /// Build a `serde_json::Map` from a JSON object literal.
 ///
@@ -275,6 +275,15 @@ pub fn all_tools() -> Vec<Tool> {
                 "required": ["query"]
             })),
         ),
+        // ── DB observability ──────────────────────────────────────────────
+        Tool::new(
+            "get_mutable_script_retry_metrics",
+            "Return mutable-script SQLITE_BUSY retry telemetry: monotonic retry count and timestamp of the most recent retry. Does not require a workspace to be bound.",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
     ]
 }
 
@@ -333,6 +342,7 @@ mod tests {
             "get_token_savings_report",
             "get_evaluation_report",
             "query_graph",
+            "get_mutable_script_retry_metrics",
         ];
         for name in &required {
             assert!(names.contains(name), "tool '{name}' missing from catalog");
