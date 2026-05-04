@@ -94,7 +94,7 @@ impl SchemaTarget for CozoDb {
 /// # Errors
 ///
 /// Returns [`EngramError`] when the directory cannot be created, the lock
-/// file cannot be opened, the advisory lock cannot be acquired within 5 s
+/// file cannot be opened, the advisory lock cannot be acquired within 30 s
 /// (another process is opening the same DB), the database cannot be opened,
 /// or schema bootstrap fails with an unexpected error.
 pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError> {
@@ -138,14 +138,14 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             .open(&lock_path)
             .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
         let mut file_lock = fd_lock::RwLock::new(lock_file);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         // Poll with try_write so the thread respects the deadline and exits cleanly.
         let _guard = loop {
             if let Ok(guard) = file_lock.try_write() {
                 break guard;
             } else if Instant::now() >= deadline {
                 return Err(map_db_err(
-                    "cannot acquire CozoDB lock: timed out after 5 s \
+                    "cannot acquire CozoDB lock: timed out after 30 s \
                      (another process is opening the same database)",
                 ));
             }

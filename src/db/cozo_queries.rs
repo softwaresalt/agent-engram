@@ -1739,6 +1739,8 @@ impl CodeGraphQueries {
         );
         Ok(out)
     }
+
+    /// BFS neighborhood traversal up to `max_depth` hops from `root_id`.
     ///
     /// Implemented as iterative multi-hop Rust BFS — one batch of 1-hop
     /// queries per depth level (avoids recursive Datalog complexity).
