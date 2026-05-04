@@ -48,13 +48,23 @@ pub fn record_query_metrics(
     span.record("table", table);
     span.record("result_count", result_count);
     let elapsed_ms_u64 = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
-    tracing::info!(
-        query_type,
-        table,
-        result_count,
-        elapsed_ms = elapsed_ms_u64,
-        "query completed"
-    );
+    if elapsed_ms > SLOW_QUERY_THRESHOLD_MS {
+        tracing::warn!(
+            query_type,
+            table,
+            result_count,
+            elapsed_ms = elapsed_ms_u64,
+            "slow query detected"
+        );
+    } else {
+        tracing::info!(
+            query_type,
+            table,
+            result_count,
+            elapsed_ms = elapsed_ms_u64,
+            "query completed"
+        );
+    }
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────
