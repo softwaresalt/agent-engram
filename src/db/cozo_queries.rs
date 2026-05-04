@@ -315,6 +315,13 @@ impl CodeGraphQueries {
                     if (msg.contains("locked") || msg.contains("busy"))
                         && attempt + 1 < MAX_ATTEMPTS
                     {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_attempts = MAX_ATTEMPTS,
+                            delay_ms = delay.as_millis(),
+                            error = %msg,
+                            "SQLITE_BUSY retry: retrying mutable run_script"
+                        );
                         tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(std::time::Duration::from_millis(500));
                         continue;
