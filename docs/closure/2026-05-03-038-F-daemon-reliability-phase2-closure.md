@@ -71,8 +71,9 @@ Branch `feat/038-F-daemon-reliability-phase2` preserved. Revert merge commit `ed
 
 ## Source Artifact Cleanup
 
-- `custom_fields.source_stash_ids` on 038-F: `[44452A7D, A3B7C1D4, E5F2A8B9, 9CFB4DBA]` — recorded for manual retirement.
+- `custom_fields.source_stash_ids` on 038-F: `[44452A7D, A3B7C1D4, E5F2A8B9, 9CFB4DBA]` — recorded for manual retirement. All four stash entries now show `state: harvested` in `.backlogit/stash.jsonl`.
 - No `source_deliberation_id` found; deliberation reference: `docs/decisions/2026-05-03-daemon-reliability-phase2-deliberation.md`.
+- Follow-up stash entries created: `100EACD8` (daemon subprocess spawn timeout), `1BA885AF` (tracing::warn on retry).
 
 ## Monitoring Plan
 
