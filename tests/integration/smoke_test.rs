@@ -60,6 +60,11 @@ async fn send_ok(endpoint: &str, id: i64, method: &str, params: Option<Value>) -
 
 /// Exercise the complete tool chain: workspace status → task CRUD → flush →
 /// health report → graceful shutdown.
+/// Ignored: `CozoDB` 0.7.6 panics at `sqlite.rs:49` (`conn.prepare().unwrap()`)
+/// when opened in a daemon subprocess on Windows. Daemon never reports Ready.
+/// Tracked: stash `100EACD8`, upstream cozo issue.
+/// Unblock: cozo >= 0.8 with graceful SQLITE error handling.
+#[ignore = "CozoDB 0.7.6 panics in subprocess context on Windows; tracked stash 100EACD8; unblock on cozo upgrade"]
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn smoke_full_tool_chain_over_ipc() {
