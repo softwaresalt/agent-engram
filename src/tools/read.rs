@@ -1156,8 +1156,9 @@ pub async fn get_evaluation_report(
 ///
 /// # Errors
 ///
-/// Returns `Err` only when serialisation of the [`RetryMetrics`] snapshot fails,
-/// which is not expected in practice.
+/// This function is infallible in practice. It returns `Ok` unconditionally
+/// because the response is constructed directly with the `json!` macro from
+/// plain numeric and optional-string values.
 #[allow(clippy::unused_async)] // async required by tool-dispatch contract
 pub async fn get_mutable_script_retry_metrics(
     _state: SharedState,

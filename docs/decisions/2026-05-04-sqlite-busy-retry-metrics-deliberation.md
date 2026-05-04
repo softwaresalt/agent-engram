@@ -49,7 +49,7 @@ Source: `51B936CD` from docs/closure/2026-05-04-039-F-daemon-reliability-phase3-
 ### Option A: Add a dedicated `AtomicU64` counter + MCP query tool
 
 Increment an in-process atomic counter on each retry. Expose via a new MCP
-tool (`get_retry_metrics`) for on-demand query. No external dependencies.
+tool (`get_mutable_script_retry_metrics`) for on-demand query. No external dependencies.
 
 - **Pros**: Zero new dependencies, simple, works without OTLP
 - **Cons**: Counter resets on daemon restart, no automatic alerting without
@@ -71,7 +71,7 @@ counter flows to the collector automatically.
 ## Decision
 
 **Option A** — Add an `AtomicU64` retry counter in the CozoDB query module,
-exposed via a new MCP tool `get_retry_metrics`. This provides immediate value
+exposed via a new MCP tool `get_mutable_script_retry_metrics`. This provides immediate value
 regardless of whether OTLP export is configured. Future work can bridge this
 counter to OpenTelemetry when the `otlp-export` feature is active.
 

@@ -3362,9 +3362,6 @@ mod tests {
     use super::*;
 
     /// AC: `retry_count` delta ≥ 1 after a simulated SQLITE_BUSY retry.
-    ///
-    /// Harness phase: `reset_retry_metrics` is a stub (`todo!`) and will panic
-    /// — confirming the red phase.
     #[test]
     fn t040_001_retry_count_increments() {
         reset_retry_metrics();
@@ -3379,9 +3376,6 @@ mod tests {
     }
 
     /// AC: `last_retry_at` is `None` on reset and `Some` after a simulated retry.
-    ///
-    /// Harness phase: `reset_retry_metrics` is a stub (`todo!`) and will panic
-    /// — confirming the red phase.
     #[test]
     fn t040_001_last_retry_at_transitions() {
         reset_retry_metrics();
@@ -3389,8 +3383,10 @@ mod tests {
             mutable_script_retry_metrics().last_retry_at.is_none(),
             "last_retry_at must be None after reset"
         );
-        let now_ms = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
-        MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
+        // Use a fixed non-zero epoch-ms value to avoid the sentinel (0 = "no retry")
+        // and eliminate any dependency on the system clock.
+        let fixed_ms: u64 = 1_000_000_000_000; // 2001-09-09 — safely after the Unix epoch sentinel
+        MUTABLE_LAST_RETRY_EPOCH_MS.store(fixed_ms, Ordering::Relaxed);
         assert!(
             mutable_script_retry_metrics().last_retry_at.is_some(),
             "last_retry_at must be Some after a simulated retry"

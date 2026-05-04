@@ -3,14 +3,11 @@
 //! Verifies that `mutable_script_retry_metrics()` returns a valid [`RetryMetrics`]
 //! snapshot with the correct initial state.
 //!
-//! Harness phase: `mutable_script_retry_metrics` is a stub (`todo!`) and will
-//! panic — confirming the red phase for 040.001-T.
+//! Initial state: `retry_count` is zero and `last_retry_at` is `None`.
 
 use engram::db::mutable_script_retry_metrics;
 
 /// AC: `mutable_script_retry_metrics()` returns a snapshot with a `retry_count` field.
-///
-/// Harness phase: function panics with `todo!` — RED confirmed.
 #[test]
 fn t040_001_metrics_has_retry_count_field() {
     let metrics = mutable_script_retry_metrics();
@@ -19,8 +16,6 @@ fn t040_001_metrics_has_retry_count_field() {
 }
 
 /// AC: fresh `retry_count` value is a valid `u64` (zero or greater).
-///
-/// Harness phase: function panics with `todo!` — RED confirmed.
 #[test]
 fn t040_001_metrics_retry_count_is_u64() {
     let metrics = mutable_script_retry_metrics();
