@@ -48,13 +48,23 @@ pub fn record_query_metrics(
     span.record("table", table);
     span.record("result_count", result_count);
     let elapsed_ms_u64 = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
-    tracing::info!(
-        query_type,
-        table,
-        result_count,
-        elapsed_ms = elapsed_ms_u64,
-        "query completed"
-    );
+    if elapsed_ms > SLOW_QUERY_THRESHOLD_MS {
+        tracing::warn!(
+            query_type,
+            table,
+            result_count,
+            elapsed_ms = elapsed_ms_u64,
+            "slow query detected"
+        );
+    } else {
+        tracing::info!(
+            query_type,
+            table,
+            result_count,
+            elapsed_ms = elapsed_ms_u64,
+            "query completed"
+        );
+    }
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────
@@ -315,6 +325,13 @@ impl CodeGraphQueries {
                     if (msg.contains("locked") || msg.contains("busy"))
                         && attempt + 1 < MAX_ATTEMPTS
                     {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_attempts = MAX_ATTEMPTS,
+                            delay_ms = delay.as_millis(),
+                            error = %msg,
+                            "SQLITE_BUSY retry: retrying mutable run_script"
+                        );
                         tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(std::time::Duration::from_millis(500));
                         continue;
@@ -1659,6 +1676,7 @@ impl CodeGraphQueries {
 
     /// Search all symbol tables for symbols whose name matches `name`.
     pub async fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
+        let start = std::time::Instant::now();
         let mut out = Vec::new();
         for (tbl, meta_tbl, code_tbl, embed_tbl) in &[
             (
@@ -1725,6 +1743,10 @@ impl CodeGraphQueries {
                 });
             }
         }
+        crate::services::query_stats::record_timing(
+            "symbol_lookup",
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
         Ok(out)
     }
 
