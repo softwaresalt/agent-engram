@@ -6,7 +6,7 @@ feature: 039-F
 pr: "76"
 merge_commit: b1b9bb5
 source_files:
-  - docs/memory/2026-05-04/022-S-post-merge-closure-memory.md
+  - docs/archive/memory/022-S-post-merge-closure-memory.md
 ---
 
 ## Outcome
@@ -26,7 +26,7 @@ Shipment 022-S (Daemon Reliability Phase 3) fully shipped and closed. PR #76 mer
 
 ## Key Decisions
 
-- `cfg_attr(target_os = "windows", ignore)` preferred over unconditional `#[ignore]`
+- `cfg_attr(any(target_os = "windows", target_os = "linux"), ignore)` preferred over unconditional `#[ignore]`; Linux broadening added in closure-phase fix `2d2b500`
 - fd-lock 30 s is stable for CI burst scenarios
 - Removing `continue-on-error` unmasked 3 bugs; all fixed before merge
 

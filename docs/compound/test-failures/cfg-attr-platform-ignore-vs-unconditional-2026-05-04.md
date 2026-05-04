@@ -1,17 +1,18 @@
 ---
 title: "cfg_attr target_os ignore vs unconditional ignore for platform-specific test failures"
-description: "Use cfg_attr(target_os = \"platform\", ignore) to gate platform-specific test failures rather than unconditional #[ignore], which removes all cross-platform CI coverage"
+description: "Use cfg_attr(target_os = \"platform\", ignore) to gate platform-specific test failures rather than unconditional #[ignore], which removes all cross-platform CI coverage. When the same failure is confirmed on multiple platforms, use cfg_attr(any(target_os = \"a\", target_os = \"b\"), ignore)."
 problem_type: "incorrect_ignore_scope"
 category: "test-failures"
 component: "tests/integration/"
-root_cause: "Unconditional #[ignore] removes coverage from all platforms when the failure is specific to one platform"
+root_cause: "Unconditional #[ignore] removes coverage from all platforms when the failure is specific to one or more platforms"
 resolution_type: "code_fix"
 severity: "medium"
-message: "test ... ignored — silently removes Linux/macOS coverage when only Windows is affected"
+message: "test ... ignored — silently removes macOS/other coverage when only Windows+Linux are affected"
 file_path: "tests/integration/graph_vector_rehydration_test.rs"
 citations:
   - "docs/closure/2026-05-04-039-F-daemon-reliability-phase3-closure.md"
   - "https://github.com/softwaresalt/agent-engram/pull/76"
+  - "https://github.com/softwaresalt/agent-engram/pull/77"
 tags:
   - test-annotation
   - cfg_attr
@@ -19,6 +20,7 @@ tags:
   - ignore
   - CozoDB
   - Windows
+  - Linux
 ---
 
 ## Problem
@@ -40,26 +42,33 @@ Transient CI flakiness (SQLITE_BUSY in daemon background threads from concurrent
 binaries) was misdiagnosed as a structural failure in the test itself. The fix was too conservative:
 unconditional `#[ignore]` removed the test from Linux where it should run.
 
-The correct scope was Windows-only because:
+The correct scope for the **initial 039-F merge** was Windows-only because:
 - The test's daemons ARE sequential (no concurrent DB access)
 - CozoDB 0.7.6 SQLITE_BUSY panics under Windows mandatory file-lock semantics are more persistent
 - Linux advisory locks release immediately on process death; Windows mandatory locks may linger
   briefly after `child.wait()` returns
 
+**Update (PR #77 closure)**: During post-merge closure CI, the same SQLITE_BUSY race was confirmed
+on Linux via the WAL-mode setup race in `connect_db`. When the new daemon opens the `SQLite` DB
+while the previous daemon's handles are still in teardown, `CozoDB` 0.7.6 panics on
+`conn.prepare().unwrap()`. This is a cross-platform issue — both Windows and Linux are affected.
+The Linux broadening was applied in fix commit `2d2b500`.
+
 ## Resolution
 
-Use `#[cfg_attr(target_os = "windows", ignore = "reason")]` to gate the ignore to the affected
-platform only:
+Use `#[cfg_attr(any(target_os = "windows", target_os = "linux"), ignore = "reason")]` to gate the ignore
+to the affected platforms, preserving macOS coverage:
 
 ```rust
-/// Ignored on Windows: CozoDB 0.7.6 panics at sqlite.rs with SQLITE_BUSY when the
-/// second daemon opens the workspace DB. The two daemons are sequential — daemon 1
-/// is fully shut down and reaped before daemon 2 starts — but Windows mandatory
-/// file locks persist until all handles are flushed, causing spurious contention.
+/// Ignored on Windows and Linux: `CozoDB` 0.7.6 panics at `sqlite.rs` with `SQLITE_BUSY` when the
+/// second daemon opens the workspace DB. On Windows: mandatory file locks persist after `child.wait()`.
+/// On Linux: WAL-mode setup races when a new `connect_db` call overlaps with a prior daemon's teardown.
+/// The two daemons are sequential — daemon 1 is fully shut down before daemon 2 starts — but handle
+/// release is not guaranteed synchronous in `CozoDB` 0.7.6.
 /// Tracked: stash `100EACD8`. Unblock: cozo >= 0.8.
 #[cfg_attr(
-    target_os = "windows",
-    ignore = "CozoDB 0.7.6 SQLITE_BUSY on daemon restart; Windows mandatory file-lock timing; tracked stash 100EACD8"
+    any(target_os = "windows", target_os = "linux"),
+    ignore = "CozoDB 0.7.6 SQLITE_BUSY on daemon restart; timing race in WAL-mode setup + platform file-lock release; tracked stash 100EACD8"
 )]
 #[tokio::test]
 async fn daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted() {

@@ -58,8 +58,9 @@ confirmations are recorded:
 
 - [x] No database schema changes — no migration needed
 - [x] No IPC protocol changes — no daemon restart required
-- [x] `#[cfg_attr(target_os = "windows", ignore)]` gates are additive — no Linux
-  coverage removed
+- [x] `#[cfg_attr(any(target_os = "windows", target_os = "linux"), ignore)]` on
+  rehydration test — Linux broadening added in closure-phase CI fix `2d2b500`; macOS
+  coverage retained
 - [x] fd-lock timeout change is conservative — widens window, no happy-path impact
 - [x] `tracing::warn!` paths are in exception/slow branches — no performance impact
 
@@ -82,7 +83,7 @@ No managed deployment surface — changes take effect at next user build.
 | Action | Risk | Result |
 |--------|------|--------|
 | Remove `continue-on-error: true` | moderate — could fail CI on pre-existing flakiness | applied — unmasked 3 fixable bugs; CI now green |
-| `#[cfg_attr(target_os = "windows", ignore)]` on rehydration test | low — Copilot initially disputed, corrected via review cycle | applied — daemons are sequential; Linux coverage retained |
+| `#[cfg_attr(any(os = "windows", os = "linux"), ignore)]` on rehydration test | low — Linux broadening added in closure PR fix `2d2b500` | applied — WAL-mode race confirmed on both platforms; macOS coverage retained |
 | fd-lock timeout 5 s → 30 s | low — widens deadline only | applied — fixed `concurrent_connect_db_*` flakiness |
 
 ## Healthy Signals
@@ -109,7 +110,7 @@ Unexpected CI failures on PRs that do not touch test infrastructure.
 
 ## Rollback Procedure
 
-1. `git revert b1b9bb5` to revert the merge commit on main.
+1. `git revert --no-edit -m 1 b1b9bb5` to revert the merge commit on main.
 2. Restore `continue-on-error: true` to `.github/workflows/ci.yml` test step.
 3. Open a new PR with the revert.
 
@@ -134,7 +135,7 @@ Both stash IDs recorded here for manual retirement via backlogit UI or CLI.
 | Artifact | Path |
 |----------|------|
 | Deliberation | `docs/decisions/2026-05-03-daemon-reliability-phase3-deliberation.md` |
-| Plan | `docs/exec-plans/2026-05-03-daemon-reliability-phase3-plan.md` |
+| Plan | `docs/archive/plans/2026-05-03-daemon-reliability-phase3-plan.md` |
 
 ## Follow-Up Items for Stage
 

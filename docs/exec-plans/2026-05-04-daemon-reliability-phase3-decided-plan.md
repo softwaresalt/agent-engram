@@ -3,9 +3,10 @@ title: "Daemon Reliability Phase 3 — Decided Plan"
 description: "Actionable decisions and rationale for 039-F; verbose deliberation archived"
 feature: 039-F
 shipment: 022-S
-merged_at: b1b9bb5
+merge_commit: b1b9bb5
+merged_at: 2026-05-04
 pr: "76"
-source_plan: "docs/exec-plans/2026-05-03-daemon-reliability-phase3-plan.md"
+source_plan: "docs/archive/plans/2026-05-03-daemon-reliability-phase3-plan.md"
 source_deliberation: "docs/decisions/2026-05-03-daemon-reliability-phase3-deliberation.md"
 date: 2026-05-04
 ---
@@ -14,13 +15,19 @@ date: 2026-05-04
 
 ### 039.001-T: Subprocess test annotation
 
-**Decision**: Use `#[cfg_attr(target_os = "windows", ignore = "reason")]` (not unconditional `#[ignore]`)
-for both `smoke_full_tool_chain_over_ipc` and `daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted`.
+**Decision**: Use `#[cfg_attr(any(target_os = "windows", target_os = "linux"), ignore = "reason")]`
+(not unconditional `#[ignore]`) for `daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted`;
+`smoke_full_tool_chain_over_ipc` retains its Windows-only gate.
 
-**Rationale**: The CozoDB 0.7.6 SQLITE_BUSY panic is a Windows mandatory file-lock issue.
-Daemons in the rehydration test are sequential (daemon 1 is fully reaped before daemon 2 starts).
-Unconditional ignore was rejected because it removes Linux CI coverage based on an incorrect
-diagnosis. The `reason` string is required by `clippy::pedantic`.
+**Rationale**: The CozoDB 0.7.6 `SQLITE_BUSY` panic manifests on both Windows (mandatory file-lock
+persistence after `child.wait()`) and Linux (WAL-mode setup race when a new `connect_db` call races
+with a prior daemon's teardown handles). The closure-phase CI runs confirmed the Linux failure is
+real and not transient flakiness. The `reason` string is required by `clippy::pedantic`.
+
+**Note**: The original 039-F design specified Windows-only. The Linux broadening was discovered during
+the post-merge closure PR CI remediation (PR #77) and applied as a fix commit `2d2b500`.
+
+**Tracking**: stash `100EACD8`. Unblock: cozo >= 0.8 for both Windows and Linux.
 
 **Tracking**: stash `100EACD8`. Unblock: cozo >= 0.8.
 
