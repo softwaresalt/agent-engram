@@ -1666,6 +1666,7 @@ impl CodeGraphQueries {
 
     /// Search all symbol tables for symbols whose name matches `name`.
     pub async fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolMatch>, EngramError> {
+        let start = std::time::Instant::now();
         let mut out = Vec::new();
         for (tbl, meta_tbl, code_tbl, embed_tbl) in &[
             (
@@ -1732,10 +1733,12 @@ impl CodeGraphQueries {
                 });
             }
         }
+        crate::services::query_stats::record_timing(
+            "symbol_lookup",
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
         Ok(out)
     }
-
-    /// BFS neighborhood traversal up to `max_depth` hops from `root_id`.
     ///
     /// Implemented as iterative multi-hop Rust BFS — one batch of 1-hop
     /// queries per depth level (avoids recursive Datalog complexity).
