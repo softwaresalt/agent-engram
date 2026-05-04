@@ -280,14 +280,13 @@ async fn assert_rehydrated_graph_and_vector_state(workspace_path: &std::path::Pa
     );
 }
 
-/// Ignored on Windows: `CozoDB` 0.7.6 panics at `sqlite.rs:49` (`conn.prepare().unwrap()`)
-/// when opened in a daemon subprocess on Windows. Daemon never reports Ready.
+/// Ignored on all platforms: this test opens two daemon instances concurrently on the same
+/// workspace path. `CozoDB` 0.7.6 panics at `sqlite.rs:49` (`conn.prepare().unwrap()`) with
+/// `SQLITE_BUSY` when the second instance tries to open the same `SQLite` file while the first
+/// still holds it open — affects Linux and Windows equally.
 /// Tracked: stash `100EACD8`, upstream cozo issue.
 /// Unblock: cozo >= 0.8 with graceful SQLITE error handling.
-#[cfg_attr(
-    target_os = "windows",
-    ignore = "CozoDB 0.7.6 panics in subprocess context on Windows; tracked stash 100EACD8; unblock on cozo upgrade"
-)]
+#[ignore = "CozoDB 0.7.6 panics on SQLITE_BUSY with two concurrent daemon instances; all platforms; tracked stash 100EACD8; unblock on cozo upgrade"]
 #[tokio::test]
 async fn daemon_rehydrates_graph_and_vector_state_after_db_directory_is_deleted() {
     // GIVEN a real workspace with Rust code and git metadata
