@@ -5,7 +5,7 @@ description: Internal architecture of the Engram MCP daemon, covering components
 
 ## Overview
 
-Engram is a code intelligence MCP daemon. It indexes source files into a queryable code graph, provides semantic search over code symbols and content records, and exposes 13 MCP tools over an HTTP/SSE transport. This document describes its internal components, data flows, and design decisions.
+Engram is a code intelligence MCP daemon. It indexes source files into a queryable code graph, provides semantic search over code symbols and content records, and exposes 14 MCP tools over an HTTP/SSE transport. This document describes its internal components, data flows, and design decisions.
 
 ---
 
@@ -269,12 +269,12 @@ flush_state() (MCP tool call) or graceful shutdown
 | Tool Dispatcher | `src/tools/mod.rs` | Routes MCP method names to handler functions via a `match` expression. Records per-call latency. |
 | Lifecycle Tools | `src/tools/lifecycle.rs` | `set_workspace`, `get_daemon_status`, `get_workspace_status`. Manages workspace binding and hydration. Spawns `background_db_hydration` task; calls `clear_hydration_ready()` before spawn to prevent stale ready state on re-bind. Background scan generation runs under a per-generation `CancellationToken`. |
 | Doctor Tools | `src/tools/doctor.rs` | `get_health_report_for_daemon` — produces structured health report covering DB connectivity, hydration state, registry validity, scan progress, and socket accessibility. `derive_overall` maps component statuses to `Green`/`Yellow`/`Red`; treats `Unknown` as `Yellow`. |
-| Read Tools | `src/tools/read.rs` | All read-only MCP tools: `query_memory`, `unified_search`, `map_code`, `list_symbols`, `impact_analysis`, `get_workspace_statistics`, `query_graph`. |
+| Read Tools | `src/tools/read.rs` | All read-only MCP tools: `query_memory`, `unified_search`, `map_code`, `list_symbols`, `impact_analysis`, `get_workspace_statistics`, `query_graph`, `get_mutable_script_retry_metrics`. The retry-metrics tool requires no workspace binding and exposes SQLITE_BUSY retry counters via `AtomicU64` process-global statics. |
 | Write Tools | `src/tools/write.rs` | Mutating MCP tools: `flush_state`, `index_workspace`, `sync_workspace`. |
 | Daemon Tools | `src/tools/daemon.rs` | Daemon-specific tool implementations. |
 | DB Layer | `src/db/` | `CozoDB` connection management, `CodeGraphQueries` struct, workspace hashing and canonicalization. `CozoDB` backend under `src/db/cozo_backend/`. |
 | CozoDB Backend | `src/db/cozo_backend/` | `CozoDB` backend (sole supported backend). `mod.rs` defines `CozoHandle` (unit struct), `CozoDb` (`Arc<DbInstance>`), and `SchemaTarget` trait. `schema.rs` holds CozoScript `:create` constants and `run_schema_bootstrap`. |
-| CozoDB Queries | `src/db/cozo_queries.rs` | Full Phase 3-4 implementation: Datalog/CozoScript CRUD for all 20 relations; edge mutations for 6 edge kinds (calls, imports, defines, inherits_from, references, concerns); BFS/DFS traversal via `bfs_impl` with in-traversal `allowed_edge_types` filtering; HNSW vector search; hybrid graph+vector search; symbol identity lookups; `concerns_edge` specialty queries (keyed on `task_id`/`symbol_id`). All MCP tool paths return `Result<T, EngramError>`; `symbol-not-found` returns `Ok(vec![])`. |
+| CozoDB Queries | `src/db/cozo_queries.rs` | Full Phase 3-4 implementation: Datalog/CozoScript CRUD for all 20 relations; edge mutations for 6 edge kinds (calls, imports, defines, inherits_from, references, concerns); BFS/DFS traversal via `bfs_impl` with in-traversal `allowed_edge_types` filtering; HNSW vector search; hybrid graph+vector search; symbol identity lookups; `concerns_edge` specialty queries (keyed on `task_id`/`symbol_id`). Hosts `MUTABLE_RETRY_COUNT` and `MUTABLE_LAST_RETRY_EPOCH_MS` `AtomicU64` process-global statics for SQLITE_BUSY retry telemetry, incremented by `run_script_busy_retry_mutable`. All MCP tool paths return `Result<T, EngramError>`; `symbol-not-found` returns `Ok(vec![])`. |
 | CozoDB Validation | `src/services/cozo_validation.rs` | `validate_cozo_embedding`: rejects empty ID, dimension mismatch, NaN/Inf values before graph upsert. |
 | Hydration | `src/services/hydration.rs` | Parse `.engram/` files and code-graph JSONL into DB records. Detect stale files. Backfill embeddings. |
 | Dehydration | `src/services/dehydration.rs` | Serialize code graph state back to `.engram/` files. Manages schema version `4.0.0`. `dehydrate_code_graph` detects partial-write states (e.g. `function_meta` row present but missing `function_code`/`function_embedding` siblings) by comparing `count_functions()` vs `all_functions()` INNER JOIN result counts; fills missing symbols from meta-only fallback queries before writing `nodes.jsonl`. |

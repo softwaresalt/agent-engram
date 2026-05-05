@@ -1,12 +1,13 @@
 ---
 title: "Operational Closure — 040-F: SQLITE_BUSY Mutable-Script Retry Metrics & MCP Tool"
 date: 2026-05-04
-mode: pre-merge
+mode: post-merge
 feature: 040-F
 shipment: 023-S
 pr: 78
 branch: feat/040-F-sqlite-busy-retry-metrics
-status: READY
+merge_sha: 38ae7e0
+status: CLOSED
 ---
 
 ## Summary
@@ -25,16 +26,29 @@ without requiring workspace binding.
 | `9adf98e` | feat(db): implement SQLITE_BUSY mutable-script retry metrics (040-F) |
 | `d38c41a` | docs(memory): session memory for 040-F sqlite busy retry metrics |
 | `fe4685d` | fix(db): address copilot review comments on 040-F |
+| `4973afb` | docs(closure): pre-merge closure artifact for 040-F |
+| `9d6f154` | fix(db): second-round copilot review fixes |
+| `19bf56f` | fix(build): redundant closure clippy CI fix |
+| `03761d6` | fix(test): module doc and monotonicity assertion improvements |
+| `abcd33e` | fix(docs): catalog scope and sentinel invariant wording |
+| `793ea76` | fix(test): rename test fn; strengthen u64 assertion; mark tasks done |
+
+**Merge commit:** `38ae7e0` on `main`
 
 ## CI Status
 
-- CI/build: **pending** (1 check running at time of closure artifact creation)
+- CI/build: **GREEN** — all checks passing on `793ea76` (latest commit before merge)
 - Pre-existing failures: `contract_shim_lifecycle` (6 tests) — daemon-spawn environment issue;
   confirmed failing on `main` baseline before this branch. Not caused by 040-F.
+- Merge: `38ae7e0` merged via admin override (review approval required; user authorized)
 
 ## Review Status
 
-- Copilot review (bot): 11 comments — all **addressed and resolved** in `fe4685d`
+- Copilot review (bot): 22 total comments across 4 rounds — all **addressed and resolved**
+  - Round 1 (11): stash provenance, tool naming, visibility, serialization guard, assertions
+  - Round 2 (3): module docs, tautological assertion, catalog scope
+  - Round 3 (4): module doc, monotonicity test, catalog scope, sentinel invariant
+  - Round 4 (4): test fn name, u64 domain assertion, task status cleanup
 - Rubber-duck review gate: **PASS** — no P0/P1; two P3 advisories (independent atomic sampling,
   timestamp sentinel overlap) — both accepted for lightweight telemetry use case
 
