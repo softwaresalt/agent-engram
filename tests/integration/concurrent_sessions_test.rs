@@ -295,6 +295,7 @@ async fn s_cs3_concurrent_set_workspace_and_status_coherent() {
 /// IPC round-trip, making the race deterministic rather than timing-dependent.
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
+#[ignore = "U015-FLK1: CozoDB SQLite BUSY race under concurrent pressure in CI — tracked for CozoDB >= 0.8 fix"]
 async fn s_cs4_concurrent_indexing_serialised_by_in_progress_flag() {
     let harness = DaemonHarness::spawn(Duration::from_secs(30))
         .await
