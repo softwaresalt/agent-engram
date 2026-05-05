@@ -70,7 +70,7 @@ async fn send_ok(endpoint: &str, id: i64, method: &str, params: Option<Value>) -
 )]
 /// Ignored on Linux: `flush_state` called while daemon startup auto-index still
 /// holds the indexing flag → error 7003. Fix: wait for indexing to complete before
-/// calling flush_state (same pattern as other daemon tests). Not a CozoDB bug.
+/// calling `flush_state` (same pattern as other daemon tests). Not a `CozoDB` bug.
 /// Unblock: fix test sequencing to await index completion before flush.
 #[cfg_attr(
     target_os = "linux",
