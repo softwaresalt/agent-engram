@@ -56,11 +56,11 @@ Integration hooks into `ingestion.rs` for the `content_type == "backlog"` branch
 | Parse YAML frontmatter from markdown | `src/services/parsing/frontmatter.rs` (new module) |
 | Create typed graph nodes from backlog items | New `backlog_node` CozoDB relation + insert queries |
 | Create relationship edges (parent, dependency, references) | New `backlog_edge` CozoDB relation + insert queries |
-| Store body text for vector search | Existing `content_record` relation (tagged `content_type: "backlog"`) |
+| Store body text for vector search | New `backlog_content_record` relation (separate from generic `content_record` to avoid key collisions when backlog paths overlap `docs/` paths already indexed as memory/decisions) |
 | Integrate with ingestion pipeline | Branch in `ingest_all_sources` for `content_type == "backlog"` |
 | Incremental sync on re-index | Hash-based comparison (consistent with `code_graph.rs` pattern) |
 | Backlog items appear in `unified_search` | Content records already searched by unified_search |
-| Relationships traversable via `query_graph` | New backlog_edge relation with query support |
+| Relationships traversable via `query_graph` | New backlog_edge relation + query execution path (note: `query_graph` currently returns `GraphQueryError::Invalid` — Unit 4 must implement a real execution path for backlog_edge traversal) |
 | Decisions appear in `query_memory` | Content records with `content_type: "backlog"` |
 | Performance: 100+ items in < 5s | Batch inserts, hash-based incremental skip |
 | Deleted files cleaned up | Deletion sweep removes orphaned nodes/edges/records |
@@ -220,7 +220,7 @@ source directory, parses files, and produces `BacklogIndexResult`.
 - `pub async fn sweep_deleted_backlog_files(source: &ContentSource, queries: &CodeGraphQueries) -> Result<usize, EngramError>`
 - Query all `backlog_node` entries for this `source_path`
 - Compare against files currently on disk
-- Delete nodes and edges via `delete_backlog_nodes_by_source`
+- Delete nodes and edges via `delete_backlog_node_by_file_path` (per-file granularity, NOT `delete_backlog_nodes_by_source` which removes all nodes for the entire registry source)
 - Delete content records via `queries.delete_content_record_by_path()` for each removed file
 - Use per-statement retry pattern (per compound learning on SQLITE_BUSY)
 

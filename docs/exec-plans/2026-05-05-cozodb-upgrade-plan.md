@@ -55,7 +55,7 @@ mitigations can be removed once CozoDB ships a release that handles
 ### Unit 3: Remove Metrics Tool & Update Catalog
 
 - **Files**: `src/tools/read.rs`, `src/shim/tools_catalog.rs`
-- **Action**: Remove `get_retry_metrics` tool handler. Decrement `TOOL_COUNT`.
+- **Action**: Remove `get_mutable_script_retry_metrics` tool handler. Decrement `TOOL_COUNT`.
   Update architecture doc.
 - **Test**: Contract tests for tool catalog pass with updated count
 - **Posture**: Test-first

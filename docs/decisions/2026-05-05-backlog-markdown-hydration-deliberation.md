@@ -33,7 +33,7 @@ requirements + decisions) from a single MCP surface.
 
 **Success criteria**:
 - Backlog items (features, tasks, decisions) are queryable via `unified_search`
-- Work item relationships are traversable via `query_graph`
+- Work item relationships are traversable via `query_graph` (requires implementing a real execution path in `query_graph` for backlog_edge relations — currently the tool returns `GraphQueryError::Invalid` for all queries)
 - Decision artifacts and ADRs appear in `query_memory` results
 - Content freshness is maintained via `sync_workspace`
 
@@ -187,7 +187,7 @@ Rationale:
 | Risk | Mitigation |
 |---|---|
 | CozoDB schema migration needed for new node types | Use flexible string-typed node kinds (already the pattern) |
-| Large backlogs slow indexing | Incremental sync via file mtime comparison (existing pattern) |
+| Large backlogs slow indexing | Incremental sync via content hash comparison (consistent with `code_graph.rs` SHA-256 hash pattern) |
 | YAML parsing errors in frontmatter | Graceful skip with warning log; don't fail entire indexing |
 | Coupling to specific frontmatter schema | Parse all frontmatter keys generically; map known keys to graph fields |
 
@@ -196,5 +196,6 @@ Rationale:
 - Should archived backlog items (`.backlogit/archive/`) also be indexed?
   **Assumption**: Yes, for historical context and traceability. Mark with `archived: true` metadata.
 - Should stash entries (`.backlogit/stash.jsonl`) be indexed?
-  **Assumption**: Yes, as a separate content source with `type: backlog, path: .backlogit/stash.jsonl`.
-  JSONL needs a small adapter (not YAML frontmatter format).
+  **Assumption**: Deferred — not supported in initial implementation. The current ingestion
+  pipeline only processes directories (returns early for non-directory sources). JSONL file-based
+  source support would require a new ingestion adapter. Tracked as a future follow-up if needed.
