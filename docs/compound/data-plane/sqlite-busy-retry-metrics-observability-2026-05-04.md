@@ -38,8 +38,8 @@ MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
 The `if attempt > 0` guard was a design iteration that was not shipped. In the
 final implementation, `fetch_add` is called unconditionally within the retry
 branch (guarded by `attempt + 1 < MAX_ATTEMPTS`). The `.max(1)` applies only
-to the epoch timestamp, clamping it to ≥ 1 ms so the `0` sentinel is never
-overwritten by a real retry.
+to the epoch timestamp, clamping it to ≥ 1 ms so a real retry never stores
+the `0` sentinel value (which means "no retry has occurred yet").
 
 Expose a snapshot via `get_mutable_script_retry_metrics` MCP tool (no workspace
 binding required — reads process-global state directly):
