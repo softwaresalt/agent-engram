@@ -5,7 +5,7 @@ description: Internal architecture of the Engram MCP daemon, covering components
 
 ## Overview
 
-Engram is a code intelligence MCP daemon. It indexes source files into a queryable code graph, provides semantic search over code symbols and content records, and exposes 18 MCP tools over an HTTP/SSE transport. This document describes its internal components, data flows, and design decisions.
+Engram is a code intelligence MCP daemon. It indexes source files into a queryable code graph, provides semantic search over code symbols and content records, and exposes 18 MCP tools over an IPC transport (named pipes on Windows; Unix domain sockets on Linux/macOS). An HTTP/SSE transport is available as an optional legacy compatibility layer via the `legacy-sse` feature flag. This document describes its internal components, data flows, and design decisions.
 
 ---
 
