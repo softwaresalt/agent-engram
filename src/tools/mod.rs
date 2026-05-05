@@ -193,6 +193,9 @@ pub async fn dispatch(
         "get_token_savings_report" => read::get_token_savings_report(state.clone(), params).await,
         "get_evaluation_report" => read::get_evaluation_report(state.clone(), params).await,
         "query_graph" => read::query_graph(state.clone(), params).await,
+        "get_mutable_script_retry_metrics" => {
+            read::get_mutable_script_retry_metrics(state.clone(), params).await
+        }
         #[cfg(feature = "git-graph")]
         "query_changes" => read::query_changes(state.clone(), params).await,
         #[cfg(feature = "git-graph")]

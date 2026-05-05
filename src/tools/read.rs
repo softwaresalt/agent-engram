@@ -1143,3 +1143,31 @@ pub async fn get_evaluation_report(
         })
     })
 }
+
+// ── 040.002-T: get_mutable_script_retry_metrics ───────────────────────────────
+
+/// Return mutable-script SQLITE_BUSY retry telemetry.
+///
+/// Reads the process-global retry counter and last-retry timestamp accumulated
+/// by `run_script_busy_retry_mutable`. Does not require a workspace to be bound.
+///
+/// Response schema: `{ retry_count: u64, last_retry_at: Option<String> }` where
+/// `last_retry_at` is an RFC-3339 timestamp or `null`.
+///
+/// # Errors
+///
+/// This function is infallible in practice. It returns `Ok` unconditionally
+/// because the response is constructed directly with the `json!` macro from
+/// plain numeric and optional-string values.
+#[allow(clippy::unused_async)] // async required by tool-dispatch contract
+pub async fn get_mutable_script_retry_metrics(
+    _state: SharedState,
+    _params: Option<Value>,
+) -> Result<Value, EngramError> {
+    let metrics = crate::db::mutable_script_retry_metrics();
+    let last_retry_at = metrics.last_retry_at.map(|dt| dt.to_rfc3339());
+    Ok(json!({
+        "retry_count": metrics.retry_count,
+        "last_retry_at": last_retry_at,
+    }))
+}

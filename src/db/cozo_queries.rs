@@ -17,6 +17,7 @@ use cozo::{DataValue, Num, ScriptMutability};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
@@ -65,6 +66,55 @@ pub fn record_query_metrics(
             "query completed"
         );
     }
+}
+
+// ── Mutable-script retry telemetry (040-F) ───────────────────────────────────
+
+/// Monotonic count of SQLITE_BUSY retries in `run_script_busy_retry_mutable`.
+static MUTABLE_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Epoch-milliseconds timestamp of the most recent retry; `0` is the sentinel
+/// meaning "no retry has ever occurred".
+static MUTABLE_LAST_RETRY_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of mutable-script SQLITE_BUSY retry telemetry.
+///
+/// Exposed by the `get_mutable_script_retry_metrics` MCP tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct RetryMetrics {
+    /// Monotonic total of retries since the daemon started.
+    pub retry_count: u64,
+    /// Timestamp of the most recent retry, or `None` if no retry has occurred.
+    pub last_retry_at: Option<DateTime<Utc>>,
+}
+
+/// Read the current mutable-script retry metrics from the process-global atomics.
+///
+/// The returned snapshot is point-in-time; concurrent retries may advance the
+/// counter between consecutive calls. Use delta arithmetic, not absolute values,
+/// when detecting new activity.
+pub fn mutable_script_retry_metrics() -> RetryMetrics {
+    let retry_count = MUTABLE_RETRY_COUNT.load(Ordering::Relaxed);
+    let epoch_ms = MUTABLE_LAST_RETRY_EPOCH_MS.load(Ordering::Relaxed);
+    let last_retry_at = (epoch_ms != 0)
+        .then(|| {
+            i64::try_from(epoch_ms)
+                .ok()
+                .and_then(DateTime::from_timestamp_millis)
+        })
+        .flatten();
+    RetryMetrics {
+        retry_count,
+        last_retry_at,
+    }
+}
+
+/// Zero both retry atomics.
+///
+/// **For test isolation only.** Do not call in production code.
+#[cfg(test)]
+pub(crate) fn reset_retry_metrics() {
+    MUTABLE_RETRY_COUNT.store(0, Ordering::Relaxed);
+    MUTABLE_LAST_RETRY_EPOCH_MS.store(0, Ordering::Relaxed);
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────
@@ -332,6 +382,16 @@ impl CodeGraphQueries {
                             error = %msg,
                             "SQLITE_BUSY retry: retrying mutable run_script"
                         );
+                        // Record retry telemetry (040.001-T).
+                        MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+                        // `0` is the sentinel for "no retry yet", so clamp to at least 1ms.
+                        // This guards against both clock-before-epoch (negative timestamp_millis,
+                        // where u64::try_from fails) and the exact Unix epoch (0ms), both of
+                        // which would otherwise write the sentinel and mask a real retry.
+                        let now_ms = u64::try_from(Utc::now().timestamp_millis())
+                            .unwrap_or(0)
+                            .max(1);
+                        MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
                         tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(std::time::Duration::from_millis(500));
                         continue;
@@ -3296,5 +3356,62 @@ fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
         message: extract_str(row, 6),
         parent_hashes,
         changes,
+    }
+}
+
+// ── Unit tests (040.001-T) ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+    use std::sync::{Mutex, OnceLock};
+
+    use super::*;
+
+    /// Serializes the two delta tests so they don't interleave on shared process-global atomics.
+    ///
+    /// Rust unit tests run in parallel by default; without this guard, one test's
+    /// `reset_retry_metrics()` can fire between another test's store and assertion.
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn acquire_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// AC: `retry_count` delta ≥ 1 after a simulated SQLITE_BUSY retry.
+    #[test]
+    fn t040_001_retry_count_increments() {
+        let _guard = acquire_test_lock();
+        reset_retry_metrics();
+        let before = mutable_script_retry_metrics().retry_count;
+        // Simulate the atomic increment that run_script_busy_retry_mutable will perform.
+        MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+        let after = mutable_script_retry_metrics().retry_count;
+        assert!(
+            after.wrapping_sub(before) >= 1,
+            "retry_count must be at least 1 more than baseline; before={before} after={after}"
+        );
+    }
+
+    /// AC: `last_retry_at` is `None` on reset and `Some` after a simulated retry.
+    #[test]
+    fn t040_001_last_retry_at_transitions() {
+        let _guard = acquire_test_lock();
+        reset_retry_metrics();
+        assert!(
+            mutable_script_retry_metrics().last_retry_at.is_none(),
+            "last_retry_at must be None after reset"
+        );
+        // Use a fixed non-zero epoch-ms value to avoid the sentinel (0 = "no retry")
+        // and eliminate any dependency on the system clock.
+        let fixed_ms: u64 = 1_000_000_000_000; // 2001-09-09 — safely after the Unix epoch sentinel
+        MUTABLE_LAST_RETRY_EPOCH_MS.store(fixed_ms, Ordering::Relaxed);
+        assert!(
+            mutable_script_retry_metrics().last_retry_at.is_some(),
+            "last_retry_at must be Some after a simulated retry"
+        );
     }
 }
