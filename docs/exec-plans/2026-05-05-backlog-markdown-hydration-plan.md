@@ -59,7 +59,7 @@ Integration hooks into `ingestion.rs` for the `content_type == "backlog"` branch
 | Store body text for vector search | New `backlog_content_record` relation (separate from generic `content_record` to avoid key collisions when backlog paths overlap `docs/` paths already indexed as memory/decisions) |
 | Integrate with ingestion pipeline | Branch in `ingest_all_sources` for `content_type == "backlog"` |
 | Incremental sync on re-index | Hash-based comparison (consistent with `code_graph.rs` pattern) |
-| Backlog items appear in `unified_search` | Content records already searched by unified_search |
+| Backlog items appear in `unified_search` | Extend `unified_search` read path to also query `backlog_content_record` (Unit 6 scope — generic `content_record` is insufficient since backlog uses a separate relation) |
 | Relationships traversable via `query_graph` | New backlog_edge relation + query execution path (note: `query_graph` currently returns `GraphQueryError::Invalid` — Unit 4 must implement a real execution path for backlog_edge traversal) |
 | Decisions appear in `query_memory` | Content records with `content_type: "backlog"` |
 | Performance: 100+ items in < 5s | Batch inserts, hash-based incremental skip |
@@ -196,8 +196,12 @@ source directory, parses files, and produces `BacklogIndexResult`.
   `file_path`, `content_hash`, body as `content` — uses the dedicated
   `backlog_content_record` relation (NOT generic `content_record`) to avoid
   key collisions when backlog file paths overlap `docs/` paths already indexed
-- Embedding population: same as other content types — left as `None` initially;
-  existing embedding backfill flow populates it on next embedding pass
+- Embedding population: `backlog_content_record` uses a separate relation from generic
+  `content_record`, so the existing `backfill_content_embeddings()` flow will NOT
+  automatically populate embeddings. Unit 6 must add a parallel backfill path that
+  iterates `select_backlog_content_records()` with `embedding = None` and populates
+  them, or extend the existing backfill to union both relations. Left as `None` on
+  initial insert; backfill runs on the next embedding pass after Unit 6 wires it.
 - Log warnings for files with invalid frontmatter (skip them)
 
 **Tests** (4 scenarios):

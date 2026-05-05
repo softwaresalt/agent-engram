@@ -166,7 +166,7 @@ Rationale:
 
 ## Implementation Scope
 
-1. **Frontmatter-aware markdown parser** (`src/services/parsing/markdown_frontmatter.rs`):
+1. **Frontmatter-aware markdown parser** (`src/services/parsing/frontmatter.rs`):
    Extract YAML frontmatter and body from `.md` files. Return structured metadata + text chunks.
 
 2. **Backlog content indexer** (`src/services/backlog_indexer.rs`):
