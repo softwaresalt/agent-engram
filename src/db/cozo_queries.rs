@@ -384,7 +384,13 @@ impl CodeGraphQueries {
                         );
                         // Record retry telemetry (040.001-T).
                         MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
-                        let now_ms = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
+                        // `0` is the sentinel for "no retry yet", so clamp to at least 1ms.
+                        // This guards against both clock-before-epoch (negative timestamp_millis,
+                        // where u64::try_from fails) and the exact Unix epoch (0ms), both of
+                        // which would otherwise write the sentinel and mask a real retry.
+                        let now_ms = u64::try_from(Utc::now().timestamp_millis())
+                            .unwrap_or(0)
+                            .max(1);
                         MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
                         tokio::time::sleep(delay).await;
                         delay = (delay * 2).min(std::time::Duration::from_millis(500));
@@ -3358,12 +3364,27 @@ fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
+    use std::sync::{Mutex, OnceLock};
 
     use super::*;
+
+    /// Serializes the two delta tests so they don't interleave on shared process-global atomics.
+    ///
+    /// Rust unit tests run in parallel by default; without this guard, one test's
+    /// `reset_retry_metrics()` can fire between another test's store and assertion.
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn acquire_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     /// AC: `retry_count` delta ≥ 1 after a simulated SQLITE_BUSY retry.
     #[test]
     fn t040_001_retry_count_increments() {
+        let _guard = acquire_test_lock();
         reset_retry_metrics();
         let before = mutable_script_retry_metrics().retry_count;
         // Simulate the atomic increment that run_script_busy_retry_mutable will perform.
@@ -3378,6 +3399,7 @@ mod tests {
     /// AC: `last_retry_at` is `None` on reset and `Some` after a simulated retry.
     #[test]
     fn t040_001_last_retry_at_transitions() {
+        let _guard = acquire_test_lock();
         reset_retry_metrics();
         assert!(
             mutable_script_retry_metrics().last_retry_at.is_none(),
