@@ -38,7 +38,7 @@ mitigations can be removed once CozoDB ships a release that handles
 ### Unit 1: Dependency Upgrade & Verification
 
 - **Files**: `Cargo.toml`, `Cargo.lock`
-- **Action**: Bump `cozo` to >= 0.8. Run `cargo build` to verify API compatibility.
+- **Action**: Bump `cozo` to a pinned exact version (e.g., `=0.8.0`) — do NOT use open-ended `>= 0.8`. Run `cargo build` to verify API compatibility.
 - **Test**: `cargo test` — all tests should pass without fd-lock or retry
 - **Posture**: Migration-first (upgrade, then verify)
 - **Blocked**: Yes — awaiting upstream release
@@ -65,8 +65,11 @@ mitigations can be removed once CozoDB ships a release that handles
 
 - **Files**: `tests/integration/smoke_test.rs`,
   `tests/integration/graph_vector_rehydration_test.rs`
-- **Action**: Remove `cfg_attr(any(target_os = "windows", target_os = "linux"), ignore)`
-  annotations. Redesign rehydration test to verify rehydrated-only state before
+- **Action**: Remove ignore annotations from both test files. `smoke_test.rs` now
+  has separate Windows-only (`CozoDB` panic) and Linux-only (`flush_state` race)
+  ignores — remove each independently once its root cause is resolved. The Linux
+  ignore is a test-sequencing fix (await index completion before flush), not a
+  `CozoDB` issue. Redesign rehydration test to verify rehydrated-only state before
   auto-index completes (use a flag or timing gate).
 - **Test**: Both tests pass on all platforms
 - **Posture**: Characterization-first (run existing tests to baseline)

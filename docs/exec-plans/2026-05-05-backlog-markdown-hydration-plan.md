@@ -388,8 +388,9 @@ If backlog indexing causes issues after deployment:
    invoke `sync_workspace` which re-runs ingestion (backlog source absent →
    no new writes, but existing data persists until explicitly purged)
 3. **Full purge**: If needed, delete all `backlog_node` and `backlog_edge` entries
-   via a targeted CozoScript `:rm` operation; delete content records with
-   `content_type == "backlog"` via `delete_content_record_by_path`
+   via a targeted CozoScript `:rm` operation; delete backlog body records from
+   `backlog_content_record` (not generic `content_record`) via a dedicated
+   purge query or `:rm backlog_content_record { ... }`
 4. **No schema rollback needed**: Empty relations are inert; CozoDB `:create` is
    idempotent
 
@@ -397,10 +398,10 @@ If backlog indexing causes issues after deployment:
 
 | Scenario | Action |
 |---|---|
-| Search results polluted with irrelevant backlog items | Remove backlog source from registry; run sync |
+| Search results polluted with irrelevant backlog items | Remove backlog source from registry; run explicit purge of `backlog_node`, `backlog_edge`, and `backlog_content_record` relations (sync alone will not remove already-ingested rows) |
 | Performance regression | Investigate batch size; disable source as interim fix |
 | Orphaned edges after partial crash | Re-run full `index_workspace` (self-healing) |
-| Graph traversal returns unexpected edges | Remove source; sync purges backlog relations |
+| Graph traversal returns unexpected edges | Remove source; explicitly purge `backlog_node` and `backlog_edge` relations |
 
 ### Performance Verification
 
