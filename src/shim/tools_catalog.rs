@@ -5,9 +5,12 @@
 //! (IDEs, agents) get accurate schema information before the daemon is ready
 //! and without an extra round-trip.
 //!
-//! All 18 tools registered in [`crate::tools::dispatch`] must appear here.
-//! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_dispatch`
-//! unit test so that catalog and dispatch stay in sync.
+//! All tools in the **default feature set** (`cozo-backend`) that are registered
+//! in [`crate::tools::dispatch`] must appear here. Feature-gated tools (e.g.,
+//! those compiled only under `cfg(feature = "git-graph")`) are intentionally
+//! excluded; [`TOOL_COUNT`] and this catalog reflect only the default build.
+//! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_catalog`
+//! contract test so that catalog and dispatch stay in sync.
 
 use std::sync::Arc;
 

@@ -50,7 +50,9 @@ without requiring workspace binding.
 
 1. `MUTABLE_RETRY_COUNT` is monotonically non-decreasing across the process lifetime.
 2. `MUTABLE_LAST_RETRY_EPOCH_MS == 0` is the authoritative sentinel for "no retry yet";
-   `DateTime::from_timestamp_millis(0)` correctly returns `None`.
+   the guard `epoch_ms != 0` is checked before calling `DateTime::from_timestamp_millis`
+   (which would return `Some(epoch)` for `0`, not `None` — the sentinel is enforced by the
+   explicit `!= 0` check, not by a chrono `None` return).
 3. `TOOL_COUNT == 18` — catalog contract test `t010_05_tool_count_matches_catalog` enforces this.
 4. `get_mutable_script_retry_metrics` returns successfully without a bound workspace.
 5. `Ordering::Relaxed` is the correct ordering for independent monotonic telemetry counters;
