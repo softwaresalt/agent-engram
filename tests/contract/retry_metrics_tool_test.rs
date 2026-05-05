@@ -36,8 +36,8 @@ async fn contract_get_mutable_script_retry_metrics_has_retry_count() {
         "response must include 'retry_count'; got: {result:?}"
     );
     assert!(
-        result["retry_count"].is_number(),
-        "'retry_count' must be a number; got: {}",
+        result["retry_count"].as_u64().is_some(),
+        "'retry_count' must be a valid u64 integer; got: {}",
         result["retry_count"]
     );
 }

@@ -20,7 +20,7 @@ fn t040_001_metrics_has_retry_count_field() {
 /// Process-global atomics only increment; a second snapshot must report a count
 /// that is greater than or equal to the first.
 #[test]
-fn t040_001_metrics_retry_count_is_u64() {
+fn t040_001_metrics_retry_count_is_monotonic() {
     let first = mutable_script_retry_metrics();
     let second = mutable_script_retry_metrics();
     assert!(
