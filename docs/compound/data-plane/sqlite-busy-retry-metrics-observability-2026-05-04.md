@@ -23,21 +23,23 @@ static MUTABLE_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
 static MUTABLE_LAST_RETRY_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
 ```
 
-Increment them inside the retry loop (after the first attempt):
+Increment them inside the retry branch (every retry, including the first):
 
 ```rust
-if attempt > 0 {
-    MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
-    MUTABLE_LAST_RETRY_EPOCH_MS.store(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64),
-        Ordering::Relaxed,
-    );
-}
+MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+// `0` is the sentinel for "no retry yet"; clamp to at least 1ms to
+// avoid writing the sentinel and masking a real retry.
+let now_ms = u64::try_from(Utc::now().timestamp_millis())
+    .unwrap_or(0)
+    .max(1);
+MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
 ```
 
-The `.max(1)` guard prevents the first attempt (attempt=0) from incrementing the counter.
+The `if attempt > 0` guard was a design iteration that was not shipped. In the
+final implementation, `fetch_add` is called unconditionally within the retry
+branch (guarded by `attempt + 1 < MAX_ATTEMPTS`). The `.max(1)` applies only
+to the epoch timestamp, clamping it to ≥ 1 ms so a real retry never stores
+the `0` sentinel value (which means "no retry has occurred yet").
 
 Expose a snapshot via `get_mutable_script_retry_metrics` MCP tool (no workspace
 binding required — reads process-global state directly):
@@ -53,8 +55,10 @@ binding required — reads process-global state directly):
 
 ## Key Design Decisions
 
-1. **`Ordering::Relaxed`**: Monotonic counters for telemetry — exact cross-thread
-   ordering doesn't matter; losing a rare concurrent increment is acceptable.
+1. **`Ordering::Relaxed`**: Monotonic counters for telemetry — cross-thread
+   ordering and immediate visibility don't matter; `fetch_add` is always
+   atomic so no increment is ever lost, but a concurrent `load` may observe
+   a slightly stale snapshot.
 2. **No workspace binding required**: Counter reads don't touch the DB or workspace
    state. This makes the tool usable even before `set_workspace` succeeds.
 3. **Process lifetime scope**: Counters reset on daemon restart. This is intentional —
