@@ -134,27 +134,32 @@ in a **new** module alongside existing models.
 
 ### Unit 3: CozoDB Schema — Backlog Relations
 
-**Scope**: Add `backlog_node` and `backlog_edge` CozoDB relations to the schema.
+**Scope**: Add `backlog_node`, `backlog_edge`, and `backlog_content_record` CozoDB relations to the schema.
 
 **Files affected**:
 
-- `src/db/cozo_backend/schema.rs` (add `CREATE_BACKLOG_NODE`, `CREATE_BACKLOG_EDGE`)
+- `src/db/cozo_backend/schema.rs` (add `CREATE_BACKLOG_NODE`, `CREATE_BACKLOG_EDGE`, `CREATE_BACKLOG_CONTENT_RECORD`)
 - `src/db/cozo_queries.rs` (add `upsert_backlog_node`, `upsert_backlog_edge`,
-  `delete_backlog_nodes_by_source`, `select_backlog_nodes`)
+  `upsert_backlog_content_record`, `delete_backlog_node_by_file_path`,
+  `delete_backlog_nodes_by_source`, `select_backlog_nodes`, `select_backlog_content_records`)
 
 **Implementation**:
 
 - `backlog_node { id: String => title: String, kind: String, status: String, labels: String, file_path: String, content_hash: String, source_path: String, ingested_at: String }`
 - `backlog_edge { from_id: String, to_id: String, edge_type: String => source_path: String }`
+- `backlog_content_record { file_path: String => content_type: String, content_hash: String, content: String, embedding: String, source_path: String, ingested_at: String }` — separate from generic `content_record` to avoid key collisions when backlog file paths overlap `docs/` paths already in the generic relation
 - Batch upsert function accepting `Vec<BacklogNode>` → CozoScript `:put`
 - Batch upsert function accepting `Vec<BacklogEdge>` → CozoScript `:put`
-- Delete function: remove all nodes/edges where `source_path` matches (for deletion sweep)
+- Batch upsert function accepting `Vec<BacklogContentRecord>` → CozoScript `:put`
+- Per-file delete: `delete_backlog_node_by_file_path(file_path)` removes node + associated edges + content record for a single file
+- Source-wide delete: `delete_backlog_nodes_by_source(source_path)` removes all nodes/edges/records for a registry source (for source removal only)
 - Select function: query backlog nodes by source_path or kind
+- Select function: query backlog content records by source_path
 
-**Tests** (4 scenarios):
+**Tests** (5 scenarios):
 
 - `tests/contract/backlog_schema_test.rs`: insert nodes, insert edges,
-  query nodes back, delete by source_path
+  insert content records, query nodes back, per-file deletion removes only target
 
 **Posture**: Test-first
 
@@ -162,9 +167,10 @@ in a **new** module alongside existing models.
 
 **Acceptance criteria**:
 
-- Schema bootstrap includes new relations (idempotent `:create`)
+- Schema bootstrap includes all three new relations (idempotent `:create`)
 - Batch upsert handles 100+ nodes without error
-- Delete by source_path removes all associated nodes and edges
+- Per-file deletion removes only the target file's node, edges, and content record
+- Source-wide deletion removes all items for a registry source
 - `cargo test` passes
 
 ### Unit 4: Backlog Indexer — File Walk & Extraction
@@ -185,8 +191,11 @@ source directory, parses files, and produces `BacklogIndexResult`.
 - Parse frontmatter; extract `id`, `title`, `artifact_type`, `status`, `parent_id`,
   `dependencies`, `references`, `labels`
 - Produce `BacklogNode` + `BacklogEdge` structs
-- Produce `ContentRecord` for body text: upsert via `queries.upsert_content_record()`
-  with `content_type: "backlog"`, `file_path`, `content_hash`, body as `content`
+- Produce `BacklogContentRecord` for body text: upsert via
+  `queries.upsert_backlog_content_record()` with `content_type: "backlog"`,
+  `file_path`, `content_hash`, body as `content` — uses the dedicated
+  `backlog_content_record` relation (NOT generic `content_record`) to avoid
+  key collisions when backlog file paths overlap `docs/` paths already indexed
 - Embedding population: same as other content types — left as `None` initially;
   existing embedding backfill flow populates it on next embedding pass
 - Log warnings for files with invalid frontmatter (skip them)
@@ -221,7 +230,7 @@ source directory, parses files, and produces `BacklogIndexResult`.
 - Query all `backlog_node` entries for this `source_path`
 - Compare against files currently on disk
 - Delete nodes and edges via `delete_backlog_node_by_file_path` (per-file granularity, NOT `delete_backlog_nodes_by_source` which removes all nodes for the entire registry source)
-- Delete content records via `queries.delete_content_record_by_path()` for each removed file
+- Delete backlog content records via `queries.delete_backlog_content_record_by_path()` for each removed file (uses dedicated `backlog_content_record` table, not generic `content_record`)
 - Use per-statement retry pattern (per compound learning on SQLITE_BUSY)
 
 **Tests** (3 scenarios):
@@ -241,11 +250,17 @@ source directory, parses files, and produces `BacklogIndexResult`.
 
 ### Unit 6: Ingestion Pipeline Integration
 
-**Scope**: Wire backlog indexer into `ingest_all_sources` content-type dispatch.
+**Scope**: Wire backlog indexer into `ingest_all_sources` content-type dispatch
+and extend query paths so `query_memory` reads from `backlog_content_record`
+and `query_graph` can traverse `backlog_edge` relations.
 
 **Files affected**:
 
 - `src/services/ingestion.rs` (add branch for `content_type == "backlog"`)
+- `src/services/code_graph.rs` or equivalent query-path module (extend `query_graph`
+  to include `backlog_edge` traversal when relation exists)
+- `src/services/memory.rs` or equivalent (extend `query_memory` / `select_content_records`
+  to also read from `backlog_content_record` when results are filtered by content_type)
 
 **Implementation**:
 
@@ -253,11 +268,16 @@ source directory, parses files, and produces `BacklogIndexResult`.
 - Call `index_backlog_source` + `sweep_deleted_backlog_files`
 - Return indexer summary counts in `IngestionSummary`
 - Hash-based incremental sync is handled internally by the indexer (Unit 4)
+- Extend `query_graph` execution to traverse `backlog_edge` when the relation exists
+  (add `backlog_edge` to the set of edge relations the graph walker queries)
+- Extend `query_memory` (or `select_content_records`) to union results from
+  `backlog_content_record` when the caller requests content_type "backlog" or "all"
 
-**Tests** (3 scenarios):
+**Tests** (5 scenarios):
 
 - `tests/integration/backlog_hydration_test.rs`: workspace with registry declaring
-  backlog source; verify nodes in DB after ingest; verify deletion sweep works
+  backlog source; verify nodes in DB after ingest; verify deletion sweep works;
+  verify `query_memory` returns backlog content; verify `query_graph` traverses backlog edges
 
 **Posture**: Test-first
 
@@ -267,6 +287,8 @@ source directory, parses files, and produces `BacklogIndexResult`.
 
 - `ingest_all_sources` processes backlog sources alongside other content types
 - Backlog nodes appear in DB after ingestion
+- `query_memory` returns backlog content records when queried
+- `query_graph` traverses `backlog_edge` relations
 - Performance: 100+ items indexed in < 5 seconds
 - `cargo test` passes
 
@@ -283,6 +305,8 @@ source directory, parses files, and produces `BacklogIndexResult`.
 - Document the registry.yaml configuration for backlog sources
 - Example configuration snippet showing `type: "backlog"` content source
 - Describe which MCP tools surface backlog data (`unified_search`, `query_memory`, `query_graph`)
+- Note that `query_graph` execution of `backlog_edge` and `query_memory` reading from
+  `backlog_content_record` are implemented in Unit 6; this task documents the user-facing behavior
 - Note that `index_workspace` / `sync_workspace` automatically process backlog sources
 
 **Tests**: None (docs-only)

@@ -17,7 +17,7 @@ mitigations can be removed once CozoDB ships a release that handles
 **Affected code paths**:
 - `src/db/cozo_backend/mod.rs` — fd-lock advisory lock in `connect_db`
 - `src/db/cozo_queries.rs` — `run_script_busy_retry_mutable` loop + atomics
-- `src/tools/read.rs` — `get_retry_metrics` MCP tool
+- `src/tools/read.rs` — `get_mutable_script_retry_metrics` MCP tool
 - `tests/integration/smoke_test.rs` — `cfg_attr` ignore annotations
 - `tests/integration/graph_vector_rehydration_test.rs` — `cfg_attr` ignore annotations
 
@@ -29,7 +29,7 @@ mitigations can be removed once CozoDB ships a release that handles
 | Verify graceful SQLITE_BUSY handling | Add integration test that forces concurrent opens |
 | Remove fd-lock workaround | Delete lock acquisition in `connect_db` |
 | Remove retry loop | Delete `run_script_busy_retry_mutable` and atomics |
-| Remove metrics tool | Delete `get_retry_metrics` tool, update TOOL_COUNT |
+| Remove metrics tool | Delete `get_mutable_script_retry_metrics` tool, update TOOL_COUNT |
 | Remove test ignore gates | Delete `cfg_attr` annotations from subprocess tests |
 | Fix rehydration test design | Verify rehydrated-only state before auto-index |
 
@@ -109,7 +109,7 @@ works, the removal steps are straightforward. No hardening needed beyond standar
 
 ## Runtime Verification and Closure
 
-- **Runtime surface changed**: MCP tool surface (removal of `get_retry_metrics`)
+- **Runtime surface changed**: MCP tool surface (removal of `get_mutable_script_retry_metrics`)
 - **Verification**: Run `cargo test` on all platforms without ignore gates. Verify daemon
   subprocess tests pass on Windows and Linux. Confirm tool catalog count matches.
 - **Closure**: Update architecture doc tool count. Archive compound entries that reference

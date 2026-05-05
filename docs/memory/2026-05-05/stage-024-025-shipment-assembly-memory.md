@@ -45,6 +45,7 @@ Staged two groups of work from stash/queue into ready shipments.
 
 - `.backlogit/queue/002-F.md` (updated with references)
 - `.backlogit/stash.jsonl` (entries consumed)
+- `.backlogit/archive/stash.jsonl` (harvested entries appended with provenance)
 - `.backlogit/queue/002.001-T.md` through `002.007-T.md` (new)
 - `.backlogit/queue/041-F.md`, `041.001-T.md` through `041.004-T.md` (new)
 - `.backlogit/queue/024-S.md`, `025-S.md` (new shipments)

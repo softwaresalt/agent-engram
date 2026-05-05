@@ -67,7 +67,7 @@ As of 2026-05-05, the latest stable release is `cozo 0.7.6`.
 2. Verify CozoDB 0.8 handles `SQLITE_BUSY` gracefully (returns `Err` instead of panicking)
 3. Remove fd-lock advisory lock in `src/db/cozo_backend/mod.rs` (`connect_db`)
 4. Remove per-`run_script` SQLITE_BUSY retry loop in `src/db/cozo_queries.rs`
-5. Remove `MUTABLE_RETRY_COUNT` / `MUTABLE_RETRY_EPOCH` atomics and `get_retry_metrics` tool
+5. Remove `MUTABLE_RETRY_COUNT` / `MUTABLE_RETRY_EPOCH` atomics and `get_mutable_script_retry_metrics` tool
 6. Remove `cfg_attr(any(target_os = "windows", target_os = "linux"), ignore)` from subprocess tests
 7. Fix rehydration test design — verify rehydrated-only state before auto-index completes
 8. Run full test suite on all platforms without ignore gates
