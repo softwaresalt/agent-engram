@@ -22,15 +22,22 @@ directly — no daemon needed for tool discovery.
 
 All CLI output conforms to JSON-RPC 2.0 response envelope:
 
+Success (exit code 0):
+
 ```json
-// Success (exit code 0):
-{"jsonrpc":"2.0","id":null,"result":{...tool-specific payload...}}
+{"jsonrpc":"2.0","id":null,"result":{"symbols":[...],"total_count":5}}
+```
 
-// Tool error (exit code 1):
+Tool error (exit code 1):
+
+```json
 {"jsonrpc":"2.0","id":null,"error":{"code":1003,"message":"workspace not set","data":null}}
+```
 
-// Manifest (exit code 0):
-{"jsonrpc":"2.0","id":null,"result":{"tools":[{"name":"...","description":"...","inputSchema":{...}}]}}
+Manifest (exit code 0):
+
+```json
+{"jsonrpc":"2.0","id":null,"result":{"tools":[{"name":"set_workspace","description":"...","inputSchema":{}}]}}
 ```
 
 When `--id <value>` is supplied, the `id` field echoes the caller's value.
@@ -77,6 +84,14 @@ Exit code 2 indicates CLI parse/invocation error — stderr only, no JSON on std
 | `engram report eval` | `get_evaluation_report` | `{}` |
 | `engram report retry-metrics` | `get_mutable_script_retry_metrics` | `{}` |
 | `engram manifest` | (local catalog) | N/A |
+
+> **Note — Catalog Schema Divergence:** The `tools_catalog.rs` `inputSchema`
+> field names differ from the handler struct field names in some cases (e.g.,
+> catalog uses `regions`/`symbol_type`/`name_contains` while handlers use
+> `region`/`node_type`/`name_prefix`). The CLI will use the **handler struct
+> field names** (which are what the daemon actually deserializes). A catalog
+> schema sync is included as a prerequisite in Unit 2 (manifest) to ensure
+> `engram manifest` output matches the actual accepted parameters.
 
 ## Clap Integration Design
 

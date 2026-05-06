@@ -156,16 +156,19 @@ in-process context.
 
 ```
 src/bin/engram.rs
-  └── Command::Cli { subcommand, global_flags }
-        └── cli::run(subcommand, flags)
-              ├── manifest → tools_catalog::all_tools() → format as JSON-RPC
-              └── all others → lifecycle::ensure_daemon() → ipc_client::send_request() → format response
+  └── Command enum (top-level flat variants)
+        ├── Shim, Daemon, Install, ...    (existing internal commands)
+        ├── Bind, Sync, Index, Search, …  (new CLI subcommands)
+        └── Manifest                      (local catalog, no daemon needed)
+
+Dispatch flow:
+  new subcommand variant matched
+    ├── manifest → tools_catalog::all_tools() → format as JSON-RPC
+    └── all others → lifecycle::ensure_daemon() → ipc_client::send_request() → format response
 
 New modules:
   src/cli/
     mod.rs        — CLI orchestration: dispatch subcommand to handler
-    commands.rs   — Clap subcommand enum (18 tools + manifest)
-    flags.rs      — Global flags struct (--workspace, --id, --json, --format, --quiet)
     output.rs     — JSON-RPC 2.0 formatter + human-readable formatter
     runner.rs     — IPC call wrapper: ensure_daemon → build IpcRequest → send → return
 ```
