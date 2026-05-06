@@ -8,6 +8,9 @@ root_cause: "SurrealDB's string::lowercase() function in SCHEMAFULL table WHERE 
 resolution_type: "workaround"
 severity: "high"
 message: "No rows returned from case-insensitive WHERE clause despite matching records present in the table"
+superseded_by: "017-S — surreal-backend removal (2026-05-01)"
+status: "stale"
+stale_reason: "The surreal-backend and SurrealDB were fully removed in Shipment 017-S. src/db/queries.rs no longer exists. This issue only affects SurrealDB and is no longer relevant."
 file_path: "src/db/queries.rs"
 citations:
   - "https://github.com/softwaresalt/agent-engram/pull/49"
