@@ -55,13 +55,38 @@ pub async fn ingest_all_sources(
     let mut total_summary = IngestionSummary::default();
 
     for source in &config.sources {
-        if source.status != ContentSourceStatus::Active {
+        // Skip sources that are explicitly known-bad: Missing or Error.
+        // Active and Unknown (not yet validated) are allowed to proceed —
+        // the indexers handle a missing directory gracefully.
+        if source.status == ContentSourceStatus::Missing
+            || source.status == ContentSourceStatus::Error
+        {
             continue;
         }
 
         // Skip code sources — they use the code graph indexer instead.
         if source.content_type == "code" {
             debug!(path = %source.path, "Skipping code source (uses code graph indexer)");
+            continue;
+        }
+
+        // Backlog sources use the dedicated backlog indexer.
+        if source.content_type == "backlog" {
+            use crate::services::backlog_indexer::{
+                index_backlog_source, sweep_deleted_backlog_files,
+            };
+
+            let result = index_backlog_source(source, workspace_root, queries).await?;
+            let removed = sweep_deleted_backlog_files(source, workspace_root, queries)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "backlog deletion sweep failed");
+                    0
+                });
+            total_summary.ingested += result.ingested;
+            total_summary.unchanged += result.unchanged;
+            total_summary.removed += removed;
+            total_summary.total_files += result.ingested + result.unchanged;
             continue;
         }
 

@@ -7,6 +7,7 @@
 //! [`BacklogFile`], and [`CommitNode`].
 
 pub mod backlog;
+pub mod backlog_graph;
 pub mod class;
 pub mod code_edge;
 pub mod code_file;
@@ -24,6 +25,9 @@ pub mod registry;
 pub mod watcher;
 
 pub use backlog::{BacklogArtifacts, BacklogFile, BacklogItem, BacklogRef, ProjectManifest};
+pub use backlog_graph::{
+    BacklogContentRecord, BacklogEdge, BacklogEdgeType, BacklogIndexResult, BacklogNode,
+};
 pub use class::Class;
 pub use code_edge::CodeEdge;
 pub use code_file::CodeFile;

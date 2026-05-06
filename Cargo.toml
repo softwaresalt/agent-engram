@@ -563,6 +563,29 @@ path = "tests/unit/retry_metrics_test.rs"
 name = "contract_retry_metrics_tool"
 path = "tests/contract/retry_metrics_tool_test.rs"
 
+# ── 002-F: Backlog markdown hydration ────────────────────────────────────────
+
+[[test]]
+name = "unit_frontmatter_parser"
+path = "tests/unit/frontmatter_parser_test.rs"
+
+[[test]]
+name = "unit_backlog_graph_models"
+path = "tests/unit/backlog_graph_models_test.rs"
+
+[[test]]
+name = "contract_backlog_schema"
+path = "tests/contract/backlog_schema_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "unit_backlog_indexer"
+path = "tests/unit/backlog_indexer_test.rs"
+
+[[test]]
+name = "integration_backlog_hydration"
+path = "tests/integration/backlog_hydration_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

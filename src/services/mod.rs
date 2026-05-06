@@ -5,6 +5,7 @@
 //! hydration/dehydration of `.engram/` files, embedding generation, search,
 //! tree-sitter AST parsing, and code graph orchestration.
 
+pub mod backlog_indexer;
 pub mod code_graph;
 pub mod config;
 pub mod connection;

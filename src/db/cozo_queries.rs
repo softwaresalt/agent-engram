@@ -3204,6 +3204,342 @@ impl CodeGraphQueries {
             embedding: extract_embedding(row, 8),
         }))
     }
+
+    // ── Backlog node queries (002-F) ─────────────────────────────────
+
+    /// Batch upsert backlog nodes into `backlog_node`.
+    ///
+    /// Each node is inserted as a separate mutable script with SQLITE_BUSY
+    /// retry (per compound learning on per-statement retry granularity).
+    pub async fn upsert_backlog_nodes(
+        &self,
+        nodes: &[crate::models::BacklogNode],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[id, title, kind, status, labels, file_path, content_hash, source_path, ingested_at] <-
+    [[$id, $title, $kind, $status, $labels, $file_path, $content_hash, $source_path, $ingested_at]]
+:put backlog_node {
+    id => title, kind, status, labels, file_path, content_hash, source_path, ingested_at
+}
+"#;
+        for node in nodes {
+            let labels_str = node.labels.join(",");
+            let mut p = BTreeMap::new();
+            p.insert("id".to_owned(), DataValue::from(node.id.as_str()));
+            p.insert("title".to_owned(), DataValue::from(node.title.as_str()));
+            p.insert("kind".to_owned(), DataValue::from(node.kind.as_str()));
+            p.insert("status".to_owned(), DataValue::from(node.status.as_str()));
+            p.insert("labels".to_owned(), DataValue::from(labels_str.as_str()));
+            p.insert(
+                "file_path".to_owned(),
+                DataValue::from(node.file_path.as_str()),
+            );
+            p.insert(
+                "content_hash".to_owned(),
+                DataValue::from(node.content_hash.as_str()),
+            );
+            p.insert(
+                "source_path".to_owned(),
+                DataValue::from(node.source_path.as_str()),
+            );
+            p.insert(
+                "ingested_at".to_owned(),
+                DataValue::from(node.ingested_at.to_rfc3339().as_str()),
+            );
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch upsert backlog edges into `backlog_edge`.
+    pub async fn upsert_backlog_edges(
+        &self,
+        edges: &[crate::models::BacklogEdge],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[from_id, to_id, edge_type, source_path] <-
+    [[$from_id, $to_id, $edge_type, $source_path]]
+:put backlog_edge {
+    from_id, to_id, edge_type => source_path
+}
+"#;
+        for edge in edges {
+            let mut p = BTreeMap::new();
+            p.insert("from_id".to_owned(), DataValue::from(edge.from_id.as_str()));
+            p.insert("to_id".to_owned(), DataValue::from(edge.to_id.as_str()));
+            p.insert(
+                "edge_type".to_owned(),
+                DataValue::from(edge.edge_type.as_str()),
+            );
+            p.insert(
+                "source_path".to_owned(),
+                DataValue::from(edge.source_path.as_str()),
+            );
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch upsert backlog content records into `backlog_content_record`.
+    pub async fn upsert_backlog_content_records(
+        &self,
+        records: &[crate::models::BacklogContentRecord],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[file_path, content_type, content_hash, content, source_path, ingested_at] <-
+    [[$file_path, $content_type, $content_hash, $content, $source_path, $ingested_at]]
+:put backlog_content_record {
+    file_path => content_type, content_hash, content, source_path, ingested_at
+}
+"#;
+        for record in records {
+            let mut p = BTreeMap::new();
+            p.insert(
+                "file_path".to_owned(),
+                DataValue::from(record.file_path.as_str()),
+            );
+            p.insert(
+                "content_type".to_owned(),
+                DataValue::from(record.content_type.as_str()),
+            );
+            p.insert(
+                "content_hash".to_owned(),
+                DataValue::from(record.content_hash.as_str()),
+            );
+            p.insert(
+                "content".to_owned(),
+                DataValue::from(record.content.as_str()),
+            );
+            p.insert(
+                "source_path".to_owned(),
+                DataValue::from(record.source_path.as_str()),
+            );
+            p.insert(
+                "ingested_at".to_owned(),
+                DataValue::from(record.ingested_at.to_rfc3339().as_str()),
+            );
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Return all backlog nodes, optionally filtered by `source_path`.
+    pub async fn select_backlog_nodes(
+        &self,
+        source_path: Option<&str>,
+    ) -> Result<Vec<crate::models::BacklogNode>, EngramError> {
+        let sp_clause = source_path
+            .map(|_| ", source_path = $source_path")
+            .unwrap_or("");
+        let script = format!(
+            r#"?[id, title, kind, status, labels, file_path, content_hash, source_path, ingested_at] :=
+    *backlog_node {{ id, title, kind, status, labels, file_path, content_hash, source_path, ingested_at }}{sp_clause}"#
+        );
+        let mut p = BTreeMap::new();
+        if let Some(sp) = source_path {
+            p.insert("source_path".to_owned(), DataValue::from(sp));
+        }
+        let result = self
+            .db
+            .run_script(&script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                let ingested_str = extract_str(row, 8);
+                let ingested_at = chrono::DateTime::parse_from_rfc3339(&ingested_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                let labels_str = extract_str(row, 4);
+                let labels = if labels_str.is_empty() {
+                    vec![]
+                } else {
+                    labels_str.split(',').map(str::to_string).collect()
+                };
+                Ok(crate::models::BacklogNode {
+                    id: extract_str(row, 0),
+                    title: extract_str(row, 1),
+                    kind: extract_str(row, 2),
+                    status: extract_str(row, 3),
+                    labels,
+                    file_path: extract_str(row, 5),
+                    content_hash: extract_str(row, 6),
+                    source_path: extract_str(row, 7),
+                    ingested_at,
+                })
+            })
+            .collect()
+    }
+
+    /// Return all backlog content records, optionally filtered by `source_path`.
+    pub async fn select_backlog_content_records(
+        &self,
+        source_path: Option<&str>,
+    ) -> Result<Vec<crate::models::BacklogContentRecord>, EngramError> {
+        let sp_clause = source_path
+            .map(|_| ", source_path = $source_path")
+            .unwrap_or("");
+        let script = format!(
+            r#"?[file_path, content_type, content_hash, content, source_path, ingested_at] :=
+    *backlog_content_record {{ file_path, content_type, content_hash, content, source_path, ingested_at }}{sp_clause}"#
+        );
+        let mut p = BTreeMap::new();
+        if let Some(sp) = source_path {
+            p.insert("source_path".to_owned(), DataValue::from(sp));
+        }
+        let result = self
+            .db
+            .run_script(&script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                let ingested_str = extract_str(row, 5);
+                let ingested_at = chrono::DateTime::parse_from_rfc3339(&ingested_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                Ok(crate::models::BacklogContentRecord {
+                    file_path: extract_str(row, 0),
+                    content_type: extract_str(row, 1),
+                    content_hash: extract_str(row, 2),
+                    content: extract_str(row, 3),
+                    source_path: extract_str(row, 4),
+                    ingested_at,
+                })
+            })
+            .collect()
+    }
+
+    /// Delete a backlog node by its file path, along with all edges
+    /// where the node's `id` is `from_id` or `to_id`.
+    ///
+    /// Uses per-statement retry (not a transaction) per compound learning
+    /// on SQLITE_BUSY granularity.
+    pub async fn delete_backlog_node_by_file_path(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        // Find the node ID for this file path.
+        let find = r#"?[id] := *backlog_node { id, file_path }, file_path = $file_path"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        let r = self
+            .db
+            .run_script(find, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        let ids: Vec<String> = r.rows.iter().map(|row| extract_str(row, 0)).collect();
+
+        for id in &ids {
+            // Delete outgoing backlog edges.
+            let find_out = r#"?[from_id, to_id, edge_type] := *backlog_edge { from_id, to_id, edge_type }, from_id = $id"#;
+            let mut po = BTreeMap::new();
+            po.insert("id".to_owned(), DataValue::from(id.as_str()));
+            let out_rows = self
+                .db
+                .run_script(find_out, po, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &out_rows.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let et = extract_str(row, 2);
+                let del = r#"?[from_id, to_id, edge_type] <- [[$from_id, $to_id, $edge_type]] :rm backlog_edge { from_id, to_id, edge_type }"#;
+                let mut dp = BTreeMap::new();
+                dp.insert("from_id".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to_id".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("edge_type".to_owned(), DataValue::from(et.as_str()));
+                self.run_script_busy_retry_mutable(del, dp).await?;
+            }
+
+            // Delete incoming backlog edges.
+            let find_in = r#"?[from_id, to_id, edge_type] := *backlog_edge { from_id, to_id, edge_type }, to_id = $id"#;
+            let mut pi = BTreeMap::new();
+            pi.insert("id".to_owned(), DataValue::from(id.as_str()));
+            let in_rows = self
+                .db
+                .run_script(find_in, pi, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &in_rows.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let et = extract_str(row, 2);
+                let del = r#"?[from_id, to_id, edge_type] <- [[$from_id, $to_id, $edge_type]] :rm backlog_edge { from_id, to_id, edge_type }"#;
+                let mut dp = BTreeMap::new();
+                dp.insert("from_id".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to_id".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("edge_type".to_owned(), DataValue::from(et.as_str()));
+                self.run_script_busy_retry_mutable(del, dp).await?;
+            }
+
+            // Delete the node itself.
+            let del_node = r#"?[id] <- [[$id]] :rm backlog_node { id }"#;
+            let mut pn = BTreeMap::new();
+            pn.insert("id".to_owned(), DataValue::from(id.as_str()));
+            self.run_script_busy_retry_mutable(del_node, pn).await?;
+        }
+        Ok(())
+    }
+
+    /// Delete all backlog nodes and edges belonging to a registry source.
+    ///
+    /// Used when an entire content source is removed from the registry.
+    /// For per-file removal use [`delete_backlog_node_by_file_path`] instead.
+    pub async fn delete_backlog_nodes_by_source(
+        &self,
+        source_path: &str,
+    ) -> Result<(), EngramError> {
+        // Delete edges for this source.
+        let find_edges = r#"?[from_id, to_id, edge_type] := *backlog_edge { from_id, to_id, edge_type, source_path }, source_path = $source_path"#;
+        let mut p = BTreeMap::new();
+        p.insert("source_path".to_owned(), DataValue::from(source_path));
+        let edge_rows = self
+            .db
+            .run_script(find_edges, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &edge_rows.rows {
+            let from = extract_str(row, 0);
+            let to = extract_str(row, 1);
+            let et = extract_str(row, 2);
+            let del = r#"?[from_id, to_id, edge_type] <- [[$from_id, $to_id, $edge_type]] :rm backlog_edge { from_id, to_id, edge_type }"#;
+            let mut dp = BTreeMap::new();
+            dp.insert("from_id".to_owned(), DataValue::from(from.as_str()));
+            dp.insert("to_id".to_owned(), DataValue::from(to.as_str()));
+            dp.insert("edge_type".to_owned(), DataValue::from(et.as_str()));
+            self.run_script_busy_retry_mutable(del, dp).await?;
+        }
+
+        // Delete nodes for this source.
+        let find_nodes =
+            r#"?[id] := *backlog_node { id, source_path }, source_path = $source_path"#;
+        let mut p2 = BTreeMap::new();
+        p2.insert("source_path".to_owned(), DataValue::from(source_path));
+        let node_rows = self
+            .db
+            .run_script(find_nodes, p2, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &node_rows.rows {
+            let id = extract_str(row, 0);
+            let del = r#"?[id] <- [[$id]] :rm backlog_node { id }"#;
+            let mut dp = BTreeMap::new();
+            dp.insert("id".to_owned(), DataValue::from(id.as_str()));
+            self.run_script_busy_retry_mutable(del, dp).await?;
+        }
+        Ok(())
+    }
+
+    /// Delete a backlog content record by file path.
+    pub async fn delete_backlog_content_record_by_path(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"?[file_path] <- [[$file_path]] :rm backlog_content_record { file_path }"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.run_script_busy_retry_mutable(script, p).await?;
+        Ok(())
+    }
 }
 
 fn extract_str(row: &[DataValue], col: usize) -> String {
