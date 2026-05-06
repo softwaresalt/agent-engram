@@ -257,9 +257,7 @@ pub async fn index_backlog_source(
     let source_path = &source.path;
 
     // Load existing nodes for this source to build a hash-map for change detection.
-    let existing_nodes = queries
-        .select_backlog_nodes(Some(source_path))
-        .await?;
+    let existing_nodes = queries.select_backlog_nodes(Some(source_path)).await?;
     let hash_by_path: HashMap<String, String> = existing_nodes
         .iter()
         .map(|n| (n.file_path.clone(), n.content_hash.clone()))
@@ -301,9 +299,13 @@ pub async fn index_backlog_source(
         }
 
         let text = String::from_utf8_lossy(&raw);
-        if let Some((node, edges, record)) =
-            extract_from_content(&text, new_hash.clone(), file_path, workspace_root, source_path)
-        {
+        if let Some((node, edges, record)) = extract_from_content(
+            &text,
+            new_hash.clone(),
+            file_path,
+            workspace_root,
+            source_path,
+        ) {
             queries
                 .upsert_backlog_nodes(std::slice::from_ref(&node))
                 .await?;

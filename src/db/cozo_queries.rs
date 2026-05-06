@@ -3537,13 +3537,9 @@ impl CodeGraphQueries {
             .map_err(|e| map_db_err(e.to_string()))?;
         for row in &record_rows.rows {
             let file_path = extract_str(row, 0);
-            let del =
-                r#"?[file_path] <- [[$file_path]] :rm backlog_content_record { file_path }"#;
+            let del = r#"?[file_path] <- [[$file_path]] :rm backlog_content_record { file_path }"#;
             let mut dp = BTreeMap::new();
-            dp.insert(
-                "file_path".to_owned(),
-                DataValue::from(file_path.as_str()),
-            );
+            dp.insert("file_path".to_owned(), DataValue::from(file_path.as_str()));
             self.run_script_busy_retry_mutable(del, dp).await?;
         }
         Ok(())
