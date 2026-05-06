@@ -22,8 +22,10 @@ pub struct FrontmatterDocument {
 ///
 /// Recognises documents that begin with a `---` line on the first line.
 /// The metadata block extends to the next `---` line; everything after that
-/// is the body. When the opening `---` is absent or the YAML is malformed,
-/// `metadata` is `None` and `body` is the complete input.
+/// is the body. When the opening `---` is absent or no closing `---` is
+/// found, `metadata` is `None` and `body` is the complete input.  When both
+/// delimiters are present but the YAML is malformed, `metadata` is `None`
+/// and `body` contains only the text after the closing `---`.
 ///
 /// # Examples
 ///

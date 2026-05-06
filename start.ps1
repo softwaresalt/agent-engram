@@ -35,7 +35,14 @@ $copilotExe = if ($env:COPILOT_EXE_PATH) {
 if (-not $copilotExe) {
     throw "Unable to locate Copilot CLI. Set COPILOT_EXE_PATH (or COPILOT_EXE for backward compatibility) or add 'copilot' to PATH."
 }
-backlogit sync index
+$backlogitCmd = Get-Command backlogit -ErrorAction SilentlyContinue
+if ($backlogitCmd) {
+    try {
+        backlogit sync index
+    } catch {
+        Write-Warning "backlogit sync index failed (non-fatal): $_"
+    }
+}
 
 & $copilotExe @args
 

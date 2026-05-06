@@ -64,6 +64,23 @@ pub async fn ingest_all_sources(
             continue;
         }
 
+        // Workspace containment check for Unknown-status sources (not yet validated).
+        // Reject absolute paths and paths containing parent-directory traversal (`..`).
+        if source.status == ContentSourceStatus::Unknown {
+            let source_path = std::path::Path::new(&source.path);
+            if source_path.is_absolute()
+                || source_path
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+            {
+                warn!(
+                    path = %source.path,
+                    "Unknown-status source path may escape workspace root — skipping until validated"
+                );
+                continue;
+            }
+        }
+
         // Skip code sources — they use the code graph indexer instead.
         if source.content_type == "code" {
             debug!(path = %source.path, "Skipping code source (uses code graph indexer)");
@@ -77,12 +94,8 @@ pub async fn ingest_all_sources(
             };
 
             let result = index_backlog_source(source, workspace_root, queries).await?;
-            let removed = sweep_deleted_backlog_files(source, workspace_root, queries)
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(error = %e, "backlog deletion sweep failed");
-                    0
-                });
+            let removed =
+                sweep_deleted_backlog_files(source, workspace_root, queries).await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;

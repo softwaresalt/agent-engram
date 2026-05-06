@@ -70,38 +70,23 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
 
 // ── Core extraction ───────────────────────────────────────────────────────
 
-/// Extract graph data from a single backlog markdown file.
+/// Inner extraction logic shared by [`extract_backlog_data`] and
+/// [`index_backlog_source`].
 ///
-/// Returns `None` (without error) when the file should be skipped:
-/// - No YAML frontmatter was found.
-/// - The frontmatter does not contain a non-empty `id` field.
+/// Accepts pre-read text and a pre-computed content hash so the caller can
+/// avoid a second filesystem read when the hash check is already done.
 ///
-/// On success returns `Some((node, edges, record))`:
-/// - `node` — a [`BacklogNode`] for this artifact.
-/// - `edges` — zero or more [`BacklogEdge`] entries inferred from
-///   `parent_id` and `dependencies` frontmatter fields.
-/// - `record` — a [`BacklogContentRecord`] containing the full file body.
-///
-/// # Errors
-///
-/// Returns an error only for I/O failures (unreadable file).
-pub fn extract_backlog_data(
+/// Returns `None` when the file should be skipped (no frontmatter or no `id`).
+fn extract_from_content(
+    text: &str,
+    content_hash: String,
     file_path: &Path,
     workspace_root: &Path,
     source_path: &str,
-) -> Result<Option<(BacklogNode, Vec<BacklogEdge>, BacklogContentRecord)>, EngramError> {
-    let raw = std::fs::read(file_path).map_err(|e| crate::errors::IngestionError::Failed {
-        path: file_path.display().to_string(),
-        reason: e.to_string(),
-    })?;
+) -> Option<(BacklogNode, Vec<BacklogEdge>, BacklogContentRecord)> {
+    let doc = frontmatter::parse(text);
 
-    let content_hash = compute_file_hash(&raw);
-    let text = String::from_utf8_lossy(&raw);
-    let doc = frontmatter::parse(&text);
-
-    let Some(meta) = doc.metadata else {
-        return Ok(None);
-    };
+    let meta = doc.metadata?;
 
     // Require non-empty `id` field.
     let id = match meta.get("id").and_then(|v| v.as_str()) {
@@ -111,7 +96,7 @@ pub fn extract_backlog_data(
                 path = %file_path.display(),
                 "backlog file missing `id` field — skipped"
             );
-            return Ok(None);
+            return None;
         }
     };
 
@@ -213,7 +198,42 @@ pub fn extract_backlog_data(
         ingested_at: chrono::Utc::now(),
     };
 
-    Ok(Some((node, edges, record)))
+    Some((node, edges, record))
+}
+
+/// Extract graph data from a single backlog markdown file.
+///
+/// Returns `None` (without error) when the file should be skipped:
+/// - No YAML frontmatter was found.
+/// - The frontmatter does not contain a non-empty `id` field.
+///
+/// On success returns `Some((node, edges, record))`:
+/// - `node` — a [`BacklogNode`] for this artifact.
+/// - `edges` — zero or more [`BacklogEdge`] entries inferred from
+///   `parent_id` and `dependencies` frontmatter fields.
+/// - `record` — a [`BacklogContentRecord`] containing the full file body.
+///
+/// # Errors
+///
+/// Returns an error only for I/O failures (unreadable file).
+pub fn extract_backlog_data(
+    file_path: &Path,
+    workspace_root: &Path,
+    source_path: &str,
+) -> Result<Option<(BacklogNode, Vec<BacklogEdge>, BacklogContentRecord)>, EngramError> {
+    let raw = std::fs::read(file_path).map_err(|e| crate::errors::IngestionError::Failed {
+        path: file_path.display().to_string(),
+        reason: e.to_string(),
+    })?;
+    let content_hash = compute_file_hash(&raw);
+    let text = String::from_utf8_lossy(&raw);
+    Ok(extract_from_content(
+        &text,
+        content_hash,
+        file_path,
+        workspace_root,
+        source_path,
+    ))
 }
 
 // ── Source-level indexing ─────────────────────────────────────────────────
@@ -239,8 +259,7 @@ pub async fn index_backlog_source(
     // Load existing nodes for this source to build a hash-map for change detection.
     let existing_nodes = queries
         .select_backlog_nodes(Some(source_path))
-        .await
-        .unwrap_or_default();
+        .await?;
     let hash_by_path: HashMap<String, String> = existing_nodes
         .iter()
         .map(|n| (n.file_path.clone(), n.content_hash.clone()))
@@ -281,34 +300,26 @@ pub async fn index_backlog_source(
             continue;
         }
 
-        match extract_backlog_data(file_path, workspace_root, source_path) {
-            Ok(Some((node, edges, record))) => {
-                queries
-                    .upsert_backlog_nodes(std::slice::from_ref(&node))
-                    .await?;
-                if !edges.is_empty() {
-                    queries.upsert_backlog_edges(&edges).await?;
-                }
-                queries
-                    .upsert_backlog_content_records(std::slice::from_ref(&record))
-                    .await?;
+        let text = String::from_utf8_lossy(&raw);
+        if let Some((node, edges, record)) =
+            extract_from_content(&text, new_hash.clone(), file_path, workspace_root, source_path)
+        {
+            queries
+                .upsert_backlog_nodes(std::slice::from_ref(&node))
+                .await?;
+            if !edges.is_empty() {
+                queries.upsert_backlog_edges(&edges).await?;
+            }
+            queries
+                .upsert_backlog_content_records(std::slice::from_ref(&record))
+                .await?;
 
-                result.nodes.push(node);
-                result.edges.extend(edges);
-                result.records.push(record);
-                result.ingested += 1;
-            }
-            Ok(None) => {
-                // File skipped (no id / no frontmatter) — not counted.
-            }
-            Err(e) => {
-                warn!(
-                    path = %file_path.display(),
-                    error = %e,
-                    "failed to extract backlog data — skipping file"
-                );
-            }
+            result.nodes.push(node);
+            result.edges.extend(edges);
+            result.records.push(record);
+            result.ingested += 1;
         }
+        // else: file skipped (no id / no frontmatter) — not counted.
     }
 
     info!(

@@ -3526,6 +3526,26 @@ impl CodeGraphQueries {
             dp.insert("id".to_owned(), DataValue::from(id.as_str()));
             self.run_script_busy_retry_mutable(del, dp).await?;
         }
+
+        // Delete content records for this source.
+        let find_records = r#"?[file_path] := *backlog_content_record { file_path, source_path }, source_path = $source_path"#;
+        let mut p3 = BTreeMap::new();
+        p3.insert("source_path".to_owned(), DataValue::from(source_path));
+        let record_rows = self
+            .db
+            .run_script(find_records, p3, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &record_rows.rows {
+            let file_path = extract_str(row, 0);
+            let del =
+                r#"?[file_path] <- [[$file_path]] :rm backlog_content_record { file_path }"#;
+            let mut dp = BTreeMap::new();
+            dp.insert(
+                "file_path".to_owned(),
+                DataValue::from(file_path.as_str()),
+            );
+            self.run_script_busy_retry_mutable(del, dp).await?;
+        }
         Ok(())
     }
 

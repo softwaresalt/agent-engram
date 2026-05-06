@@ -22,7 +22,7 @@ mod backlog_schema_tests {
         (tmp, db)
     }
 
-    /// S-BS-01: Schema bootstrap includes new backlog relations (idempotent).
+    /// S-BS-01: Schema `CREATE_*` constants for backlog relations are non-empty.
     #[tokio::test]
     async fn backlog_schema_constants_populated() {
         assert!(
