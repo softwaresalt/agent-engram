@@ -1,7 +1,7 @@
 //! Integration tests for backlog hydration ingestion pipeline (002.006-T).
 //!
-//! Tests: end-to-end ingestion, `query_memory` includes backlog content,
-//! `unified_search` includes backlog results, deletion sweep, performance.
+//! Tests: source-type recognition, end-to-end ingestion, DB-layer persistence,
+//! `query_memory` returns backlog content, deletion sweep, performance.
 
 use std::fs;
 use tempfile::TempDir;
@@ -14,6 +14,7 @@ fn write_backlog_file(dir: &std::path::Path, name: &str, id: &str, title: &str, 
 }
 
 /// S-BH-01: Registry with backlog source is parsed and recognized.
+#[cfg(feature = "cozo-backend")]
 #[test]
 fn backlog_source_type_recognized() {
     use engram::services::registry::parse_registry_yaml;

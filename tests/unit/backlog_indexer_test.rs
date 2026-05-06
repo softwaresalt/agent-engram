@@ -1,8 +1,7 @@
 //! Unit tests for the backlog indexer (002.004-T, 002.005-T).
 //!
 //! Tests: index valid files, skip invalid, handle missing fields,
-//! verify hash-based skip, delete detection, orphaned edges removed,
-//! content records removed.
+//! hash-based skip, parent/child and dependency edges, delete detection.
 
 use std::fs;
 use tempfile::TempDir;

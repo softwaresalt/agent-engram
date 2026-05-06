@@ -1,7 +1,7 @@
 //! Unit tests for the YAML frontmatter parser (002.001-T).
 //!
-//! Validates four scenarios: valid frontmatter, no frontmatter,
-//! malformed YAML, and empty body.
+//! Validates five scenarios: valid frontmatter, no frontmatter,
+//! malformed YAML, empty body, and Debug/Clone derives.
 
 use engram::services::parsing::frontmatter::{FrontmatterDocument, parse};
 
