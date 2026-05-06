@@ -1,15 +1,17 @@
 ---
 type: operational-closure
-mode: pre-merge
+mode: post-merge
 date: 2026-05-05
+merged: 2026-05-06
+merge_sha: a56a8ba
 feature: 002-F — Backlog Markdown Hydration
 shipment: 024-S
 branch: feat/002-F-backlog-hydration
 pr: https://github.com/softwaresalt/agent-engram/pull/82
-readiness: READY
+readiness: SHIPPED
 ---
 
-# Operational Closure — 002-F Backlog Markdown Hydration (Pre-Merge)
+# Operational Closure — 002-F Backlog Markdown Hydration (Post-Merge)
 
 ## Change Summary
 
@@ -118,9 +120,9 @@ The change is low-risk (additive, opt-in, fully tested). No extended monitoring 
 
 ## Readiness Status
 
-**READY**
+**SHIPPED** — Merge commit `a56a8ba` on `main`, 2026-05-06.
 
-All quality gates pass. Runtime verification returns PASS WITH FOLLOW-UP (follow-up is pre-existing `query_graph` stub limitation, not introduced by this feature). Rollback is simple and non-destructive.
+All quality gates passed across 4 Copilot review rounds (30 total threads resolved). Runtime verification PASS WITH FOLLOW-UP. Backlog archived (9 items: 002-F, 002.001-T–002.007-T, 024-S).
 
 ## Source Artifact Traceability (002-F)
 

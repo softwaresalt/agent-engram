@@ -38,9 +38,9 @@ if (-not $copilotExe) {
 $backlogitCmd = Get-Command backlogit -ErrorAction SilentlyContinue
 if ($backlogitCmd) {
     try {
-        backlogit sync index
+        backlogit sync
     } catch {
-        Write-Warning "backlogit sync index failed (non-fatal): $_"
+        Write-Warning "backlogit sync failed (non-fatal): $_"
     }
 }
 
