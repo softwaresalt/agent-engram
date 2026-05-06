@@ -8,6 +8,7 @@
 mod c;
 mod cpp;
 mod csharp;
+pub mod frontmatter;
 mod go_lang;
 mod javascript;
 mod kotlin;

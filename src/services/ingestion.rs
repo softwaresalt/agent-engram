@@ -55,13 +55,54 @@ pub async fn ingest_all_sources(
     let mut total_summary = IngestionSummary::default();
 
     for source in &config.sources {
-        if source.status != ContentSourceStatus::Active {
+        // Skip sources that are explicitly known-bad: Missing or Error.
+        // Active and Unknown (not yet validated) are allowed to proceed —
+        // the indexers handle a missing directory gracefully.
+        if source.status == ContentSourceStatus::Missing
+            || source.status == ContentSourceStatus::Error
+        {
             continue;
+        }
+
+        // Workspace containment check for Unknown-status sources (not yet validated).
+        // Reject absolute paths, parent-directory traversal (`..`), and Windows
+        // drive/UNC-prefixed paths that bypass `is_absolute()` (e.g. `C:foo`).
+        if source.status == ContentSourceStatus::Unknown {
+            let source_path = std::path::Path::new(&source.path);
+            if source_path.is_absolute()
+                || source_path.components().any(|c| {
+                    c == std::path::Component::ParentDir
+                        || matches!(c, std::path::Component::Prefix(_))
+                })
+            {
+                warn!(
+                    path = %source.path,
+                    "Unknown-status source path may escape workspace root — skipping until validated"
+                );
+                continue;
+            }
         }
 
         // Skip code sources — they use the code graph indexer instead.
         if source.content_type == "code" {
             debug!(path = %source.path, "Skipping code source (uses code graph indexer)");
+            continue;
+        }
+
+        // Backlog sources use the dedicated backlog indexer.
+        if source.content_type == "backlog" {
+            use crate::services::backlog_indexer::{
+                index_backlog_source, sweep_deleted_backlog_files,
+            };
+
+            let result =
+                index_backlog_source(source, workspace_root, queries, config.max_file_size_bytes)
+                    .await?;
+            let removed = sweep_deleted_backlog_files(source, workspace_root, queries).await?;
+            total_summary.ingested += result.ingested;
+            total_summary.unchanged += result.unchanged;
+            total_summary.removed += removed;
+            total_summary.total_files += result.total_files;
             continue;
         }
 

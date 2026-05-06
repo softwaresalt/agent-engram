@@ -72,6 +72,10 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         // Phase 3: auxiliary tables
         CREATE_CONTENT_RECORD,
         CREATE_FILE_HASH,
+        // 002-F: backlog hydration relations
+        CREATE_BACKLOG_NODE,
+        CREATE_BACKLOG_EDGE,
+        CREATE_BACKLOG_CONTENT_RECORD,
     ];
 
     for script in &scripts {
@@ -460,5 +464,60 @@ pub const HNSW_INTERFACE_EMBEDDING: &str = r#"
     m: 50,
     ef_construction: 20,
     index_filter: length(embedding) == 384,
+}
+"#;
+
+// ── 002-F: Backlog hydration relations ────────────────────────────────────
+
+/// CozoScript `:create` for `backlog_node` — a single backlog artifact.
+///
+/// Key: `id` — artifact identifier from frontmatter (e.g. `001-F`, `001.001-T`).
+/// Stored separately from the code graph symbol tables to keep backlog
+/// traversal queries isolated and avoid cross-domain key conflicts.
+pub const CREATE_BACKLOG_NODE: &str = r#"
+:create backlog_node {
+    id: String
+    =>
+    title: String,
+    kind: String,
+    status: String,
+    labels: String,
+    file_path: String,
+    content_hash: String,
+    source_path: String,
+    ingested_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `backlog_edge` — a directed relationship between
+/// two backlog nodes.
+///
+/// Key: `(from_id, to_id, edge_type)` — composite key supports multiple
+/// relationship types between the same pair of nodes.
+pub const CREATE_BACKLOG_EDGE: &str = r#"
+:create backlog_edge {
+    from_id: String,
+    to_id: String,
+    edge_type: String
+    =>
+    source_path: String,
+}
+"#;
+
+/// CozoScript `:create` for `backlog_content_record` — full text of a
+/// backlog file, stored separately from `content_record` to prevent key
+/// collisions when backlog paths overlap other indexed content sources
+/// (e.g. `docs/` or `.backlogit/` when those are also indexed).
+///
+/// Key: `file_path` — workspace-relative path (unique per backlog source).
+pub const CREATE_BACKLOG_CONTENT_RECORD: &str = r#"
+:create backlog_content_record {
+    file_path: String
+    =>
+    content_type: String,
+    content_hash: String,
+    content: String,
+    source_path: String,
+    ingested_at: String,
 }
 "#;
