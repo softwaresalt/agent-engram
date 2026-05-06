@@ -70,7 +70,7 @@ fn empty_body_after_frontmatter() {
     );
 }
 
-/// S-FM-05: FrontmatterDocument is cloneable and debuggable.
+/// S-FM-05: `FrontmatterDocument` is cloneable and debuggable.
 #[test]
 fn frontmatter_document_is_debug_clone() {
     let doc = FrontmatterDocument {

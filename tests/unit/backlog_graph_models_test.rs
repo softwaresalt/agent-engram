@@ -6,7 +6,7 @@ use engram::models::backlog_graph::{
     BacklogContentRecord, BacklogEdge, BacklogEdgeType, BacklogIndexResult, BacklogNode,
 };
 
-/// S-BGM-01: BacklogNode can be constructed and has expected field values.
+/// S-BGM-01: `BacklogNode` can be constructed and has expected field values.
 #[test]
 fn backlog_node_construct() {
     let node = BacklogNode {
@@ -25,7 +25,7 @@ fn backlog_node_construct() {
     assert_eq!(node.labels.len(), 2);
 }
 
-/// S-BGM-02: BacklogEdge has correct fields and edge_type round-trips.
+/// S-BGM-02: `BacklogEdge` has correct fields and `edge_type` round-trips.
 #[test]
 fn backlog_edge_construct_and_edge_type() {
     let edge = BacklogEdge {
@@ -39,7 +39,7 @@ fn backlog_edge_construct_and_edge_type() {
     assert_eq!(BacklogEdgeType::References.as_str(), "references");
 }
 
-/// S-BGM-03: BacklogNode serializes and deserializes correctly.
+/// S-BGM-03: `BacklogNode` serializes and deserializes correctly.
 #[test]
 fn backlog_node_serde_roundtrip() {
     let node = BacklogNode {
@@ -60,7 +60,7 @@ fn backlog_node_serde_roundtrip() {
     assert_eq!(roundtripped.labels, node.labels);
 }
 
-/// S-BGM-04: BacklogIndexResult aggregates nodes, edges, and records.
+/// S-BGM-04: `BacklogIndexResult` aggregates nodes, edges, and records.
 #[test]
 fn backlog_index_result_aggregates() {
     let result = BacklogIndexResult {
@@ -76,7 +76,7 @@ fn backlog_index_result_aggregates() {
     assert_eq!(result.records.len(), 0);
 }
 
-/// S-BGM-05: BacklogContentRecord constructs with expected fields.
+/// S-BGM-05: `BacklogContentRecord` constructs with expected fields.
 #[test]
 fn backlog_content_record_construct() {
     let record = BacklogContentRecord {

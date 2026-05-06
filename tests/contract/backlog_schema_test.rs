@@ -1,4 +1,4 @@
-//! Contract tests for backlog CozoDB schema and CRUD operations (002.003-T).
+//! Contract tests for backlog `CozoDB` schema and CRUD operations (002.003-T).
 //!
 //! Tests: schema bootstrap, upsert nodes/edges/records, query, per-file deletion.
 

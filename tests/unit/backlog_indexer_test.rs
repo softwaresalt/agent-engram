@@ -15,7 +15,7 @@ fn write_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::Pa
     path
 }
 
-/// S-BI-01: Valid backlog file produces a BacklogNode with correct fields.
+/// S-BI-01: Valid backlog file produces a `BacklogNode` with correct fields.
 #[test]
 fn valid_file_produces_backlog_node() {
     let dir = TempDir::new().expect("tempdir");
@@ -83,7 +83,7 @@ fn unchanged_file_detected_by_hash() {
     );
 }
 
-/// S-BI-05: Parent-child relationship produces a parent_of edge.
+/// S-BI-05: Parent-child relationship produces a `parent_of` edge.
 #[test]
 fn parent_child_produces_parent_of_edge() {
     let dir = TempDir::new().expect("tempdir");
@@ -108,7 +108,7 @@ fn parent_child_produces_parent_of_edge() {
     );
 }
 
-/// S-BI-06: Dependency list produces depends_on edges.
+/// S-BI-06: Dependency list produces `depends_on` edges.
 #[test]
 fn dependencies_produce_depends_on_edges() {
     let dir = TempDir::new().expect("tempdir");

@@ -1,7 +1,7 @@
 //! Integration tests for backlog hydration ingestion pipeline (002.006-T).
 //!
-//! Tests: end-to-end ingestion, query_memory includes backlog content,
-//! unified_search includes backlog results, deletion sweep, performance.
+//! Tests: end-to-end ingestion, `query_memory` includes backlog content,
+//! `unified_search` includes backlog results, deletion sweep, performance.
 
 use std::fs;
 use tempfile::TempDir;
@@ -23,7 +23,7 @@ fn backlog_source_type_recognized() {
     assert_eq!(config.sources[0].content_type, "backlog");
 }
 
-/// S-BH-02: ingest_all_sources processes a backlog source and returns summary counts.
+/// S-BH-02: `ingest_all_sources` processes a backlog source and returns summary counts.
 #[cfg(feature = "cozo-backend")]
 #[tokio::test]
 async fn ingest_backlog_source_produces_summary() {
@@ -41,7 +41,7 @@ async fn ingest_backlog_source_produces_summary() {
     write_backlog_file(&queue_dir, "001.001-T.md", "001.001-T", "Task one", "task");
     write_backlog_file(&queue_dir, "001.002-T.md", "001.002-T", "Task two", "task");
 
-    let yaml = format!("sources:\n  - type: backlog\n    path: .backlogit/queue\n");
+    let yaml = "sources:\n  - type: backlog\n    path: .backlogit/queue\n".to_string();
     let config = parse_registry_yaml(&yaml).expect("parse registry");
 
     let db = connect_db(dir.path(), "test-branch")
@@ -101,7 +101,7 @@ async fn ingested_nodes_appear_in_db() {
     );
 }
 
-/// S-BH-04: query_memory returns backlog content after ingestion.
+/// S-BH-04: `query_memory` returns backlog content after ingestion.
 #[cfg(feature = "cozo-backend")]
 #[tokio::test]
 async fn query_memory_returns_backlog_content() {
