@@ -24,9 +24,13 @@ Adds a `backlog` content source type to the engram daemon ingestion pipeline. `.
 | `cargo fmt --all -- --check` | ✅ clean |
 | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` | ✅ clean (CI) |
 | `cargo test` (non-cozo-backend, Linux CI) | ✅ passing |
-| GitHub CI `CI/build (pull_request)` | ✅ green |
-| Automated review comments | None received |
-| Unresolved review findings | None |
+| GitHub CI `CI/build (pull_request)` | ✅ green on `346a252` |
+| Copilot review round 1 (13 threads) | ✅ all resolved (`98ad124`) |
+| Copilot review round 2 (10 threads) | ✅ all resolved (`8f5a5b6`) |
+| Copilot review round 3 (4 threads) | ✅ all resolved (`346a252`) |
+| Unresolved review findings | **None** |
+
+**Round 3 fixes** (`346a252`): doc comment accuracy in `frontmatter_parser_test.rs` (count), `backlog_indexer_test.rs` (removed untested claims), `backlog_hydration_test.rs` (removed `unified_search` claim); added `required-features = ["cozo-backend"]` to the integration test `[[test]]` entry and `#[cfg(feature = "cozo-backend")]` guard to the one unguarded test (`backlog_source_type_recognized`).
 
 Pre-existing local failure: `contract_shim_lifecycle` (6 tests, SQLite BUSY on Windows IPC) — confirmed pre-existing, not introduced by this branch.
 
