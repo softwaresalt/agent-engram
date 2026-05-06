@@ -65,13 +65,15 @@ pub async fn ingest_all_sources(
         }
 
         // Workspace containment check for Unknown-status sources (not yet validated).
-        // Reject absolute paths and paths containing parent-directory traversal (`..`).
+        // Reject absolute paths, parent-directory traversal (`..`), and Windows
+        // drive/UNC-prefixed paths that bypass `is_absolute()` (e.g. `C:foo`).
         if source.status == ContentSourceStatus::Unknown {
             let source_path = std::path::Path::new(&source.path);
             if source_path.is_absolute()
-                || source_path
-                    .components()
-                    .any(|c| c == std::path::Component::ParentDir)
+                || source_path.components().any(|c| {
+                    c == std::path::Component::ParentDir
+                        || matches!(c, std::path::Component::Prefix(_))
+                })
             {
                 warn!(
                     path = %source.path,

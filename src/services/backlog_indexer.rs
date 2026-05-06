@@ -34,9 +34,8 @@ pub fn compute_file_hash(content: &[u8]) -> String {
 
 /// Return the subset of `known_paths` whose files no longer exist on disk.
 ///
-/// Paths are expected to be absolute or workspace-relative strings.  Any
-/// entry in `known_paths` for which [`std::path::Path::exists`] returns
-/// `false` is included in the output.
+/// Paths must be absolute.  Any entry in `known_paths` for which
+/// [`std::path::Path::exists`] returns `false` is included in the output.
 #[must_use]
 pub fn compute_deleted_paths(known_paths: &[String]) -> Vec<String> {
     known_paths
