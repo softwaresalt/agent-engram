@@ -7,6 +7,7 @@ evidence: src/tools/lifecycle.rs — discovered and fixed in PR #21 (009-S)
 superseded_by: "017-S — surreal-backend removal (2026-05-01)"
 status: "stale"
 stale_reason: "The surreal-backend and SurrealKV were fully removed in Shipment 017-S. This workaround no longer applies to the codebase."
+---
 
 # Problem
 
