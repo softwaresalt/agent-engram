@@ -122,15 +122,6 @@ pub struct BacklogContentRecord {
 /// Aggregated result from a backlog indexer run over a content source.
 #[derive(Debug, Default)]
 pub struct BacklogIndexResult {
-    /// Nodes produced or updated in this run.
-    pub nodes: Vec<BacklogNode>,
-
-    /// Edges produced or updated in this run.
-    pub edges: Vec<BacklogEdge>,
-
-    /// Content records produced or updated in this run.
-    pub records: Vec<BacklogContentRecord>,
-
     /// Number of files that were newly ingested or changed.
     pub ingested: usize,
 
@@ -139,4 +130,7 @@ pub struct BacklogIndexResult {
 
     /// Number of files that were removed from the index (deletion sweep).
     pub removed: usize,
+
+    /// Total files scanned (includes ingested, unchanged, and skipped files).
+    pub total_files: usize,
 }

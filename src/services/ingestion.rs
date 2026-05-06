@@ -93,12 +93,14 @@ pub async fn ingest_all_sources(
                 index_backlog_source, sweep_deleted_backlog_files,
             };
 
-            let result = index_backlog_source(source, workspace_root, queries).await?;
+            let result =
+                index_backlog_source(source, workspace_root, queries, config.max_file_size_bytes)
+                    .await?;
             let removed = sweep_deleted_backlog_files(source, workspace_root, queries).await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;
-            total_summary.total_files += result.ingested + result.unchanged;
+            total_summary.total_files += result.total_files;
             continue;
         }
 

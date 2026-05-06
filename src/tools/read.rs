@@ -163,6 +163,26 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
         });
     }
 
+    // Include backlog content records when the filter is unset or explicitly
+    // requests "backlog" content.  Backlog records live in a separate relation
+    // (`backlog_content_record`) and have no embedding, so they participate
+    // only in lexical (BM25) matching.
+    let include_backlog = parsed
+        .content_type
+        .as_deref()
+        .is_none_or(|ct| ct == "backlog");
+    if include_backlog {
+        let backlog_records = queries.select_backlog_content_records(None).await?;
+        for bcr in backlog_records {
+            candidates.push(SearchCandidate {
+                id: format!("backlog_content_record:{}", bcr.file_path),
+                source_type: bcr.content_type,
+                content: bcr.content,
+                embedding: None,
+            });
+        }
+    }
+
     let results = hybrid_search(&parsed.query, &candidates, parsed.limit)?;
 
     Ok(json!({ "results": results }))

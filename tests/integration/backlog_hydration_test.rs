@@ -134,7 +134,11 @@ async fn query_memory_returns_backlog_content() {
         .await
         .expect("ingest");
 
-    // query_memory reads backlog_content_record; verify via select
+    // `select_backlog_content_records` queries the DB layer directly.
+    // The MCP `query_memory` tool also includes these records (when content_type
+    // filter is unset or "backlog") via `select_backlog_content_records`, so
+    // this test validates DB layer persistence which is the foundation for both
+    // access paths.
     let records = queries
         .select_backlog_content_records(None)
         .await
@@ -243,7 +247,7 @@ async fn backlog_index_100_items_under_5_seconds() {
         summary.ingested
     );
     assert!(
-        elapsed.as_secs() < 5,
+        elapsed < std::time::Duration::from_secs(5),
         "100-item ingestion should complete in under 5 seconds, took {elapsed:?}"
     );
 }

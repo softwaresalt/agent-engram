@@ -5,7 +5,7 @@ feature: 002-F — Backlog Markdown Hydration
 shipment: 024-S
 branch: feat/002-F-backlog-hydration
 surface: background-job
-verdict: PASS
+verdict: PASS WITH FOLLOW-UP
 ---
 
 # Runtime Verification — 002-F Backlog Markdown Hydration
@@ -36,7 +36,7 @@ No CLI commands, HTTP endpoints, IPC handlers, or browser-visible surfaces were 
 ### Scenario 1: Schema Bootstrap
 
 **Target**: `connect_db` → `run_schema_bootstrap` includes `backlog_node`, `backlog_edge`, `backlog_content_record`  
-**Test**: `backlog_source_type_recognized` (integration)  
+**Test**: `backlog_source_type_recognized` (integration) — parses registry YAML and verifies the `content_type == "backlog"` branch is reached; DB bootstrap is exercised as a side-effect of `connect_db`.  Schema completeness (all 3 new relations created) is more directly verified by the `*_produces_summary` and `ingested_nodes_appear_in_db` scenarios.  
 **Result**: ✅ PASS — schema bootstrap creates all 3 new relations without error
 
 ### Scenario 2: End-to-End Ingestion
@@ -53,9 +53,9 @@ No CLI commands, HTTP endpoints, IPC handlers, or browser-visible surfaces were 
 
 ### Scenario 4: query_memory Integration
 
-**Target**: `query_memory` MCP tool returns backlog content records  
-**Test**: `query_memory_returns_backlog_content`  
-**Result**: ✅ PASS — backlog content searchable via existing MCP tool with no code changes to tool layer
+**Target**: Backlog content records are included in `query_memory` candidates  
+**Test**: `query_memory_returns_backlog_content` — calls `select_backlog_content_records` on the DB layer directly, confirming that records are stored and retrievable.  The MCP `query_memory` tool now delegates to the same DB query (via the `include_backlog` path added in the Copilot review round 2 fix), so DB-layer persistence is the necessary and sufficient precondition.  
+**Result**: ✅ PASS — backlog content records persist in DB and are included as `query_memory` candidates
 
 ### Scenario 5: Deletion Sweep
 

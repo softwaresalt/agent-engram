@@ -60,20 +60,18 @@ fn backlog_node_serde_roundtrip() {
     assert_eq!(roundtripped.labels, node.labels);
 }
 
-/// S-BGM-04: `BacklogIndexResult` aggregates nodes, edges, and records.
+/// S-BGM-04: `BacklogIndexResult` tracks file counts across the run.
 #[test]
 fn backlog_index_result_aggregates() {
     let result = BacklogIndexResult {
-        nodes: vec![],
-        edges: vec![],
-        records: vec![],
         ingested: 0,
         unchanged: 0,
         removed: 0,
+        total_files: 0,
     };
-    assert_eq!(result.nodes.len(), 0);
-    assert_eq!(result.edges.len(), 0);
-    assert_eq!(result.records.len(), 0);
+    assert_eq!(result.ingested, 0);
+    assert_eq!(result.unchanged, 0);
+    assert_eq!(result.total_files, 0);
 }
 
 /// S-BGM-05: `BacklogContentRecord` constructs with expected fields.

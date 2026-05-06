@@ -244,6 +244,9 @@ pub fn extract_backlog_data(
 /// each, compares content hashes against existing DB records, and upserts
 /// only changed files.  Returns a [`BacklogIndexResult`] with counts.
 ///
+/// Files exceeding `max_file_size_bytes` are skipped (same limit as
+/// the generic ingestion pipeline).
+///
 /// # Errors
 ///
 /// Returns errors for DB write failures.  Per-file read or parse errors are
@@ -252,6 +255,7 @@ pub async fn index_backlog_source(
     source: &ContentSource,
     workspace_root: &Path,
     queries: &CodeGraphQueries,
+    max_file_size_bytes: u64,
 ) -> Result<BacklogIndexResult, EngramError> {
     let source_dir = workspace_root.join(&source.path);
     let source_path = &source.path;
@@ -274,8 +278,22 @@ pub async fn index_backlog_source(
     }
 
     let files = collect_md_files(&source_dir);
+    result.total_files = files.len();
 
     for file_path in &files {
+        // Skip files that exceed the configured size limit.
+        if let Ok(meta) = std::fs::metadata(file_path) {
+            if meta.len() > max_file_size_bytes {
+                warn!(
+                    path = %file_path.display(),
+                    size = meta.len(),
+                    limit = max_file_size_bytes,
+                    "backlog file exceeds size limit — skipped"
+                );
+                continue;
+            }
+        }
+
         // Quick hash check: read raw bytes first.
         let raw = match std::fs::read(file_path) {
             Ok(b) => b,
@@ -316,9 +334,6 @@ pub async fn index_backlog_source(
                 .upsert_backlog_content_records(std::slice::from_ref(&record))
                 .await?;
 
-            result.nodes.push(node);
-            result.edges.extend(edges);
-            result.records.push(record);
             result.ingested += 1;
         }
         // else: file skipped (no id / no frontmatter) — not counted.
@@ -328,6 +343,7 @@ pub async fn index_backlog_source(
         source = %source_path,
         ingested = result.ingested,
         unchanged = result.unchanged,
+        total_files = result.total_files,
         "backlog source indexed"
     );
 
