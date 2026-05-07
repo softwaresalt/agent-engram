@@ -21,10 +21,10 @@ follow_up_stash:
 
 ## Change Summary
 
-Added `engram sync --workspace . --quiet` to `start.ps1` between the existing
+Added `engram sync --workspace $PSScriptRoot --quiet` to `start.ps1` between the existing
 `backlogit sync` block and the `& $copilotExe --remote` launch line. The block
 is guarded by `Get-Command engram -ErrorAction SilentlyContinue` with a `$LASTEXITCODE`
-check, making the sync step non-fatal.If engram is absent or the sync
+check, making the sync step non-fatal. If engram is absent or the sync
 fails, Copilot still launches normally.
 
 The `--remote @args` pass-through on the Copilot launch line was also preserved per user request
@@ -90,9 +90,9 @@ auto-spawn daemon design confirmed via source code; `--quiet` flag semantics con
 
 ## Failure Signals
 
-- `start.ps1` hangs indefinitely (would indicate the `try/catch` is not protecting
-  against a blocking call — considered impossible given the non-terminating error
-  model, but monitor on first use)
+- `start.ps1` hangs indefinitely (would indicate the `$LASTEXITCODE` check is not
+  protecting against a blocking call — considered impossible given the non-terminating
+  error model, but monitor on first use)
 - Copilot does not launch after engram sync step
 
 ## Monitoring Plan
