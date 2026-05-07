@@ -35,8 +35,12 @@ pub async fn run_tool(
         Err(e) => return formatter.cli_error(&e),
     };
 
-    // Canonicalize only when the path exists; fall back for new workspaces.
-    let workspace_path = std::fs::canonicalize(&workspace_path).unwrap_or(workspace_path);
+    // Canonicalize only when the path exists; propagate permission errors.
+    let workspace_path = match std::fs::canonicalize(&workspace_path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => workspace_path,
+        Err(e) => return formatter.cli_error(&format!("workspace path error: {e}")),
+    };
 
     // Ensure daemon is running (auto-spawn if needed).
     if let Err(e) = ensure_daemon_running(&workspace_path).await {

@@ -47,6 +47,7 @@ fn cli_parity_subcommand_names_unique() {
     let mut all: Vec<&str> = CLI_PARITY_SUBCOMMANDS.to_vec();
     all.extend_from_slice(INTERNAL_SUBCOMMANDS);
     let total = all.len();
+    all.sort_unstable();
     all.dedup();
     assert_eq!(
         all.len(),

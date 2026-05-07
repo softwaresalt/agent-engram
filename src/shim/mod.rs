@@ -17,26 +17,31 @@ use crate::errors::{EngramError, WorkspaceError};
 
 /// Run the shim: connect to or spawn the daemon, then proxy stdio MCP calls.
 ///
-/// Resolves the workspace from the `ENGRAM_WORKSPACE` environment variable,
-/// falling back to the current working directory. Ensures the daemon is
-/// running before starting the MCP stdio server.
+/// Resolves the workspace in priority order: `workspace_override` argument,
+/// then the `ENGRAM_WORKSPACE` environment variable, then the current working
+/// directory. Ensures the daemon is running before starting the MCP stdio server.
 ///
 /// # Errors
 ///
 /// Returns [`EngramError`] if the daemon cannot be spawned, the IPC connection
 /// fails, or the MCP transport encounters a protocol error.
-pub async fn run() -> Result<(), EngramError> {
-    let workspace = std::env::var("ENGRAM_WORKSPACE").or_else(|_| {
-        std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .map_err(|e| {
-                // current_dir() can fail if the working directory has been deleted
-                // or permissions have changed. Return a clear diagnostic.
-                EngramError::Workspace(WorkspaceError::NotFound {
-                    path: format!("<current directory — {e}>"),
-                })
+pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
+    let workspace = workspace_override
+        .map(std::borrow::ToOwned::to_owned)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            std::env::var("ENGRAM_WORKSPACE").or_else(|_| {
+                std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .map_err(|e| {
+                        // current_dir() can fail if the working directory has been deleted
+                        // or permissions have changed. Return a clear diagnostic.
+                        EngramError::Workspace(WorkspaceError::NotFound {
+                            path: format!("<current directory — {e}>"),
+                        })
+                    })
             })
-    })?;
+        })?;
 
     let workspace_path = std::fs::canonicalize(&workspace).map_err(|_| {
         EngramError::Workspace(WorkspaceError::NotFound {

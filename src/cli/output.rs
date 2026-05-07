@@ -17,17 +17,21 @@ pub enum OutputMode {
 /// Formatter that writes tool results to stdout.
 pub struct OutputFormatter {
     mode: OutputMode,
+    quiet: bool,
 }
 
 impl OutputFormatter {
-    /// Create a new formatter in the given mode.
+    /// Create a new formatter in the given mode with quiet suppression disabled.
     pub fn new(mode: OutputMode) -> Self {
-        Self { mode }
+        Self { mode, quiet: false }
     }
 
     /// Detect output mode from flags: explicit `--json`, `--format=json`, or
     /// non-TTY stdout implies JSON; `--format=text` or TTY implies text.
-    pub fn from_flags(json_flag: bool, format: Option<&str>) -> Self {
+    ///
+    /// When `quiet` is `true`, `success()` suppresses stdout; errors still
+    /// reach stderr so scripts can detect failures regardless of quiet mode.
+    pub fn from_flags(json_flag: bool, format: Option<&str>, quiet: bool) -> Self {
         let mode = if json_flag {
             OutputMode::Json
         } else if let Some(fmt) = format {
@@ -46,11 +50,17 @@ impl OutputFormatter {
                 OutputMode::Json
             }
         };
-        Self { mode }
+        Self { mode, quiet }
     }
 
     /// Print a success envelope and return exit code 0.
+    ///
+    /// When `--quiet` is set, stdout is suppressed; callers should rely on the
+    /// exit code (0) rather than parsing output in quiet mode.
     pub fn success(&self, id: Option<Value>, result: Value) -> i32 {
+        if self.quiet {
+            return 0;
+        }
         match self.mode {
             OutputMode::Json => {
                 let envelope = json!({
@@ -153,19 +163,26 @@ mod tests {
 
     #[test]
     fn from_flags_json_flag_overrides() {
-        let f = OutputFormatter::from_flags(true, Some("text"));
+        let f = OutputFormatter::from_flags(true, Some("text"), false);
         assert_eq!(f.mode, OutputMode::Json);
     }
 
     #[test]
     fn from_flags_format_text() {
-        let f = OutputFormatter::from_flags(false, Some("text"));
+        let f = OutputFormatter::from_flags(false, Some("text"), false);
         assert_eq!(f.mode, OutputMode::Text);
     }
 
     #[test]
     fn from_flags_format_json() {
-        let f = OutputFormatter::from_flags(false, Some("json"));
+        let f = OutputFormatter::from_flags(false, Some("json"), false);
         assert_eq!(f.mode, OutputMode::Json);
+    }
+
+    #[test]
+    fn quiet_suppresses_success_output() {
+        let f = OutputFormatter::from_flags(false, Some("json"), true);
+        // success() returns 0 without printing; we can only check the exit code.
+        assert_eq!(f.success(None, serde_json::json!({"ok": true})), 0);
     }
 }

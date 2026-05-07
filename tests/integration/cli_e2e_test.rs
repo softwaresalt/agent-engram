@@ -5,22 +5,9 @@
 
 use std::process::Command;
 
-/// Path to the built binary under the cargo test profile.
+/// Path to the built binary, provided by Cargo for integration tests.
 fn engram_bin() -> std::path::PathBuf {
-    let mut path = std::env::current_exe()
-        .expect("cannot determine test binary path")
-        .parent()
-        .expect("cannot get parent dir")
-        .to_path_buf();
-    // Walk up from `deps/` to the target profile directory.
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.join(if cfg!(windows) {
-        "engram.exe"
-    } else {
-        "engram"
-    })
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_engram"))
 }
 
 /// Spawn `engram <args>`, capturing stdout + stderr, return exit status + output.

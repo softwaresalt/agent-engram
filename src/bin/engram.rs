@@ -29,11 +29,7 @@ enum Command {
 
     /// Run as workspace daemon. Manages workspace state, IPC server, file watching,
     /// and idle timeout. Spawned automatically by the shim; not intended for direct use.
-    Daemon {
-        /// Absolute path to the workspace root.
-        #[arg(long)]
-        workspace: String,
-    },
+    Daemon,
 
     /// Install the engram plugin into the current workspace.
     /// Creates `.engram/` directory structure, generates MCP configuration,
@@ -178,6 +174,9 @@ enum Command {
     },
 
     /// Execute a read-only `SurrealQL` SELECT against the workspace graph (`query_graph`).
+    ///
+    /// **Note**: this subcommand is not yet implemented. It always returns an error.
+    /// Included here to complete the CLI surface for future activation.
     #[command(name = "query-graph")]
     QueryGraph {
         /// `SurrealQL` SELECT statement.
@@ -229,10 +228,14 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Shim) {
         // ── Internal commands ─────────────────────────────────────────────────
         Command::Shim => {
-            engram::shim::run().await?;
+            engram::shim::run(flags.workspace.as_deref()).await?;
         }
-        Command::Daemon { workspace } => {
+        Command::Daemon => {
             engram::init_tracing(engram::config::LogFormat::Pretty);
+            let workspace = flags
+                .workspace
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("daemon requires --workspace <path>"))?;
             engram::daemon::run(&workspace).await?;
         }
         Command::Install {
@@ -263,37 +266,37 @@ async fn main() -> Result<()> {
 
         // ── CLI parity commands ───────────────────────────────────────────────
         Command::Bind { path } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = lifecycle::run_bind(path, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::DaemonStatus => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = lifecycle::run_daemon_status(&flags, &fmt).await;
             std::process::exit(code);
         }
         Command::WorkspaceStatus => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = lifecycle::run_workspace_status(&flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Flush => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = lifecycle::run_flush(&flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Sync { full } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = indexing::run_sync(full, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Index => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = indexing::run_index(&flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Manifest => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = manifest::run_manifest(&flags, &fmt);
             std::process::exit(code);
         }
@@ -304,7 +307,7 @@ async fn main() -> Result<()> {
             content_type,
             scope_to,
         } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code =
                 search::run_search(query, region, limit, content_type, scope_to, &flags, &fmt)
                     .await;
@@ -315,7 +318,7 @@ async fn main() -> Result<()> {
             limit,
             content_type,
         } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = search::run_query_memory(query, limit, content_type, &flags, &fmt).await;
             std::process::exit(code);
         }
@@ -326,7 +329,7 @@ async fn main() -> Result<()> {
             limit,
             offset,
         } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code =
                 search::run_symbols(file, node_type, prefix, limit, offset, &flags, &fmt).await;
             std::process::exit(code);
@@ -336,7 +339,7 @@ async fn main() -> Result<()> {
             depth,
             max_nodes,
         } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = search::run_map_code(symbol, depth, max_nodes, &flags, &fmt).await;
             std::process::exit(code);
         }
@@ -346,32 +349,32 @@ async fn main() -> Result<()> {
             max_nodes,
             concept,
         } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = search::run_impact(symbol, depth, max_nodes, concept, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::QueryGraph { query } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = search::run_query_graph(query, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Stats => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = report::run_stats(&flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Health => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = report::run_health(&flags, &fmt).await;
             std::process::exit(code);
         }
         Command::BranchMetrics { branch, compare } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = report::run_branch_metrics(branch, compare, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Report { subcommand } => {
-            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref());
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = match subcommand {
                 ReportCommand::TokenSavings => report::run_token_savings(&flags, &fmt).await,
                 ReportCommand::Eval => report::run_eval(&flags, &fmt).await,
