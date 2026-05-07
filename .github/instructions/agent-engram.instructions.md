@@ -149,7 +149,9 @@ engram daemon-status --json
 engram symbols --file src/lib.rs --json
 ```
 
-All subcommands emit JSON-RPC 2.0 envelopes on stdout (exit 0 = success, 1 = tool error, 2 = invocation failure).
+All subcommands emit JSON-RPC 2.0 envelopes on stdout in non-TTY contexts (piped or
+scripted); in a terminal they default to human-readable text. Use `--json` to force JSON
+output regardless of TTY state (exit 0 = success, 1 = tool error, 2 = invocation failure).
 
 ### Startup preloading pattern (start.ps1 / shell scripts)
 

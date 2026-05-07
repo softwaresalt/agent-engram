@@ -13,7 +13,7 @@ pub fn run_manifest(flags: &GlobalFlags, formatter: &OutputFormatter) -> i32 {
             serde_json::json!({
                 "name": t.name.as_ref(),
                 "description": t.description.as_deref().unwrap_or(""),
-                "inputSchema": *t.input_schema
+                "inputSchema": serde_json::Value::Object(t.input_schema.as_ref().clone())
             })
         })
         .collect();

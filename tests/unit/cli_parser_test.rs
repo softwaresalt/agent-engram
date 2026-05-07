@@ -1,12 +1,12 @@
 //! Parser regression tests for the engram binary CLI.
 //!
-//! Verifies that all existing commands continue to parse correctly (no regressions)
-//! and that all new CLI subcommands parse with the expected argument extraction.
+//! Verifies that the expected subcommand and flag names are stable across
+//! refactors. These tests enumerate the known CLI surface and flag names as
+//! assertions over hard-coded string lists; they do not invoke the clap parser
+//! directly. Use the integration tests in `tests/integration/cli_e2e_test.rs`
+//! for end-to-end CLI parsing coverage via the compiled binary.
 
-// Use the binary's clap parser indirectly by testing argument parsing patterns.
-// These tests verify the CLI surface without spawning the binary process.
-
-// ── Argument mapping tests ────────────────────────────────────────────────────
+// ── Subcommand name registry ──────────────────────────────────────────────────
 
 /// All new subcommand names that must be parseable.
 const CLI_PARITY_SUBCOMMANDS: &[&str] = &[
@@ -91,11 +91,9 @@ fn report_subcommand_count_is_three() {
 
 #[test]
 fn cli_parity_count_covers_all_tools() {
-    // 17 direct subcommands + report (which covers 3 more = 6 report tools).
-    // Total distinct MCP tools: 18 (TOOL_COUNT) + manifest = 19 exposed via CLI.
-    // Direct subcommand count: manifest + bind + daemon-status + workspace-status +
-    //   flush + sync + index + search + query-memory + symbols + map-code +
-    //   impact + query-graph + stats + health + branch-metrics + report = 17
+    // CLI parity subcommands: one per group (lifecycle, indexing, manifest, search, report).
+    // report is a single entry here but contains 3 sub-subcommands (token-savings, eval, retry-metrics).
+    // Total top-level parity subcommands: 17.
     assert_eq!(CLI_PARITY_SUBCOMMANDS.len(), 17);
     assert_eq!(REPORT_SUBCOMMANDS.len(), 3);
 }

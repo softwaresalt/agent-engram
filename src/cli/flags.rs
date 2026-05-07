@@ -18,7 +18,7 @@ pub struct GlobalFlags {
     pub json: bool,
 
     /// Output format: "json" or "text". Defaults to "json" on non-TTY.
-    #[arg(long, global = true, value_name = "FORMAT")]
+    #[arg(long, global = true, value_name = "FORMAT", value_parser = ["json", "text"])]
     pub format: Option<String>,
 
     /// Suppress non-error output.

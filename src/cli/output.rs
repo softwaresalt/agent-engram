@@ -29,8 +29,9 @@ impl OutputFormatter {
     /// Detect output mode from flags: explicit `--json`, `--format=json`, or
     /// non-TTY stdout implies JSON; `--format=text` or TTY implies text.
     ///
-    /// When `quiet` is `true`, `success()` suppresses stdout; errors still
-    /// reach stderr so scripts can detect failures regardless of quiet mode.
+    /// When `quiet` is `true`, `success()` suppresses stdout; error output
+    /// is always produced regardless of quiet mode: in JSON mode errors are
+    /// emitted as JSON-RPC error envelopes on stdout, in text mode on stderr.
     pub fn from_flags(json_flag: bool, format: Option<&str>, quiet: bool) -> Self {
         let mode = if json_flag {
             OutputMode::Json

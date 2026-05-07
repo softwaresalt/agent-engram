@@ -336,7 +336,7 @@ Three primary use cases:
 
 1. **Startup preloading** — `start.ps1` (or shell equivalent) runs `engram sync` or `engram index` before launching Copilot, pre-populating the CozoDB code graph so the first MCP tool call does not time out.
 2. **Agent fallback** — when the MCP transport is unavailable (timeout, daemon restart, network issues), agents can invoke `engram <subcommand>` as a subprocess to directly call tools.
-3. **Scripting** — all CLI subcommands output JSON-RPC 2.0 envelopes by default (exit code 0 = success, 1 = tool error, 2 = invocation failure), making them composable in PowerShell and Bash pipelines.
+3. **Scripting** — CLI subcommands output JSON-RPC 2.0 envelopes on non-TTY (piped/scripted) stdout and human-readable text in terminals (exit code 0 = success, 1 = tool error, 2 = invocation failure), making them composable in PowerShell and Bash pipelines. Use `--json` to force JSON output regardless of TTY.
 
 ### Architecture: CLI → IPC → Daemon
 

@@ -132,7 +132,7 @@ enum Command {
         #[arg(long)]
         file: Option<String>,
         /// Filter by symbol kind (function, struct, enum, trait, impl, …).
-        #[arg(long, name = "type")]
+        #[arg(long = "type", value_name = "KIND")]
         node_type: Option<String>,
         /// Filter to symbols whose name starts with this prefix.
         #[arg(long)]
