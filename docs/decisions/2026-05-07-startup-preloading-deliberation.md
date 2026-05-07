@@ -81,5 +81,5 @@ from 042-F.
 | Risk | Mitigation |
 |---|---|
 | Daemon not installed | `Get-Command` check; skip with no warning |
-| Daemon spawn takes too long | Non-blocking; backgound daemon spawn is handled by the shim already |
+| Daemon spawn takes too long | Non-blocking; background daemon spawn is handled by the shim already |
 | Sync fails (no prior index) | `try/catch` with `Write-Warning`; Copilot launches anyway |

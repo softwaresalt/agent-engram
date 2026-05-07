@@ -46,14 +46,13 @@ if ($backlogitCmd) {
 
 $engramCmd = Get-Command engram -ErrorAction SilentlyContinue
 if ($engramCmd) {
-    try {
-        engram sync --workspace . --quiet
-    } catch {
-        Write-Warning "engram sync failed (non-fatal): $_"
+    engram sync --workspace $PSScriptRoot --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "engram sync failed (non-fatal, exit code: $LASTEXITCODE)"
     }
 }
 
-& $copilotExe --remote
+& $copilotExe --remote @args
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
