@@ -150,7 +150,7 @@ enum Command {
     MapCode {
         /// Name of the symbol to map.
         symbol: String,
-        /// Maximum traversal depth (default 2).
+        /// Maximum traversal depth (default 1).
         #[arg(long)]
         depth: Option<u32>,
         /// Maximum number of graph nodes.
@@ -162,7 +162,7 @@ enum Command {
     Impact {
         /// Name of the changed symbol.
         symbol: String,
-        /// Call-graph traversal depth (default 2).
+        /// Call-graph traversal depth (default 1).
         #[arg(long)]
         depth: Option<u32>,
         /// Maximum number of graph nodes.
