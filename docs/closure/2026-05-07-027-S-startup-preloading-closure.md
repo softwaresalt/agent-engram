@@ -1,16 +1,20 @@
 ---
 type: operational-closure
-mode: pre-merge
+mode: post-merge
 shipment: 027-S
 feature: 042-F
 task: 042.001-T
 branch: feat/042-F-startup-preloading
 pr: 88
+merge_sha: ad867b3
 date: 2026-05-07
-status: READY WITH CONDITIONS
+status: SHIPPED
 runtime_verification: docs/closure/2026-05-07-027-S-startup-preloading-runtime-verification.md
 source_stash_id: B59D87CA
 source_deliberation: docs/decisions/2026-05-07-startup-preloading-deliberation.md
+follow_up_stash:
+    - C3A8E7F4
+    - F2D1B9C5
 ---
 
 # Operational Closure — 027-S Startup Script Engram Pre-Loading
@@ -19,12 +23,12 @@ source_deliberation: docs/decisions/2026-05-07-startup-preloading-deliberation.m
 
 Added `engram sync --workspace . --quiet` to `start.ps1` between the existing
 `backlogit sync` block and the `& $copilotExe --remote` launch line. The block
-is guarded by `Get-Command engram -ErrorAction SilentlyContinue` and wrapped in
-`try/catch`, making the sync step non-fatal. If engram is absent or the sync
+is guarded by `Get-Command engram -ErrorAction SilentlyContinue` with a `$LASTEXITCODE`
+check, making the sync step non-fatal.If engram is absent or the sync
 fails, Copilot still launches normally.
 
-The `--remote` flag on the Copilot launch line was also preserved per user request
-(replacing the prior `@args` pass-through).
+The `--remote @args` pass-through on the Copilot launch line was also preserved per user request
+(replacing the prior bare `@args`).
 
 **Files changed**: `start.ps1` (+9 lines)  
 **Rust code changed**: None  
@@ -45,7 +49,7 @@ All four invariants are satisfied by the current implementation.
 |---|---|
 | No Rust changes — no database migration risk | ✅ |
 | `start.ps1` syntax: AST parse 0 errors | ✅ |
-| Non-fatal guard: `Get-Command + try/catch` present | ✅ |
+| Non-fatal guard: `Get-Command + $LASTEXITCODE` check present | ✅ |
 | `--quiet` suppresses success noise | ✅ |
 | `--remote` preserved on `& $copilotExe` | ✅ |
 | CI green on PR #88 | ✅ |
@@ -137,13 +141,16 @@ validates during their next `start.ps1` invocation.
 - `custom_fields.source_stash_id` not set on 042-F (known backlogit limitation
   for Stage-harvested items; traceability preserved here).
 
-## Readiness Status
+## Post-Merge Status
 
-**READY WITH CONDITIONS**
+**SHIPPED** — PR #88 merged (ad867b3) by admin bypass (ruleset required 1 approving review;
+Copilot left COMMENTED state, not APPROVED). All 13 review threads resolved.
 
-Conditions:
-1. PR #88 receives merge approval (awaiting user)
-2. FU-1 (binary update) performed by developer before first use
+Follow-up stash entries created:
+- `C3A8E7F4` (FU-1, High): Install updated binary via `cargo install --path .`
+- `F2D1B9C5` (FU-2, Medium): Manual cold-start test after FU-1
 
-Merge itself is non-blocking. The engram sync block is safe whether or not
-the updated binary is installed — it fails non-fatally in all cases.
+Note on ID collision: 042-F and 042.001-T queue items deleted without archival because
+`archive/042-F.md` and `archive/042.001-T.md` are owned by the prior CLI parity feature (026-S).
+Backlogit auto-increment does not skip archived IDs — known limitation. Shipment 027-S
+archived normally at `.backlogit/archive/027-S.md`.
