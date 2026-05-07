@@ -71,7 +71,7 @@ mod tests {
     fn branch_metrics_no_params_when_both_none() {
         // Both branch_name and compare_to are None → empty object → None params.
         let params = json!({});
-        let is_empty = params.as_object().map_or(false, |m| m.is_empty());
+        let is_empty = params.as_object().is_some_and(serde_json::Map::is_empty);
         assert!(is_empty, "empty params object should produce None");
     }
 

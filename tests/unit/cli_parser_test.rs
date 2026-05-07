@@ -3,8 +3,8 @@
 //! Verifies that all existing commands continue to parse correctly (no regressions)
 //! and that all new CLI subcommands parse with the expected argument extraction.
 
-/// Use the binary's clap parser indirectly by testing argument parsing patterns.
-/// These tests verify the CLI surface without spawning the binary process.
+// Use the binary's clap parser indirectly by testing argument parsing patterns.
+// These tests verify the CLI surface without spawning the binary process.
 
 // ── Argument mapping tests ────────────────────────────────────────────────────
 

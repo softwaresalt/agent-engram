@@ -79,7 +79,6 @@ pub async fn run_tool(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::cli::output::{OutputFormatter, OutputMode};
 
     fn make_formatter() -> OutputFormatter {
