@@ -16,7 +16,8 @@ Engram is a code intelligence MCP daemon. It indexes source files into a queryab
 3. [Workspace Lifecycle](#workspace-lifecycle)
 4. [Module Responsibilities](#module-responsibilities)
 5. [Key Design Decisions](#key-design-decisions)
-6. [Dual-Backend Architecture](#dual-backend-architecture)
+6. [CLI Architecture](#cli-architecture)
+7. [Dual-Backend Architecture](#dual-backend-architecture)
 
 ---
 
@@ -323,7 +324,107 @@ References edges are resolved at index time: when the target class is found in t
 
 ---
 
-## CozoDB Backend Architecture
+## CLI Architecture
+
+### Overview
+
+Feature 042-F (CLI Parity, Shipment 026-S) added direct CLI subcommands for all 18 MCP tools. Operators and scripts can call any tool without an active MCP session by running `engram <subcommand>`.
+
+### Why CLI Parity Exists
+
+Three primary use cases:
+
+1. **Startup preloading** — `start.ps1` (or shell equivalent) runs `engram sync` or `engram index` before launching Copilot, pre-populating the CozoDB code graph so the first MCP tool call does not time out.
+2. **Agent fallback** — when the MCP transport is unavailable (timeout, daemon restart, network issues), agents can invoke `engram <subcommand>` as a subprocess to directly call tools.
+3. **Scripting** — all CLI subcommands output JSON-RPC 2.0 envelopes by default (exit code 0 = success, 1 = tool error, 2 = invocation failure), making them composable in PowerShell and Bash pipelines.
+
+### Architecture: CLI → IPC → Daemon
+
+```text
+                 ┌──────────────────────────────────────────┐
+                 │      engram <subcommand> [args] [flags]   │
+                 │                                           │
+                 │  src/bin/engram.rs — Command enum match   │
+                 │     GlobalFlags: --workspace, --id,       │
+                 │                  --json, --format, --quiet│
+                 └────────────────┬─────────────────────────┘
+                                  │ src/cli/runner.rs
+                                  │ run_tool(method, params, ...)
+                                  │
+                  1. resolve_workspace()   (flag → env → cwd)
+                  2. ensure_daemon_running()  (auto-spawn if needed)
+                  3. ipc_endpoint(workspace)  (socket path)
+                  4. ipc_client::send_request(endpoint, IpcRequest, 30s)
+                                  │
+                                  ▼
+                 ┌──────────────────────────────────────────┐
+                 │         Daemon IPC Server                 │
+                 │  (named pipe on Windows, Unix socket      │
+                 │   on Linux/macOS)                         │
+                 │                                           │
+                 │  IpcRequest → tool dispatch → IpcResponse │
+                 └──────────────────────────────────────────┘
+                                  │
+                 ┌────────────────▼─────────────────────────┐
+                 │     OutputFormatter (src/cli/output.rs)   │
+                 │                                           │
+                 │  result → JSON-RPC 2.0 envelope  exit 0  │
+                 │  error  → JSON-RPC 2.0 envelope  exit 1  │
+                 │  failure → stderr message         exit 2  │
+                 └──────────────────────────────────────────┘
+```
+
+**Exception:** `engram manifest` reads the compile-time tool catalog directly. It does not start or connect to the daemon and always succeeds without network I/O.
+
+### Output Modes
+
+| Condition | Mode | Exit Code |
+|---|---|---|
+| `--json` flag | JSON-RPC 2.0 envelope | 0 / 1 / 2 |
+| `--format=json` | JSON-RPC 2.0 envelope | 0 / 1 / 2 |
+| `--format=text` | Human-readable key: value | 0 / 1 / 2 |
+| stdout is a TTY | Human-readable text | 0 / 1 / 2 |
+| stdout is a pipe / file | JSON-RPC 2.0 envelope | 0 / 1 / 2 |
+
+### Subcommand → MCP Tool Mapping
+
+| CLI Subcommand | MCP Method | Daemon Required |
+|---|---|---|
+| `engram bind [path]` | `set_workspace` | Yes |
+| `engram daemon-status` | `get_daemon_status` | Yes |
+| `engram workspace-status` | `get_workspace_status` | Yes |
+| `engram flush` | `flush_state` | Yes |
+| `engram sync` | `sync_workspace` | Yes |
+| `engram sync --full` | `index_workspace` | Yes |
+| `engram index` | `index_workspace` | Yes |
+| `engram manifest` | *(compile-time catalog)* | **No** |
+| `engram search <query>` | `unified_search` | Yes |
+| `engram query-memory <query>` | `query_memory` | Yes |
+| `engram symbols` | `list_symbols` | Yes |
+| `engram map-code <sym>` | `map_code` | Yes |
+| `engram impact <sym>` | `impact_analysis` | Yes |
+| `engram query-graph <ql>` | `query_graph` | Yes |
+| `engram stats` | `get_workspace_statistics` | Yes |
+| `engram health` | `get_health_report` | Yes |
+| `engram branch-metrics` | `get_branch_metrics` | Yes |
+| `engram report token-savings` | `get_token_savings_report` | Yes |
+| `engram report eval` | `get_evaluation_report` | Yes |
+| `engram report retry-metrics` | `get_mutable_script_retry_metrics` | Yes |
+
+### Key Modules
+
+| Module | Path | Responsibility |
+|---|---|---|
+| CLI root | `src/cli/mod.rs` | Module declarations |
+| Global flags | `src/cli/flags.rs` | `GlobalFlags` clap struct; workspace resolution |
+| Output | `src/cli/output.rs` | `OutputFormatter`; TTY detection; exit codes |
+| IPC runner | `src/cli/runner.rs` | `run_tool()`: daemon check → IPC dispatch → format output |
+| Lifecycle cmds | `src/cli/commands/lifecycle.rs` | bind, daemon-status, workspace-status, flush |
+| Indexing cmds | `src/cli/commands/indexing.rs` | sync, index |
+| Manifest cmd | `src/cli/commands/manifest.rs` | manifest (daemon-free) |
+| Search cmds | `src/cli/commands/search.rs` | search, query-memory, symbols, map-code, impact, query-graph |
+| Report cmds | `src/cli/commands/report.rs` | stats, health, branch-metrics, report token-savings/eval/retry-metrics |
+
 
 Phase 7 of the CozoDB migration (Shipment 017-S, 2026-05-01) completed the removal of the
 legacy SurrealDB backend. `CozoDB` is now the sole embedded database backend.
