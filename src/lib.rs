@@ -33,6 +33,7 @@
 
 /// Crate-level constants and shared library entrypoints for the Engram daemon.
 pub const APP_NAME: &str = "engram";
+pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod db;

@@ -116,6 +116,56 @@ list_symbols(path: ".github/skills/new-skill/SKILL.md")
 → still empty → use view tool directly; do not cite engram for this file
 ```
 
+## Agent Fallback Protocol
+
+When the MCP transport is unavailable (timeout, daemon restart in progress, transport-level error),
+agents can invoke `engram` CLI subcommands directly as a subprocess to call MCP tools.
+
+### When to use CLI fallback
+
+Use CLI fallback when **all** of the following are true:
+
+* An MCP tool call failed with a transport-level error (not a tool-level error).
+* The tool is critical to completing the current step and cannot be deferred.
+* `engram` binary is available in `PATH` (verify with `engram --help` or `engram manifest`).
+
+Do **not** use CLI fallback when:
+* The failure is a tool-level error (the daemon is running, the call reached the tool, and the tool returned an error). Retry or handle the error at the tool level instead.
+* The step can be safely deferred until MCP is restored.
+
+### CLI fallback invocation pattern
+
+```bash
+# Incremental sync — preload before launching Copilot
+engram sync --json
+
+# Full re-index — use when incremental sync is insufficient
+engram sync --full --json
+
+# Check daemon status without requiring workspace binding
+engram daemon-status --json
+
+# Symbolic lookup when unified_search is unavailable
+engram symbols --file src/lib.rs --json
+```
+
+All subcommands emit JSON-RPC 2.0 envelopes on stdout in non-TTY contexts (piped or
+scripted); in a terminal they default to human-readable text. Use `--json` to force JSON
+output regardless of TTY state (exit 0 = success, 1 = tool error, 2 = invocation failure).
+
+### Startup preloading pattern (start.ps1 / shell scripts)
+
+```powershell
+# Pre-populate the code graph before launching Copilot
+engram sync --workspace $WorkspaceRoot --json | Out-Null
+# OR for a full re-index on first boot:
+engram index --workspace $WorkspaceRoot --json | Out-Null
+```
+
+### Available CLI subcommands
+
+See `docs/architecture.md` § [CLI Architecture](#cli-architecture) for the full subcommand → MCP tool mapping table.
+
 ## Data Ownership Rule
 
 Treat `.engram/` artifacts as tool-managed state. Do not hand-edit generated registry, code-graph,
