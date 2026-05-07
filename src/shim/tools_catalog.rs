@@ -92,6 +92,10 @@ pub fn all_tools() -> Vec<Tool> {
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of results to return (default 10)"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "Filter by content type (e.g. spec, docs, tests, backlog)"
                     }
                 },
                 "required": ["query"]
@@ -140,8 +144,12 @@ pub fn all_tools() -> Vec<Tool> {
                     },
                     "depth": {
                         "type": "integer",
-                        "description": "Maximum traversal depth (default 2)",
-                        "default": 2
+                        "description": "Maximum traversal depth (default 1)",
+                        "default": 1
+                    },
+                    "max_nodes": {
+                        "type": "integer",
+                        "description": "Maximum number of graph nodes to return (default 50)"
                     }
                 },
                 "required": ["symbol_name"]
@@ -157,17 +165,21 @@ pub fn all_tools() -> Vec<Tool> {
                         "type": "string",
                         "description": "Filter to symbols defined in this file path"
                     },
-                    "symbol_type": {
+                    "node_type": {
                         "type": "string",
                         "description": "Filter by symbol kind (function, struct, enum, trait, impl, ...)"
                     },
-                    "name_contains": {
+                    "name_prefix": {
                         "type": "string",
-                        "description": "Filter to symbols whose name contains this substring"
+                        "description": "Filter to symbols whose name starts with this prefix"
                     },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of symbols to return (default 50)"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Pagination offset (default 0)"
                     }
                 }
             })),
@@ -183,17 +195,22 @@ pub fn all_tools() -> Vec<Tool> {
                         "type": "string",
                         "description": "Natural language search query"
                     },
-                    "regions": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": ["tasks", "context", "code"]
-                        },
-                        "description": "Limit search to specific regions (default: all)"
+                    "region": {
+                        "type": "string",
+                        "enum": ["all", "tasks", "context", "code"],
+                        "description": "Limit search to a specific region (default: all)"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum total results to return (default 20)"
+                        "description": "Maximum total results to return (default 10)"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "Filter context results by content type (e.g. spec, docs, tests)"
+                    },
+                    "scope_to_symbol": {
+                        "type": "string",
+                        "description": "Restrict code symbol results to the graph neighbourhood of this symbol"
                     }
                 },
                 "required": ["query"]
@@ -211,8 +228,16 @@ pub fn all_tools() -> Vec<Tool> {
                     },
                     "depth": {
                         "type": "integer",
-                        "description": "How many hops in the call graph to explore (default 2)",
-                        "default": 2
+                        "description": "How many hops in the call graph to explore (default 1)",
+                        "default": 1
+                    },
+                    "max_nodes": {
+                        "type": "integer",
+                        "description": "Maximum number of graph nodes to return (default 50)"
+                    },
+                    "concept": {
+                        "type": "string",
+                        "description": "Optional semantic concept to narrow the analysis"
                     }
                 },
                 "required": ["symbol_name"]
@@ -263,13 +288,13 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Sandboxed Query ────────────────────────────────────────────────
         Tool::new(
             "query_graph",
-            "Execute a read-only SurrealQL SELECT query against the workspace graph database. Write operations (INSERT, UPDATE, DELETE, etc.) are rejected. Results are capped at the configured row limit.",
+            "Execute a read-only Datalog (CozoScript) query against the workspace graph database. Write operations (INSERT, UPDATE, DELETE, etc.) are rejected. Results are capped at the configured row limit. Note: not yet implemented — always returns an error.",
             schema(json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "A SurrealQL SELECT statement to execute against the workspace database"
+                        "description": "A Datalog (CozoScript) query to execute against the workspace graph database"
                     },
                     "params": {
                         "description": "Reserved for future parameterised query support"
