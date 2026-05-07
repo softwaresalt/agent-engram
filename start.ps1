@@ -44,7 +44,7 @@ if ($backlogitCmd) {
     }
 }
 
-& $copilotExe @args
+& $copilotExe --remote
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
