@@ -173,13 +173,13 @@ enum Command {
         concept: Option<String>,
     },
 
-    /// Execute a read-only `SurrealQL` SELECT against the workspace graph (`query_graph`).
+    /// Execute a read-only Datalog query against the workspace graph (`query_graph`).
     ///
     /// **Note**: this subcommand is not yet implemented. It always returns an error.
     /// Included here to complete the CLI surface for future activation.
     #[command(name = "query-graph")]
     QueryGraph {
-        /// `SurrealQL` SELECT statement.
+        /// Datalog query string (CozoScript).
         query: String,
     },
 
