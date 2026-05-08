@@ -62,8 +62,15 @@ pub struct WatcherConfig {
 /// detection and live event filtering stay in sync.
 ///
 /// Paths are workspace-relative and forward-slash separated.
-pub const DEFAULT_EXCLUDE_PREFIXES: &[&str] =
-    &[".engram/", ".git/", "node_modules/", "target/", ".env"];
+pub const DEFAULT_EXCLUDE_PREFIXES: &[&str] = &[
+    ".copilot-tracking/",
+    ".copilot/",
+    ".engram/",
+    ".env",
+    ".git/",
+    "node_modules/",
+    "target/",
+];
 
 impl Default for WatcherConfig {
     fn default() -> Self {

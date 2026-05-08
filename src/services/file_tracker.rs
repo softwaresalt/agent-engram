@@ -24,6 +24,12 @@ use crate::daemon::watcher::DEFAULT_EXCLUDE_PREFIXES;
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, IngestionError, SystemError};
 
+/// Files larger than this threshold are skipped during offline change detection
+/// to prevent the daemon from reading gigabyte-scale log or binary files into
+/// memory.  These files are not source code and do not benefit from hash-based
+/// change tracking.
+const MAX_HASH_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// The kind of change detected for a workspace file.
@@ -202,6 +208,18 @@ fn compare_disk_to_stored(
                 continue;
             }
         };
+
+        // Skip files above the hash threshold: reading multi-GB log or binary
+        // files into memory would stall the daemon for minutes on cold start.
+        if current_size > MAX_HASH_FILE_BYTES {
+            debug!(
+                path = %rel,
+                size_bytes = current_size,
+                "file_tracker: skipping large file (above hash threshold)"
+            );
+            stored_map.remove(&rel);
+            continue;
+        }
 
         match stored_map.remove(&rel) {
             None => {

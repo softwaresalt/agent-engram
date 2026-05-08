@@ -284,6 +284,8 @@ fn default_watch_patterns() -> Vec<String> {
 
 fn default_exclude_patterns() -> Vec<String> {
     vec![
+        ".copilot-tracking/".to_owned(),
+        ".copilot/".to_owned(),
         ".engram/".to_owned(),
         ".git/".to_owned(),
         "node_modules/".to_owned(),

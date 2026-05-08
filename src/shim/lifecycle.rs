@@ -284,11 +284,20 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
     );
 
     // Spawn detached: all stdio handles closed, no process group membership.
+    // Clear ENGRAM_DATA_DIR so the daemon computes its own data directory from
+    // the workspace path rather than inheriting a developer-level override that
+    // may point to a different workspace's data (e.g. the engram project itself
+    // when ENGRAM_DATA_DIR is set in the shell).  Passing an absolute data-dir
+    // override through the shim causes every spawned daemon — regardless of
+    // workspace — to share the same CozoDB, which is incorrect.  Users who need
+    // a non-default data location should configure it via the daemon's own
+    // environment (service manager unit, wrapper script, etc.).
     tokio::process::Command::new(&current_exe)
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .env_remove("ENGRAM_DATA_DIR")
         .spawn()
         .map_err(|e| {
             EngramError::Daemon(DaemonError::SpawnFailed {

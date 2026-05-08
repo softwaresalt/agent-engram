@@ -179,7 +179,7 @@ enum Command {
     /// Included here to complete the CLI surface for future activation.
     #[command(name = "query-graph")]
     QueryGraph {
-        /// Datalog query string (CozoScript).
+        /// Datalog query string (`CozoScript`).
         query: String,
     },
 

@@ -103,8 +103,6 @@ impl DaemonHarness {
     /// - The IPC endpoint does not become ready within `timeout` or 30
     ///   attempts.
     pub async fn spawn(timeout: Duration) -> Result<Self, Box<dyn std::error::Error>> {
-        const MAX_ATTEMPTS: u32 = 30;
-
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
 
@@ -121,6 +119,13 @@ impl DaemonHarness {
 
         let child = Command::new(env!("CARGO_BIN_EXE_engram"))
             .args(["daemon", "--workspace", workspace_str])
+            // Unset ENGRAM_DATA_DIR so the daemon uses the workspace-specific
+            // data directory ({workspace}/.engram) rather than the developer's
+            // production data directory.  Without this, every test daemon opens
+            // the full production CozoDB (thousands of indexed files) and
+            // hydrates the entire code graph, which takes minutes in debug mode
+            // and causes the ready-timeout to fire (U016-HARNESS-2).
+            .env_remove("ENGRAM_DATA_DIR")
             .spawn()?;
 
         let deadline = std::time::Instant::now() + timeout;
@@ -137,7 +142,10 @@ impl DaemonHarness {
             }
 
             attempt += 1;
-            if attempt >= MAX_ATTEMPTS || std::time::Instant::now() >= deadline {
+            // Use only the wall-clock deadline, not an attempt count.
+            // MAX_ATTEMPTS = 30 with 500 ms cap only allows ~12.6 s, far less than
+            // the intended 30 s timeout on slow CI runners (U016-HARNESS-1).
+            if std::time::Instant::now() >= deadline {
                 let mut child = child;
                 let _ = child.kill();
                 let _ = child.wait();
@@ -190,8 +198,6 @@ impl DaemonHarness {
         workspace: &Path,
         ready_timeout: Duration,
     ) -> Result<HarnessWithoutOwnership, Box<dyn std::error::Error>> {
-        const MAX_ATTEMPTS: u32 = 30;
-
         let workspace_path = workspace.canonicalize()?;
         let ipc_path = ipc_path_for_workspace(&workspace_path);
 
@@ -201,6 +207,7 @@ impl DaemonHarness {
 
         let child = Command::new(env!("CARGO_BIN_EXE_engram"))
             .args(["daemon", "--workspace", workspace_str])
+            .env_remove("ENGRAM_DATA_DIR")
             .spawn()?;
 
         let deadline = std::time::Instant::now() + ready_timeout;
@@ -213,7 +220,7 @@ impl DaemonHarness {
             }
 
             attempt += 1;
-            if attempt >= MAX_ATTEMPTS || std::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 let mut child = child;
                 let _ = child.kill();
                 let _ = child.wait();
@@ -241,8 +248,6 @@ impl DaemonHarness {
         timeout_ms: u64,
         ready_timeout: Duration,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        const MAX_ATTEMPTS: u32 = 30;
-
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
 
@@ -258,6 +263,7 @@ impl DaemonHarness {
         let child = Command::new(env!("CARGO_BIN_EXE_engram"))
             .args(["daemon", "--workspace", workspace_str])
             .env("ENGRAM_IDLE_TIMEOUT_MS", timeout_ms.to_string())
+            .env_remove("ENGRAM_DATA_DIR")
             .spawn()?;
 
         let deadline = std::time::Instant::now() + ready_timeout;
@@ -274,7 +280,7 @@ impl DaemonHarness {
             }
 
             attempt += 1;
-            if attempt >= MAX_ATTEMPTS || std::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= deadline {
                 let mut child = child;
                 let _ = child.kill();
                 let _ = child.wait();
