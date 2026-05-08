@@ -12,7 +12,7 @@ status: decided
 
 All engram CLI subcommands route through the daemon via IPC (`run_tool()` in `src/cli/runner.rs` → `send_request()` → daemon handler). For indexing commands (`sync`, `index`), this forces a persistent daemon process, conflicts with ongoing `background_db_hydration`, and creates 30s IPC timeout failures on large workspaces.
 
-The chosen solution (deliberation Option D) adds a `--direct` flag to `sync` and `index` that bypasses the daemon entirely, calling the service-layer functions directly. `DaemonLock` provides mutual exclusion — CLI-direct and daemon cannot operate on the same workspace simultaneously. An index freshness marker ensures the daemon skips re-indexing when it starts after a `--direct` run.
+The chosen solution (deliberation Option D) adds a `--direct` flag to `sync` and `index` that bypasses the daemon entirely, calling the service-layer functions directly. `DaemonLock` provides mutual exclusion — CLI-direct and daemon cannot operate on the same workspace simultaneously. Freshness is derived from file-hash tracking: `sync_workspace()` records per-file hashes (matching what `index_workspace()` already does), so the daemon's `detect_offline_changes()` returns 0 changes after a `--direct` run and skips re-indexing.
 
 ## Requirements Trace
 
@@ -58,20 +58,35 @@ pub async fn run_direct_sync(
         Err(e) => return formatter.cli_error(&format!("lock error: {e}")),
     };
 
-    // 2. Resolve workspace metadata
-    let canonical = canonicalize_workspace(workspace.to_str().unwrap_or_default())
-        .map_err(...);
+    // 2. Resolve workspace metadata (all errors → cli_error exit)
+    let ws_str = match workspace.to_str() {
+        Some(s) => s,
+        None => return formatter.cli_error("workspace path is not valid UTF-8"),
+    };
+    let canonical = match canonicalize_workspace(ws_str) {
+        Ok(p) => p,
+        Err(e) => return formatter.cli_error(&format!("workspace error: {e}")),
+    };
     let data_dir = resolve_data_dir(&canonical);
-    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "main".to_owned());
-    let config = parse_config(&canonical).unwrap_or_default();
+    let branch = resolve_git_branch(&canonical)
+        .unwrap_or_else(|_| "main".to_owned());
+    let config = match parse_config(&canonical) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "config parse failed, using defaults");
+            WorkspaceConfig::default()
+        }
+    };
 
     // 3. Dispatch to service layer
-    if full {
-        let result = index_workspace(&canonical, &data_dir, &branch, &config.code_graph, true).await;
-        formatter.success(None, serde_json::to_value(result).unwrap_or_default())
+    let result = if full {
+        index_workspace(&canonical, &data_dir, &branch, &config.code_graph, true).await
     } else {
-        let result = sync_workspace(&canonical, &data_dir, &branch, &config.code_graph).await;
-        formatter.success(None, serde_json::to_value(result).unwrap_or_default())
+        sync_workspace(&canonical, &data_dir, &branch, &config.code_graph).await
+    };
+    match result {
+        Ok(r) => formatter.success(None, serde_json::json!(r)),
+        Err(e) => formatter.cli_error(&format!("{e}")),
     }
     // 4. DaemonLock dropped here — released automatically
 }
@@ -151,7 +166,7 @@ pub async fn run_sync(
 
 ---
 
-### Unit 3: Index Freshness Detection (045.004-T)
+### Unit 3: Integration Tests (045.003-T)
 
 **What**: Ensure the daemon skips re-indexing when the DB is already current after a `--direct` run.
 
@@ -183,7 +198,13 @@ In `hydrate_code_graph()` (`src/services/hydration.rs`), before loading JSONL fi
 // If the DB already has code files, skip JSONL re-loading.
 // The JSONL files are dehydration artifacts for persistence; the DB
 // is the source of truth once populated.
-let existing_count = cg_queries.count_code_files().await.unwrap_or(0);
+let existing_count = match cg_queries.count_code_files().await {
+    Ok(n) => n,
+    Err(e) => {
+        warn!(error = %e, "count_code_files failed, falling back to JSONL reload");
+        0
+    }
+};
 if existing_count > 0 {
     info!(existing = existing_count, "code graph already populated, skipping JSONL reload");
     return Ok(CodeGraphHydrationResult::default());
@@ -207,7 +228,7 @@ The daemon already skips re-indexing when `offline_count == 0` (line 325 in `lif
 
 ---
 
-### Unit 4: Integration Tests (045.003-T)
+### Unit 4: Index Freshness Detection (045.004-T)
 
 **What**: End-to-end tests verifying CLI-direct mode and daemon freshness detection.
 
@@ -298,7 +319,7 @@ Reviewed by: Constitution Reviewer, Rust Reviewer, Scope Boundary Auditor, Learn
 
 All constitutional principles satisfied:
 
-- **I. Safety-First Rust**: All proposed code returns `Result<T, EngramError>`. No `unwrap()` or `expect()`. `DaemonLock` uses existing error types.
+- **I. Safety-First Rust**: All proposed code returns `Result<T, EngramError>`. Pseudocode uses illustrative fallback patterns (`unwrap_or_else`, `match` with `warn` + fallback); actual implementation must propagate errors via `?` or explicit `match` with logged fallback — never bare `unwrap()` or `expect()`. `DaemonLock` uses existing error types.
 - **II. Test-First Development**: Unit 4 provides integration tests. Execution posture is test-first where appropriate.
 - **III. Workspace Isolation**: `canonicalize_workspace()` already validates paths. Direct mode reuses the same validation.
 - **IV. CLI Containment**: No out-of-workspace operations introduced.
