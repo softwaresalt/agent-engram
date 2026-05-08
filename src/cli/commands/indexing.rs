@@ -22,7 +22,7 @@ pub async fn run_sync(
             Ok(p) => p,
             Err(e) => return formatter.cli_error(&e),
         };
-        return run_direct_sync(&workspace, full, formatter).await;
+        return run_direct_sync(&workspace, full, flags.id_value(), formatter).await;
     }
     if full {
         run_tool("index_workspace", None, flags, formatter).await
@@ -38,7 +38,7 @@ pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputForm
             Ok(p) => p,
             Err(e) => return formatter.cli_error(&e),
         };
-        return run_direct_sync(&workspace, true, formatter).await;
+        return run_direct_sync(&workspace, true, flags.id_value(), formatter).await;
     }
     run_tool("index_workspace", None, flags, formatter).await
 }

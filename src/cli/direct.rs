@@ -27,14 +27,31 @@ use crate::services::config::parse_config;
 /// 4. Calls [`sync_workspace`] (incremental) or [`index_workspace`] (full).
 /// 5. Prints a JSON-RPC 2.0 success envelope and returns exit code 0.
 ///
+/// The `id` parameter is echoed in the JSON-RPC envelope so scripts can
+/// correlate responses (same behaviour as the IPC path). Pass
+/// [`GlobalFlags::id_value()`] or `None` for no correlation id.
+///
 /// # Returns
 /// - `0` — success
-/// - `1` — tool error (DB or parse failure)
+/// - `1` — tool error (DB, parse failure, or invalid config)
 /// - `2` — invocation failure (bad workspace, lock held by daemon)
-pub async fn run_direct_sync(workspace: &Path, full: bool, formatter: &OutputFormatter) -> i32 {
-    let (ws_path, data_dir, branch, config) = match resolve_workspace_params(workspace, formatter) {
+pub async fn run_direct_sync(
+    workspace: &Path,
+    full: bool,
+    id: Option<serde_json::Value>,
+    formatter: &OutputFormatter,
+) -> i32 {
+    let (ws_path, data_dir, branch) = match resolve_workspace_params(workspace, formatter) {
         Ok(params) => params,
         Err(code) => return code,
+    };
+
+    let config = match parse_config(&ws_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let resp = e.to_response().error;
+            return formatter.tool_error(id, i64::from(resp.code), &resp.message, resp.details);
+        }
     };
 
     let _lock = match DaemonLock::acquire(&ws_path) {
@@ -52,36 +69,37 @@ pub async fn run_direct_sync(workspace: &Path, full: bool, formatter: &OutputFor
 
     if full {
         match index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false).await {
-            Ok(result) => formatter.success(None, index_result_to_json(&result)),
-            Err(e) => formatter.tool_error(None, 1, &e.to_string(), None),
+            Ok(result) => formatter.success(id, index_result_to_json(&result)),
+            Err(e) => {
+                let resp = e.to_response().error;
+                formatter.tool_error(id, i64::from(resp.code), &resp.message, resp.details)
+            }
         }
     } else {
         match sync_workspace(&ws_path, &data_dir, &branch, &config.code_graph).await {
-            Ok(result) => formatter.success(None, sync_result_to_json(&result)),
-            Err(e) => formatter.tool_error(None, 1, &e.to_string(), None),
+            Ok(result) => formatter.success(id, sync_result_to_json(&result)),
+            Err(e) => {
+                let resp = e.to_response().error;
+                formatter.tool_error(id, i64::from(resp.code), &resp.message, resp.details)
+            }
         }
     }
 }
 
-/// Resolve workspace path, data directory, git branch, and config.
+/// Resolve workspace path, data directory, and git branch.
 ///
-/// Returns `Ok((ws_path, data_dir, branch, config))`.
+/// Returns `Ok((ws_path, data_dir, branch))`.
 ///
 /// The `Err(i32)` variant carries the CLI exit code. Errors are formatted
 /// and emitted to stderr via `formatter.cli_error` as a side effect before
 /// the exit code is returned — this is intentional for CLI dispatch.
+/// Config parsing is intentionally excluded here so callers can report
+/// config errors at the appropriate severity (exit 1 tool error vs
+/// exit 2 invocation error).
 fn resolve_workspace_params(
     workspace: &Path,
     formatter: &OutputFormatter,
-) -> Result<
-    (
-        PathBuf,
-        PathBuf,
-        String,
-        crate::models::config::WorkspaceConfig,
-    ),
-    i32,
-> {
+) -> Result<(PathBuf, PathBuf, String), i32> {
     let ws_str = workspace
         .to_str()
         .ok_or_else(|| formatter.cli_error("workspace path contains invalid UTF-8"))?;
@@ -96,15 +114,7 @@ fn resolve_workspace_params(
 
     let data_dir = resolve_data_dir(&ws_path);
 
-    let config = match parse_config(&ws_path) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            warn!(error = %e, "failed to parse config, using defaults");
-            crate::models::config::WorkspaceConfig::default()
-        }
-    };
-
-    Ok((ws_path, data_dir, branch, config))
+    Ok((ws_path, data_dir, branch))
 }
 
 /// Convert [`IndexResult`] into a [`Value`] for the JSON-RPC 2.0 result field.
