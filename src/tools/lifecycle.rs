@@ -62,7 +62,7 @@ pub struct WorkspaceStatus {
     pub path: String,
     /// Active git branch name (used as the DB storage subdirectory).
     pub branch: String,
-    /// Absolute path to the SurrealDB storage directory for this workspace and branch.
+    /// Absolute path to the CozoDB SQLite database file for this workspace and branch.
     pub db_path: String,
     pub last_flush: Option<String>,
     pub stale_files: bool,
@@ -200,7 +200,7 @@ pub async fn set_workspace(
 
 /// Background DB hydration task spawned by [`set_workspace`].
 ///
-/// Connects to SurrealDB, hydrates the code graph from JSONL files, and runs
+/// Connects to CozoDB, hydrates the code graph from JSONL files, and runs
 /// offline-change detection — all off the bind-latency hot path. Updates
 /// [`AppState::scan_progress`] when complete (029-F WS-6).
 ///
@@ -214,6 +214,21 @@ async fn background_db_hydration(
     branch: String,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) {
+    // Acquire the indexing lock immediately so the startup auto-sync task
+    // (spawned after set_workspace returns) cannot grab it and open a competing
+    // DB connection while we are still doing schema bootstrap.  Concurrent
+    // writers on the same CozoDB/SQLite file cause SQLITE_BUSY retries in
+    // run_schema_bootstrap (up to 500ms × 20 attempts × 23 scripts ≈ minutes)
+    // which prevents set_hydration_ready() from being called within the shim's
+    // poll_until_ready timeout.  Holding the lock here forces the auto-sync
+    // task to see try_start_indexing() == false and exit immediately; the lock
+    // is released after we call finish_indexing() at the end of this function.
+    //
+    // `acquired_lock` tracks whether THIS task holds the flag so that only the
+    // holder calls finish_indexing() — releasing another task's lock would break
+    // the concurrency guard.
+    let acquired_lock = state.try_start_indexing();
+
     macro_rules! check_cancel {
         () => {
             if *cancel_rx.borrow_and_update() {
@@ -227,6 +242,10 @@ async fn background_db_hydration(
                     }))
                     .await;
                 state.set_hydration_ready();
+                // Only release the lock if this task acquired it.
+                if acquired_lock {
+                    state.finish_indexing().await;
+                }
                 return;
             }
         };
@@ -245,6 +264,9 @@ async fn background_db_hydration(
                 }))
                 .await;
             state.set_hydration_ready();
+            if acquired_lock {
+                state.finish_indexing().await;
+            }
             return;
         }
     };
@@ -286,9 +308,21 @@ async fn background_db_hydration(
         }))
         .await;
 
+    // Signal "ready" before the offline catch-up re-index so the shim's
+    // poll_until_ready succeeds promptly on cold start.  On a large workspace
+    // the re-index below can take minutes; keeping the daemon in "starting"
+    // for that entire duration causes the shim to time out and report
+    // "Daemon failed to reach Ready state" to the user even though the daemon
+    // is healthy.  Tool handlers already guard against concurrent indexing, so
+    // requests issued while the re-index runs receive a clear "indexing in
+    // progress" response rather than silently failing.
+    state.set_hydration_ready();
+
     // Trigger a code-graph re-index when offline changes were found.
-    // Guarded by the try_start_indexing flag so concurrent indexing is prevented.
-    if offline_count > 0 && state.try_start_indexing() {
+    // The indexing lock was already acquired at function entry, so skip
+    // the try_start_indexing() guard here — it would return false because
+    // we already hold it.
+    if offline_count > 0 {
         check_cancel!();
         if let (Some(snapshot), Some(ws_config)) = (
             state.snapshot_workspace().await,
@@ -314,10 +348,11 @@ async fn background_db_hydration(
                 ),
             }
         }
+    }
+    // Release the indexing lock only if this task acquired it.
+    if acquired_lock {
         state.finish_indexing().await;
     }
-
-    state.set_hydration_ready();
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
@@ -373,7 +408,9 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
                 .await;
         }
 
-        // Gather code graph stats from the database
+        // Gather code graph stats from the database (only when git-graph feature is active).
+        // Without git-graph, the code-graph indexer is inactive so the counts must stay zero.
+        #[cfg(feature = "git-graph")]
         let code_graph = if let Ok(db) = connect_db(&snapshot.data_dir, &snapshot.branch).await {
             let cg_queries = CodeGraphQueries::new(db);
             let code_files = cg_queries.count_code_files().await.unwrap_or(0);
@@ -391,11 +428,15 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         } else {
             CodeGraphStats::default()
         };
+        #[cfg(not(feature = "git-graph"))]
+        let code_graph = CodeGraphStats::default();
 
+        let branch_safe = snapshot.branch.replace(['/', '\\', ':'], "_");
         let db_path = snapshot
             .data_dir
-            .join("db")
-            .join(&snapshot.branch)
+            .join("cozo")
+            .join(&branch_safe)
+            .join("engram.db")
             .display()
             .to_string();
 

@@ -150,7 +150,7 @@ enum Command {
     MapCode {
         /// Name of the symbol to map.
         symbol: String,
-        /// Maximum traversal depth (default 2).
+        /// Maximum traversal depth (default 1).
         #[arg(long)]
         depth: Option<u32>,
         /// Maximum number of graph nodes.
@@ -162,7 +162,7 @@ enum Command {
     Impact {
         /// Name of the changed symbol.
         symbol: String,
-        /// Call-graph traversal depth (default 2).
+        /// Call-graph traversal depth (default 1).
         #[arg(long)]
         depth: Option<u32>,
         /// Maximum number of graph nodes.
@@ -173,13 +173,13 @@ enum Command {
         concept: Option<String>,
     },
 
-    /// Execute a read-only `SurrealQL` SELECT against the workspace graph (`query_graph`).
+    /// Execute a read-only Datalog query against the workspace graph (`query_graph`).
     ///
     /// **Note**: this subcommand is not yet implemented. It always returns an error.
     /// Included here to complete the CLI surface for future activation.
     #[command(name = "query-graph")]
     QueryGraph {
-        /// `SurrealQL` SELECT statement.
+        /// Datalog query string (`CozoScript`).
         query: String,
     },
 

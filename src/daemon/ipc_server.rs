@@ -439,7 +439,7 @@ pub async fn run_with_shutdown(
     //
     // Running set_workspace asynchronously unblocks the accept loop so health
     // probes from the shim are answered immediately (with "starting") rather
-    // than timing out waiting for SurrealDB init + file hydration.
+    // than timing out waiting for CozoDB init + file hydration.
     //
     // On success: reset the TTL idle deadline and spawn the TTL expiry task
     //   (T049/S046, T045) so the idle window begins from "daemon ready".
@@ -859,57 +859,18 @@ pub async fn run_with_shutdown_v2(
         }
     }
 
-    // ── Start file watcher AFTER IPC bind, using spawn_blocking ──────────────
-    //
-    // `new_debouncer` + `debouncer.watch(…, RecursiveMode::Recursive)` are
-    // synchronous and block until the OS has registered watch handles for every
-    // sub-directory.  On a large workspace this can exceed the shim's health-
-    // probe timeout.  Using `spawn_blocking` offloads the blocking work to the
-    // thread pool so the tokio executor and the already-bound IPC listener remain
-    // responsive.  A 5-second timeout lets the daemon continue in degraded mode
-    // (no file-change tracking) if the workspace is unusually large.
-    //
-    // The mpsc channel is created inside the blocking task so that `event_tx` is
-    // dropped together with the closure on the timeout/error path.  This prevents
-    // the file-change receive loop from waiting indefinitely when the watcher init
-    // times out and the blocking thread outlives the timeout window.
-    let workspace_for_watcher = workspace_path.clone();
-    let watcher_init_handle = tokio::task::spawn_blocking(move || {
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
-        // start_watcher logs its own error/warning details; we only need to
-        // surface the result here.
-        let handle =
-            start_watcher(&workspace_for_watcher, watcher_config, event_tx).unwrap_or(None);
-        handle.map(|h| (h, event_rx))
-    });
-    // `_watcher_handle` stays in the outer function scope so the watcher remains
-    // active for the full lifetime of `run_with_shutdown_v2` and is dropped when
-    // the daemon exits, which closes `event_tx` and lets the receive loop end.
-    let (_watcher_handle, maybe_event_rx) =
-        match tokio::time::timeout(Duration::from_secs(5), watcher_init_handle).await {
-            Ok(Ok(Some((handle, rx)))) => (Some(handle), Some(rx)),
-            Ok(Ok(None)) => (None, None),
-            Ok(Err(join_err)) => {
-                error!(
-                    error = %join_err,
-                    "watcher spawn_blocking panicked; daemon continues degraded"
-                );
-                (None, None)
-            }
-            Err(_timeout) => {
-                warn!(
-                    "file watcher initialisation exceeded 5 s deadline; \
-                     daemon continues without file-change tracking"
-                );
-                (None, None)
-            }
-        };
-
     // ── Hydrate workspace in a background task ────────────────────────────────
     //
-    // Running set_workspace asynchronously unblocks the accept loop so health
-    // probes from the shim are answered immediately (with "starting") rather
-    // than timing out waiting for SurrealDB init + file hydration.
+    // Spawned before awaiting the file-watcher init timeout so that
+    // set_workspace runs concurrently with watcher registration.  On large
+    // workspaces the watcher can take up to 5 s; without this reordering the
+    // daemon would stay in "starting" for that entire 5 s window, causing the
+    // shim's poll_until_ready to time out and report "Daemon failed to reach
+    // Ready state" even though startup would have succeeded.
+    //
+    // Running set_workspace asynchronously also keeps the accept loop responsive
+    // so health probes from the shim are answered immediately (with "starting")
+    // rather than timing out waiting for CozoDB init + file hydration.
     {
         let state_init = Arc::clone(&state);
         let workspace_str = workspace.to_owned();
@@ -1064,6 +1025,55 @@ pub async fn run_with_shutdown_v2(
             }
         });
     }
+
+    // ── Start file watcher AFTER IPC bind, using spawn_blocking ──────────────
+    //
+    // `new_debouncer` + `debouncer.watch(…, RecursiveMode::Recursive)` are
+    // synchronous and block until the OS has registered watch handles for every
+    // sub-directory.  On a large workspace this can exceed the shim's health-
+    // probe timeout.  Using `spawn_blocking` offloads the blocking work to the
+    // thread pool so the tokio executor and the already-bound IPC listener remain
+    // responsive.  A 5-second timeout lets the daemon continue in degraded mode
+    // (no file-change tracking) if the workspace is unusually large.
+    //
+    // The mpsc channel is created inside the blocking task so that `event_tx` is
+    // dropped together with the closure on the timeout/error path.  This prevents
+    // the file-change receive loop from waiting indefinitely when the watcher init
+    // times out and the blocking thread outlives the timeout window.
+    //
+    // This block is intentionally placed AFTER the set_workspace tokio::spawn above
+    // so that workspace hydration begins concurrently with watcher registration.
+    let workspace_for_watcher = workspace_path.clone();
+    let watcher_init_handle = tokio::task::spawn_blocking(move || {
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
+        // start_watcher logs its own error/warning details; we only need to
+        // surface the result here.
+        let handle =
+            start_watcher(&workspace_for_watcher, watcher_config, event_tx).unwrap_or(None);
+        handle.map(|h| (h, event_rx))
+    });
+    // `_watcher_handle` stays in the outer function scope so the watcher remains
+    // active for the full lifetime of `run_with_shutdown_v2` and is dropped when
+    // the daemon exits, which closes `event_tx` and lets the receive loop end.
+    let (_watcher_handle, maybe_event_rx) =
+        match tokio::time::timeout(Duration::from_secs(5), watcher_init_handle).await {
+            Ok(Ok(Some((handle, rx)))) => (Some(handle), Some(rx)),
+            Ok(Ok(None)) => (None, None),
+            Ok(Err(join_err)) => {
+                error!(
+                    error = %join_err,
+                    "watcher spawn_blocking panicked; daemon continues degraded"
+                );
+                (None, None)
+            }
+            Err(_timeout) => {
+                warn!(
+                    "file watcher initialisation exceeded 5 s deadline; \
+                     daemon continues without file-change tracking"
+                );
+                (None, None)
+            }
+        };
 
     // ── File-change auto-sync loop ────────────────────────────────────────────
     // Only spawned when watcher init succeeded; skipped on degraded-mode paths

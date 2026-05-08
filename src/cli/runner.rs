@@ -53,7 +53,10 @@ pub async fn run_tool(
         Err(e) => return formatter.cli_error(&format!("cannot compute IPC endpoint: {e}")),
     };
 
-    let id = flags.id_value().unwrap_or(Value::Null);
+    // Default to `1` when the caller does not supply an explicit request ID.
+    // JSON-RPC 2.0 requires a non-null id for requests that expect a response;
+    // `null` is rejected by the daemon validator.
+    let id = flags.id_value().unwrap_or_else(|| Value::from(1_u64));
 
     let request = IpcRequest {
         jsonrpc: "2.0".to_owned(),

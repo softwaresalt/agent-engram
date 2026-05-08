@@ -1,11 +1,11 @@
 //! Sandboxed query sanitizer for MCP graph queries.
 //!
-//! Validates that a SurrealQL query string does not contain write operations.
+//! Validates that a Datalog (CozoScript) query string does not contain write operations.
 //! Used by the `query_graph` tool to enforce read-only query access.
 
 // ── Sandboxed query sanitizer ─────────────────────────────────────────────────
 
-/// Validates that a SurrealQL query string does not contain write operations.
+/// Validates that a Datalog (CozoScript) query string does not contain write operations.
 ///
 /// Strips quoted string literals first, then checks for write keywords on word
 /// boundaries. Returns `Ok(())` if the query is safe for read-only execution.
