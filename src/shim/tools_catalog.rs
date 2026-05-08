@@ -149,7 +149,8 @@ pub fn all_tools() -> Vec<Tool> {
                     },
                     "max_nodes": {
                         "type": "integer",
-                        "description": "Maximum number of graph nodes to return (default 50)"
+                        "description": "Maximum number of graph nodes to return (default 50)",
+                        "default": 50
                     }
                 },
                 "required": ["symbol_name"]
@@ -197,8 +198,9 @@ pub fn all_tools() -> Vec<Tool> {
                     },
                     "region": {
                         "type": "string",
-                        "enum": ["all", "tasks", "context", "code"],
-                        "description": "Limit search to a specific region (default: all)"
+                        "enum": ["all", "code"],
+                        "default": "all",
+                        "description": "Limit search to a specific region (default: all). 'code' restricts to code symbols only; 'all' searches across all available sources."
                     },
                     "limit": {
                         "type": "integer",
@@ -233,7 +235,8 @@ pub fn all_tools() -> Vec<Tool> {
                     },
                     "max_nodes": {
                         "type": "integer",
-                        "description": "Maximum number of graph nodes to return (default 50)"
+                        "description": "Maximum number of graph nodes to return (default 50)",
+                        "default": 50
                     },
                     "concept": {
                         "type": "string",

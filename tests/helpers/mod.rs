@@ -89,10 +89,9 @@ impl DaemonHarness {
     /// Spawn a daemon for a fresh temporary workspace and wait for IPC ready.
     ///
     /// Polls for the IPC socket/pipe path to appear with exponential backoff
-    /// (starting at 10 ms, doubling each attempt, capped at 500 ms per step,
-    /// for up to 30 attempts). Whichever limit is reached first — attempt cap
-    /// or `timeout` wall-clock — triggers a `kill` of the child and an `Err`
-    /// return.
+    /// (starting at 10 ms, doubling each attempt, capped at 500 ms per step).
+    /// Polling continues until the `timeout` wall-clock deadline is reached,
+    /// at which point the child is killed and an `Err` is returned.
     ///
     /// # Errors
     ///
@@ -100,8 +99,7 @@ impl DaemonHarness {
     /// - The temporary directory cannot be created.
     /// - The workspace path cannot be canonicalized.
     /// - The `engram` binary cannot be spawned (e.g., not on `PATH`).
-    /// - The IPC endpoint does not become ready within `timeout` or 30
-    ///   attempts.
+    /// - The IPC endpoint does not become ready within `timeout`.
     pub async fn spawn(timeout: Duration) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
