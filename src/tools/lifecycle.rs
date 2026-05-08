@@ -214,6 +214,21 @@ async fn background_db_hydration(
     branch: String,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) {
+    // Acquire the indexing lock immediately so the startup auto-sync task
+    // (spawned after set_workspace returns) cannot grab it and open a competing
+    // DB connection while we are still doing schema bootstrap.  Concurrent
+    // writers on the same CozoDB/SQLite file cause SQLITE_BUSY retries in
+    // run_schema_bootstrap (up to 500ms × 20 attempts × 23 scripts ≈ minutes)
+    // which prevents set_hydration_ready() from being called within the shim's
+    // poll_until_ready timeout.  Holding the lock here forces the auto-sync
+    // task to see try_start_indexing() == false and exit immediately; the lock
+    // is released after we call finish_indexing() at the end of this function.
+    //
+    // `acquired_lock` tracks whether THIS task holds the flag so that only the
+    // holder calls finish_indexing() — releasing another task's lock would break
+    // the concurrency guard.
+    let acquired_lock = state.try_start_indexing();
+
     macro_rules! check_cancel {
         () => {
             if *cancel_rx.borrow_and_update() {
@@ -227,23 +242,14 @@ async fn background_db_hydration(
                     }))
                     .await;
                 state.set_hydration_ready();
-                // Release the indexing lock acquired at function entry.
-                state.finish_indexing().await;
+                // Only release the lock if this task acquired it.
+                if acquired_lock {
+                    state.finish_indexing().await;
+                }
                 return;
             }
         };
     }
-
-    // Acquire the indexing lock immediately so the startup auto-sync task
-    // (spawned after set_workspace returns) cannot grab it and open a competing
-    // DB connection while we are still doing schema bootstrap.  Concurrent
-    // writers on the same CozoDB/SQLite file cause SQLITE_BUSY retries in
-    // run_schema_bootstrap (up to 500ms × 20 attempts × 23 scripts ≈ minutes)
-    // which prevents set_hydration_ready() from being called within the shim's
-    // poll_until_ready timeout.  Holding the lock here forces the auto-sync
-    // task to see try_start_indexing() == false and exit immediately; the lock
-    // is released after we call finish_indexing() at the end of this function.
-    let _ = state.try_start_indexing();
 
     let db = match connect_db(&data_dir, &branch).await {
         Ok(db) => db,
@@ -258,7 +264,9 @@ async fn background_db_hydration(
                 }))
                 .await;
             state.set_hydration_ready();
-            state.finish_indexing().await;
+            if acquired_lock {
+                state.finish_indexing().await;
+            }
             return;
         }
     };
@@ -341,8 +349,10 @@ async fn background_db_hydration(
             }
         }
     }
-    // Always release the indexing lock acquired at function entry.
-    state.finish_indexing().await;
+    // Release the indexing lock only if this task acquired it.
+    if acquired_lock {
+        state.finish_indexing().await;
+    }
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
