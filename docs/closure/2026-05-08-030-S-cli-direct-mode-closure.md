@@ -11,8 +11,6 @@ prs:
   - 96
 ---
 
-# 030-S CLI-Direct Daemonless Mode — Closure
-
 ## Shipment Summary
 
 Shipped feature 045-F: `engram sync --direct` and `engram index --direct` daemonless mode. Enables one-shot CLI workspace indexing from `start.ps1`/`start.sh` scripts without spawning a persistent daemon.
