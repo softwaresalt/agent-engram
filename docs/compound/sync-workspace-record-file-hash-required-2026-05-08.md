@@ -1,3 +1,14 @@
+---
+title: "sync_workspace must call record_file_hash after each file upsert"
+description: "sync_workspace() must call record_file_hash after upsert_code_file to keep the hash table current; without it detect_offline_changes reports false positives on the next daemon startup"
+problem_type: "missing_update"
+category: "best-practices"
+component: "src/services/code_graph.rs"
+root_cause: "sync_workspace called upsert_code_file but not record_file_hash; index_workspace already had the correct paired pattern"
+resolution_type: "code_fix"
+date: "2026-05-08"
+shipment: "030-S"
+---
 # sync_workspace must call record_file_hash after each file upsert
 
 ## Problem

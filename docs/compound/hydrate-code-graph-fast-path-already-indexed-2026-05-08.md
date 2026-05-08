@@ -1,3 +1,14 @@
+---
+title: "hydrate_code_graph skips JSONL reload when DB is already populated"
+description: "hydrate_code_graph() should fast-path when DB already has code files, avoiding redundant re-indexing after a --direct run or prior daemon session"
+problem_type: "missing_optimization"
+category: "best-practices"
+component: "src/services/hydration.rs"
+root_cause: "hydrate_code_graph always ran JSONL reload even when DB was fully populated, causing redundant work after engram sync --direct"
+resolution_type: "code_fix"
+date: "2026-05-08"
+shipment: "030-S"
+---
 # hydrate_code_graph skips JSONL reload when DB is already populated
 
 ## Problem

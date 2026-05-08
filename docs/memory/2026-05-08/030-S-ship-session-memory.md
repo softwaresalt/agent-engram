@@ -9,8 +9,6 @@ branch: feat/cli-direct-daemonless-mode
 status: awaiting-merge
 ---
 
-# 030-S Ship Session Memory
-
 ## Completed Tasks
 
 | Task | Title | Status |

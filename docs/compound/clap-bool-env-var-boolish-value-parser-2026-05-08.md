@@ -1,3 +1,14 @@
+---
+title: "Clap 4 bool env var requires BoolishValueParser for '1'/'0' support"
+description: "In clap 4, bool args with env vars only accept 'true'/'false' by default; use BoolishValueParser to also accept '1'/'0'/'yes'/'no'/'on'/'off'"
+problem_type: "design_misuse"
+category: "best-practices"
+component: "src/bin/engram.rs"
+root_cause: "Default clap bool parser rejects '1'/'0' env var values; requires BoolishValueParser for conventional shell usage"
+resolution_type: "code_fix"
+date: "2026-05-08"
+shipment: "030-S"
+---
 # Clap 4 bool env var requires BoolishValueParser for "1"/"0" support
 
 ## Problem

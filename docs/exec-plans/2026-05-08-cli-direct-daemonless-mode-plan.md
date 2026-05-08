@@ -95,7 +95,7 @@ pub async fn run_direct_sync(
 **Key decisions**:
 - Reuse `DaemonLock` as-is — no new locking code
 - `parse_config()` called directly (already standalone, returns defaults if missing)
-- `resolve_git_branch()` with fallback to `"main"` for non-git workspaces
+- `canonicalize_workspace()` rejects non-git workspaces (exits early); `resolve_git_branch()` falls back to `"default"` (not `"main"`) when git metadata is unavailable
 - Error handling via `formatter.cli_error()` for consistency with `run_tool()` exit codes
 
 **Tests**: Compilation test only — integration tests in Unit 3.
@@ -160,7 +160,7 @@ pub async fn run_sync(
 - Flag is per-subcommand (not global) — only `Sync` and `Index` support it
 - `run_sync()` and `run_index()` signature change is backward-compatible (callers updated in same commit)
 
-**Tests**: Existing `sync_no_full_uses_sync_workspace` tests remain valid; flag routing tested in Unit 3.
+**Tests**: Unit tests (`sync_no_full_uses_sync_workspace`) were removed during review; flag routing is covered by integration tests in Unit 3.
 
 **Execution posture**: Implementation-first (straightforward wiring).
 
@@ -175,15 +175,15 @@ pub async fn run_sync(
 
 **Test cases**:
 
-1. **`direct_sync_produces_valid_result`**: Run `engram sync --direct --json` on a temp workspace with Rust files. Assert exit 0, parse `SyncResult` from stdout JSON.
+1. **`direct_sync_produces_valid_result`** ✅ (shipped): Run `engram sync --direct --json` on a temp workspace with Rust files. Assert exit 0, parse `SyncResult` from stdout JSON.
 
-2. **`direct_index_produces_valid_result`**: Run `engram index --direct --json` on same temp workspace. Assert exit 0, parse `IndexResult`.
+2. **`direct_index_produces_valid_result`** ✅ (shipped): Run `engram index --direct --json` on same temp workspace. Assert exit 0, parse `IndexResult`.
 
-3. **`direct_mode_mutex_with_daemon`**: Start daemon via `DaemonHarness`, then run `engram sync --direct`. Assert exit 2 and stderr contains "daemon (PID".
+3. **`direct_mode_mutex_with_daemon`** ⏸ (deferred — see [stash item CLX-03]): Start daemon via `DaemonHarness`, then run `engram sync --direct`. Assert exit 2 and stderr contains "daemon (PID". Deferred because daemon harness coordination requires additional test infrastructure not in scope for this shipment.
 
-4. **`env_var_activates_direct_mode`**: Set `ENGRAM_DIRECT=1`, run `engram sync --json` without `--direct` flag. Assert exit 0 (direct mode activated by env var).
+4. **`env_var_activates_direct_mode`** ✅ (shipped): Set `ENGRAM_DIRECT=1`, run `engram sync --json` without `--direct` flag. Assert exit 0 (direct mode activated by env var).
 
-5. **`daemon_skips_reindex_after_direct`**: Run `engram index --direct --json`, then start daemon. Assert daemon logs contain "offline changes detected" with count 0 (or "index is current"). Assert daemon reaches ready state without re-indexing.
+5. **`daemon_skips_reindex_after_direct`** ⏸ (deferred — see [stash item CLX-03]): Run `engram index --direct --json`, then start daemon. Assert daemon logs contain "offline changes detected" with count 0 (or "index is current"). Assert daemon reaches ready state without re-indexing. Deferred because daemon lifecycle polling requires a test harness refactor not in scope for this shipment.
 
 **Key decisions**:
 - Tests use `env!("CARGO_BIN_EXE_engram")` for binary location (per test harness convention)

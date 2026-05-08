@@ -29,7 +29,8 @@ use crate::services::config::parse_config;
 ///
 /// The `id` parameter is echoed in the JSON-RPC envelope so scripts can
 /// correlate responses (same behaviour as the IPC path). Pass
-/// [`GlobalFlags::id_value()`] or `None` for no correlation id.
+/// [`GlobalFlags::id_value()`] or `None` to use the default id `1`, matching
+/// the IPC runner behaviour (see `src/cli/runner.rs`).
 ///
 /// # Returns
 /// - `0` — success
@@ -41,6 +42,10 @@ pub async fn run_direct_sync(
     id: Option<serde_json::Value>,
     formatter: &OutputFormatter,
 ) -> i32 {
+    // Default to `1` when no --id provided; matches the IPC runner path (runner.rs).
+    // JSON-RPC 2.0 requires a non-null id for request-correlated responses.
+    let effective_id = id.unwrap_or_else(|| Value::from(1_u64));
+
     let (ws_path, data_dir, branch) = match resolve_workspace_params(workspace, formatter) {
         Ok(params) => params,
         Err(code) => return code,
@@ -50,7 +55,12 @@ pub async fn run_direct_sync(
         Ok(cfg) => cfg,
         Err(e) => {
             let resp = e.to_response().error;
-            return formatter.tool_error(id, i64::from(resp.code), &resp.message, resp.details);
+            return formatter.tool_error(
+                Some(effective_id),
+                i64::from(resp.code),
+                &resp.message,
+                resp.details,
+            );
         }
     };
 
@@ -69,18 +79,28 @@ pub async fn run_direct_sync(
 
     if full {
         match index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false).await {
-            Ok(result) => formatter.success(id, index_result_to_json(&result)),
+            Ok(result) => formatter.success(Some(effective_id), index_result_to_json(&result)),
             Err(e) => {
                 let resp = e.to_response().error;
-                formatter.tool_error(id, i64::from(resp.code), &resp.message, resp.details)
+                formatter.tool_error(
+                    Some(effective_id),
+                    i64::from(resp.code),
+                    &resp.message,
+                    resp.details,
+                )
             }
         }
     } else {
         match sync_workspace(&ws_path, &data_dir, &branch, &config.code_graph).await {
-            Ok(result) => formatter.success(id, sync_result_to_json(&result)),
+            Ok(result) => formatter.success(Some(effective_id), sync_result_to_json(&result)),
             Err(e) => {
                 let resp = e.to_response().error;
-                formatter.tool_error(id, i64::from(resp.code), &resp.message, resp.details)
+                formatter.tool_error(
+                    Some(effective_id),
+                    i64::from(resp.code),
+                    &resp.message,
+                    resp.details,
+                )
             }
         }
     }
@@ -118,31 +138,19 @@ fn resolve_workspace_params(
 }
 
 /// Convert [`IndexResult`] into a [`Value`] for the JSON-RPC 2.0 result field.
+///
+/// Serialises the full struct so the direct-mode output matches the daemon
+/// IPC path field-for-field (`IndexResult` derives [`serde::Serialize`]).
 fn index_result_to_json(r: &IndexResult) -> Value {
-    json!({
-        "files_parsed": r.files_parsed,
-        "files_skipped": r.files_skipped,
-        "functions_indexed": r.functions_indexed,
-        "classes_indexed": r.classes_indexed,
-        "interfaces_indexed": r.interfaces_indexed,
-        "edges_created": r.edges_created,
-        "embeddings_generated": r.embeddings_generated,
-        "duration_ms": r.duration_ms,
-        "errors": r.errors.len(),
-    })
+    serde_json::to_value(r).unwrap_or_else(|_| json!({}))
 }
 
 /// Convert [`SyncResult`] into a [`Value`] for the JSON-RPC 2.0 result field.
+///
+/// Serialises the full struct so the direct-mode output matches the daemon
+/// IPC path field-for-field (`SyncResult` derives [`serde::Serialize`]).
 fn sync_result_to_json(r: &SyncResult) -> Value {
-    json!({
-        "files_modified": r.files_modified,
-        "files_added": r.files_added,
-        "files_deleted": r.files_deleted,
-        "files_unchanged": r.files_unchanged,
-        "symbols_reembedded": r.symbols_reembedded,
-        "duration_ms": r.duration_ms,
-        "errors": r.errors.len(),
-    })
+    serde_json::to_value(r).unwrap_or_else(|_| json!({}))
 }
 
 #[cfg(test)]
@@ -187,20 +195,34 @@ mod tests {
     }
 
     #[test]
-    fn index_result_json_has_expected_keys() {
+    fn index_result_json_has_full_schema() {
         let r = make_index_result();
         let v = index_result_to_json(&r);
+        // Core fields
         assert_eq!(v["files_parsed"], json!(10));
         assert_eq!(v["duration_ms"], json!(123_u64));
-        assert_eq!(v["errors"], json!(0_usize));
+        // Previously omitted fields — full struct serialisation ensures parity
+        // with the daemon IPC path
+        assert_eq!(v["tier1_count"], json!(40_usize));
+        assert_eq!(v["tier2_count"], json!(15_usize));
+        assert_eq!(v["cross_file_edges_dropped"], json!(0_usize));
+        // errors is the full list, not just a count
+        assert_eq!(v["errors"], json!([]));
     }
 
     #[test]
-    fn sync_result_json_has_expected_keys() {
+    fn sync_result_json_has_full_schema() {
         let r = make_sync_result();
         let v = sync_result_to_json(&r);
+        // Core fields
         assert_eq!(v["files_modified"], json!(3));
         assert_eq!(v["files_unchanged"], json!(6));
-        assert_eq!(v["errors"], json!(0_usize));
+        // Previously omitted fields — full struct serialisation ensures parity
+        // with the daemon IPC path
+        assert_eq!(v["symbols_reused"], json!(30_usize));
+        assert_eq!(v["concerns_relinked"], json!(0_usize));
+        assert_eq!(v["edges_created"], json!(5_usize));
+        // errors is the full list, not just a count
+        assert_eq!(v["errors"], json!([]));
     }
 }
