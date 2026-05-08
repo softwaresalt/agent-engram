@@ -9,8 +9,6 @@ merge_sha: fcdec8d69f2b5a5d3ea9cebc006ebe1a88b6cb13
 branch: feat/cli-hardening-startup-validation
 ---
 
-# 028-S — CLI Hardening & Startup Validation — Closure
-
 ## Summary
 
 Shipment 028-S (feature 043-F) hardened the `engram` CLI + daemon startup path so release
