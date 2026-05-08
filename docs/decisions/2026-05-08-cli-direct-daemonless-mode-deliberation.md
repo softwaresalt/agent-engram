@@ -231,11 +231,13 @@ copilot
 
 ## Unresolved Questions
 
-1. **Read-only direct mode**: Should `search`, `symbols`, `stats` also support `--direct`? Deferred — these depend on an indexed database. If the user ran `engram sync --direct` first, the DB is populated and reads would work. But this is a future extension.
+1. ~~**Read-only direct mode**~~: Should `search`, `symbols`, `stats` also support `--direct`? Deferred — these depend on an indexed database. If the user ran `engram sync --direct` first, the DB is populated and reads would work. But this is a future extension.
 
-2. **Config resolution in direct mode**: The daemon loads config via `parse_config()` and caches it in `AppState`. Direct mode needs to call `parse_config()` independently. The function already accepts a path, so this is straightforward.
+2. ~~**Config resolution in direct mode**~~: The daemon loads config via `parse_config()` and caches it in `AppState`. Direct mode needs to call `parse_config()` independently. The function already accepts a path, so this is straightforward.
 
-3. **Daemon lockfile check**: Should `--direct` refuse to run if the daemon holds the DB? Decision: warn but proceed. SQLite WAL handles concurrent access; the advisory lock in `connect_db()` serializes opens. Refusing would defeat the purpose.
+3. ~~**Daemon lockfile check**~~: Resolved — `DaemonLock::acquire()` provides mutual exclusion. CLI-direct refuses if daemon is running.
+
+4. **Freshness handoff** (045.004-T): The daemon's `detect_offline_changes()` already skips re-indexing when `offline_count == 0`. But `sync_workspace()` does NOT record file hashes (only `index_workspace` does). This means a `--direct` sync leaves stale hashes and the daemon will detect phantom changes. Fix: add `record_file_hash` calls to `sync_workspace()` and write an index freshness marker after completion.
 
 ## Risks and Mitigations
 
