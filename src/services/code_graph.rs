@@ -718,6 +718,19 @@ pub async fn sync_workspace(
         };
         queries.upsert_code_file(&code_file).await?;
 
+        // Record file hash for offline change detection.
+        // Non-fatal: a hash recording failure degrades offline detection but
+        // does not invalidate the synced code graph.
+        if let Err(e) =
+            crate::services::file_tracker::record_file_hash(&rel_path, file_path, &queries).await
+        {
+            debug!(
+                error = %e,
+                path = %rel_path,
+                "code graph sync: file hash recording failed — offline detection may report false changes"
+            );
+        }
+
         // Clear previous symbols and defines edges for this file.
         queries.delete_functions_by_file(&rel_path).await?;
         queries.delete_classes_by_file(&rel_path).await?;

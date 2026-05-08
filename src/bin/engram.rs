@@ -86,11 +86,22 @@ enum Command {
         /// Force full re-index instead of incremental sync.
         #[arg(long)]
         full: bool,
+        /// Run without spawning a daemon: acquire the lock and call service
+        /// functions directly. The process exits when indexing completes.
+        /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
+        #[arg(long, env = "ENGRAM_DIRECT", value_parser = clap::builder::BoolishValueParser::new())]
+        direct: bool,
     },
 
     /// Parse and index all workspace source files into the code graph (`index_workspace`).
     /// Equivalent to `engram sync --full`.
-    Index,
+    Index {
+        /// Run without spawning a daemon: acquire the lock and call service
+        /// functions directly. The process exits when indexing completes.
+        /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
+        #[arg(long, env = "ENGRAM_DIRECT", value_parser = clap::builder::BoolishValueParser::new())]
+        direct: bool,
+    },
 
     /// List MCP tools registered in the compile-time catalog (local, no daemon required).
     Manifest,
@@ -285,14 +296,14 @@ async fn main() -> Result<()> {
             let code = lifecycle::run_flush(&flags, &fmt).await;
             std::process::exit(code);
         }
-        Command::Sync { full } => {
+        Command::Sync { full, direct } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = indexing::run_sync(full, &flags, &fmt).await;
+            let code = indexing::run_sync(full, direct, &flags, &fmt).await;
             std::process::exit(code);
         }
-        Command::Index => {
+        Command::Index { direct } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = indexing::run_index(&flags, &fmt).await;
+            let code = indexing::run_index(direct, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Manifest => {

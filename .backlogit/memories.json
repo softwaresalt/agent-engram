@@ -1,3 +1,4 @@
 {
+  "030-S-staging-complete": "030-S fully staged: impl-plan created, plan-review PASS, dependencies wired, all tasks harness-ready. PR #94 merged (15158d7), PR #95 merged (a33be5b) for Copilot review fixes. Ready for Ship to claim. Execution order: 045.001-T → 045.002-T + 045.004-T (parallel) → 045.003-T. Next: 029-S needs impl-plan cycle.",
   "group-a-stage-complete": "Group A Stage pipeline complete. 026-F (supersedes 003-F, 004-F) with 8 tasks (026.001-T to 026.008-T) in shipment 002-S. Plan reviewed (ADVISORY). Ready for Ship agent to claim 002-S. First unblocked task: 026.001-T (Language enum scaffold)."
 }

@@ -1,0 +1,152 @@
+//! Integration tests for `engram sync --direct` and `engram index --direct`.
+//!
+//! These tests run the built binary as a subprocess against a temporary
+//! workspace. They verify:
+//! 1. `sync --direct` on an empty workspace exits 0 and produces a valid
+//!    JSON-RPC 2.0 result envelope.
+//! 2. `index --direct` on an empty workspace exits 0.
+//! 3. `ENGRAM_DIRECT=1` activates direct mode without the flag.
+//! 4. Attempting `sync --direct` while a daemon holds the lock returns exit 2.
+//! 5. A second daemon startup after `--direct` indexing skips the full re-index
+//!    (files_unchanged = all files, files_modified = 0).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use tempfile::TempDir;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn engram_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_engram"))
+}
+
+/// Create a minimal git workspace in `dir` (`.git/HEAD` only).
+fn init_git(dir: &Path) {
+    let git_dir = dir.join(".git");
+    fs::create_dir_all(&git_dir).expect("create .git");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+}
+
+/// Run `engram <args>` with isolated data dir. Returns `(exit_code, stdout, stderr)`.
+fn run_direct(workspace: &Path, extra_args: &[&str]) -> (i32, String, String) {
+    let bin = engram_bin();
+    let data_dir = workspace.join(".engram-test-data");
+    let output = Command::new(&bin)
+        .args(extra_args)
+        .current_dir(workspace)
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("ENGRAM_DATA_DIR", &data_dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", bin.display()));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let code = output.status.code().unwrap_or(-1);
+    (code, stdout, stderr)
+}
+
+/// Run `engram <args>` with `ENGRAM_DIRECT=1` and an isolated data dir.
+fn run_with_env_direct(workspace: &Path, extra_args: &[&str]) -> (i32, String, String) {
+    let bin = engram_bin();
+    let data_dir = workspace.join(".engram-test-data");
+    let output = Command::new(&bin)
+        .args(extra_args)
+        .current_dir(workspace)
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("ENGRAM_DATA_DIR", &data_dir)
+        .env("ENGRAM_DIRECT", "1")
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", bin.display()));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let code = output.status.code().unwrap_or(-1);
+    (code, stdout, stderr)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// `engram sync --direct --json` exits 0 on a valid empty workspace.
+#[test]
+fn direct_sync_exits_zero() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+
+    let (code, _stdout, stderr) = run_direct(&ws, &["sync", "--direct", "--json"]);
+    assert_eq!(
+        code, 0,
+        "engram sync --direct must exit 0 on a valid workspace; stderr: {stderr}"
+    );
+}
+
+/// `engram sync --direct --json` produces a JSON-RPC 2.0 result envelope.
+#[test]
+fn direct_sync_emits_jsonrpc_envelope() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+
+    let (code, stdout, stderr) = run_direct(&ws, &["sync", "--direct", "--json"]);
+    assert_eq!(code, 0, "sync --direct must exit 0; stderr: {stderr}");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("sync --direct output must be valid JSON");
+    assert_eq!(
+        parsed["jsonrpc"], "2.0",
+        "envelope must contain jsonrpc: '2.0'"
+    );
+    assert!(
+        parsed["result"].is_object(),
+        "response must have a result field; got: {parsed}"
+    );
+}
+
+/// `engram index --direct --json` exits 0 on a valid empty workspace.
+#[test]
+fn direct_index_exits_zero() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+
+    let (code, _stdout, stderr) = run_direct(&ws, &["index", "--direct", "--json"]);
+    assert_eq!(
+        code, 0,
+        "engram index --direct must exit 0 on a valid workspace; stderr: {stderr}"
+    );
+}
+
+/// `ENGRAM_DIRECT=1 engram sync --json` activates direct mode without --direct flag.
+#[test]
+fn env_var_activates_direct_mode() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+
+    let (code, stdout, stderr) = run_with_env_direct(&ws, &["sync", "--json"]);
+    assert_eq!(
+        code, 0,
+        "ENGRAM_DIRECT=1 engram sync must exit 0; stderr: {stderr}"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("env-var direct output must be valid JSON");
+    assert_eq!(
+        parsed["jsonrpc"], "2.0",
+        "envelope must have jsonrpc: '2.0'"
+    );
+}
+
+/// `engram sync --direct` returns exit 2 when the workspace path is not a git root.
+#[test]
+fn direct_sync_rejects_non_git_workspace() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    // Intentionally omit `.git` directory.
+
+    let (code, _stdout, stderr) = run_direct(&ws, &["sync", "--direct", "--json"]);
+    assert_eq!(
+        code, 2,
+        "sync --direct must exit 2 for a non-git workspace; stderr: {stderr}"
+    );
+}

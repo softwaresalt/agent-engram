@@ -595,6 +595,10 @@ required-features = ["cozo-backend"]
 name = "integration_cli_e2e"
 path = "tests/integration/cli_e2e_test.rs"
 
+[[test]]
+name = "integration_cli_direct"
+path = "tests/integration/cli_direct_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
