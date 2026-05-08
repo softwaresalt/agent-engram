@@ -65,7 +65,11 @@ pub async fn run_direct_sync(workspace: &Path, full: bool, formatter: &OutputFor
 
 /// Resolve workspace path, data directory, git branch, and config.
 ///
-/// Returns `Ok((ws_path, data_dir, branch, config))` or `Err(exit_code)`.
+/// Returns `Ok((ws_path, data_dir, branch, config))`.
+///
+/// The `Err(i32)` variant carries the CLI exit code. Errors are formatted
+/// and emitted to stderr via `formatter.cli_error` as a side effect before
+/// the exit code is returned — this is intentional for CLI dispatch.
 fn resolve_workspace_params(
     workspace: &Path,
     formatter: &OutputFormatter,

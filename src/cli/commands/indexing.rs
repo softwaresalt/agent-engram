@@ -43,45 +43,5 @@ pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputForm
     run_tool("index_workspace", None, flags, formatter).await
 }
 
-#[cfg(test)]
-mod tests {
-    /// sync without --full routes to sync_workspace (IPC mode).
-    #[test]
-    fn sync_no_full_uses_sync_workspace() {
-        let method = if false {
-            "index_workspace"
-        } else {
-            "sync_workspace"
-        };
-        assert_eq!(method, "sync_workspace");
-    }
-
-    /// sync --full routes to index_workspace (IPC mode).
-    #[test]
-    fn sync_full_uses_index_workspace() {
-        let method = if true {
-            "index_workspace"
-        } else {
-            "sync_workspace"
-        };
-        assert_eq!(method, "index_workspace");
-    }
-
-    /// index command always routes to index_workspace (IPC mode).
-    #[test]
-    fn index_command_uses_index_workspace() {
-        assert_eq!("index_workspace", "index_workspace");
-    }
-
-    /// direct flag bypasses IPC (compile-time path verification).
-    #[test]
-    fn direct_flag_bypasses_ipc() {
-        // When direct == true we take the run_direct_sync code path, not run_tool.
-        let direct = true;
-        let uses_direct = direct;
-        assert!(
-            uses_direct,
-            "direct flag should select the direct code path"
-        );
-    }
-}
+// Routing behaviour is covered by tests/integration/cli_direct_test.rs which
+// runs the binary as a subprocess and verifies the actual dispatch paths.

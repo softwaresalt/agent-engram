@@ -6,9 +6,10 @@
 //!    JSON-RPC 2.0 result envelope.
 //! 2. `index --direct` on an empty workspace exits 0.
 //! 3. `ENGRAM_DIRECT=1` activates direct mode without the flag.
-//! 4. Attempting `sync --direct` while a daemon holds the lock returns exit 2.
-//! 5. A second daemon startup after `--direct` indexing skips the full re-index
-//!    (files_unchanged = all files, files_modified = 0).
+//! 4. Non-git directories are rejected with exit 2.
+//!
+//! Lock-contention (daemon holds lock → direct mode returns exit 2) and
+//! hydration fast-path verification are tracked as follow-up backlog items.
 
 use std::fs;
 use std::path::{Path, PathBuf};
