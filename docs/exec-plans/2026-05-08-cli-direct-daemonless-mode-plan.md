@@ -22,10 +22,10 @@ The chosen solution (deliberation Option D) adds a `--direct` flag to `sync` and
 | `ENGRAM_DIRECT=1` env var support | Unit 2 |
 | `DaemonLock` mutual exclusion | Unit 1 |
 | Service-layer direct invocation | Unit 1 |
-| `sync_workspace()` records file hashes | Unit 3 |
-| Index freshness marker | Unit 3 |
-| Daemon startup fast-path | Unit 3 |
-| Integration tests | Unit 4 |
+| `sync_workspace()` records file hashes | Unit 4 |
+| Hash-based freshness detection (file-hash tracking) | Unit 4 |
+| Daemon startup fast-path | Unit 4 |
+| Integration tests | Unit 3 |
 
 ## Implementation Units
 
@@ -95,12 +95,12 @@ pub async fn run_direct_sync(
 **Key decisions**:
 - Reuse `DaemonLock` as-is — no new locking code
 - `parse_config()` called directly (already standalone, returns defaults if missing)
-- `resolve_git_branch()` with fallback to `"main"` for non-git workspaces
+- `canonicalize_workspace()` rejects non-git workspaces (exits early); `resolve_git_branch()` falls back to `"default"` (not `"main"`) when git metadata is unavailable
 - Error handling via `formatter.cli_error()` for consistency with `run_tool()` exit codes
 
-**Tests**: Compilation test only — integration tests in Unit 4.
+**Tests**: Compilation test only — integration tests in Unit 3.
 
-**Execution posture**: Test-first (harness in Unit 4, implementation here).
+**Execution posture**: Test-first (harness in Unit 3, implementation here).
 
 ---
 
@@ -160,13 +160,42 @@ pub async fn run_sync(
 - Flag is per-subcommand (not global) — only `Sync` and `Index` support it
 - `run_sync()` and `run_index()` signature change is backward-compatible (callers updated in same commit)
 
-**Tests**: Existing `sync_no_full_uses_sync_workspace` tests remain valid; flag routing tested in Unit 4.
+**Tests**: Unit tests (`sync_no_full_uses_sync_workspace`) were removed during review; flag routing is covered by integration tests in Unit 3.
 
 **Execution posture**: Implementation-first (straightforward wiring).
 
 ---
 
 ### Unit 3: Integration Tests (045.003-T)
+
+**What**: End-to-end tests verifying CLI-direct mode and daemon freshness detection.
+
+**Files affected**:
+- `tests/integration/cli_direct_test.rs` (new — ~120 lines)
+
+**Test cases**:
+
+1. **`direct_sync_produces_valid_result`** ✅ (shipped): Run `engram sync --direct --json` on a temp workspace with Rust files. Assert exit 0, parse `SyncResult` from stdout JSON.
+
+2. **`direct_index_produces_valid_result`** ✅ (shipped): Run `engram index --direct --json` on same temp workspace. Assert exit 0, parse `IndexResult`.
+
+3. **`direct_mode_mutex_with_daemon`** ⏸ (deferred — see [stash item CLX-03]): Start daemon via `DaemonHarness`, then run `engram sync --direct`. Assert exit 2 and stderr contains "daemon (PID". Deferred because daemon harness coordination requires additional test infrastructure not in scope for this shipment.
+
+4. **`env_var_activates_direct_mode`** ✅ (shipped): Set `ENGRAM_DIRECT=1`, run `engram sync --json` without `--direct` flag. Assert exit 0 (direct mode activated by env var).
+
+5. **`daemon_skips_reindex_after_direct`** ⏸ (deferred — see [stash item CLX-03]): Run `engram index --direct --json`, then start daemon. Assert daemon logs contain "offline changes detected" with count 0 (or "index is current"). Assert daemon reaches ready state without re-indexing. Deferred because daemon lifecycle polling requires a test harness refactor not in scope for this shipment.
+
+**Key decisions**:
+- Tests use `env!("CARGO_BIN_EXE_engram")` for binary location (per test harness convention)
+- `.env_remove("ENGRAM_DATA_DIR")` in all subprocess spawns (per compound learning)
+- Deadline-based polling for daemon readiness (per 028-S test fix pattern)
+- Temp workspace created with `tempfile::tempdir()` containing a small Rust file
+
+**Execution posture**: Test-first (harness written before implementation units).
+
+---
+
+### Unit 4: Index Freshness Detection (045.004-T)
 
 **What**: Ensure the daemon skips re-indexing when the DB is already current after a `--direct` run.
 
@@ -222,38 +251,9 @@ The daemon already skips re-indexing when `offline_count == 0` (line 325 in `lif
 - `record_file_hash` in `sync_workspace` is a bug fix (file hashes should always be recorded)
 - The `detect_offline_changes` scan still runs (~100ms) but returns 0 changes; a future optimization could skip it entirely via a "last indexed at" marker, but that's not needed for this shipment
 
-**Tests**: Existing `detect_offline_changes` tests validate the hash comparison. Integration test in Unit 4 verifies the daemon startup fast-path.
+**Tests**: Existing `detect_offline_changes` tests validate the hash comparison. Integration test in Unit 3 verifies the daemon startup fast-path.
 
 **Execution posture**: Test-first for `record_file_hash` in sync; characterization-first for hydration skip.
-
----
-
-### Unit 4: Index Freshness Detection (045.004-T)
-
-**What**: End-to-end tests verifying CLI-direct mode and daemon freshness detection.
-
-**Files affected**:
-- `tests/integration/cli_direct_test.rs` (new — ~120 lines)
-
-**Test cases**:
-
-1. **`direct_sync_produces_valid_result`**: Run `engram sync --direct --json` on a temp workspace with Rust files. Assert exit 0, parse `SyncResult` from stdout JSON.
-
-2. **`direct_index_produces_valid_result`**: Run `engram index --direct --json` on same temp workspace. Assert exit 0, parse `IndexResult`.
-
-3. **`direct_mode_mutex_with_daemon`**: Start daemon via `DaemonHarness`, then run `engram sync --direct`. Assert exit 2 and stderr contains "daemon (PID".
-
-4. **`env_var_activates_direct_mode`**: Set `ENGRAM_DIRECT=1`, run `engram sync --json` without `--direct` flag. Assert exit 0 (direct mode activated by env var).
-
-5. **`daemon_skips_reindex_after_direct`**: Run `engram index --direct --json`, then start daemon. Assert daemon logs contain "offline changes detected" with count 0 (or "index is current"). Assert daemon reaches ready state without re-indexing.
-
-**Key decisions**:
-- Tests use `env!("CARGO_BIN_EXE_engram")` for binary location (per test harness convention)
-- `.env_remove("ENGRAM_DATA_DIR")` in all subprocess spawns (per compound learning)
-- Deadline-based polling for daemon readiness (per 028-S test fix pattern)
-- Temp workspace created with `tempfile::tempdir()` containing a small Rust file
-
-**Execution posture**: Test-first (harness written before implementation units).
 
 ## Dependency Graph
 
@@ -306,8 +306,8 @@ No cycles. 045.002-T and 045.004-T are independent after 045.001-T completes.
 |---|---|---|---|
 | Unit 1 (direct runner) | CLI exit codes | `engram sync --direct --json` returns valid JSON, exit 0 | Verify no orphaned processes |
 | Unit 2 (flag wiring) | CLI help text, env var | `engram sync --help` shows `--direct`; `ENGRAM_DIRECT=1` works | Document in `--help` |
-| Unit 3 (freshness) | Daemon startup latency | Daemon logs show 0 offline changes after direct run | Monitor startup time regression |
-| Unit 4 (tests) | CI green | All 5 integration tests pass | CI gate |
+| Unit 3 (tests) | CI green | All 5 integration tests pass | CI gate |
+| Unit 4 (freshness) | Daemon startup latency | Daemon logs show 0 offline changes after direct run | Monitor startup time regression |
 
 ## Plan Review
 
@@ -320,7 +320,7 @@ Reviewed by: Constitution Reviewer, Rust Reviewer, Scope Boundary Auditor, Learn
 All constitutional principles satisfied:
 
 - **I. Safety-First Rust**: All proposed code returns `Result<T, EngramError>`. Pseudocode uses illustrative fallback patterns (`unwrap_or_else`, `match` with `warn` + fallback); actual implementation must propagate errors via `?` or explicit `match` with logged fallback — never bare `unwrap()` or `expect()`. `DaemonLock` uses existing error types.
-- **II. Test-First Development**: Unit 4 provides integration tests. Execution posture is test-first where appropriate.
+- **II. Test-First Development**: Unit 3 provides integration tests. Execution posture is test-first where appropriate.
 - **III. Workspace Isolation**: `canonicalize_workspace()` already validates paths. Direct mode reuses the same validation.
 - **IV. CLI Containment**: No out-of-workspace operations introduced.
 - **VII. Destructive Approval**: No destructive operations; `--direct` is read/write to the DB only within the workspace `.engram/` directory.

@@ -1,0 +1,228 @@
+//! Direct (daemonless) runner for indexing and sync operations.
+//!
+//! When `--direct` is passed, the CLI acquires the daemon lock and calls the
+//! service layer directly instead of routing through IPC. This allows
+//! indexing to be run as a stand-alone process that exits on completion
+//! without leaving a daemon alive. The daemon lock ensures at most one
+//! writer is active at any time.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+use tracing::warn;
+
+use crate::cli::output::OutputFormatter;
+use crate::daemon::lockfile::DaemonLock;
+use crate::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
+use crate::errors::{EngramError, LockError};
+use crate::services::code_graph::{IndexResult, SyncResult, index_workspace, sync_workspace};
+use crate::services::config::parse_config;
+
+/// Run an incremental sync (or full re-index) in direct mode.
+///
+/// 1. Canonicalises `workspace` and checks it is a valid git root.
+/// 2. Tries to acquire the daemon lock; returns exit code 2 if a daemon is
+///    already running.
+/// 3. Resolves the data directory, branch, and config.
+/// 4. Calls [`sync_workspace`] (incremental) or [`index_workspace`] (full).
+/// 5. Prints a JSON-RPC 2.0 success envelope and returns exit code 0.
+///
+/// The `id` parameter is echoed in the JSON-RPC envelope so scripts can
+/// correlate responses (same behaviour as the IPC path). Pass
+/// [`GlobalFlags::id_value()`] or `None` to use the default id `1`, matching
+/// the IPC runner behaviour (see `src/cli/runner.rs`).
+///
+/// # Returns
+/// - `0` — success
+/// - `1` — tool error (DB, parse failure, or invalid config)
+/// - `2` — invocation failure (bad workspace, lock held by daemon)
+pub async fn run_direct_sync(
+    workspace: &Path,
+    full: bool,
+    id: Option<serde_json::Value>,
+    formatter: &OutputFormatter,
+) -> i32 {
+    // Default to `1` when no --id provided; matches the IPC runner path (runner.rs).
+    // JSON-RPC 2.0 requires a non-null id for request-correlated responses.
+    let effective_id = id.unwrap_or_else(|| Value::from(1_u64));
+
+    let (ws_path, data_dir, branch) = match resolve_workspace_params(workspace, formatter) {
+        Ok(params) => params,
+        Err(code) => return code,
+    };
+
+    let config = match parse_config(&ws_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let resp = e.to_response().error;
+            return formatter.tool_error(
+                Some(effective_id),
+                i64::from(resp.code),
+                &resp.message,
+                resp.details,
+            );
+        }
+    };
+
+    let _lock = match DaemonLock::acquire(&ws_path) {
+        Ok(lock) => lock,
+        Err(EngramError::Lock(LockError::AlreadyHeld { pid })) => {
+            return formatter.cli_error(&format!(
+                "daemon is already running (pid {pid}); \
+                 stop it before using --direct mode"
+            ));
+        }
+        Err(e) => {
+            return formatter.cli_error(&format!("failed to acquire daemon lock: {e}"));
+        }
+    };
+
+    if full {
+        match index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false).await {
+            Ok(result) => formatter.success(Some(effective_id), index_result_to_json(&result)),
+            Err(e) => {
+                let resp = e.to_response().error;
+                formatter.tool_error(
+                    Some(effective_id),
+                    i64::from(resp.code),
+                    &resp.message,
+                    resp.details,
+                )
+            }
+        }
+    } else {
+        match sync_workspace(&ws_path, &data_dir, &branch, &config.code_graph).await {
+            Ok(result) => formatter.success(Some(effective_id), sync_result_to_json(&result)),
+            Err(e) => {
+                let resp = e.to_response().error;
+                formatter.tool_error(
+                    Some(effective_id),
+                    i64::from(resp.code),
+                    &resp.message,
+                    resp.details,
+                )
+            }
+        }
+    }
+}
+
+/// Resolve workspace path, data directory, and git branch.
+///
+/// Returns `Ok((ws_path, data_dir, branch))`.
+///
+/// The `Err(i32)` variant carries the CLI exit code. Errors are formatted
+/// and emitted to stderr via `formatter.cli_error` as a side effect before
+/// the exit code is returned — this is intentional for CLI dispatch.
+/// Config parsing is intentionally excluded here so callers can report
+/// config errors at the appropriate severity (exit 1 tool error vs
+/// exit 2 invocation error).
+fn resolve_workspace_params(
+    workspace: &Path,
+    formatter: &OutputFormatter,
+) -> Result<(PathBuf, PathBuf, String), i32> {
+    let ws_str = workspace
+        .to_str()
+        .ok_or_else(|| formatter.cli_error("workspace path contains invalid UTF-8"))?;
+
+    let ws_path = canonicalize_workspace(ws_str)
+        .map_err(|e| formatter.cli_error(&format!("invalid workspace: {e}")))?;
+
+    let branch = resolve_git_branch(&ws_path).unwrap_or_else(|e| {
+        warn!(error = %e, "could not resolve git branch; using 'default'");
+        "default".to_owned()
+    });
+
+    let data_dir = resolve_data_dir(&ws_path);
+
+    Ok((ws_path, data_dir, branch))
+}
+
+/// Convert [`IndexResult`] into a [`Value`] for the JSON-RPC 2.0 result field.
+///
+/// Serialises the full struct so the direct-mode output matches the daemon
+/// IPC path field-for-field (`IndexResult` derives [`serde::Serialize`]).
+fn index_result_to_json(r: &IndexResult) -> Value {
+    serde_json::to_value(r).unwrap_or_else(|_| json!({}))
+}
+
+/// Convert [`SyncResult`] into a [`Value`] for the JSON-RPC 2.0 result field.
+///
+/// Serialises the full struct so the direct-mode output matches the daemon
+/// IPC path field-for-field (`SyncResult` derives [`serde::Serialize`]).
+fn sync_result_to_json(r: &SyncResult) -> Value {
+    serde_json::to_value(r).unwrap_or_else(|_| json!({}))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{index_result_to_json, sync_result_to_json};
+    use crate::services::code_graph::{IndexResult, SyncResult};
+
+    fn make_index_result() -> IndexResult {
+        IndexResult {
+            files_parsed: 10,
+            files_skipped: 2,
+            functions_indexed: 50,
+            classes_indexed: 5,
+            interfaces_indexed: 3,
+            edges_created: 20,
+            embeddings_generated: 55,
+            tier1_count: 40,
+            tier2_count: 15,
+            cross_file_edges_dropped: 0,
+            errors: vec![],
+            duration_ms: 123,
+        }
+    }
+
+    fn make_sync_result() -> SyncResult {
+        SyncResult {
+            files_modified: 3,
+            files_added: 1,
+            files_deleted: 0,
+            files_unchanged: 6,
+            symbols_reembedded: 10,
+            symbols_reused: 30,
+            concerns_relinked: 0,
+            concerns_orphaned: 0,
+            edges_created: 5,
+            cross_file_edges_dropped: 0,
+            errors: vec![],
+            duration_ms: 45,
+        }
+    }
+
+    #[test]
+    fn index_result_json_has_full_schema() {
+        let r = make_index_result();
+        let v = index_result_to_json(&r);
+        // Core fields
+        assert_eq!(v["files_parsed"], json!(10));
+        assert_eq!(v["duration_ms"], json!(123_u64));
+        // Previously omitted fields — full struct serialisation ensures parity
+        // with the daemon IPC path
+        assert_eq!(v["tier1_count"], json!(40_usize));
+        assert_eq!(v["tier2_count"], json!(15_usize));
+        assert_eq!(v["cross_file_edges_dropped"], json!(0_usize));
+        // errors is the full list, not just a count
+        assert_eq!(v["errors"], json!([]));
+    }
+
+    #[test]
+    fn sync_result_json_has_full_schema() {
+        let r = make_sync_result();
+        let v = sync_result_to_json(&r);
+        // Core fields
+        assert_eq!(v["files_modified"], json!(3));
+        assert_eq!(v["files_unchanged"], json!(6));
+        // Previously omitted fields — full struct serialisation ensures parity
+        // with the daemon IPC path
+        assert_eq!(v["symbols_reused"], json!(30_usize));
+        assert_eq!(v["concerns_relinked"], json!(0_usize));
+        assert_eq!(v["edges_created"], json!(5_usize));
+        // errors is the full list, not just a count
+        assert_eq!(v["errors"], json!([]));
+    }
+}

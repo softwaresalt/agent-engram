@@ -132,6 +132,27 @@ pub async fn hydrate_code_graph(
     branch: &str,
     cg_queries: &crate::db::queries::CodeGraphQueries,
 ) -> Result<CodeGraphHydrationResult, EngramError> {
+    // Fast-path: if the DB already has indexed code files (e.g. populated by a
+    // prior `--direct` sync), skip the JSONL reload entirely. The file_node
+    // table is the authoritative source; reloading JSONL over live data would
+    // overwrite newer content_hash values and break incremental sync.
+    match cg_queries.count_code_files().await {
+        Ok(n) if n > 0 => {
+            tracing::debug!(
+                code_files = n,
+                "hydrate_code_graph: DB already populated — skipping JSONL reload"
+            );
+            return Ok(CodeGraphHydrationResult::default());
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "hydrate_code_graph: count_code_files failed; proceeding with JSONL reload"
+            );
+        }
+    }
+
     // Branch-aware path (schema 4.0.0).
     let new_path = data_dir.join("code-graph").join(branch);
     // Legacy path fallback (schema 3.0.0).

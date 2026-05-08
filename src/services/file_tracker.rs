@@ -115,6 +115,37 @@ pub async fn record_file_hash(
         .await
 }
 
+/// Store a file hash that was already computed by the caller.
+///
+/// Avoids the extra I/O of [`record_file_hash`] when the caller already holds
+/// `content_hash` and `size_bytes` in memory (e.g., after `upsert_code_file`
+/// in the sync loop which computed the hash for change-detection).
+///
+/// `rel_path` must be the workspace-relative, forward-slash-separated path.
+///
+/// # Errors
+///
+/// Returns `EngramError` if the database write fails.
+pub async fn record_file_hash_precomputed(
+    rel_path: &str,
+    hash: &str,
+    size_bytes: u64,
+    queries: &CodeGraphQueries,
+) -> Result<(), EngramError> {
+    let normalized = rel_path.replace('\\', "/");
+
+    debug!(
+        path = %normalized,
+        hash = %&hash[..hash.len().min(8)],
+        size = size_bytes,
+        "file_tracker: recording precomputed hash"
+    );
+
+    queries
+        .upsert_file_hash(&normalized, hash, size_bytes)
+        .await
+}
+
 /// Walk `workspace_root`, compare every non-excluded file against stored
 /// hashes, and return the set of files that changed while the daemon was
 /// offline.
