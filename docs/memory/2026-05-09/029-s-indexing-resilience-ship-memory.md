@@ -14,6 +14,7 @@ status: shipped
 Shipped feature 044-F (Indexing Resilience — SQLITE_BUSY Guards, Queued Sync, Configurable CLI Timeout) as shipment 029-S, merged in PR #101.
 
 ### Tasks Completed
+
 - **044.001-T**: Added `is_indexing()` guards to `get_workspace_statistics`, `query_memory`, `unified_search`, `query_changes` in `src/tools/read.rs`. Returns `IndexInProgress` (7003) instead of hitting locked DB.
 - **044.002-T**: CLI user-friendly IndexInProgress message in `src/cli/runner.rs` — detects `err.data["engram_code"] == 7003` and shows retry instruction.
 - **044.003-T**: 5 integration tests in `tests/integration/indexing_resilience_test.rs` (T-IXR-01 through T-IXR-05).
@@ -29,6 +30,7 @@ Pre-merge review found 4 P1 bugs all fixed in commit `d56701d`:
 P2-01 (sync_workspace missing drain) also fixed in same commit.
 
 ## Files Modified
+
 - `src/tools/read.rs` — is_indexing() guards
 - `src/tools/write.rs` — queued sync + drain at finish_indexing
 - `src/tools/lifecycle.rs` — drain_pending_sync() helper (extracted + race-fixed)
@@ -48,19 +50,23 @@ P2-01 (sync_workspace missing drain) also fixed in same commit.
 `IpcResponse::error()` wraps all `EngramError` as JSON-RPC code `-32603` with `data: { "engram_code": <u16> }`. The actual Engram error code (7003 for IndexInProgress) lives in `err.data["engram_code"]`, NOT in `err.code`.
 
 ### drain_pending_sync design
+
 - Only `take_pending_sync()` as fast-path guard (no flag = immediate return)
 - Acquire lock BEFORE consuming the flag is not possible with `compare_exchange`, so re-set on lock failure
 - Called from every `finish_indexing()` site (4 total call sites)
 - Coalesces all concurrent sync requests into single run
 
 ### SeqCst ordering (P3 advisory — not fixed)
+
 All AtomicBool ops use SeqCst. AcqRel/Acquire/Release would suffice but correctness takes priority over micro-optimization. Stashed as advisory.
 
 ## Open Items
+
 - Stash 3AA1E6DD: Harden IndexInProgress detection in CLI runner (P2-02 — low priority)
 - Pre-existing flaky test: `run_with_shutdown_v2_exits_cleanly_on_ttl_expiry` (SQLITE_BUSY on Windows during schema bootstrap — unrelated to this shipment)
 
 ## Commits
+
 - `76fdef8` — feat(tools): add is_indexing() guards to unguarded read-only tool handlers
 - `aa62123` — feat(tools): queued sync, configurable CLI timeout, IndexInProgress message (044.002-005)
 - `85fe4f1` — chore(backlog): mark 044-F tasks done and 029-S active
@@ -68,5 +74,6 @@ All AtomicBool ops use SeqCst. AcqRel/Acquire/Release would suffice but correctn
 - `8f23c3c` — merge commit for PR #101
 
 ## Compound Learnings Written
+
 - `docs/compound/concurrency-issues/pending-sync-drain-must-cover-all-finish-indexing-sites-2026-05-09.md`
 - `docs/compound/concurrency-issues/atomicbool-drain-race-take-before-lock-2026-05-09.md`
