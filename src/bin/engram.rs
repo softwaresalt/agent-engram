@@ -254,7 +254,9 @@ async fn main() -> Result<()> {
             no_hooks,
             port,
         } => {
-            let workspace = std::env::current_dir()?;
+            let workspace = flags
+                .resolve_workspace()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let opts = engram::installer::InstallOptions {
                 hooks_only,
                 no_hooks,
@@ -263,15 +265,21 @@ async fn main() -> Result<()> {
             engram::installer::install(&workspace, &opts).await?;
         }
         Command::Update => {
-            let workspace = std::env::current_dir()?;
+            let workspace = flags
+                .resolve_workspace()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             engram::installer::update(&workspace).await?;
         }
         Command::Reinstall => {
-            let workspace = std::env::current_dir()?;
+            let workspace = flags
+                .resolve_workspace()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             engram::installer::reinstall(&workspace).await?;
         }
         Command::Uninstall { keep_data } => {
-            let workspace = std::env::current_dir()?;
+            let workspace = flags
+                .resolve_workspace()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             engram::installer::uninstall(&workspace, keep_data).await?;
         }
 

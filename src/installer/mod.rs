@@ -144,6 +144,7 @@ const AUTO_DETECT_DIRS: &[(&str, &str, Option<&str>)] = &[
     (".github", "instructions", Some("markdown")),
     (".copilot-tracking", "memory", Some("markdown")),
     (".backlog", "backlog", Some("markdown")),
+    (".backlogit", "backlog", Some("markdown")),
 ];
 
 /// Scan `workspace` for common directories and generate a default
