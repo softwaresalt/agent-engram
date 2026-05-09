@@ -8,8 +8,6 @@ prs: [102, 103, 104]
 status: complete
 ---
 
-# 029-S PR #102 Copilot Review Closure — Session Memory
-
 ## What Was Done
 
 This session completed final post-merge closure for 029-S (Indexing Resilience),
@@ -26,6 +24,7 @@ Both Copilot review threads on PR #102 were resolved programmatically:
 | `PRRT_kwDORJEduc6AyT0A` | `docs/memory/2026-05-09/029-s-indexing-resilience-ship-memory.md` | Missing blank lines after headings before lists | Added blank lines at all 7 heading-list transitions |
 
 Resolution mutation used:
+
 ```graphql
 mutation { resolveReviewThread(input: { threadId: "<id>" }) { thread { isResolved } } }
 ```
