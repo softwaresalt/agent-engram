@@ -11,9 +11,12 @@
 //! - S076: install into a workspace path that contains spaces
 //! - S078: install into a read-only directory returns a descriptive error
 //! - S073/S074: daemon-interaction tests are marked #[ignore] (require running daemon)
+//! - S079: `--workspace` flag respected by install/update/uninstall commands (binary dispatch)
+//! - S080: `.backlogit/` auto-detected during install
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use engram::errors::{EngramError, InstallError};
 use engram::installer;
@@ -978,5 +981,194 @@ async fn t059_update_creates_version_if_missing() {
         version.trim(),
         SCHEMA_VERSION,
         "update must create .version with SCHEMA_VERSION"
+    );
+}
+
+// ── S079: --workspace flag dispatch (binary tests) ────────────────────────────
+
+/// S079a: `engram install --workspace <target>` installs into target, not cwd.
+///
+/// Verifies the dispatch layer passes the resolved workspace path to the
+/// installer library (the bug was `current_dir()` hardcoded in 4 match arms).
+#[test]
+fn s079a_install_workspace_flag_respected() {
+    let target = tempfile::tempdir().expect("target dir");
+    let cwd = tempfile::tempdir().expect("cwd dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["install", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram install");
+
+    assert!(
+        output.status.success(),
+        "engram install --workspace must succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        target.path().join(".engram").is_dir(),
+        ".engram/ must be created in the target workspace, not cwd"
+    );
+    assert!(
+        !cwd.path().join(".engram").exists(),
+        ".engram/ must NOT be created in cwd"
+    );
+}
+
+/// S079b: `engram update --workspace <target>` updates target, not cwd.
+#[test]
+fn s079b_update_workspace_flag_respected() {
+    let target = tempfile::tempdir().expect("target dir");
+    let cwd = tempfile::tempdir().expect("cwd dir");
+
+    // Pre-install into target using the binary so state is consistent.
+    let install = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["install", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram install");
+    assert!(install.status.success(), "pre-install must succeed");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["update", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram update");
+
+    assert!(
+        output.status.success(),
+        "engram update --workspace must succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Update preserves .engram/ in target.
+    assert!(
+        target.path().join(".engram").is_dir(),
+        ".engram/ must remain in the target workspace after update"
+    );
+    assert!(
+        !cwd.path().join(".engram").exists(),
+        ".engram/ must NOT appear in cwd after update"
+    );
+}
+
+/// S079c: `engram uninstall --workspace <target>` removes from target, not cwd.
+#[test]
+fn s079c_uninstall_workspace_flag_respected() {
+    let target = tempfile::tempdir().expect("target dir");
+    let cwd = tempfile::tempdir().expect("cwd dir");
+
+    // Pre-install into target.
+    let install = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["install", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram install");
+    assert!(install.status.success(), "pre-install must succeed");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["uninstall", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram uninstall");
+
+    assert!(
+        output.status.success(),
+        "engram uninstall --workspace must succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !target.path().join(".engram").exists(),
+        ".engram/ must be removed from the target workspace"
+    );
+    assert!(
+        !cwd.path().join(".engram").exists(),
+        ".engram/ must NOT have been created in cwd"
+    );
+}
+
+/// S079d: `engram reinstall --workspace <target>` reinstalls into target, not cwd.
+///
+/// Reinstall is the fourth dispatch arm changed in 046.001-T; this ensures
+/// it cannot regress independently of the other three arms.
+#[test]
+fn s079d_reinstall_workspace_flag_respected() {
+    let target = tempfile::tempdir().expect("target dir");
+    let cwd = tempfile::tempdir().expect("cwd dir");
+
+    // Pre-install into target so reinstall has existing state to replace.
+    let install = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["install", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram install");
+    assert!(install.status.success(), "pre-install must succeed");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["reinstall", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram reinstall");
+
+    assert!(
+        output.status.success(),
+        "engram reinstall --workspace must succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        target.path().join(".engram").is_dir(),
+        ".engram/ must remain in the target workspace after reinstall"
+    );
+    assert!(
+        !cwd.path().join(".engram").exists(),
+        ".engram/ must NOT appear in cwd after reinstall"
+    );
+}
+
+// ── S080: .backlogit/ auto-detection ─────────────────────────────────────────
+
+/// S080: Install auto-detects `.backlogit/` and adds a `backlog` source entry.
+#[tokio::test]
+async fn s080_backlogit_dir_auto_detected() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let workspace = tmp.path();
+
+    // Create a .backlogit/ directory to trigger auto-detection.
+    fs::create_dir(workspace.join(".backlogit")).expect("create .backlogit");
+
+    installer::install(workspace, &installer::InstallOptions::default())
+        .await
+        .expect("install should succeed");
+
+    let registry_path = workspace.join(".engram/registry.yaml");
+    assert!(registry_path.is_file(), "registry.yaml must be created");
+
+    let registry_content = fs::read_to_string(&registry_path).expect("read registry.yaml");
+
+    // The registry must contain a source with path: .backlogit
+    assert!(
+        registry_content.contains(".backlogit"),
+        "registry.yaml must include a .backlogit source entry; got:\n{registry_content}"
     );
 }
