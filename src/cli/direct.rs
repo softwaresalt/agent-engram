@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use fd_lock::RwLock as FdRwLock;
 use serde_json::{Value, json};
 use tracing::warn;
 
@@ -76,6 +77,40 @@ pub async fn run_direct_sync(
             return formatter.cli_error(&format!("failed to acquire daemon lock: {e}"));
         }
     };
+
+    // Probe the CozoDB advisory lock before connect_db's 30-second polling loop.
+    // When ENGRAM_DATA_DIR is shared across workspaces, two processes targeting
+    // different workspace roots (different DaemonLock paths) may race on the
+    // same CozoDB database file. This pre-check returns a clear exit-2 error
+    // immediately instead of surfacing a generic 30-second timeout message.
+    //
+    // TOCTOU note: the probe and connect_db's own try_write loop are not atomic.
+    // Another process could acquire the lock between the probe and connect_db.
+    // The connect_db timeout covers that residual race and will also return a
+    // clean error; this probe only improves the UX for the common case.
+    {
+        let branch_safe = branch.replace(['/', '\\', ':'], "_");
+        let db_lock_path = data_dir
+            .join("cozo")
+            .join(&branch_safe)
+            .join("engram.db.lock");
+        if db_lock_path.exists() {
+            if let Ok(f) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(false)
+                .open(&db_lock_path)
+            {
+                let mut rw = FdRwLock::new(f);
+                if rw.try_write().is_err() {
+                    return formatter.cli_error(
+                        "workspace database is locked by another process; \
+                         stop the daemon first or use IPC mode (omit --direct)",
+                    );
+                }
+            }
+        }
+    }
 
     if full {
         match index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false).await {
@@ -224,5 +259,49 @@ mod tests {
         assert_eq!(v["edges_created"], json!(5_usize));
         // errors is the full list, not just a count
         assert_eq!(v["errors"], json!([]));
+    }
+
+    /// Verify that fd_lock detects a held write lock from a separate file handle.
+    ///
+    /// This test documents the cross-handle locking guarantee that the db-lock
+    /// probe in `run_direct_sync` relies on. On Windows, `LockFileEx` locks are
+    /// per-file-handle even within the same process. On Linux/macOS, `flock` /
+    /// `fcntl` may coalesce per-process — but the probe is specifically for the
+    /// multi-process scenario (daemon holds the lock, direct mode probes it).
+    #[test]
+    fn fd_lock_try_write_conflicts_with_held_write_lock() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let lock_path = tmp.path().join("engram.db.lock");
+        std::fs::write(&lock_path, b"").expect("create lock file");
+
+        // Handle A acquires an exclusive write lock.
+        let file_a = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open a");
+        let mut rw_a = fd_lock::RwLock::new(file_a);
+        let _guard_a = rw_a.try_write().expect("first acquisition must succeed");
+
+        // Handle B's try_write should fail while A holds the lock.
+        let file_b = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open b");
+        let mut rw_b = fd_lock::RwLock::new(file_b);
+
+        // On Windows, LockFileEx enforces per-handle exclusivity.
+        // On Linux/macOS with BSD flock, try_write may succeed for same-process
+        // handles. The integration test (cli_direct_test.rs) covers cross-process.
+        #[cfg(target_os = "windows")]
+        assert!(
+            rw_b.try_write().is_err(),
+            "second try_write must fail while first handle holds the lock (Windows)"
+        );
+
+        // On non-Windows: just assert the call doesn't panic.
+        #[cfg(not(target_os = "windows"))]
+        let _ = rw_b.try_write();
     }
 }

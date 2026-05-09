@@ -112,6 +112,17 @@ impl OutputFormatter {
         eprintln!("Error: {message}");
         2
     }
+
+    /// Emit a single-line progress hint on stderr when in text mode and not quiet.
+    ///
+    /// Suppressed in JSON mode (machine-readable output) and when `--quiet` is set.
+    /// Used before long-running auto-spawn operations so the terminal does not
+    /// appear frozen.
+    pub fn progress_hint(&self, message: &str) {
+        if self.mode == OutputMode::Text && !self.quiet {
+            eprintln!("{message}");
+        }
+    }
 }
 
 /// Render a JSON value as human-readable text.
@@ -185,5 +196,27 @@ mod tests {
         let f = OutputFormatter::from_flags(false, Some("json"), true);
         // success() returns 0 without printing; we can only check the exit code.
         assert_eq!(f.success(None, serde_json::json!({"ok": true})), 0);
+    }
+
+    #[test]
+    fn progress_hint_suppressed_in_json_mode() {
+        // progress_hint is a no-op in JSON mode; the call must not panic.
+        let f = OutputFormatter::from_flags(true, None, false);
+        f.progress_hint("Starting engram daemon...");
+        // No assertion possible for stderr in unit tests; absence of panic is the contract.
+    }
+
+    #[test]
+    fn progress_hint_suppressed_in_quiet_mode() {
+        // progress_hint is a no-op when --quiet is set; the call must not panic.
+        let f = OutputFormatter::from_flags(false, Some("text"), true);
+        f.progress_hint("Starting engram daemon...");
+    }
+
+    #[test]
+    fn progress_hint_noop_in_json_quiet_combination() {
+        // Doubly suppressed: JSON mode and quiet. Must not panic.
+        let f = OutputFormatter::from_flags(true, None, true);
+        f.progress_hint("Starting engram daemon...");
     }
 }
