@@ -9,8 +9,6 @@ merge_sha: 5cae4a3
 status: closed
 ---
 
-# 033-S Closure: query_graph Structured API
-
 ## Summary
 
 Replaced the always-erroring `query_graph` stub with a real BFS-based graph traversal engine.
@@ -20,12 +18,12 @@ All 6 backlog items (048-F + 048.001–005-T) delivered via PR #123, merged 2026
 
 | ID | Title | Status |
 |---|---|---|
-| 048-F | Query Graph Structured API | archived/done |
-| 048.001-T | Graph Query Model and Parsing | archived/done |
-| 048.002-T | Neighborhood and Transitive Closure | archived/done |
-| 048.003-T | Find Path | archived/done |
-| 048.004-T | MCP Schema and CLI | archived/done |
-| 048.005-T | Backlog Edge Traversal | archived/done (subsumed by 048.002-T) |
+| 048-F | Query Graph Structured API | archived |
+| 048.001-T | Graph Query Model and Parsing | archived |
+| 048.002-T | Neighborhood and Transitive Closure | archived |
+| 048.003-T | Find Path | archived |
+| 048.004-T | MCP Schema and CLI | archived |
+| 048.005-T | Backlog Edge Traversal | archived (subsumed by 048.002-T) |
 
 ## Files Changed
 
@@ -70,7 +68,7 @@ All 5 threads resolved via `gh api graphql resolveReviewThread`.
 
 ## Rollback
 
-```
+```bash
 git revert --no-edit -m 1 5cae4a3
 ```
 
