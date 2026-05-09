@@ -151,3 +151,81 @@ fn direct_sync_rejects_non_git_workspace() {
         "sync --direct must exit 2 for a non-git workspace; stderr: {stderr}"
     );
 }
+
+/// S081: `engram sync --direct` returns exit 2 immediately when the CozoDB
+/// database is locked by another process.
+///
+/// The test holds the `engram.db.lock` advisory lock from a background thread,
+/// then runs the binary. Because the lock is held by a separate OS-level file
+/// handle, the binary's `fd_lock::RwLock::try_write()` probe sees the file as
+/// locked and must return exit 2 before attempting the 30-second connect_db
+/// polling loop.
+///
+/// On Windows `LockFileEx` enforces per-handle exclusivity even within the same
+/// process. On Linux/macOS, advisory `flock`/`fcntl` locks do not conflict
+/// across handles in the same process, so this test is restricted to Windows.
+/// Cross-process lock contention is the real production scenario and is covered
+/// by the daemon-held lock in actual operation.
+#[test]
+#[cfg(target_os = "windows")]
+fn direct_sync_detects_locked_database() {
+    use std::sync::mpsc;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+
+    // Use a dedicated, separate data dir (not the one run_direct builds).
+    let data_dir = tmp.path().join("locked-data");
+    let cozo_dir = data_dir.join("cozo").join("main");
+    fs::create_dir_all(&cozo_dir).expect("create cozo dir");
+    let db_lock_path = cozo_dir.join("engram.db.lock");
+    fs::write(&db_lock_path, b"").expect("create lock file");
+
+    // Acquire the write lock from a background thread to hold it while
+    // the binary runs. The thread signals readiness via a channel.
+    let lock_path_clone = db_lock_path.clone();
+    let (tx, rx) = mpsc::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let _holder = std::thread::spawn(move || {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path_clone)
+            .expect("open lock file in holder thread");
+        let mut rw = fd_lock::RwLock::new(file);
+        let _guard = rw.try_write().expect("holder must acquire lock first");
+        tx.send(()).expect("send ready");
+        // Keep the guard alive until the test signals done.
+        let _ = done_rx.recv_timeout(std::time::Duration::from_secs(15));
+    });
+
+    // Wait until the background thread holds the lock.
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("lock holder did not signal ready in time");
+
+    // Run the binary; it must detect the locked DB and exit 2 quickly.
+    let bin = engram_bin();
+    let output = Command::new(&bin)
+        .args(["sync", "--direct", "--json"])
+        .current_dir(&ws)
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("ENGRAM_DATA_DIR", &data_dir)
+        .output()
+        .expect("run engram binary");
+
+    // Signal holder to release the lock (test is done regardless).
+    let _ = done_tx.send(());
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let code = output.status.code().unwrap_or(-1);
+
+    assert_eq!(
+        code, 2,
+        "must exit 2 when DB is locked by another process; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("locked by another process"),
+        "stderr must mention 'locked by another process'; got: {stderr}"
+    );
+}

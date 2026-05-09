@@ -10,9 +10,9 @@ use serde_json::Value;
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
 use crate::daemon::ipc_server::ipc_endpoint;
-use crate::daemon::protocol::IpcRequest;
+use crate::daemon::protocol::{IpcError, IpcRequest};
 use crate::shim::ipc_client;
-use crate::shim::lifecycle::ensure_daemon_running;
+use crate::shim::lifecycle::{check_health, ensure_daemon_running};
 
 /// Default IPC request timeout for short-lived CLI commands (30 s).
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -22,6 +22,46 @@ pub const INDEXING_TIMEOUT_SECS: u64 = 300;
 
 /// Engram-level error code for IndexInProgress, embedded in wire `data.engram_code`.
 const INDEX_IN_PROGRESS_CODE: u16 = 7003;
+
+/// JSON-RPC internal-error code (`-32603`) used as a secondary heuristic for
+/// IndexInProgress detection when `engram_code` is absent.
+const JSONRPC_INTERNAL_ERROR_CODE: i32 = -32_603;
+
+/// Translate a wire-format [`IpcError`] into a user-facing message.
+///
+/// Primary path: `data.engram_code == 7003` → fixed friendly string.
+/// Fallback path: code `-32603` whose message contains both "index" and "progress"
+/// (case-insensitive) → same friendly string. This covers daemon versions that
+/// return the `IndexInProgress` payload without an explicit `engram_code` field.
+fn friendly_error_message(err: &IpcError) -> String {
+    const INDEX_IN_PROGRESS_MSG: &str = "Indexing is in progress. \
+         This command will be available once indexing completes. \
+         Try again shortly.";
+
+    // Primary: explicit engram_code in the data envelope.
+    let primary_match = err
+        .data
+        .as_ref()
+        .and_then(|d| d.get("engram_code"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|code| code == u64::from(INDEX_IN_PROGRESS_CODE))
+        .unwrap_or(false);
+
+    if primary_match {
+        return INDEX_IN_PROGRESS_MSG.to_owned();
+    }
+
+    // Fallback: -32603 internal error whose message text mentions indexing.
+    let msg_lower = err.message.to_lowercase();
+    if err.code == JSONRPC_INTERNAL_ERROR_CODE
+        && msg_lower.contains("index")
+        && msg_lower.contains("progress")
+    {
+        return INDEX_IN_PROGRESS_MSG.to_owned();
+    }
+
+    err.message.clone()
+}
 
 /// Run a single tool call through the daemon IPC and print the result.
 ///
@@ -66,16 +106,23 @@ pub async fn run_tool_timed(
         Err(e) => return formatter.cli_error(&format!("workspace path error: {e}")),
     };
 
-    // Ensure daemon is running (auto-spawn if needed).
-    if let Err(e) = ensure_daemon_running(&workspace_path).await {
-        return formatter.cli_error(&format!("daemon unavailable: {e}"));
-    }
-
-    // Compute IPC endpoint.
+    // Compute IPC endpoint before spawning so we can probe daemon liveness
+    // and emit a progress hint when the daemon is not yet running.
     let endpoint = match ipc_endpoint(&workspace_path) {
         Ok(ep) => ep,
         Err(e) => return formatter.cli_error(&format!("cannot compute IPC endpoint: {e}")),
     };
+
+    // Emit a progress hint when the daemon is not yet reachable so the
+    // terminal does not appear frozen during the auto-spawn delay.
+    if !check_health(&endpoint).await {
+        formatter.progress_hint("Starting engram daemon...");
+    }
+
+    // Ensure daemon is running (auto-spawn if needed).
+    if let Err(e) = ensure_daemon_running(&workspace_path).await {
+        return formatter.cli_error(&format!("daemon unavailable: {e}"));
+    }
 
     // Default to `1` when the caller does not supply an explicit request ID.
     // JSON-RPC 2.0 requires a non-null id for requests that expect a response;
@@ -95,26 +142,8 @@ pub async fn run_tool_timed(
             if let Some(result) = response.result {
                 formatter.success(Some(id), result)
             } else if let Some(err) = response.error {
-                // Translate IndexInProgress (7003) into a user-friendly CLI message.
-                let friendly_message = err
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("engram_code"))
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|code| {
-                        if code == u64::from(INDEX_IN_PROGRESS_CODE) {
-                            Some(
-                                "Indexing is in progress. \
-                                 This command will be available once indexing completes. \
-                                 Try again shortly."
-                                    .to_owned(),
-                            )
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(err.message);
-                formatter.tool_error(Some(id), i64::from(err.code), &friendly_message, err.data)
+                let message = friendly_error_message(&err);
+                formatter.tool_error(Some(id), i64::from(err.code), &message, err.data)
             } else {
                 formatter.cli_error("daemon returned empty response")
             }
@@ -131,6 +160,9 @@ mod tests {
 
     use crate::cli::flags::GlobalFlags;
     use crate::cli::output::{OutputFormatter, OutputMode};
+    use crate::daemon::protocol::IpcError;
+
+    use super::{INDEX_IN_PROGRESS_CODE, JSONRPC_INTERNAL_ERROR_CODE, friendly_error_message};
 
     fn make_formatter() -> OutputFormatter {
         OutputFormatter::new(OutputMode::Json)
@@ -144,6 +176,14 @@ mod tests {
             format: None,
             quiet: false,
             timeout,
+        }
+    }
+
+    fn make_ipc_error(code: i32, message: &str, data: Option<serde_json::Value>) -> IpcError {
+        IpcError {
+            code,
+            message: message.to_owned(),
+            data,
         }
     }
 
@@ -176,5 +216,69 @@ mod tests {
         let data = json!({ "engram_code": 7003_u64 });
         let code = data.get("engram_code").and_then(serde_json::Value::as_u64);
         assert_eq!(code, Some(7003));
+    }
+
+    #[test]
+    fn friendly_message_primary_path_engram_code_7003() {
+        let err = make_ipc_error(
+            JSONRPC_INTERNAL_ERROR_CODE,
+            "index operation in progress",
+            Some(json!({ "engram_code": u64::from(INDEX_IN_PROGRESS_CODE) })),
+        );
+        let msg = friendly_error_message(&err);
+        assert!(
+            msg.contains("Indexing is in progress"),
+            "expected friendly message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn friendly_message_fallback_path_no_engram_code() {
+        // No engram_code in data — fall through to the -32603 + message heuristic.
+        let err = make_ipc_error(
+            JSONRPC_INTERNAL_ERROR_CODE,
+            "Index operation in progress on this workspace",
+            Some(json!({ "unrelated": true })),
+        );
+        let msg = friendly_error_message(&err);
+        assert!(
+            msg.contains("Indexing is in progress"),
+            "expected friendly message from fallback, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn friendly_message_primary_wins_when_both_signals_present() {
+        // Both engram_code 7003 AND a matching message — primary path wins (same result).
+        let err = make_ipc_error(
+            JSONRPC_INTERNAL_ERROR_CODE,
+            "Index operation in progress",
+            Some(json!({ "engram_code": u64::from(INDEX_IN_PROGRESS_CODE) })),
+        );
+        let msg = friendly_error_message(&err);
+        assert!(
+            msg.contains("Indexing is in progress"),
+            "expected friendly message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn friendly_message_no_false_positive_on_unrelated_32603() {
+        // -32603 with unrelated message → original message preserved.
+        let original = "internal server fault";
+        let err = make_ipc_error(JSONRPC_INTERNAL_ERROR_CODE, original, None);
+        let msg = friendly_error_message(&err);
+        assert_eq!(msg, original, "unrelated -32603 must not be rewritten");
+    }
+
+    #[test]
+    fn friendly_message_no_false_positive_wrong_code() {
+        // Wrong JSON-RPC code with IndexInProgress-like message → original preserved.
+        let err = make_ipc_error(-32_601, "index in progress", None);
+        let msg = friendly_error_message(&err);
+        assert!(
+            !msg.contains("Indexing is in progress"),
+            "wrong code must not trigger friendly message; got: {msg}"
+        );
     }
 }
