@@ -95,18 +95,29 @@ pub async fn run_direct_sync(
             .join(&branch_safe)
             .join("engram.db.lock");
         if db_lock_path.exists() {
-            if let Ok(f) = std::fs::OpenOptions::new()
+            match std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(false)
                 .open(&db_lock_path)
             {
-                let mut rw = FdRwLock::new(f);
-                if rw.try_write().is_err() {
-                    return formatter.cli_error(
-                        "workspace database is locked by another process; \
-                         stop the daemon first or use IPC mode (omit --direct)",
-                    );
+                Ok(f) => {
+                    let mut rw = FdRwLock::new(f);
+                    if rw.try_write().is_err() {
+                        return formatter.cli_error(
+                            "workspace database is locked by another process; \
+                             stop the daemon first or use IPC mode (omit --direct)",
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Cannot open the lock file — permissions or sharing violation.
+                    // Return exit 2 rather than falling through to connect_db's
+                    // 30-second polling loop with an opaque timeout message.
+                    return formatter.cli_error(&format!(
+                        "cannot open workspace database lock file: {e}; \
+                         check permissions or stop any running daemon"
+                    ));
                 }
             }
         }
