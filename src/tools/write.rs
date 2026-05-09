@@ -212,9 +212,13 @@ pub async fn sync_workspace(
         }
     }
 
-    // Reject if indexing is already running (FR-121 / 7003).
+    // If indexing is already running, queue a sync to run after it finishes
+    // rather than returning an error — callers get a "queued" status (044.004-T).
     if !state.try_start_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+        state.set_pending_sync();
+        return Ok(
+            json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+        );
     }
 
     // Run the sync logic, ensuring the flag is cleared on all exit paths.

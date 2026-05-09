@@ -36,6 +36,7 @@ mod tests {
             json: true,
             format: None,
             quiet: false,
+            timeout: None,
         }
     }
 

@@ -352,6 +352,38 @@ async fn background_db_hydration(
     // Release the indexing lock only if this task acquired it.
     if acquired_lock {
         state.finish_indexing().await;
+        // Drain a pending sync queued while we held the indexing lock.
+        // This coalesces multiple concurrent sync requests into a single run.
+        if state.take_pending_sync() {
+            tracing::info!("background_db_hydration: draining pending sync request");
+            if let (Some(snapshot), Some(ws_config)) = (
+                state.snapshot_workspace().await,
+                state.workspace_config().await,
+            ) {
+                if state.try_start_indexing() {
+                    let ws_path = PathBuf::from(&snapshot.path);
+                    match sync_code_graph(
+                        &ws_path,
+                        &snapshot.data_dir,
+                        &snapshot.branch,
+                        &ws_config.code_graph,
+                    )
+                    .await
+                    {
+                        Ok(result) => tracing::info!(
+                            files_added = result.files_added,
+                            files_modified = result.files_modified,
+                            "background_db_hydration: pending sync complete"
+                        ),
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "background_db_hydration: pending sync failed"
+                        ),
+                    }
+                    state.finish_indexing().await;
+                }
+            }
+        }
     }
 }
 

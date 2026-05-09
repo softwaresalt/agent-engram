@@ -1,5 +1,7 @@
 //! Global CLI flags shared across all CLI subcommands.
 
+use std::time::Duration;
+
 use clap::Args;
 
 /// Global flags available on every CLI subcommand.
@@ -24,6 +26,12 @@ pub struct GlobalFlags {
     /// Suppress non-error output.
     #[arg(long, global = true)]
     pub quiet: bool,
+
+    /// IPC request timeout in seconds. Overrides the per-command default.
+    /// Set higher for long-running operations such as full index on large workspaces.
+    /// Env: ENGRAM_CLI_TIMEOUT
+    #[arg(long, global = true, value_name = "SECS", env = "ENGRAM_CLI_TIMEOUT")]
+    pub timeout: Option<u64>,
 }
 
 impl GlobalFlags {
@@ -37,6 +45,12 @@ impl GlobalFlags {
                 serde_json::Value::String(s.to_owned())
             }
         })
+    }
+
+    /// Resolve the IPC timeout, giving precedence to an explicit `--timeout` flag
+    /// or `ENGRAM_CLI_TIMEOUT` env var, falling back to `command_default_secs`.
+    pub fn ipc_timeout(&self, command_default_secs: u64) -> Duration {
+        Duration::from_secs(self.timeout.unwrap_or(command_default_secs))
     }
 
     /// Resolve the workspace path: flag → env var → cwd.
