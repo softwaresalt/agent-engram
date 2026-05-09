@@ -1102,6 +1102,50 @@ fn s079c_uninstall_workspace_flag_respected() {
     );
 }
 
+/// S079d: `engram reinstall --workspace <target>` reinstalls into target, not cwd.
+///
+/// Reinstall is the fourth dispatch arm changed in 046.001-T; this ensures
+/// it cannot regress independently of the other three arms.
+#[test]
+fn s079d_reinstall_workspace_flag_respected() {
+    let target = tempfile::tempdir().expect("target dir");
+    let cwd = tempfile::tempdir().expect("cwd dir");
+
+    // Pre-install into target so reinstall has existing state to replace.
+    let install = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["install", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram install");
+    assert!(install.status.success(), "pre-install must succeed");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["reinstall", "--workspace"])
+        .arg(target.path())
+        .current_dir(cwd.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .output()
+        .expect("engram reinstall");
+
+    assert!(
+        output.status.success(),
+        "engram reinstall --workspace must succeed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        target.path().join(".engram").is_dir(),
+        ".engram/ must remain in the target workspace after reinstall"
+    );
+    assert!(
+        !cwd.path().join(".engram").exists(),
+        ".engram/ must NOT appear in cwd after reinstall"
+    );
+}
+
 // ── S080: .backlogit/ auto-detection ─────────────────────────────────────────
 
 /// S080: Install auto-detects `.backlogit/` and adds a `backlog` source entry.
