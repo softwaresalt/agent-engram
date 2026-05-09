@@ -1,5 +1,5 @@
 ---
-title: "query_graph Structured API — Implementation Plan"
+title: "query_graph Structured API — Decided Plan"
 type: decided-plan
 date: 2026-05-09
 source: .backlogit/queue/003-D.md
@@ -144,7 +144,7 @@ Linear dependency — Unit 2 needs the types from Unit 1, and Unit 3 needs the w
 
 5. **Keep `query` string parameter for backward compat**: Existing MCP clients may send `{ "query": "..." }`. The new implementation accepts either the structured format or falls back to an error suggesting the structured format.
 
-6. **Backlog edges as an edge type filter value**: Rather than a separate API surface, backlog edges (`parent_of`, `depends_on`, `references`) are selectable via the `edge_types` array alongside code edges (`calls`, `imports`, `defines`, `inherits_from`, `concerns`). The `references` edge type is shared between code and backlog graphs — both use the string `"references"` (from `BacklogEdgeType::as_str()`). No disambiguation is needed because the traversal engine queries all matching edge tables regardless of origin. This unifies code and backlog graph traversal.
+6. **Backlog edges as an edge type filter value**: Rather than a separate API surface, backlog edges (`parent_of`, `depends_on`) are selectable via the `edge_types` array alongside code edges (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`). The `references` edge type maps exclusively to the code `references_edge` table (qualified-name references between symbols). Backlog `references` edges stored in `backlog_edge` are a distinct concept and are not included when a client requests `edge_types: ["references"]` — they require the explicit backlog edge type names (`parent_of`, `depends_on`). This avoids ambiguity: clients always know which graph domain they are querying. This unifies code and backlog graph traversal under a single API while keeping edge type namespaces distinct.
 
 ## Risks and Caveats
 
