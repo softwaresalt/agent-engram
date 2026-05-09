@@ -1,6 +1,6 @@
 ---
 title: "query_graph Structured API — Implementation Plan"
-type: plan
+type: decided-plan
 date: 2026-05-09
 source: .backlogit/queue/003-D.md
 status: decided
@@ -42,7 +42,7 @@ Key source locations:
 | Support transitive closure from a starting symbol | Unit 2: `transitive_closure` operation |
 | Expose backlog edges alongside code edges | Unit 2: include backlog edge tables in traversal |
 | Safe for MCP clients (JSON in, JSON out) | Unit 1: structured `GraphQuery` enum |
-| Result size limits | Unit 2: enforce `max_results` cap |
+| Result size limits | Unit 2: enforce `max_nodes` cap |
 | Update MCP tool schema for structured API | Unit 3: update `tools_catalog.rs` |
 | Update CLI subcommand for new API | Unit 3: update `search.rs` CLI dispatch |
 
@@ -144,7 +144,7 @@ Linear dependency — Unit 2 needs the types from Unit 1, and Unit 3 needs the w
 
 5. **Keep `query` string parameter for backward compat**: Existing MCP clients may send `{ "query": "..." }`. The new implementation accepts either the structured format or falls back to an error suggesting the structured format.
 
-6. **Backlog edges as an edge type filter value**: Rather than a separate API surface, backlog edges (`parent_of`, `depends_on`, `references_backlog`) are selectable via the `edge_types` array alongside code edges (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`). This unifies code and backlog graph traversal.
+6. **Backlog edges as an edge type filter value**: Rather than a separate API surface, backlog edges (`parent_of`, `depends_on`, `references`) are selectable via the `edge_types` array alongside code edges (`calls`, `imports`, `defines`, `inherits_from`, `concerns`). The `references` edge type is shared between code and backlog graphs — both use the string `"references"` (from `BacklogEdgeType::as_str()`). No disambiguation is needed because the traversal engine queries all matching edge tables regardless of origin. This unifies code and backlog graph traversal.
 
 ## Risks and Caveats
 
