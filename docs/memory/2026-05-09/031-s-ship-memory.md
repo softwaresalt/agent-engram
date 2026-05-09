@@ -8,8 +8,6 @@ pr: 112
 merge_sha: 25cea55
 ---
 
-# 031-S Ship Session Memory
-
 ## Task IDs Completed
 
 - **046-F** CLI Install & Workspace Flag Fixes — shipped
