@@ -12,6 +12,7 @@ use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::server::state::SharedState;
 use crate::services::dehydration;
 use crate::services::hydration;
+use crate::tools::lifecycle::drain_pending_sync;
 
 #[cfg(feature = "git-graph")]
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
@@ -136,6 +137,7 @@ pub async fn index_workspace(
     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
     let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
     state.finish_indexing().await;
+    drain_pending_sync(&state).await;
     result
 }
 
@@ -224,6 +226,7 @@ pub async fn sync_workspace(
     // Run the sync logic, ensuring the flag is cleared on all exit paths.
     let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
     state.finish_indexing().await;
+    drain_pending_sync(&state).await;
     result
 }
 

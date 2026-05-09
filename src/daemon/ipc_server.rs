@@ -611,6 +611,7 @@ pub async fn run_with_shutdown(
                         // finish_indexing MUST come before flush_state —
                         // flush_state rejects calls while indexing is in progress.
                         state_auto.finish_indexing().await;
+                        crate::tools::lifecycle::drain_pending_sync(&state_auto).await;
                         if should_flush {
                             if let Err(e) =
                                 crate::tools::write::flush_state(Arc::clone(&state_auto), None)
@@ -692,6 +693,7 @@ pub async fn run_with_shutdown(
                     };
                     // finish_indexing MUST come before flush_state.
                     state_watcher.finish_indexing().await;
+                    crate::tools::lifecycle::drain_pending_sync(&state_watcher).await;
                     if should_flush {
                         if let Err(e) =
                             crate::tools::write::flush_state(Arc::clone(&state_watcher), None).await
