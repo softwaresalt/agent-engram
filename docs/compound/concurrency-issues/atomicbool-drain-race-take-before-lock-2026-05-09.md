@@ -78,7 +78,7 @@ When implementing an "atomic flag → guarded action" pattern:
 1. **Never assume the guard will succeed** after consuming the flag.
 2. Always provide a re-queue path for the failure case.
 3. The general pattern is:
-   ```
+   ```text
    consume_flag()
    if guard_available():
        do_work()
