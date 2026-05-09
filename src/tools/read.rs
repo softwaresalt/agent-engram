@@ -88,6 +88,11 @@ pub async fn get_workspace_statistics(
 ) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
+    // Reject while indexing — code graph counters are inconsistent mid-write (7003).
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
+
     let (data_dir, branch) = workspace_db(&state).await?;
     let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
@@ -136,6 +141,11 @@ fn default_limit() -> usize {
 
 pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
+
+    // Reject while indexing — content record table may be mid-write (7003).
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
 
     let parsed: QueryMemoryParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -489,6 +499,11 @@ pub async fn unified_search(
                  Text-based search via keyword queries is unaffected."
             .to_owned(),
     }));
+
+    // Reject while indexing — code graph and content vectors are mid-write (7003).
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
 
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
@@ -1039,6 +1054,11 @@ pub async fn query_changes(
     } else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
+
+    // Reject while indexing — git-graph tables may be mid-write (7003).
+    if state.is_indexing() {
+        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    }
 
     let parsed: QueryChangesParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
         .map_err(|e| {

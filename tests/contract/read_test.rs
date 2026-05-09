@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::test;
 
-use engram::errors::codes::{QUERY_EMPTY, QUERY_TOO_LONG, WORKSPACE_NOT_SET};
+use engram::errors::codes::{INDEX_IN_PROGRESS, QUERY_EMPTY, QUERY_TOO_LONG, WORKSPACE_NOT_SET};
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use engram::tools;
 
@@ -284,4 +284,59 @@ async fn contract_impact_analysis_symbol_not_found() {
 
     let code = err.to_response().error.code;
     assert_eq!(code, SYMBOL_NOT_FOUND);
+}
+
+// ── 044.001-T: IndexInProgress guards for read-only tools ───────────────────
+
+#[test]
+async fn contract_get_workspace_statistics_rejects_while_indexing() {
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("stats_indexing"))
+        .await
+        .expect("set workspace");
+
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let err = tools::dispatch(state, "get_workspace_statistics", None)
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+}
+
+#[test]
+async fn contract_query_memory_rejects_while_indexing() {
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("query_memory_indexing"))
+        .await
+        .expect("set workspace");
+
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let params = Some(json!({ "query": "user authentication" }));
+    let err = tools::dispatch(state, "query_memory", params)
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+}
+
+#[test]
+async fn contract_unified_search_rejects_while_indexing() {
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(test_snapshot("unified_search_indexing"))
+        .await
+        .expect("set workspace");
+
+    assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+    let params = Some(json!({ "query": "database connection pool" }));
+    let err = tools::dispatch(state, "unified_search", params)
+        .await
+        .expect_err("expected index-in-progress error");
+
+    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
 }
