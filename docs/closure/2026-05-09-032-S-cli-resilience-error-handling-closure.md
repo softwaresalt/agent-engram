@@ -73,11 +73,11 @@ Shipped 3 CLI resilience improvements for 047-F across `src/cli/direct.rs`,
 
 `t047_data_persists_across_crash_and_restart` fails under concurrent test load
 but passes in isolation. Not caused by this PR (timing/resource contention).
-Tracked in compound library under `concurrency-issues/cozodb-sqlite-lock-panic`.
+Tracked in compound library at `docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md`.
 
 ## Rollback
 
-```
+```bash
 git revert --no-edit -m 1 10134ad
 ```
 
