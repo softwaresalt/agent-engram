@@ -119,13 +119,51 @@ pub async fn run_impact(
     run_tool("impact_analysis", Some(params), flags, formatter).await
 }
 
-/// `engram query-graph <query>` → `query_graph`
+/// `engram query-graph --operation <op> [opts]` → `query_graph`
+///
+/// Builds a structured JSON params object from CLI flags and dispatches
+/// to the `query_graph` MCP tool.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_query_graph(
-    query: String,
+    operation: String,
+    root: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    direction: Option<String>,
+    max_depth: Option<u32>,
+    max_nodes: Option<u32>,
+    edge_types: Option<String>,
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
 ) -> i32 {
-    let params = json!({ "query": query });
+    let mut params = json!({ "operation": operation });
+    if let Some(r) = root {
+        params["root"] = Value::String(r);
+    }
+    if let Some(f) = from {
+        params["from"] = Value::String(f);
+    }
+    if let Some(t) = to {
+        params["to"] = Value::String(t);
+    }
+    if let Some(d) = direction {
+        params["direction"] = Value::String(d);
+    }
+    if let Some(md) = max_depth {
+        params["max_depth"] = Value::Number(md.into());
+    }
+    if let Some(mn) = max_nodes {
+        params["max_nodes"] = Value::Number(mn.into());
+    }
+    if let Some(et) = edge_types {
+        let types: Vec<Value> = et
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| Value::String(s.to_owned()))
+            .collect();
+        params["edge_types"] = Value::Array(types);
+    }
     run_tool("query_graph", Some(params), flags, formatter).await
 }
 

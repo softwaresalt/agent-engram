@@ -2,9 +2,10 @@
 //!
 //! Provides code graph models: [`CodeFile`], [`Function`], [`Class`],
 //! [`Interface`], and [`CodeEdge`]; the file watcher event types
-//! [`WatcherEvent`] and [`WatchEventKind`]; and workspace content
+//! [`WatcherEvent`] and [`WatchEventKind`]; workspace content
 //! intelligence models: [`RegistryConfig`], [`ContentRecord`],
-//! [`BacklogFile`], and [`CommitNode`].
+//! [`BacklogFile`], and [`CommitNode`]; and graph query types
+//! [`TraversalDirection`].
 
 pub mod backlog;
 pub mod backlog_graph;
@@ -17,6 +18,7 @@ pub mod content;
 pub mod evaluation;
 pub mod file_hash;
 pub mod function;
+pub mod graph_query;
 pub mod health;
 pub mod interface;
 pub mod metrics;
@@ -36,6 +38,7 @@ pub use config::{BatchConfig, CodeGraphConfig, EmbeddingConfig, PluginConfig, Wo
 pub use content::ContentRecord;
 pub use file_hash::FileHashRecord;
 pub use function::Function;
+pub use graph_query::TraversalDirection;
 pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
 pub use metrics::MetricsConfig;

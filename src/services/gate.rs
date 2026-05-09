@@ -1,7 +1,8 @@
-//! Sandboxed query sanitizer for MCP graph queries.
+//! Sandboxed query sanitizer — validates that a Datalog (CozoScript) string
+//! does not contain write operations.
 //!
-//! Validates that a Datalog (CozoScript) query string does not contain write operations.
-//! Used by the `query_graph` tool to enforce read-only query access.
+//! Previously used by the `query_graph` tool; retained as a public utility
+//! for callers that need write-keyword detection on raw query strings.
 
 // ── Sandboxed query sanitizer ─────────────────────────────────────────────────
 

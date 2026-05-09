@@ -291,19 +291,54 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Sandboxed Query ────────────────────────────────────────────────
         Tool::new(
             "query_graph",
-            "Execute a read-only Datalog (CozoScript) query against the workspace graph database. Write operations (INSERT, UPDATE, DELETE, etc.) are rejected. Results are capped at the configured row limit. Note: not yet implemented — always returns an error.",
+            "Execute a structured graph query against the workspace code and backlog graph. \
+             Three operations are supported: \
+             `neighborhood` (BFS from a root node), \
+             `find_path` (shortest path between two nodes), and \
+             `transitive_closure` (all nodes reachable from a root). \
+             Edge types: code (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`) \
+             and backlog (`parent_of`, `depends_on`, `backlog_references`). \
+             Results are capped at 500 nodes.",
             schema(json!({
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "operation": {
                         "type": "string",
-                        "description": "A Datalog (CozoScript) query to execute against the workspace graph database"
+                        "enum": ["neighborhood", "find_path", "transitive_closure"],
+                        "description": "Graph operation to execute"
                     },
-                    "params": {
-                        "description": "Reserved for future parameterised query support"
+                    "root": {
+                        "type": "string",
+                        "description": "Root node ID for `neighborhood` and `transitive_closure` (e.g. `fn:abc123`)"
+                    },
+                    "from": {
+                        "type": "string",
+                        "description": "Start node ID for `find_path`"
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "End node ID for `find_path`"
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["both", "outgoing", "incoming"],
+                        "description": "Traversal direction for `neighborhood` — defaults to `both`"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum hop depth — defaults to 3"
+                    },
+                    "max_nodes": {
+                        "type": "integer",
+                        "description": "Maximum result nodes for `neighborhood` and `transitive_closure` — defaults to 50, hard-capped at 500"
+                    },
+                    "edge_types": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Edge types to traverse — empty array means all types"
                     }
                 },
-                "required": ["query"]
+                "required": ["operation"]
             })),
         ),
         // ── DB observability ──────────────────────────────────────────────

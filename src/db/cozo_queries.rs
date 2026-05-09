@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
+use crate::models::TraversalDirection;
 use crate::models::code_edge::CodeEdgeType;
 
 pub use crate::models::FileHashRecord;
@@ -235,6 +236,39 @@ pub struct BfsResult {
     pub edges: Vec<BfsEdge>,
     /// Whether the traversal was truncated at `max_nodes`.
     pub truncated: bool,
+}
+
+/// A node in a structured `query_graph` result — code symbol or backlog artifact.
+#[derive(Debug, Clone)]
+pub struct QueryGraphNode {
+    /// Full qualified ID (e.g., `fn:abc123`, `048-F`).
+    pub id: String,
+    /// Node kind: symbol table name (`function`, `class`, etc.) or `backlog_artifact`.
+    pub kind: String,
+    /// Display name.
+    pub name: String,
+    /// Workspace-relative file path (present for code symbols, absent for backlog artifacts).
+    pub file_path: Option<String>,
+}
+
+/// Result of a structured `query_graph` neighborhood or transitive-closure operation.
+#[derive(Debug)]
+pub struct QueryGraphResult {
+    /// Nodes discovered during traversal (excludes the root).
+    pub nodes: Vec<QueryGraphNode>,
+    /// Edges connecting the traversed nodes.
+    pub edges: Vec<BfsEdge>,
+    /// Whether traversal was truncated at `max_nodes`.
+    pub truncated: bool,
+}
+
+/// Result of a `find_path` graph query.
+#[derive(Debug)]
+pub struct FindPathResult {
+    /// Whether a path was found within `max_depth` hops.
+    pub found: bool,
+    /// Sequence of node IDs from `from` to `to` (inclusive). Empty when `found` is false.
+    pub path: Vec<String>,
 }
 
 /// Filter criteria for `list_symbols`.
@@ -3164,7 +3198,508 @@ impl CodeGraphQueries {
         })
     }
 
-    /// Resolve a symbol from a specific table by ID.
+    // ── Structured query_graph traversal ─────────────────────────────────────
+
+    /// Resolve a backlog artifact ID to a [`QueryGraphNode`] using `backlog_node` metadata.
+    ///
+    /// Returns `None` when the ID is not found in `backlog_node`, so callers can
+    /// fall back to a bare-ID node if needed.
+    async fn resolve_backlog_node(&self, id: &str) -> Result<Option<QueryGraphNode>, EngramError> {
+        let script = "?[id, title, kind, file_path] := *backlog_node { id, title, kind, file_path }, id = $id";
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(id));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &result.rows[0];
+        let node_id = extract_str(row, 0);
+        let title = extract_str(row, 1);
+        let kind = extract_str(row, 2);
+        let file_path_val = extract_str(row, 3);
+        Ok(Some(QueryGraphNode {
+            id: node_id,
+            kind: if kind.is_empty() {
+                "backlog_artifact".to_owned()
+            } else {
+                kind
+            },
+            name: if title.is_empty() {
+                id.to_owned()
+            } else {
+                title
+            },
+            file_path: if file_path_val.is_empty() {
+                None
+            } else {
+                Some(file_path_val)
+            },
+        }))
+    }
+
+    /// BFS traversal with direction control and backlog edge support — used by
+    /// `query_graph_neighborhood`, `transitive_closure`, and `find_path`.
+    ///
+    /// Extends [`bfs_impl`] with:
+    /// - `direction`: `Outgoing`, `Incoming`, or `Both` (default in `bfs_impl`)
+    /// - Backlog edge types (`parent_of`, `depends_on`, `backlog_references`)
+    /// - Code `references` edge support (excluded from `bfs_impl` for SurrealDB parity)
+    ///
+    /// Results use [`QueryGraphNode`] rather than [`SymbolMatch`] to unify
+    /// code symbols and backlog artifacts in a single traversal result.
+    async fn bfs_directed_impl(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
+        allowed_edge_types: &[&str],
+        direction: TraversalDirection,
+    ) -> Result<QueryGraphResult, EngramError> {
+        // (edge_type_label, table_name) — concerns_edge is detected by table name at runtime
+        const CODE_EDGE_TABLES: &[(&str, &str)] = &[
+            ("calls", "calls_edge"),
+            ("imports", "imports_edge"),
+            ("defines", "defines_edge"),
+            ("inherits_from", "inherits_from_edge"),
+            ("concerns", "concerns_edge"),
+            ("references", "references_edge"),
+        ];
+        // (api_label, db_edge_type_value) — all routed through `backlog_edge` table
+        const BACKLOG_EDGE_TYPES: &[(&str, &str)] = &[
+            ("parent_of", "parent_of"),
+            ("depends_on", "depends_on"),
+            ("backlog_references", "references"),
+        ];
+
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut nodes: Vec<QueryGraphNode> = Vec::new();
+        let mut edges: Vec<BfsEdge> = Vec::new();
+        let mut frontier: Vec<String> = vec![root_id.to_owned()];
+        visited.insert(root_id.to_owned());
+        let mut truncated = false;
+
+        let traverse_out = matches!(
+            direction,
+            TraversalDirection::Outgoing | TraversalDirection::Both
+        );
+        let traverse_in = matches!(
+            direction,
+            TraversalDirection::Incoming | TraversalDirection::Both
+        );
+
+        'outer: for _ in 0..max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next_frontier: Vec<String> = Vec::new();
+
+            for node in &frontier {
+                // ── Code edges ──────────────────────────────────────────────
+                for (et, tbl) in CODE_EDGE_TABLES {
+                    if !allowed_edge_types.is_empty() && !allowed_edge_types.contains(et) {
+                        continue;
+                    }
+                    // concerns_edge uses task_id/symbol_id instead of from/to.
+                    let (out_script, in_script) = if *tbl == "concerns_edge" {
+                        (
+                            "?[from, to] := *concerns_edge { task_id, symbol_id }, task_id = $node, from = task_id, to = symbol_id".to_owned(),
+                            "?[from, to] := *concerns_edge { task_id, symbol_id }, symbol_id = $node, from = task_id, to = symbol_id".to_owned(),
+                        )
+                    } else {
+                        (
+                            format!("?[from, to] := *{tbl} {{ from, to }}, from = $node"),
+                            format!("?[from, to] := *{tbl} {{ from, to }}, to = $node"),
+                        )
+                    };
+
+                    if traverse_out {
+                        let mut p = BTreeMap::new();
+                        p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        let r = self
+                            .db
+                            .run_script(&out_script, p, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r.rows {
+                            let target = extract_str(row, 1);
+                            if visited.contains(&target) {
+                                continue;
+                            }
+                            if let Ok(Some(sym)) = self.resolve_symbol(&target).await {
+                                if nodes.len() >= max_nodes {
+                                    truncated = true;
+                                    break 'outer;
+                                }
+                                edges.push(BfsEdge {
+                                    edge_type: (*et).to_owned(),
+                                    from: node.clone(),
+                                    to: target.clone(),
+                                });
+                                visited.insert(target.clone());
+                                nodes.push(QueryGraphNode {
+                                    id: sym.id,
+                                    kind: sym.table,
+                                    name: sym.name,
+                                    file_path: Some(sym.file_path),
+                                });
+                                next_frontier.push(target);
+                            }
+                        }
+                    }
+
+                    if traverse_in {
+                        let mut p2 = BTreeMap::new();
+                        p2.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        let r2 = self
+                            .db
+                            .run_script(&in_script, p2, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r2.rows {
+                            let source = extract_str(row, 0);
+                            if visited.contains(&source) {
+                                continue;
+                            }
+                            // For concerns_edge incoming, column 0 is `task_id` (a
+                            // backlog artifact ID). Try backlog first, fall back to
+                            // code-symbol resolution for other edge types.
+                            let graph_node = if *tbl == "concerns_edge" {
+                                self.resolve_backlog_node(&source)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .or_else(|| {
+                                        // Bare-ID fallback so the node is not silently dropped.
+                                        Some(QueryGraphNode {
+                                            id: source.clone(),
+                                            kind: "backlog_artifact".to_owned(),
+                                            name: source.clone(),
+                                            file_path: None,
+                                        })
+                                    })
+                            } else {
+                                self.resolve_symbol(&source)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .map(|sym| QueryGraphNode {
+                                        id: sym.id,
+                                        kind: sym.table,
+                                        name: sym.name,
+                                        file_path: Some(sym.file_path),
+                                    })
+                            };
+                            if let Some(gn) = graph_node {
+                                if nodes.len() >= max_nodes {
+                                    truncated = true;
+                                    break 'outer;
+                                }
+                                edges.push(BfsEdge {
+                                    edge_type: (*et).to_owned(),
+                                    from: source.clone(),
+                                    to: node.clone(),
+                                });
+                                visited.insert(source.clone());
+                                nodes.push(gn);
+                                next_frontier.push(source);
+                            }
+                        }
+                    }
+                }
+
+                // ── Backlog edges ────────────────────────────────────────────
+                for (api_label, db_et) in BACKLOG_EDGE_TYPES {
+                    if !allowed_edge_types.is_empty() && !allowed_edge_types.contains(api_label) {
+                        continue;
+                    }
+                    let out_script =
+                        "?[from, to] := *backlog_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let in_script =
+                        "?[from, to] := *backlog_edge { from_id, to_id, edge_type }, to_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+
+                    if traverse_out {
+                        let mut p = BTreeMap::new();
+                        p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r = self
+                            .db
+                            .run_script(&out_script, p, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r.rows {
+                            let target = extract_str(row, 1);
+                            if visited.contains(&target) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: node.clone(),
+                                to: target.clone(),
+                            });
+                            visited.insert(target.clone());
+                            // Enrich with backlog_node metadata; fall back to bare ID.
+                            let gn = self
+                                .resolve_backlog_node(&target)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: target.clone(),
+                                    kind: "backlog_artifact".to_owned(),
+                                    name: target.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(target);
+                        }
+                    }
+
+                    if traverse_in {
+                        let mut p2 = BTreeMap::new();
+                        p2.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p2.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r2 = self
+                            .db
+                            .run_script(&in_script, p2, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r2.rows {
+                            let source = extract_str(row, 0);
+                            if visited.contains(&source) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: source.clone(),
+                                to: node.clone(),
+                            });
+                            visited.insert(source.clone());
+                            // Enrich with backlog_node metadata; fall back to bare ID.
+                            let gn = self
+                                .resolve_backlog_node(&source)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: source.clone(),
+                                    kind: "backlog_artifact".to_owned(),
+                                    name: source.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(source);
+                        }
+                    }
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        Ok(QueryGraphResult {
+            nodes,
+            edges,
+            truncated,
+        })
+    }
+
+    /// Structured graph neighborhood — BFS from `root_id` up to `max_depth` hops.
+    ///
+    /// Supports bidirectional or directed traversal via `direction`.
+    /// Pass an empty `edge_types` slice to traverse all available edge types
+    /// (code + backlog). Non-empty slices restrict traversal to the named types.
+    ///
+    /// Code edge types: `calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`.
+    /// Backlog edge types: `parent_of`, `depends_on`, `backlog_references`.
+    pub async fn query_graph_neighborhood(
+        &self,
+        root_id: &str,
+        direction: TraversalDirection,
+        max_depth: usize,
+        max_nodes: usize,
+        edge_types: &[&str],
+    ) -> Result<QueryGraphResult, EngramError> {
+        let start = std::time::Instant::now();
+        let result = self
+            .bfs_directed_impl(root_id, max_depth, max_nodes, edge_types, direction)
+            .await;
+        crate::services::query_stats::record_timing(
+            "query_graph_neighborhood",
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+        result
+    }
+
+    /// Transitive closure — all nodes reachable from `root_id` following outgoing edges.
+    ///
+    /// Unlike `query_graph_neighborhood`, only forward (outgoing) edges are traversed.
+    /// Results include both code symbols and backlog artifacts reachable in `max_depth`
+    /// hops respecting the `edge_types` filter.
+    pub async fn transitive_closure(
+        &self,
+        root_id: &str,
+        max_depth: usize,
+        max_nodes: usize,
+        edge_types: &[&str],
+    ) -> Result<QueryGraphResult, EngramError> {
+        let start = std::time::Instant::now();
+        let result = self
+            .bfs_directed_impl(
+                root_id,
+                max_depth,
+                max_nodes,
+                edge_types,
+                TraversalDirection::Outgoing,
+            )
+            .await;
+        crate::services::query_stats::record_timing(
+            "transitive_closure",
+            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+        result
+    }
+
+    /// BFS shortest-path search from `from_id` to `to_id` via outgoing edges.
+    ///
+    /// Returns the sequence of node IDs on the shortest path (inclusive of both
+    /// endpoints). Returns `found: false` when no path exists within `max_depth` hops.
+    ///
+    /// Only forward (outgoing) edges are traversed. Pass an empty `edge_types`
+    /// slice to allow all edge types.
+    pub async fn find_path(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        max_depth: usize,
+        edge_types: &[&str],
+    ) -> Result<FindPathResult, EngramError> {
+        const CODE_EDGE_TABLES: &[(&str, &str)] = &[
+            ("calls", "calls_edge"),
+            ("imports", "imports_edge"),
+            ("defines", "defines_edge"),
+            ("inherits_from", "inherits_from_edge"),
+            ("concerns", "concerns_edge"),
+            ("references", "references_edge"),
+        ];
+        const BACKLOG_EDGE_TYPES: &[(&str, &str)] = &[
+            ("parent_of", "parent_of"),
+            ("depends_on", "depends_on"),
+            ("backlog_references", "references"),
+        ];
+
+        if from_id == to_id {
+            return Ok(FindPathResult {
+                found: true,
+                path: vec![from_id.to_owned()],
+            });
+        }
+
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut parent: HashMap<String, String> = HashMap::new();
+        let mut frontier: Vec<String> = vec![from_id.to_owned()];
+        visited.insert(from_id.to_owned());
+        let mut found = false;
+
+        'outer: for _ in 0..max_depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next_frontier: Vec<String> = Vec::new();
+
+            for node in &frontier {
+                // Code edges (outgoing only for path finding)
+                for (et, tbl) in CODE_EDGE_TABLES {
+                    if !edge_types.is_empty() && !edge_types.contains(et) {
+                        continue;
+                    }
+                    let script = if *tbl == "concerns_edge" {
+                        "?[from, to] := *concerns_edge { task_id, symbol_id }, task_id = $node, from = task_id, to = symbol_id".to_owned()
+                    } else {
+                        format!("?[from, to] := *{tbl} {{ from, to }}, from = $node")
+                    };
+                    let mut p = BTreeMap::new();
+                    p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                    let r = self
+                        .db
+                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r.rows {
+                        let target = extract_str(row, 1);
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        parent.insert(target.clone(), node.clone());
+                        visited.insert(target.clone());
+                        if target == to_id {
+                            found = true;
+                            break 'outer;
+                        }
+                        next_frontier.push(target);
+                    }
+                }
+
+                // Backlog edges (outgoing only)
+                for (api_label, db_et) in BACKLOG_EDGE_TYPES {
+                    if !edge_types.is_empty() && !edge_types.contains(api_label) {
+                        continue;
+                    }
+                    let script =
+                        "?[from, to] := *backlog_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let mut p = BTreeMap::new();
+                    p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                    p.insert("et".to_owned(), DataValue::from(*db_et));
+                    let r = self
+                        .db
+                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r.rows {
+                        let target = extract_str(row, 1);
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        parent.insert(target.clone(), node.clone());
+                        visited.insert(target.clone());
+                        if target == to_id {
+                            found = true;
+                            break 'outer;
+                        }
+                        next_frontier.push(target);
+                    }
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        if found {
+            // Reconstruct path from parent map (reverse walk from `to_id` to `from_id`).
+            let mut path = vec![to_id.to_owned()];
+            let mut cur = to_id.to_owned();
+            while cur != from_id {
+                if let Some(p) = parent.get(&cur) {
+                    cur = p.clone();
+                    path.push(cur.clone());
+                } else {
+                    break;
+                }
+            }
+            path.reverse();
+            Ok(FindPathResult { found: true, path })
+        } else {
+            Ok(FindPathResult {
+                found: false,
+                path: Vec::new(),
+            })
+        }
+    }
     async fn resolve_from_table(
         &self,
         node_id: &str,
