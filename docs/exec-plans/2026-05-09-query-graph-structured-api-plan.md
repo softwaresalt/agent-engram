@@ -83,7 +83,7 @@ Key source locations:
 - `src/tools/read.rs` — wire `query_graph` to dispatch to the correct DB method
 
 **Changes**:
-- `neighborhood`: delegate to existing `bfs_impl` with edge_type filter; add backlog edge tables (`backlog_edge` with `parent_of`, `depends_on`, `backlog_references`) to the edge table list when backlog edges are requested
+- `neighborhood`: delegate to existing `bfs_impl` with edge_type filter; add backlog edge traversal support — the API-layer `edge_types` values `parent_of`, `depends_on`, and `backlog_references` map internally to `backlog_edge WHERE edge_type = 'parent_of'/'depends_on'/'references'`
 - `find_path`: implement bidirectional BFS or iterative-deepening BFS; return the first shortest path as a list of nodes + edges; cap at `max_depth` (default 5)
 - `transitive_closure`: implement directed BFS collecting all reachable nodes via specified edge types in the specified direction; cap at `max_nodes` (default 100)
 - All operations return a common `GraphQueryResult` struct: `{ nodes: Vec<SymbolMatch>, edges: Vec<BfsEdge>, truncated: bool, operation: String }`
@@ -232,12 +232,13 @@ new BFS logic distinct from `bfs_impl`. This may push Unit 2 beyond the
 #### P3 — `backlog_references` edge type name (Rust Reviewer)
 
 The backlog `BacklogEdgeType::References` enum uses `as_str()` returning
-`"references"`, which collides with the code `references_edge` table name.
-The query API resolves this by exposing the backlog variant as
-`backlog_references` in the `edge_types` filter namespace, mapping it
-internally to `backlog_edge WHERE edge_type = 'references'`. The stored
-`BacklogEdgeType` enum and its `as_str()` remain unchanged — the prefix
-is an API-layer concern only.
+`"references"`, which collides with the code edge type name `references`
+(which maps to the `references_edge` relation). The query API resolves this
+by exposing the backlog variant as `backlog_references` in the `edge_types`
+filter namespace, mapping it internally to
+`backlog_edge WHERE edge_type = 'references'`. The stored `BacklogEdgeType`
+enum and its `as_str()` remain unchanged — the prefix is an API-layer
+concern only.
 
 #### P3 — Default values not specified for `max_depth` / `max_nodes` (Rust Reviewer)
 
