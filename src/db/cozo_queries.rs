@@ -3200,6 +3200,46 @@ impl CodeGraphQueries {
 
     // ── Structured query_graph traversal ─────────────────────────────────────
 
+    /// Resolve a backlog artifact ID to a [`QueryGraphNode`] using `backlog_node` metadata.
+    ///
+    /// Returns `None` when the ID is not found in `backlog_node`, so callers can
+    /// fall back to a bare-ID node if needed.
+    async fn resolve_backlog_node(&self, id: &str) -> Result<Option<QueryGraphNode>, EngramError> {
+        let script = "?[id, title, kind, file_path] := *backlog_node { id, title, kind, file_path }, id = $id";
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(id));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &result.rows[0];
+        let node_id = extract_str(row, 0);
+        let title = extract_str(row, 1);
+        let kind = extract_str(row, 2);
+        let file_path_val = extract_str(row, 3);
+        Ok(Some(QueryGraphNode {
+            id: node_id,
+            kind: if kind.is_empty() {
+                "backlog_artifact".to_owned()
+            } else {
+                kind
+            },
+            name: if title.is_empty() {
+                id.to_owned()
+            } else {
+                title
+            },
+            file_path: if file_path_val.is_empty() {
+                None
+            } else {
+                Some(file_path_val)
+            },
+        }))
+    }
+
     /// BFS traversal with direction control and backlog edge support — used by
     /// `query_graph_neighborhood`, `transitive_closure`, and `find_path`.
     ///
@@ -3321,7 +3361,36 @@ impl CodeGraphQueries {
                             if visited.contains(&source) {
                                 continue;
                             }
-                            if let Ok(Some(sym)) = self.resolve_symbol(&source).await {
+                            // For concerns_edge incoming, column 0 is `task_id` (a
+                            // backlog artifact ID). Try backlog first, fall back to
+                            // code-symbol resolution for other edge types.
+                            let graph_node = if *tbl == "concerns_edge" {
+                                self.resolve_backlog_node(&source)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .or_else(|| {
+                                        // Bare-ID fallback so the node is not silently dropped.
+                                        Some(QueryGraphNode {
+                                            id: source.clone(),
+                                            kind: "backlog_artifact".to_owned(),
+                                            name: source.clone(),
+                                            file_path: None,
+                                        })
+                                    })
+                            } else {
+                                self.resolve_symbol(&source)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .map(|sym| QueryGraphNode {
+                                        id: sym.id,
+                                        kind: sym.table,
+                                        name: sym.name,
+                                        file_path: Some(sym.file_path),
+                                    })
+                            };
+                            if let Some(gn) = graph_node {
                                 if nodes.len() >= max_nodes {
                                     truncated = true;
                                     break 'outer;
@@ -3332,12 +3401,7 @@ impl CodeGraphQueries {
                                     to: node.clone(),
                                 });
                                 visited.insert(source.clone());
-                                nodes.push(QueryGraphNode {
-                                    id: sym.id,
-                                    kind: sym.table,
-                                    name: sym.name,
-                                    file_path: Some(sym.file_path),
-                                });
+                                nodes.push(gn);
                                 next_frontier.push(source);
                             }
                         }
@@ -3379,12 +3443,19 @@ impl CodeGraphQueries {
                                 to: target.clone(),
                             });
                             visited.insert(target.clone());
-                            nodes.push(QueryGraphNode {
-                                id: target.clone(),
-                                kind: "backlog_artifact".to_owned(),
-                                name: target.clone(),
-                                file_path: None,
-                            });
+                            // Enrich with backlog_node metadata; fall back to bare ID.
+                            let gn = self
+                                .resolve_backlog_node(&target)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: target.clone(),
+                                    kind: "backlog_artifact".to_owned(),
+                                    name: target.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
                             next_frontier.push(target);
                         }
                     }
@@ -3412,12 +3483,19 @@ impl CodeGraphQueries {
                                 to: node.clone(),
                             });
                             visited.insert(source.clone());
-                            nodes.push(QueryGraphNode {
-                                id: source.clone(),
-                                kind: "backlog_artifact".to_owned(),
-                                name: source.clone(),
-                                file_path: None,
-                            });
+                            // Enrich with backlog_node metadata; fall back to bare ID.
+                            let gn = self
+                                .resolve_backlog_node(&source)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: source.clone(),
+                                    kind: "backlog_artifact".to_owned(),
+                                    name: source.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
                             next_frontier.push(source);
                         }
                     }

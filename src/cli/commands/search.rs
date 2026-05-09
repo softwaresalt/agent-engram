@@ -158,7 +158,9 @@ pub async fn run_query_graph(
     if let Some(et) = edge_types {
         let types: Vec<Value> = et
             .split(',')
-            .map(|s| Value::String(s.trim().to_owned()))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| Value::String(s.to_owned()))
             .collect();
         params["edge_types"] = Value::Array(types);
     }
