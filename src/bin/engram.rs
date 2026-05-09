@@ -184,14 +184,38 @@ enum Command {
         concept: Option<String>,
     },
 
-    /// Execute a read-only Datalog query against the workspace graph (`query_graph`).
+    /// Execute a structured graph query against the workspace code and backlog graph (`query_graph`).
     ///
-    /// **Note**: this subcommand is not yet implemented. It always returns an error.
-    /// Included here to complete the CLI surface for future activation.
+    /// Three operations are supported:
+    /// - `neighborhood`: BFS from a root node in one or both directions.
+    /// - `find_path`: Shortest path between two nodes via outgoing edges.
+    /// - `transitive_closure`: All nodes reachable from a root via outgoing edges.
     #[command(name = "query-graph")]
     QueryGraph {
-        /// Datalog query string (`CozoScript`).
-        query: String,
+        /// Operation to execute: `neighborhood`, `find_path`, or `transitive_closure`.
+        #[arg(long, value_name = "OPERATION")]
+        operation: String,
+        /// Root node ID for `neighborhood` and `transitive_closure` (e.g. `fn:abc123`).
+        #[arg(long, value_name = "ID")]
+        root: Option<String>,
+        /// Start node ID for `find_path`.
+        #[arg(long, value_name = "ID")]
+        from: Option<String>,
+        /// End node ID for `find_path`.
+        #[arg(long, value_name = "ID")]
+        to: Option<String>,
+        /// Traversal direction for `neighborhood`: `both` (default), `outgoing`, or `incoming`.
+        #[arg(long, value_name = "DIRECTION")]
+        direction: Option<String>,
+        /// Maximum hop depth (default: 3).
+        #[arg(long, value_name = "N")]
+        max_depth: Option<u32>,
+        /// Maximum result nodes for `neighborhood` and `transitive_closure` (default: 50).
+        #[arg(long, value_name = "N")]
+        max_nodes: Option<u32>,
+        /// Comma-separated edge types to traverse (default: all types).
+        #[arg(long, value_name = "TYPES")]
+        edge_types: Option<String>,
     },
 
     /// Return workspace statistics: task counts, label distribution (`get_workspace_statistics`).
@@ -372,9 +396,22 @@ async fn main() -> Result<()> {
             let code = search::run_impact(symbol, depth, max_nodes, concept, &flags, &fmt).await;
             std::process::exit(code);
         }
-        Command::QueryGraph { query } => {
+        Command::QueryGraph {
+            operation,
+            root,
+            from,
+            to,
+            direction,
+            max_depth,
+            max_nodes,
+            edge_types,
+        } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = search::run_query_graph(query, &flags, &fmt).await;
+            let code = search::run_query_graph(
+                operation, root, from, to, direction, max_depth, max_nodes, edge_types, &flags,
+                &fmt,
+            )
+            .await;
             std::process::exit(code);
         }
         Command::Stats => {

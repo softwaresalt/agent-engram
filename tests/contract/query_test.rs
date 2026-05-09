@@ -110,7 +110,7 @@ fn t069_timeout_error_code() {
     assert_eq!(details["timeout_ms"], 5000);
 }
 
-/// S038: Invalid `SurrealQL` syntax has correct code (4012).
+/// S038: Invalid graph query syntax returns the correct error code (4012).
 #[test]
 fn t070_invalid_syntax_error_code() {
     let err = EngramError::GraphQuery(GraphQueryError::Invalid {
@@ -147,4 +147,104 @@ fn t070c_unterminated_single_quote_rejected() {
         "unterminated single-quote must be rejected"
     );
     assert_eq!(result.unwrap_err().to_response().error.code, 4012);
+}
+
+// ── query_graph structured API contract tests ─────────────────────────────────
+
+/// The `query_graph` tool catalog entry has `operation` as a required field.
+#[test]
+fn query_graph_catalog_has_operation_field() {
+    use engram::shim::tools_catalog;
+
+    let tools = tools_catalog::all_tools();
+    let qg = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "query_graph")
+        .expect("query_graph tool must be in catalog");
+
+    let schema = qg.input_schema.as_ref();
+    let props = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("query_graph schema must have properties");
+
+    assert!(
+        props.contains_key("operation"),
+        "query_graph schema must have 'operation' property"
+    );
+
+    let required = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .expect("query_graph schema must have required array");
+
+    let required_strs: Vec<&str> = required
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+
+    assert!(
+        required_strs.contains(&"operation"),
+        "'operation' must be required in query_graph schema"
+    );
+}
+
+/// The `query_graph` tool catalog entry no longer describes a raw Datalog string.
+#[test]
+fn query_graph_catalog_no_raw_datalog_description() {
+    use engram::shim::tools_catalog;
+
+    let tools = tools_catalog::all_tools();
+    let qg = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "query_graph")
+        .expect("query_graph tool must be in catalog");
+
+    let description = qg.description.as_deref().unwrap_or("");
+    assert!(
+        !description.contains("not yet implemented"),
+        "query_graph description must not say 'not yet implemented'"
+    );
+}
+
+/// The `query_graph` tool catalog describes the three supported operations.
+#[test]
+fn query_graph_catalog_describes_three_operations() {
+    use engram::shim::tools_catalog;
+
+    let tools = tools_catalog::all_tools();
+    let qg = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "query_graph")
+        .expect("query_graph tool must be in catalog");
+
+    let schema = qg.input_schema.as_ref();
+    let props = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("schema must have properties");
+
+    let operation_enum = props
+        .get("operation")
+        .and_then(|op| op.get("enum"))
+        .and_then(serde_json::Value::as_array)
+        .expect("operation field must have an enum");
+
+    let ops: Vec<&str> = operation_enum
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+
+    assert!(
+        ops.contains(&"neighborhood"),
+        "operation enum must contain 'neighborhood'"
+    );
+    assert!(
+        ops.contains(&"find_path"),
+        "operation enum must contain 'find_path'"
+    );
+    assert!(
+        ops.contains(&"transitive_closure"),
+        "operation enum must contain 'transitive_closure'"
+    );
 }

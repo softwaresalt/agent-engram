@@ -298,6 +298,10 @@ name = "unit_graph_traversal_migration"
 path = "tests/unit/graph_traversal_migration_test.rs"
 
 [[test]]
+name = "unit_graph_query_model"
+path = "tests/unit/graph_query_model_test.rs"
+
+[[test]]
 name = "integration_unified_search_embedding_guard"
 path = "tests/integration/unified_search_embedding_guard_test.rs"
 

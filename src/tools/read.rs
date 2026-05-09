@@ -4,10 +4,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, SymbolFilter};
-use crate::errors::{
-    CodeGraphError, EngramError, GraphQueryError, QueryError, SystemError, WorkspaceError,
-};
+use crate::db::queries::{CodeGraphQueries, FindPathResult, QueryGraphResult, SymbolFilter};
+use crate::errors::{CodeGraphError, EngramError, QueryError, SystemError, WorkspaceError};
+use crate::models::TraversalDirection;
 use crate::server::state::SharedState;
 use crate::services::embedding;
 use crate::services::metrics;
@@ -974,45 +973,206 @@ pub async fn get_token_savings_report(
 
 // ── query_graph (T074) ────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-struct QueryGraphParams {
-    query: String,
-    /// Reserved for future parameterised queries; accepted but not yet used.
-    #[serde(default)]
-    #[allow(dead_code)]
-    params: Option<serde_json::Value>,
+// ── query_graph (T048) ────────────────────────────────────────────────────────
+
+/// Hard cap on the number of result nodes returned by any `query_graph` operation.
+const HARD_MAX_NODES: usize = 500;
+
+fn default_max_depth() -> usize {
+    3
 }
 
-/// Sandboxed read-only Datalog query tool — stub, not yet implemented (Phase 2 placeholder).
+fn default_max_nodes() -> usize {
+    50
+}
+
+/// Structured input for the `query_graph` MCP tool.
 ///
-/// The query is sanitised by [`crate::services::gate::sanitize_query`] before
-/// dispatch; write keywords cause an immediate `QUERY_REJECTED` (4010) error.
-/// Currently always returns `GraphQueryError::Invalid` — `CozoDB` query execution
-/// will be wired in Phase 2.
+/// Dispatches to one of three operations via the required `operation` tag.
+/// Use `{ "operation": "neighborhood", "root": "fn:..." }` for graph exploration,
+/// `{ "operation": "find_path", "from": "...", "to": "..." }` for path queries, or
+/// `{ "operation": "transitive_closure", "root": "..." }` for reachability analysis.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+enum GraphQuery {
+    /// BFS neighborhood from a root node (bidirectional by default).
+    Neighborhood {
+        /// Root node ID (e.g., `fn:abc123`, `class:xyz789`).
+        root: String,
+        /// Traversal direction — defaults to `both`.
+        #[serde(default)]
+        direction: TraversalDirection,
+        /// Maximum hop depth from root — defaults to 3.
+        #[serde(default = "default_max_depth")]
+        max_depth: usize,
+        /// Maximum nodes to return — defaults to 50, hard-capped at 500.
+        #[serde(default = "default_max_nodes")]
+        max_nodes: usize,
+        /// Edge types to traverse — empty means all types.
+        #[serde(default)]
+        edge_types: Vec<String>,
+    },
+    /// BFS shortest-path search between two nodes (forward edges only).
+    FindPath {
+        /// Start node ID.
+        from: String,
+        /// End node ID.
+        to: String,
+        /// Maximum hop depth to search — defaults to 3.
+        #[serde(default = "default_max_depth")]
+        max_depth: usize,
+        /// Edge types to traverse — empty means all types.
+        #[serde(default)]
+        edge_types: Vec<String>,
+    },
+    /// All nodes reachable from a root via outgoing edges.
+    TransitiveClosure {
+        /// Root node ID.
+        root: String,
+        /// Maximum hop depth — defaults to 3.
+        #[serde(default = "default_max_depth")]
+        max_depth: usize,
+        /// Maximum nodes to return — defaults to 50, hard-capped at 500.
+        #[serde(default = "default_max_nodes")]
+        max_nodes: usize,
+        /// Edge types to traverse — empty means all types.
+        #[serde(default)]
+        edge_types: Vec<String>,
+    },
+}
+
+/// Build a JSON response for `neighborhood` and `transitive_closure` results.
+fn build_graph_json(operation: &str, root: &str, result: QueryGraphResult) -> Value {
+    let node_count = result.nodes.len();
+    let nodes: Vec<Value> = result
+        .nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "kind": n.kind,
+                "name": n.name,
+                "file_path": n.file_path,
+            })
+        })
+        .collect();
+    let edges: Vec<Value> = result
+        .edges
+        .iter()
+        .map(|e| {
+            json!({
+                "edge_type": e.edge_type,
+                "from": e.from,
+                "to": e.to,
+            })
+        })
+        .collect();
+    json!({
+        "operation": operation,
+        "root": root,
+        "nodes": nodes,
+        "edges": edges,
+        "node_count": node_count,
+        "truncated": result.truncated,
+    })
+}
+
+/// Build a JSON response for `find_path` results.
+fn build_find_path_json(from: &str, to: &str, result: FindPathResult) -> Value {
+    let hop_count = if result.path.len() > 1 {
+        result.path.len() - 1
+    } else {
+        0
+    };
+    json!({
+        "operation": "find_path",
+        "from": from,
+        "to": to,
+        "found": result.found,
+        "path": result.path,
+        "hop_count": hop_count,
+    })
+}
+
+/// Execute a structured graph query against the workspace code and backlog graph.
+///
+/// Accepts a tagged `operation` JSON object instead of a raw Datalog string.
+/// Three operations are supported:
+/// - `neighborhood`: BFS from a root node in one or both directions.
+/// - `find_path`: Shortest path between two nodes via outgoing edges.
+/// - `transitive_closure`: All nodes reachable from a root via outgoing edges.
+///
+/// Edge type namespace: code edges (`calls`, `imports`, `defines`, `inherits_from`,
+/// `concerns`, `references`) and backlog edges (`parent_of`, `depends_on`,
+/// `backlog_references`). Pass an empty `edge_types` array to traverse all types.
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    use crate::services::gate::sanitize_query;
+    let raw = params.unwrap_or_default();
 
-    let parsed: QueryGraphParams =
-        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            EngramError::System(SystemError::InvalidParams {
-                reason: e.to_string(),
-            })
-        })?;
-
-    if parsed.query.trim().is_empty() {
-        return Err(EngramError::Query(QueryError::QueryEmpty));
+    // Legacy compat: if `query` field is present without `operation`, return a helpful error
+    // rather than a confusing parse failure message.
+    if let Some(obj) = raw.as_object() {
+        if obj.contains_key("query") && !obj.contains_key("operation") {
+            return Err(EngramError::System(SystemError::InvalidParams {
+                reason: "query_graph now requires a structured operation. \
+                         Use {\"operation\":\"neighborhood\",\"root\":\"fn:...\"} \
+                         instead of a raw Datalog query string."
+                    .into(),
+            }));
+        }
     }
 
-    sanitize_query(&parsed.query)?;
+    let gq: GraphQuery = serde_json::from_value(raw).map_err(|e| {
+        EngramError::System(SystemError::InvalidParams {
+            reason: e.to_string(),
+        })
+    })?;
 
-    // Ensure the workspace is set before returning the backend error so that
-    // basic pre-condition failures (no workspace) still surface correctly.
-    workspace_db(&state).await?;
+    let (data_dir, branch) = workspace_db(&state).await?;
+    let db = connect_db(&data_dir, &branch).await?;
+    let cg_queries = CodeGraphQueries::new(db);
 
-    Err(EngramError::GraphQuery(GraphQueryError::Invalid {
-        reason: "CozoDB query_graph not yet implemented (Phase 2)".into(),
-    }))
+    match gq {
+        GraphQuery::Neighborhood {
+            root,
+            direction,
+            max_depth,
+            max_nodes,
+            edge_types,
+        } => {
+            let capped = max_nodes.min(HARD_MAX_NODES);
+            let edge_refs: Vec<&str> = edge_types.iter().map(String::as_str).collect();
+            let result = cg_queries
+                .query_graph_neighborhood(&root, direction, max_depth, capped, &edge_refs)
+                .await?;
+            Ok(build_graph_json("neighborhood", &root, result))
+        }
+        GraphQuery::FindPath {
+            from,
+            to,
+            max_depth,
+            edge_types,
+        } => {
+            let edge_refs: Vec<&str> = edge_types.iter().map(String::as_str).collect();
+            let result = cg_queries
+                .find_path(&from, &to, max_depth, &edge_refs)
+                .await?;
+            Ok(build_find_path_json(&from, &to, result))
+        }
+        GraphQuery::TransitiveClosure {
+            root,
+            max_depth,
+            max_nodes,
+            edge_types,
+        } => {
+            let capped = max_nodes.min(HARD_MAX_NODES);
+            let edge_refs: Vec<&str> = edge_types.iter().map(String::as_str).collect();
+            let result = cg_queries
+                .transitive_closure(&root, max_depth, capped, &edge_refs)
+                .await?;
+            Ok(build_graph_json("transitive_closure", &root, result))
+        }
+    }
 }
 
 // ── query_changes (T041) ──────────────────────────────────────────────────────
