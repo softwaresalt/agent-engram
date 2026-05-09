@@ -82,17 +82,16 @@ workspace from `--workspace` rather than cwd.
 
 **Changes**:
 
-Add tests that invoke `installer::install()`, `installer::update()`, and
-`installer::uninstall()` with a workspace path different from the temp dir
-used as cwd, verifying that `.engram/` is created in the specified workspace,
-not in cwd.
+The bug is in the dispatch layer (`src/bin/engram.rs`), not in the installer
+library. Library-level tests calling `installer::install()` directly will
+always pass because those functions accept `workspace: &Path` explicitly —
+they never call `current_dir()`. Therefore the **primary regression tests
+must use the compiled binary** to exercise the dispatch path end-to-end.
 
-These are library-level integration tests calling the public API directly
-(same pattern as existing `s067_install_clean_workspace`). No binary
-subprocess needed since the fix is in the dispatch layer, not the installer
-library.
+Library-level tests are supplementary: they confirm the installer library
+itself handles arbitrary paths correctly but do not exercise the bug.
 
-Also add a CLI-level test using the compiled binary to verify end-to-end:
+Primary regression test using the compiled binary:
 
 ```rust
 // Verify `engram install --workspace <target>` creates .engram/ in <target>
