@@ -83,7 +83,7 @@ Key source locations:
 - `src/tools/read.rs` — wire `query_graph` to dispatch to the correct DB method
 
 **Changes**:
-- `neighborhood`: delegate to existing `bfs_impl` with edge_type filter; add backlog edge tables (`backlog_edge` with `parent_of`, `depends_on`, `references`) to the edge table list when backlog edges are requested
+- `neighborhood`: delegate to existing `bfs_impl` with edge_type filter; add backlog edge traversal support — the API-layer `edge_types` values `parent_of`, `depends_on`, and `backlog_references` map internally to `backlog_edge WHERE edge_type = 'parent_of'/'depends_on'/'references'`
 - `find_path`: implement bidirectional BFS or iterative-deepening BFS; return the first shortest path as a list of nodes + edges; cap at `max_depth` (default 5)
 - `transitive_closure`: implement directed BFS collecting all reachable nodes via specified edge types in the specified direction; cap at `max_nodes` (default 100)
 - All operations return a common `GraphQueryResult` struct: `{ nodes: Vec<SymbolMatch>, edges: Vec<BfsEdge>, truncated: bool, operation: String }`
@@ -144,7 +144,7 @@ Linear dependency — Unit 2 needs the types from Unit 1, and Unit 3 needs the w
 
 5. **Keep `query` string parameter for backward compat**: Existing MCP clients may send `{ "query": "..." }`. The new implementation accepts either the structured format or falls back to an error suggesting the structured format.
 
-6. **Backlog edges as an edge type filter value**: Rather than a separate API surface, backlog edges (`parent_of`, `depends_on`) are selectable via the `edge_types` array alongside code edges (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`). The `references` edge type maps exclusively to the code `references_edge` table (qualified-name references between symbols). Backlog `references` edges stored in `backlog_edge` are a distinct concept and are not included when a client requests `edge_types: ["references"]` — they require the explicit backlog edge type names (`parent_of`, `depends_on`). This avoids ambiguity: clients always know which graph domain they are querying. This unifies code and backlog graph traversal under a single API while keeping edge type namespaces distinct.
+6. **Backlog edges as an edge type filter value**: Rather than a separate API surface, backlog edges are selectable via the `edge_types` array alongside code edges. To avoid a naming collision between code `references` (`references_edge` table — qualified-name references between symbols) and backlog `references` (`backlog_edge` table with `edge_type = "references"` — cross-artifact reference links), the query API prefixes the backlog variant as `backlog_references`. The full edge type namespace is: code edges (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`) and backlog edges (`parent_of`, `depends_on`, `backlog_references`). The execution engine maps `backlog_references` to `backlog_edge WHERE edge_type = 'references'` internally. This unifies code and backlog graph traversal under a single API with no ambiguous type names.
 
 ## Risks and Caveats
 
@@ -229,13 +229,16 @@ new BFS logic distinct from `bfs_impl`. This may push Unit 2 beyond the
 (which requires new shortest-path logic). This keeps each task within the
 2-hour envelope.
 
-#### P3 — `references_backlog` edge type name (Rust Reviewer)
+#### P3 — `backlog_references` edge type name (Rust Reviewer)
 
-The plan lists `references_backlog` as an edge type for backlog edges, but the
-`BacklogEdgeType` enum uses `References` (with `as_str()` returning
-`"references"`). Using `"references_backlog"` would not match the stored edge
-type. Clarify whether code edges and backlog edges that share the
-`"references"` type need disambiguation, or if the same string is used for both.
+The backlog `BacklogEdgeType::References` enum uses `as_str()` returning
+`"references"`, which collides with the code edge type name `references`
+(which maps to the `references_edge` relation). The query API resolves this
+by exposing the backlog variant as `backlog_references` in the `edge_types`
+filter namespace, mapping it internally to
+`backlog_edge WHERE edge_type = 'references'`. The stored `BacklogEdgeType`
+enum and its `as_str()` remain unchanged — the prefix is an API-layer
+concern only.
 
 #### P3 — Default values not specified for `max_depth` / `max_nodes` (Rust Reviewer)
 
