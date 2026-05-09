@@ -12,6 +12,7 @@ use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::server::state::SharedState;
 use crate::services::dehydration;
 use crate::services::hydration;
+use crate::tools::lifecycle::drain_pending_sync;
 
 #[cfg(feature = "git-graph")]
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
@@ -136,6 +137,7 @@ pub async fn index_workspace(
     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
     let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
     state.finish_indexing().await;
+    drain_pending_sync(&state).await;
     result
 }
 
@@ -212,14 +214,19 @@ pub async fn sync_workspace(
         }
     }
 
-    // Reject if indexing is already running (FR-121 / 7003).
+    // If indexing is already running, queue a sync to run after it finishes
+    // rather than returning an error — callers get a "queued" status (044.004-T).
     if !state.try_start_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+        state.set_pending_sync();
+        return Ok(
+            json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+        );
     }
 
     // Run the sync logic, ensuring the flag is cleared on all exit paths.
     let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
     state.finish_indexing().await;
+    drain_pending_sync(&state).await;
     result
 }
 

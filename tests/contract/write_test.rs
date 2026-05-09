@@ -129,7 +129,7 @@ async fn contract_sync_workspace_requires_workspace() {
 }
 
 #[test]
-async fn contract_sync_workspace_rejects_while_in_progress() {
+async fn contract_sync_workspace_queues_while_in_progress() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     let engram_dir = workspace.path().join(".engram");
@@ -149,11 +149,16 @@ async fn contract_sync_workspace_rejects_while_in_progress() {
     // Simulate an indexing operation in progress.
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
-    let err = tools::dispatch(state, "sync_workspace", Some(json!({})))
+    // sync_workspace now queues a deferred sync instead of returning an error.
+    let result = tools::dispatch(Arc::clone(&state), "sync_workspace", Some(json!({})))
         .await
-        .expect_err("expected index-in-progress error");
+        .expect("sync_workspace should return queued status, not an error");
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    assert_eq!(result["status"], "queued", "expected status: queued");
+    assert!(
+        state.take_pending_sync(),
+        "pending_sync flag should be set after queued sync request"
+    );
 }
 
 // ── Phase 9: flush_state FR-153 guard ───────────────────────────────

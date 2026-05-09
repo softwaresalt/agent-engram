@@ -599,6 +599,12 @@ path = "tests/integration/cli_e2e_test.rs"
 name = "integration_cli_direct"
 path = "tests/integration/cli_direct_test.rs"
 
+# ── 044-F: Indexing resilience (SQLITE_BUSY + sync timeout) ──────────────────
+
+[[test]]
+name = "integration_indexing_resilience"
+path = "tests/integration/indexing_resilience_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

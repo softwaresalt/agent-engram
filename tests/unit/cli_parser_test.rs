@@ -101,8 +101,15 @@ fn cli_parity_count_covers_all_tools() {
 #[test]
 fn global_flags_names_are_stable() {
     // Document the expected global flag names for regression detection.
-    const GLOBAL_FLAGS: &[&str] = &["--workspace", "--id", "--json", "--format", "--quiet"];
-    assert_eq!(GLOBAL_FLAGS.len(), 5);
+    const GLOBAL_FLAGS: &[&str] = &[
+        "--workspace",
+        "--id",
+        "--json",
+        "--format",
+        "--quiet",
+        "--timeout",
+    ];
+    assert_eq!(GLOBAL_FLAGS.len(), 6);
     // All must be long flags (double dash).
     for flag in GLOBAL_FLAGS {
         assert!(

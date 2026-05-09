@@ -146,6 +146,9 @@ pub struct AppState {
     connection_registry: ConnectionRegistry,
     rate_limiter: RateLimiter,
     indexing_in_progress: AtomicBool,
+    /// Set when `sync_workspace` is called while indexing is active.
+    /// Drained after `finish_indexing()` in `background_db_hydration`.
+    pending_sync: AtomicBool,
     last_indexed_at: RwLock<Option<DateTime<Utc>>>,
     /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
     query_latencies: RwLock<VecDeque<u64>>,
@@ -196,6 +199,7 @@ impl AppState {
             connection_registry: ConnectionRegistry::new(),
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
             indexing_in_progress: AtomicBool::new(false),
+            pending_sync: AtomicBool::new(false),
             last_indexed_at: RwLock::new(None),
             query_latencies: RwLock::new(VecDeque::new()),
             tool_call_count: AtomicU64::new(0),
@@ -377,6 +381,24 @@ impl AppState {
     pub async fn finish_indexing(&self) {
         self.indexing_in_progress.store(false, Ordering::SeqCst);
         *self.last_indexed_at.write().await = Some(Utc::now());
+    }
+
+    /// Signal that a sync was requested while indexing was in progress.
+    ///
+    /// The next caller of [`finish_indexing`] that drains this flag (via
+    /// [`take_pending_sync`]) is responsible for running one coalesced sync.
+    pub fn set_pending_sync(&self) {
+        self.pending_sync.store(true, Ordering::SeqCst);
+    }
+
+    /// Atomically clear and return the pending-sync flag.
+    ///
+    /// Returns `true` once after a successful [`set_pending_sync`] call,
+    /// then `false` until set again.
+    pub fn take_pending_sync(&self) -> bool {
+        self.pending_sync
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
 
     /// Get the timestamp of the last completed indexing operation.

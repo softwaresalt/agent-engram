@@ -349,9 +349,61 @@ async fn background_db_hydration(
             }
         }
     }
-    // Release the indexing lock only if this task acquired it.
+    // Release the indexing lock only if this task acquired it, then drain any
+    // pending sync that was queued while we held the lock.
     if acquired_lock {
         state.finish_indexing().await;
+        drain_pending_sync(&state).await;
+    }
+}
+
+/// Drain a sync request that was queued while an indexing operation held the lock.
+///
+/// Called from every [`AppState::finish_indexing`] site so that a
+/// `sync_workspace` request queued during indexing is eventually executed.
+/// Multiple concurrent queue requests are coalesced into a single sync run.
+///
+/// # Race safety
+///
+/// The pending-sync flag is only consumed *after* the indexing lock is
+/// successfully acquired, preventing the flag from being cleared when the
+/// lock is unavailable. If `try_start_indexing` fails, the flag is re-set
+/// so the next `finish_indexing` caller can drain it.
+pub async fn drain_pending_sync(state: &AppState) {
+    if !state.take_pending_sync() {
+        return;
+    }
+    tracing::info!("drain_pending_sync: running coalesced sync after indexing completed");
+    if let (Some(snapshot), Some(ws_config)) = (
+        state.snapshot_workspace().await,
+        state.workspace_config().await,
+    ) {
+        if state.try_start_indexing() {
+            let ws_path = PathBuf::from(&snapshot.path);
+            match sync_code_graph(
+                &ws_path,
+                &snapshot.data_dir,
+                &snapshot.branch,
+                &ws_config.code_graph,
+            )
+            .await
+            {
+                Ok(result) => tracing::info!(
+                    files_added = result.files_added,
+                    files_modified = result.files_modified,
+                    "drain_pending_sync: coalesced sync complete"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "drain_pending_sync: coalesced sync failed"
+                ),
+            }
+            state.finish_indexing().await;
+        } else {
+            // Another indexer grabbed the lock before we could; re-queue so
+            // the next finish_indexing caller can drain it.
+            state.set_pending_sync();
+        }
     }
 }
 

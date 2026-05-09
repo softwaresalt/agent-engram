@@ -3,7 +3,7 @@
 use crate::cli::direct::run_direct_sync;
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
-use crate::cli::runner::run_tool;
+use crate::cli::runner::{INDEXING_TIMEOUT_SECS, run_tool, run_tool_timed};
 
 /// `engram sync [--full] [--direct]` — incremental or full workspace index.
 ///
@@ -25,7 +25,15 @@ pub async fn run_sync(
         return run_direct_sync(&workspace, full, flags.id_value(), formatter).await;
     }
     if full {
-        run_tool("index_workspace", None, flags, formatter).await
+        // Full re-index can take minutes on large workspaces — use extended timeout.
+        run_tool_timed(
+            "index_workspace",
+            None,
+            flags,
+            formatter,
+            INDEXING_TIMEOUT_SECS,
+        )
+        .await
     } else {
         run_tool("sync_workspace", None, flags, formatter).await
     }
@@ -40,7 +48,15 @@ pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputForm
         };
         return run_direct_sync(&workspace, true, flags.id_value(), formatter).await;
     }
-    run_tool("index_workspace", None, flags, formatter).await
+    // Full re-index can take minutes on large workspaces — use extended timeout.
+    run_tool_timed(
+        "index_workspace",
+        None,
+        flags,
+        formatter,
+        INDEXING_TIMEOUT_SECS,
+    )
+    .await
 }
 
 // Routing behaviour is covered by tests/integration/cli_direct_test.rs which
