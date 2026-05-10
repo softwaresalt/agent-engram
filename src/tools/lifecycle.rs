@@ -275,6 +275,15 @@ async fn background_db_hydration(
 
     let cg_queries = CodeGraphQueries::new(db);
 
+    // Signal "ready" immediately after the DB connects so the shim's
+    // poll_until_ready succeeds as soon as the daemon is responsive.
+    // JSONL code-graph hydration and offline-change detection may take
+    // minutes on large workspaces; keeping the daemon in "starting" for that
+    // entire duration causes the shim to time out.  Read-only tool handlers
+    // no longer gate on is_indexing(), so they return available (possibly
+    // partial) data while the background hydration and re-index complete.
+    state.set_hydration_ready();
+
     if let Err(e) = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await {
         tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
     }
@@ -308,27 +317,27 @@ async fn background_db_hydration(
         }))
         .await;
 
-    // Signal "ready" before the offline catch-up re-index so the shim's
-    // poll_until_ready succeeds promptly on cold start.  On a large workspace
-    // the re-index below can take minutes; keeping the daemon in "starting"
-    // for that entire duration causes the shim to time out and report
-    // "Daemon failed to reach Ready state" to the user even though the daemon
-    // is healthy.  Tool handlers already guard against concurrent indexing, so
-    // requests issued while the re-index runs receive a clear "indexing in
-    // progress" response rather than silently failing.
-    state.set_hydration_ready();
+    // Trigger a code-graph re-index when offline changes were found, but only
+    // when ENGRAM_AUTO_REINDEX=true is set.  Without the opt-in, startup
+    // re-indexing on a large workspace (e.g. 1 000+ files) can consume
+    // several gigabytes of RAM and block the daemon for many minutes.
+    // Users can trigger a re-index explicitly with `engram sync` or
+    // `engram index` at any time.
+    let auto_reindex = std::env::var("ENGRAM_AUTO_REINDEX")
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
 
-    // Trigger a code-graph re-index when offline changes were found.
-    // The indexing lock was already acquired at function entry, so skip
-    // the try_start_indexing() guard here — it would return false because
-    // we already hold it.
-    if offline_count > 0 {
+    if offline_count > 0 && auto_reindex {
         check_cancel!();
         if let (Some(snapshot), Some(ws_config)) = (
             state.snapshot_workspace().await,
             state.workspace_config().await,
         ) {
             let ws_path = PathBuf::from(&snapshot.path);
+            tracing::info!(
+                offline_count,
+                "background_db_hydration: ENGRAM_AUTO_REINDEX=true, starting post-scan re-index"
+            );
             match sync_code_graph(
                 &ws_path,
                 &snapshot.data_dir,
@@ -348,6 +357,13 @@ async fn background_db_hydration(
                 ),
             }
         }
+    } else if offline_count > 0 {
+        tracing::info!(
+            offline_count,
+            "background_db_hydration: offline changes detected; \
+             set ENGRAM_AUTO_REINDEX=true to re-index on startup, \
+             or run `engram sync` to update the code graph"
+        );
     }
     // Release the indexing lock only if this task acquired it, then drain any
     // pending sync that was queued while we held the lock.

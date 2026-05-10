@@ -138,13 +138,20 @@ pub async fn hydrate_code_graph(
     // overwrite newer content_hash values and break incremental sync.
     match cg_queries.count_code_files().await {
         Ok(n) if n > 0 => {
-            tracing::debug!(
+            tracing::info!(
                 code_files = n,
                 "hydrate_code_graph: DB already populated — skipping JSONL reload"
             );
             return Ok(CodeGraphHydrationResult::default());
         }
-        Ok(_) => {}
+        Ok(n) => {
+            tracing::info!(
+                code_files = n,
+                data_dir = %data_dir.display(),
+                branch,
+                "hydrate_code_graph: DB has no code files — will attempt JSONL reload"
+            );
+        }
         Err(e) => {
             tracing::warn!(
                 error = %e,
@@ -173,6 +180,11 @@ pub async fn hydrate_code_graph(
             })
         })?;
 
+        // Yield to the tokio executor every 50 upsert attempts so that IPC
+        // health probes and other async tasks are not starved by synchronous
+        // CozoDB SQLite writes (3B541819). Counter is incremented only when an
+        // upsert is attempted, keeping the comment accurate for corrupt lines.
+        let mut nodes_batch: u32 = 0;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -183,6 +195,10 @@ pub async fn hydrate_code_graph(
                     result.nodes_loaded += 1;
                 } else {
                     result.lines_skipped += 1;
+                }
+                nodes_batch += 1;
+                if nodes_batch % 50 == 0 {
+                    tokio::task::yield_now().await;
                 }
             } else {
                 tracing::warn!(
@@ -203,6 +219,8 @@ pub async fn hydrate_code_graph(
             })
         })?;
 
+        // Yield to the tokio executor every 50 upsert attempts (3B541819).
+        let mut edges_batch: u32 = 0;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -213,6 +231,10 @@ pub async fn hydrate_code_graph(
                     result.edges_loaded += 1;
                 } else {
                     result.lines_skipped += 1;
+                }
+                edges_batch += 1;
+                if edges_batch % 50 == 0 {
+                    tokio::task::yield_now().await;
                 }
             } else {
                 tracing::warn!(

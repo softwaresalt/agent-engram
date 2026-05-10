@@ -1,15 +1,18 @@
-//! Integration tests for indexing-resilience guards (044-F).
+//! Integration tests for indexing-resilience behaviour (044-F / 049-F).
 //!
-//! Verifies that read-only tool handlers return `IndexInProgress` (7003)
-//! when background indexing holds the lock, and that `sync_workspace` queues
-//! a deferred sync instead of returning an error.
+//! Since 049-F (daemon startup reliability), read-only tool handlers no longer
+//! return `IndexInProgress` (7003) — they proceed against the current DB snapshot
+//! so that partial results are served instead of blocking callers.
+//!
+//! `sync_workspace` still queues a deferred sync instead of returning an error
+//! when background indexing holds the lock.
 //!
 //! All tests drive [`AppState`] and the tool dispatch layer directly —
 //! no IPC socket or network connection is required.
 
 use std::sync::Arc;
 
-use engram::errors::codes::INDEX_IN_PROGRESS;
+use engram::errors::codes::{INDEX_IN_PROGRESS, WORKSPACE_NOT_SET};
 use engram::server::state::AppState;
 use engram::services::dehydration::SCHEMA_VERSION;
 use engram::tools;
@@ -39,10 +42,10 @@ async fn bind_workspace(state: Arc<AppState>, path: &std::path::Path) {
     .expect("set_workspace");
 }
 
-// ── T-IXR-1: get_workspace_statistics rejects while indexing ────────────────
+// ── T-IXR-1: get_workspace_statistics allowed while indexing ────────────────
 
-/// `get_workspace_statistics` must return `IndexInProgress` (7003) when
-/// background indexing holds the lock.
+/// `get_workspace_statistics` must NOT return `IndexInProgress` (7003) when
+/// background indexing holds the lock — it should proceed with partial data.
 #[tokio::test]
 async fn t_ixr_01_stats_rejects_while_indexing() {
     let (ws, state) = make_workspace();
@@ -50,16 +53,20 @@ async fn t_ixr_01_stats_rejects_while_indexing() {
 
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
-    let err = tools::dispatch(Arc::clone(&state), "get_workspace_statistics", None)
-        .await
-        .expect_err("expected IndexInProgress error");
+    let result = tools::dispatch(Arc::clone(&state), "get_workspace_statistics", None).await;
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    // Tool proceeds during indexing — may succeed (empty stats) or fail with a
+    // non-IndexInProgress, non-WorkspaceNotSet error (workspace was bound above).
+    if let Err(err) = result {
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+    }
 }
 
-// ── T-IXR-2: query_memory rejects while indexing ────────────────────────────
+// ── T-IXR-2: query_memory allowed while indexing ────────────────────────────
 
-/// `query_memory` must return `IndexInProgress` (7003) when indexing is active.
+/// `query_memory` must NOT return `IndexInProgress` (7003) when indexing is active.
 #[tokio::test]
 async fn t_ixr_02_query_memory_rejects_while_indexing() {
     let (ws, state) = make_workspace();
@@ -67,20 +74,23 @@ async fn t_ixr_02_query_memory_rejects_while_indexing() {
 
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
-    let err = tools::dispatch(
+    let result = tools::dispatch(
         Arc::clone(&state),
         "query_memory",
         Some(json!({ "query": "test" })),
     )
-    .await
-    .expect_err("expected IndexInProgress error");
+    .await;
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    if let Err(err) = result {
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+    }
 }
 
-// ── T-IXR-3: unified_search rejects while indexing ──────────────────────────
+// ── T-IXR-3: unified_search allowed while indexing ──────────────────────────
 
-/// `unified_search` must return `IndexInProgress` (7003) when indexing is active.
+/// `unified_search` must NOT return `IndexInProgress` (7003) when indexing is active.
 #[tokio::test]
 async fn t_ixr_03_unified_search_rejects_while_indexing() {
     let (ws, state) = make_workspace();
@@ -88,15 +98,18 @@ async fn t_ixr_03_unified_search_rejects_while_indexing() {
 
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
-    let err = tools::dispatch(
+    let result = tools::dispatch(
         Arc::clone(&state),
         "unified_search",
         Some(json!({ "query": "test" })),
     )
-    .await
-    .expect_err("expected IndexInProgress error");
+    .await;
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    if let Err(err) = result {
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+    }
 }
 
 // ── T-IXR-4: sync_workspace queues deferred sync while indexing ─────────────

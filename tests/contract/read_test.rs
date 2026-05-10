@@ -286,10 +286,13 @@ async fn contract_impact_analysis_symbol_not_found() {
     assert_eq!(code, SYMBOL_NOT_FOUND);
 }
 
-// ── 044.001-T: IndexInProgress guards for read-only tools ───────────────────
+// ── 044.001-T: Read-only tools allowed while indexing ───────────────────────
+// Since 049-F (daemon reliability), read-only tools no longer return
+// IndexInProgress — they proceed against the current DB snapshot so that
+// partial results are returned instead of an error.
 
 #[test]
-async fn contract_get_workspace_statistics_rejects_while_indexing() {
+async fn contract_get_workspace_statistics_allowed_while_indexing() {
     let state = Arc::new(AppState::new(10));
     state
         .set_workspace(test_snapshot("stats_indexing"))
@@ -298,15 +301,20 @@ async fn contract_get_workspace_statistics_rejects_while_indexing() {
 
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
-    let err = tools::dispatch(state, "get_workspace_statistics", None)
-        .await
-        .expect_err("expected index-in-progress error");
+    let result = tools::dispatch(state, "get_workspace_statistics", None).await;
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    // The tool proceeds during indexing. It may return Ok (empty stats from an
+    // empty DB) or an Err from a missing DB file — but NOT IndexInProgress or
+    // WorkspaceNotSet (workspace was bound above).
+    if let Err(err) = result {
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+    }
 }
 
 #[test]
-async fn contract_query_memory_rejects_while_indexing() {
+async fn contract_query_memory_allowed_while_indexing() {
     let state = Arc::new(AppState::new(10));
     state
         .set_workspace(test_snapshot("query_memory_indexing"))
@@ -316,15 +324,19 @@ async fn contract_query_memory_rejects_while_indexing() {
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
     let params = Some(json!({ "query": "user authentication" }));
-    let err = tools::dispatch(state, "query_memory", params)
-        .await
-        .expect_err("expected index-in-progress error");
+    let result = tools::dispatch(state, "query_memory", params).await;
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    // The tool proceeds during indexing. It may succeed or fail due to a missing
+    // DB — but NOT with IndexInProgress or WorkspaceNotSet.
+    if let Err(err) = result {
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+    }
 }
 
 #[test]
-async fn contract_unified_search_rejects_while_indexing() {
+async fn contract_unified_search_allowed_while_indexing() {
     let state = Arc::new(AppState::new(10));
     state
         .set_workspace(test_snapshot("unified_search_indexing"))
@@ -334,9 +346,13 @@ async fn contract_unified_search_rejects_while_indexing() {
     assert!(state.try_start_indexing(), "should acquire indexing lock");
 
     let params = Some(json!({ "query": "database connection pool" }));
-    let err = tools::dispatch(state, "unified_search", params)
-        .await
-        .expect_err("expected index-in-progress error");
+    let result = tools::dispatch(state, "unified_search", params).await;
 
-    assert_eq!(err.to_response().error.code, INDEX_IN_PROGRESS);
+    // The tool proceeds during indexing. It may fail (e.g. embeddings not
+    // compiled, missing DB) — but NOT with IndexInProgress or WorkspaceNotSet.
+    if let Err(err) = result {
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+    }
 }
