@@ -304,13 +304,12 @@ async fn contract_get_workspace_statistics_allowed_while_indexing() {
     let result = tools::dispatch(state, "get_workspace_statistics", None).await;
 
     // The tool proceeds during indexing. It may return Ok (empty stats from an
-    // empty DB) or an Err from a missing DB file — but NOT IndexInProgress.
+    // empty DB) or an Err from a missing DB file — but NOT IndexInProgress or
+    // WorkspaceNotSet (workspace was bound above).
     if let Err(err) = result {
-        assert_ne!(
-            err.to_response().error.code,
-            INDEX_IN_PROGRESS,
-            "get_workspace_statistics must not return IndexInProgress"
-        );
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
     }
 }
 
@@ -328,13 +327,11 @@ async fn contract_query_memory_allowed_while_indexing() {
     let result = tools::dispatch(state, "query_memory", params).await;
 
     // The tool proceeds during indexing. It may succeed or fail due to a missing
-    // DB — but NOT with IndexInProgress.
+    // DB — but NOT with IndexInProgress or WorkspaceNotSet.
     if let Err(err) = result {
-        assert_ne!(
-            err.to_response().error.code,
-            INDEX_IN_PROGRESS,
-            "query_memory must not return IndexInProgress"
-        );
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
     }
 }
 
@@ -352,12 +349,10 @@ async fn contract_unified_search_allowed_while_indexing() {
     let result = tools::dispatch(state, "unified_search", params).await;
 
     // The tool proceeds during indexing. It may fail (e.g. embeddings not
-    // compiled, missing DB) — but NOT with IndexInProgress.
+    // compiled, missing DB) — but NOT with IndexInProgress or WorkspaceNotSet.
     if let Err(err) = result {
-        assert_ne!(
-            err.to_response().error.code,
-            INDEX_IN_PROGRESS,
-            "unified_search must not return IndexInProgress"
-        );
+        let code = err.to_response().error.code;
+        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
+        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
     }
 }

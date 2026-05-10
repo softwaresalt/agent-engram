@@ -180,6 +180,10 @@ pub async fn hydrate_code_graph(
             })
         })?;
 
+        // Yield to the tokio executor every 50 upsert attempts so that IPC
+        // health probes and other async tasks are not starved by synchronous
+        // CozoDB SQLite writes (3B541819). Counter is incremented only when an
+        // upsert is attempted, keeping the comment accurate for corrupt lines.
         let mut nodes_batch: u32 = 0;
         for line in content.lines() {
             let line = line.trim();
@@ -192,19 +196,16 @@ pub async fn hydrate_code_graph(
                 } else {
                     result.lines_skipped += 1;
                 }
+                nodes_batch += 1;
+                if nodes_batch % 50 == 0 {
+                    tokio::task::yield_now().await;
+                }
             } else {
                 tracing::warn!(
                     line_preview = &line[..line.len().min(80)],
                     "skipping corrupt nodes.jsonl line (FR-135)"
                 );
                 result.lines_skipped += 1;
-            }
-            // Yield to the tokio executor every 50 upserts so that IPC health
-            // probes and other async tasks are not starved by synchronous
-            // CozoDB SQLite writes (3B541819).
-            nodes_batch += 1;
-            if nodes_batch % 50 == 0 {
-                tokio::task::yield_now().await;
             }
         }
     }
@@ -218,6 +219,7 @@ pub async fn hydrate_code_graph(
             })
         })?;
 
+        // Yield to the tokio executor every 50 upsert attempts (3B541819).
         let mut edges_batch: u32 = 0;
         for line in content.lines() {
             let line = line.trim();
@@ -230,17 +232,16 @@ pub async fn hydrate_code_graph(
                 } else {
                     result.lines_skipped += 1;
                 }
+                edges_batch += 1;
+                if edges_batch % 50 == 0 {
+                    tokio::task::yield_now().await;
+                }
             } else {
                 tracing::warn!(
                     line_preview = &line[..line.len().min(80)],
                     "skipping corrupt edges.jsonl line (FR-135)"
                 );
                 result.lines_skipped += 1;
-            }
-            // Yield to the tokio executor every 50 upserts (3B541819).
-            edges_batch += 1;
-            if edges_batch % 50 == 0 {
-                tokio::task::yield_now().await;
             }
         }
     }
