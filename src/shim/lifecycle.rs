@@ -21,8 +21,6 @@ use crate::shim::version::ensure_protocol_compatible;
 
 // ── Backoff constants ─────────────────────────────────────────────────────────
 
-/// Maximum number of health-check poll attempts after spawning the daemon.
-const MAX_BACKOFF_ATTEMPTS: u32 = 30;
 /// Initial delay before the first poll (milliseconds).
 const INITIAL_BACKOFF_MS: u64 = 10;
 /// Maximum delay cap per backoff step (milliseconds).
@@ -424,18 +422,20 @@ fn is_process_alive(pid: u32) -> bool {
 
 /// Poll the health endpoint with exponential backoff until the daemon is ready.
 ///
-/// If the daemon does not become healthy within the budget (wall-clock
-/// [`ready_timeout_ms()`] ms or [`MAX_BACKOFF_ATTEMPTS`] polls), one final
-/// check is made to handle the race where a concurrent shim spawned the
-/// daemon just ahead of us.
+/// Polls with exponential backoff (capped at [`MAX_BACKOFF_MS`]) until the
+/// wall-clock deadline computed from [`ready_timeout_ms()`] is exceeded. One
+/// final probe is made after the deadline to handle the race where a
+/// concurrent shim spawned the daemon just ahead of us.
 async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
     let timeout_ms = ready_timeout_ms();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
+    let mut attempt: u32 = 0;
 
-    for attempt in 0..MAX_BACKOFF_ATTEMPTS {
+    loop {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         delay_ms = (delay_ms * 2).min(MAX_BACKOFF_MS);
+        attempt += 1;
 
         if daemon_ready(endpoint).await? {
             info!(attempt, "daemon reached ready state");

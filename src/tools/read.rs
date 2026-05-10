@@ -87,10 +87,10 @@ pub async fn get_workspace_statistics(
 ) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    // Reject while indexing — code graph counters are inconsistent mid-write (7003).
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: code graph counters may reflect partial data while indexing
+    // is in progress, but returning potentially-incomplete statistics is
+    // more useful than an IndexInProgress error. Callers can inspect
+    // `scan_status.running` in workspace_status to detect mid-index state.
 
     let (data_dir, branch) = workspace_db(&state).await?;
     let db = connect_db(&data_dir, &branch).await?;
@@ -141,10 +141,9 @@ fn default_limit() -> usize {
 pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    // Reject while indexing — content record table may be mid-write (7003).
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: content records may be partially written during a background
+    // index. Returning available data is more useful than an error; the
+    // caller can check scan_status.running in workspace_status if freshness matters.
 
     let parsed: QueryMemoryParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -223,9 +222,9 @@ const fn default_map_max_nodes() -> usize {
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: graph state may be partially written during a background
+    // index. Returning available symbol graph context is more useful than
+    // blocking with an IndexInProgress error.
 
     let parsed: MapCodeParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -371,10 +370,8 @@ const fn default_list_limit() -> usize {
 pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    // Reject while indexing — graph state is not yet consistent
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: symbol list may be incomplete during a background index.
+    // Returning partial results is more useful than an IndexInProgress error.
 
     let parsed: ListSymbolsParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -499,10 +496,9 @@ pub async fn unified_search(
             .to_owned(),
     }));
 
-    // Reject while indexing — code graph and content vectors are mid-write (7003).
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: code graph and content vectors may be partially written during
+    // a background index. Returning available search results is more useful than
+    // an IndexInProgress error; freshness is indicated via scan_status.running.
 
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
@@ -694,9 +690,8 @@ pub async fn impact_analysis(
 ) -> Result<Value, EngramError> {
     ensure_workspace(&state).await?;
 
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: graph may be partially populated during a background index.
+    // Returning available impact data is more useful than an IndexInProgress error.
 
     let parsed: ImpactAnalysisParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -1215,10 +1210,8 @@ pub async fn query_changes(
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
 
-    // Reject while indexing — git-graph tables may be mid-write (7003).
-    if state.is_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-    }
+    // Read-only: git-graph tables may be partially written during a background
+    // index. Returning available commit data is more useful than blocking the caller.
 
     let parsed: QueryChangesParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
         .map_err(|e| {

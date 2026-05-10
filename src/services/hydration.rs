@@ -138,13 +138,20 @@ pub async fn hydrate_code_graph(
     // overwrite newer content_hash values and break incremental sync.
     match cg_queries.count_code_files().await {
         Ok(n) if n > 0 => {
-            tracing::debug!(
+            tracing::info!(
                 code_files = n,
                 "hydrate_code_graph: DB already populated — skipping JSONL reload"
             );
             return Ok(CodeGraphHydrationResult::default());
         }
-        Ok(_) => {}
+        Ok(n) => {
+            tracing::info!(
+                code_files = n,
+                data_dir = %data_dir.display(),
+                branch,
+                "hydrate_code_graph: DB has no code files — will attempt JSONL reload"
+            );
+        }
         Err(e) => {
             tracing::warn!(
                 error = %e,
@@ -173,6 +180,7 @@ pub async fn hydrate_code_graph(
             })
         })?;
 
+        let mut nodes_batch: u32 = 0;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -191,6 +199,13 @@ pub async fn hydrate_code_graph(
                 );
                 result.lines_skipped += 1;
             }
+            // Yield to the tokio executor every 50 upserts so that IPC health
+            // probes and other async tasks are not starved by synchronous
+            // CozoDB SQLite writes (3B541819).
+            nodes_batch += 1;
+            if nodes_batch % 50 == 0 {
+                tokio::task::yield_now().await;
+            }
         }
     }
 
@@ -203,6 +218,7 @@ pub async fn hydrate_code_graph(
             })
         })?;
 
+        let mut edges_batch: u32 = 0;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -220,6 +236,11 @@ pub async fn hydrate_code_graph(
                     "skipping corrupt edges.jsonl line (FR-135)"
                 );
                 result.lines_skipped += 1;
+            }
+            // Yield to the tokio executor every 50 upserts (3B541819).
+            edges_batch += 1;
+            if edges_batch % 50 == 0 {
+                tokio::task::yield_now().await;
             }
         }
     }
