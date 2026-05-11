@@ -12,11 +12,12 @@ maintainability.
 ## General Rules
 
 * Use the latest stable Rust edition.
-* `#![forbid(unsafe_code)]` at crate root unless the crate has a
-  documented safety-critical need. Justify every `unsafe` block
-  with a `// SAFETY:` comment.
-* All code must pass `cargo clippy -- -D warnings` with zero
-  warnings.
+* `#![forbid(unsafe_code)]` at crate root. Exceptions require an
+  explicit constitution waiver with documented safety-critical
+  justification. Every `unsafe` block must have a `// SAFETY:` comment
+  explaining the invariant being upheld.
+* All code must pass `cargo clippy -- -D warnings -D clippy::pedantic`
+  with zero warnings. Pedantic warnings are hard errors per constitution.
 * Write documentation comments (`///`) on all public functions,
   types, traits, and modules.
 * Prefer the standard library and well-maintained crates from
@@ -25,8 +26,8 @@ maintainability.
 ## Commands
 
 ```bash
-cargo test                             # Run all tests
-cargo clippy -- -D warnings            # Lint check
+cargo dev-test                         # Run all tests (repo alias)
+cargo clippy -- -D warnings -D clippy::pedantic  # Lint check
 cargo fmt --all -- --check             # Format check
 cargo check --all-targets              # Fast compilation check
 cargo build                            # Build project

@@ -30,7 +30,12 @@ set -euo pipefail
 #
 export COPILOT_HOME="${COPILOT_HOME:-./.copilot}"
 # export ENGRAM_DATA_DIR="./.engram"   # Uncomment when the agent-engram capability pack is active
-export GITHUB_TOKEN="$(gh auth token)"
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+	if command -v gh >/dev/null 2>&1; then
+		GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
+	fi
+fi
+export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 copilot_exe="${COPILOT_EXE_PATH:-${COPILOT_EXE:-copilot}}"
 
 if command -v "$copilot_exe" >/dev/null 2>&1; then

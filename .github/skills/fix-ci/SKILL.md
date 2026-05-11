@@ -188,7 +188,7 @@ Run the full quality gate sequence:
 ```text
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings -D clippy::pedantic
-cargo test --all-targets
+cargo dev-test
 cargo audit
 ```
 

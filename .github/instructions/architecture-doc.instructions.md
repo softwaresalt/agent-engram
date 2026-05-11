@@ -18,8 +18,7 @@ codebase.
 
 2. **Structured docs/ directory.** Organize durable knowledge by purpose:
    * `docs/ARCHITECTURE.md` — Top-level domain map and dependency direction
-   * `docs/research/` — Graduated design decisions and rationale from completed work
-   * `docs/research/` — Product requirements and acceptance criteria
+   * `docs/research/` — Graduated design decisions, rationale from completed work, product requirements, and acceptance criteria
    * `docs/references/` — External documentation relevant to the codebase
    * `docs/QUALITY_SCORE.md` — Quality grades per domain
 

@@ -121,12 +121,13 @@ Use a different model from the caller when available to force genuine diversity 
 
 1. Always-on: spawn Constitution Reviewer, Rust Reviewer, Learnings Researcher
 2. Conditional: analyze changed file paths, content patterns, and workspace agent-native signals to select additional personas:
-   * Select **Security Reviewer** (`security-reviewer.agent.md`) when the diff touches: authentication or authorization code, public endpoint handlers, user input processing, permission or role checks, secret or credential management, or files matching `- `src/daemon/ipc_server.rs`, `src/daemon/protocol.rs` — IPC transport security
-- `src/tools/*.rs` — MCP tool input handling and dispatch
-- `src/db/*.rs` — Database query construction
-- `src/config/*.rs` — Configuration parsing and environment variable handling
-- `src/shim/transport.rs` — Transport layer security
-- Files containing: `unsafe`, `deserialize`, `from_str`, `execute`, `query`, `bind`, `listen`, `accept`, `secret`, `token`, `key`, `password`, `credential``
+   * Select **Security Reviewer** (`security-reviewer.agent.md`) when the diff touches: authentication or authorization code, public endpoint handlers, user input processing, permission or role checks, secret or credential management, or files matching:
+     * `src/daemon/ipc_server.rs`, `src/daemon/protocol.rs` — IPC transport security
+     * `src/tools/*.rs` — MCP tool input handling and dispatch
+     * `src/db/*.rs` — Database query construction
+     * `src/config/*.rs` — Configuration parsing and environment variable handling
+     * `src/shim/transport.rs` — Transport layer security
+     * Files containing: `unsafe`, `deserialize`, `from_str`, `execute`, `query`, `bind`, `listen`, `accept`, `secret`, `token`, `key`, `password`, `credential`
 3. Broadcast the routing decision with persona count
 
 ### Step 3: Spawn Persona Subagents

@@ -10,7 +10,7 @@ applyTo: '**'
 ### I. Safety-First Rust
 
 All production code MUST be written in Rust (2024).
-#![forbid(unsafe_code)]. All clippy warnings are hard errors (-D warnings -D clippy::pedantic); unsafe code is forbidden at the crate level. All errors must be propagated via Result<T, EngramError> using the ? operator. The unwrap_used and expect_used lints are denied at workspace level..
+#![forbid(unsafe_code)]. All clippy warnings are hard errors (-D warnings -D clippy::pedantic); unsafe code is forbidden at the crate level. All errors must be propagated via Result<T, EngramError> using the ? operator. The unwrap_used and expect_used lints are denied at workspace level.
 
 **Rationale**: Explicit error handling and safety enforcement prevent data corruption,
 silent failures, and state loss during unattended agent operation.
@@ -186,7 +186,7 @@ commit-traceability links and backlog commit associations.
 | Build           | `cargo build`                                              |
 | Test            | `cargo dev-test`                                               |
 | Lint            | `cargo clippy -- -D warnings -D clippy::pedantic`                                               |
-| Format          | `cargo fmt --all`                                             |
+| Format          | `cargo fmt --all -- --check`                                             |
 | CI              | GitHub Actions                                                  |
 | Error Handling  | Result<T, EngramError>                                                |
 | Documentation   | /// doc comment                                            |
@@ -198,7 +198,7 @@ Run in order. Do not skip any gate.
 ```text
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings -D clippy::pedantic
-cargo test --all-targets
+cargo dev-test
 cargo audit
 ```
 

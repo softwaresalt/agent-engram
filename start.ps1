@@ -22,14 +22,18 @@
 # Set ai_tools.copilot_cli.exe_path in .autoharness/config.yaml if copilot
 # is not on PATH, then re-run autoharness install or tune.
 #
-$env:COPILOT_HOME = ".\.copilot"
-# $env:ENGRAM_DATA_DIR = ".\.engram"   # Uncomment when the agent-engram capability pack is active
-$env:GITHUB_TOKEN = (gh auth token)
-$copilotExe = "copilot"
+if (-not $env:COPILOT_HOME) { $env:COPILOT_HOME = Join-Path $PSScriptRoot ".copilot" }
+# if (-not $env:ENGRAM_DATA_DIR) { $env:ENGRAM_DATA_DIR = Join-Path $PSScriptRoot ".engram" }   # Uncomment when the agent-engram capability pack is active
+if (-not $env:GITHUB_TOKEN) {
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        $env:GITHUB_TOKEN = (gh auth token)
+    }
+}
+$copilotExe = if ($env:COPILOT_EXE_PATH) { $env:COPILOT_EXE_PATH } else { "copilot" }
 if (-not (Test-Path -LiteralPath $copilotExe -PathType Leaf) -and ($copilotExe -ne "copilot")) {
     throw "COPILOT_EXE_PATH ('$copilotExe') must be a path to the Copilot executable only (no arguments). Update ai_tools.copilot_cli.exe_path in .autoharness/config.yaml."
 }
-& $copilotExe
+& $copilotExe @args
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
 # Uncomment to run Claude Code with workspace-local state directories.
