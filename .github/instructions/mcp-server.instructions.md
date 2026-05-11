@@ -13,10 +13,7 @@ servers in Rust using rmcp.
 Organize MCP server code following the standard layout:
 
 ```text
-src/shim/             # MCP stdio transport (IPC client)
-src/tools/            # MCP tool dispatch (lifecycle, read, write)
-src/daemon/           # IPC server (named pipes/Unix sockets)
-src/server/           # Legacy HTTP/SSE router (feature-gated)
+src/tools/ (MCP tool dispatch: lifecycle, read, write, doctor), src/shim/ (stdio shim: IPC client, transport, tools catalog), src/daemon/ (IPC server, lockfile, protocol, TTL, watcher), src/server/ (legacy SSE HTTP server behind feature flag)
 ```
 
 ## Server Lifecycle

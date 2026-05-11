@@ -11,11 +11,12 @@ maintainability.
 
 ## General Rules
 
-* Use Rust 2024 edition with stable toolchain 1.85.
-* `#![forbid(unsafe_code)]` at crate root. No `unsafe` code is
-  permitted in this workspace. This is a constitutional constraint.
-* All code must pass `cargo clippy -- -D warnings -D clippy::pedantic`
-  with zero warnings.
+* Use the latest stable Rust edition.
+* `#![forbid(unsafe_code)]` at crate root unless the crate has a
+  documented safety-critical need. Justify every `unsafe` block
+  with a `// SAFETY:` comment.
+* All code must pass `cargo clippy -- -D warnings` with zero
+  warnings.
 * Write documentation comments (`///`) on all public functions,
   types, traits, and modules.
 * Prefer the standard library and well-maintained crates from
@@ -44,17 +45,13 @@ cargo doc --no-deps                    # Generate documentation
 
 ## Error Handling
 
-* For fallible operations in library code, use the canonical
-  `Result<T, EngramError>` pattern defined in `src/errors/mod.rs`.
-* Use `thiserror` only when maintaining or extending the repo's
-  canonical error model, not for introducing unrelated library-local
-  error types.
+* Define error types using `thiserror` for library code.
 * Use `anyhow` only in binary crates and test code.
 * Use `?` for error propagation; add context with `.context()` or
-  `.with_context()` when the surrounding code accepts `anyhow`-style
-  context enrichment.
+  `.with_context()`.
 * Never use `.unwrap()` or `.expect()` in library code without a
   proof comment explaining why the value cannot be `None`/`Err`.
+* Use custom error enums that implement `Display` and `Error`.
 
 ## Concurrency
 

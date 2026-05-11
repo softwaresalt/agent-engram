@@ -93,7 +93,7 @@ For each comment requiring a fix:
 2. **Apply the fix**: Make the minimal targeted change that resolves the
    issue without introducing scope creep.
 3. **Verify locally**: Run the relevant quality gate
-   (`cargo fmt --all -- --check`, `cargo clippy -- -D warnings -D clippy::pedantic`, `cargo test`)
+   (`cargo fmt --all -- --check`, `cargo clippy -- -D warnings -D clippy::pedantic`, `cargo dev-test`)
    to confirm the fix doesn't break anything.
 4. **Commit**: Use a `fix:` conventional commit referencing the comment
    (e.g., `fix: address copilot review — null check on user input`).

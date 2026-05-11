@@ -34,6 +34,8 @@ Before relying on engram results:
 
 Do not spam lifecycle calls on every trivial step. Check once per major workflow phase or when results appear wrong.
 
+The daemon now handles OOM conditions and startup failures gracefully (034-S). Do not assume daemon failure from a single timeout — retry once before falling back to file-based tools.
+
 ## Search Protocol
 
 Use the most specific engram tool first:
@@ -46,8 +48,11 @@ Use the most specific engram tool first:
 | Understand callers, callees, and local graph context | `map_code` |
 | Assess blast radius before modifying a symbol | `impact_analysis` |
 | Run advanced read-only graph queries | `query_graph` |
+| Traverse typed edges from a known node to explore local graph neighborhood | `query_graph_neighborhood` |
 
 Prefer these before file-based fallback whenever the question is structural or conceptual.
+
+Use `query_graph` for ad-hoc Cypher-style read-only queries across the full graph. Use `query_graph_neighborhood` for structured node-centric traversal when exploring typed edges from a known node (033-S). Prefer the neighborhood API when you have a specific starting node.
 
 ## Fallback Protocol
 
@@ -63,6 +68,9 @@ If semantic search is unavailable, degraded, or returns a database / embedding f
 retrying the same broad search. Fall back to `list_symbols` + `map_code` + `impact_analysis` for
 the same discovery problem before broad raw-file scanning.
 
+Engram now internally retries on SQLITE_BUSY (032-S). If you see a transient database error, retry
+the operation once before falling back to grep — the internal retry may resolve the contention.
+
 ## Freshness Protocol
 
 If code changed outside the expected indexing flow, or the daemon reports stale state:
@@ -70,105 +78,32 @@ If code changed outside the expected indexing flow, or the daemon reports stale 
 1. Run `sync_workspace` for incremental refresh.
 2. Use `index_workspace` only when a full rebuild is actually needed.
 3. Treat stale results as suspect until freshness is restored.
-
-## Verifying File Indexed
-
-Before treating any engram result as authoritative for a specific file, verify that file
-is present in the index. This prevents citing stale or hallucinated data from files the
-file-watcher has not yet processed.
-
-### When verification is required
-
-Perform the check before any of these actions:
-
-* Citing a specific file's contents as evidence in a plan, decision, or review
-* Passing file-derived context to a subagent as source material
-* Making claims about a file's current structure, symbols, or dependencies based on
-  engram-indexed data
-
-Verification is **not** required for broad conceptual discovery (e.g., "find all files that
-implement X") — only for file-specific authoritative citation.
-
-### Verification procedure
-
-1. Call `query_memory` or `list_symbols` with the file path as a filter.
-2. **Positive result** (file is indexed): proceed to cite the result.
-3. **Negative result** (file absent or stale):
-   a. Call `sync_workspace` to trigger an incremental re-index.
-   b. Re-query using `query_memory` or `list_symbols`.
-   c. If still absent after sync, fall back to reading the file directly with `view`.
-   d. Do **not** cite engram results for that file as authoritative after two negative responses.
-
-### Examples
-
-**Positive — file is indexed, safe to cite:**
-```
-list_symbols(path: ".github/instructions/agent-engram.instructions.md")
-→ returns: ["Workspace Lifecycle Protocol", "Search Protocol", "Fallback Protocol"]
-→ safe to cite indexed data for this file
-```
-
-**Negative — file not yet indexed, fallback required:**
-```
-list_symbols(path: ".github/skills/new-skill/SKILL.md")
-→ returns: [] (empty — file not yet in index)
-→ call sync_workspace, re-query
-→ still empty → use view tool directly; do not cite engram for this file
-```
-
-## Agent Fallback Protocol
-
-When the MCP transport is unavailable (timeout, daemon restart in progress, transport-level error),
-agents can invoke `engram` CLI subcommands directly as a subprocess to call MCP tools.
-
-### When to use CLI fallback
-
-Use CLI fallback when **all** of the following are true:
-
-* An MCP tool call failed with a transport-level error (not a tool-level error).
-* The tool is critical to completing the current step and cannot be deferred.
-* `engram` binary is available in `PATH` (verify with `engram --help` or `engram manifest`).
-
-Do **not** use CLI fallback when:
-* The failure is a tool-level error (the daemon is running, the call reached the tool, and the tool returned an error). Retry or handle the error at the tool level instead.
-* The step can be safely deferred until MCP is restored.
-
-### CLI fallback invocation pattern
-
-```bash
-# Incremental sync — preload before launching Copilot
-engram sync --json
-
-# Full re-index — use when incremental sync is insufficient
-engram sync --full --json
-
-# Check daemon status without requiring workspace binding
-engram daemon-status --json
-
-# Symbolic lookup when unified_search is unavailable
-engram symbols --file src/lib.rs --json
-```
-
-All subcommands emit JSON-RPC 2.0 envelopes on stdout in non-TTY contexts (piped or
-scripted); in a terminal they default to human-readable text. Use `--json` to force JSON
-output regardless of TTY state (exit 0 = success, 1 = tool error, 2 = invocation failure).
-
-### Startup preloading pattern (start.ps1 / shell scripts)
-
-```powershell
-# Pre-populate the code graph before launching Copilot
-engram sync --workspace $WorkspaceRoot --json | Out-Null
-# OR for a full re-index on first boot:
-engram index --workspace $WorkspaceRoot --json | Out-Null
-```
-
-### Available CLI subcommands
-
-See `docs/architecture.md` § [CLI Architecture](#cli-architecture) for the full subcommand → MCP tool mapping table.
+4. If `sync_workspace` returns an error, check `get_health_report` before assuming the workspace is corrupted (032-S). Sync errors may indicate transient conditions rather than data loss.
 
 ## Data Ownership Rule
 
 Treat `.engram/` artifacts as tool-managed state. Do not hand-edit generated registry, code-graph,
 or cache artifacts as a substitute for lifecycle, indexing, or flush operations.
+
+## Observability & Diagnostics Protocol
+
+When observability tools are available, use them to verify workspace health before attributing
+failures to query issues:
+
+| Need | Preferred Tool |
+|---|---|
+| Workspace-level indexing coverage and stats | `get_workspace_statistics` |
+| Daemon and workspace health diagnostics | `get_health_report` |
+| Evaluation and quality metrics | `get_evaluation_report` |
+| Per-branch indexing and activity metrics | `get_branch_metrics` |
+| Token efficiency and savings data | `get_token_savings_report` |
+| Retry and resilience metrics for mutable scripts | `get_mutable_script_retry_metrics` |
+| Git blame and history indexing for attribution | `index_git_history` |
+
+1. Prefer `get_health_report` for daemon troubleshooting; prefer `get_workspace_statistics` for indexing coverage gaps.
+2. Use `get_evaluation_report` and `get_branch_metrics` to assess quality trends before and after major changes.
+3. `index_git_history` is expensive — run it once per session when git attribution is needed, not on every query.
+4. Use `get_token_savings_report` to verify engram is delivering token efficiency gains; investigate if savings are unexpectedly low.
+5. Check `get_mutable_script_retry_metrics` when mutable script operations show intermittent failures.
 
 Generated by autoharness | Template: agent-engram.instructions.md.tmpl

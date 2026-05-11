@@ -1,88 +1,66 @@
 # agent-engram Development Guidelines
 
-Last updated: 2026-05-01
+Last updated: 2026-05-11
 
-Agent Engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded CozoDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS). The project enforces strict safety (forbid unsafe, deny unwrap/expect), test-first development with three test tiers, and comprehensive observability via structured tracing.
+agent-engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded SurrealDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS).
 
 ## Technology Stack
 
 | Layer           | Technology                | Notes                                 |
 |-----------------|---------------------------|---------------------------------------|
-| Language        | Rust 2024 | Rust 2024 edition, stable toolchain 1.85, `#![forbid(unsafe_code)]`          |
+| Language        | Rust 2024 | (Rust 2024 edition)          |
 | Build           | cargo            | `cargo build`                   |
-| Test            | cargo test           | `cargo test`                    |
+| Test            | cargo           | `cargo dev-test`                    |
 | Lint            | clippy                | `cargo clippy -- -D warnings -D clippy::pedantic`                    |
-| Format          | rustfmt             | `cargo fmt --all -- --check`                  |
-| CI              | GitHub Actions           | GitHub Actions CI: fmt → clippy → test → audit; release builds cross-platform (Linux, Windows, macOS)                          |
-| MCP SDK      | rmcp 1.1                  | JSON-RPC 2.0 via IPC transport            |
-| Database     | CozoDB 0.7 (embedded, SQLite storage) | Per-workspace path-based isolation (`{data_dir}/cozo/{branch_safe}/engram.db`); `surreal-backend` available as non-default feature |
-| Code Parsing | tree-sitter 0.25          | Rust source file indexing                 |
-| CLI          | clap 4                    | `ENGRAM_` env prefix                      |
-| Tracing      | tracing 0.1               | JSON or pretty format                     |
+| Format          | rustfmt             | `cargo fmt --all`                  |
+| CI              | GitHub Actions           | CI runs on ubuntu-latest; release builds are cross-platform (Linux, Windows, macOS). Actions use @v4 tags (not SHA-pinned). cargo-audit runs with continue-on-error: true.                          |
+| SurrealDB (embedded) | `2` | Embedded graph database via kv-surrealkv feature |
+| tree-sitter | `0.25` | Multi-language code graph parsing |
+| rmcp | `1.1` | MCP SDK for JSON-RPC 2.0 / stdio transport |
+| axum | `0.7` | HTTP server for legacy SSE transport |
+| tokio | `1` | Async runtime (full features) |
+| fastembed | `5` | Embedding generation for semantic search (optional) |
+| interprocess | `2` | IPC via named pipes / Unix domain sockets |
 
 ## Project Structure
 
 ```text
-src/
-  lib.rs              # Crate root: forbid(unsafe_code), tracing init
-  bin/engram.rs       # Binary entrypoint: Config, Router, shutdown
-  config/             # Config struct via clap
-  daemon/             # IPC server, lockfile, protocol, watcher
-  db/                 # CozoDB connect, schema, queries
-  errors/             # EngramError enum, error codes
-  installer/          # Install/update/uninstall commands
-  models/             # Domain models
-  server/             # Router, SSE, MCP handler (legacy-sse)
-  services/           # Business logic (code_graph, hydration, etc.)
-  shim/               # Stdio shim: IPC client, transport, catalog
-  tools/              # MCP tool dispatch
-tests/
-  contract/           # MCP tool contract tests (26 files)
-  integration/        # End-to-end flows (50 files)
-  unit/               # Isolated logic + proptest (24 files)
-  helpers/            # Shared test utilities
+src/ (101 .rs files across 12 modules: bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools), tests/ (117 files: contract/28, integration/58, unit/30, helpers/1), docs/ (architecture, ADRs, compound learnings, exec-plans, research), .github/ (agents, skills, instructions, policies, prompts)
 ```
 
 ## Commands
 
 ```bash
 cargo build              # Build
-cargo test               # Run all tests
+cargo dev-test               # Run all tests
 cargo clippy -- -D warnings -D clippy::pedantic               # Lint
-cargo fmt --all -- --check             # Format check
-cargo check                    # Type-check
-cargo ci                       # Alias: test --all-targets --all-features
-cargo lint                     # Alias: clippy with -D warnings -D clippy::pedantic
+cargo fmt --all             # Format check
+| `cargo dev-test` | Run default test suite (dev workflow) |
+| `cargo ci` | Run all tests with all features (CI equivalent) |
+| `cargo lint` | Alias for clippy with pedantic warnings |
+| `cargo fmt-check` | Alias for format check |
+| `cargo audit` | Check for known vulnerabilities |
 ```
 
 ## Code Style and Conventions
 
 ### Error Handling
 
-All fallible operations return `Result<T, EngramError>`. `EngramError` wraps domain-specific sub-errors via `#[from]`; each variant maps to a u16 error code. Error codes: 1xxx (Workspace), 2xxx (Hydration), 4xxx (Query), 5xxx (System), 7xxx (Code Graph). Map external errors via `From` impls or `.map_err()` — never `unwrap()` or `expect()`.
+Result<T, EngramError> for all fallible operations, propagate with ? operator, never use unwrap() or expect()
 
 ### Naming
 
-* Module files: `src/{module}/mod.rs` for directories
-* Struct IDs: prefixed strings (`fn:uuid`, `class:uuid`, `file:uuid`)
-* Variables: `snake_case`
-* Types: `PascalCase`
-* Constants: `SCREAMING_SNAKE_CASE`
-* Default visibility: `pub(crate)` unless public API
+snake_case for functions and variables, PascalCase for types and traits, SCREAMING_SNAKE_CASE for constants
 
 ### Documentation
 
-* All public items require `///` doc comments
-* Module-level `//!` doc comments on every `mod.rs`
-* Use rustdoc conventions
+/// doc comments on all public items, //! for module-level documentation
 
 ### Testing
 
 * TDD required: write tests first, verify they fail, then implement
 * Test tiers in `tests/` directory:
-  * `contract/` — MCP tool response contract verification (26 files)
-  * `integration/` — end-to-end flows with real DB/IPC (50 files)
-  * `unit/` — isolated logic tests, property-based tests with proptest (24 files)
+Contract: MCP tool schema and error code verification (28 files). Integration: end-to-end flows with real DB/IPC (58 files). Unit: isolated logic and property-based tests via proptest (30 files).
 
 ## Search Strategy
 
@@ -107,7 +85,7 @@ tokens proportional to file size.
 | `docs/memory/` | Session memory and checkpoints |
 | `docs/closure/` | Review, runtime verification, and closure artifacts |
 | `docs/research/` | Graduated architecture and design rationale |
-
+| `docs/research/` | Product-oriented requirements |
 
 ## Session Memory Requirements
 
@@ -231,7 +209,7 @@ The `ping-loop.prompt.md` prompt is available in `.github/prompts/` for sustaine
 When `agent-engram` is available:
 
 * Verify workspace binding before relying on indexed results.
-* If the workspace is not yet indexed, run `index_workspace` (or `set_workspace` then `index_workspace`) for initial setup. Use `sync_workspace` for incremental re-indexing of an already-indexed workspace.
+* If the workspace is not bound or indexed, run `sync_workspace` or the workspace's equivalent freshness operation before searching.
 * Fall back to grep, glob, or direct file reads only when indexed results are unavailable or insufficient.
 
 ## Backlog Workflow Expectations

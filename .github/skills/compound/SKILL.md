@@ -57,7 +57,7 @@ component: "{{AFFECTED_COMPONENT}}"
 root_cause: "{{ROOT_CAUSE}}"
 resolution_type: "code_fix|config_change|dependency_update|workaround|design_change"
 severity: "critical|high|medium|low"
-message: "{{ERROR_MESSAGE_PATTERN}}"
+message: "EngramError"
 file_path: "{{PRIMARY_FILE}}"
 citations:
   - "{{SOURCE_ARTIFACT_1}}"
@@ -91,46 +91,6 @@ tags:
 * Resolution is actionable (not "fixed the bug")
 * Prevention notes exist for root causes that could recur
 * Citations make it possible to trace the learning back to the work that produced it
-
-## Learnings-Researcher Subagent: File-First Delivery Protocol
-
-When invoking the learnings-researcher as a Tier 1 subagent (e.g., inside `plan-review`),
-do **not** pass the full `docs/compound/` library inline. The library contains ~23 files
-(~18,000 tokens). Inline delivery wastes most of that context window on unrelated entries.
-
-**Before (inline — do not use):**
-
-```text
-context_window += read_all_files("docs/compound/**/*.md")   # ~18,000 tokens
-spawn(learnings_researcher, context=context_window)
-```
-
-**After (file-first — required):**
-
-```text
-# Step 1: Query for relevant entries using keywords from the plan or task description
-results = query_memory(keywords)           # returns ≤10 targeted entries
-# Step 2: Pass only the matching entries plus the path for follow-up reads
-spawn(learnings_researcher, library_path="docs/compound/", top_matches=results)
-```
-
-The subagent prompt receives:
-
-* `library_path` — so the agent can perform targeted follow-up reads if needed
-* `top_matches` — the pre-filtered entries returned by the query (title + description + path)
-* `search_query` — the keyword(s) used, so the subagent can explain its reasoning
-
-This reduces token delivery from ~18,000 tokens (full library) to ~500–1,500 tokens
-(targeted matches), achieving ≥30% context reduction for any plan with fewer than
-six highly relevant compound entries.
-
-**Verification:** The learnings-researcher spawn commit message must include a
-before/after token estimate for the batch being reviewed.
-
-This protocol applies whenever the learnings-researcher is invoked with access to the
-full compound library. It is consistent with the
-[file-first content production protocol](./../../../.github/instructions/file-first-content.instructions.md)
-and [Constitution Principle X](../../../.github/instructions/constitution.instructions.md).
 
 
 ## Model Routing

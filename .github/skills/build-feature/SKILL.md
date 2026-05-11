@@ -13,7 +13,7 @@ Invoked by the ship agent when a task has the `harness-ready` label. Not invoked
 ## Inputs
 
 * `task_id`: (Required) The backlog task ID to implement.
-* `harness_cmd`: (Required) The test command to run (e.g., `cargo test`).
+* `harness_cmd`: (Required) The test command to run (e.g., `cargo dev-test`).
 
 ## Output
 
@@ -118,7 +118,7 @@ After the harness passes:
 1. **Lint**: `cargo clippy -- -D warnings -D clippy::pedantic`
 2. **Format**: `cargo fmt --all -- --check`
    * If violations found: `cargo fmt --all` and re-check
-3. **Full test suite**: `cargo test`
+3. **Full test suite**: `cargo dev-test`
 
 ### Commit
 

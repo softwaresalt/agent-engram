@@ -4,7 +4,7 @@
 # =============================================================================
 
 schema_version: "1.0.0"
-generated_at: "2026-04-25T02:50:00Z"
+generated_at: "2026-07-25T12:00:00Z"
 workspace_path: "D:\\Source\\GitHub\\agent-engram"
 
 # =============================================================================
@@ -16,10 +16,10 @@ languages:
     version: "1.85"
     edition: "2024"
     toolchain: stable
-    file_count: 87  # src/*.rs
+    file_count: 101  # src/*.rs (added cli module since last profile)
   secondary:
     - name: Markdown
-      file_count: 718  # git-tracked .md files only (excludes untracked/generated)
+      file_count: 1132  # git-tracked .md files only (excludes untracked/generated)
       purpose: documentation, agent instructions, skills, backlog artifacts
     - name: PowerShell
       file_count: 4
@@ -139,21 +139,21 @@ test:
   tiers:
     - name: contract
       path: "tests/contract/"
-      file_count: 26
+      file_count: 28
       purpose: MCP tool response contract verification
     - name: integration
       path: "tests/integration/"
-      file_count: 50
+      file_count: 58
       purpose: end-to-end flows with real DB/IPC
     - name: unit
       path: "tests/unit/"
-      file_count: 24
+      file_count: 30
       purpose: isolated logic, property-based tests (proptest)
     - name: helpers
       path: "tests/helpers/"
-      file_count: 2
+      file_count: 1
       purpose: shared test harness utilities
-  total_test_files: 102
+  total_test_files: 117
   dev_dependencies:
     - proptest: "1"
     - tokio-test: "0.4"
@@ -242,6 +242,7 @@ structure:
     library: "src/lib.rs"
     modules:
       - config      # Config struct (port, timeout, data_dir, log_format) via clap
+      - cli         # CLI subcommands and argument handling
       - daemon      # IPC server, lockfile, protocol, TTL, watcher, debounce
       - db          # SurrealDB + CozoDB backends, schema bootstrap, queries, workspace hashing
       - errors      # EngramError enum, u16 error codes
@@ -251,15 +252,15 @@ structure:
       - services    # Business logic (code_graph, hydration, dehydration, search, parsing/*, etc.)
       - shim        # Stdio shim: IPC client, transport, tools catalog, lifecycle, pidfile
       - tools       # MCP tool dispatch: lifecycle, read, write, doctor
-    source_file_count: 87
+    source_file_count: 101
   test_layout:
     root: "tests/"
     tiers:
-      - contract    # 26 files — MCP tool contract tests
-      - integration # 50 files — end-to-end flows
-      - unit        # 24 files — isolated logic, proptest
-      - helpers     # 2 files — shared test utilities
-    test_file_count: 102
+      - contract    # 28 files — MCP tool contract tests
+      - integration # 58 files — end-to-end flows
+      - unit        # 30 files — isolated logic, proptest
+      - helpers     # 1 file — shared test utilities
+    test_file_count: 117
   doc_layout:
     root: "docs/"
     subdirectories:

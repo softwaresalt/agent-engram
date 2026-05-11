@@ -127,13 +127,6 @@ When the `agent-engram` capability pack is installed, follow
 related modules, symbols, and prior context before falling back to broader file
 scans.
 
-**File-load verification** (when `agent-engram` is installed): Before citing
-any file's contents as evidence in the findings, verify the file is indexed
-per the protocol in `.github/instructions/agent-engram.instructions.md`
-("Verifying File Indexed"). Use `list_symbols` or `query_memory` with the
-file path; if absent, call `sync_workspace` and re-query before falling back
-to direct `view`.
-
 #### Step 2.3: Hands-On Investigation
 
 Execute the investigation approach:
@@ -244,11 +237,12 @@ When the `backlogit` capability pack is installed and `create_task` is available
 6. If `linked_parent_work_item` was provided, set `parent_id` to link the spike to its
   feature or chore
 
-When `backlog-md` is the installed backlog tool, create a queue entry directly
-using the backlog tool's create operation (refer to the installed registry for
-the exact command name and parameters) with `title` from the goal question
-(shortened to 5-10 words), `description` linking to the findings artifact path,
-`status: "done"`, and `labels: ["spike"]`.
+When `backlog-md` is the installed backlog tool:
+
+* If promoting to queue, create a spike item using `backlogit_create_item` with
+  `title` from the goal question (shortened to 5-10 words),
+  `description` linking to the findings artifact path,
+  `status: "done"`, and `labels: ["spike"]`.
 
 When no backlog tool is available:
 

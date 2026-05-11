@@ -3,7 +3,12 @@ name: Learnings Researcher
 description: "Searches institutional knowledge in docs/compound/ for relevant past solutions to inform current work"
 maturity: stable
 tools: read, search
-model_routing: "Tier 1 (Fast/Cheap)"
+model_routing: "Tier 1 (Fast/Cheap)"  # DEPRECATED — use model_tier
+model_tier: 1
+max_subagent_tier: 1
+reasoning_effort: "low"
+model_provider: "openai"
+model_family: "gpt-5.4-mini"
 subagent_depth: 0
 ---
 

@@ -50,12 +50,6 @@ When the `agent-engram` capability pack is installed, prefer `unified_search` fo
 `list_symbols` for inventory, `map_code` for caller/callee context, and `impact_analysis` before
 manual caller tracing.
 
-**File-load verification** (when `agent-engram` is installed): Before citing any file's
-contents as evidence in the plan, verify the file is indexed per the protocol in
-`.github/instructions/agent-engram.instructions.md` ("Verifying File Indexed").
-Use `list_symbols` or `query_memory` with the file path; if absent, call `sync_workspace`
-and re-query before falling back to direct `view`.
-
 ### Phase 3: Structure the Plan
 
 Produce a plan with these sections:
