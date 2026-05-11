@@ -101,12 +101,6 @@ Use workspace search tools to understand:
 * Precedents — how similar problems were solved before
 * Constraints imposed by the current architecture
 
-**File-load verification** (when `agent-engram` is installed): Before citing any file's
-contents as evidence, verify the file is indexed per the protocol in
-`.github/instructions/agent-engram.instructions.md` ("Verifying File Indexed").
-Use `list_symbols` or `query_memory` with the file path; if absent, call `sync_workspace`
-and re-query before falling back to direct `view`.
-
 #### Step 2.3: External Research (Deep only)
 
 For `deep` scope, investigate beyond the codebase:
@@ -197,8 +191,7 @@ When the `backlogit` capability pack is installed and the backlog tool supports
 * Reference the artifact path in the description or a comment
 
 When `backlog-md` is the installed backlog tool, create a queue entry using
-the backlog tool's create operation (refer to the installed registry for the
-exact command name) with `title` derived from the deliberation topic,
+`backlogit_create_item` with `title` derived from the deliberation topic,
 `description` linking to the decision artifact path,
 `status: "queued"`, and `labels: ["deliberation-outcome"]`.
 

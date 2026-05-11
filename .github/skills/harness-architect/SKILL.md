@@ -92,7 +92,7 @@ For each task, select the appropriate harness strategy:
 1. Create test files that express the task intent as compilable tests.
 2. Prefer table-driven or parameterized tests when the task describes
    multiple scenarios.
-3. Create matching production stubs with unimplemented! bodies
+3. Create matching production stubs with unimplemented!("Worker: ...") bodies
    so the module compiles while the tests still fail for the intended
    reason.
 4. Keep signatures, types, and module names aligned with the current
@@ -103,7 +103,7 @@ For each task, select the appropriate harness strategy:
 Write harness files into the module that matches the work item's scope:
 
 * **Unit harnesses**: colocated with the production code in the
-  appropriate src subdirectory
+  appropriate src/ subdirectory
 * **Integration harnesses**: in `tests/integration/` when the
   task spans modules or runtime boundaries
 * **Contract harnesses**: in `tests/contract/` when the task
@@ -123,8 +123,8 @@ with a non-compiling harness.
 
 #### Step 5.2: Red phase check
 
-Run `cargo test` for the harness tests. ALL tests MUST fail with
-the expected failure marker (unimplemented!).
+Run `cargo dev-test` for the harness tests. ALL tests MUST fail with
+the expected failure marker (unimplemented!("Worker: ...")).
 
 If any test passes (false positive) or fails with an unexpected error
 (compilation vs runtime), fix the harness.

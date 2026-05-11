@@ -61,11 +61,27 @@ strict_safety:
   require_approval_for:
     - destructive
 
-# Model routing preferences (map tiers to model identifiers)
+# Model routing preferences (map tiers to model identifiers and per-tier config)
 model_routing:
-  tier1: gpt-5.4-mini      # Fast/cheap: memory, docs, compaction
-  tier2: claude-sonnet-4.6      # Standard: orchestration, code, review
-  tier3: claude-opus-4.6      # Frontier: planning, architecture, analysis
+  tier1:
+    model: gpt-5.4-mini              # Fast/cheap: memory, docs, compaction (e.g., gpt-5.4-mini)
+    reasoning_effort: "low"  # Leave empty to use model default
+    model_provider: "openai"       # e.g., openai, anthropic — leave empty for default
+    model_family: "gpt-5.4-mini"           # Resolved into Tier 1 agent frontmatter
+  tier2:
+    model: claude-sonnet-4.6              # Standard: orchestration, code, review (e.g., claude-sonnet-4.6)
+    reasoning_effort: "medium"
+    model_provider: "anthropic"
+    model_family: "claude-sonnet-4.6"
+  tier3:
+    model: claude-opus-4.6              # Frontier: planning, architecture, analysis (e.g., claude-opus-4.6)
+    reasoning_effort: "high"
+    model_provider: "anthropic"
+    model_family: "claude-opus-4.6"
+  orchestrator:
+    model_family: "gpt-5.4"     # Orchestrator model override (default: gpt-5.4)
+    reasoning_effort: "medium"
+    model_provider: "openai"
 
 # AI CLI tool startup configuration
 # Resolves copilot in the generated start.ps1 and start.sh scripts.
@@ -74,6 +90,16 @@ ai_tools:
   copilot_cli:
     exe_path: "copilot"  # Default: "copilot" (expects it on PATH)
                                       # Example: "C:\\Tools\\ghcpcli\\copilot.exe"
+
+# Optional browser-automation capability configuration (used when browser-verification is enabled)
+browser:
+  cli: "agent-browser"                    # Default: "agent-browser"
+  headless_flag: "--headless" # Default: "--headless"
+
+# Optional iterative-experiment skill configuration
+experiments:
+  branch_prefix: "experiment/"  # Default: "experiment/"
+  results_dir: "docs/experiments"       # Default: "docs/experiments"
 
 # Explicit template variable overrides applied during install/tune (use sparingly —
 # prefer fixing the workspace setup over overriding discovery results)

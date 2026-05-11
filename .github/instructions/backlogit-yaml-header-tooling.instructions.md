@@ -17,7 +17,7 @@ The table below covers every field present in artifact frontmatter (features, ta
 | `title` | Yes | `backlogit_update_item` | `title` param |
 | `artifact_type` | No | None | Determined at creation; changing type would violate WIT hierarchy |
 | `status` | Yes | `backlogit_move_item` | Prefer `backlogit_move_item` for status transitions; `backlogit_update_item` also accepts `status` |
-| `parent_id` | Partial | None (gap) | The installed backlog registry does not expose a supported MCP operation for re-parenting. Treat `parent_id` changes as a tooling gap requiring direct backlog file edits or a registry/tooling update |
+| `parent_id` | Yes | `backlogit_update_item` | `parent_id` param; use `backlogit_update_item` to assign or re-parent an item |
 | `sprint` | Yes | `backlogit_update_item` | `sprint` param |
 | `priority` | Yes | `backlogit_update_item` | `priority` param; values: `low`, `medium`, `high`, `critical` |
 | `description` | Yes | `backlogit_update_item` | `description` param (main body text) |
@@ -38,14 +38,13 @@ The table below covers every field present in artifact frontmatter (features, ta
 
 Semantic links live in `item_links` (not in frontmatter) but affect artifact relationships.
 
-The currently installed backlog registry does not expose MCP tools for typed semantic links (`related_to`, `duplicate_of`, `informs`, `supersedes`, `spike_ref`). Use dependency operations for blocking and structural relationships.
-
 | Operation | MCP Tool |
 |---|---|
 | Add a blocking or parent dependency | `backlogit_add_dependency` |
 | Remove a dependency | `backlogit_remove_dependency` |
 | Inspect dependency graph | `backlogit_get_dependencies` |
-| Add, list, or remove typed semantic links | Not supported by the currently installed registry |
+
+> **Note**: Typed semantic links (`related_to`, `duplicate_of`, `informs`, `supersedes`, `spike_ref`) are stored in `item_links` but there is no dedicated MCP tool to manage them. Use `backlogit_query_sql` to read links and direct file edits followed by `backlogit_sync_index` to create or remove them.
 
 ## Coverage Gaps
 
@@ -93,10 +92,8 @@ backlogit_move_item(id="022.004-T", status="done")
 // Update multiple fields at once
 backlogit_update_item(id="022.004-T", priority="high", assigned_to="agent-1", labels="stash,cli")
 
-// Re-parent an orphaned task (tooling gap — no MCP operation; edit directly)
-// 1. Edit .backlogit/queue/012-T.md and set parent_id: "025-F" in the YAML frontmatter
-// 2. Refresh the index cache
-backlogit_sync_index()
+// Re-parent an orphaned task
+backlogit_update_item(id="012-T", parent_id="025-F")
 
 // Associate a commit
 backlogit_track_commit(item_id="022-F", sha="abc123", message="feat(stash): add list command", author="agent")

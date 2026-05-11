@@ -13,7 +13,7 @@ This workspace uses **backlogit** for structured backlog management. All agents 
 |---------|-------|
 | Tool | backlogit |
 | Directory | `.backlogit/` |
-| Access | MCP |
+| Access | both |
 | Registry | `.autoharness/backlog-registry.yaml` |
 
 ## Operation Reference
@@ -24,13 +24,13 @@ Use these operations for all backlog interactions. The operation names are abstr
 
 | Operation | MCP Tool | CLI Command | Purpose |
 |-----------|----------|-------------|---------|
-| Create task | `backlogit_create_item` | `N/A` | Create a new task/artifact |
-| List tasks | `backlogit_list_items` | `N/A` | List tasks with filters |
-| Get task | `backlogit_get_item` | `N/A` | Retrieve task details |
-| Update task | `backlogit_update_item` | `N/A` | Modify task fields |
-| Move task | `backlogit_move_item` | `N/A` | Change task status |
-| Search | `backlogit_search_items` | `N/A` | Full-text search |
-| Complete | `backlogit_move_item` | `N/A` | Mark task complete |
+| Create task | `backlogit_create_item` | `backlogit add --type {type} --title {title}` | Create a new task/artifact |
+| List tasks | `backlogit_list_items` | `backlogit list` | List tasks with filters |
+| Get task | `backlogit_get_item` | `backlogit get {id}` | Retrieve task details |
+| Update task | `backlogit_update_item` | `backlogit update {id}` | Modify task fields |
+| Move task | `backlogit_move_item` | `backlogit move {id} --status {status}` | Change task status |
+| Search | `backlogit_search_items` | `backlogit search {query}` | Full-text search |
+| Complete | `backlogit_move_item` | `backlogit move {id} --status done` | Mark task complete |
 
 ### Status Values
 
@@ -43,27 +43,17 @@ Use these operations for all backlog interactions. The operation names are abstr
 
 ### Extended Operations (Tool-Dependent)
 
-| Operation | MCP Tool | Purpose |
-|-----------|----------|---------|
-| SQL query | `backlogit_query_sql` | Token-efficient lookup via SQL |
-| Sync index | `backlogit_sync_index` | Rehydrate query index after out-of-band edits |
-| Append comment | `backlogit_append_comment` | Add execution notes to a task |
-| Log telemetry | `backlogit_log_telemetry` | Write agent telemetry events |
-| Save memory | `backlogit_save_memory` | Persist agent continuity state |
-| Create checkpoint | `backlogit_create_checkpoint` | Save session state checkpoint |
-| List checkpoints | `backlogit_list_checkpoints` | List active checkpoints for recovery |
-| Get checkpoint | `backlogit_get_checkpoint` | Retrieve a specific checkpoint |
-| Resolve checkpoint | `backlogit_resolve_checkpoint` | Mark a stale checkpoint as resolved |
-| Poll hook events | `backlogit_poll_hook_events` | Poll unacknowledged hook signals |
-| Ack hook events | `backlogit_ack_hook_events` | Acknowledge processed hook events |
-| Get queue | `backlogit_get_queue` | Prioritized ready-work selection |
-| Add dependency | `backlogit_add_dependency` | Wire task execution ordering |
-| Track commit | `backlogit_track_commit` | Associate commits with task IDs |
-| Create shipment | `backlogit_create_shipment` | Create a release shipment |
-| Get shipment | `backlogit_get_shipment` | Retrieve shipment details |
-| List shipments | `backlogit_list_shipments` | List shipments with filters |
-| Claim shipment | `backlogit_claim_shipment` | Move shipment to active |
-| Ship shipment | `backlogit_ship_shipment` | Close and archive a shipment |
+| `backlogit_append_comment` | Append a comment to a backlog item | `backlogit_append_comment` | `item_id`, `actor`, `comment` |
+| `backlogit_log_telemetry` | Log a telemetry event | `backlogit_log_telemetry` | `event_type` |
+| `backlogit_save_memory` | Save a memory entry | `backlogit_save_memory` | `key`, `summary` |
+| `backlogit_track_commit` | Track a commit against a backlog item | `backlogit_track_commit` | `item_id`, `sha`, `message`, `author` |
+| `backlogit_return_blocked` | Return a blocked item from shipment | `backlogit_return_blocked` | `shipment_id`, `item_id`, `reason` |
+| `backlogit_get_queue` | View the prioritized queue | `backlogit_get_queue` | `type`, `status`, `assigned_to`, `limit`, `offset`, `group_by` |
+| `backlogit_add_dependency` | Add dependency between items | `backlogit_add_dependency` | `item_id`, `depends_on`, `dep_type` |
+| `backlogit_remove_dependency` | Remove dependency | `backlogit_remove_dependency` | `item_id`, `depends_on` |
+| `backlogit_get_dependencies` | List dependencies | `backlogit_get_dependencies` | `id`, `reverse` |
+| `backlogit_get_metadata_catalog` | Retrieve metadata catalog | `backlogit_get_metadata_catalog` | — |
+| `backlogit_export_command_map` | Export tool command map | `backlogit_export_command_map` | — |
 
 ## Agent Workflow Patterns
 

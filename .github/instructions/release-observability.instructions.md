@@ -62,7 +62,7 @@ Release-observability artifacts feed INTO operational closure. The
 `release-observability` instruction file defines WHAT monitoring, auditing, and
 rollback discipline must be produced; `operational-closure/SKILL.md` defines
 WHERE those artifacts land in the closure record. When both are active, do not
-duplicate content. Produce it once and carry it into closure:
+duplicate content — produce it once and carry it into closure:
 
 * monitoring plan → closure healthy signals and failure signals
 * pre-deploy audit → closure pre-deploy checks

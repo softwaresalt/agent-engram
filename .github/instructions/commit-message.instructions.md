@@ -28,18 +28,7 @@ Types MUST be one of the following:
 
 Scopes MUST be one of the following:
 
-* `(agents)` — Custom agent definitions in `.github/agents/`
-* `(prompts)` — Prompt templates in `.github/prompts/`
-* `(instructions)` — Coding guidelines in `.github/instructions/`
-* `(skills)` — Skill packages in `.github/skills/`
-* `(templates)` — Issue and PR templates in `.github/ISSUE_TEMPLATE/`
-* `(workflows)` — GitHub Actions in `.github/workflows/`
-* `(extension)` — VS Code extension in `extension/`
-* `(scripts)` — Automation scripts in `scripts/`
-* `(docs)` — Documentation in `docs/`
-* `(adrs)` — Architecture Decision Records
-* `(settings)` — Configuration files (`.vscode/`, linter configs)
-* `(build)` — Build system and dependencies
+agents, prompts, instructions, skills, templates, workflows, extension, scripts, docs, adrs, settings, build
 
 ## Description
 

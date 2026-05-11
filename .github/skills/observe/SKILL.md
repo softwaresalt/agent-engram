@@ -16,38 +16,17 @@ Invoke when:
 * an environment-specific hook emitted a useful signal
 * manual observation during planning, build, review, verification, or closure
   revealed a recurring practice worth tracking
-* a defect is discovered during any phase — capture it as a `bug` observation
-  so it persists as institutional knowledge even when it is not yet resolved
 
 ## Inputs
 
 * `context`: (Required) Summary of the observed behavior and why it matters.
-* `source`: (Optional) One of `manual`, `hook`, `review`, `runtime-verification`, `closure`, `memory`, or `bug`.
+* `source`: (Optional) One of `manual`, `hook`, `review`, `runtime-verification`, `closure`, or `memory`.
 * `evidence`: (Optional) File paths, citations, metrics, or artifact references supporting the observation.
-
-## Bug Capture
-
-When `source: bug` is provided (or the context clearly describes a discovered defect):
-
-1. Normalize the observation as a bug record rather than a general workflow observation.
-2. Write a bug entry to `docs/compound/bugs/{slug}-{YYYY-MM-DD}.md` using the schema
-   defined in `docs/decisions/2026-04-29-bug-capture-format-decision.md`.
-3. Set `status: open` unless the resolution is already known (use `status: resolved` if so).
-4. Also append to the `.autoharness/continuous-learning/observations/{YYYY-MM-DD}.jsonl`
-   file so the bug enters the learn/evolve clustering pipeline.
-5. Return the path of the created compound bug entry as part of the capture summary.
-
-**Learning-loop integration**: Bug entries in `docs/compound/bugs/` are discovered
-by the learnings-researcher at research time (it scans all `docs/compound/` subdirectories).
-The `learn` skill clusters repeated bug patterns into instincts. The `compound-refresh`
-skill reviews and updates stale bug entries post-shipment. No additional configuration
-is needed — the CE loop picks up bugs automatically.
 
 ## Output
 
 * Normalized observation record appended to `.autoharness/continuous-learning/observations/{YYYY-MM-DD}.jsonl`
 * Concise capture summary indicating whether the observation is likely one-off or recurring
-* **For bug observations**: also a bug entry at `docs/compound/bugs/{slug}-{YYYY-MM-DD}.md`
 
 ## Required Protocol
 
@@ -61,14 +40,12 @@ is needed — the CE loop picks up bugs automatically.
 3. Prefer concise normalized evidence over dumping transcript fragments.
 4. If hook capture is disabled or unavailable, continue with manual capture
    rather than treating observation as unsupported.
-5. For `source: bug`, also write the compound bug entry (see Bug Capture above).
 
 ## Quality Criteria
 
 * Observations capture recurring practice rather than one-off noise
 * Evidence is preserved through citations or artifact references
 * The record is safe to store in the repository
-* Bug observations produce both a JSONL entry AND a compound bug entry
 
 
 ## Model Routing

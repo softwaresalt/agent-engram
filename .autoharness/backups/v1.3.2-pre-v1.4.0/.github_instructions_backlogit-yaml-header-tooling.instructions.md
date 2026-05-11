@@ -1,0 +1,133 @@
+---
+description: "YAML frontmatter field reference for backlogit artifacts with MCP tool coverage and gap analysis"
+applyTo: '**'
+---
+
+# Backlogit YAML Header Tooling Coverage
+
+Backlogit artifacts are Markdown files with YAML frontmatter. This reference maps every frontmatter field to the MCP tool that manages it and identifies gaps requiring direct file editing or alternative approaches.
+
+## Artifact Frontmatter Fields
+
+The table below covers every field present in artifact frontmatter (features, tasks, subtasks). Use it to determine which MCP tool to call when modifying a field.
+
+| Field | Editable? | MCP Tool | Notes |
+|---|---|---|---|
+| `id` | No | System-assigned | Set at creation from WIT prefix + sequence counter; never editable |
+| `title` | Yes | `backlogit_update_item` | `title` param |
+| `artifact_type` | No | None | Determined at creation; changing type would violate WIT hierarchy |
+| `status` | Yes | `backlogit_move_item` | Prefer `backlogit_move_item` for status transitions; `backlogit_update_item` also accepts `status` |
+| `parent_id` | Partial | None (gap) | The installed backlog registry does not expose a supported MCP operation for re-parenting. Treat `parent_id` changes as a tooling gap requiring direct backlog file edits or a registry/tooling update |
+| `sprint` | Yes | `backlogit_update_item` | `sprint` param |
+| `priority` | Yes | `backlogit_update_item` | `priority` param; values: `low`, `medium`, `high`, `critical` |
+| `description` | Yes | `backlogit_update_item` | `description` param (main body text) |
+| `assigned_to` | Yes | `backlogit_update_item` | `assigned_to` param |
+| `owner` | Yes | `backlogit_update_item` | `owner` param |
+| `labels` | Yes | `backlogit_update_item` | `labels` param; comma-separated string |
+| `references` | Partial | `backlogit_create_item` | Set at creation via `references` param; **not editable after creation** via standard tools |
+| `commit` | Yes | `backlogit_update_item` or `backlogit_track_commit` | `backlogit_track_commit` records full SHA + message + author in `commit_links`; `backlogit_update_item` writes to frontmatter `commit` field only |
+| `dependencies` | Yes | `backlogit_add_dependency`, `backlogit_remove_dependency` | Manages the `item_deps` table and frontmatter `dependencies` field |
+| `custom_fields` | No | None (gap) | JSON blob written by internal tools; not directly editable via any MCP tool |
+| `sections` (body sections) | Yes | `backlogit_update_item` or `backlogit_create_item` | `sections` param accepts `{"section_name": "content"}` JSON |
+| `created_at` | No | System-managed | Set at item creation |
+| `updated_at` | No | System-managed | Updated automatically on every mutation |
+| `level` | No | System-managed | Derived from parent hierarchy depth |
+| `hierarchy_path` | No | System-managed | Derived from ID structure |
+
+## Semantic Link Fields
+
+Semantic links live in `item_links` (not in frontmatter) but affect artifact relationships.
+
+The currently installed backlog registry does not expose MCP tools for typed semantic links (`related_to`, `duplicate_of`, `informs`, `supersedes`, `spike_ref`). Use dependency operations for blocking and structural relationships.
+
+| Operation | MCP Tool |
+|---|---|
+| Add a blocking or parent dependency | `backlogit_add_dependency` |
+| Remove a dependency | `backlogit_remove_dependency` |
+| Inspect dependency graph | `backlogit_get_dependencies` |
+| Add, list, or remove typed semantic links | Not supported by the currently installed registry |
+
+## Coverage Gaps
+
+The following gaps require either file-level edits or are not yet supported:
+
+### `custom_fields`
+
+`custom_fields` is a JSON blob in frontmatter populated by internal workflows (e.g. `source_stash_id`, `harness_status`). There is no MCP tool to read or write individual `custom_fields` keys.
+
+**Workarounds:**
+- Read via `backlogit_query_sql`: `SELECT custom_fields FROM items WHERE id = '022-F'`
+- Edit by reading the Markdown file directly, modifying the YAML, then calling `backlogit_sync_index` to refresh the cache
+
+### `references`
+
+`references` is set during item creation but cannot be updated through `backlogit_update_item`.
+
+**Workaround:** Edit the Markdown file directly, then call `backlogit_sync_index`.
+
+### `artifact_type`
+
+Artifact type cannot be changed after creation. If the wrong type was assigned, delete the item (`backlogit_delete_item`) and recreate it with the correct type.
+
+## Discovery and Inspection Tools
+
+Use these tools to understand available fields and schema before querying or editing:
+
+| Tool | Purpose |
+|---|---|
+| `backlogit_get_wit_metadata` | Returns full WIT definition for a type, including all configurable fields and sections |
+| `backlogit_list_types` | Lists all configured WIT types with hierarchy levels |
+| `backlogit_get_metadata_catalog` | Returns unified workspace metadata (types, statuses, prefixes, available tools) |
+| `backlogit_query_sql` | Ad-hoc read-only SQL against the index for any field not covered by standard tools |
+
+## Usage Patterns
+
+### Preferred update flow
+
+Always prefer MCP tools over direct file edits:
+
+```text
+// Change status
+backlogit_move_item(id="022.004-T", status="done")
+
+// Update multiple fields at once
+backlogit_update_item(id="022.004-T", priority="high", assigned_to="agent-1", labels="stash,cli")
+
+// Re-parent an orphaned task (tooling gap — no MCP operation; edit directly)
+// 1. Edit .backlogit/queue/012-T.md and set parent_id: "025-F" in the YAML frontmatter
+// 2. Refresh the index cache
+backlogit_sync_index()
+
+// Associate a commit
+backlogit_track_commit(item_id="022-F", sha="abc123", message="feat(stash): add list command", author="agent")
+```
+
+### When to sync
+
+Call `backlogit_sync_index` after any direct file edit in `.backlogit/`. The index cache becomes stale if artifacts are modified outside the MCP or CLI surfaces.
+
+### Reading custom_fields via SQL
+
+```sql
+SELECT id,
+       json_extract(custom_fields, '$.source_stash_id')  AS stash_id,
+       json_extract(custom_fields, '$.harness_status')   AS harness_status
+FROM items
+WHERE artifact_type = 'task'
+  AND custom_fields IS NOT NULL
+```
+
+## Section Editing
+
+Named body sections (e.g. `## Acceptance Criteria`, `## Implementation Notes`) are writeable via the `sections` param:
+
+```json
+{
+  "Acceptance Criteria": "- Unit tests cover filter by kind\n- CLI help text updated",
+  "Implementation Notes": "See internal/cli/stash.go"
+}
+```
+
+Pass this JSON string to `backlogit_update_item.sections` or `backlogit_create_item.sections`. Section names are matched case-insensitively against the Markdown headings in the artifact body.
+
+Generated by autoharness | Template: backlogit-yaml-header-tooling.instructions.md.tmpl
