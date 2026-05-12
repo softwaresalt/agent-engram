@@ -152,13 +152,13 @@ fn direct_sync_rejects_non_git_workspace() {
     );
 }
 
-/// S081: `engram sync --direct` returns exit 2 immediately when the CozoDB
+/// S081: `engram sync --direct` returns exit 2 immediately when the `CozoDB`
 /// database is locked by another process.
 ///
 /// The test holds the `engram.db.lock` advisory lock from a background thread,
 /// then runs the binary. Because the lock is held by a separate OS-level file
 /// handle, the binary's `fd_lock::RwLock::try_write()` probe sees the file as
-/// locked and must return exit 2 before attempting the 30-second connect_db
+/// locked and must return exit 2 before attempting the 30-second `connect_db`
 /// polling loop.
 ///
 /// On Windows `LockFileEx` enforces per-handle exclusivity even within the same

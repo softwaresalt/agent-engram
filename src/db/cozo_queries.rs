@@ -77,6 +77,10 @@ static MUTABLE_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
 /// meaning "no retry has ever occurred".
 static MUTABLE_LAST_RETRY_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
 
+const SQLITE_BUSY_MAX_ATTEMPTS: u32 = 5;
+const SQLITE_BUSY_INITIAL_DELAY_MS: u64 = 50;
+const SQLITE_BUSY_MAX_DELAY_MS: u64 = 500;
+
 /// Snapshot of mutable-script SQLITE_BUSY retry telemetry.
 ///
 /// Exposed by the `get_mutable_script_retry_metrics` MCP tool.
@@ -116,6 +120,23 @@ pub fn mutable_script_retry_metrics() -> RetryMetrics {
 pub(crate) fn reset_retry_metrics() {
     MUTABLE_RETRY_COUNT.store(0, Ordering::Relaxed);
     MUTABLE_LAST_RETRY_EPOCH_MS.store(0, Ordering::Relaxed);
+}
+
+fn is_busy_error(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("locked") || normalized.contains("busy")
+}
+
+fn record_mutable_retry_telemetry() {
+    MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+    // `0` is the sentinel for "no retry yet", so clamp to at least 1ms.
+    // This guards against both clock-before-epoch (negative timestamp_millis,
+    // where u64::try_from fails) and the exact Unix epoch (0ms), both of
+    // which would otherwise write the sentinel and mask a real retry.
+    let now_ms = u64::try_from(Utc::now().timestamp_millis())
+        .unwrap_or(0)
+        .max(1);
+    MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────
@@ -396,38 +417,61 @@ impl CodeGraphQueries {
         script: &str,
         params: BTreeMap<String, DataValue>,
     ) -> Result<cozo::NamedRows, EngramError> {
-        const MAX_ATTEMPTS: u32 = 5;
-        let mut delay = std::time::Duration::from_millis(50);
-        for attempt in 0..MAX_ATTEMPTS {
+        let mut delay = std::time::Duration::from_millis(SQLITE_BUSY_INITIAL_DELAY_MS);
+        for attempt in 0..SQLITE_BUSY_MAX_ATTEMPTS {
             match self
                 .db
                 .run_script(script, params.clone(), ScriptMutability::Mutable)
             {
                 Ok(r) => return Ok(r),
                 Err(e) => {
-                    let msg = e.to_string().to_lowercase();
-                    if (msg.contains("locked") || msg.contains("busy"))
-                        && attempt + 1 < MAX_ATTEMPTS
-                    {
+                    let msg = e.to_string();
+                    if is_busy_error(&msg) && attempt + 1 < SQLITE_BUSY_MAX_ATTEMPTS {
                         tracing::warn!(
                             attempt = attempt + 1,
-                            max_attempts = MAX_ATTEMPTS,
+                            max_attempts = SQLITE_BUSY_MAX_ATTEMPTS,
                             delay_ms = delay.as_millis(),
                             error = %msg,
                             "SQLITE_BUSY retry: retrying mutable run_script"
                         );
-                        // Record retry telemetry (040.001-T).
-                        MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
-                        // `0` is the sentinel for "no retry yet", so clamp to at least 1ms.
-                        // This guards against both clock-before-epoch (negative timestamp_millis,
-                        // where u64::try_from fails) and the exact Unix epoch (0ms), both of
-                        // which would otherwise write the sentinel and mask a real retry.
-                        let now_ms = u64::try_from(Utc::now().timestamp_millis())
-                            .unwrap_or(0)
-                            .max(1);
-                        MUTABLE_LAST_RETRY_EPOCH_MS.store(now_ms, Ordering::Relaxed);
+                        record_mutable_retry_telemetry();
                         tokio::time::sleep(delay).await;
-                        delay = (delay * 2).min(std::time::Duration::from_millis(500));
+                        delay = (delay * 2)
+                            .min(std::time::Duration::from_millis(SQLITE_BUSY_MAX_DELAY_MS));
+                        continue;
+                    }
+                    return Err(map_db_err(e.to_string()));
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    async fn run_script_busy_retry_immutable(
+        &self,
+        script: &str,
+        params: BTreeMap<String, DataValue>,
+    ) -> Result<cozo::NamedRows, EngramError> {
+        let mut delay = std::time::Duration::from_millis(SQLITE_BUSY_INITIAL_DELAY_MS);
+        for attempt in 0..SQLITE_BUSY_MAX_ATTEMPTS {
+            match self
+                .db
+                .run_script(script, params.clone(), ScriptMutability::Immutable)
+            {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if is_busy_error(&msg) && attempt + 1 < SQLITE_BUSY_MAX_ATTEMPTS {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            max_attempts = SQLITE_BUSY_MAX_ATTEMPTS,
+                            delay_ms = delay.as_millis(),
+                            error = %msg,
+                            "SQLITE_BUSY retry: retrying immutable run_script"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2)
+                            .min(std::time::Duration::from_millis(SQLITE_BUSY_MAX_DELAY_MS));
                         continue;
                     }
                     return Err(map_db_err(e.to_string()));
@@ -2283,9 +2327,8 @@ impl CodeGraphQueries {
     pub async fn count_code_files(&self) -> Result<u64, EngramError> {
         let script = "?[count(path)] := *file_node { path }";
         let result = self
-            .db
-            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await?;
         Ok(extract_count(&result))
     }
 
@@ -2766,9 +2809,7 @@ impl CodeGraphQueries {
             DataValue::Num(Num::Int(i64::try_from(size_bytes).unwrap_or(i64::MAX))),
         );
         p.insert("recorded_at".to_owned(), DataValue::from(ts.as_str()));
-        self.db
-            .run_script(script, p, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(script, p).await?;
         Ok(())
     }
 
@@ -2779,9 +2820,8 @@ impl CodeGraphQueries {
     *file_hash { file_path, content_hash, size_bytes, recorded_at }
 "#;
         let r = self
-            .db
-            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await?;
         r.rows
             .iter()
             .map(|row| {
@@ -2807,9 +2847,7 @@ impl CodeGraphQueries {
 "#;
         let mut p = BTreeMap::new();
         p.insert("file_path".to_owned(), DataValue::from(file_path));
-        self.db
-            .run_script(script, p, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(script, p).await?;
         Ok(())
     }
 

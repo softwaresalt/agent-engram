@@ -47,6 +47,9 @@ pub type Db = CozoDb;
 
 type DbOpenLock = Arc<Mutex<()>>;
 
+// Intentionally retain one lock per concrete DB path for the daemon lifetime.
+// Weak/strong-count eviction reintroduces a TOCTOU window where concurrent
+// callers can race to install distinct locks for the same path.
 static DB_OPEN_LOCKS: OnceLock<Mutex<HashMap<PathBuf, DbOpenLock>>> = OnceLock::new();
 
 // ── Bootstrap trait ───────────────────────────────────────────────────────────
@@ -210,8 +213,8 @@ pub fn map_db_err<E: ToString>(err: E) -> EngramError {
 mod tests {
     use std::{
         path::PathBuf,
-        sync::Arc,
-        time::{Duration, Instant},
+        sync::{Arc, mpsc},
+        time::Duration,
     };
 
     use tempfile::TempDir;
@@ -316,28 +319,62 @@ mod tests {
         let path = PathBuf::from("serialized-path");
         let first_lock = connect_db_open_lock(&path);
         let second_lock = connect_db_open_lock(&path);
-        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (second_attempt_tx, second_attempt_rx) = mpsc::channel();
+        let (second_acquired_tx, second_acquired_rx) = mpsc::channel();
 
-        let first_barrier = Arc::clone(&barrier);
         let hold_guard = tokio::task::spawn_blocking(move || {
             let _guard = match first_lock.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            first_barrier.wait();
-            std::thread::sleep(Duration::from_millis(150));
+            let _ = first_acquired_tx.send(());
+            let _ = release_rx.recv();
         });
 
-        let second_barrier = Arc::clone(&barrier);
-        let wait_time = tokio::task::spawn_blocking(move || {
-            second_barrier.wait();
-            let started_at = Instant::now();
+        assert!(
+            first_acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "first caller must report that it holds the lock"
+        );
+
+        let wait_guard = tokio::task::spawn_blocking(move || {
+            let _ = second_attempt_tx.send(());
             let _guard = match second_lock.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            started_at.elapsed()
+            let _ = second_acquired_tx.send(());
         });
+
+        assert!(
+            second_attempt_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "second caller must report that it is attempting the lock"
+        );
+
+        assert!(
+            matches!(
+                second_acquired_rx.recv_timeout(Duration::from_millis(250)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "second caller must remain blocked until the first guard is released"
+        );
+
+        assert!(
+            release_tx.send(()).is_ok(),
+            "test must be able to release the first caller"
+        );
+
+        assert!(
+            second_acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "second caller must acquire the lock after the first releases it"
+        );
 
         let first_result = hold_guard.await;
         assert!(
@@ -345,16 +382,10 @@ mod tests {
             "first blocking task must complete without panic: {first_result:?}"
         );
 
-        let elapsed = match wait_time.await {
-            Ok(duration) => duration,
-            Err(join_error) => {
-                panic!("second blocking task must complete without panic: {join_error}")
-            }
-        };
-
+        let second_result = wait_guard.await;
         assert!(
-            elapsed >= Duration::from_millis(100),
-            "second caller must wait for the first guard; elapsed: {elapsed:?}"
+            second_result.is_ok(),
+            "second blocking task must complete without panic: {second_result:?}"
         );
     }
 }
