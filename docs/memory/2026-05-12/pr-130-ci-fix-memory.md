@@ -4,7 +4,7 @@ type: session-memory
 date: 2026-05-12
 pr: 130
 branch: chore/autoharness-mergeinstall-v1.4.0
-commit: 32c9a5c
+commit: 87af02e
 status: completed
 ---
 
@@ -12,12 +12,17 @@ status: completed
 
 ## Outcome
 
-PR #130 is green after commit `32c9a5c`.
-The failing CI root cause from the GitHub Actions log was startup hydration
-lock contention in Cozo query paths: `count_code_files()` and offline
-file-hash reads/writes could hit `database is locked` during
-`background_db_hydration`, which left indexing incomplete and caused
-`t030_001_swift_function_indexed_via_ipc` to time out with no symbols.
+PR #130 is green after commits `32c9a5c` and `87af02e`.
+The fix shipped in two steps:
+
+* `32c9a5c` fixed the GitHub log's original startup hydration lock contention:
+  `count_code_files()` and offline file-hash reads/writes could hit
+  `database is locked` during `background_db_hydration`, leaving indexing
+  incomplete and causing `t030_001_swift_function_indexed_via_ipc` to time
+  out with no symbols
+* `87af02e` fixed the follow-on startup sync race:
+  startup auto-sync could exit early when hydration already held the indexing
+  lock, leaving a fresh workspace "ready" with an empty graph until a later sync
 
 ## Files changed
 
@@ -33,20 +38,28 @@ file-hash reads/writes could hit `database is locked` during
   * added `harvested_artifact_id` values for `049.001-T` through `049.006-T`
 * `tests/integration/cli_direct_test.rs`
   * fixed clippy `doc_markdown` warnings
+* `src/daemon/ipc_server.rs`
+  * queued startup auto-sync through the existing `pending_sync` path when hydration already held the indexing lock
+  * added a regression test covering the queued startup-sync path
+* `src/daemon/watcher.rs`
+  * made `.engram/` an unconditional watcher exclusion so daemon-managed writes cannot keep TTL alive
+  * added a watcher unit test covering empty user exclusion lists
 
 ## Validation
 
 * `cargo fmt --all -- --check`
 * `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`
-* `cargo dev-test`
+* `cargo test --no-default-features --features cozo-backend,embeddings --lib engram_dir_is_always_excluded_even_with_empty_patterns`
+* `cargo test --no-default-features --features cozo-backend,embeddings --test integration_daemon_startup_order`
+* `cargo test --no-default-features --features cozo-backend,embeddings --test integration_lang_ipc_indexing`
 * `gh pr checks 130 --watch --fail-fast`
 
 Notes:
 
 * `cargo audit` still reports pre-existing dependency advisories in transitive crates
   (`cozo`, `fastembed`, and related trees); no dependency changes were made in this fix
-* local Windows runs showed a targeted C++ IPC test can fail in isolation, but the full
-  `integration_lang_ipc_indexing` test binary passed and the GitHub CI check cleared on the fix commit
+* local Windows runs showed the earlier all-targets command was slow enough to be impractical for repeated iteration,
+  so the final validation used the directly affected integration suites and then the authoritative PR CI run
 
 ## Review thread handling
 
@@ -58,5 +71,5 @@ Notes:
 
 ## Next state
 
-* Branch `chore/autoharness-mergeinstall-v1.4.0` contains the fix
+* Branch `chore/autoharness-mergeinstall-v1.4.0` contains both fix commits
 * PR #130 is updated, reviewed, and green
