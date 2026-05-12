@@ -7,9 +7,6 @@ branch: chore/autoharness-mergeinstall-v1.4.0
 commit: 593bc54
 status: completed
 ---
-
-# PR 130 CI fix memory
-
 ## Outcome
 
 PR #130 is green after commits `32c9a5c`, `87af02e`, `e769ccc`, and `593bc54`.
@@ -90,4 +87,4 @@ Notes:
 ## Next state
 
 * Branch `chore/autoharness-mergeinstall-v1.4.0` contains the four code/test follow-up commits
-* PR #130 is updated, reviewed, and green on Actions run `25712452936`
+* PR #130 is updated, reviewed, and green on the latest branch head

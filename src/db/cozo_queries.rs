@@ -444,7 +444,9 @@ impl CodeGraphQueries {
                 }
             }
         }
-        unreachable!()
+        Err(EngramError::System(SystemError::DatabaseError {
+            reason: "SQLITE_BUSY retry loop terminated without executing an attempt".to_string(),
+        }))
     }
 
     async fn run_script_busy_retry_immutable(
@@ -478,7 +480,9 @@ impl CodeGraphQueries {
                 }
             }
         }
-        unreachable!()
+        Err(EngramError::System(SystemError::DatabaseError {
+            reason: "SQLITE_BUSY retry loop terminated without executing an attempt".to_string(),
+        }))
     }
 
     // ── code_file CRUD ─────────────────────────────────────────────
