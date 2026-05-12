@@ -4,7 +4,7 @@ type: session-memory
 date: 2026-05-12
 pr: 130
 branch: chore/autoharness-mergeinstall-v1.4.0
-commit: 87af02e
+commit: 593bc54
 status: completed
 ---
 
@@ -12,8 +12,8 @@ status: completed
 
 ## Outcome
 
-PR #130 is green after commits `32c9a5c` and `87af02e`.
-The fix shipped in two steps:
+PR #130 is green after commits `32c9a5c`, `87af02e`, `e769ccc`, and `593bc54`.
+The fix shipped in four steps:
 
 * `32c9a5c` fixed the GitHub log's original startup hydration lock contention:
   `count_code_files()` and offline file-hash reads/writes could hit
@@ -23,6 +23,14 @@ The fix shipped in two steps:
 * `87af02e` fixed the follow-on startup sync race:
   startup auto-sync could exit early when hydration already held the indexing
   lock, leaving a fresh workspace "ready" with an empty graph until a later sync
+* `e769ccc` fixed the remaining Markdown IPC flake:
+  `integration_markdown_indexing` stopped polling on the first partial
+  `list_symbols` response, so it could assert before the fenced code-block
+  symbol was visible
+* `593bc54` fixed the last Copilot follow-up comments:
+  reused the existing retry error string in `cozo_queries` and made the
+  duplicated v2 daemon indexing paths drain queued pending-sync work through
+  a shared helper
 
 ## Files changed
 
@@ -41,9 +49,12 @@ The fix shipped in two steps:
 * `src/daemon/ipc_server.rs`
   * queued startup auto-sync through the existing `pending_sync` path when hydration already held the indexing lock
   * added a regression test covering the queued startup-sync path
+  * added a shared `finish_indexing_and_drain_pending_sync` helper so both v2 startup and watcher indexing paths drain queued sync work consistently
 * `src/daemon/watcher.rs`
   * made `.engram/` an unconditional watcher exclusion so daemon-managed writes cannot keep TTL alive
   * added a watcher unit test covering empty user exclusion lists
+* `tests/integration/markdown_indexing_test.rs`
+  * changed the poll helper to wait for the full expected Markdown symbol set instead of returning on the first partial `list_symbols` response
 
 ## Validation
 
@@ -52,6 +63,9 @@ The fix shipped in two steps:
 * `cargo test --no-default-features --features cozo-backend,embeddings --lib engram_dir_is_always_excluded_even_with_empty_patterns`
 * `cargo test --no-default-features --features cozo-backend,embeddings --test integration_daemon_startup_order`
 * `cargo test --no-default-features --features cozo-backend,embeddings --test integration_lang_ipc_indexing`
+* `cargo test --no-default-features --features cozo-backend,embeddings --test integration_markdown_indexing`
+* `cargo dev-test`
+* `cargo audit` (advisory debt unchanged; see notes)
 * `gh pr checks 130 --watch --fail-fast`
 
 Notes:
@@ -68,8 +82,12 @@ Notes:
   * `PRRT_kwDORJEduc6BQLUY` — declined with rationale on stable lock retention
   * `PRRT_kwDORJEduc6BQLUm` — fixed deterministic test
   * `PRRT_kwDORJEduc6BQLU5` — fixed harvested stash metadata
+* Replied to the 2 later Copilot follow-up threads after pushing `593bc54`
+* Resolved threads via GraphQL:
+  * `PRRT_kwDORJEduc6BQ1L_` — fixed duplicate retry-string allocation
+  * `PRRT_kwDORJEduc6BReb5` — fixed pending-sync draining in the v2 daemon indexing paths
 
 ## Next state
 
-* Branch `chore/autoharness-mergeinstall-v1.4.0` contains both fix commits
-* PR #130 is updated, reviewed, and green
+* Branch `chore/autoharness-mergeinstall-v1.4.0` contains the four code/test follow-up commits
+* PR #130 is updated, reviewed, and green on Actions run `25712452936`
