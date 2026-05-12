@@ -440,7 +440,7 @@ impl CodeGraphQueries {
                             .min(std::time::Duration::from_millis(SQLITE_BUSY_MAX_DELAY_MS));
                         continue;
                     }
-                    return Err(map_db_err(e.to_string()));
+                    return Err(map_db_err(msg));
                 }
             }
         }
@@ -474,7 +474,7 @@ impl CodeGraphQueries {
                             .min(std::time::Duration::from_millis(SQLITE_BUSY_MAX_DELAY_MS));
                         continue;
                     }
-                    return Err(map_db_err(e.to_string()));
+                    return Err(map_db_err(msg));
                 }
             }
         }

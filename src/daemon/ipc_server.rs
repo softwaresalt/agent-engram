@@ -610,8 +610,7 @@ pub async fn run_with_shutdown(
 
                         // finish_indexing MUST come before flush_state —
                         // flush_state rejects calls while indexing is in progress.
-                        state_auto.finish_indexing().await;
-                        crate::tools::lifecycle::drain_pending_sync(&state_auto).await;
+                        finish_indexing_and_drain_pending_sync(&state_auto).await;
                         if should_flush {
                             if let Err(e) =
                                 crate::tools::write::flush_state(Arc::clone(&state_auto), None)
@@ -692,8 +691,7 @@ pub async fn run_with_shutdown(
                         }
                     };
                     // finish_indexing MUST come before flush_state.
-                    state_watcher.finish_indexing().await;
-                    crate::tools::lifecycle::drain_pending_sync(&state_watcher).await;
+                    finish_indexing_and_drain_pending_sync(&state_watcher).await;
                     if should_flush {
                         if let Err(e) =
                             crate::tools::write::flush_state(Arc::clone(&state_watcher), None).await
@@ -1009,7 +1007,7 @@ pub async fn run_with_shutdown_v2(
                             }
                         }
 
-                        state_auto.finish_indexing().await;
+                        finish_indexing_and_drain_pending_sync(&state_auto).await;
                         if should_flush {
                             if let Err(e) =
                                 crate::tools::write::flush_state(Arc::clone(&state_auto), None)
@@ -1134,7 +1132,7 @@ pub async fn run_with_shutdown_v2(
                             }
                         }
                     };
-                    state_watcher.finish_indexing().await;
+                    finish_indexing_and_drain_pending_sync(&state_watcher).await;
                     if should_flush {
                         if let Err(e) =
                             crate::tools::write::flush_state(Arc::clone(&state_watcher), None).await
@@ -1160,6 +1158,11 @@ fn try_start_startup_sync(state: &AppState) -> bool {
         state.set_pending_sync();
         false
     }
+}
+
+async fn finish_indexing_and_drain_pending_sync(state: &AppState) {
+    state.finish_indexing().await;
+    crate::tools::lifecycle::drain_pending_sync(state).await;
 }
 
 #[cfg(test)]
@@ -1278,6 +1281,24 @@ mod tests {
         assert!(
             state.take_pending_sync(),
             "startup sync must queue a pending sync when hydration already holds the lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_indexing_helper_drains_pending_sync_flag() {
+        let state = AppState::new(1);
+        assert!(state.try_start_indexing(), "should acquire indexing lock");
+        state.set_pending_sync();
+
+        finish_indexing_and_drain_pending_sync(&state).await;
+
+        assert!(
+            !state.is_indexing(),
+            "finish helper must release the indexing lock"
+        );
+        assert!(
+            !state.take_pending_sync(),
+            "finish helper must drain the queued pending sync flag"
         );
     }
 }
