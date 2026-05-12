@@ -72,6 +72,8 @@ pub const DEFAULT_EXCLUDE_PREFIXES: &[&str] = &[
     "target/",
 ];
 
+const REQUIRED_INTERNAL_EXCLUDE_PREFIXES: &[&str] = &[".engram/"];
+
 impl Default for WatcherConfig {
     fn default() -> Self {
         Self {
@@ -255,17 +257,21 @@ fn is_excluded(path: &Path, workspace_root: &Path, exclude_patterns: &[String]) 
     // Normalise to forward slashes for cross-platform prefix matching.
     let rel_str = rel.to_string_lossy().replace('\\', "/");
 
-    exclude_patterns.iter().any(|pat| {
-        // Strip optional trailing slash to get the stem for exact matching.
-        let stem = pat.trim_end_matches('/');
-        // 1. Exact match (directory itself, e.g. "node_modules").
-        // 2. Descendant match (e.g. "node_modules/package/index.js").
-        // 3. Leading path component match (e.g. a nested ".git/" inside the root).
-        rel_str == stem
-            || rel_str.starts_with(&format!("{stem}/"))
-            || rel_str.contains(&format!("/{stem}/"))
-            || rel_str.ends_with(&format!("/{stem}"))
-    })
+    REQUIRED_INTERNAL_EXCLUDE_PREFIXES
+        .iter()
+        .copied()
+        .chain(exclude_patterns.iter().map(String::as_str))
+        .any(|pat| {
+            // Strip optional trailing slash to get the stem for exact matching.
+            let stem = pat.trim_end_matches('/');
+            // 1. Exact match (directory itself, e.g. "node_modules").
+            // 2. Descendant match (e.g. "node_modules/package/index.js").
+            // 3. Leading path component match (e.g. a nested ".git/" inside the root).
+            rel_str == stem
+                || rel_str.starts_with(&format!("{stem}/"))
+                || rel_str.contains(&format!("/{stem}/"))
+                || rel_str.ends_with(&format!("/{stem}"))
+        })
 }
 
 /// Strip `workspace_root` from `path`, returning the relative portion.
@@ -275,4 +281,21 @@ fn relativize(path: &Path, workspace_root: &Path) -> PathBuf {
     path.strip_prefix(workspace_root)
         .unwrap_or(path)
         .to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_excluded;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn engram_dir_is_always_excluded_even_with_empty_patterns() {
+        let workspace_root = Path::new("C:\\workspace");
+        let engram_path = PathBuf::from("C:\\workspace\\.engram\\metrics\\usage.jsonl");
+
+        assert!(
+            is_excluded(&engram_path, workspace_root, &[]),
+            ".engram paths must always be excluded from watcher activity"
+        );
+    }
 }

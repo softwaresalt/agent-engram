@@ -469,7 +469,7 @@ pub async fn run_with_shutdown(
                     // flush, or performs a full index if the code graph is empty.
                     let state_auto = Arc::clone(&state_init);
                     tokio::spawn(async move {
-                        if !state_auto.try_start_indexing() {
+                        if !try_start_startup_sync(&state_auto) {
                             return;
                         }
                         // Retry on SQLITE_BUSY: background_db_hydration and this
@@ -891,7 +891,7 @@ pub async fn run_with_shutdown_v2(
                     });
                     let state_auto = Arc::clone(&state_init);
                     tokio::spawn(async move {
-                        if !state_auto.try_start_indexing() {
+                        if !try_start_startup_sync(&state_auto) {
                             return;
                         }
                         let should_flush = 'sync: {
@@ -1153,9 +1153,19 @@ pub async fn run_with_shutdown_v2(
     Ok(())
 }
 
+fn try_start_startup_sync(state: &AppState) -> bool {
+    if state.try_start_indexing() {
+        true
+    } else {
+        state.set_pending_sync();
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::state::AppState;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
@@ -1253,6 +1263,21 @@ mod tests {
         assert!(
             ep.starts_with(r"\\.\pipe\engram-"),
             "expected named pipe, got {ep}"
+        );
+    }
+
+    #[test]
+    fn startup_sync_queues_when_indexing_is_already_running() {
+        let state = AppState::new(1);
+        assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+        assert!(
+            !try_start_startup_sync(&state),
+            "startup sync must not acquire a second indexing lock"
+        );
+        assert!(
+            state.take_pending_sync(),
+            "startup sync must queue a pending sync when hydration already holds the lock"
         );
     }
 }
