@@ -72,3 +72,6 @@ temp/
 .backlogit/backlogit.db-shm
 .backlogit/backlogit.db-wal
 .backlogit/*.db-journal
+
+# graphtor-docs — managed by graphtor-docs install
+.graphtor/

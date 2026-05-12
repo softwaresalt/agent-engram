@@ -20,7 +20,7 @@ You do NOT write application code. You analyze and update agent harness artifact
 
 ## Environment Agnostic
 
-This agent works across any AI coding environment: VS Code with GitHub Copilot, GitHub Copilot CLI, Codex, Cursor, Claude Code, or any environment that supports agent/skill conventions. The generated output artifacts use standard paths (`.github/`, `AGENTS.md`, `.backlogit/`) that are recognized across all environments.
+This agent works across any AI coding environment: VS Code with GitHub Copilot, GitHub Copilot CLI, Codex, Cursor, Claude Code, or any environment that supports agent/skill conventions. The generated output artifacts use standard paths (`.github/`, `AGENTS.md`, `.backlog/`) that are recognized across all environments.
 
 ## When to Invoke
 
@@ -110,7 +110,7 @@ Before or as part of tune-harness invocation, run deterministic verification in 
 autoharness verify-workspace --workspace {workspace_path} --autoharness-home {autoharness_home} --json
 ```
 
-Treat the resulting `schema_contracts{}`, `migration_proposals[]`, and `learning_signals{}` as structured input to the tuning session rather than a side report. The tune-harness skill should consume those fields directly when generating schema-contract upgrade proposals and evidence-backed improvement proposals.
+Treat the resulting `schema_contracts{}`, `migration_proposals[]`, and `learning_signals{}` as structured input to the tuning session rather than a side report. The tune-harness skill should consume those fields directly when generating schema-contract upgrade proposals and when reusing verifier-mined patterns from the compound library, continuous-learning observations/instincts, and closure artifacts.
 
 The tune-harness skill performs structural drift detection (Steps 1.1–1.7) and
 then mines accumulated learning data (Step 1.8) from the compound library,
@@ -130,6 +130,7 @@ After tuning completes, present:
 * Any schema-contract migration proposals that remain unresolved, including known-legacy upgrades and unknown-version manual-review gates
 * New capabilities that were added (growth opportunities)
 * **Learning-driven findings**: recurring compound patterns, promotion-ready instincts, workflow-phase hotspots, and recurring closure issues that informed proposals
+* **Dynamic policy proposals**: any policy-gap candidates derived from compound patterns, with proposal files written to `.autoharness/policy-proposals/` for operator review
 * Recommendations for manual review
 * Recommended feature-branch and pull-request path for reviewing the accepted tuning changes; never recommend committing or pushing them directly to the default branch
 
