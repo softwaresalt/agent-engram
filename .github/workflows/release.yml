@@ -110,17 +110,11 @@ jobs:
             use_cross: false
 
           # macOS Apple Silicon — native ARM64 build on M-series runner
+          # x86_64-apple-darwin is intentionally omitted: ONNX Runtime does not
+          # provide the prebuilt binaries required by the default embeddings
+          # feature set for macOS Intel release builds.
           - os: macos-latest
             target: aarch64-apple-darwin
-            archive: tar.gz
-            binary_suffix: ""
-            use_cross: false
-
-          # macOS Intel — cross-compiled to x86_64 on ARM64 runner (macos-13
-          # Intel runners were deprecated by GitHub Actions). The Rust toolchain
-          # natively supports this target on Apple Silicon without Docker/cross.
-          - os: macos-latest
-            target: x86_64-apple-darwin
             archive: tar.gz
             binary_suffix: ""
             use_cross: false
