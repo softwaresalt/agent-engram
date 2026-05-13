@@ -13,11 +13,49 @@ need more detail.
 
 | Requirement | Notes |
 |---|---|
-| Rust 1.85+ | Install with [rustup](https://rustup.rs) |
 | Git repository | Engram binds only to Git workspaces |
 | Supported MCP client | Any client that can launch a stdio MCP server |
+| Rust 1.85+ | Only required for building from source — install with [rustup](https://rustup.rs) |
 
-## Build the binary
+## Install from release
+
+The fastest path. A single command downloads the latest release binary and adds
+it to your PATH.
+
+**macOS (Apple Silicon)**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.sh | sh
+```
+
+**Linux (x86_64)**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.sh | sh
+```
+
+**Windows (x86_64, PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.ps1 | iex
+```
+
+Override the install directory with the `ENGRAM_INSTALL_DIR` environment variable
+if `~/.engram/bin` (Unix) or `%LOCALAPPDATA%\Programs\engram` (Windows) is not
+suitable.
+
+### Manual download
+
+If you prefer not to pipe to a shell:
+
+1. Go to [GitHub Releases](https://github.com/softwaresalt/agent-engram/releases/latest)
+2. Download the archive for your platform:
+   * Linux x86_64: `engram-<tag>-x86_64-unknown-linux-gnu.tar.gz`
+   * macOS ARM: `engram-<tag>-aarch64-apple-darwin.tar.gz`
+   * Windows x86_64: `engram-<tag>-x86_64-pc-windows-msvc.zip`
+3. Extract the archive and place the `engram` binary on your PATH
+
+## Build from source
 
 ```bash
 git clone https://github.com/softwaresalt/agent-engram.git
@@ -34,8 +72,11 @@ Run `engram install` from the repository you want Engram to manage:
 
 ```bash
 cd /path/to/your/workspace
-/path/to/engram install
+engram install
 ```
+
+If you built from source instead of using the installer, use the full path to
+the binary: `/path/to/agent-engram/target/release/engram install`
 
 The installer prepares the workspace for Engram and writes the main runtime and
 client artifacts below.
