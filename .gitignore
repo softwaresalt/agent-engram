@@ -72,6 +72,9 @@ temp/
 .backlogit/backlogit.db-shm
 .backlogit/backlogit.db-wal
 .backlogit/*.db-journal
+.backlogit/telemetry/
+.backlogit/telemetry-sessions.jsonl
+.backlogit/.telemetry-checkpoint.json
 
 # graphtor-docs — managed by graphtor-docs install
 .graphtor/

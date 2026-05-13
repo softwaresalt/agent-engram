@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- Storage backend migrated from SurrealDB to CozoDB
+
 ### Added
 
 - Shim + daemon architecture: per-workspace MCP plugin model
@@ -22,4 +26,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 43 MCP tools for task management, code graph, and workspace operations
 
 <!-- next-url -->
-[Unreleased]: https://github.com/softwaresalt/agent-engram/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/softwaresalt/agent-engram/compare/v0.1.0...HEAD
