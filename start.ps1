@@ -1,43 +1,24 @@
-$autoharnessCmd = Get-Command autoharness -ErrorAction SilentlyContinue
-$autoharness_home = $null
-if ($autoharnessCmd) {
-    try {
-        $autoharness_home = (& $autoharnessCmd.Source home).Trim()
-    } catch {
-        Write-Warning "autoharness home lookup failed (non-fatal): $_"
-    }
-}
-
-$global_agents_src = if ($autoharness_home) {
-    Join-Path $autoharness_home ".github\agents"
-} else {
-    $null
-}
-$local_agents = ".github\agents"
+#$autoharness_home = (autoharness home)
+#$global_agents_src = "$autoharness_home\.github\agents"
+#$local_agents = ".github\agents"
 
 # Copies global autoharness agents into .github/agents (tracked; workspace-discoverable).
 # To keep them gitignored instead, change this to ".github\local-agents" and update
 # chat.agentFilesLocations in the workspace settings file to include that path.
-if ($global_agents_src -and (Test-Path $global_agents_src)) {
-    Get-ChildItem "$global_agents_src\*.agent.md" | ForEach-Object {
-        $dest = Join-Path $local_agents $_.Name
-        $sourceFile = $_
-        $shouldCopy = -not (Test-Path $dest)
-
-        if (-not $shouldCopy) {
-            $destFile = Get-Item $dest
-            $sourceHash = (Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash
-            $destHash = (Get-FileHash -LiteralPath $destFile.FullName -Algorithm SHA256).Hash
-            $shouldCopy = $sourceHash -ne $destHash -and $sourceFile.LastWriteTimeUtc -gt $destFile.LastWriteTimeUtc
-
-            if ($shouldCopy) {
-                Write-Warning "Overwriting local agent '$dest' with newer autoharness copy."
-            }
-        }
-
-        if ($shouldCopy) { Copy-Item $sourceFile.FullName $dest -Force }
-    }
-}
+#if (Test-Path $global_agents_src) {
+#    Get-ChildItem "$global_agents_src\*.agent.md" | ForEach-Object {
+#        $dest = Join-Path $local_agents $_.Name
+#        $sourceFile = $_
+#        $shouldCopy = -not (Test-Path $dest)
+#
+#        if (-not $shouldCopy) {
+#            $destFile = Get-Item $dest
+#            $shouldCopy = $sourceFile.LastWriteTimeUtc -gt $destFile.LastWriteTimeUtc
+#        }
+#
+#        if ($shouldCopy) { Copy-Item $sourceFile.FullName $dest }
+#    }
+#}
 
 function Invoke-EngramCommandWithProgress {
     param(
@@ -125,19 +106,7 @@ function Invoke-EngramCommandWithProgress {
 
 $env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $PSScriptRoot ".copilot" }
 $env:ENGRAM_DATA_DIR = if ($env:ENGRAM_DATA_DIR) { $env:ENGRAM_DATA_DIR } else { Join-Path $PSScriptRoot ".engram" }
-if (-not $env:GITHUB_TOKEN) {
-    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
-    if ($ghCmd) {
-        try {
-            $ghToken = (& $ghCmd.Source auth token 2>$null).Trim()
-            if ($ghToken) {
-                $env:GITHUB_TOKEN = $ghToken
-            }
-        } catch {
-            Write-Warning "gh auth token failed (non-fatal): $_"
-        }
-    }
-}
+$env:GITHUB_TOKEN = (gh auth token)
 $copilotExe = if ($env:COPILOT_EXE_PATH) {
     $env:COPILOT_EXE_PATH
 } elseif ($env:COPILOT_EXE) {
@@ -177,13 +146,7 @@ if ($engramCmd) {
     }
 }
 
-$copilotArguments = @()
-if (-not ($args -contains "--remote")) {
-    $copilotArguments += "--remote"
-}
-$copilotArguments += $args
-
-& $copilotExe @copilotArguments
+& $copilotExe --remote
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
