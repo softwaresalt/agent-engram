@@ -7,7 +7,7 @@ description: Local-first MCP daemon for code graph indexing, symbol navigation, 
 
 Agent Engram is a local-first MCP daemon for AI coding assistants. It pairs a
 workspace-local shim with a long-lived daemon, moves day-to-day tool traffic
-over IPC, and stores branch-aware code graph state in embedded CozoDB.
+over IPC, and stores branch-aware code graph state in an embedded database.
 
 The default experience is:
 
@@ -16,32 +16,56 @@ The default experience is:
 * branch-aware indexing and search data under `.engram/`
 * optional semantic search through the default embeddings feature set
 
-## What you get
+## Features
 
-* Tree-sitter indexing for code graph navigation
-* Unified search across symbols and indexed workspace content
-* CLI parity for the main MCP lifecycle, search, graph, and report surfaces
-* Local diagnostics for daemon health, branch metrics, and token-delivery reports
+* **Code graph indexing** — tree-sitter parses your codebase into a navigable
+  graph of symbols, definitions, and references
+* **Symbol navigation and call-graph traversal** — find callers, callees, and
+  dependency chains without leaving your editor
+* **Semantic search** — optional embeddings let you search by concept, not
+  string matching
+* **Impact analysis** — assess blast radius before changing a symbol or module
+* **Branch-aware workspace isolation** — each branch maintains its own index
+  state so switching context is instant
+* **CLI parity for all MCP tools** — every tool available to your AI assistant
+  is also available from the command line
+* **Diagnostics and observability** — health checks, branch metrics, and
+  token-delivery reports built in
 
-## Basic installation
+## QuickStart
 
-Build the binary:
+Install the latest release with a single command:
 
-```bash
-git clone https://github.com/softwaresalt/agent-engram.git
-cd agent-engram
-cargo build --release
+**macOS (Apple Silicon)**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.sh | sh
 ```
 
-Initialize a target workspace:
+**Linux (x86_64)**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.sh | sh
+```
+
+**Windows (x86_64, PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.ps1 | iex
+```
+
+Initialize a workspace, build the index, and verify:
 
 ```bash
 cd /path/to/your/workspace
-/path/to/agent-engram/target/release/engram install
+engram install
+engram sync
+engram search "hello" --format text
 ```
 
-From there, move to the quickstart to connect a client, bind the workspace, and
-run the first sync.
+> [!TIP]
+> Prefer to build from source? Clone the repo and run `cargo build --release`.
+> See [docs/quickstart.md](docs/quickstart.md) for the full guide.
 
 ## Read next
 
