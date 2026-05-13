@@ -1,14 +1,18 @@
 # install.ps1 — one-liner installer for engram (Windows)
 # Usage: irm https://raw.githubusercontent.com/softwaresalt/agent-engram/main/scripts/install.ps1 | iex
-$ErrorActionPreference = 'Stop'
 
 $Repo = 'softwaresalt/agent-engram'
 $InstallDir = if ($env:ENGRAM_INSTALL_DIR) { $env:ENGRAM_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\engram' }
+
+function Cleanup { if ($script:TmpDir -and (Test-Path $script:TmpDir)) { Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue } }
+
+function Abort([string]$Message) { Write-Host "Error: $Message" -ForegroundColor Red; Cleanup; exit 1 }
 
 function Main {
     Detect-Platform
     Fetch-LatestTag
     Download-Archive
+    Verify-Checksum
     Verify-Archive
     Extract-Binary
     Update-Path
@@ -17,8 +21,7 @@ function Main {
 
 function Detect-Platform {
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
-        Write-Error "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE. Only x86_64 (AMD64) is supported."
-        exit 1
+        Abort "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE. Only x86_64 (AMD64) is supported."
     }
     $script:Target = 'x86_64-pc-windows-msvc'
     $script:Ext = 'zip'
@@ -32,13 +35,11 @@ function Fetch-LatestTag {
         $script:Tag = $release.tag_name
     }
     catch {
-        Write-Error "Failed to fetch latest release. Check your network connection and try again."
-        exit 1
+        Abort "Failed to fetch latest release. Check your network connection and try again."
     }
 
     if (-not $script:Tag) {
-        Write-Error 'Could not determine latest release tag.'
-        exit 1
+        Abort 'Could not determine latest release tag.'
     }
     Write-Host "Latest release: $script:Tag"
 }
@@ -55,42 +56,54 @@ function Download-Archive {
         Invoke-WebRequest -Uri $url -OutFile $script:ArchivePath -UseBasicParsing
     }
     catch {
-        Write-Error "Download failed. URL: $url"
-        Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue
-        exit 1
+        Abort "Download failed. URL: $url"
+    }
+
+    # Also download the SHA256 checksum sidecar if available
+    $script:ChecksumUrl = "$url.sha256"
+    $script:ChecksumPath = "$script:ArchivePath.sha256"
+    try {
+        Invoke-WebRequest -Uri $script:ChecksumUrl -OutFile $script:ChecksumPath -UseBasicParsing -ErrorAction Stop
+    }
+    catch {
+        $script:ChecksumPath = $null
+        Write-Host 'SHA256 checksum not available for this release — skipping verification.'
     }
 }
 
+function Verify-Checksum {
+    if (-not $script:ChecksumPath -or -not (Test-Path $script:ChecksumPath)) { return }
+
+    $expected = (Get-Content $script:ChecksumPath -Raw).Trim().Split(' ')[0].ToLower()
+    $actual = (Get-FileHash -Path $script:ArchivePath -Algorithm SHA256).Hash.ToLower()
+
+    if ($expected -ne $actual) {
+        Abort "SHA256 checksum mismatch. Expected: $expected, got: $actual"
+    }
+    Write-Host 'SHA256 checksum verified.'
+}
+
 function Verify-Archive {
-    # Validate the file exists and is non-empty
     if (-not (Test-Path $script:ArchivePath)) {
-        Write-Error 'Downloaded file not found.'
-        Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue
-        exit 1
+        Abort 'Downloaded file not found.'
     }
 
     $fileSize = (Get-Item $script:ArchivePath).Length
     if ($fileSize -lt 1024) {
-        Write-Error "Downloaded file is too small ($fileSize bytes) — likely not a valid archive."
-        Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue
-        exit 1
+        Abort "Downloaded file is too small ($fileSize bytes) — likely not a valid archive."
     }
 
-    # Verify the zip can be opened
     try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [System.IO.Compression.ZipFile]::OpenRead($script:ArchivePath)
         $entryCount = $zip.Entries.Count
         $zip.Dispose()
         if ($entryCount -eq 0) {
-            Write-Error 'Archive contains no entries.'
-            Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue
-            exit 1
+            Abort 'Archive contains no entries.'
         }
     }
     catch {
-        Write-Error "Archive integrity check failed: $_"
-        Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue
-        exit 1
+        Abort "Archive integrity check failed: $_"
     }
 
     Write-Host 'Archive verified.'
@@ -98,14 +111,11 @@ function Verify-Archive {
 
 function Extract-Binary {
     $extractDir = Join-Path $script:TmpDir 'extracted'
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::ExtractToDirectory($script:ArchivePath, $extractDir)
 
     $binary = Join-Path $extractDir 'engram.exe'
     if (-not (Test-Path $binary)) {
-        Write-Error 'engram.exe not found in archive.'
-        Remove-Item -Recurse -Force $script:TmpDir -ErrorAction SilentlyContinue
-        exit 1
+        Abort 'engram.exe not found in archive.'
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null

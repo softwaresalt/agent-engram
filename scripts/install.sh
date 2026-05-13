@@ -81,9 +81,40 @@ download_archive() {
         rm -rf "${TMP_DIR}"
         exit 1
     fi
+
+    # Download SHA256 checksum sidecar if available
+    CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
+    if curl -fsSL -o "${CHECKSUM_PATH}" "${URL}.sha256" 2>/dev/null; then
+        HAVE_CHECKSUM=1
+    else
+        HAVE_CHECKSUM=0
+        echo "SHA256 checksum not available for this release — skipping verification."
+    fi
 }
 
 verify_archive() {
+    # Verify SHA256 checksum when available
+    if [ "${HAVE_CHECKSUM}" = "1" ]; then
+        EXPECTED="$(cat "${CHECKSUM_PATH}" | awk '{print $1}')"
+        if command -v sha256sum > /dev/null 2>&1; then
+            ACTUAL="$(sha256sum "${ARCHIVE_PATH}" | awk '{print $1}')"
+        elif command -v shasum > /dev/null 2>&1; then
+            ACTUAL="$(shasum -a 256 "${ARCHIVE_PATH}" | awk '{print $1}')"
+        else
+            echo "Warning: no sha256sum or shasum found — skipping checksum verification." >&2
+            ACTUAL="${EXPECTED}"
+        fi
+
+        if [ "${EXPECTED}" != "${ACTUAL}" ]; then
+            echo "Error: SHA256 checksum mismatch" >&2
+            echo "  Expected: ${EXPECTED}" >&2
+            echo "  Got:      ${ACTUAL}" >&2
+            rm -rf "${TMP_DIR}"
+            exit 1
+        fi
+        echo "SHA256 checksum verified."
+    fi
+
     # Verify tar can list the archive contents
     if ! tar tzf "${ARCHIVE_PATH}" > /dev/null 2>&1; then
         echo "Error: archive integrity check failed — not a valid tar.gz" >&2
@@ -138,6 +169,7 @@ update_path() {
     fi
 
     if [ -n "${PROFILE}" ]; then
+        mkdir -p "$(dirname "${PROFILE}")"
         echo "" >> "${PROFILE}"
         echo "# Added by engram installer" >> "${PROFILE}"
         if [ "${SHELL_NAME}" = "fish" ]; then

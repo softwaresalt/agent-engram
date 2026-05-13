@@ -1,13 +1,13 @@
 ---
 title: Engram Quickstart
-description: Build the binary, initialize a workspace, connect a client, and run the first sync and query flow.
+description: Install engram, initialize a workspace, connect a client, and run the first sync and query flow.
 ---
 
 ## Overview
 
-This guide gets you from a fresh checkout to a working Engram-backed workspace.
-It stays on the happy path and points to the deeper reference pages when you
-need more detail.
+This guide gets you from zero to a working Engram-backed workspace. It covers
+both the release install path (recommended) and building from source, then walks
+through workspace setup and the first query.
 
 ## Prerequisites
 
