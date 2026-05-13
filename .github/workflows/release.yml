@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,9 +19,23 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  validate-tag:
+    name: Validate Release Tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate semantic version tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Unsupported release tag: ${TAG}" >&2
+            exit 1
+          fi
+
   # ── Quality gate ─────────────────────────────────────────────────────────────
   test:
     name: Quality Gates
+    needs: validate-tag
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -51,6 +65,7 @@ jobs:
   # the publish job via job outputs. Requires git-cliff (T088).
   changelog:
     name: Generate Changelog
+    needs: validate-tag
     runs-on: ubuntu-latest
     outputs:
       body: ${{ steps.cliff.outputs.content }}
@@ -89,15 +104,15 @@ jobs:
   # fail-fast: true ensures a partial platform failure aborts the entire release.
   build:
     name: Build ${{ matrix.target }}
-    needs: test
+    needs: [validate-tag, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
       matrix:
         include:
-          # Linux x86_64 — use ubuntu-latest so the runner glibc matches the
+          # Linux x86_64 — pin ubuntu-24.04 so the runner glibc matches the
           # prebuilt ONNX Runtime binaries required by the embeddings feature.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             binary_suffix: ""
@@ -196,7 +211,7 @@ jobs:
   # If any build job failed, this job will not run (fail-fast enforced).
   release:
     name: Publish GitHub Release
-    needs: [changelog, build]
+    needs: [validate-tag, changelog, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
