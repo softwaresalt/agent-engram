@@ -89,10 +89,10 @@ client artifacts below.
 | `.github/copilot-instructions.md` | GitHub Copilot helper content |
 | `.claude/instructions.md` | Claude helper content |
 
-[!NOTE]
-If your client expects a plain stdio MCP entry, use the manual config below.
-Generated helper files vary by client and may include compatibility-oriented
-content that you should review before relying on it.
+> [!NOTE]
+> If your client expects a plain stdio MCP entry, use the manual config below.
+> Generated helper files vary by client and may include compatibility-oriented
+> content that you should review before relying on it.
 
 ## Connect a client
 

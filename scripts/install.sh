@@ -84,16 +84,9 @@ download_archive() {
 }
 
 verify_archive() {
-    # Validate the archive is a real gzip file (magic bytes 1f 8b)
-    if ! file "${ARCHIVE_PATH}" | grep -qi "gzip"; then
-        echo "Error: downloaded file is not a valid gzip archive" >&2
-        rm -rf "${TMP_DIR}"
-        exit 1
-    fi
-
     # Verify tar can list the archive contents
     if ! tar tzf "${ARCHIVE_PATH}" > /dev/null 2>&1; then
-        echo "Error: archive integrity check failed" >&2
+        echo "Error: archive integrity check failed — not a valid tar.gz" >&2
         rm -rf "${TMP_DIR}"
         exit 1
     fi
