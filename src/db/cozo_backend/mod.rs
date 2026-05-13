@@ -6,8 +6,10 @@
 pub mod schema;
 
 use std::{
+    collections::HashMap,
     path::Path,
-    sync::Arc,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -43,6 +45,13 @@ impl std::fmt::Debug for CozoDb {
 /// The active database handle type for the CozoDB backend.
 pub type Db = CozoDb;
 
+type DbOpenLock = Arc<Mutex<()>>;
+
+// Intentionally retain one lock per concrete DB path for the daemon lifetime.
+// Weak/strong-count eviction reintroduces a TOCTOU window where concurrent
+// callers can race to install distinct locks for the same path.
+static DB_OPEN_LOCKS: OnceLock<Mutex<HashMap<PathBuf, DbOpenLock>>> = OnceLock::new();
+
 // ── Bootstrap trait ───────────────────────────────────────────────────────────
 
 /// Provides a `cozo::DbInstance` to [`schema::run_schema_bootstrap`].
@@ -77,19 +86,20 @@ impl SchemaTarget for CozoDb {
 ///
 /// Creates `{data_dir}/cozo/{branch}/engram.db` if it does not exist,
 /// acquires an exclusive process-level advisory lock on
-/// `{data_dir}/cozo/{branch}/engram.db.lock` to serialise concurrent opens,
-/// opens a SQLite-backed `cozo::DbInstance`, bootstraps the schema
-/// idempotently (`:create` errors for existing relations are silently
-/// ignored), and returns the handle — all while the lock is held.
+/// `{data_dir}/cozo/{branch}/engram.db.lock` to serialise concurrent opens
+/// across processes, acquires an in-process mutex keyed by the concrete DB path
+/// to serialise same-process callers on POSIX platforms, opens a SQLite-backed
+/// `cozo::DbInstance`, bootstraps the schema idempotently (`:create` errors for
+/// existing relations are silently ignored), and returns the handle — all while
+/// the guards are held.
 ///
-/// Holding the lock through schema bootstrap (not just through
-/// `DbInstance::new`) prevents the intra-process `SQLITE_BUSY` race
-/// where two handles could otherwise reach schema writes concurrently
-/// (U015-FLK1 residual, stash `C4E8F2A1`).  The lock is released
-/// automatically when the returned `CozoDb` handle leaves the
-/// `spawn_blocking` closure.  CozoDB's own SQLite WAL handles
-/// concurrent access from multiple in-process handles after the
-/// initial open and bootstrap.
+/// Holding both guards through schema bootstrap (not just through
+/// `DbInstance::new`) prevents the `SQLITE_BUSY` unwrap panic in cozo 0.7.x
+/// when two same-path callers race during open or bootstrap (U015-FLK1
+/// residual, stash `C4E8F2A1`). The guards are released automatically when the
+/// returned `CozoDb` handle leaves the `spawn_blocking` closure. CozoDB's own
+/// SQLite WAL handles concurrent access from multiple in-process handles after
+/// the initial open and bootstrap.
 ///
 /// # Errors
 ///
@@ -110,26 +120,32 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
         .ok_or_else(|| map_db_err("CozoDB path is not valid UTF-8"))?
         .to_owned();
 
-    // Acquire a process-level advisory file lock before opening CozoDB and
-    // hold it through schema bootstrap to prevent two variants of the
-    // SQLITE_BUSY unwrap panic in cozo 0.7.x (U015-FLK1):
+    // Acquire an in-process mutex and a process-level advisory file lock before
+    // opening CozoDB, then hold them through schema bootstrap to prevent two
+    // variants of the SQLITE_BUSY unwrap panic in cozo 0.7.x (U015-FLK1):
     //
     //   * Multi-process variant: two daemon processes open the same SQLite
     //     file concurrently — serialised by holding the lock during
     //     `DbInstance::new`.
     //
     //   * Intra-process variant (residual): two concurrent `connect_db`
-    //     calls on the same DB path both complete `DbInstance::new`, then
-    //     both call `run_schema_bootstrap` concurrently — serialised by
-    //     holding the lock through bootstrap (this change, stash C4E8F2A1).
+    //     calls on the same DB path can bypass POSIX advisory file locking
+    //     because `fcntl` locks are process-scoped — serialised by the
+    //     per-path mutex plus the file lock through bootstrap.
     //
     // `spawn_blocking` is required because all locking and DB-open work must
-    // not run on the async executor.  `try_write()` is used in a polling
-    // loop with a 5-second deadline so the task itself enforces the timeout —
-    // there is no dangling background thread after a timeout return.  50 ms
-    // polling interval keeps CPU overhead negligible while bounding the
-    // worst-case latency.
+    // not run on the async executor. Lock order is registry -> per-path mutex
+    // -> file lock. `try_write()` is used in a polling loop with a 30-second
+    // deadline so the task itself enforces the timeout — there is no dangling
+    // background thread after a timeout return. 50 ms polling interval keeps
+    // CPU overhead negligible while bounding the worst-case latency.
     let cozo_db = tokio::task::spawn_blocking(move || -> Result<CozoDb, EngramError> {
+        let open_lock = connect_db_open_lock(&db_path);
+        let _open_guard = match open_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -168,6 +184,20 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
     Ok(cozo_db)
 }
 
+fn connect_db_open_lock(db_path: &Path) -> DbOpenLock {
+    let registry = DB_OPEN_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = match registry.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    Arc::clone(
+        locks
+            .entry(db_path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
+
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
 /// Map any error value into an [`EngramError`] database error.
@@ -181,9 +211,15 @@ pub fn map_db_err<E: ToString>(err: E) -> EngramError {
 
 #[cfg(all(test, feature = "cozo-backend"))]
 mod tests {
+    use std::{
+        path::PathBuf,
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
+
     use tempfile::TempDir;
 
-    use super::connect_db;
+    use super::{connect_db, connect_db_open_lock};
 
     /// Verify two concurrent `connect_db` calls to the same path do not panic.
     ///
@@ -255,5 +291,101 @@ mod tests {
         assert!(r2.is_ok(), "caller 2 failed: {r2:?}");
         assert!(r3.is_ok(), "caller 3 failed: {r3:?}");
         assert!(r4.is_ok(), "caller 4 failed: {r4:?}");
+    }
+
+    /// Verify same-path callers reuse a shared in-process mutex.
+    #[test]
+    fn connect_db_open_lock_reuses_mutex_per_db_path() {
+        let path = PathBuf::from("same-path");
+        let other = PathBuf::from("other-path");
+
+        let first = connect_db_open_lock(&path);
+        let second = connect_db_open_lock(&path);
+        let third = connect_db_open_lock(&other);
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "same DB path must reuse the same in-process mutex"
+        );
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "different DB paths must not share the same in-process mutex"
+        );
+    }
+
+    /// Verify the in-process mutex serializes same-path open attempts.
+    #[tokio::test]
+    async fn connect_db_open_lock_serializes_same_path_callers() {
+        let path = PathBuf::from("serialized-path");
+        let first_lock = connect_db_open_lock(&path);
+        let second_lock = connect_db_open_lock(&path);
+        let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (second_attempt_tx, second_attempt_rx) = mpsc::channel();
+        let (second_acquired_tx, second_acquired_rx) = mpsc::channel();
+
+        let hold_guard = tokio::task::spawn_blocking(move || {
+            let _guard = match first_lock.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = first_acquired_tx.send(());
+            let _ = release_rx.recv();
+        });
+
+        assert!(
+            first_acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "first caller must report that it holds the lock"
+        );
+
+        let wait_guard = tokio::task::spawn_blocking(move || {
+            let _ = second_attempt_tx.send(());
+            let _guard = match second_lock.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = second_acquired_tx.send(());
+        });
+
+        assert!(
+            second_attempt_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "second caller must report that it is attempting the lock"
+        );
+
+        assert!(
+            matches!(
+                second_acquired_rx.recv_timeout(Duration::from_millis(250)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "second caller must remain blocked until the first guard is released"
+        );
+
+        assert!(
+            release_tx.send(()).is_ok(),
+            "test must be able to release the first caller"
+        );
+
+        assert!(
+            second_acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "second caller must acquire the lock after the first releases it"
+        );
+
+        let first_result = hold_guard.await;
+        assert!(
+            first_result.is_ok(),
+            "first blocking task must complete without panic: {first_result:?}"
+        );
+
+        let second_result = wait_guard.await;
+        assert!(
+            second_result.is_ok(),
+            "second blocking task must complete without panic: {second_result:?}"
+        );
     }
 }

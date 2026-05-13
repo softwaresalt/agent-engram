@@ -63,13 +63,15 @@ fn engram_code(error_data: Option<&Value>) -> Option<i64> {
     error_data.and_then(|d| d["engram_code"].as_i64())
 }
 
-/// Poll `list_symbols` via IPC until at least one symbol appears (or timeout).
+/// Poll `list_symbols` via IPC until all required symbols appear (or timeout).
 ///
-/// Retries on `IndexInProgress` (engram code 7003) and empty-symbol responses.
-async fn poll_for_symbols(endpoint: &str, hint: &str) -> Vec<Value> {
+/// Retries on `IndexInProgress` (engram code 7003), empty-symbol responses, and
+/// partial symbol sets that do not yet contain every required symbol.
+async fn poll_for_symbols(endpoint: &str, required_names: &[&str]) -> Vec<Value> {
     let deadline = std::time::Instant::now() + POLL_TIMEOUT;
     let mut delay = POLL_START;
     let mut attempt: u32 = 0;
+    let hint = required_names.join(", ");
 
     loop {
         tokio::time::sleep(delay).await;
@@ -103,14 +105,19 @@ async fn poll_for_symbols(endpoint: &str, hint: &str) -> Vec<Value> {
             .cloned()
             .unwrap_or_default();
 
-        if !symbols.is_empty() {
+        let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+        let has_all_required = required_names
+            .iter()
+            .all(|required| names.iter().any(|name| name.contains(required)));
+
+        if !symbols.is_empty() && has_all_required {
             return symbols;
         }
 
         assert!(
             std::time::Instant::now() < deadline,
-            "list_symbols returned no symbols after {POLL_TIMEOUT:?} ({attempt} attempts); \
-             hint: {hint}"
+            "list_symbols did not return all expected symbols after {POLL_TIMEOUT:?} \
+             ({attempt} attempts); hint: {hint}; got: {names:?}"
         );
         delay = (delay * 2).min(POLL_CAP);
     }
@@ -168,7 +175,7 @@ async fn t030_003_markdown_heading_and_code_block_indexed_via_ipc() {
 
     let endpoint = harness.ipc_path().to_str().expect("UTF-8 path").to_owned();
 
-    let symbols = poll_for_symbols(&endpoint, "Getting Started").await;
+    let symbols = poll_for_symbols(&endpoint, &["Getting Started", "rust_block"]).await;
 
     let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
 
