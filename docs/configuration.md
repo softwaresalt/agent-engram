@@ -1,506 +1,125 @@
-# Engram Configuration Reference
-
-The Engram daemon accepts configuration through CLI flags and `ENGRAM_`-prefixed environment variables. Environment variables take precedence when both are specified. All flags and variables are optional — defaults are designed for local development use.
-
+---
+title: Engram Configuration Reference
+description: Runtime flags, environment variables, workspace files, and install lifecycle behavior for Engram.
 ---
 
-## Table of Contents
+## Overview
 
-1. [CLI Flags and Environment Variables](#cli-flags-and-environment-variables)
-2. [Environment Variable Reference](#environment-variable-reference)
-3. [Example Invocations](#example-invocations)
-4. [Installer Options](#installer-options)
-5. [Workspace Config File](#workspace-config-file)
-6. [Content Registry (`registry.yaml`)](#content-registry-registryyaml)
-7. [Validation Rules](#validation-rules)
+Engram configuration comes from three places:
 
----
+* CLI flags on parity commands such as `engram sync` or `engram search`
+* `ENGRAM_*` environment variables for daemon, shim, and CLI runtime behavior
+* workspace files under `.engram/`
 
-## CLI Flags and Environment Variables
+The primary runtime remains stdio shim plus IPC daemon. Treat HTTP/SSE settings
+as compatibility settings rather than the main path.
 
-| CLI Flag | Environment Variable | Default | Type | Description |
-|---|---|---|---|---|
-| `--port <PORT>` | `ENGRAM_PORT` | `7437` | `u16` | TCP port for the HTTP/SSE MCP server. Must be > 0. |
-| `--request-timeout-ms <MS>` | `ENGRAM_REQUEST_TIMEOUT_MS` | `60000` | `u64` | Request timeout in milliseconds. Must be > 0. |
-| `--max-workspaces <N>` | `ENGRAM_MAX_WORKSPACES` | `10` | `usize` | Maximum number of simultaneously active workspace bindings. Must be > 0. |
-| `--data-dir <PATH>` | `ENGRAM_DATA_DIR` | `~/.local/share/engram` | `PathBuf` | Root directory for the embedded SurrealDB database and cached models. |
-| `--stale-strategy <STRATEGY>` | `ENGRAM_STALE_STRATEGY` | `warn` | `StaleStrategy` | Behavior when workspace files are detected as stale. See [Stale Strategy](#stale-strategy) below. |
-| `--log-format <FORMAT>` | `ENGRAM_LOG_FORMAT` | `pretty` | `string` | Log output format. Accepted values: `json`, `pretty`. |
-| `--event-ledger-max <N>` | `ENGRAM_EVENT_LEDGER_MAX` | `500` | `usize` | Maximum number of events stored in the rolling event ledger per workspace. Must be > 0. |
-| `--allow-agent-rollback` | `ENGRAM_ALLOW_AGENT_ROLLBACK` | `false` | `bool` | When `true`, allows AI agents to call `rollback_to_event`. Disabled by default for safety. |
-| `--query-timeout-ms <MS>` | `ENGRAM_QUERY_TIMEOUT_MS` | `50` | `u64` | Timeout for sandboxed graph queries (`query_graph` tool). Must be > 0. |
-| `--query-row-limit <N>` | `ENGRAM_QUERY_ROW_LIMIT` | `1000` | `usize` | Maximum rows returned by sandboxed graph queries. Must be > 0. |
-| `--otlp-endpoint <URL>` | `ENGRAM_OTLP_ENDPOINT` | _(none)_ | `string` | OTLP gRPC endpoint for exporting OpenTelemetry trace spans. Requires the `otlp-export` feature flag at compile time. |
+## Common global CLI flags
 
----
+These flags are available on the CLI parity commands.
 
-## Environment Variable Reference
-
-### `ENGRAM_PORT`
-
-TCP port the MCP HTTP/SSE server listens on.
-
-```bash
-ENGRAM_PORT=8080 engram daemon
-```
-
-**Constraints**: Must be a valid `u16` (1–65535). Port 0 is rejected.
-
----
-
-### `ENGRAM_REQUEST_TIMEOUT_MS`
-
-Maximum time in milliseconds the server waits for a tool call to complete before returning an error. Long-running operations like `index_workspace` or `index_git_history` respect this limit.
-
-```bash
-ENGRAM_REQUEST_TIMEOUT_MS=120000 engram daemon   # 2-minute timeout
-```
-
-**Constraints**: Must be > 0.
-
----
-
-### `ENGRAM_MAX_WORKSPACES`
-
-The daemon can manage multiple workspace bindings concurrently (one per `set_workspace` call). This cap prevents unbounded memory growth.
-
-```bash
-ENGRAM_MAX_WORKSPACES=5 engram daemon
-```
-
-**Constraints**: Must be > 0. When the limit is reached, `set_workspace` returns error code `1005` (`WORKSPACE_LIMIT_REACHED`).
-
----
-
-### `ENGRAM_DATA_DIR`
-
-Where the daemon stores its embedded SurrealDB database files and downloaded embedding models. Each workspace gets a subdirectory keyed by a hash of its canonical path.
-
-```bash
-ENGRAM_DATA_DIR=/var/lib/engram engram daemon
-```
-
-**Default**: `~/.local/share/engram` (Linux/macOS) or `%LOCALAPPDATA%\engram` equivalent via `dirs::home_dir()`.
-
-**Constraints**: The directory is created automatically if it does not exist. Must not be empty.
-
----
-
-### `ENGRAM_STALE_STRATEGY` {#stale-strategy}
-
-Controls what happens when the daemon detects that workspace files on disk have been modified since the workspace was hydrated.
-
-| Value | Behavior |
+| Flag | Purpose |
 |---|---|
-| `warn` | Emit a warning log entry and continue serving requests. `get_workspace_status` returns `stale_files: true`. |
-| `rehydrate` | Automatically re-hydrate the workspace from disk on the next tool call. |
-| `fail` | Return an error on any tool call until the workspace is explicitly re-bound via `set_workspace`. |
+| `--workspace <PATH>` | Resolve the workspace root explicitly instead of using the current directory |
+| `--id <VALUE>` | Set the JSON-RPC request ID echoed in CLI output |
+| `--json` | Force JSON-RPC output |
+| `--format json|text` | Choose human-readable or JSON output |
+| `--quiet` | Suppress non-error output |
+| `--timeout <SECS>` | Override the IPC timeout for the command |
 
-```bash
-ENGRAM_STALE_STRATEGY=rehydrate engram daemon
-```
+## Core runtime environment variables
 
----
-
-### `ENGRAM_LOG_FORMAT`
-
-Controls the format of structured log output.
-
-| Value | Output |
-|---|---|
-| `pretty` | Human-readable colorized output (default for local development) |
-| `json` | Machine-readable JSON objects, one per line (use in production, CI, or with log aggregators) |
-
-```bash
-ENGRAM_LOG_FORMAT=json engram daemon 2>&1 | jq .
-```
-
----
-
-### `ENGRAM_EVENT_LEDGER_MAX`
-
-The event ledger records every state-changing operation as an immutable event for rollback and audit purposes. This cap defines how many events are retained per workspace in the rolling window.
-
-```bash
-ENGRAM_EVENT_LEDGER_MAX=1000 engram daemon
-```
-
-**Constraints**: Must be > 0. Older events are discarded when the cap is reached.
-
----
-
-### `ENGRAM_ALLOW_AGENT_ROLLBACK`
-
-When `false` (the default), calling `rollback_to_event` from an MCP client returns error code `3020` (`ROLLBACK_DENIED`). Set to `true` to permit agents to roll back workspace state.
-
-```bash
-ENGRAM_ALLOW_AGENT_ROLLBACK=true engram daemon
-```
-
-> **Warning**: Enabling agent rollback allows AI agents to destructively revert workspace state. Only enable in trusted environments.
-
----
-
-### `ENGRAM_QUERY_TIMEOUT_MS`
-
-Timeout for the `query_graph` sandboxed SurrealQL query tool. Queries that exceed this duration are cancelled and return error code `4011` (`QUERY_TIMEOUT`).
-
-```bash
-ENGRAM_QUERY_TIMEOUT_MS=200 engram daemon   # 200ms sandbox limit
-```
-
-**Constraints**: Must be > 0.
-
----
-
-### `ENGRAM_QUERY_ROW_LIMIT`
-
-Maximum rows returned by the `query_graph` sandboxed query tool. Queries exceeding this limit are truncated.
-
-```bash
-ENGRAM_QUERY_ROW_LIMIT=500 engram daemon
-```
-
-**Constraints**: Must be > 0.
-
----
-
-### `ENGRAM_OTLP_ENDPOINT`
-
-OTLP gRPC endpoint for OpenTelemetry trace export. Only available when the binary is compiled with the `otlp-export` feature:
-
-```bash
-cargo build --release --features otlp-export
-ENGRAM_OTLP_ENDPOINT=http://localhost:4317 engram daemon
-```
-
-When unset, telemetry spans are emitted only to the local log.
-
----
-
-## Example Invocations
-
-### Local development (default settings)
-
-```bash
-engram daemon
-```
-
-### Production server
-
-```bash
-ENGRAM_PORT=7437 \
-ENGRAM_LOG_FORMAT=json \
-ENGRAM_DATA_DIR=/var/lib/engram \
-ENGRAM_MAX_WORKSPACES=20 \
-ENGRAM_REQUEST_TIMEOUT_MS=120000 \
-ENGRAM_STALE_STRATEGY=rehydrate \
-engram daemon
-```
-
-### Development with rollback enabled
-
-```bash
-ENGRAM_ALLOW_AGENT_ROLLBACK=true \
-ENGRAM_EVENT_LEDGER_MAX=2000 \
-engram daemon
-```
-
-### With OpenTelemetry export
-
-```bash
-ENGRAM_OTLP_ENDPOINT=http://otel-collector:4317 \
-ENGRAM_LOG_FORMAT=json \
-engram daemon
-```
-
-### Non-standard port for testing
-
-```bash
-ENGRAM_PORT=9000 engram daemon
-```
-
----
-
-## Installer Options
-
-The `engram install` command accepts the following flags:
-
-| Flag | Default | Description |
+| Variable | Scope | Purpose |
 |---|---|---|
-| `--hooks-only` | `false` | Generate only agent hook files; skip `.engram/` data setup |
-| `--no-hooks` | `false` | Skip hook file generation entirely |
-| `--port <PORT>` | `7437` | Port embedded in generated hook file MCP endpoint URLs |
+| `ENGRAM_PORT` | Compatibility transport | Port used by the optional legacy HTTP/SSE path |
+| `ENGRAM_REQUEST_TIMEOUT_MS` | Daemon | Maximum tool-call runtime before timeout |
+| `ENGRAM_MAX_WORKSPACES` | Daemon | Maximum concurrent workspace bindings |
+| `ENGRAM_STALE_STRATEGY` | Daemon | `warn`, `rehydrate`, or `fail` when workspace state looks stale |
+| `ENGRAM_LOG_FORMAT` | Daemon | `pretty` or `json` tracing output |
+| `ENGRAM_EVENT_LEDGER_MAX` | Daemon | Rolling metrics and event buffer size |
+| `ENGRAM_ALLOW_AGENT_ROLLBACK` | Daemon | Enables rollback-oriented operations when supported |
+| `ENGRAM_QUERY_TIMEOUT_MS` | Daemon | Timeout for `query_graph` execution |
+| `ENGRAM_QUERY_ROW_LIMIT` | Daemon | Maximum rows returned by `query_graph` |
+| `ENGRAM_OTLP_ENDPOINT` | Daemon | OTLP export target when built with `otlp-export` |
+| `ENGRAM_DATA_DIR` | Storage | Override the data directory; default is `{workspace}/.engram` |
+| `ENGRAM_READY_TIMEOUT_MS` | Shim | How long the shim waits for a daemon to become ready |
+| `ENGRAM_IDLE_TIMEOUT_MS` | Daemon | Idle timeout override in milliseconds |
+| `ENGRAM_DIRECT` | CLI indexing | Makes `engram sync` or `engram index` run in direct mode |
+| `ENGRAM_CLI_TIMEOUT` | CLI | Default timeout override for parity commands |
 
-```bash
-# Install with custom port in hook files
-engram install --port 8080
+[!IMPORTANT]
+`ENGRAM_PORT` still exists because the compatibility transport is feature-gated,
+but normal editor and agent setups should use the stdio shim entry instead.
 
-# Regenerate hook files only (workspace already initialized)
-engram install --hooks-only
+## Workspace files under `.engram/`
 
-# Initialize workspace without modifying any hook files
-engram install --no-hooks
-```
+| Path | Purpose |
+|---|---|
+| `.engram/config.toml` | Workspace-local daemon, watcher, and indexing settings |
+| `.engram/registry.yaml` | Additional content sources beyond code files |
+| `.engram/.version` | Schema version marker |
+| `.engram/.workspace-id` | Stable workspace identifier |
+| `.engram/run/` | IPC endpoints, locks, and runtime process artifacts |
+| `.engram/logs/` | Structured daemon logs |
+| `.engram/db/` | Runtime database files when the workspace-local data directory is used |
 
----
+By default, Engram resolves storage into the workspace itself. The workspace ID
+and database namespace are branch-aware, so the same repository on different
+branches does not share the same indexed database state.
 
-## Workspace Config File
+## `config.toml` basics
 
-Each workspace may optionally contain `.engram/config.toml` to set workspace-level defaults. The daemon validates this file during `set_workspace` — if validation fails, the workspace binding is rejected.
+Engram reads `.engram/config.toml` for workspace-local behavior. The file can
+carry both daemon-oriented settings and code-graph/query settings.
+
+Representative keys include:
+
+* `idle_timeout_minutes`
+* `debounce_ms`
+* `watch_patterns`
+* `exclude_patterns`
+* `log_level`
+* `log_format`
+* `query_timeout_ms`
+* `query_row_limit`
+* `code_graph.max_traversal_depth`
+* `code_graph.max_traversal_nodes`
+* `code_graph.max_file_size_bytes`
+* `code_graph.supported_languages`
+* `code_graph.embedding.token_limit`
+
+Example:
 
 ```toml
-# .engram/config.toml
-# Engram workspace configuration
-# See documentation for all available options.
+idle_timeout_minutes = 240
+debounce_ms = 500
+log_format = "pretty"
 
-# [daemon]
-# port = 7437
+[code_graph]
+max_traversal_depth = 5
+max_traversal_nodes = 50
+supported_languages = ["rust", "python", "typescript", "tsx", "javascript", "go", "csharp"]
+
+[code_graph.embedding]
+token_limit = 512
 ```
 
-> **Note**: Workspace config keys are validated against a known schema. Unknown keys return error code `6003` (`UNKNOWN_CONFIG_KEY`).
+## `registry.yaml` basics
 
----
+`engram install` generates a starter registry from common directories such as
+`src`, `tests`, `docs`, `.github`, and `.backlogit` when they exist. Use this
+file when you want Engram to ingest additional markdown, memory, or backlog
+content beyond code symbols.
 
-## Content Registry (`registry.yaml`)
+## Install lifecycle commands
 
-Every workspace contains `.engram/registry.yaml`, which tells Engram which directories to ingest as searchable content records. The file is generated automatically by `engram install` by scanning for well-known directories; you can edit it freely afterward.
-
-### File Format
-
-```yaml
-sources:
-  - type: docs             # required — see Content Types below
-    path: docs             # required — path relative to the workspace root
-    language: markdown     # optional — language hint (see Language Hints)
-
-  - type: spec
-    path: specs
-
-  - type: instructions
-    path: .github
-    language: markdown
-
-  - type: memory
-    path: .copilot-tracking
-```
-
-Each entry under `sources` is a content source with these fields:
-
-| Field | Required | Description |
-|---|---|---|
-| `type` | Yes | Content type. See [Content Types](#content-types) below. |
-| `path` | Yes | Directory path relative to the workspace root. Must be a directory. Subdirectory paths are valid — each entry indexes only its declared subtree. |
-| `language` | No | Language hint used when indexing `code` type sources. Ignored by the content ingestion pipeline. |
-| `pattern` | No | Glob pattern for filtering files within the source directory. See [File Pattern Filtering](#file-pattern-filtering). |
-
-### Content Types
-
-Engram recognizes seven built-in content types. Custom type strings are also accepted (see [Custom Types](#custom-types)).
-
-#### `backlog`
-
-Structured project backlog content managed by a backlog tool (such as Backlog.md): feature definitions, user stories, tasks, ADRs, decisions, and research documents. Ingested as content records searchable via `query_memory`. Using a dedicated `backlog` type (rather than `docs`, `spec`, or `memory`) lets agents filter specifically for planning artifacts without pulling in unrelated documentation.
-
-```yaml
-- type: backlog
-  path: .backlog
-  language: markdown
-```
-
-> [!NOTE]
-> If your backlog tool stores completed and archived items under subdirectories (`.backlog/completed/`, `.backlog/archive/`), they are included automatically — Engram traverses the whole directory tree for each source entry.
-
-#### `docs`
-
-Documentation files: `docs/`, `README` files, architecture guides, changelogs. Ingested as searchable content records accessible via `query_memory`. Use this type for any directory whose purpose is explaining the project to humans or agents.
-
-```yaml
-- type: docs
-  path: docs
-  language: markdown
-```
-
-#### `spec`
-
-Specification and design documents: feature specs, API contracts, behavior descriptions. Ingested as content records with the `spec` content type, allowing `query_memory` to filter on `content_type = "spec"`. Use this type for structured requirement documents that describe _what_ the system does.
-
-```yaml
-- type: spec
-  path: specs
-```
-
-#### `tests`
-
-Test files and test documentation: integration test directories, test fixtures with embedded comments, testing guides. Ingested as content records for semantic search. Use this type alongside the code graph — the code graph indexes the test code as symbols while the content record captures free-form test descriptions.
-
-```yaml
-- type: tests
-  path: tests
-  language: rust
-```
-
-#### `instructions`
-
-Agent configuration and instructions: `.github/` with Copilot instruction files, agent prompts, custom workflow definitions. Ingested as content records so agents can search for relevant guidance. This is the natural type for any directory containing instructions files or prompt templates.
-
-```yaml
-- type: instructions
-  path: .github
-  language: markdown
-```
-
-#### `context`
-
-Active workspace context: conversation fragments, session notes, or any directory an agent writes ephemeral context into. Ingested and searchable via `query_memory`. Distinct from `memory` primarily by intent — context is the current working set while memory is historical.
-
-```yaml
-- type: context
-  path: .context
-```
-
-#### `memory`
-
-Persistent memory and notes: agent-written summaries, review logs, tracked decisions. Ingested as searchable content records. Any directory that functions as an external memory store fits here.
-
-```yaml
-- type: memory
-  path: .copilot-tracking
-  language: markdown
-
-- type: memory
-  path: .backlog
-```
-
-#### `code`
-
-Reserved for the code graph indexer. Sources of type `code` are **skipped by the content ingestion pipeline** and do not produce content records. The code graph indexer discovers source files automatically using gitignore-aware traversal; you do not need a `code` entry for Engram to index your source code.
-
-A `code` entry in `registry.yaml` acts as documentation that a given directory is source code. It has no operational effect on ingestion or indexing today.
-
-```yaml
-- type: code
-  path: src
-  language: rust
-```
-
-### Custom Types
-
-You can use any string as a content type. Custom types go through the same content ingestion pipeline as the built-in types (except `code`). They appear as-is in the `content_type` field of content records and can be filtered in `query_memory`.
-
-```yaml
-- type: rfcs
-  path: rfcs
-  language: markdown
-
-- type: runbooks
-  path: ops/runbooks
-```
-
-### Subdirectory Classification
-
-Because `path` can point to any subdirectory, a single root directory can be split across multiple entries with different types. Each entry ingests only its declared subtree — there is no overlap unless two entries point to overlapping paths.
-
-This is the recommended approach for the `.backlog/` directory managed by Backlog.md, where different subdirectories hold content with distinct purposes:
-
-```yaml
-sources:
-  # Active planning artifacts — searchable as 'backlog'
-  - type: backlog
-    path: .backlog/tasks
-    language: markdown
-
-  - type: backlog
-    path: .backlog/milestones
-    language: markdown
-
-  # Research and design documents — searchable as 'spec'
-  - type: spec
-    path: .backlog/documents
-    language: markdown
-
-  # Historical record — searchable as 'memory', excluded from 'backlog' queries
-  - type: memory
-    path: .backlog/completed
-    language: markdown
-
-  - type: memory
-    path: .backlog/archive
-    language: markdown
-```
-
-With this configuration, `query_memory` with `content_type = "backlog"` returns only active tasks and milestones, while `content_type = "memory"` covers historical completed and archived items.
-
-### File Pattern Filtering
-
-The optional `pattern` field limits ingestion to files matching a glob expression. The pattern is matched against each file's path **relative to the source directory** (not the workspace root), using standard glob syntax:
-
-| Syntax | Matches |
+| Command | What it does |
 |---|---|
-| `*` | Any sequence of characters within a single path segment |
-| `**` | Any sequence of characters across path separators |
-| `?` | Any single character |
-| `[abc]` | A character class |
+| `engram install` | Creates `.engram/`, generates starter registry content, and writes client helper files |
+| `engram update` | Refreshes generated runtime artifacts and `.version` while preserving existing data |
+| `engram reinstall` | Rebuilds runtime directories and regenerates the registry while preserving the main workspace |
+| `engram uninstall --keep-data` | Removes runtime artifacts and client wiring while preserving workspace data |
+| `engram uninstall` | Removes the entire Engram installation from the workspace |
 
-```yaml
-sources:
-  # Only ingest files ending with '-research.md' from the documents folder
-  - type: spec
-    path: .backlog/documents
-    pattern: '*-research.md'
-    language: markdown
-
-  # Only Markdown files anywhere under the docs tree
-  - type: docs
-    path: docs
-    pattern: '**/*.md'
-
-  # Everything — same as omitting the pattern field
-  - type: backlog
-    path: .backlog/tasks
-```
-
-> [!NOTE]
-> When a `pattern` is invalid, Engram logs a warning and ingests the entire directory rather than skipping the source silently.
-
-### Language Hints
-
-The `language` field is optional on all source entries. For non-`code` types the field is stored but has no effect on ingestion behavior. Common values include `markdown`, `rust`, `typescript`, `python`, `go`, `json`, and `yaml`. Using consistent values makes it easier to filter content records programmatically.
-
-### Auto-Detection
-
-`engram install` (and `engram reinstall`) scans the workspace root for the following directories and generates matching entries automatically:
-
-| Directory | Generated Type | Language Hint |
-|---|---|---|
-| `src/` | `code` | `rust` |
-| `tests/` | `tests` | `rust` |
-| `specs/` | `spec` | `markdown` |
-| `docs/` | `docs` | `markdown` |
-| `backlog/` | `docs` | `markdown` |
-| `.context/` | `context` | `markdown` |
-| `.github/` | `instructions` | `markdown` |
-| `.copilot-tracking/` | `memory` | `markdown` |
-| `.backlog/` | `backlog` | `markdown` |
-
-Any directory not in this list requires a manual entry. Re-running `engram install` overwrites the generated entries; the `engram install --hooks-only` flag regenerates hook files without touching `registry.yaml`.
-
-### Startup Behavior
-
-On startup, after the code graph is synchronized, the daemon reads `registry.yaml` and ingests all active sources through the content ingestion pipeline. Any content records without embedding vectors are then backfilled automatically (when compiled with the `embeddings` feature). This means a fully populated `registry.yaml` is sufficient — you do not need to call any MCP tool to trigger ingestion.
-
----
-
-## Validation Rules
-
-The daemon validates all configuration values at startup. Violations halt the process with a descriptive error message.
-
-| Rule | Error |
-|---|---|
-| `port` must be > 0 | Startup fails |
-| `request_timeout_ms` must be > 0 | Startup fails |
-| `max_workspaces` must be > 0 | Startup fails |
-| `data_dir` must not be empty | Startup fails |
-| `event_ledger_max` must be > 0 | Startup fails |
-| `query_timeout_ms` must be > 0 | Startup fails |
-| `query_row_limit` must be > 0 | Startup fails |
+Use `reinstall` when runtime artifacts are suspect. Use `update` when you want
+fresh generated files without resetting the workspace installation.
