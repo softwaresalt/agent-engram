@@ -106,7 +106,19 @@ function Invoke-EngramCommandWithProgress {
 
 $env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $PSScriptRoot ".copilot" }
 $env:ENGRAM_DATA_DIR = if ($env:ENGRAM_DATA_DIR) { $env:ENGRAM_DATA_DIR } else { Join-Path $PSScriptRoot ".engram" }
-$env:GITHUB_TOKEN = (gh auth token)
+if (-not $env:GITHUB_TOKEN) {
+    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+    if ($ghCmd) {
+        try {
+            $ghToken = (& $ghCmd.Source auth token 2>$null).Trim()
+            if ($ghToken) {
+                $env:GITHUB_TOKEN = $ghToken
+            }
+        } catch {
+            Write-Warning "gh auth token failed (non-fatal): $_"
+        }
+    }
+}
 $copilotExe = if ($env:COPILOT_EXE_PATH) {
     $env:COPILOT_EXE_PATH
 } elseif ($env:COPILOT_EXE) {
@@ -146,7 +158,13 @@ if ($engramCmd) {
     }
 }
 
-& $copilotExe --remote
+$copilotArguments = @()
+if (-not ($args -contains "--remote")) {
+    $copilotArguments += "--remote"
+}
+$copilotArguments += $args
+
+& $copilotExe @copilotArguments
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────

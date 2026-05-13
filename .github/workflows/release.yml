@@ -2,6 +2,9 @@ name: Release
 
 on:
   push:
+    # GitHub tag globs cannot express full SemVer 2.0.0 precisely, especially
+    # once prerelease/build metadata is allowed. Keep the trigger numerically
+    # scoped here and let validate-tag enforce the exact accepted format.
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
 
@@ -27,7 +30,7 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
-          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "Unsupported release tag: ${TAG}" >&2
             exit 1
           fi
