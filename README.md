@@ -36,6 +36,7 @@ cargo build --release
 Initialize a target workspace:
 
 ```bash
+cd /path/to/your/workspace
 /path/to/agent-engram/target/release/engram install
 ```
 

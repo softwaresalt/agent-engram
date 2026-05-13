@@ -15,7 +15,7 @@ symptom-oriented [docs/troubleshooting.md](troubleshooting.md) page.
 |---|---|
 | `.engram/logs/` | Structured daemon logs |
 | `.engram/run/` | IPC endpoints and runtime locks |
-| `.engram/db/` | Workspace-local database files when the default data dir is used |
+| `.engram/cozo/` | Branch-scoped Cozo database directories with `engram.db` and `engram.db.lock` |
 
 ## Useful diagnostic commands
 

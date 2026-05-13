@@ -41,7 +41,7 @@ These flags are available on the CLI parity commands.
 | `ENGRAM_QUERY_TIMEOUT_MS` | Daemon | Timeout for `query_graph` execution |
 | `ENGRAM_QUERY_ROW_LIMIT` | Daemon | Maximum rows returned by `query_graph` |
 | `ENGRAM_OTLP_ENDPOINT` | Daemon | OTLP export target when built with `otlp-export` |
-| `ENGRAM_DATA_DIR` | Storage | Override the data directory; default is `{workspace}/.engram` |
+| `ENGRAM_DATA_DIR` | Storage | Override the data directory for direct mode or daemon-managed launches; default is `{workspace}/.engram` |
 | `ENGRAM_READY_TIMEOUT_MS` | Shim | How long the shim waits for a daemon to become ready |
 | `ENGRAM_IDLE_TIMEOUT_MS` | Daemon | Idle timeout override in milliseconds |
 | `ENGRAM_DIRECT` | CLI indexing | Makes `engram sync` or `engram index` run in direct mode |
@@ -50,6 +50,13 @@ These flags are available on the CLI parity commands.
 [!IMPORTANT]
 `ENGRAM_PORT` still exists because the compatibility transport is feature-gated,
 but normal editor and agent setups should use the stdio shim entry instead.
+
+[!NOTE]
+In normal shim-driven operation, the shim removes `ENGRAM_DATA_DIR` before it
+spawns the daemon so a shell-level override does not silently force unrelated
+workspaces to share the same database path. If you need a non-default data
+directory, set it in the daemon's own environment, run the daemon manually, or
+use direct mode for the CLI indexing path.
 
 ## Workspace files under `.engram/`
 
@@ -61,7 +68,7 @@ but normal editor and agent setups should use the stdio shim entry instead.
 | `.engram/.workspace-id` | Stable workspace identifier |
 | `.engram/run/` | IPC endpoints, locks, and runtime process artifacts |
 | `.engram/logs/` | Structured daemon logs |
-| `.engram/db/` | Runtime database files when the workspace-local data directory is used |
+| `.engram/cozo/` | Branch-scoped Cozo database directories containing `engram.db` and `engram.db.lock` |
 
 By default, Engram resolves storage into the workspace itself. The workspace ID
 and database namespace are branch-aware, so the same repository on different

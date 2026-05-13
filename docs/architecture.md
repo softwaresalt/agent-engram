@@ -53,7 +53,7 @@ Key storage boundaries:
 | `.engram/registry.yaml` | Additional content ingestion sources |
 | `.engram/run/` | IPC endpoints, locks, and runtime artifacts |
 | `.engram/logs/` | Structured runtime logs |
-| `.engram/db/` | Workspace-local embedded database files when the default data dir is used |
+| `.engram/cozo/` | Branch-scoped Cozo database directories with `engram.db` and `engram.db.lock` |
 
 ## Indexing model
 
