@@ -5,10 +5,14 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 # Ensures partial platform failures abort the entire release (S056).
 # A failed build job cancels all sibling jobs and prevents publish from running.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,24 +25,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy, rustfmt
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -D clippy::pedantic
+        run: cargo clippy --locked --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic
 
       - name: Tests
-        run: cargo test
+        run: cargo test --locked --no-default-features --features cozo-backend,embeddings --all-targets
 
   # ── Changelog generation ─────────────────────────────────────────────────────
   # Runs in parallel with `test`. The generated changelog body is passed to
@@ -50,14 +56,15 @@ jobs:
       body: ${{ steps.cliff.outputs.content }}
     steps:
       - name: Checkout (full history for cliff)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Install git-cliff as a pre-built binary instead of using the Docker-based
       # action, which broke when Debian Buster (the action's base image) went EOL.
       - name: Install git-cliff
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@3235f8901fd37ffed0052b276cec25a362fb82e9 # v2
         with:
           tool: git-cliff
 
@@ -120,10 +127,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -131,23 +140,23 @@ jobs:
       # Used when use_cross is true (e.g., additional Linux/ARM targets in future).
       - name: Install cross
         if: matrix.use_cross
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@3235f8901fd37ffed0052b276cec25a362fb82e9 # v2
         with:
           tool: cross
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
 
       # Build with cross when use_cross is true, otherwise use cargo directly
       - name: Build release binaries (cargo)
         if: "!matrix.use_cross"
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin engram
 
       - name: Build release binaries (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --locked --release --target ${{ matrix.target }} --bin engram
 
       # ── Archive: Unix (.tar.gz) ──────────────────────────────────────────────
       - name: Prepare archive (Unix)
@@ -155,13 +164,12 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
-          ARCHIVE_NAME="agent-intercom-${TAG}-${{ matrix.target }}.tar.gz"
+          ARCHIVE_NAME="engram-${TAG}-${{ matrix.target }}.tar.gz"
           STAGING="staging-${{ matrix.target }}"
           mkdir -p "${STAGING}"
-          cp "target/${{ matrix.target }}/release/agent-intercom${{ matrix.binary_suffix }}" "${STAGING}/"
-          cp "target/${{ matrix.target }}/release/agent-intercom-ctl${{ matrix.binary_suffix }}" "${STAGING}/"
-          cp config.toml.example "${STAGING}/"
+          cp "target/${{ matrix.target }}/release/engram${{ matrix.binary_suffix }}" "${STAGING}/"
           cp README.md "${STAGING}/"
+          cp LICENSE "${STAGING}/"
           tar -czf "${ARCHIVE_NAME}" -C "${STAGING}" .
           echo "ASSET=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
@@ -171,22 +179,22 @@ jobs:
         shell: pwsh
         run: |
           $tag = "$env:GITHUB_REF_NAME"
-          $archiveName = "agent-intercom-$tag-${{ matrix.target }}.zip"
+          $archiveName = "engram-$tag-${{ matrix.target }}.zip"
           $staging = "staging-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\agent-intercom${{ matrix.binary_suffix }}" "$staging\"
-          Copy-Item "target\${{ matrix.target }}\release\agent-intercom-ctl${{ matrix.binary_suffix }}" "$staging\"
-          Copy-Item "config.toml.example" "$staging\"
+          Copy-Item "target\${{ matrix.target }}\release\engram${{ matrix.binary_suffix }}" "$staging\"
           Copy-Item "README.md" "$staging\"
+          Copy-Item "LICENSE" "$staging\"
           Compress-Archive -Path "$staging\*" -DestinationPath $archiveName
           "ASSET=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ matrix.target }}
+          name: engram-${{ matrix.target }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
+          retention-days: 7
 
   # ── GitHub Releases publish ───────────────────────────────────────────────────
   # Requires BOTH changelog and all build jobs to succeed before publishing.
@@ -195,15 +203,17 @@ jobs:
     name: Publish GitHub Release
     needs: [changelog, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
           path: artifacts/
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body: ${{ needs.changelog.outputs.body }}
           files: artifacts/*
