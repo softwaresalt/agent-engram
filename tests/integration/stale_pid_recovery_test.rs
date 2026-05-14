@@ -8,6 +8,9 @@ use engram::shim::lifecycle::{check_health, ensure_daemon_running};
 use engram::shim::pidfile::PidFile;
 use serde_json::Value;
 
+#[path = "../helpers/mod.rs"]
+mod helpers;
+
 #[tokio::test]
 async fn shim_recovers_from_stale_pid_file() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -58,6 +61,62 @@ async fn shim_recovers_from_stale_pid_file() {
     assert!(
         check_health(&endpoint).await,
         "recovery path should leave the daemon healthy"
+    );
+
+    shutdown_daemon(&endpoint).await;
+}
+
+/// Scenario 2: dead-daemon runtime state must not require manual cleanup before restart.
+///
+/// Simulates a daemon crash (SIGKILL via drop) that leaves stale runtime state
+/// (PID file, IPC socket, lock files) in `.engram/run/`. The subsequent call to
+/// `ensure_daemon_running` must start a fresh daemon without operator intervention.
+#[tokio::test]
+async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let workspace_path = workspace.path().canonicalize().expect("canonicalize");
+
+    let git_dir = workspace_path.join(".git");
+    fs::create_dir(&git_dir).expect("create .git");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+
+    // Start first daemon and verify it is healthy.
+    let harness =
+        helpers::DaemonHarness::spawn_for_workspace(&workspace_path, Duration::from_secs(20))
+            .await
+            .expect("first daemon must spawn");
+
+    let stale_endpoint = harness.ipc_path().to_str().expect("UTF-8").to_owned();
+    assert!(
+        check_health(&stale_endpoint).await,
+        "first daemon must be healthy before crash simulation"
+    );
+
+    // Crash simulation: drop kills the daemon process (SIGKILL) without
+    // graceful shutdown, leaving stale runtime state in .engram/run/.
+    drop(harness);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Stale endpoint must no longer respond.
+    assert!(
+        !check_health(&stale_endpoint).await,
+        "stale endpoint must not respond after crash"
+    );
+
+    // Recovery: ensure_daemon_running must start a fresh daemon without
+    // requiring manual cleanup of the stale runtime state.
+    tokio::time::timeout(
+        Duration::from_secs(25),
+        ensure_daemon_running(&workspace_path),
+    )
+    .await
+    .expect("dead-daemon recovery must complete before timeout")
+    .expect("daemon must start cleanly from dead runtime state without manual cleanup");
+
+    let endpoint = ipc_endpoint(&workspace_path).expect("endpoint must resolve after recovery");
+    assert!(
+        check_health(&endpoint).await,
+        "recovered daemon must be healthy after dead-runtime-state recovery"
     );
 
     shutdown_daemon(&endpoint).await;

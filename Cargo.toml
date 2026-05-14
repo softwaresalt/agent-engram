@@ -609,6 +609,24 @@ path = "tests/integration/cli_direct_test.rs"
 name = "integration_indexing_resilience"
 path = "tests/integration/indexing_resilience_test.rs"
 
+# ── 035-S: Daemon / CLI release-readiness hardening ──────────────────────────
+
+[[test]]
+name = "integration_workspace_lifecycle_workflow"
+path = "tests/integration/workspace_lifecycle_workflow_test.rs"
+
+[[test]]
+name = "integration_cli_command_matrix"
+path = "tests/integration/cli_command_matrix_test.rs"
+
+[[test]]
+name = "integration_release_regression_workflow"
+path = "tests/integration/release_regression_workflow_test.rs"
+
+[[test]]
+name = "integration_release_smoke_daemon_cli"
+path = "tests/integration/release_smoke_daemon_cli_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
