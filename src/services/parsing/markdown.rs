@@ -20,6 +20,40 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as CmarkParser, Tag, 
 
 use super::{ExtractedClass, ExtractedEdge, ExtractedFunction, ExtractedSymbol, ParseResult};
 
+/// A structure-aware Markdown retrieval unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkdownChunk {
+    /// Retrieval granularity for the chunk.
+    pub record_kind: String,
+    /// Stable chunk identifier derived from heading structure.
+    pub chunk_id: String,
+    /// One-based chunk ordinal in document order.
+    pub chunk_index: u32,
+    /// Display title for the retrieval unit.
+    pub title: String,
+    /// Full heading ancestry for the chunk.
+    pub heading_path: Vec<String>,
+    /// One-based starting line of the chunk.
+    pub line_start: Option<u32>,
+    /// One-based ending line of the chunk.
+    pub line_end: Option<u32>,
+    /// Text indexed for retrieval.
+    pub content: String,
+    /// Explicit fallback reason when chunking degrades to file-level retrieval.
+    pub fallback_reason: Option<String>,
+    /// Advisory lint summary.
+    pub lint_summary: Option<String>,
+    /// Advisory lint suggestions.
+    pub suggestions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MarkdownHeading {
+    level: u8,
+    title: String,
+    line_start: usize,
+}
+
 /// Parse a Markdown document and extract headings, code blocks, and links.
 ///
 /// This function never fails: pulldown-cmark is lenient and will produce
@@ -118,7 +152,213 @@ pub(super) fn parse_markdown_source(
     Ok(ParseResult { symbols, edges })
 }
 
+/// Chunk a Markdown document into stable retrieval units.
+///
+/// Falls back to a single file-level retrieval unit when the document lacks a
+/// stable heading spine.
+///
+/// # Errors
+///
+/// Never errors; always returns `Ok(Vec<MarkdownChunk>)`.
+#[allow(clippy::unnecessary_wraps)]
+pub fn chunk_markdown_document(
+    source: &str,
+) -> Result<Vec<MarkdownChunk>, crate::errors::EngramError> {
+    chunk_markdown_document_with_title_hint(source, None)
+}
+
+/// Chunk a Markdown document with an optional title hint for fallback advice.
+///
+/// # Errors
+///
+/// Never errors; always returns `Ok(Vec<MarkdownChunk>)`.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn chunk_markdown_document_with_title_hint(
+    source: &str,
+    title_hint: Option<&str>,
+) -> Result<Vec<MarkdownChunk>, crate::errors::EngramError> {
+    let lines: Vec<&str> = source.lines().collect();
+    let headings = collect_headings(&lines);
+    let findings = lint_findings(&headings);
+    let has_h1 = headings.iter().any(|heading| heading.level == 1);
+    let stable_heading_spine = headings.first().is_some_and(|heading| heading.level == 1) && has_h1;
+
+    if !stable_heading_spine {
+        return Ok(vec![fallback_chunk(source, title_hint, &findings)]);
+    }
+
+    let mut heading_path: Vec<String> = Vec::new();
+    let mut chunks: Vec<MarkdownChunk> = Vec::new();
+
+    for (index, heading) in headings.iter().enumerate() {
+        while heading_path.len() >= usize::from(heading.level) {
+            heading_path.pop();
+        }
+        heading_path.push(heading.title.clone());
+
+        let next_line_start = headings
+            .get(index + 1)
+            .map_or(lines.len() + 1, |next| next.line_start);
+        let section_lines = &lines[heading.line_start - 1..next_line_start - 1];
+        let content = section_lines.join("\n");
+
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        let line_start = u32::try_from(heading.line_start).ok();
+        let line_end = u32::try_from(next_line_start.saturating_sub(1)).ok();
+        let chunk_index = u32::try_from(chunks.len() + 1).unwrap_or(u32::MAX);
+
+        chunks.push(MarkdownChunk {
+            record_kind: "markdown_chunk".to_owned(),
+            chunk_id: slugify_heading_path(&heading_path),
+            chunk_index,
+            title: heading.title.clone(),
+            heading_path: heading_path.clone(),
+            line_start,
+            line_end,
+            content,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        });
+    }
+
+    if chunks.is_empty() {
+        return Ok(vec![fallback_chunk(source, title_hint, &findings)]);
+    }
+
+    Ok(chunks)
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+fn collect_headings(lines: &[&str]) -> Vec<MarkdownHeading> {
+    let mut headings: Vec<MarkdownHeading> = Vec::new();
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        if let Some((level, title)) = parse_atx_heading(lines[index]) {
+            headings.push(MarkdownHeading {
+                level,
+                title,
+                line_start: index + 1,
+            });
+            index += 1;
+            continue;
+        }
+
+        if let Some((level, title)) = parse_setext_heading(lines, index) {
+            headings.push(MarkdownHeading {
+                level,
+                title,
+                line_start: index + 1,
+            });
+            index += 2;
+            continue;
+        }
+
+        index += 1;
+    }
+
+    headings
+}
+
+fn parse_atx_heading(line: &str) -> Option<(u8, String)> {
+    let trimmed = line.trim_start();
+    let level = trimmed
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+
+    let after_hashes = trimmed[level..].trim();
+    if after_hashes.is_empty() {
+        return None;
+    }
+
+    let title = after_hashes.trim_end_matches('#').trim().to_owned();
+    if title.is_empty() {
+        return None;
+    }
+
+    Some((u8::try_from(level).ok()?, title))
+}
+
+fn parse_setext_heading(lines: &[&str], index: usize) -> Option<(u8, String)> {
+    let current = lines.get(index)?.trim();
+    let underline = lines.get(index + 1)?.trim();
+    if current.is_empty() || underline.is_empty() {
+        return None;
+    }
+
+    let level = if underline.chars().all(|character| character == '=') {
+        1
+    } else if underline.chars().all(|character| character == '-') {
+        2
+    } else {
+        return None;
+    };
+
+    Some((level, current.to_owned()))
+}
+
+fn lint_findings(headings: &[MarkdownHeading]) -> Vec<String> {
+    let mut findings: Vec<String> = Vec::new();
+    if headings.first().is_none_or(|heading| heading.level != 1) {
+        findings.push("missing_h1".to_owned());
+    }
+    findings
+}
+
+fn fallback_chunk(source: &str, title_hint: Option<&str>, findings: &[String]) -> MarkdownChunk {
+    let fallback_title = title_hint.unwrap_or("Notes");
+    let line_end = u32::try_from(source.lines().count()).ok();
+    let lint_summary = (!findings.is_empty()).then(|| findings.join(", "));
+    let mut suggestions = Vec::new();
+    if findings.iter().any(|finding| finding == "missing_h1") {
+        suggestions.push(format!("# {fallback_title}"));
+    }
+
+    MarkdownChunk {
+        record_kind: "file".to_owned(),
+        chunk_id: "file".to_owned(),
+        chunk_index: 1,
+        title: fallback_title.to_owned(),
+        heading_path: Vec::new(),
+        line_start: Some(1),
+        line_end,
+        content: source.to_owned(),
+        fallback_reason: Some("missing_heading_structure".to_owned()),
+        lint_summary,
+        suggestions,
+    }
+}
+
+fn slugify_heading_path(heading_path: &[String]) -> String {
+    heading_path
+        .iter()
+        .map(|segment| {
+            let mut slug = String::new();
+            let mut previous_dash = false;
+            for character in segment.chars().flat_map(char::to_lowercase) {
+                if character.is_ascii_alphanumeric() {
+                    slug.push(character);
+                    previous_dash = false;
+                } else if !previous_dash {
+                    slug.push('-');
+                    previous_dash = true;
+                }
+            }
+            slug.trim_matches('-').to_owned()
+        })
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 /// Convert a byte offset within `source` to a 1-based line number.
 #[allow(clippy::naive_bytecount)]

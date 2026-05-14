@@ -12,6 +12,27 @@ fn fresh_state() -> Arc<AppState> {
     Arc::new(AppState::new(10))
 }
 
+fn make_candidate(
+    id: String,
+    source_type: &str,
+    content: String,
+) -> engram::services::search::SearchCandidate {
+    engram::services::search::SearchCandidate {
+        id,
+        source_type: source_type.to_string(),
+        content,
+        embedding: None,
+        title: None,
+        file_path: None,
+        line_range: None,
+        record_kind: None,
+        heading_path: Vec::new(),
+        fallback_reason: None,
+        lint_summary: None,
+        suggestions: Vec::new(),
+    }
+}
+
 /// T097: Benchmark cold start time (target: < 200ms).
 ///
 /// Measures time to create `AppState` and build the axum router,
@@ -68,13 +89,14 @@ fn t099_query_memory_under_50ms() {
 
     // Build a corpus of 100 candidates
     let candidates: Vec<SearchCandidate> = (0..100)
-        .map(|i| SearchCandidate {
-            id: format!("spec:{i}"),
-            source_type: "spec".to_string(),
-            content: format!(
-                "Document {i} about authentication and user login flow with OAuth2 integration"
-            ),
-            embedding: None,
+        .map(|i| {
+            make_candidate(
+                format!("spec:{i}"),
+                "spec",
+                format!(
+                    "Document {i} about authentication and user login flow with OAuth2 integration"
+                ),
+            )
         })
         .collect();
 

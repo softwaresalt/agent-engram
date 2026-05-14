@@ -62,6 +62,15 @@ mod vector_tests {
             source_path: path.to_owned(),
             file_size_bytes: content.len() as u64,
             ingested_at: Utc::now(),
+            record_kind: "file".to_owned(),
+            chunk_id: None,
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -159,6 +168,64 @@ mod vector_tests {
         assert!(
             records.iter().any(|r| r.file_path == "docs/readme.md"),
             "inserted content record must appear in select"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_record_roundtrips_markdown_chunk_metadata() {
+        let (_tmp, db) = make_db().await;
+        let q = engram::db::queries::CodeGraphQueries::new(db);
+        let rec = ContentRecord {
+            id: "content:chunk-meta".to_owned(),
+            content_type: "docs".to_owned(),
+            file_path: "docs/guide.md".to_owned(),
+            content_hash: "hash_chunk_meta".to_owned(),
+            content: "## Install\n\nRun cargo build.".to_owned(),
+            embedding: None,
+            source_path: "docs".to_owned(),
+            file_size_bytes: 28,
+            ingested_at: Utc::now(),
+            record_kind: "markdown_chunk".to_owned(),
+            chunk_id: Some("guide/install".to_owned()),
+            chunk_index: Some(1),
+            heading_path: vec!["Guide".to_owned(), "Install".to_owned()],
+            line_start: Some(3),
+            line_end: Some(5),
+            fallback_reason: Some("missing_heading_structure".to_owned()),
+            lint_summary: Some("missing_h1 at line 3".to_owned()),
+            suggestions: vec!["Add '# Guide' above line 3".to_owned()],
+        };
+        q.upsert_content_record(&rec)
+            .await
+            .expect("upsert_content_record");
+
+        let records = q
+            .select_content_records(Some("docs"))
+            .await
+            .expect("select_content_records");
+        let stored = records
+            .iter()
+            .find(|record| record.id == "content:chunk-meta")
+            .expect("chunk record must be persisted");
+
+        assert_eq!(stored.record_kind, "markdown_chunk");
+        assert_eq!(stored.chunk_id.as_deref(), Some("guide/install"));
+        assert_eq!(
+            stored.heading_path,
+            vec!["Guide".to_owned(), "Install".to_owned()]
+        );
+        assert_eq!(stored.line_start, Some(3));
+        assert_eq!(stored.line_end, Some(5));
+        assert_eq!(
+            stored.fallback_reason.as_deref(),
+            Some("missing_heading_structure")
+        );
+        assert!(
+            stored
+                .suggestions
+                .iter()
+                .any(|suggestion| suggestion.contains("# Guide")),
+            "advisory suggestions should be queryable after persistence"
         );
     }
 

@@ -165,9 +165,17 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     for cr in content_records {
         candidates.push(SearchCandidate {
             id: format!("content_record:{}", cr.id),
-            source_type: cr.content_type,
-            content: cr.content,
-            embedding: cr.embedding,
+            source_type: cr.content_type.clone(),
+            content: cr.content.clone(),
+            embedding: cr.embedding.clone(),
+            title: content_record_title(&cr),
+            file_path: Some(cr.file_path.clone()),
+            line_range: content_record_line_range(&cr),
+            record_kind: Some(cr.record_kind.clone()),
+            heading_path: cr.heading_path.clone(),
+            fallback_reason: cr.fallback_reason.clone(),
+            lint_summary: cr.lint_summary.clone(),
+            suggestions: cr.suggestions.clone(),
         });
     }
 
@@ -187,6 +195,14 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
                 source_type: bcr.content_type,
                 content: bcr.content,
                 embedding: None,
+                title: Some(bcr.file_path.clone()),
+                file_path: Some(bcr.file_path),
+                line_range: None,
+                record_kind: Some("file".to_owned()),
+                heading_path: Vec::new(),
+                fallback_reason: None,
+                lint_summary: None,
+                suggestions: Vec::new(),
             });
         }
     }
@@ -554,6 +570,11 @@ pub async fn unified_search(
                     summary: s.summary,
                     status: None,
                     linked_symbols: None,
+                    record_kind: None,
+                    heading_path: Vec::new(),
+                    fallback_reason: None,
+                    lint_summary: None,
+                    suggestions: Vec::new(),
                 }
             })
             .collect::<Vec<_>>()
@@ -588,18 +609,7 @@ pub async fn unified_search(
                         .count();
                     let score = matched as f32 / query_words.len() as f32;
                     if score > 0.0 {
-                        Some(UnifiedSearchResult {
-                            region: SearchRegion::Task,
-                            score,
-                            node_type: cr.content_type.clone(),
-                            id: format!("content_record:{}", cr.id),
-                            title: Some(cr.file_path.clone()),
-                            summary: Some(truncate_summary(&cr.content, 200)),
-                            file_path: Some(cr.file_path),
-                            line_range: None,
-                            status: None,
-                            linked_symbols: None,
-                        })
+                        Some(content_record_unified_result(score, cr))
                     } else {
                         None
                     }
@@ -607,18 +617,7 @@ pub async fn unified_search(
                 .collect()
         } else {
             knn.into_iter()
-                .map(|(score, cr)| UnifiedSearchResult {
-                    region: SearchRegion::Task,
-                    score,
-                    node_type: cr.content_type.clone(),
-                    id: format!("content_record:{}", cr.id),
-                    title: Some(cr.file_path.clone()),
-                    summary: Some(truncate_summary(&cr.content, 200)),
-                    file_path: Some(cr.file_path),
-                    line_range: None,
-                    status: None,
-                    linked_symbols: None,
-                })
+                .map(|(score, cr)| content_record_unified_result(score, cr))
                 .collect()
         }
     };
@@ -649,6 +648,47 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
         format!("{}…", &truncated[..pos])
     } else {
         format!("{truncated}…")
+    }
+}
+
+fn content_record_title(record: &crate::models::ContentRecord) -> Option<String> {
+    record.heading_path.last().cloned().or_else(|| {
+        std::path::Path::new(&record.file_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn content_record_line_range(record: &crate::models::ContentRecord) -> Option<String> {
+    match (record.line_start, record.line_end) {
+        (Some(start), Some(end)) => Some(format!("L{start}-L{end}")),
+        (Some(start), None) => Some(format!("L{start}")),
+        _ => None,
+    }
+}
+
+fn content_record_unified_result(
+    score: f32,
+    record: crate::models::ContentRecord,
+) -> UnifiedSearchResult {
+    UnifiedSearchResult {
+        region: SearchRegion::Task,
+        score,
+        node_type: record.content_type.clone(),
+        id: format!("content_record:{}", record.id),
+        title: content_record_title(&record),
+        file_path: Some(record.file_path.clone()),
+        line_range: content_record_line_range(&record),
+        summary: Some(truncate_summary(&record.content, 200)),
+        status: None,
+        linked_symbols: None,
+        record_kind: Some(record.record_kind),
+        heading_path: record.heading_path,
+        fallback_reason: record.fallback_reason,
+        lint_summary: record.lint_summary,
+        suggestions: record.suggestions,
     }
 }
 

@@ -23,6 +23,9 @@ use sha2::{Digest, Sha256};
 
 use crate::errors::{CodeGraphError, EngramError};
 
+pub(crate) use markdown::chunk_markdown_document_with_title_hint;
+pub use markdown::{MarkdownChunk, chunk_markdown_document};
+
 /// Supported source-language identifiers for Tier-1 code graph parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {

@@ -63,7 +63,9 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
 ///
 /// 4.0.0: code-graph JSONL files moved to branch-aware paths
 ///        (`{data_dir}/code-graph/{branch}/nodes.jsonl`).
-pub const SCHEMA_VERSION: &str = "4.0.0";
+/// 5.0.0: `content_record` switched from file-keyed rows to retrieval-unit rows,
+///        adding markdown chunk metadata and advisory lint fields.
+pub const SCHEMA_VERSION: &str = "5.0.0";
 
 /// Result of a code graph dehydration operation.
 #[derive(Debug, Clone)]
