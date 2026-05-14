@@ -1101,6 +1101,47 @@ fn test_markdown_chunking_reports_advisory_heading_lints() {
     );
 }
 
+/// Frontmatter delimiters must not be treated as setext headings.
+#[test]
+fn test_markdown_chunking_ignores_yaml_frontmatter() {
+    let source = "---\n\
+title: Guide\n\
+---\n\
+\n\
+# Guide\n\
+\n\
+## Install\n\
+\n\
+Run cargo build.\n";
+    let chunks = chunk_markdown_document(source).unwrap();
+
+    assert_eq!(
+        chunks.len(),
+        2,
+        "frontmatter should not force file-level fallback"
+    );
+    assert_eq!(chunks[0].heading_path, vec!["Guide".to_string()]);
+    assert_eq!(
+        chunks[1].heading_path,
+        vec!["Guide".to_string(), "Install".to_string()]
+    );
+}
+
+/// Repeated headings under the same ancestry need distinct stable identifiers.
+#[test]
+fn test_markdown_chunking_disambiguates_repeated_heading_paths() {
+    let source = "# Guide\n\n## Install\n\nRust steps.\n\n## Install\n\nGo steps.\n";
+    let chunks = chunk_markdown_document(source).unwrap();
+
+    let install_ids: Vec<&str> = chunks
+        .iter()
+        .filter(|chunk| chunk.heading_path == ["Guide".to_string(), "Install".to_string()])
+        .map(|chunk| chunk.chunk_id.as_str())
+        .collect();
+
+    assert_eq!(install_ids, vec!["guide/install", "guide/install--2"]);
+}
+
 // ── SQL parsing tests (034.002-T core + 034.003-T secondary) ─────────────────
 
 /// CREATE TABLE must produce an `ExtractedSymbol::Class` with the table name.

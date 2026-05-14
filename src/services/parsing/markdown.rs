@@ -16,6 +16,8 @@
 //! - Inline and reference links → [`super::ExtractedEdge::Imports`]
 //!   The `import_path` field carries the destination URL.
 
+use std::collections::HashMap;
+
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as CmarkParser, Tag, TagEnd};
 
 use super::{ExtractedClass, ExtractedEdge, ExtractedFunction, ExtractedSymbol, ParseResult};
@@ -189,6 +191,7 @@ pub(crate) fn chunk_markdown_document_with_title_hint(
 
     let mut heading_path: Vec<String> = Vec::new();
     let mut chunks: Vec<MarkdownChunk> = Vec::new();
+    let mut chunk_id_counts: HashMap<String, u32> = HashMap::new();
 
     for (index, heading) in headings.iter().enumerate() {
         while heading_path.len() >= usize::from(heading.level) {
@@ -209,10 +212,11 @@ pub(crate) fn chunk_markdown_document_with_title_hint(
         let line_start = u32::try_from(heading.line_start).ok();
         let line_end = u32::try_from(next_line_start.saturating_sub(1)).ok();
         let chunk_index = u32::try_from(chunks.len() + 1).unwrap_or(u32::MAX);
+        let chunk_id = next_chunk_id(&heading_path, &mut chunk_id_counts);
 
         chunks.push(MarkdownChunk {
             record_kind: "markdown_chunk".to_owned(),
-            chunk_id: slugify_heading_path(&heading_path),
+            chunk_id,
             chunk_index,
             title: heading.title.clone(),
             heading_path: heading_path.clone(),
@@ -236,7 +240,7 @@ pub(crate) fn chunk_markdown_document_with_title_hint(
 
 fn collect_headings(lines: &[&str]) -> Vec<MarkdownHeading> {
     let mut headings: Vec<MarkdownHeading> = Vec::new();
-    let mut index = 0usize;
+    let mut index = frontmatter_end_index(lines).unwrap_or(0);
 
     while index < lines.len() {
         if let Some((level, title)) = parse_atx_heading(lines[index]) {
@@ -263,6 +267,21 @@ fn collect_headings(lines: &[&str]) -> Vec<MarkdownHeading> {
     }
 
     headings
+}
+
+fn frontmatter_end_index(lines: &[&str]) -> Option<usize> {
+    if lines.first().is_none_or(|line| line.trim() != "---") {
+        return None;
+    }
+
+    lines.iter().enumerate().skip(1).find_map(|(index, line)| {
+        let trimmed = line.trim();
+        if trimmed == "---" || trimmed == "..." {
+            Some(index + 1)
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_atx_heading(line: &str) -> Option<(u8, String)> {
@@ -335,6 +354,17 @@ fn fallback_chunk(source: &str, title_hint: Option<&str>, findings: &[String]) -
         fallback_reason: Some("missing_heading_structure".to_owned()),
         lint_summary,
         suggestions,
+    }
+}
+
+fn next_chunk_id(heading_path: &[String], counts: &mut HashMap<String, u32>) -> String {
+    let base = slugify_heading_path(heading_path);
+    let occurrence = counts.entry(base.clone()).or_insert(0);
+    *occurrence += 1;
+    if *occurrence == 1 {
+        base
+    } else {
+        format!("{base}--{occurrence}")
     }
 }
 
