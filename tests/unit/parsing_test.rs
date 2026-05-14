@@ -1142,6 +1142,49 @@ fn test_markdown_chunking_disambiguates_repeated_heading_paths() {
     assert_eq!(install_ids, vec!["guide/install", "guide/install--2"]);
 }
 
+/// Non-ASCII or punctuation-only headings still need deterministic chunk IDs.
+#[test]
+fn test_markdown_chunking_uses_non_empty_fallback_slug() {
+    let source = "# !!!\n\n## ???\n\nDetails.\n";
+    let chunks = chunk_markdown_document(source).unwrap();
+
+    assert!(
+        chunks.iter().all(|chunk| !chunk.chunk_id.is_empty()),
+        "chunk ids should never be empty"
+    );
+    assert!(
+        chunks[0].chunk_id.starts_with("section-"),
+        "punctuation-only headings should fall back to deterministic section ids"
+    );
+}
+
+/// A later H1 should not be reported as missing when the spine is merely unstable.
+#[test]
+fn test_markdown_chunking_distinguishes_missing_from_non_leading_h1() {
+    let source = "Preface\n----\n\n# Guide\n\n## Install\n\nRun cargo build.\n";
+    let chunks = chunk_markdown_document(source).unwrap();
+    let fallback = &chunks[0];
+
+    assert_eq!(
+        fallback.fallback_reason.as_deref(),
+        Some("missing_heading_structure")
+    );
+    assert!(
+        fallback
+            .lint_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("missing_leading_h1")),
+        "non-leading H1 should be reported explicitly"
+    );
+    assert!(
+        fallback
+            .lint_summary
+            .as_deref()
+            .is_none_or(|summary| !summary.contains("missing_h1")),
+        "documents with any H1 should not be flagged as missing_h1"
+    );
+}
+
 // ── SQL parsing tests (034.002-T core + 034.003-T secondary) ─────────────────
 
 /// CREATE TABLE must produce an `ExtractedSymbol::Class` with the table name.

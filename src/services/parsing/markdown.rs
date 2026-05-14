@@ -327,8 +327,12 @@ fn parse_setext_heading(lines: &[&str], index: usize) -> Option<(u8, String)> {
 
 fn lint_findings(headings: &[MarkdownHeading]) -> Vec<String> {
     let mut findings: Vec<String> = Vec::new();
-    if headings.first().is_none_or(|heading| heading.level != 1) {
+    let has_h1 = headings.iter().any(|heading| heading.level == 1);
+    if !has_h1 {
         findings.push("missing_h1".to_owned());
+    }
+    if headings.first().is_some_and(|heading| heading.level != 1) {
+        findings.push("missing_leading_h1".to_owned());
     }
     findings
 }
@@ -359,6 +363,12 @@ fn fallback_chunk(source: &str, title_hint: Option<&str>, findings: &[String]) -
 
 fn next_chunk_id(heading_path: &[String], counts: &mut HashMap<String, u32>) -> String {
     let base = slugify_heading_path(heading_path);
+    let base = if base.is_empty() {
+        let heading_key = heading_path.join(" > ");
+        format!("section-{}", &super::sha256_hex(&heading_key)[..8])
+    } else {
+        base
+    };
     let occurrence = counts.entry(base.clone()).or_insert(0);
     *occurrence += 1;
     if *occurrence == 1 {

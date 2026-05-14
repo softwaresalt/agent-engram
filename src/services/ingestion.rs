@@ -447,8 +447,9 @@ fn file_content_record(
     lint_summary: Option<String>,
     suggestions: Vec<String>,
 ) -> ContentRecord {
+    let identity_seed = content_record_identity_seed(rel_path, content_type, source_path, None);
     ContentRecord {
-        id: format!("cr_{}", compute_hash(rel_path.as_bytes())),
+        id: format!("cr_{}", compute_hash(identity_seed.as_bytes())),
         content_type: content_type.to_owned(),
         file_path: rel_path.to_owned(),
         content_hash: content_hash.to_owned(),
@@ -477,7 +478,12 @@ fn markdown_chunk_record(
     content_hash: &str,
     chunk: MarkdownChunk,
 ) -> ContentRecord {
-    let chunk_key = format!("{rel_path}:{}", chunk.chunk_id);
+    let chunk_key = content_record_identity_seed(
+        rel_path,
+        content_type,
+        source_path,
+        Some(chunk.chunk_id.as_str()),
+    );
     ContentRecord {
         id: format!("cr_{}", compute_hash(chunk_key.as_bytes())),
         content_type: content_type.to_owned(),
@@ -497,6 +503,18 @@ fn markdown_chunk_record(
         fallback_reason: chunk.fallback_reason,
         lint_summary: chunk.lint_summary,
         suggestions: chunk.suggestions,
+    }
+}
+
+fn content_record_identity_seed(
+    rel_path: &str,
+    content_type: &str,
+    source_path: &str,
+    chunk_id: Option<&str>,
+) -> String {
+    match chunk_id {
+        Some(chunk_id) => format!("{source_path}:{content_type}:{rel_path}:{chunk_id}"),
+        None => format!("{source_path}:{content_type}:{rel_path}"),
     }
 }
 
@@ -697,4 +715,25 @@ pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<u
 
     info!(updated, "content embedding backfill complete");
     Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_record_identity_seed;
+
+    #[test]
+    fn content_record_identity_seed_scopes_file_records_by_source_and_type() {
+        let docs = content_record_identity_seed("docs/guide.md", "docs", "docs", None);
+        let specs = content_record_identity_seed("docs/guide.md", "spec", "specs", None);
+        assert_ne!(docs, specs);
+    }
+
+    #[test]
+    fn content_record_identity_seed_scopes_chunk_records_by_source_and_type() {
+        let docs =
+            content_record_identity_seed("docs/guide.md", "docs", "docs", Some("guide/install"));
+        let specs =
+            content_record_identity_seed("docs/guide.md", "spec", "specs", Some("guide/install"));
+        assert_ne!(docs, specs);
+    }
 }
