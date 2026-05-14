@@ -81,6 +81,15 @@ fn arb_content_record() -> impl Strategy<Value = ContentRecord> {
                     source_path,
                     file_size_bytes,
                     ingested_at: Utc::now(),
+                    record_kind: "file".to_string(),
+                    chunk_id: None,
+                    chunk_index: None,
+                    heading_path: Vec::new(),
+                    line_start: None,
+                    line_end: None,
+                    fallback_reason: None,
+                    lint_summary: None,
+                    suggestions: Vec::new(),
                 }
             },
         )

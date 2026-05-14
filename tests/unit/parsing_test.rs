@@ -6,7 +6,8 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
 use engram::services::parsing::{
-    ExtractedEdge, ExtractedSymbol, Language, parse_rust_source, parse_source, parse_sql_source,
+    ExtractedEdge, ExtractedSymbol, Language, chunk_markdown_document, parse_rust_source,
+    parse_source, parse_sql_source,
 };
 
 /// Debug helper: dump the raw tree-sitter node kinds from a C++ class body.
@@ -1031,6 +1032,72 @@ fn test_markdown_empty_no_symbols() {
         result.edges.is_empty(),
         "expected no edges for empty doc; got: {:?}",
         result.edges
+    );
+}
+
+/// Structure-aware chunk IDs must stay stable when only body text changes.
+#[test]
+fn test_markdown_chunk_ids_are_stable_across_reindex() {
+    let original = "# Guide\n\n## Install\n\nRun cargo build.\n\n## Use\n\nRun engram.\n";
+    let revised =
+        "# Guide\n\n## Install\n\nRun cargo check first.\n\n## Use\n\nRun engram daemon.\n";
+
+    let original_chunks = chunk_markdown_document(original).unwrap();
+    let revised_chunks = chunk_markdown_document(revised).unwrap();
+
+    let original_ids: Vec<&str> = original_chunks
+        .iter()
+        .map(|chunk| chunk.chunk_id.as_str())
+        .collect();
+    let revised_ids: Vec<&str> = revised_chunks
+        .iter()
+        .map(|chunk| chunk.chunk_id.as_str())
+        .collect();
+
+    assert_eq!(
+        original_ids, revised_ids,
+        "heading-stable edits must preserve chunk identifiers"
+    );
+    assert!(
+        original_chunks
+            .iter()
+            .any(|chunk| chunk.heading_path == ["Guide".to_string(), "Install".to_string()]),
+        "expected nested heading provenance for the Install section"
+    );
+}
+
+/// Missing or unstable heading structure must produce advisory fallback metadata
+/// without inventing rewritten document content.
+#[test]
+fn test_markdown_chunking_reports_advisory_heading_lints() {
+    let source = "Overview paragraph without headings.\n\n### Deep topic\n\nDetails.\n";
+    let chunks = chunk_markdown_document(source).unwrap();
+
+    assert_eq!(
+        chunks.len(),
+        1,
+        "unstable heading structure should fall back to one retrieval unit"
+    );
+
+    let fallback = &chunks[0];
+    assert_eq!(
+        fallback.fallback_reason.as_deref(),
+        Some("missing_heading_structure"),
+        "documents without a stable heading spine must declare an explicit fallback reason"
+    );
+    assert!(
+        fallback
+            .lint_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("missing_h1")),
+        "lint summary should report advisory heading findings"
+    );
+    assert!(
+        fallback
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.contains('#')),
+        "advisory suggestions should propose headings without rewriting the source"
     );
 }
 

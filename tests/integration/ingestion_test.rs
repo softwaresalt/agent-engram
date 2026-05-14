@@ -95,3 +95,161 @@ fn different_content_different_hash() {
     let hash2 = compute_hash(b"Hello World");
     assert_ne!(hash1, hash2);
 }
+
+/// Markdown ingestion must emit section-aware chunks that `query_memory` can
+/// return with provenance metadata.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn markdown_query_memory_returns_chunk_provenance() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use engram::db::connect_db;
+    use engram::db::queries::CodeGraphQueries;
+    use engram::server::state::{AppState, WorkspaceSnapshot};
+    use engram::services::ingestion::ingest_all_sources;
+    use engram::services::registry::parse_registry_yaml;
+    use engram::tools;
+    use serde_json::json;
+
+    let dir = TempDir::new().expect("tempdir");
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::write(
+        docs.join("guide.md"),
+        "# Guide\n\n## Install\n\nRun cargo build --release.\n\n## Use\n\nRun engram query-memory.\n",
+    )
+    .expect("write markdown");
+
+    let yaml = "sources:\n  - type: docs\n    language: markdown\n    path: docs\n    pattern: \"**/*.md\"\n";
+    let config = parse_registry_yaml(yaml).expect("parse registry");
+    let data_dir = dir.path().join("data");
+    let db = connect_db(&data_dir, "test-branch")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+    ingest_all_sources(&config, dir.path(), &queries)
+        .await
+        .expect("ingest_all_sources");
+
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(WorkspaceSnapshot {
+            workspace_id: "markdown-query-memory".to_string(),
+            workspace_uuid: "uuid-markdown-query-memory".to_string(),
+            branch: "test-branch".to_string(),
+            data_dir,
+            path: dir.path().to_string_lossy().to_string(),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 1,
+            file_mtimes: HashMap::new(),
+        })
+        .await
+        .expect("bind workspace");
+
+    let result = tools::dispatch(
+        state,
+        "query_memory",
+        Some(json!({ "query": "cargo build", "content_type": "docs", "limit": 5 })),
+    )
+    .await
+    .expect("query_memory");
+
+    let first = result["results"]
+        .as_array()
+        .and_then(|results| results.first())
+        .expect("expected markdown chunk result");
+
+    assert_eq!(first["record_kind"], "markdown_chunk");
+    assert_eq!(first["file_path"], "docs/guide.md");
+    assert_eq!(first["title"], "Install");
+    assert_eq!(first["heading_path"], json!(["Guide", "Install"]));
+    assert!(
+        first["line_range"]
+            .as_str()
+            .is_some_and(|range| range.starts_with('L')),
+        "chunk results should surface a line range"
+    );
+}
+
+/// Documents without a stable heading spine must fall back to file-level
+/// retrieval with advisory lint metadata instead of silent rewrites.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn markdown_query_memory_exposes_fallback_lint_guardrails() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use engram::db::connect_db;
+    use engram::db::queries::CodeGraphQueries;
+    use engram::server::state::{AppState, WorkspaceSnapshot};
+    use engram::services::ingestion::ingest_all_sources;
+    use engram::services::registry::parse_registry_yaml;
+    use engram::tools;
+    use serde_json::json;
+
+    let dir = TempDir::new().expect("tempdir");
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::write(
+        docs.join("notes.md"),
+        "Overview paragraph without headings.\n\n### Deep topic\n\nDetails for retrieval.\n",
+    )
+    .expect("write markdown");
+
+    let yaml = "sources:\n  - type: docs\n    language: markdown\n    path: docs\n    pattern: \"**/*.md\"\n";
+    let config = parse_registry_yaml(yaml).expect("parse registry");
+    let data_dir = dir.path().join("data");
+    let db = connect_db(&data_dir, "test-branch")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+    ingest_all_sources(&config, dir.path(), &queries)
+        .await
+        .expect("ingest_all_sources");
+
+    let state = Arc::new(AppState::new(10));
+    state
+        .set_workspace(WorkspaceSnapshot {
+            workspace_id: "markdown-query-memory-fallback".to_string(),
+            workspace_uuid: "uuid-markdown-query-memory-fallback".to_string(),
+            branch: "test-branch".to_string(),
+            data_dir,
+            path: dir.path().to_string_lossy().to_string(),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 1,
+            file_mtimes: HashMap::new(),
+        })
+        .await
+        .expect("bind workspace");
+
+    let result = tools::dispatch(
+        state,
+        "query_memory",
+        Some(json!({ "query": "retrieval", "content_type": "docs", "limit": 5 })),
+    )
+    .await
+    .expect("query_memory");
+
+    let first = result["results"]
+        .as_array()
+        .and_then(|results| results.first())
+        .expect("expected fallback markdown result");
+
+    assert_eq!(first["record_kind"], "file");
+    assert_eq!(first["fallback_reason"], "missing_heading_structure");
+    assert!(
+        first["lint_summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("missing_h1")),
+        "fallback result should surface advisory lint findings"
+    );
+    assert!(
+        first["suggestions"]
+            .as_array()
+            .is_some_and(|suggestions| suggestions.iter().any(|value| value == "# Notes")),
+        "fallback result should expose advisory heading suggestions"
+    );
+}

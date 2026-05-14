@@ -6,6 +6,23 @@
 use engram::services::embedding::{self, EMBEDDING_DIM, MAX_QUERY_CHARS};
 use engram::services::search::{self, SearchCandidate, hybrid_search};
 
+fn make_candidate(id: &str, source_type: &str, content: &str) -> SearchCandidate {
+    SearchCandidate {
+        id: id.to_string(),
+        source_type: source_type.to_string(),
+        content: content.to_string(),
+        embedding: None,
+        title: None,
+        file_path: None,
+        line_range: None,
+        record_kind: None,
+        heading_path: Vec::new(),
+        fallback_reason: None,
+        lint_summary: None,
+        suggestions: Vec::new(),
+    }
+}
+
 // ── Model cache directory ────────────────────────────────────────
 
 #[test]
@@ -67,18 +84,8 @@ fn validate_query_length_rejects_over_limit() {
 #[test]
 fn hybrid_search_works_without_embeddings() {
     let candidates = vec![
-        SearchCandidate {
-            id: "spec:auth".to_string(),
-            source_type: "spec".to_string(),
-            content: "user authentication login flow".to_string(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "spec:db".to_string(),
-            source_type: "spec".to_string(),
-            content: "database schema migration".to_string(),
-            embedding: None,
-        },
+        make_candidate("spec:auth", "spec", "user authentication login flow"),
+        make_candidate("spec:db", "spec", "database schema migration"),
     ];
 
     let results =

@@ -35,6 +35,15 @@ fn content_type_filter_param_valid() {
         source_path: "specs".to_string(),
         file_size_bytes: 12,
         ingested_at: chrono::Utc::now(),
+        record_kind: "file".to_string(),
+        chunk_id: None,
+        chunk_index: None,
+        heading_path: Vec::new(),
+        line_start: None,
+        line_end: None,
+        fallback_reason: None,
+        lint_summary: None,
+        suggestions: Vec::new(),
     };
     assert_eq!(record.content_type, "spec");
 }

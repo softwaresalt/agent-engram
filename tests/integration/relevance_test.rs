@@ -6,109 +6,102 @@
 
 use engram::services::search::{SearchCandidate, hybrid_search};
 
+fn make_candidate(id: &str, source_type: &str, content: &str) -> SearchCandidate {
+    SearchCandidate {
+        id: id.into(),
+        source_type: source_type.into(),
+        content: content.into(),
+        embedding: None,
+        title: None,
+        file_path: None,
+        line_range: None,
+        record_kind: None,
+        heading_path: Vec::new(),
+        fallback_reason: None,
+        lint_summary: None,
+        suggestions: Vec::new(),
+    }
+}
+
 /// Build the fixed test corpus of searchable documents.
 #[allow(clippy::too_many_lines)]
 fn test_corpus() -> Vec<SearchCandidate> {
     vec![
-        SearchCandidate {
-            id: "spec:auth".into(),
-            source_type: "spec".into(),
-            content: "User authentication and login flow using OAuth2 with JWT tokens".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "spec:db".into(),
-            source_type: "spec".into(),
-            content: "Database schema design with SurrealDB embedded storage and graph relations"
-                .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "spec:api".into(),
-            source_type: "spec".into(),
-            content: "REST API design with axum HTTP server and JSON-RPC endpoints".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "spec:search".into(),
-            source_type: "spec".into(),
-            content: "Semantic search with vector embeddings and keyword matching hybrid scoring"
-                .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "spec:persist".into(),
-            source_type: "spec".into(),
-            content: "Git-backed persistence with markdown serialization and comment preservation"
-                .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "context:task_mgmt".into(),
-            source_type: "context".into(),
-            content: "Task management with status tracking todo in_progress done blocked".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "context:sse".into(),
-            source_type: "context".into(),
-            content: "SSE server-sent events connection with keepalive and timeout handling".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "context:concurrent".into(),
-            source_type: "context".into(),
-            content: "Concurrent multi-client access with connection registry and rate limiting"
-                .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "context:error".into(),
-            source_type: "context".into(),
-            content: "Error handling with typed error codes workspace hydration task query system"
-                .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "context:config".into(),
-            source_type: "context".into(),
-            content:
-                "Configuration with clap CLI arguments and environment variables ENGRAM_ prefix"
-                    .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "task:impl_auth".into(),
-            source_type: "task".into(),
-            content: "Implement OAuth2 authentication flow with JWT token validation".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "task:impl_search".into(),
-            source_type: "task".into(),
-            content: "Implement hybrid search combining vector similarity and BM25 keyword".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "task:impl_flush".into(),
-            source_type: "task".into(),
-            content: "Implement flush_state to serialize workspace to engram files markdown".into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "task:impl_graph".into(),
-            source_type: "task".into(),
-            content: "Implement task dependency graph with cyclic detection and blocker tracking"
-                .into(),
-            embedding: None,
-        },
-        SearchCandidate {
-            id: "task:impl_sse".into(),
-            source_type: "task".into(),
-            content: "Implement SSE endpoint with connection ID assignment and keepalive pings"
-                .into(),
-            embedding: None,
-        },
+        make_candidate(
+            "spec:auth",
+            "spec",
+            "User authentication and login flow using OAuth2 with JWT tokens",
+        ),
+        make_candidate(
+            "spec:db",
+            "spec",
+            "Database schema design with SurrealDB embedded storage and graph relations",
+        ),
+        make_candidate(
+            "spec:api",
+            "spec",
+            "REST API design with axum HTTP server and JSON-RPC endpoints",
+        ),
+        make_candidate(
+            "spec:search",
+            "spec",
+            "Semantic search with vector embeddings and keyword matching hybrid scoring",
+        ),
+        make_candidate(
+            "spec:persist",
+            "spec",
+            "Git-backed persistence with markdown serialization and comment preservation",
+        ),
+        make_candidate(
+            "context:task_mgmt",
+            "context",
+            "Task management with status tracking todo in_progress done blocked",
+        ),
+        make_candidate(
+            "context:sse",
+            "context",
+            "SSE server-sent events connection with keepalive and timeout handling",
+        ),
+        make_candidate(
+            "context:concurrent",
+            "context",
+            "Concurrent multi-client access with connection registry and rate limiting",
+        ),
+        make_candidate(
+            "context:error",
+            "context",
+            "Error handling with typed error codes workspace hydration task query system",
+        ),
+        make_candidate(
+            "context:config",
+            "context",
+            "Configuration with clap CLI arguments and environment variables ENGRAM_ prefix",
+        ),
+        make_candidate(
+            "task:impl_auth",
+            "task",
+            "Implement OAuth2 authentication flow with JWT token validation",
+        ),
+        make_candidate(
+            "task:impl_search",
+            "task",
+            "Implement hybrid search combining vector similarity and BM25 keyword",
+        ),
+        make_candidate(
+            "task:impl_flush",
+            "task",
+            "Implement flush_state to serialize workspace to engram files markdown",
+        ),
+        make_candidate(
+            "task:impl_graph",
+            "task",
+            "Implement task dependency graph with cyclic detection and blocker tracking",
+        ),
+        make_candidate(
+            "task:impl_sse",
+            "task",
+            "Implement SSE endpoint with connection ID assignment and keepalive pings",
+        ),
     ]
 }
 
