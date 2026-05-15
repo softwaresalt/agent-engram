@@ -39,68 +39,18 @@ function Invoke-EngramCommandWithProgress {
         [string]$Status
     )
 
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Executable
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.CreateNoWindow = $true
+    Write-Host "$Activity — $Status"
 
-    [void]$startInfo.ArgumentList.Add("--format")
-    [void]$startInfo.ArgumentList.Add("text")
+    $engramArguments = @("--format", "text")
+    $engramArguments += $GlobalArguments
+    $engramArguments += $Subcommand
+    $engramArguments += $Arguments
 
-    foreach ($argument in $GlobalArguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
+    & $Executable @engramArguments
+    $exitCode = $LASTEXITCODE
 
-    [void]$startInfo.ArgumentList.Add($Subcommand)
-
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-
-    if (-not $process.Start()) {
-        throw "Failed to start engram $Subcommand."
-    }
-
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
-    $startedAt = Get-Date
-    $percentComplete = 0
-
-    while (-not $process.WaitForExit(250)) {
-        $percentComplete = ($percentComplete + 4) % 100
-        $elapsedSeconds = [math]::Floor(((Get-Date) - $startedAt).TotalSeconds)
-        Write-Progress -Id 1 -Activity $Activity -Status "$Status ($elapsedSeconds s elapsed)" -PercentComplete $percentComplete
-    }
-
-    $process.WaitForExit()
-    Write-Progress -Id 1 -Activity $Activity -Completed
-
-    $stdout = $stdoutTask.GetAwaiter().GetResult().TrimEnd()
-    $stderr = $stderrTask.GetAwaiter().GetResult().TrimEnd()
-
-    if (-not [string]::IsNullOrWhiteSpace($stdout)) {
-        Write-Host $stdout
-    }
-
-    if ($process.ExitCode -ne 0) {
-        if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-            throw $stderr
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($stdout)) {
-            throw $stdout
-        }
-
-        throw "engram $Subcommand failed with exit code $($process.ExitCode)."
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-        Write-Warning $stderr
+    if ($exitCode -ne 0) {
+        throw "engram $Subcommand failed with exit code $exitCode."
     }
 }
 
@@ -144,17 +94,26 @@ if ($backlogitCmd) {
 $engramCmd = Get-Command engram -ErrorAction SilentlyContinue
 if ($engramCmd) {
     try {
-        & $engramCmd.Source --format text bind
-        # Prefer sync for fast steady-state startup; on a fresh branch-local DB it
-        # falls back to a full index, so give it the longer indexing timeout.
         Invoke-EngramCommandWithProgress `
             -Executable $engramCmd.Source `
             -Subcommand "sync" `
             -GlobalArguments @("--timeout", "300") `
+            -Arguments @("--direct") `
             -Activity "Synchronizing Engram index" `
-            -Status "Syncing branch-local code graph"
+            -Status "Direct pre-warm before Copilot startup"
     } catch {
-        Write-Warning "engram sync failed (non-fatal): $_"
+        Write-Warning "engram direct pre-warm failed; retrying via daemon sync: $_"
+        try {
+            & $engramCmd.Source --format text bind
+            Invoke-EngramCommandWithProgress `
+                -Executable $engramCmd.Source `
+                -Subcommand "sync" `
+                -GlobalArguments @("--timeout", "300") `
+                -Activity "Synchronizing Engram index" `
+                -Status "Daemon-backed pre-warm fallback"
+        } catch {
+            Write-Warning "engram sync failed (non-fatal): $_"
+        }
     }
 }
 

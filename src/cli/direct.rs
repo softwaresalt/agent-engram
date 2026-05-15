@@ -6,9 +6,7 @@
 //! without leaving a daemon alive. The daemon lock ensures at most one
 //! writer is active at any time.
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use fd_lock::RwLock as FdRwLock;
 use serde_json::{Value, json};
@@ -18,7 +16,10 @@ use crate::cli::output::OutputFormatter;
 use crate::daemon::lockfile::DaemonLock;
 use crate::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
 use crate::errors::{EngramError, LockError};
-use crate::services::code_graph::{IndexResult, SyncResult, index_workspace, sync_workspace};
+use crate::services::code_graph::{
+    IndexResult, ProgressCallback, SyncResult, index_workspace_with_progress,
+    sync_workspace_with_progress,
+};
 use crate::services::config::parse_config;
 
 /// Run an incremental sync (or full re-index) in direct mode.
@@ -125,10 +126,33 @@ pub async fn run_direct_sync(
         }
     }
 
+    let started_at = std::time::Instant::now();
+    let mut last_message = String::new();
+    let mut progress_callback = |completed: u64, total: u64| {
+        if !formatter.shows_progress() {
+            return;
+        }
+
+        let message = render_direct_progress(completed, total, started_at.elapsed().as_secs());
+        if message != last_message {
+            formatter.progress_hint(&message);
+            last_message = message;
+        }
+    };
+    let progress: Option<&mut ProgressCallback<'_>> = if formatter.shows_progress() {
+        Some(&mut progress_callback)
+    } else {
+        None
+    };
+
     if full {
-        match await_direct_indexing(
-            index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false),
-            formatter,
+        match index_workspace_with_progress(
+            &ws_path,
+            &data_dir,
+            &branch,
+            &config.code_graph,
+            false,
+            progress,
         )
         .await
         {
@@ -144,7 +168,15 @@ pub async fn run_direct_sync(
             }
         }
     } else {
-        match sync_workspace(&ws_path, &data_dir, &branch, &config.code_graph).await {
+        match sync_workspace_with_progress(
+            &ws_path,
+            &data_dir,
+            &branch,
+            &config.code_graph,
+            progress,
+        )
+        .await
+        {
             Ok(result) => formatter.success(Some(effective_id), sync_result_to_json(&result)),
             Err(e) => {
                 let resp = e.to_response().error;
@@ -159,35 +191,13 @@ pub async fn run_direct_sync(
     }
 }
 
-async fn await_direct_indexing<F, T>(future: F, formatter: &OutputFormatter) -> T
-where
-    F: Future<Output = T>,
-{
-    if !formatter.shows_progress() {
-        return future.await;
+fn render_direct_progress(completed: u64, total: u64, elapsed_secs: u64) -> String {
+    if total == 0 {
+        return format!("Pre-warm workspace... {elapsed_secs}s elapsed");
     }
 
-    formatter.progress_hint("Indexing workspace...");
-
-    let future = future;
-    tokio::pin!(future);
-
-    let heartbeat_start = tokio::time::Instant::now();
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    heartbeat.tick().await;
-
-    loop {
-        tokio::select! {
-            result = &mut future => return result,
-            _ = heartbeat.tick() => {
-                formatter.progress_hint(&format!(
-                    "Indexing workspace... {}s elapsed",
-                    heartbeat_start.elapsed().as_secs()
-                ));
-            }
-        }
-    }
+    let percent = completed.saturating_mul(100) / total;
+    format!("Pre-warm workspace... {completed}/{total} files ({percent}%, {elapsed_secs}s elapsed)")
 }
 
 /// Resolve workspace path, data directory, and git branch.
