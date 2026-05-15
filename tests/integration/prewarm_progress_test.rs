@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::test;
 
+use engram::db::connect_db;
+use engram::db::queries::CodeGraphQueries;
 use engram::models::config::CodeGraphConfig;
 use engram::services::code_graph;
 
@@ -182,5 +184,67 @@ async fn sync_workspace_tracks_oversized_files_without_errors() {
     assert!(
         result.errors.is_empty(),
         "oversized files must not appear in sync errors"
+    );
+}
+
+#[test]
+async fn sync_workspace_removes_stale_records_when_file_becomes_oversized() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    let limit: u64 = 64;
+    let config = CodeGraphConfig {
+        max_file_size_bytes: limit,
+        ..CodeGraphConfig::default()
+    };
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(ws, "src/tracked.rs", "pub fn tracked() {}\n");
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert!(
+        q.get_code_file_by_path("src/tracked.rs")
+            .await
+            .expect("lookup indexed file")
+            .is_some(),
+        "initial index should persist the file"
+    );
+
+    write_sample_file(
+        ws,
+        "src/tracked.rs",
+        &"x".repeat(usize::try_from(limit + 1).expect("limit fits usize")),
+    );
+
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync should succeed");
+
+    assert_eq!(
+        result.oversized_files_skipped, 1,
+        "oversized file should be reported as skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "oversized file should not surface as an error"
+    );
+    assert!(
+        q.get_code_file_by_path("src/tracked.rs")
+            .await
+            .expect("lookup oversized file")
+            .is_none(),
+        "stale code_file record should be removed during sync"
+    );
+    assert!(
+        q.get_symbol_identities_for_file("src/tracked.rs")
+            .await
+            .expect("lookup stale symbols")
+            .is_empty(),
+        "stale symbols should be removed during sync"
     );
 }

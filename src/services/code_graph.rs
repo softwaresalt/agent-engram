@@ -177,6 +177,10 @@ async fn index_workspace_impl(
             // content-based check that follows the file read.
             if let Ok(meta) = tokio::fs::metadata(file_path).await {
                 if meta.len() > config.max_file_size_bytes {
+                    if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
+                        let _orphaned =
+                            handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                    }
                     warn!(
                         path = %rel_path,
                         size_bytes = meta.len(),
@@ -205,6 +209,9 @@ async fn index_workspace_impl(
             // Secondary size guard: protects against metadata races (TOCTOU).
             let size_bytes = source.len() as u64;
             if size_bytes > config.max_file_size_bytes {
+                if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
+                    let _orphaned = handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                }
                 warn!(
                     path = %rel_path,
                     size_bytes,
@@ -717,6 +724,11 @@ pub async fn sync_workspace_with_progress(
                     break 'file;
                 }
                 if meta_size > config.max_file_size_bytes {
+                    if let Some(existing) = indexed_map.get(&rel_path) {
+                        let orphaned =
+                            handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                        result.concerns_orphaned += orphaned;
+                    }
                     warn!(
                         path = %rel_path,
                         size_bytes = meta_size,
@@ -748,6 +760,10 @@ pub async fn sync_workspace_with_progress(
             }
             // Secondary size guard: protects against metadata races (TOCTOU).
             if size_bytes > config.max_file_size_bytes {
+                if let Some(existing) = indexed_map.get(&rel_path) {
+                    let orphaned = handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                    result.concerns_orphaned += orphaned;
+                }
                 warn!(
                     path = %rel_path,
                     size_bytes,
@@ -1160,9 +1176,11 @@ pub async fn sync_workspace_with_progress(
     Ok(result)
 }
 
-/// Handle deletion of a file from the code graph:
-/// remove all concerns edges (orphan cleanup), then remove symbols and
-/// the code file node itself.
+/// Handle removal of an indexed file from the code graph.
+///
+/// Used when a file is deleted from disk or when we intentionally evict stale
+/// indexed state, such as when a previously indexed file now exceeds the size
+/// policy and should disappear from search and graph results.
 ///
 /// Returns the number of concerns edges orphaned.
 async fn handle_deleted_file(
@@ -1180,12 +1198,16 @@ async fn handle_deleted_file(
         orphaned += deleted;
     }
 
-    // Delete all symbol nodes and defines edges for this file.
+    // Delete all symbol nodes, outbound file edges, and metadata for this file.
     queries.delete_functions_by_file(file_path).await?;
     queries.delete_classes_by_file(file_path).await?;
     queries.delete_interfaces_by_file(file_path).await?;
     queries.delete_edges_from_file("defines", file_id).await?;
+    queries
+        .delete_edges_from_file("references", file_id)
+        .await?;
     queries.delete_code_file(file_path).await?;
+    queries.delete_file_hash_by_path(file_path).await?;
 
     if orphaned > 0 {
         warn!(
