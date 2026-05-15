@@ -6,7 +6,9 @@
 //! without leaving a daemon alive. The daemon lock ensures at most one
 //! writer is active at any time.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fd_lock::RwLock as FdRwLock;
 use serde_json::{Value, json};
@@ -124,7 +126,12 @@ pub async fn run_direct_sync(
     }
 
     if full {
-        match index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false).await {
+        match await_direct_indexing(
+            index_workspace(&ws_path, &data_dir, &branch, &config.code_graph, false),
+            formatter,
+        )
+        .await
+        {
             Ok(result) => formatter.success(Some(effective_id), index_result_to_json(&result)),
             Err(e) => {
                 let resp = e.to_response().error;
@@ -147,6 +154,37 @@ pub async fn run_direct_sync(
                     &resp.message,
                     resp.details,
                 )
+            }
+        }
+    }
+}
+
+async fn await_direct_indexing<F, T>(future: F, formatter: &OutputFormatter) -> T
+where
+    F: Future<Output = T>,
+{
+    if !formatter.shows_progress() {
+        return future.await;
+    }
+
+    formatter.progress_hint("Indexing workspace...");
+
+    let future = future;
+    tokio::pin!(future);
+
+    let heartbeat_start = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = heartbeat.tick() => {
+                formatter.progress_hint(&format!(
+                    "Indexing workspace... {}s elapsed",
+                    heartbeat_start.elapsed().as_secs()
+                ));
             }
         }
     }

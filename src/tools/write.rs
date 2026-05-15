@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -9,6 +10,7 @@ use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{resolve_git_branch, workspace_hash};
 use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
+use crate::models::health::ScanProgress;
 use crate::server::state::SharedState;
 use crate::services::dehydration;
 use crate::services::hydration;
@@ -134,8 +136,11 @@ pub async fn index_workspace(
         return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
     }
 
+    begin_indexing_scan_progress(&state).await;
+
     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
     let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
+    finish_indexing_scan_progress(&state, &result, true).await;
     state.finish_indexing().await;
     drain_pending_sync(&state).await;
     result
@@ -223,8 +228,11 @@ pub async fn sync_workspace(
         );
     }
 
+    begin_indexing_scan_progress(&state).await;
+
     // Run the sync logic, ensuring the flag is cleared on all exit paths.
     let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
+    finish_indexing_scan_progress(&state, &result, false).await;
     state.finish_indexing().await;
     drain_pending_sync(&state).await;
     result
@@ -254,6 +262,64 @@ async fn sync_workspace_inner(
             reason: format!("result serialization failed: {e}"),
         })
     })
+}
+
+fn indexing_started_progress(last_completed_at: Option<String>) -> ScanProgress {
+    ScanProgress {
+        running: true,
+        files_scanned: 0,
+        files_total: 0,
+        last_completed_at,
+    }
+}
+
+fn completed_index_scan_progress(result: &Value) -> ScanProgress {
+    let total = value_u64(result, "files_parsed") + value_u64(result, "files_skipped");
+    completed_scan_progress(total)
+}
+
+fn completed_sync_scan_progress(result: &Value) -> ScanProgress {
+    let total = value_u64(result, "files_modified")
+        + value_u64(result, "files_added")
+        + value_u64(result, "files_deleted")
+        + value_u64(result, "files_unchanged");
+    completed_scan_progress(total)
+}
+
+fn completed_scan_progress(total: u64) -> ScanProgress {
+    ScanProgress {
+        running: false,
+        files_scanned: total,
+        files_total: total,
+        last_completed_at: Some(Utc::now().to_rfc3339()),
+    }
+}
+
+fn value_u64(result: &Value, field: &str) -> u64 {
+    result.get(field).and_then(Value::as_u64).unwrap_or(0)
+}
+
+async fn begin_indexing_scan_progress(state: &SharedState) {
+    let last_completed_at = state
+        .scan_progress_snapshot()
+        .await
+        .and_then(|progress| progress.last_completed_at);
+    state
+        .set_scan_progress(Some(indexing_started_progress(last_completed_at)))
+        .await;
+}
+
+async fn finish_indexing_scan_progress(
+    state: &SharedState,
+    result: &Result<Value, EngramError>,
+    full_index: bool,
+) {
+    let progress = match result {
+        Ok(value) if full_index => completed_index_scan_progress(value),
+        Ok(value) => completed_sync_scan_progress(value),
+        Err(_) => completed_scan_progress(0),
+    };
+    state.set_scan_progress(Some(progress)).await;
 }
 
 // ── index_git_history (T042) ──────────────────────────────────────────────────
@@ -315,4 +381,54 @@ pub async fn index_git_history(
             reason: format!("index_git_history serialization failed: {e}"),
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        completed_index_scan_progress, completed_sync_scan_progress, indexing_started_progress,
+    };
+
+    #[test]
+    fn indexing_started_progress_sets_running_without_totals() {
+        let progress = indexing_started_progress(Some("2026-05-14T00:00:00Z".to_owned()));
+        assert!(progress.running, "progress should mark indexing as running");
+        assert_eq!(progress.files_scanned, 0);
+        assert_eq!(progress.files_total, 0);
+        assert_eq!(
+            progress.last_completed_at.as_deref(),
+            Some("2026-05-14T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn completed_index_scan_progress_uses_parsed_and_skipped_counts() {
+        let progress = completed_index_scan_progress(&json!({
+            "files_parsed": 7,
+            "files_skipped": 2
+        }));
+        assert!(
+            !progress.running,
+            "completed progress should not be running"
+        );
+        assert_eq!(progress.files_scanned, 9);
+        assert_eq!(progress.files_total, 9);
+        assert!(progress.last_completed_at.is_some());
+    }
+
+    #[test]
+    fn completed_sync_scan_progress_uses_all_file_buckets() {
+        let progress = completed_sync_scan_progress(&json!({
+            "files_modified": 3,
+            "files_added": 2,
+            "files_deleted": 1,
+            "files_unchanged": 4
+        }));
+        assert!(!progress.running, "completed sync should not be running");
+        assert_eq!(progress.files_scanned, 10);
+        assert_eq!(progress.files_total, 10);
+        assert!(progress.last_completed_at.is_some());
+    }
 }
