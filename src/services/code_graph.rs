@@ -26,6 +26,14 @@ pub struct IndexResult {
     pub files_parsed: usize,
     /// Number of files skipped (unsupported, too large, or unchanged).
     pub files_skipped: usize,
+    /// Number of files skipped specifically because they exceeded
+    /// [`CodeGraphConfig::max_file_size_bytes`].
+    ///
+    /// Counted separately from `files_skipped` so callers can distinguish
+    /// capacity-policy skips from parse errors and unchanged-file skips.
+    /// Oversized files are not added to `errors` — they are a normal
+    /// policy outcome, not a processing failure.
+    pub oversized_files_skipped: usize,
     /// Number of function records upserted.
     pub functions_indexed: usize,
     /// Number of class (struct) records upserted.
@@ -139,6 +147,7 @@ async fn index_workspace_impl(
     let mut result = IndexResult {
         files_parsed: 0,
         files_skipped: 0,
+        oversized_files_skipped: 0,
         functions_indexed: 0,
         classes_indexed: 0,
         interfaces_indexed: 0,
@@ -162,6 +171,24 @@ async fn index_workspace_impl(
                 break 'file;
             };
 
+            // ── Early size check via filesystem metadata ────────────────
+            // Avoids reading large files into memory only to discard them.
+            // A metadata I/O failure is non-fatal: fall through to the
+            // content-based check that follows the file read.
+            if let Ok(meta) = tokio::fs::metadata(file_path).await {
+                if meta.len() > config.max_file_size_bytes {
+                    warn!(
+                        path = %rel_path,
+                        size_bytes = meta.len(),
+                        limit_bytes = config.max_file_size_bytes,
+                        "code graph: skipping oversized file"
+                    );
+                    result.oversized_files_skipped += 1;
+                    result.files_skipped += 1;
+                    break 'file;
+                }
+            }
+
             // Read file contents.
             let source = match tokio::fs::read_to_string(file_path).await {
                 Ok(s) => s,
@@ -175,16 +202,16 @@ async fn index_workspace_impl(
                 }
             };
 
-            // Check file size.
+            // Secondary size guard: protects against metadata races (TOCTOU).
             let size_bytes = source.len() as u64;
             if size_bytes > config.max_file_size_bytes {
-                result.errors.push(FileError {
-                    file: rel_path.clone(),
-                    error: format!(
-                        "file too large ({size_bytes} > {} bytes)",
-                        config.max_file_size_bytes
-                    ),
-                });
+                warn!(
+                    path = %rel_path,
+                    size_bytes,
+                    limit_bytes = config.max_file_size_bytes,
+                    "code graph: skipping oversized file (content check)"
+                );
+                result.oversized_files_skipped += 1;
                 result.files_skipped += 1;
                 break 'file;
             }
@@ -522,6 +549,7 @@ async fn index_workspace_impl(
     info!(
         files_parsed = result.files_parsed,
         files_skipped = result.files_skipped,
+        oversized_files_skipped = result.oversized_files_skipped,
         functions = result.functions_indexed,
         classes = result.classes_indexed,
         interfaces = result.interfaces_indexed,
@@ -558,6 +586,12 @@ pub struct SyncResult {
     pub edges_created: usize,
     /// Number of cross-file import/call edges dropped (deferred to future phase).
     pub cross_file_edges_dropped: usize,
+    /// Number of files skipped specifically because they exceeded
+    /// [`CodeGraphConfig::max_file_size_bytes`].
+    ///
+    /// Oversized files are not added to `errors` — they are a normal
+    /// policy outcome, not a processing failure.
+    pub oversized_files_skipped: usize,
     /// Per-file errors encountered (non-fatal).
     pub errors: Vec<FileError>,
     /// Total sync duration in milliseconds.
@@ -646,6 +680,7 @@ pub async fn sync_workspace_with_progress(
         concerns_orphaned: 0,
         edges_created: 0,
         cross_file_edges_dropped: 0,
+        oversized_files_skipped: 0,
         errors: Vec::new(),
         duration_ms: 0,
     };
@@ -671,6 +706,28 @@ pub async fn sync_workspace_with_progress(
                 break 'file;
             };
 
+            // ── Early size check via filesystem metadata ────────────────
+            // Avoids reading large files into memory only to discard them.
+            // A metadata I/O failure is non-fatal: fall through to the
+            // content-based checks that follow the file read.
+            if let Ok(meta) = tokio::fs::metadata(file_path).await {
+                let meta_size = meta.len();
+                if meta_size == 0 {
+                    result.files_unchanged += 1;
+                    break 'file;
+                }
+                if meta_size > config.max_file_size_bytes {
+                    warn!(
+                        path = %rel_path,
+                        size_bytes = meta_size,
+                        limit_bytes = config.max_file_size_bytes,
+                        "code graph sync: skipping oversized file"
+                    );
+                    result.oversized_files_skipped += 1;
+                    break 'file;
+                }
+            }
+
             // Read file contents.
             let source = match tokio::fs::read_to_string(file_path).await {
                 Ok(s) => s,
@@ -685,18 +742,19 @@ pub async fn sync_workspace_with_progress(
 
             let size_bytes = source.len() as u64;
             if size_bytes == 0 {
-                // Skip 0-byte files.
+                // Skip empty files (handles TOCTOU race between metadata and read).
                 result.files_unchanged += 1;
                 break 'file;
             }
+            // Secondary size guard: protects against metadata races (TOCTOU).
             if size_bytes > config.max_file_size_bytes {
-                result.errors.push(FileError {
-                    file: rel_path.clone(),
-                    error: format!(
-                        "file too large ({size_bytes} > {} bytes)",
-                        config.max_file_size_bytes
-                    ),
-                });
+                warn!(
+                    path = %rel_path,
+                    size_bytes,
+                    limit_bytes = config.max_file_size_bytes,
+                    "code graph sync: skipping oversized file (content check)"
+                );
+                result.oversized_files_skipped += 1;
                 break 'file;
             }
 
