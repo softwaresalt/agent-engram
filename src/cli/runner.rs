@@ -75,7 +75,7 @@ fn friendly_error_message(err: &IpcError) -> String {
 }
 
 fn is_indexing_method(method: &str) -> bool {
-    method == "index_workspace"
+    method == "index_workspace" || method == "sync_workspace"
 }
 
 fn extract_indexing_progress(result: &Value) -> Option<IndexingProgress> {

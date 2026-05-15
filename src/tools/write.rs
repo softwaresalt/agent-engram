@@ -170,12 +170,18 @@ async fn index_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result = crate::services::code_graph::index_workspace(
+    let last_completed_at = state
+        .scan_progress_snapshot()
+        .await
+        .and_then(|progress| progress.last_completed_at);
+    let mut progress_callback = make_scan_progress_callback(state, last_completed_at);
+    let result = crate::services::code_graph::index_workspace_with_progress(
         ws_path,
         data_dir,
         branch,
         &config,
         parsed.force,
+        Some(&mut progress_callback),
     )
     .await?;
 
@@ -258,8 +264,19 @@ async fn sync_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result =
-        crate::services::code_graph::sync_workspace(ws_path, data_dir, branch, &config).await?;
+    let last_completed_at = state
+        .scan_progress_snapshot()
+        .await
+        .and_then(|progress| progress.last_completed_at);
+    let mut progress_callback = make_scan_progress_callback(state, last_completed_at);
+    let result = crate::services::code_graph::sync_workspace_with_progress(
+        ws_path,
+        data_dir,
+        branch,
+        &config,
+        Some(&mut progress_callback),
+    )
+    .await?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -268,13 +285,34 @@ async fn sync_workspace_inner(
     })
 }
 
-fn indexing_started_progress(last_completed_at: Option<String>) -> ScanProgress {
+fn running_scan_progress(
+    files_scanned: u64,
+    files_total: u64,
+    last_completed_at: Option<String>,
+) -> ScanProgress {
     ScanProgress {
         running: true,
-        files_scanned: 0,
-        files_total: 0,
+        files_scanned,
+        files_total,
         last_completed_at,
     }
+}
+
+fn make_scan_progress_callback<'a>(
+    state: &'a SharedState,
+    last_completed_at: Option<String>,
+) -> impl FnMut(u64, u64) + Send + 'a {
+    move |files_scanned, files_total| {
+        state.set_scan_progress_blocking(Some(running_scan_progress(
+            files_scanned,
+            files_total,
+            last_completed_at.clone(),
+        )));
+    }
+}
+
+fn indexing_started_progress(last_completed_at: Option<String>) -> ScanProgress {
+    running_scan_progress(0, 0, last_completed_at)
 }
 
 fn completed_index_scan_progress(result: &Value) -> ScanProgress {

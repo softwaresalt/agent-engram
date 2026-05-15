@@ -57,6 +57,24 @@ pub struct FileError {
     pub error: String,
 }
 
+/// Callback invoked with `(completed, total)` file progress during index or sync.
+pub type ProgressCallback<'a> = dyn FnMut(u64, u64) + Send + 'a;
+
+fn emit_progress(progress: &mut Option<&mut ProgressCallback<'_>>, completed: u64, total: u64) {
+    if let Some(callback) = progress.as_deref_mut() {
+        callback(completed, total);
+    }
+}
+
+fn advance_progress(
+    progress: &mut Option<&mut ProgressCallback<'_>>,
+    completed: &mut u64,
+    total: u64,
+) {
+    *completed += 1;
+    emit_progress(progress, *completed, total);
+}
+
 /// Discover, parse, and index all supported source files in the workspace.
 ///
 /// Uses the `ignore` crate for .gitignore-aware file traversal, filters by
@@ -79,7 +97,20 @@ pub async fn index_workspace(
     config: &CodeGraphConfig,
     force: bool,
 ) -> Result<IndexResult, EngramError> {
-    index_workspace_impl(ws_path, data_dir, branch, config, force).await
+    index_workspace_with_progress(ws_path, data_dir, branch, config, force, None).await
+}
+
+/// Discover, parse, and index all supported source files while reporting
+/// progress snapshots to interested callers.
+pub async fn index_workspace_with_progress(
+    ws_path: &Path,
+    data_dir: &Path,
+    branch: &str,
+    config: &CodeGraphConfig,
+    force: bool,
+    progress: Option<&mut ProgressCallback<'_>>,
+) -> Result<IndexResult, EngramError> {
+    index_workspace_impl(ws_path, data_dir, branch, config, force, progress).await
 }
 
 async fn index_workspace_impl(
@@ -88,6 +119,7 @@ async fn index_workspace_impl(
     branch: &str,
     config: &CodeGraphConfig,
     force: bool,
+    mut progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<IndexResult, EngramError> {
     let start = std::time::Instant::now();
 
@@ -100,6 +132,9 @@ async fn index_workspace_impl(
         files_found = files.len(),
         "code graph: discovered source files"
     );
+    let total_files = files.len() as u64;
+    let mut completed_files = 0_u64;
+    emit_progress(&mut progress, completed_files, total_files);
 
     let mut result = IndexResult {
         files_parsed: 0,
@@ -118,342 +153,352 @@ async fn index_workspace_impl(
 
     // ── Step 2: Process each file ───────────────────────────────────
     for file_path in &files {
-        let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
-            p.to_string_lossy().replace('\\', "/")
-        } else {
-            warn!(path = %file_path.display(), "code graph: file outside workspace root, skipping");
-            result.files_skipped += 1;
-            continue;
-        };
+        'file: {
+            let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
+                p.to_string_lossy().replace('\\', "/")
+            } else {
+                warn!(path = %file_path.display(), "code graph: file outside workspace root, skipping");
+                result.files_skipped += 1;
+                break 'file;
+            };
 
-        // Read file contents.
-        let source = match tokio::fs::read_to_string(file_path).await {
-            Ok(s) => s,
-            Err(e) => {
+            // Read file contents.
+            let source = match tokio::fs::read_to_string(file_path).await {
+                Ok(s) => s,
+                Err(e) => {
+                    result.errors.push(FileError {
+                        file: rel_path.clone(),
+                        error: format!("read error: {e}"),
+                    });
+                    result.files_skipped += 1;
+                    break 'file;
+                }
+            };
+
+            // Check file size.
+            let size_bytes = source.len() as u64;
+            if size_bytes > config.max_file_size_bytes {
                 result.errors.push(FileError {
                     file: rel_path.clone(),
-                    error: format!("read error: {e}"),
+                    error: format!(
+                        "file too large ({size_bytes} > {} bytes)",
+                        config.max_file_size_bytes
+                    ),
                 });
                 result.files_skipped += 1;
-                continue;
+                break 'file;
             }
-        };
 
-        // Check file size.
-        let size_bytes = source.len() as u64;
-        if size_bytes > config.max_file_size_bytes {
-            result.errors.push(FileError {
-                file: rel_path.clone(),
-                error: format!(
-                    "file too large ({size_bytes} > {} bytes)",
-                    config.max_file_size_bytes
-                ),
-            });
-            result.files_skipped += 1;
-            continue;
-        }
+            // Compute content hash.
+            let content_hash = sha256_hex(&source);
 
-        // Compute content hash.
-        let content_hash = sha256_hex(&source);
-
-        // Skip unchanged files (unless force).
-        if !force {
-            if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
-                if existing.content_hash == content_hash {
-                    debug!(path = %rel_path, "code graph: skipping unchanged file");
-                    result.files_skipped += 1;
-                    continue;
+            // Skip unchanged files (unless force).
+            if !force {
+                if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
+                    if existing.content_hash == content_hash {
+                        debug!(path = %rel_path, "code graph: skipping unchanged file");
+                        result.files_skipped += 1;
+                        break 'file;
+                    }
                 }
             }
-        }
 
-        // Detect language from extension.
-        let lang = language_from_path(file_path);
-        if !config.supported_languages.contains(&lang) {
-            result.files_skipped += 1;
-            continue;
-        }
-
-        // ── Parse via tree-sitter (CPU-bound, run in blocking task) ─
-        let source_clone = source.clone();
-        let lang_enum = match Language::try_from(lang.as_str()) {
-            Ok(l) => l,
-            Err(e) => {
-                result.errors.push(FileError {
-                    file: rel_path.clone(),
-                    error: e.to_string(),
-                });
+            // Detect language from extension.
+            let lang = language_from_path(file_path);
+            if !config.supported_languages.contains(&lang) {
                 result.files_skipped += 1;
-                continue;
+                break 'file;
             }
-        };
-        let parse_result =
-            match tokio::task::spawn_blocking(move || parse_source(&source_clone, lang_enum)).await
-            {
-                Ok(Ok(pr)) => pr,
-                Ok(Err(e)) => {
+
+            // ── Parse via tree-sitter (CPU-bound, run in blocking task) ─
+            let source_clone = source.clone();
+            let lang_enum = match Language::try_from(lang.as_str()) {
+                Ok(l) => l,
+                Err(e) => {
                     result.errors.push(FileError {
                         file: rel_path.clone(),
                         error: e.to_string(),
                     });
                     result.files_skipped += 1;
-                    continue;
-                }
-                Err(e) => {
-                    result.errors.push(FileError {
-                        file: rel_path.clone(),
-                        error: format!("task join error: {e}"),
-                    });
-                    result.files_skipped += 1;
-                    continue;
+                    break 'file;
                 }
             };
-
-        // ── Upsert code file node ───────────────────────────────────
-        let file_id = format!("code_file:{}", sha256_short(&rel_path));
-        let code_file = CodeFile {
-            id: file_id.clone(),
-            path: rel_path.clone(),
-            language: lang.clone(),
-            size_bytes,
-            content_hash,
-            last_indexed_at: chrono::Utc::now().to_rfc3339(),
-        };
-        queries.upsert_code_file(&code_file).await?;
-
-        // Clear previous edges from this file.
-        queries.delete_functions_by_file(&rel_path).await?;
-        queries.delete_classes_by_file(&rel_path).await?;
-        queries.delete_interfaces_by_file(&rel_path).await?;
-        queries.delete_edges_from_file("defines", &file_id).await?;
-        queries
-            .delete_edges_from_file("references", &file_id)
-            .await?;
-
-        // ── Collect symbols for embedding ───────────────────────────
-        let token_limit = config.embedding.token_limit;
-        let mut embed_texts: Vec<String> = Vec::new();
-        let mut embed_ids: Vec<String> = Vec::new();
-
-        // Track symbol IDs for edge creation.
-        let mut function_ids: Vec<(String, String)> = Vec::new(); // (name, id)
-        let mut class_ids: Vec<(String, String)> = Vec::new();
-        let mut interface_ids: Vec<(String, String)> = Vec::new();
-
-        for symbol in &parse_result.symbols {
-            match symbol {
-                ExtractedSymbol::Function(f) => {
-                    let sym_id = format!("function:{}", Uuid::new_v4());
-                    let (embed_type, summary) = tier_classification(
-                        f.token_count as usize,
-                        token_limit,
-                        &f.body,
-                        &f.signature,
-                        f.docstring.as_deref(),
-                    );
-                    embed_texts.push(summary.clone());
-                    embed_ids.push(sym_id.clone());
-
-                    let func = crate::models::function::Function {
-                        id: sym_id.clone(),
-                        name: f.name.clone(),
-                        file_path: rel_path.clone(),
-                        line_start: f.line_start,
-                        line_end: f.line_end,
-                        signature: f.signature.clone(),
-                        docstring: f.docstring.clone(),
-                        body: f.body.clone(),
-                        body_hash: f.body_hash.clone(),
-                        token_count: f.token_count,
-                        embed_type: embed_type.to_owned(),
-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
-                        summary,
-                    };
-                    queries.upsert_function(&func).await?;
-                    function_ids.push((f.name.clone(), sym_id.clone()));
-
-                    if embed_type == "explicit_code" {
-                        result.tier1_count += 1;
-                    } else {
-                        result.tier2_count += 1;
+            let parse_result =
+                match tokio::task::spawn_blocking(move || parse_source(&source_clone, lang_enum))
+                    .await
+                {
+                    Ok(Ok(pr)) => pr,
+                    Ok(Err(e)) => {
+                        result.errors.push(FileError {
+                            file: rel_path.clone(),
+                            error: e.to_string(),
+                        });
+                        result.files_skipped += 1;
+                        break 'file;
                     }
-                    result.functions_indexed += 1;
-
-                    // Create defines edge.
-                    queries
-                        .create_defines_edge(&file_id, "function", &sym_id)
-                        .await?;
-                    result.edges_created += 1;
-                }
-                ExtractedSymbol::Class(c) => {
-                    let sym_id = format!("class:{}", Uuid::new_v4());
-                    let (embed_type, summary) = tier_classification(
-                        c.token_count as usize,
-                        token_limit,
-                        &c.body,
-                        "",
-                        c.docstring.as_deref(),
-                    );
-                    embed_texts.push(summary.clone());
-                    embed_ids.push(sym_id.clone());
-
-                    let class = crate::models::class::Class {
-                        id: sym_id.clone(),
-                        name: c.name.clone(),
-                        file_path: rel_path.clone(),
-                        line_start: c.line_start,
-                        line_end: c.line_end,
-                        docstring: c.docstring.clone(),
-                        body: c.body.clone(),
-                        body_hash: c.body_hash.clone(),
-                        token_count: c.token_count,
-                        embed_type: embed_type.to_owned(),
-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
-                        summary,
-                    };
-                    queries.upsert_class(&class).await?;
-                    class_ids.push((c.name.clone(), sym_id.clone()));
-
-                    if embed_type == "explicit_code" {
-                        result.tier1_count += 1;
-                    } else {
-                        result.tier2_count += 1;
+                    Err(e) => {
+                        result.errors.push(FileError {
+                            file: rel_path.clone(),
+                            error: format!("task join error: {e}"),
+                        });
+                        result.files_skipped += 1;
+                        break 'file;
                     }
-                    result.classes_indexed += 1;
+                };
 
-                    queries
-                        .create_defines_edge(&file_id, "class", &sym_id)
-                        .await?;
-                    result.edges_created += 1;
-                }
-                ExtractedSymbol::Interface(i) => {
-                    let sym_id = format!("interface:{}", Uuid::new_v4());
-                    let (embed_type, summary) = tier_classification(
-                        i.token_count as usize,
-                        token_limit,
-                        &i.body,
-                        "",
-                        i.docstring.as_deref(),
-                    );
-                    embed_texts.push(summary.clone());
-                    embed_ids.push(sym_id.clone());
+            // ── Upsert code file node ───────────────────────────────────
+            let file_id = format!("code_file:{}", sha256_short(&rel_path));
+            let code_file = CodeFile {
+                id: file_id.clone(),
+                path: rel_path.clone(),
+                language: lang.clone(),
+                size_bytes,
+                content_hash,
+                last_indexed_at: chrono::Utc::now().to_rfc3339(),
+            };
+            queries.upsert_code_file(&code_file).await?;
 
-                    let iface = crate::models::interface::Interface {
-                        id: sym_id.clone(),
-                        name: i.name.clone(),
-                        file_path: rel_path.clone(),
-                        line_start: i.line_start,
-                        line_end: i.line_end,
-                        docstring: i.docstring.clone(),
-                        body: i.body.clone(),
-                        body_hash: i.body_hash.clone(),
-                        token_count: i.token_count,
-                        embed_type: embed_type.to_owned(),
-                        embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
-                        summary,
-                    };
-                    queries.upsert_interface(&iface).await?;
-                    interface_ids.push((i.name.clone(), sym_id.clone()));
+            // Clear previous edges from this file.
+            queries.delete_functions_by_file(&rel_path).await?;
+            queries.delete_classes_by_file(&rel_path).await?;
+            queries.delete_interfaces_by_file(&rel_path).await?;
+            queries.delete_edges_from_file("defines", &file_id).await?;
+            queries
+                .delete_edges_from_file("references", &file_id)
+                .await?;
 
-                    if embed_type == "explicit_code" {
-                        result.tier1_count += 1;
-                    } else {
-                        result.tier2_count += 1;
-                    }
-                    result.interfaces_indexed += 1;
+            // ── Collect symbols for embedding ───────────────────────────
+            let token_limit = config.embedding.token_limit;
+            let mut embed_texts: Vec<String> = Vec::new();
+            let mut embed_ids: Vec<String> = Vec::new();
 
-                    queries
-                        .create_defines_edge(&file_id, "interface", &sym_id)
-                        .await?;
-                    result.edges_created += 1;
-                }
-            }
-        }
+            // Track symbol IDs for edge creation.
+            let mut function_ids: Vec<(String, String)> = Vec::new(); // (name, id)
+            let mut class_ids: Vec<(String, String)> = Vec::new();
+            let mut interface_ids: Vec<(String, String)> = Vec::new();
 
-        // ── Batch embed (non-fatal if model not loaded) ─────────────
-        if !embed_texts.is_empty() {
-            match embedding::embed_texts(&embed_texts) {
-                Ok(vectors) => {
-                    result.embeddings_generated += vectors.len();
-                    for (sym_id, vector) in embed_ids.iter().zip(vectors) {
-                        if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
-                            debug!(error = %e, sym_id = %sym_id, "code graph: embedding write-back failed");
+            for symbol in &parse_result.symbols {
+                match symbol {
+                    ExtractedSymbol::Function(f) => {
+                        let sym_id = format!("function:{}", Uuid::new_v4());
+                        let (embed_type, summary) = tier_classification(
+                            f.token_count as usize,
+                            token_limit,
+                            &f.body,
+                            &f.signature,
+                            f.docstring.as_deref(),
+                        );
+                        embed_texts.push(summary.clone());
+                        embed_ids.push(sym_id.clone());
+
+                        let func = crate::models::function::Function {
+                            id: sym_id.clone(),
+                            name: f.name.clone(),
+                            file_path: rel_path.clone(),
+                            line_start: f.line_start,
+                            line_end: f.line_end,
+                            signature: f.signature.clone(),
+                            docstring: f.docstring.clone(),
+                            body: f.body.clone(),
+                            body_hash: f.body_hash.clone(),
+                            token_count: f.token_count,
+                            embed_type: embed_type.to_owned(),
+                            embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
+                            summary,
+                        };
+                        queries.upsert_function(&func).await?;
+                        function_ids.push((f.name.clone(), sym_id.clone()));
+
+                        if embed_type == "explicit_code" {
+                            result.tier1_count += 1;
+                        } else {
+                            result.tier2_count += 1;
                         }
-                    }
-                    debug!(
-                        count = result.embeddings_generated,
-                        "code graph: generated and stored embeddings for file"
-                    );
-                }
-                Err(e) => {
-                    debug!(error = %e, "code graph: embedding unavailable, skipping");
-                }
-            }
-        }
+                        result.functions_indexed += 1;
 
-        // ── Create edges from extracted relationships ───────────────
-        for edge in &parse_result.edges {
-            match edge {
-                ExtractedEdge::Calls { caller, callee } => {
-                    // Resolve names to IDs within this file's symbols.
-                    if let (Some(from_id), Some(to_id)) = (
-                        find_function_id(&function_ids, caller),
-                        find_function_id(&function_ids, callee),
-                    ) {
-                        queries.create_calls_edge(&from_id, &to_id).await?;
+                        // Create defines edge.
+                        queries
+                            .create_defines_edge(&file_id, "function", &sym_id)
+                            .await?;
+                        result.edges_created += 1;
+                    }
+                    ExtractedSymbol::Class(c) => {
+                        let sym_id = format!("class:{}", Uuid::new_v4());
+                        let (embed_type, summary) = tier_classification(
+                            c.token_count as usize,
+                            token_limit,
+                            &c.body,
+                            "",
+                            c.docstring.as_deref(),
+                        );
+                        embed_texts.push(summary.clone());
+                        embed_ids.push(sym_id.clone());
+
+                        let class = crate::models::class::Class {
+                            id: sym_id.clone(),
+                            name: c.name.clone(),
+                            file_path: rel_path.clone(),
+                            line_start: c.line_start,
+                            line_end: c.line_end,
+                            docstring: c.docstring.clone(),
+                            body: c.body.clone(),
+                            body_hash: c.body_hash.clone(),
+                            token_count: c.token_count,
+                            embed_type: embed_type.to_owned(),
+                            embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
+                            summary,
+                        };
+                        queries.upsert_class(&class).await?;
+                        class_ids.push((c.name.clone(), sym_id.clone()));
+
+                        if embed_type == "explicit_code" {
+                            result.tier1_count += 1;
+                        } else {
+                            result.tier2_count += 1;
+                        }
+                        result.classes_indexed += 1;
+
+                        queries
+                            .create_defines_edge(&file_id, "class", &sym_id)
+                            .await?;
+                        result.edges_created += 1;
+                    }
+                    ExtractedSymbol::Interface(i) => {
+                        let sym_id = format!("interface:{}", Uuid::new_v4());
+                        let (embed_type, summary) = tier_classification(
+                            i.token_count as usize,
+                            token_limit,
+                            &i.body,
+                            "",
+                            i.docstring.as_deref(),
+                        );
+                        embed_texts.push(summary.clone());
+                        embed_ids.push(sym_id.clone());
+
+                        let iface = crate::models::interface::Interface {
+                            id: sym_id.clone(),
+                            name: i.name.clone(),
+                            file_path: rel_path.clone(),
+                            line_start: i.line_start,
+                            line_end: i.line_end,
+                            docstring: i.docstring.clone(),
+                            body: i.body.clone(),
+                            body_hash: i.body_hash.clone(),
+                            token_count: i.token_count,
+                            embed_type: embed_type.to_owned(),
+                            embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
+                            summary,
+                        };
+                        queries.upsert_interface(&iface).await?;
+                        interface_ids.push((i.name.clone(), sym_id.clone()));
+
+                        if embed_type == "explicit_code" {
+                            result.tier1_count += 1;
+                        } else {
+                            result.tier2_count += 1;
+                        }
+                        result.interfaces_indexed += 1;
+
+                        queries
+                            .create_defines_edge(&file_id, "interface", &sym_id)
+                            .await?;
                         result.edges_created += 1;
                     }
                 }
-                ExtractedEdge::InheritsFrom {
-                    struct_name,
-                    trait_name,
-                } => {
-                    if let Some(child_id) = find_class_id(&class_ids, struct_name) {
-                        if let Some(parent_id) = find_interface_id(&interface_ids, trait_name) {
-                            queries
-                                .create_inherits_edge("class", &child_id, "interface", &parent_id)
-                                .await?;
+            }
+
+            // ── Batch embed (non-fatal if model not loaded) ─────────────
+            if !embed_texts.is_empty() {
+                match embedding::embed_texts(&embed_texts) {
+                    Ok(vectors) => {
+                        result.embeddings_generated += vectors.len();
+                        for (sym_id, vector) in embed_ids.iter().zip(vectors) {
+                            if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
+                                debug!(error = %e, sym_id = %sym_id, "code graph: embedding write-back failed");
+                            }
+                        }
+                        debug!(
+                            count = result.embeddings_generated,
+                            "code graph: generated and stored embeddings for file"
+                        );
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "code graph: embedding unavailable, skipping");
+                    }
+                }
+            }
+
+            // ── Create edges from extracted relationships ───────────────
+            for edge in &parse_result.edges {
+                match edge {
+                    ExtractedEdge::Calls { caller, callee } => {
+                        // Resolve names to IDs within this file's symbols.
+                        if let (Some(from_id), Some(to_id)) = (
+                            find_function_id(&function_ids, caller),
+                            find_function_id(&function_ids, callee),
+                        ) {
+                            queries.create_calls_edge(&from_id, &to_id).await?;
                             result.edges_created += 1;
                         }
                     }
-                }
-                // Defines already created above; Imports are cross-file (deferred, counted).
-                ExtractedEdge::Imports { .. } => {
-                    result.cross_file_edges_dropped += 1;
-                }
-                // Defines edge already handled during symbol upsert.
-                ExtractedEdge::Defines { .. } => {}
-                // SQL References: resolve target to a Class node or self-loop (033.001-T).
-                ExtractedEdge::References { target, .. } => {
-                    let resolved_id = queries.resolve_reference_target(target).await?;
-                    if let Some(class_id) = resolved_id {
-                        queries
-                            .create_references_edge(&file_id, &class_id, Some(target))
-                            .await?;
-                    } else {
-                        queries
-                            .create_references_edge(&file_id, &file_id, Some(target))
-                            .await?;
+                    ExtractedEdge::InheritsFrom {
+                        struct_name,
+                        trait_name,
+                    } => {
+                        if let Some(child_id) = find_class_id(&class_ids, struct_name) {
+                            if let Some(parent_id) = find_interface_id(&interface_ids, trait_name) {
+                                queries
+                                    .create_inherits_edge(
+                                        "class",
+                                        &child_id,
+                                        "interface",
+                                        &parent_id,
+                                    )
+                                    .await?;
+                                result.edges_created += 1;
+                            }
+                        }
                     }
-                    result.edges_created += 1;
+                    // Defines already created above; Imports are cross-file (deferred, counted).
+                    ExtractedEdge::Imports { .. } => {
+                        result.cross_file_edges_dropped += 1;
+                    }
+                    // Defines edge already handled during symbol upsert.
+                    ExtractedEdge::Defines { .. } => {}
+                    // SQL References: resolve target to a Class node or self-loop (033.001-T).
+                    ExtractedEdge::References { target, .. } => {
+                        let resolved_id = queries.resolve_reference_target(target).await?;
+                        if let Some(class_id) = resolved_id {
+                            queries
+                                .create_references_edge(&file_id, &class_id, Some(target))
+                                .await?;
+                        } else {
+                            queries
+                                .create_references_edge(&file_id, &file_id, Some(target))
+                                .await?;
+                        }
+                        result.edges_created += 1;
+                    }
                 }
             }
-        }
 
-        result.files_parsed += 1;
-        // Record file hash for offline change detection (TASK-009.09).
-        // Non-fatal: a hash recording failure degrades offline detection but
-        // does not invalidate the indexed code graph.
-        if let Err(e) =
-            crate::services::file_tracker::record_file_hash(&rel_path, file_path, &queries).await
-        {
-            debug!(
-                error = %e,
-                path = %rel_path,
-                "code graph: file hash recording failed — offline detection may report false changes"
-            );
+            result.files_parsed += 1;
+            // Record file hash for offline change detection (TASK-009.09).
+            // Non-fatal: a hash recording failure degrades offline detection but
+            // does not invalidate the indexed code graph.
+            if let Err(e) =
+                crate::services::file_tracker::record_file_hash(&rel_path, file_path, &queries)
+                    .await
+            {
+                debug!(
+                    error = %e,
+                    path = %rel_path,
+                    "code graph: file hash recording failed — offline detection may report false changes"
+                );
+            }
+            debug!(path = %rel_path, "code graph: indexed file");
         }
-        debug!(path = %rel_path, "code graph: indexed file");
+        advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
     // ── Post-pass: re-resolve unresolved references edges ───────────
@@ -543,6 +588,18 @@ pub async fn sync_workspace(
     branch: &str,
     config: &CodeGraphConfig,
 ) -> Result<SyncResult, EngramError> {
+    sync_workspace_with_progress(ws_path, data_dir, branch, config, None).await
+}
+
+/// Incrementally sync the code graph while reporting `(completed, total)` file
+/// progress to callers that want streamed startup visibility.
+pub async fn sync_workspace_with_progress(
+    ws_path: &Path,
+    data_dir: &Path,
+    branch: &str,
+    config: &CodeGraphConfig,
+    mut progress: Option<&mut ProgressCallback<'_>>,
+) -> Result<SyncResult, EngramError> {
     let start = std::time::Instant::now();
 
     let db = connect_db(data_dir, branch).await?;
@@ -567,6 +624,13 @@ pub async fn sync_workspace(
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
         })
         .collect();
+    let deleted_paths: Vec<_> = indexed_map
+        .iter()
+        .filter(|(indexed_path, _)| !current_rel_paths.contains(*indexed_path))
+        .collect();
+    let total_files = (deleted_paths.len() + current_files.len()) as u64;
+    let mut completed_files = 0_u64;
+    emit_progress(&mut progress, completed_files, total_files);
 
     let mut result = SyncResult {
         files_modified: 0,
@@ -584,418 +648,428 @@ pub async fn sync_workspace(
     };
 
     // ── Phase 1: Detect and remove deleted files ────────────────────
-    for (indexed_path, indexed_file) in &indexed_map {
-        if !current_rel_paths.contains(indexed_path) {
-            // File deleted — collect concerns edges before removing symbols.
-            let orphaned = handle_deleted_file(&queries, indexed_path, &indexed_file.id).await?;
-            result.concerns_orphaned += orphaned;
-            result.files_deleted += 1;
-        }
+    for (indexed_path, indexed_file) in deleted_paths {
+        // File deleted — collect concerns edges before removing symbols.
+        let orphaned = handle_deleted_file(&queries, indexed_path, &indexed_file.id).await?;
+        result.concerns_orphaned += orphaned;
+        result.files_deleted += 1;
+        advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
     // ── Phase 2: Process current files (add / modify / skip) ────────
     for file_path in &current_files {
-        let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
-            p.to_string_lossy().replace('\\', "/")
-        } else {
-            warn!(path = %file_path.display(), "code graph sync: file outside workspace root, skipping");
-            continue;
-        };
+        'file: {
+            let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
+                p.to_string_lossy().replace('\\', "/")
+            } else {
+                warn!(path = %file_path.display(), "code graph sync: file outside workspace root, skipping");
+                break 'file;
+            };
 
-        // Read file contents.
-        let source = match tokio::fs::read_to_string(file_path).await {
-            Ok(s) => s,
-            Err(e) => {
-                result.errors.push(FileError {
-                    file: rel_path.clone(),
-                    error: format!("read error: {e}"),
-                });
-                continue;
-            }
-        };
-
-        let size_bytes = source.len() as u64;
-        if size_bytes == 0 {
-            // Skip 0-byte files.
-            result.files_unchanged += 1;
-            continue;
-        }
-        if size_bytes > config.max_file_size_bytes {
-            result.errors.push(FileError {
-                file: rel_path.clone(),
-                error: format!(
-                    "file too large ({size_bytes} > {} bytes)",
-                    config.max_file_size_bytes
-                ),
-            });
-            continue;
-        }
-
-        // Language check.
-        let lang = language_from_path(file_path);
-        if !config.supported_languages.contains(&lang) {
-            continue;
-        }
-
-        // File-level hash comparison (level 1).
-        let content_hash = sha256_hex(&source);
-        let is_new = !indexed_map.contains_key(&rel_path);
-
-        if !is_new {
-            let existing = &indexed_map[&rel_path];
-            if existing.content_hash == content_hash {
-                // File unchanged — skip entirely.
-                result.files_unchanged += 1;
-                continue;
-            }
-        }
-
-        // ── File changed or new: collect pre-sync concerns info ─────
-        let pre_sync_identities = if is_new {
-            Vec::new()
-        } else {
-            queries.get_symbol_identities_for_file(&rel_path).await?
-        };
-        let pre_sync_concerns = if is_new {
-            Vec::new()
-        } else {
-            queries.get_concerns_edges_for_file(&rel_path).await?
-        };
-
-        // Enrich concerns edges with symbol name + body_hash.
-        let enriched_concerns: Vec<_> = pre_sync_concerns
-            .into_iter()
-            .map(|mut c| {
-                if let Some(ident) = pre_sync_identities.iter().find(|i| i.id == c.symbol_id) {
-                    c.symbol_name = ident.name.clone();
-                    c.symbol_body_hash = ident.body_hash.clone();
+            // Read file contents.
+            let source = match tokio::fs::read_to_string(file_path).await {
+                Ok(s) => s,
+                Err(e) => {
+                    result.errors.push(FileError {
+                        file: rel_path.clone(),
+                        error: format!("read error: {e}"),
+                    });
+                    break 'file;
                 }
-                c
-            })
-            .collect();
+            };
 
-        // ── Parse file ──────────────────────────────────────────────
-        let source_clone = source.clone();
-        let lang_enum = match Language::try_from(lang.as_str()) {
-            Ok(l) => l,
-            Err(e) => {
+            let size_bytes = source.len() as u64;
+            if size_bytes == 0 {
+                // Skip 0-byte files.
+                result.files_unchanged += 1;
+                break 'file;
+            }
+            if size_bytes > config.max_file_size_bytes {
                 result.errors.push(FileError {
                     file: rel_path.clone(),
-                    error: e.to_string(),
+                    error: format!(
+                        "file too large ({size_bytes} > {} bytes)",
+                        config.max_file_size_bytes
+                    ),
                 });
-                continue;
+                break 'file;
             }
-        };
-        let parse_result =
-            match tokio::task::spawn_blocking(move || parse_source(&source_clone, lang_enum)).await
-            {
-                Ok(Ok(pr)) => pr,
-                Ok(Err(e)) => {
+
+            // Language check.
+            let lang = language_from_path(file_path);
+            if !config.supported_languages.contains(&lang) {
+                break 'file;
+            }
+
+            // File-level hash comparison (level 1).
+            let content_hash = sha256_hex(&source);
+            let is_new = !indexed_map.contains_key(&rel_path);
+
+            if !is_new {
+                let existing = &indexed_map[&rel_path];
+                if existing.content_hash == content_hash {
+                    // File unchanged — skip entirely.
+                    result.files_unchanged += 1;
+                    break 'file;
+                }
+            }
+
+            // ── File changed or new: collect pre-sync concerns info ─────
+            let pre_sync_identities = if is_new {
+                Vec::new()
+            } else {
+                queries.get_symbol_identities_for_file(&rel_path).await?
+            };
+            let pre_sync_concerns = if is_new {
+                Vec::new()
+            } else {
+                queries.get_concerns_edges_for_file(&rel_path).await?
+            };
+
+            // Enrich concerns edges with symbol name + body_hash.
+            let enriched_concerns: Vec<_> = pre_sync_concerns
+                .into_iter()
+                .map(|mut c| {
+                    if let Some(ident) = pre_sync_identities.iter().find(|i| i.id == c.symbol_id) {
+                        c.symbol_name = ident.name.clone();
+                        c.symbol_body_hash = ident.body_hash.clone();
+                    }
+                    c
+                })
+                .collect();
+
+            // ── Parse file ──────────────────────────────────────────────
+            let source_clone = source.clone();
+            let lang_enum = match Language::try_from(lang.as_str()) {
+                Ok(l) => l,
+                Err(e) => {
                     result.errors.push(FileError {
                         file: rel_path.clone(),
                         error: e.to_string(),
                     });
-                    continue;
-                }
-                Err(e) => {
-                    result.errors.push(FileError {
-                        file: rel_path.clone(),
-                        error: format!("task join error: {e}"),
-                    });
-                    continue;
+                    break 'file;
                 }
             };
-
-        // ── Upsert code file node ───────────────────────────────────
-        let file_id = format!("code_file:{}", sha256_short(&rel_path));
-        let code_file = CodeFile {
-            id: file_id.clone(),
-            path: rel_path.clone(),
-            language: lang.clone(),
-            size_bytes,
-            content_hash: content_hash.clone(),
-            last_indexed_at: chrono::Utc::now().to_rfc3339(),
-        };
-        queries.upsert_code_file(&code_file).await?;
-
-        // Record file hash for offline change detection using the already-computed
-        // content_hash and size_bytes — avoids re-reading from disk.
-        // Non-fatal: a hash recording failure degrades offline detection but
-        // does not invalidate the synced code graph.
-        if let Err(e) = crate::services::file_tracker::record_file_hash_precomputed(
-            &rel_path,
-            &content_hash,
-            size_bytes,
-            &queries,
-        )
-        .await
-        {
-            debug!(
-                error = %e,
-                path = %rel_path,
-                "code graph sync: file hash recording failed — offline detection may report false changes"
-            );
-        }
-
-        // Clear previous symbols and defines edges for this file.
-        queries.delete_functions_by_file(&rel_path).await?;
-        queries.delete_classes_by_file(&rel_path).await?;
-        queries.delete_interfaces_by_file(&rel_path).await?;
-        queries.delete_edges_from_file("defines", &file_id).await?;
-        queries
-            .delete_edges_from_file("references", &file_id)
-            .await?;
-
-        // ── Build map of old symbols by (name, body_hash) for reuse ─
-        let old_sym_map: HashMap<(String, String), &crate::db::queries::SymbolIdentity> =
-            pre_sync_identities
-                .iter()
-                .map(|s| ((s.name.clone(), s.body_hash.clone()), s))
-                .collect();
-
-        // ── Insert new symbols, re-embed only if body changed ───────
-        let token_limit = config.embedding.token_limit;
-        let mut new_function_ids: Vec<(String, String)> = Vec::new();
-        let mut new_class_ids: Vec<(String, String)> = Vec::new();
-        let mut new_interface_ids: Vec<(String, String)> = Vec::new();
-        let mut embed_texts: Vec<String> = Vec::new();
-        let mut embed_ids: Vec<String> = Vec::new();
-
-        for symbol in &parse_result.symbols {
-            match symbol {
-                ExtractedSymbol::Function(f) => {
-                    let sym_id = format!("function:{}", Uuid::new_v4());
-                    let (embed_type, summary) = tier_classification(
-                        f.token_count as usize,
-                        token_limit,
-                        &f.body,
-                        &f.signature,
-                        f.docstring.as_deref(),
-                    );
-
-                    // Check if body_hash matches an old symbol and carry its embedding forward.
-                    // Without this, reused symbols would be written with a zero-vector, causing
-                    // NaN cosine scores on the next KNN search.
-                    let old_embedding = old_sym_map
-                        .get(&(f.name.clone(), f.body_hash.clone()))
-                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
-                        .map(|s| s.embedding.clone());
-
-                    let reused = old_embedding.is_some();
-                    if reused {
-                        result.symbols_reused += 1;
-                    } else {
-                        embed_texts.push(summary.clone());
-                        embed_ids.push(sym_id.clone());
-                        result.symbols_reembedded += 1;
+            let parse_result =
+                match tokio::task::spawn_blocking(move || parse_source(&source_clone, lang_enum))
+                    .await
+                {
+                    Ok(Ok(pr)) => pr,
+                    Ok(Err(e)) => {
+                        result.errors.push(FileError {
+                            file: rel_path.clone(),
+                            error: e.to_string(),
+                        });
+                        break 'file;
                     }
-
-                    let func = crate::models::function::Function {
-                        id: sym_id.clone(),
-                        name: f.name.clone(),
-                        file_path: rel_path.clone(),
-                        line_start: f.line_start,
-                        line_end: f.line_end,
-                        signature: f.signature.clone(),
-                        docstring: f.docstring.clone(),
-                        body: f.body.clone(),
-                        body_hash: f.body_hash.clone(),
-                        token_count: f.token_count,
-                        embed_type: embed_type.to_owned(),
-                        embedding: old_embedding
-                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
-                        summary,
-                    };
-                    queries.upsert_function(&func).await?;
-                    new_function_ids.push((f.name.clone(), sym_id.clone()));
-                    queries
-                        .create_defines_edge(&file_id, "function", &sym_id)
-                        .await?;
-                }
-                ExtractedSymbol::Class(c) => {
-                    let sym_id = format!("class:{}", Uuid::new_v4());
-                    let (embed_type, summary) = tier_classification(
-                        c.token_count as usize,
-                        token_limit,
-                        &c.body,
-                        "",
-                        c.docstring.as_deref(),
-                    );
-
-                    let old_embedding = old_sym_map
-                        .get(&(c.name.clone(), c.body_hash.clone()))
-                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
-                        .map(|s| s.embedding.clone());
-
-                    let reused = old_embedding.is_some();
-                    if reused {
-                        result.symbols_reused += 1;
-                    } else {
-                        embed_texts.push(summary.clone());
-                        embed_ids.push(sym_id.clone());
-                        result.symbols_reembedded += 1;
+                    Err(e) => {
+                        result.errors.push(FileError {
+                            file: rel_path.clone(),
+                            error: format!("task join error: {e}"),
+                        });
+                        break 'file;
                     }
+                };
 
-                    let class = crate::models::class::Class {
-                        id: sym_id.clone(),
-                        name: c.name.clone(),
-                        file_path: rel_path.clone(),
-                        line_start: c.line_start,
-                        line_end: c.line_end,
-                        docstring: c.docstring.clone(),
-                        body: c.body.clone(),
-                        body_hash: c.body_hash.clone(),
-                        token_count: c.token_count,
-                        embed_type: embed_type.to_owned(),
-                        embedding: old_embedding
-                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
-                        summary,
-                    };
-                    queries.upsert_class(&class).await?;
-                    new_class_ids.push((c.name.clone(), sym_id.clone()));
-                    queries
-                        .create_defines_edge(&file_id, "class", &sym_id)
-                        .await?;
-                }
-                ExtractedSymbol::Interface(i) => {
-                    let sym_id = format!("interface:{}", Uuid::new_v4());
-                    let (embed_type, summary) = tier_classification(
-                        i.token_count as usize,
-                        token_limit,
-                        &i.body,
-                        "",
-                        i.docstring.as_deref(),
-                    );
+            // ── Upsert code file node ───────────────────────────────────
+            let file_id = format!("code_file:{}", sha256_short(&rel_path));
+            let code_file = CodeFile {
+                id: file_id.clone(),
+                path: rel_path.clone(),
+                language: lang.clone(),
+                size_bytes,
+                content_hash: content_hash.clone(),
+                last_indexed_at: chrono::Utc::now().to_rfc3339(),
+            };
+            queries.upsert_code_file(&code_file).await?;
 
-                    let old_embedding = old_sym_map
-                        .get(&(i.name.clone(), i.body_hash.clone()))
-                        .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
-                        .map(|s| s.embedding.clone());
+            // Record file hash for offline change detection using the already-computed
+            // content_hash and size_bytes — avoids re-reading from disk.
+            // Non-fatal: a hash recording failure degrades offline detection but
+            // does not invalidate the synced code graph.
+            if let Err(e) = crate::services::file_tracker::record_file_hash_precomputed(
+                &rel_path,
+                &content_hash,
+                size_bytes,
+                &queries,
+            )
+            .await
+            {
+                debug!(
+                    error = %e,
+                    path = %rel_path,
+                    "code graph sync: file hash recording failed — offline detection may report false changes"
+                );
+            }
 
-                    let reused = old_embedding.is_some();
-                    if reused {
-                        result.symbols_reused += 1;
-                    } else {
-                        embed_texts.push(summary.clone());
-                        embed_ids.push(sym_id.clone());
-                        result.symbols_reembedded += 1;
+            // Clear previous symbols and defines edges for this file.
+            queries.delete_functions_by_file(&rel_path).await?;
+            queries.delete_classes_by_file(&rel_path).await?;
+            queries.delete_interfaces_by_file(&rel_path).await?;
+            queries.delete_edges_from_file("defines", &file_id).await?;
+            queries
+                .delete_edges_from_file("references", &file_id)
+                .await?;
+
+            // ── Build map of old symbols by (name, body_hash) for reuse ─
+            let old_sym_map: HashMap<(String, String), &crate::db::queries::SymbolIdentity> =
+                pre_sync_identities
+                    .iter()
+                    .map(|s| ((s.name.clone(), s.body_hash.clone()), s))
+                    .collect();
+
+            // ── Insert new symbols, re-embed only if body changed ───────
+            let token_limit = config.embedding.token_limit;
+            let mut new_function_ids: Vec<(String, String)> = Vec::new();
+            let mut new_class_ids: Vec<(String, String)> = Vec::new();
+            let mut new_interface_ids: Vec<(String, String)> = Vec::new();
+            let mut embed_texts: Vec<String> = Vec::new();
+            let mut embed_ids: Vec<String> = Vec::new();
+
+            for symbol in &parse_result.symbols {
+                match symbol {
+                    ExtractedSymbol::Function(f) => {
+                        let sym_id = format!("function:{}", Uuid::new_v4());
+                        let (embed_type, summary) = tier_classification(
+                            f.token_count as usize,
+                            token_limit,
+                            &f.body,
+                            &f.signature,
+                            f.docstring.as_deref(),
+                        );
+
+                        // Check if body_hash matches an old symbol and carry its embedding forward.
+                        // Without this, reused symbols would be written with a zero-vector, causing
+                        // NaN cosine scores on the next KNN search.
+                        let old_embedding = old_sym_map
+                            .get(&(f.name.clone(), f.body_hash.clone()))
+                            .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
+                            .map(|s| s.embedding.clone());
+
+                        let reused = old_embedding.is_some();
+                        if reused {
+                            result.symbols_reused += 1;
+                        } else {
+                            embed_texts.push(summary.clone());
+                            embed_ids.push(sym_id.clone());
+                            result.symbols_reembedded += 1;
+                        }
+
+                        let func = crate::models::function::Function {
+                            id: sym_id.clone(),
+                            name: f.name.clone(),
+                            file_path: rel_path.clone(),
+                            line_start: f.line_start,
+                            line_end: f.line_end,
+                            signature: f.signature.clone(),
+                            docstring: f.docstring.clone(),
+                            body: f.body.clone(),
+                            body_hash: f.body_hash.clone(),
+                            token_count: f.token_count,
+                            embed_type: embed_type.to_owned(),
+                            embedding: old_embedding
+                                .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
+                            summary,
+                        };
+                        queries.upsert_function(&func).await?;
+                        new_function_ids.push((f.name.clone(), sym_id.clone()));
+                        queries
+                            .create_defines_edge(&file_id, "function", &sym_id)
+                            .await?;
                     }
+                    ExtractedSymbol::Class(c) => {
+                        let sym_id = format!("class:{}", Uuid::new_v4());
+                        let (embed_type, summary) = tier_classification(
+                            c.token_count as usize,
+                            token_limit,
+                            &c.body,
+                            "",
+                            c.docstring.as_deref(),
+                        );
 
-                    let iface = crate::models::interface::Interface {
-                        id: sym_id.clone(),
-                        name: i.name.clone(),
-                        file_path: rel_path.clone(),
-                        line_start: i.line_start,
-                        line_end: i.line_end,
-                        docstring: i.docstring.clone(),
-                        body: i.body.clone(),
-                        body_hash: i.body_hash.clone(),
-                        token_count: i.token_count,
-                        embed_type: embed_type.to_owned(),
-                        embedding: old_embedding
-                            .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
-                        summary,
-                    };
-                    queries.upsert_interface(&iface).await?;
-                    new_interface_ids.push((i.name.clone(), sym_id.clone()));
-                    queries
-                        .create_defines_edge(&file_id, "interface", &sym_id)
-                        .await?;
+                        let old_embedding = old_sym_map
+                            .get(&(c.name.clone(), c.body_hash.clone()))
+                            .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
+                            .map(|s| s.embedding.clone());
+
+                        let reused = old_embedding.is_some();
+                        if reused {
+                            result.symbols_reused += 1;
+                        } else {
+                            embed_texts.push(summary.clone());
+                            embed_ids.push(sym_id.clone());
+                            result.symbols_reembedded += 1;
+                        }
+
+                        let class = crate::models::class::Class {
+                            id: sym_id.clone(),
+                            name: c.name.clone(),
+                            file_path: rel_path.clone(),
+                            line_start: c.line_start,
+                            line_end: c.line_end,
+                            docstring: c.docstring.clone(),
+                            body: c.body.clone(),
+                            body_hash: c.body_hash.clone(),
+                            token_count: c.token_count,
+                            embed_type: embed_type.to_owned(),
+                            embedding: old_embedding
+                                .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
+                            summary,
+                        };
+                        queries.upsert_class(&class).await?;
+                        new_class_ids.push((c.name.clone(), sym_id.clone()));
+                        queries
+                            .create_defines_edge(&file_id, "class", &sym_id)
+                            .await?;
+                    }
+                    ExtractedSymbol::Interface(i) => {
+                        let sym_id = format!("interface:{}", Uuid::new_v4());
+                        let (embed_type, summary) = tier_classification(
+                            i.token_count as usize,
+                            token_limit,
+                            &i.body,
+                            "",
+                            i.docstring.as_deref(),
+                        );
+
+                        let old_embedding = old_sym_map
+                            .get(&(i.name.clone(), i.body_hash.clone()))
+                            .filter(|s| embedding::has_meaningful_embedding(&s.embedding))
+                            .map(|s| s.embedding.clone());
+
+                        let reused = old_embedding.is_some();
+                        if reused {
+                            result.symbols_reused += 1;
+                        } else {
+                            embed_texts.push(summary.clone());
+                            embed_ids.push(sym_id.clone());
+                            result.symbols_reembedded += 1;
+                        }
+
+                        let iface = crate::models::interface::Interface {
+                            id: sym_id.clone(),
+                            name: i.name.clone(),
+                            file_path: rel_path.clone(),
+                            line_start: i.line_start,
+                            line_end: i.line_end,
+                            docstring: i.docstring.clone(),
+                            body: i.body.clone(),
+                            body_hash: i.body_hash.clone(),
+                            token_count: i.token_count,
+                            embed_type: embed_type.to_owned(),
+                            embedding: old_embedding
+                                .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
+                            summary,
+                        };
+                        queries.upsert_interface(&iface).await?;
+                        new_interface_ids.push((i.name.clone(), sym_id.clone()));
+                        queries
+                            .create_defines_edge(&file_id, "interface", &sym_id)
+                            .await?;
+                    }
                 }
             }
-        }
 
-        // ── Batch embed changed symbols ─────────────────────────────
-        if !embed_texts.is_empty() {
-            match embedding::embed_texts(&embed_texts) {
-                Ok(vectors) => {
-                    for (sym_id, vector) in embed_ids.iter().zip(vectors) {
-                        if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
-                            debug!(error = %e, sym_id = %sym_id, "code graph sync: embedding write-back failed");
+            // ── Batch embed changed symbols ─────────────────────────────
+            if !embed_texts.is_empty() {
+                match embedding::embed_texts(&embed_texts) {
+                    Ok(vectors) => {
+                        for (sym_id, vector) in embed_ids.iter().zip(vectors) {
+                            if let Err(e) = queries.update_symbol_embedding(sym_id, vector).await {
+                                debug!(error = %e, sym_id = %sym_id, "code graph sync: embedding write-back failed");
+                            }
+                        }
+                        debug!(
+                            count = embed_ids.len(),
+                            "code graph sync: generated and stored embeddings for changed symbols"
+                        );
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "code graph sync: embedding unavailable, skipping");
+                    }
+                }
+            }
+
+            // ── Recreate edges from parse result ────────────────────────
+            for edge in &parse_result.edges {
+                match edge {
+                    ExtractedEdge::Calls { caller, callee } => {
+                        if let (Some(from_id), Some(to_id)) = (
+                            find_function_id(&new_function_ids, caller),
+                            find_function_id(&new_function_ids, callee),
+                        ) {
+                            queries.create_calls_edge(&from_id, &to_id).await?;
                         }
                     }
-                    debug!(
-                        count = embed_ids.len(),
-                        "code graph sync: generated and stored embeddings for changed symbols"
-                    );
-                }
-                Err(e) => {
-                    debug!(error = %e, "code graph sync: embedding unavailable, skipping");
-                }
-            }
-        }
-
-        // ── Recreate edges from parse result ────────────────────────
-        for edge in &parse_result.edges {
-            match edge {
-                ExtractedEdge::Calls { caller, callee } => {
-                    if let (Some(from_id), Some(to_id)) = (
-                        find_function_id(&new_function_ids, caller),
-                        find_function_id(&new_function_ids, callee),
-                    ) {
-                        queries.create_calls_edge(&from_id, &to_id).await?;
+                    ExtractedEdge::InheritsFrom {
+                        struct_name,
+                        trait_name,
+                    } => {
+                        if let Some(child_id) = find_class_id(&new_class_ids, struct_name) {
+                            if let Some(parent_id) =
+                                find_interface_id(&new_interface_ids, trait_name)
+                            {
+                                queries
+                                    .create_inherits_edge(
+                                        "class",
+                                        &child_id,
+                                        "interface",
+                                        &parent_id,
+                                    )
+                                    .await?;
+                            }
+                        }
                     }
-                }
-                ExtractedEdge::InheritsFrom {
-                    struct_name,
-                    trait_name,
-                } => {
-                    if let Some(child_id) = find_class_id(&new_class_ids, struct_name) {
-                        if let Some(parent_id) = find_interface_id(&new_interface_ids, trait_name) {
+                    // Defines already created above; Imports are cross-file (deferred, counted).
+                    ExtractedEdge::Imports { .. } => {
+                        result.cross_file_edges_dropped += 1;
+                    }
+                    // Defines edge already handled during symbol upsert.
+                    ExtractedEdge::Defines { .. } => {}
+                    // SQL References: resolve target to a Class node or self-loop (033.001-T).
+                    ExtractedEdge::References { target, .. } => {
+                        let resolved_id = queries.resolve_reference_target(target).await?;
+                        if let Some(class_id) = resolved_id {
                             queries
-                                .create_inherits_edge("class", &child_id, "interface", &parent_id)
+                                .create_references_edge(&file_id, &class_id, Some(target))
+                                .await?;
+                        } else {
+                            queries
+                                .create_references_edge(&file_id, &file_id, Some(target))
                                 .await?;
                         }
+                        result.edges_created += 1;
                     }
-                }
-                // Defines already created above; Imports are cross-file (deferred, counted).
-                ExtractedEdge::Imports { .. } => {
-                    result.cross_file_edges_dropped += 1;
-                }
-                // Defines edge already handled during symbol upsert.
-                ExtractedEdge::Defines { .. } => {}
-                // SQL References: resolve target to a Class node or self-loop (033.001-T).
-                ExtractedEdge::References { target, .. } => {
-                    let resolved_id = queries.resolve_reference_target(target).await?;
-                    if let Some(class_id) = resolved_id {
-                        queries
-                            .create_references_edge(&file_id, &class_id, Some(target))
-                            .await?;
-                    } else {
-                        queries
-                            .create_references_edge(&file_id, &file_id, Some(target))
-                            .await?;
-                    }
-                    result.edges_created += 1;
                 }
             }
-        }
 
-        // ── Delete old concerns edges before relinking (prevent duplicates) ──
-        for edge in &enriched_concerns {
-            let _ = queries
-                .delete_concerns_edges_for_symbol(&edge.symbol_table, &edge.symbol_id)
-                .await;
-        }
+            // ── Delete old concerns edges before relinking (prevent duplicates) ──
+            for edge in &enriched_concerns {
+                let _ = queries
+                    .delete_concerns_edges_for_symbol(&edge.symbol_table, &edge.symbol_id)
+                    .await;
+            }
 
-        // ── Relink concerns edges (FR-124) ──────────────────────────
-        let (relinked, orphaned) = relink_concerns_edges(
-            &queries,
-            &enriched_concerns,
-            &new_function_ids,
-            &new_class_ids,
-            &new_interface_ids,
-        )
-        .await?;
-        result.concerns_relinked += relinked;
-        result.concerns_orphaned += orphaned;
+            // ── Relink concerns edges (FR-124) ──────────────────────────
+            let (relinked, orphaned) = relink_concerns_edges(
+                &queries,
+                &enriched_concerns,
+                &new_function_ids,
+                &new_class_ids,
+                &new_interface_ids,
+            )
+            .await?;
+            result.concerns_relinked += relinked;
+            result.concerns_orphaned += orphaned;
 
-        if is_new {
-            result.files_added += 1;
-        } else {
-            result.files_modified += 1;
+            if is_new {
+                result.files_added += 1;
+            } else {
+                result.files_modified += 1;
+            }
+            debug!(path = %rel_path, "code graph sync: re-indexed file");
         }
-        debug!(path = %rel_path, "code graph sync: re-indexed file");
+        advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
     // ── Post-pass: re-resolve unresolved references edges ───────────

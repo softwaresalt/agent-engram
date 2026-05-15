@@ -472,6 +472,12 @@ impl AppState {
         *self.scan_progress.write().await = progress;
     }
 
+    /// Store or clear the current background scan progress snapshot from
+    /// synchronous progress-reporting callbacks.
+    pub fn set_scan_progress_blocking(&self, progress: Option<ScanProgress>) {
+        *self.scan_progress.blocking_write() = progress;
+    }
+
     /// Return a clone of the current scan progress, or `None` when no scan
     /// has been queued since startup.
     pub async fn scan_progress_snapshot(&self) -> Option<ScanProgress> {
