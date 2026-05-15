@@ -2703,16 +2703,25 @@ impl CodeGraphQueries {
         Ok(())
     }
 
-    /// Delete a content record by its file path.
-    pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
+    /// Delete content records for a single `(file_path, content_type, source_path)` scope.
+    pub async fn delete_content_records_by_scope(
+        &self,
+        file_path: &str,
+        content_type: &str,
+        source_path: &str,
+    ) -> Result<(), EngramError> {
         let script = r#"
 ?[id] :=
-    *content_record { id, file_path },
-    file_path = $file_path
+    *content_record { id, file_path, content_type, source_path },
+    file_path = $file_path,
+    content_type = $content_type,
+    source_path = $source_path
 :rm content_record { id }
 "#;
         let mut p = BTreeMap::new();
         p.insert("file_path".to_owned(), DataValue::from(file_path));
+        p.insert("content_type".to_owned(), DataValue::from(content_type));
+        p.insert("source_path".to_owned(), DataValue::from(source_path));
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;

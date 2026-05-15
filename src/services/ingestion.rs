@@ -272,7 +272,9 @@ async fn ingest_directory(
                 continue;
             }
 
-            queries.delete_content_record_by_path(&rel_path).await?;
+            queries
+                .delete_content_records_by_scope(&rel_path, content_type, source_path)
+                .await?;
             for record in &desired_records {
                 queries.upsert_content_record(record).await?;
             }
@@ -288,7 +290,11 @@ async fn ingest_directory(
             && removed_paths.insert(existing_record.file_path.clone())
         {
             queries
-                .delete_content_record_by_path(&existing_record.file_path)
+                .delete_content_records_by_scope(
+                    &existing_record.file_path,
+                    existing_record.content_type.as_str(),
+                    existing_record.source_path.as_str(),
+                )
                 .await?;
             summary.removed += 1;
         }
@@ -595,7 +601,9 @@ pub async fn ingest_single_file(
 
     // Check if file still exists (may have been deleted).
     if !file_path.exists() {
-        queries.delete_content_record_by_path(&rel_path).await?;
+        queries
+            .delete_content_records_by_scope(&rel_path, content_type, source_path)
+            .await?;
         return Ok(true);
     }
 
@@ -640,7 +648,9 @@ pub async fn ingest_single_file(
         return Ok(false);
     }
 
-    queries.delete_content_record_by_path(&rel_path).await?;
+    queries
+        .delete_content_records_by_scope(&rel_path, content_type, source_path)
+        .await?;
     for record in &desired_records {
         queries.upsert_content_record(record).await?;
     }
