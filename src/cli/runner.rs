@@ -10,7 +10,8 @@ use serde_json::Value;
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
 use crate::daemon::ipc_server::ipc_endpoint;
-use crate::daemon::protocol::{IpcError, IpcRequest};
+use crate::daemon::protocol::{IpcError, IpcRequest, IpcResponse};
+use crate::errors::EngramError;
 use crate::shim::ipc_client;
 use crate::shim::lifecycle::{check_health, ensure_daemon_running};
 
@@ -26,6 +27,16 @@ const INDEX_IN_PROGRESS_CODE: u16 = 7003;
 /// JSON-RPC internal-error code (`-32603`) used as a secondary heuristic for
 /// IndexInProgress detection when `engram_code` is absent.
 const JSONRPC_INTERNAL_ERROR_CODE: i32 = -32_603;
+
+/// Poll interval for text-mode indexing heartbeats.
+const INDEXING_PROGRESS_POLL_SECS: u64 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexingProgress {
+    running: bool,
+    files_scanned: u64,
+    files_total: u64,
+}
 
 /// Translate a wire-format [`IpcError`] into a user-facing message.
 ///
@@ -61,6 +72,99 @@ fn friendly_error_message(err: &IpcError) -> String {
     }
 
     err.message.clone()
+}
+
+fn is_indexing_method(method: &str) -> bool {
+    method == "index_workspace"
+}
+
+fn extract_indexing_progress(result: &Value) -> Option<IndexingProgress> {
+    let scan_status = result.get("scan_status")?;
+    Some(IndexingProgress {
+        running: scan_status.get("running")?.as_bool()?,
+        files_scanned: scan_status
+            .get("files_scanned")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        files_total: scan_status
+            .get("files_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    })
+}
+
+fn render_indexing_progress(progress: Option<IndexingProgress>, elapsed: Duration) -> String {
+    let elapsed_secs = elapsed.as_secs();
+    match progress {
+        Some(progress) if progress.files_total > 0 => format!(
+            "Indexing workspace... {}/{} files ({elapsed_secs}s elapsed)",
+            progress.files_scanned, progress.files_total
+        ),
+        Some(progress) if progress.running => {
+            format!("Indexing workspace... working ({elapsed_secs}s elapsed)")
+        }
+        _ => format!("Indexing workspace... {elapsed_secs}s elapsed"),
+    }
+}
+
+async fn fetch_indexing_progress(
+    endpoint: &str,
+    timeout: Duration,
+) -> Result<Option<IndexingProgress>, EngramError> {
+    let response = ipc_client::send_request(
+        endpoint,
+        &IpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Value::from(0_u64)),
+            method: "get_workspace_status".to_owned(),
+            params: None,
+        },
+        timeout,
+    )
+    .await?;
+
+    Ok(response.result.as_ref().and_then(extract_indexing_progress))
+}
+
+async fn send_request_with_optional_progress(
+    endpoint: &str,
+    request: &IpcRequest,
+    timeout: Duration,
+    formatter: &OutputFormatter,
+    method: &str,
+) -> Result<IpcResponse, EngramError> {
+    if !is_indexing_method(method) || !formatter.shows_progress() {
+        return ipc_client::send_request(endpoint, request, timeout).await;
+    }
+
+    formatter.progress_hint("Indexing workspace...");
+
+    let request_future = ipc_client::send_request(endpoint, request, timeout);
+    tokio::pin!(request_future);
+
+    let heartbeat_start = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(INDEXING_PROGRESS_POLL_SECS));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+
+    let mut last_message = String::from("Indexing workspace...");
+
+    loop {
+        tokio::select! {
+            response = &mut request_future => return response,
+            _ = heartbeat.tick() => {
+                let progress = fetch_indexing_progress(endpoint, Duration::from_secs(INDEXING_PROGRESS_POLL_SECS))
+                    .await
+                    .ok()
+                    .flatten();
+                let message = render_indexing_progress(progress, heartbeat_start.elapsed());
+                if message != last_message {
+                    formatter.progress_hint(&message);
+                    last_message = message;
+                }
+            }
+        }
+    }
 }
 
 /// Run a single tool call through the daemon IPC and print the result.
@@ -137,7 +241,8 @@ pub async fn run_tool_timed(
     };
 
     // Send request.
-    match ipc_client::send_request(&endpoint, &request, timeout).await {
+    match send_request_with_optional_progress(&endpoint, &request, timeout, formatter, method).await
+    {
         Ok(response) => {
             if let Some(result) = response.result {
                 formatter.success(Some(id), result)
@@ -162,7 +267,10 @@ mod tests {
     use crate::cli::output::{OutputFormatter, OutputMode};
     use crate::daemon::protocol::IpcError;
 
-    use super::{INDEX_IN_PROGRESS_CODE, JSONRPC_INTERNAL_ERROR_CODE, friendly_error_message};
+    use super::{
+        INDEX_IN_PROGRESS_CODE, JSONRPC_INTERNAL_ERROR_CODE, extract_indexing_progress,
+        friendly_error_message, render_indexing_progress,
+    };
 
     fn make_formatter() -> OutputFormatter {
         OutputFormatter::new(OutputMode::Json)
@@ -279,6 +387,51 @@ mod tests {
         assert!(
             !msg.contains("Indexing is in progress"),
             "wrong code must not trigger friendly message; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extract_indexing_progress_reads_scan_status_snapshot() {
+        let snapshot = json!({
+            "scan_status": {
+                "running": true,
+                "files_scanned": 12,
+                "files_total": 48
+            }
+        });
+
+        let progress =
+            extract_indexing_progress(&snapshot).expect("scan_status should parse into progress");
+        assert!(progress.running, "running flag should be preserved");
+        assert_eq!(progress.files_scanned, 12);
+        assert_eq!(progress.files_total, 48);
+    }
+
+    #[test]
+    fn render_indexing_progress_prefers_file_counts_when_available() {
+        let message = render_indexing_progress(
+            extract_indexing_progress(&json!({
+                "scan_status": {
+                    "running": true,
+                    "files_scanned": 3,
+                    "files_total": 10
+                }
+            })),
+            Duration::from_secs(9),
+        );
+
+        assert!(
+            message.contains("3/10 files"),
+            "expected file-count progress, got: {message}"
+        );
+    }
+
+    #[test]
+    fn render_indexing_progress_degrades_to_elapsed_time_without_totals() {
+        let message = render_indexing_progress(None, Duration::from_secs(11));
+        assert!(
+            message.contains("11s elapsed"),
+            "expected elapsed-time heartbeat, got: {message}"
         );
     }
 }

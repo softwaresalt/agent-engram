@@ -123,6 +123,11 @@ impl OutputFormatter {
             eprintln!("{message}");
         }
     }
+
+    /// Whether progress messages should be rendered for long-running CLI work.
+    pub fn shows_progress(&self) -> bool {
+        self.mode == OutputMode::Text && !self.quiet
+    }
 }
 
 /// Render a JSON value as human-readable text.
