@@ -2421,13 +2421,19 @@ impl CodeGraphQueries {
         record: &crate::models::ContentRecord,
     ) -> Result<(), EngramError> {
         let script = r#"
-?[file_path, id, content_type, content_hash, content, source_path,
-  file_size_bytes, ingested_at, embedding] <-
-    [[$file_path, $id, $content_type, $content_hash, $content, $source_path,
-      $file_size_bytes, $ingested_at, $embedding]]
+?[id, file_path, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, record_kind, chunk_id, chunk_index,
+  heading_path, line_start, line_end, fallback_reason, lint_summary,
+  suggestions, embedding] <-
+    [[$id, $file_path, $content_type, $content_hash, $content, $source_path,
+      $file_size_bytes, $ingested_at, $record_kind, $chunk_id, $chunk_index,
+      $heading_path, $line_start, $line_end, $fallback_reason, $lint_summary,
+      $suggestions, $embedding]]
 :put content_record {
-    file_path => id, content_type, content_hash, content, source_path,
-    file_size_bytes, ingested_at, embedding
+    id => file_path, content_type, content_hash, content, source_path,
+    file_size_bytes, ingested_at, record_kind, chunk_id, chunk_index,
+    heading_path, line_start, line_end, fallback_reason, lint_summary,
+    suggestions, embedding
 }
 "#;
         let emb_dv = DataValue::List(
@@ -2439,12 +2445,14 @@ impl CodeGraphQueries {
                 .map(|&f| DataValue::Num(Num::Float(f64::from(f))))
                 .collect(),
         );
+        let heading_path = string_list_to_datavalue(&record.heading_path);
+        let suggestions = string_list_to_datavalue(&record.suggestions);
         let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(record.id.as_str()));
         p.insert(
             "file_path".to_owned(),
             DataValue::from(record.file_path.as_str()),
         );
-        p.insert("id".to_owned(), DataValue::from(record.id.as_str()));
         p.insert(
             "content_type".to_owned(),
             DataValue::from(record.content_type.as_str()),
@@ -2471,6 +2479,36 @@ impl CodeGraphQueries {
             "ingested_at".to_owned(),
             DataValue::from(record.ingested_at.to_rfc3339().as_str()),
         );
+        p.insert(
+            "record_kind".to_owned(),
+            DataValue::from(record.record_kind.as_str()),
+        );
+        p.insert(
+            "chunk_id".to_owned(),
+            DataValue::from(record.chunk_id.as_deref().unwrap_or("")),
+        );
+        p.insert(
+            "chunk_index".to_owned(),
+            optional_u32_to_datavalue(record.chunk_index),
+        );
+        p.insert("heading_path".to_owned(), heading_path);
+        p.insert(
+            "line_start".to_owned(),
+            optional_u32_to_datavalue(record.line_start),
+        );
+        p.insert(
+            "line_end".to_owned(),
+            optional_u32_to_datavalue(record.line_end),
+        );
+        p.insert(
+            "fallback_reason".to_owned(),
+            DataValue::from(record.fallback_reason.as_deref().unwrap_or("")),
+        );
+        p.insert(
+            "lint_summary".to_owned(),
+            DataValue::from(record.lint_summary.as_deref().unwrap_or("")),
+        );
+        p.insert("suggestions".to_owned(), suggestions);
         p.insert("embedding".to_owned(), emb_dv);
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
@@ -2487,10 +2525,14 @@ impl CodeGraphQueries {
             .map(|_| ", content_type = $content_type")
             .unwrap_or("");
         let script = format!(
-            r#"?[file_path, id, content_type, content_hash, content, source_path,
-  file_size_bytes, ingested_at, embedding] :=
-    *content_record {{ file_path, id, content_type, content_hash, content,
-                      source_path, file_size_bytes, ingested_at, embedding }}{ct_clause}"#
+            r#"?[id, file_path, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, record_kind, chunk_id, chunk_index,
+  heading_path, line_start, line_end, fallback_reason, lint_summary,
+  suggestions, embedding] :=
+    *content_record {{ id, file_path, content_type, content_hash, content,
+                      source_path, file_size_bytes, ingested_at, record_kind,
+                      chunk_id, chunk_index, heading_path, line_start, line_end,
+                      fallback_reason, lint_summary, suggestions, embedding }}{ct_clause}"#
         );
         let mut p = BTreeMap::new();
         if let Some(ct) = content_type {
@@ -2500,7 +2542,7 @@ impl CodeGraphQueries {
             .db
             .run_script(&script, p, ScriptMutability::Immutable)
             .map_err(|e| map_db_err(e.to_string()))?;
-        result
+        let mut records = result
             .rows
             .iter()
             .map(|row| {
@@ -2508,20 +2550,36 @@ impl CodeGraphQueries {
                 let ingested_at = chrono::DateTime::parse_from_rfc3339(&ingested_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now());
-                let emb = extract_embedding(row, 8);
-                Ok(crate::models::ContentRecord {
-                    file_path: extract_str(row, 0),
-                    id: extract_str(row, 1),
+                let emb = extract_embedding(row, 17);
+                crate::models::ContentRecord {
+                    id: extract_str(row, 0),
+                    file_path: extract_str(row, 1),
                     content_type: extract_str(row, 2),
                     content_hash: extract_str(row, 3),
                     content: extract_str(row, 4),
                     source_path: extract_str(row, 5),
                     file_size_bytes: u64::try_from(extract_i64(row, 6).max(0)).unwrap_or(0),
                     ingested_at,
+                    record_kind: extract_str(row, 8),
+                    chunk_id: extract_opt_str(row, 9),
+                    chunk_index: extract_opt_u32(row, 10),
+                    heading_path: extract_string_list(row, 11),
+                    line_start: extract_opt_u32(row, 12),
+                    line_end: extract_opt_u32(row, 13),
+                    fallback_reason: extract_opt_str(row, 14),
+                    lint_summary: extract_opt_str(row, 15),
+                    suggestions: extract_string_list(row, 16),
                     embedding: if emb.is_empty() { None } else { Some(emb) },
-                })
+                }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.file_path
+                .cmp(&right.file_path)
+                .then_with(|| left.chunk_index.cmp(&right.chunk_index))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
     }
 
     /// Update the embedding on an existing content record (keyed by `record_id` = `file_path`).
@@ -2536,10 +2594,14 @@ impl CodeGraphQueries {
     ) -> Result<(), EngramError> {
         // Look up by `id` column (not the `file_path` key) to match caller semantics.
         let get = r#"
-?[file_path, id, content_type, content_hash, content, source_path,
-  file_size_bytes, ingested_at] :=
-    *content_record { file_path, id, content_type, content_hash, content,
-                      source_path, file_size_bytes, ingested_at },
+?[id, file_path, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, record_kind, chunk_id, chunk_index,
+  heading_path, line_start, line_end, fallback_reason, lint_summary,
+  suggestions] :=
+    *content_record { id, file_path, content_type, content_hash, content,
+                      source_path, file_size_bytes, ingested_at, record_kind,
+                      chunk_id, chunk_index, heading_path, line_start, line_end,
+                      fallback_reason, lint_summary, suggestions },
     id = $id
 "#;
         let mut gp = BTreeMap::new();
@@ -2552,7 +2614,13 @@ impl CodeGraphQueries {
             return Ok(()); // nothing to update
         }
         let row = &existing.rows[0];
-        let file_path = extract_str(row, 0);
+        let file_path = extract_str(row, 1);
+        let record_kind = extract_str(row, 8);
+        let chunk_id = extract_str(row, 9);
+        let fallback_reason = extract_str(row, 14);
+        let lint_summary = extract_str(row, 15);
+        let heading_path = string_list_to_datavalue(&extract_string_list(row, 11));
+        let suggestions = string_list_to_datavalue(&extract_string_list(row, 16));
         let emb_dv = DataValue::List(
             embedding
                 .iter()
@@ -2560,12 +2628,18 @@ impl CodeGraphQueries {
                 .collect(),
         );
         let put = r#"
-?[file_path, id, content_type, content_hash, content, source_path,
-  file_size_bytes, ingested_at, embedding] <-
-    [[$file_path, $id, $ct, $ch, $content, $sp, $fsb, $ia, $embedding]]
+?[id, file_path, content_type, content_hash, content, source_path,
+  file_size_bytes, ingested_at, record_kind, chunk_id, chunk_index,
+  heading_path, line_start, line_end, fallback_reason, lint_summary,
+  suggestions, embedding] <-
+    [[$id, $file_path, $ct, $ch, $content, $sp, $fsb, $ia, $record_kind,
+      $chunk_id, $chunk_index, $heading_path, $line_start, $line_end,
+      $fallback_reason, $lint_summary, $suggestions, $embedding]]
 :put content_record {
-    file_path => id, content_type, content_hash, content, source_path,
-    file_size_bytes, ingested_at, embedding
+    id => file_path, content_type, content_hash, content, source_path,
+    file_size_bytes, ingested_at, record_kind, chunk_id, chunk_index,
+    heading_path, line_start, line_end, fallback_reason, lint_summary,
+    suggestions, embedding
 }
 "#;
         let mut p = BTreeMap::new();
@@ -2595,6 +2669,33 @@ impl CodeGraphQueries {
             "ia".to_owned(),
             DataValue::from(extract_str(row, 7).as_str()),
         );
+        p.insert(
+            "record_kind".to_owned(),
+            DataValue::from(record_kind.as_str()),
+        );
+        p.insert("chunk_id".to_owned(), DataValue::from(chunk_id.as_str()));
+        p.insert(
+            "chunk_index".to_owned(),
+            optional_u32_to_datavalue(extract_opt_u32(row, 10)),
+        );
+        p.insert("heading_path".to_owned(), heading_path);
+        p.insert(
+            "line_start".to_owned(),
+            optional_u32_to_datavalue(extract_opt_u32(row, 12)),
+        );
+        p.insert(
+            "line_end".to_owned(),
+            optional_u32_to_datavalue(extract_opt_u32(row, 13)),
+        );
+        p.insert(
+            "fallback_reason".to_owned(),
+            DataValue::from(fallback_reason.as_str()),
+        );
+        p.insert(
+            "lint_summary".to_owned(),
+            DataValue::from(lint_summary.as_str()),
+        );
+        p.insert("suggestions".to_owned(), suggestions);
         p.insert("embedding".to_owned(), emb_dv);
         self.db
             .run_script(put, p, ScriptMutability::Mutable)
@@ -2605,8 +2706,10 @@ impl CodeGraphQueries {
     /// Delete a content record by its file path.
     pub async fn delete_content_record_by_path(&self, file_path: &str) -> Result<(), EngramError> {
         let script = r#"
-?[file_path] <- [[$file_path]]
-:rm content_record { file_path }
+?[id] :=
+    *content_record { id, file_path },
+    file_path = $file_path
+:rm content_record { id }
 "#;
         let mut p = BTreeMap::new();
         p.insert("file_path".to_owned(), DataValue::from(file_path));
@@ -4174,6 +4277,43 @@ fn extract_opt_str(row: &[DataValue], col: usize) -> Option<String> {
         Some(DataValue::Str(s)) if !s.is_empty() => Some(s.to_string()),
         _ => None,
     }
+}
+
+fn extract_opt_u32(row: &[DataValue], col: usize) -> Option<u32> {
+    match row.get(col) {
+        Some(DataValue::Num(Num::Int(value))) if *value >= 0 => u32::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn extract_string_list(row: &[DataValue], col: usize) -> Vec<String> {
+    match row.get(col) {
+        Some(DataValue::List(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                DataValue::Str(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn optional_u32_to_datavalue(value: Option<u32>) -> DataValue {
+    value
+        .map(i64::from)
+        .map(Num::Int)
+        .map(DataValue::Num)
+        .unwrap_or_else(|| DataValue::Num(Num::Int(-1)))
+}
+
+fn string_list_to_datavalue(values: &[String]) -> DataValue {
+    DataValue::List(
+        values
+            .iter()
+            .map(|value| DataValue::from(value.as_str()))
+            .collect(),
+    )
 }
 
 fn extract_count(rows: &cozo::NamedRows) -> u64 {

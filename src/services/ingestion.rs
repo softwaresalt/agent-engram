@@ -5,7 +5,7 @@
 //! SurrealDB. Supports incremental sync via content hash comparison and
 //! respects configurable file size limits and batch sizes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::Utc;
@@ -23,6 +23,7 @@ use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, IngestionError};
 use crate::models::content::ContentRecord;
 use crate::models::registry::{ContentSourceStatus, RegistryConfig};
+use crate::services::parsing::{MarkdownChunk, chunk_markdown_document_with_title_hint};
 
 /// Result summary from an ingestion run.
 #[derive(Debug, Clone, Default)]
@@ -206,10 +207,7 @@ async fn ingest_directory(
     // Get existing records to detect changes.
     let existing: Vec<crate::models::ContentRecord> =
         queries.select_content_records(Some(content_type)).await?;
-    let existing_by_path: std::collections::HashMap<String, String> = existing
-        .iter()
-        .map(|r| (r.file_path.clone(), r.content_hash.clone()))
-        .collect();
+    let existing_by_path = group_content_records_by_path(existing);
     let mut seen_paths: HashSet<String> = HashSet::new();
 
     // Process in batches.
@@ -257,36 +255,37 @@ async fn ingest_directory(
             let content_str = String::from_utf8_lossy(&content).to_string();
             let content_hash = compute_hash(&content);
 
-            // Check if content has changed.
-            if let Some(existing_hash) = existing_by_path.get(&rel_path) {
-                if *existing_hash == content_hash {
-                    summary.unchanged += 1;
-                    continue;
-                }
+            let desired_records = build_content_records(
+                &rel_path,
+                content_type,
+                source_path,
+                metadata.len(),
+                &content_hash,
+                &content_str,
+            )?;
+
+            if existing_by_path
+                .get(&rel_path)
+                .is_some_and(|records| content_records_match(records, &desired_records))
+            {
+                summary.unchanged += 1;
+                continue;
             }
 
-            // Upsert the content record.
-            let record = ContentRecord {
-                id: format!("cr_{}", compute_hash(rel_path.as_bytes())),
-                content_type: content_type.to_owned(),
-                file_path: rel_path.clone(),
-                content_hash,
-                content: content_str,
-                embedding: None,
-                source_path: source_path.to_owned(),
-                file_size_bytes: metadata.len(),
-                ingested_at: Utc::now(),
-            };
-
-            queries.upsert_content_record(&record).await?;
+            queries.delete_content_record_by_path(&rel_path).await?;
+            for record in &desired_records {
+                queries.upsert_content_record(record).await?;
+            }
             summary.ingested += 1;
         }
     }
 
     // Remove records for files that no longer exist.
-    for existing_record in &existing {
+    let mut removed_paths: HashSet<String> = HashSet::new();
+    for existing_record in existing_by_path.values().flatten() {
         if existing_record.source_path == source_path
             && !seen_paths.contains(&existing_record.file_path)
+            && removed_paths.insert(existing_record.file_path.clone())
         {
             queries
                 .delete_content_record_by_path(&existing_record.file_path)
@@ -320,6 +319,241 @@ fn compute_hash(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
     hex::encode(hasher.finalize())
+}
+
+fn group_content_records_by_path(
+    records: Vec<ContentRecord>,
+) -> HashMap<String, Vec<ContentRecord>> {
+    let mut grouped: HashMap<String, Vec<ContentRecord>> = HashMap::new();
+    for record in records {
+        grouped
+            .entry(record.file_path.clone())
+            .or_default()
+            .push(record);
+    }
+    grouped
+}
+
+fn content_records_match(existing: &[ContentRecord], desired: &[ContentRecord]) -> bool {
+    if existing.len() != desired.len() {
+        return false;
+    }
+
+    let existing_by_id: HashMap<&str, &ContentRecord> = existing
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect();
+
+    desired.iter().all(|desired_record| {
+        existing_by_id
+            .get(desired_record.id.as_str())
+            .is_some_and(|existing_record| {
+                existing_record.content_hash == desired_record.content_hash
+                    && existing_record.record_kind == desired_record.record_kind
+                    && existing_record.chunk_id == desired_record.chunk_id
+                    && existing_record.chunk_index == desired_record.chunk_index
+                    && existing_record.heading_path == desired_record.heading_path
+                    && existing_record.line_start == desired_record.line_start
+                    && existing_record.line_end == desired_record.line_end
+                    && existing_record.fallback_reason == desired_record.fallback_reason
+                    && existing_record.lint_summary == desired_record.lint_summary
+                    && existing_record.suggestions == desired_record.suggestions
+            })
+    })
+}
+
+fn build_content_records(
+    rel_path: &str,
+    content_type: &str,
+    source_path: &str,
+    file_size_bytes: u64,
+    content_hash: &str,
+    content: &str,
+) -> Result<Vec<ContentRecord>, EngramError> {
+    if is_markdown_path(rel_path) {
+        return build_markdown_content_records(
+            rel_path,
+            content_type,
+            source_path,
+            file_size_bytes,
+            content_hash,
+            content,
+        );
+    }
+
+    Ok(vec![file_content_record(
+        rel_path,
+        content_type,
+        source_path,
+        file_size_bytes,
+        content_hash,
+        content,
+        None,
+        None,
+        Vec::new(),
+    )])
+}
+
+fn build_markdown_content_records(
+    rel_path: &str,
+    content_type: &str,
+    source_path: &str,
+    file_size_bytes: u64,
+    content_hash: &str,
+    content: &str,
+) -> Result<Vec<ContentRecord>, EngramError> {
+    let title_hint = markdown_title_hint(rel_path);
+    let chunks = chunk_markdown_document_with_title_hint(content, Some(&title_hint))?;
+
+    if chunks.len() == 1 && chunks[0].record_kind == "file" {
+        let fallback = &chunks[0];
+        return Ok(vec![file_content_record(
+            rel_path,
+            content_type,
+            source_path,
+            file_size_bytes,
+            content_hash,
+            content,
+            fallback.fallback_reason.clone(),
+            fallback.lint_summary.clone(),
+            fallback.suggestions.clone(),
+        )]);
+    }
+
+    Ok(chunks
+        .into_iter()
+        .map(|chunk| {
+            markdown_chunk_record(
+                rel_path,
+                content_type,
+                source_path,
+                file_size_bytes,
+                content_hash,
+                chunk,
+            )
+        })
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn file_content_record(
+    rel_path: &str,
+    content_type: &str,
+    source_path: &str,
+    file_size_bytes: u64,
+    content_hash: &str,
+    content: &str,
+    fallback_reason: Option<String>,
+    lint_summary: Option<String>,
+    suggestions: Vec<String>,
+) -> ContentRecord {
+    let identity_seed = content_record_identity_seed(rel_path, content_type, source_path, None);
+    ContentRecord {
+        id: format!("cr_{}", compute_hash(identity_seed.as_bytes())),
+        content_type: content_type.to_owned(),
+        file_path: rel_path.to_owned(),
+        content_hash: content_hash.to_owned(),
+        content: content.to_owned(),
+        embedding: None,
+        source_path: source_path.to_owned(),
+        file_size_bytes,
+        ingested_at: Utc::now(),
+        record_kind: "file".to_owned(),
+        chunk_id: None,
+        chunk_index: None,
+        heading_path: Vec::new(),
+        line_start: None,
+        line_end: None,
+        fallback_reason,
+        lint_summary,
+        suggestions,
+    }
+}
+
+fn markdown_chunk_record(
+    rel_path: &str,
+    content_type: &str,
+    source_path: &str,
+    file_size_bytes: u64,
+    content_hash: &str,
+    chunk: MarkdownChunk,
+) -> ContentRecord {
+    let chunk_key = content_record_identity_seed(
+        rel_path,
+        content_type,
+        source_path,
+        Some(chunk.chunk_id.as_str()),
+    );
+    ContentRecord {
+        id: format!("cr_{}", compute_hash(chunk_key.as_bytes())),
+        content_type: content_type.to_owned(),
+        file_path: rel_path.to_owned(),
+        content_hash: content_hash.to_owned(),
+        content: chunk.content,
+        embedding: None,
+        source_path: source_path.to_owned(),
+        file_size_bytes,
+        ingested_at: Utc::now(),
+        record_kind: chunk.record_kind,
+        chunk_id: Some(chunk.chunk_id),
+        chunk_index: Some(chunk.chunk_index),
+        heading_path: chunk.heading_path,
+        line_start: chunk.line_start,
+        line_end: chunk.line_end,
+        fallback_reason: chunk.fallback_reason,
+        lint_summary: chunk.lint_summary,
+        suggestions: chunk.suggestions,
+    }
+}
+
+fn content_record_identity_seed(
+    rel_path: &str,
+    content_type: &str,
+    source_path: &str,
+    chunk_id: Option<&str>,
+) -> String {
+    match chunk_id {
+        Some(chunk_id) => format!("{source_path}:{content_type}:{rel_path}:{chunk_id}"),
+        None => format!("{source_path}:{content_type}:{rel_path}"),
+    }
+}
+
+fn is_markdown_path(rel_path: &str) -> bool {
+    Path::new(rel_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        })
+}
+
+fn markdown_title_hint(rel_path: &str) -> String {
+    let filename = Path::new(rel_path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("Notes");
+
+    let mut titled = String::new();
+    let mut capitalize_next = true;
+    for character in filename.chars() {
+        if matches!(character, '-' | '_' | ' ') {
+            if !titled.is_empty() && !titled.ends_with(' ') {
+                titled.push(' ');
+            }
+            capitalize_next = true;
+            continue;
+        }
+
+        if capitalize_next {
+            titled.extend(character.to_uppercase());
+            capitalize_next = false;
+        } else {
+            titled.extend(character.to_lowercase());
+        }
+    }
+
+    titled.trim().to_owned()
 }
 
 /// Simple binary detection: check for null bytes in the first 8KB.
@@ -389,27 +623,27 @@ pub async fn ingest_single_file(
     // Check existing record for change detection.
     let existing: Vec<crate::models::ContentRecord> =
         queries.select_content_records(Some(content_type)).await?;
-    let already_current = existing
-        .iter()
-        .any(|r| r.file_path == rel_path && r.content_hash == content_hash);
+    let existing_by_path = group_content_records_by_path(existing);
+    let desired_records = build_content_records(
+        &rel_path,
+        content_type,
+        source_path,
+        metadata.len(),
+        &content_hash,
+        &content_str,
+    )?;
+    let already_current = existing_by_path
+        .get(&rel_path)
+        .is_some_and(|records| content_records_match(records, &desired_records));
 
     if already_current {
         return Ok(false);
     }
 
-    let record = ContentRecord {
-        id: format!("cr_{}", compute_hash(rel_path.as_bytes())),
-        content_type: content_type.to_owned(),
-        file_path: rel_path,
-        content_hash,
-        content: content_str,
-        embedding: None,
-        source_path: source_path.to_owned(),
-        file_size_bytes: metadata.len(),
-        ingested_at: Utc::now(),
-    };
-
-    queries.upsert_content_record(&record).await?;
+    queries.delete_content_record_by_path(&rel_path).await?;
+    for record in &desired_records {
+        queries.upsert_content_record(record).await?;
+    }
     Ok(true)
 }
 
@@ -481,4 +715,25 @@ pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<u
 
     info!(updated, "content embedding backfill complete");
     Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_record_identity_seed;
+
+    #[test]
+    fn content_record_identity_seed_scopes_file_records_by_source_and_type() {
+        let docs = content_record_identity_seed("docs/guide.md", "docs", "docs", None);
+        let specs = content_record_identity_seed("docs/guide.md", "spec", "specs", None);
+        assert_ne!(docs, specs);
+    }
+
+    #[test]
+    fn content_record_identity_seed_scopes_chunk_records_by_source_and_type() {
+        let docs =
+            content_record_identity_seed("docs/guide.md", "docs", "docs", Some("guide/install"));
+        let specs =
+            content_record_identity_seed("docs/guide.md", "spec", "specs", Some("guide/install"));
+        assert_ne!(docs, specs);
+    }
 }

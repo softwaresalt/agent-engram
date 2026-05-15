@@ -34,6 +34,15 @@ async fn insert_content_record_with_embedding(
         source_path: "docs".to_string(),
         file_size_bytes: content.len() as u64,
         ingested_at: chrono::Utc::now(),
+        record_kind: "file".to_string(),
+        chunk_id: None,
+        chunk_index: None,
+        heading_path: Vec::new(),
+        line_start: None,
+        line_end: None,
+        fallback_reason: None,
+        lint_summary: None,
+        suggestions: Vec::new(),
     };
     queries
         .upsert_content_record(&record)

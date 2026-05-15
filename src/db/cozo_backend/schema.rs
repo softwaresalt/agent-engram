@@ -398,18 +398,27 @@ pub const CREATE_REFERENCES_EDGE: &str = r#"
 
 /// CozoScript `:create` for `content_record` — ingested workspace content.
 ///
-/// Key: `file_path` — one record per file path (unique constraint).
+/// Key: `id` — one record per retrieval unit.
 pub const CREATE_CONTENT_RECORD: &str = r#"
 :create content_record {
-    file_path: String
+    id: String
     =>
-    id: String,
+    file_path: String,
     content_type: String,
     content_hash: String,
     content: String,
     source_path: String,
     file_size_bytes: Int,
     ingested_at: String,
+    record_kind: String,
+    chunk_id: String,
+    chunk_index: Int,
+    heading_path: [String],
+    line_start: Int,
+    line_end: Int,
+    fallback_reason: String,
+    lint_summary: String,
+    suggestions: [String],
     embedding: [Float],
 }
 "#;
