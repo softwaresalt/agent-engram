@@ -96,7 +96,7 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
         "unified_search" | "query_memory" => {
             let total = value_array_len(value.get("results"));
             insert_shape_count(&mut shape_counts, "results", total);
-            (0, total, total, shape_counts)
+            (total, total, total, shape_counts)
         }
         "impact_analysis" => {
             let total = value_array_len(value.get("code_neighborhood"));
@@ -106,13 +106,13 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
         "query_graph" => {
             let total = value_u32(value.get("row_count"));
             insert_shape_count(&mut shape_counts, "rows", total);
-            (0, total, total, shape_counts)
+            (total, total, total, shape_counts)
         }
         #[cfg(feature = "git-graph")]
         "query_changes" => {
             let total = value_u32(value.get("total"));
             insert_shape_count(&mut shape_counts, "changes", total);
-            (0, total, total, shape_counts)
+            (total, total, total, shape_counts)
         }
         "get_branch_metrics" => {
             let tool_entries = object_len_u32(
@@ -125,7 +125,11 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
                     .get("summary")
                     .and_then(|summary| summary.get("top_symbols")),
             );
-            let comparison_present = u32::from(value.get("comparison").is_some());
+            let comparison_present = u32::from(
+                value
+                    .get("comparison")
+                    .is_some_and(|comparison| !comparison.is_null()),
+            );
             insert_shape_count(&mut shape_counts, "tool_entries", tool_entries);
             insert_shape_count(&mut shape_counts, "top_symbols", top_symbols);
             insert_shape_count(&mut shape_counts, "comparison", comparison_present);
@@ -356,4 +360,49 @@ pub async fn dispatch(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_counts;
+    use serde_json::json;
+
+    #[test]
+    fn query_memory_preserves_legacy_symbol_count_compatibility() {
+        let value = json!({
+            "results": [
+                { "id": "a" },
+                { "id": "b" },
+            ]
+        });
+
+        let (symbols_returned, results_returned, result_count, shape_counts) =
+            extract_counts("query_memory", &value);
+
+        assert_eq!(symbols_returned, 2);
+        assert_eq!(results_returned, 2);
+        assert_eq!(result_count, 2);
+        assert_eq!(shape_counts.get("results"), Some(&2));
+    }
+
+    #[test]
+    fn branch_metrics_ignores_null_comparison_payloads() {
+        let value = json!({
+            "summary": {
+                "by_tool": {
+                    "map_code": { "call_count": 1 }
+                },
+                "top_symbols": [
+                    { "name": "map_code", "count": 1 }
+                ]
+            },
+            "comparison": null
+        });
+
+        let (_, _, _, shape_counts) = extract_counts("get_branch_metrics", &value);
+
+        assert_eq!(shape_counts.get("comparison"), Some(&0));
+        assert_eq!(shape_counts.get("tool_entries"), Some(&1));
+        assert_eq!(shape_counts.get("top_symbols"), Some(&1));
+    }
 }
