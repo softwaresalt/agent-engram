@@ -155,7 +155,24 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
             insert_shape_count(&mut shape_counts, "recommendations", recommendations);
             (0, 1, 1, shape_counts)
         }
-        "get_workspace_status" | "get_daemon_status" => {
+        "get_workspace_status" => {
+            let code_graph = value.get("code_graph");
+            let code_files = value_u32(code_graph.and_then(|graph| graph.get("code_files")));
+            let functions = value_u32(code_graph.and_then(|graph| graph.get("functions")));
+            let classes = value_u32(code_graph.and_then(|graph| graph.get("classes")));
+            let interfaces = value_u32(code_graph.and_then(|graph| graph.get("interfaces")));
+            let edges = value_u32(code_graph.and_then(|graph| graph.get("edges")));
+            let scan_status_present =
+                u32::from(value.get("scan_status").is_some_and(|scan| !scan.is_null()));
+            insert_shape_count(&mut shape_counts, "code_files", code_files);
+            insert_shape_count(&mut shape_counts, "functions", functions);
+            insert_shape_count(&mut shape_counts, "classes", classes);
+            insert_shape_count(&mut shape_counts, "interfaces", interfaces);
+            insert_shape_count(&mut shape_counts, "edges", edges);
+            insert_shape_count(&mut shape_counts, "scan_status", scan_status_present);
+            (0, 1, 1, shape_counts)
+        }
+        "get_daemon_status" => {
             let checks =
                 value_array_len(value.get("health").and_then(|health| health.get("checks")));
             insert_shape_count(&mut shape_counts, "checks", checks);
