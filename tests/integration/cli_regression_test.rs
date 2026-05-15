@@ -103,7 +103,7 @@ fn cli_regression_direct_sync_empty_workspace_exits_zero() {
 }
 
 /// `sync --direct` on a workspace containing a Rust source file must report
-/// `files_parsed >= 1` in the result payload.
+/// at least one indexed file in the sync result payload.
 #[test]
 fn cli_regression_direct_sync_indexes_rust_source_file() {
     let tmp = TempDir::new().expect("tempdir");
@@ -123,19 +123,24 @@ fn cli_regression_direct_sync_indexes_rust_source_file() {
         "`sync --direct` with a source file should exit 0; stderr: {stderr}"
     );
 
-    // Parse the JSON-RPC envelope and inspect files_parsed.
+    // Parse the JSON-RPC envelope and inspect the sync file counters.
     let value: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout must be valid JSON");
 
-    let files_parsed = value
-        .pointer("/result/files_parsed")
-        .or_else(|| value.pointer("/result/result/files_parsed"))
+    let indexed_files = value
+        .pointer("/result/files_added")
+        .or_else(|| value.pointer("/result/result/files_added"))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+        + value
+            .pointer("/result/files_modified")
+            .or_else(|| value.pointer("/result/result/files_modified"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
     assert!(
-        files_parsed >= 1,
-        "expected at least 1 parsed file; stdout: {stdout}"
+        indexed_files >= 1,
+        "expected at least 1 indexed file in sync output; stdout: {stdout}"
     );
 }
 
