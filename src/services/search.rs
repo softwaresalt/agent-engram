@@ -26,6 +26,30 @@ pub struct SearchResult {
     pub content: String,
     /// Combined relevance score in `[0.0, 1.0]`.
     pub score: f32,
+    /// Display title for the result when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Workspace-relative file path when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// One-based line range string, e.g. `"L3-L5"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_range: Option<String>,
+    /// Retrieval granularity for content-backed results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_kind: Option<String>,
+    /// Heading ancestry for Markdown chunk results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heading_path: Vec<String>,
+    /// Explicit fallback reason when chunking degrades to file-level retrieval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// Advisory lint summary for the matched record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lint_summary: Option<String>,
+    /// Advisory lint suggestions for the matched record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
 }
 
 /// Searchable item fed into the ranking pipeline.
@@ -35,6 +59,14 @@ pub struct SearchCandidate {
     pub source_type: String,
     pub content: String,
     pub embedding: Option<Vec<f32>>,
+    pub title: Option<String>,
+    pub file_path: Option<String>,
+    pub line_range: Option<String>,
+    pub record_kind: Option<String>,
+    pub heading_path: Vec<String>,
+    pub fallback_reason: Option<String>,
+    pub lint_summary: Option<String>,
+    pub suggestions: Vec<String>,
 }
 
 // ── Unified Semantic Search Types (Phase 7 — US5) ────────────────────────
@@ -78,6 +110,21 @@ pub struct UnifiedSearchResult {
     /// Linked code symbol names (task nodes only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_symbols: Option<Vec<String>>,
+    /// Retrieval granularity for content-backed results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_kind: Option<String>,
+    /// Heading ancestry for Markdown chunk results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heading_path: Vec<String>,
+    /// Explicit fallback reason when chunking degrades to file-level retrieval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// Advisory lint summary for the matched record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lint_summary: Option<String>,
+    /// Advisory lint suggestions for the matched record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
 }
 
 /// Merge code-region and task-region results into a single list sorted by
@@ -204,6 +251,14 @@ pub fn hybrid_search(
                 source_type: c.source_type.clone(),
                 content: c.content.clone(),
                 score: combined,
+                title: c.title.clone(),
+                file_path: c.file_path.clone(),
+                line_range: c.line_range.clone(),
+                record_kind: c.record_kind.clone(),
+                heading_path: c.heading_path.clone(),
+                fallback_reason: c.fallback_reason.clone(),
+                lint_summary: c.lint_summary.clone(),
+                suggestions: c.suggestions.clone(),
             }
         })
         .collect();
@@ -296,6 +351,14 @@ mod tests {
             source_type: "spec".to_string(),
             content: "user login authentication".to_string(),
             embedding: None,
+            title: None,
+            file_path: None,
+            line_range: None,
+            record_kind: None,
+            heading_path: Vec::new(),
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
         }];
 
         let results = hybrid_search("user login", &candidates, 10).unwrap();
@@ -318,12 +381,28 @@ mod tests {
                 source_type: "spec".to_string(),
                 content: "the quick brown fox".to_string(),
                 embedding: None,
+                title: None,
+                file_path: None,
+                line_range: None,
+                record_kind: None,
+                heading_path: Vec::new(),
+                fallback_reason: None,
+                lint_summary: None,
+                suggestions: Vec::new(),
             },
             SearchCandidate {
                 id: "spec:high".to_string(),
                 source_type: "spec".to_string(),
                 content: "user login authentication flow".to_string(),
                 embedding: None,
+                title: None,
+                file_path: None,
+                line_range: None,
+                record_kind: None,
+                heading_path: Vec::new(),
+                fallback_reason: None,
+                lint_summary: None,
+                suggestions: Vec::new(),
             },
         ];
 
@@ -344,6 +423,14 @@ mod tests {
                 source_type: "spec".to_string(),
                 content: format!("document number {i} about login"),
                 embedding: None,
+                title: None,
+                file_path: None,
+                line_range: None,
+                record_kind: None,
+                heading_path: Vec::new(),
+                fallback_reason: None,
+                lint_summary: None,
+                suggestions: Vec::new(),
             })
             .collect();
 
