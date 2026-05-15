@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
 use chrono::Utc;
 use serde::Deserialize;
@@ -140,9 +142,10 @@ pub async fn index_workspace(
 
     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
     let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
-    finish_indexing_scan_progress(&state, &result, true).await;
-    state.finish_indexing().await;
-    drain_pending_sync(&state).await;
+    finalize_indexing_request(&state, &result, true, |state| {
+        Box::pin(drain_pending_sync(state))
+    })
+    .await;
     result
 }
 
@@ -232,9 +235,10 @@ pub async fn sync_workspace(
 
     // Run the sync logic, ensuring the flag is cleared on all exit paths.
     let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
-    finish_indexing_scan_progress(&state, &result, false).await;
-    state.finish_indexing().await;
-    drain_pending_sync(&state).await;
+    finalize_indexing_request(&state, &result, false, |state| {
+        Box::pin(drain_pending_sync(state))
+    })
+    .await;
     result
 }
 
@@ -322,6 +326,21 @@ async fn finish_indexing_scan_progress(
     state.set_scan_progress(Some(progress)).await;
 }
 
+type DrainFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+async fn finalize_indexing_request<F>(
+    state: &SharedState,
+    result: &Result<Value, EngramError>,
+    full_index: bool,
+    drain: F,
+) where
+    F: for<'a> FnOnce(&'a SharedState) -> DrainFuture<'a>,
+{
+    state.finish_indexing().await;
+    drain(state).await;
+    finish_indexing_scan_progress(state, result, full_index).await;
+}
+
 // ── index_git_history (T042) ──────────────────────────────────────────────────
 
 /// Parameters for the `index_git_history` MCP tool.
@@ -385,11 +404,16 @@ pub async fn index_git_history(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use serde_json::json;
 
     use super::{
-        completed_index_scan_progress, completed_sync_scan_progress, indexing_started_progress,
+        completed_index_scan_progress, completed_sync_scan_progress, finalize_indexing_request,
+        indexing_started_progress,
     };
+    use crate::server::state::AppState;
 
     #[test]
     fn indexing_started_progress_sets_running_without_totals() {
@@ -430,5 +454,48 @@ mod tests {
         assert_eq!(progress.files_scanned, 10);
         assert_eq!(progress.files_total, 10);
         assert!(progress.last_completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn finalize_indexing_request_keeps_progress_running_until_pending_sync_drains() {
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_scan_progress(Some(indexing_started_progress(None)))
+            .await;
+        assert!(state.try_start_indexing(), "should acquire indexing lock");
+
+        let observed_running = Arc::new(AtomicBool::new(false));
+        let observed_running_for_drain = Arc::clone(&observed_running);
+        let result = Ok(json!({
+            "files_parsed": 2,
+            "files_skipped": 1
+        }));
+
+        finalize_indexing_request(&state, &result, true, |state| {
+            let observed_running = Arc::clone(&observed_running_for_drain);
+            Box::pin(async move {
+                let progress = state
+                    .scan_progress_snapshot()
+                    .await
+                    .expect("scan progress should be present while draining");
+                observed_running.store(progress.running, Ordering::SeqCst);
+            })
+        })
+        .await;
+
+        assert!(
+            observed_running.load(Ordering::SeqCst),
+            "progress should remain running until pending sync drain completes"
+        );
+        let final_progress = state
+            .scan_progress_snapshot()
+            .await
+            .expect("completed progress should be recorded");
+        assert!(
+            !final_progress.running,
+            "progress should be marked complete after drain finishes"
+        );
+        assert_eq!(final_progress.files_scanned, 3);
+        assert_eq!(final_progress.files_total, 3);
     }
 }
