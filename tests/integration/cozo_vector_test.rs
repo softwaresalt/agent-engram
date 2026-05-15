@@ -5,7 +5,7 @@
 //!  - `vector_search_symbols_native` — returns Vec<(f32, `SymbolMatch`)>
 //!  - `vector_search_symbols` — returns Vec<SymbolMatch>
 //!  - `upsert_content_record`, `select_content_records`, `update_content_record_embedding`,
-//!    `delete_content_record_by_path`
+//!    `delete_content_records_by_scope`
 //!  - `update_symbol_embedding`
 //!  - `gc_corrupted_embeddings`
 //!
@@ -258,7 +258,7 @@ mod vector_tests {
         let q = engram::db::queries::CodeGraphQueries::new(db);
         let rec = make_content("content:cr3", "docs/to_delete.md", "Delete me");
         q.upsert_content_record(&rec).await.expect("upsert");
-        q.delete_content_record_by_path("docs/to_delete.md")
+        q.delete_content_records_by_scope("docs/to_delete.md", "file", "docs/to_delete.md")
             .await
             .expect("delete");
 
@@ -269,6 +269,56 @@ mod vector_tests {
         assert!(
             !records.iter().any(|r| r.file_path == "docs/to_delete.md"),
             "deleted content record must not appear in select"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_content_records_by_scope_preserves_other_sources_with_same_path() {
+        let (_tmp, db) = make_db().await;
+        let q = engram::db::queries::CodeGraphQueries::new(db);
+
+        let mut scoped = make_content("content:scoped", "docs/shared.md", "Docs copy");
+        scoped.content_type = "docs".to_owned();
+        scoped.source_path = "docs".to_owned();
+
+        let mut other_source = make_content("content:other_source", "docs/shared.md", "Notes copy");
+        other_source.content_type = "docs".to_owned();
+        other_source.source_path = "notes".to_owned();
+
+        let mut other_type = make_content("content:other_type", "docs/shared.md", "Spec copy");
+        other_type.content_type = "spec".to_owned();
+        other_type.source_path = "docs".to_owned();
+
+        q.upsert_content_record(&scoped)
+            .await
+            .expect("upsert scoped");
+        q.upsert_content_record(&other_source)
+            .await
+            .expect("upsert other source");
+        q.upsert_content_record(&other_type)
+            .await
+            .expect("upsert other type");
+
+        q.delete_content_records_by_scope("docs/shared.md", "docs", "docs")
+            .await
+            .expect("delete scoped");
+
+        let records = q
+            .select_content_records(None)
+            .await
+            .expect("select after scoped delete");
+
+        assert!(
+            !records.iter().any(|record| record.id == scoped.id),
+            "matching scope should be removed"
+        );
+        assert!(
+            records.iter().any(|record| record.id == other_source.id),
+            "other sources sharing the path must be preserved"
+        );
+        assert!(
+            records.iter().any(|record| record.id == other_type.id),
+            "other content types sharing the path must be preserved"
         );
     }
 

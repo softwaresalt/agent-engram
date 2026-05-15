@@ -180,10 +180,19 @@ pub(crate) fn chunk_markdown_document_with_title_hint(
     title_hint: Option<&str>,
 ) -> Result<Vec<MarkdownChunk>, crate::errors::EngramError> {
     let lines: Vec<&str> = source.lines().collect();
+    let frontmatter_end = frontmatter_end_index(&lines).unwrap_or(0);
     let headings = collect_headings(&lines);
-    let findings = lint_findings(&headings);
+    let leading_content_before_h1 = headings.first().is_some_and(|heading| {
+        heading.level == 1
+            && lines[frontmatter_end..heading.line_start.saturating_sub(1)]
+                .iter()
+                .any(|line| !line.trim().is_empty())
+    });
+    let findings = lint_findings(&headings, leading_content_before_h1);
     let has_h1 = headings.iter().any(|heading| heading.level == 1);
-    let stable_heading_spine = headings.first().is_some_and(|heading| heading.level == 1) && has_h1;
+    let stable_heading_spine = headings.first().is_some_and(|heading| heading.level == 1)
+        && has_h1
+        && !leading_content_before_h1;
 
     if !stable_heading_spine {
         return Ok(vec![fallback_chunk(source, title_hint, &findings)]);
@@ -325,7 +334,7 @@ fn parse_setext_heading(lines: &[&str], index: usize) -> Option<(u8, String)> {
     Some((level, current.to_owned()))
 }
 
-fn lint_findings(headings: &[MarkdownHeading]) -> Vec<String> {
+fn lint_findings(headings: &[MarkdownHeading], leading_content_before_h1: bool) -> Vec<String> {
     let mut findings: Vec<String> = Vec::new();
     let has_h1 = headings.iter().any(|heading| heading.level == 1);
     if !has_h1 {
@@ -333,6 +342,9 @@ fn lint_findings(headings: &[MarkdownHeading]) -> Vec<String> {
     }
     if headings.first().is_some_and(|heading| heading.level != 1) {
         findings.push("missing_leading_h1".to_owned());
+    }
+    if leading_content_before_h1 {
+        findings.push("leading_content_before_h1".to_owned());
     }
     findings
 }

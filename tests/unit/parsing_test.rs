@@ -1185,6 +1185,34 @@ fn test_markdown_chunking_distinguishes_missing_from_non_leading_h1() {
     );
 }
 
+/// Introductory prose before the first H1 must not be dropped during chunking.
+#[test]
+fn test_markdown_chunking_falls_back_when_intro_precedes_h1() {
+    let source =
+        "Intro paragraph before the document title.\n\n# Guide\n\n## Install\n\nRun cargo build.\n";
+    let chunks = chunk_markdown_document(source).unwrap();
+    let fallback = &chunks[0];
+
+    assert_eq!(
+        chunks.len(),
+        1,
+        "leading prose before the first H1 should trigger file-level fallback"
+    );
+    assert_eq!(fallback.record_kind, "file");
+    assert_eq!(
+        fallback.fallback_reason.as_deref(),
+        Some("missing_heading_structure")
+    );
+    assert_eq!(fallback.content, source);
+    assert!(
+        fallback
+            .lint_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("leading_content_before_h1")),
+        "fallback lint summary should explain why chunking was disabled"
+    );
+}
+
 // ── SQL parsing tests (034.002-T core + 034.003-T secondary) ─────────────────
 
 /// CREATE TABLE must produce an `ExtractedSymbol::Class` with the table name.
