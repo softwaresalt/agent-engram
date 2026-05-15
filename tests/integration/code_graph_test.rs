@@ -312,7 +312,7 @@ async fn index_workspace_oversized_boundary_exact_limit_is_parsed() {
     let ws = tmp.path();
 
     // Build content whose byte-length is exactly 64.
-    let content = "pub fn f() {}\n".repeat(4); // 15 × 4 = 60 + 4 newlines = 60
+    let content = "pub fn f() {}\n".repeat(4); // 14-byte literal × 4 = 56 bytes before padding
     // Pad to exactly 64 bytes.
     let padding = 64usize.saturating_sub(content.len());
     let content = format!("{}{}", content, " ".repeat(padding));

@@ -139,3 +139,48 @@ async fn sync_workspace_with_progress_counts_deleted_current_and_completed_work(
         "last snapshot should report all work complete"
     );
 }
+
+#[test]
+async fn sync_workspace_tracks_oversized_files_without_errors() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    write_sample_file(ws, "src/kept.rs", "pub fn kept() {}\n");
+
+    let config = CodeGraphConfig {
+        max_file_size_bytes: 64,
+        ..CodeGraphConfig::default()
+    };
+    let (data_dir, branch) = test_db_params(ws);
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index");
+
+    write_sample_file(
+        ws,
+        "src/oversized.rs",
+        &"x".repeat(usize::try_from(config.max_file_size_bytes + 1).expect("limit fits usize")),
+    );
+
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync should succeed");
+
+    assert_eq!(
+        result.files_added, 0,
+        "oversized file must not be indexed as added"
+    );
+    assert_eq!(
+        result.files_unchanged, 1,
+        "existing unchanged file should still be counted"
+    );
+    assert_eq!(
+        result.oversized_files_skipped, 1,
+        "oversized file must increment oversized_files_skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "oversized files must not appear in sync errors"
+    );
+}
