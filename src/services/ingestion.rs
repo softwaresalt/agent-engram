@@ -264,10 +264,9 @@ async fn ingest_directory(
                 &content_str,
             )?;
 
-            if existing_by_path
-                .get(&rel_path)
-                .is_some_and(|records| content_records_match(records, &desired_records))
-            {
+            let existing_records =
+                scoped_content_records(existing_by_path.get(&rel_path), source_path);
+            if content_records_match(&existing_records, &desired_records) {
                 summary.unchanged += 1;
                 continue;
             }
@@ -338,6 +337,21 @@ fn group_content_records_by_path(
             .push(record);
     }
     grouped
+}
+
+fn scoped_content_records(
+    records: Option<&Vec<ContentRecord>>,
+    source_path: &str,
+) -> Vec<ContentRecord> {
+    records
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.source_path == source_path)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn content_records_match(existing: &[ContentRecord], desired: &[ContentRecord]) -> bool {
@@ -640,9 +654,8 @@ pub async fn ingest_single_file(
         &content_hash,
         &content_str,
     )?;
-    let already_current = existing_by_path
-        .get(&rel_path)
-        .is_some_and(|records| content_records_match(records, &desired_records));
+    let existing_records = scoped_content_records(existing_by_path.get(&rel_path), source_path);
+    let already_current = content_records_match(&existing_records, &desired_records);
 
     if already_current {
         return Ok(false);
