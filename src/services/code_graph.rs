@@ -498,6 +498,9 @@ async fn index_workspace_impl(
             }
             debug!(path = %rel_path, "code graph: indexed file");
         }
+        // Progress counts completed file decisions, not only successfully indexed
+        // files, so skips and non-fatal per-file errors still advance the caller's
+        // view of total work completed.
         advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
@@ -653,6 +656,8 @@ pub async fn sync_workspace_with_progress(
         let orphaned = handle_deleted_file(&queries, indexed_path, &indexed_file.id).await?;
         result.concerns_orphaned += orphaned;
         result.files_deleted += 1;
+        // Progress counts completed file decisions, including unchanged/skipped
+        // files, so callers see steady forward motion through the full sync set.
         advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
