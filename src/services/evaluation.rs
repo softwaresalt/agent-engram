@@ -50,10 +50,10 @@ pub fn evaluate(events: &[UsageEvent], config: &EvaluationConfig) -> EvaluationR
 
     for (role, role_events) in &by_role {
         let total_calls = u64::try_from(role_events.len()).unwrap_or(u64::MAX);
-        let total_tokens: u64 = role_events.iter().map(|e| e.estimated_tokens).sum();
+        let total_tokens: u64 = role_events.iter().map(|event| event.output_tokens()).sum();
         let total_results: u64 = role_events
             .iter()
-            .map(|e| u64::from(e.results_returned))
+            .map(|event| u64::from(event.effective_result_count()))
             .sum();
 
         let avg_tokens_per_call = if total_calls > 0 {

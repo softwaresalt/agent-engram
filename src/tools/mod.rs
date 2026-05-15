@@ -3,6 +3,7 @@
 //! The `dispatch` function routes tool names to handler functions in
 //! the `lifecycle`, `read`, and `write` submodules.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -33,7 +34,9 @@ fn not_implemented(method: &str) -> EngramError {
 fn should_record_metrics(method: &str) -> bool {
     matches!(
         method,
-        "query_memory"
+        "get_daemon_status"
+            | "get_workspace_status"
+            | "query_memory"
             | "get_workspace_statistics"
             | "map_code"
             | "list_symbols"
@@ -43,6 +46,8 @@ fn should_record_metrics(method: &str) -> bool {
             | "query_graph"
             | "get_branch_metrics"
             | "get_token_savings_report"
+            | "get_evaluation_report"
+            | "get_mutable_script_retry_metrics"
     ) || cfg!(feature = "git-graph") && method == "query_changes"
 }
 
@@ -60,41 +65,107 @@ fn value_u32(value: Option<&Value>) -> u32 {
         .unwrap_or(0)
 }
 
-fn extract_counts(method: &str, value: &Value) -> (u32, u32) {
+fn insert_shape_count(shape_counts: &mut BTreeMap<String, u32>, key: &str, count: u32) {
+    shape_counts.insert(key.to_owned(), count);
+}
+
+fn object_len_u32(value: Option<&Value>) -> u32 {
+    value
+        .and_then(Value::as_object)
+        .and_then(|object| u32::try_from(object.len()).ok())
+        .unwrap_or(0)
+}
+
+fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<String, u32>) {
+    let mut shape_counts = BTreeMap::new();
     match method {
         "map_code" => {
             let neighbors = value_array_len(value.get("neighbors"));
             let root_count = u32::from(!value.get("root").unwrap_or(&Value::Null).is_null());
             let total = neighbors.saturating_add(root_count);
-            (total, total)
+            insert_shape_count(&mut shape_counts, "neighbors", neighbors);
+            insert_shape_count(&mut shape_counts, "root", root_count);
+            insert_shape_count(&mut shape_counts, "nodes", total);
+            (total, total, total, shape_counts)
         }
         "list_symbols" => {
             let total = value_u32(value.get("total_count"));
-            (total, total)
+            insert_shape_count(&mut shape_counts, "symbols", total);
+            (total, total, total, shape_counts)
         }
         "unified_search" | "query_memory" => {
             let total = value_array_len(value.get("results"));
-            (total, total)
+            insert_shape_count(&mut shape_counts, "results", total);
+            (0, total, total, shape_counts)
         }
         "impact_analysis" => {
             let total = value_array_len(value.get("code_neighborhood"));
-            (total, total)
+            insert_shape_count(&mut shape_counts, "code_neighborhood", total);
+            (total, total, total, shape_counts)
         }
         "query_graph" => {
             let total = value_u32(value.get("row_count"));
-            (total, total)
+            insert_shape_count(&mut shape_counts, "rows", total);
+            (0, total, total, shape_counts)
         }
         #[cfg(feature = "git-graph")]
         "query_changes" => {
             let total = value_u32(value.get("total"));
-            (total, total)
+            insert_shape_count(&mut shape_counts, "changes", total);
+            (0, total, total, shape_counts)
         }
         "get_branch_metrics" => {
-            let total = u32::from(value.get("comparison").is_some()) + 1;
-            (0, total)
+            let tool_entries = object_len_u32(
+                value
+                    .get("summary")
+                    .and_then(|summary| summary.get("by_tool")),
+            );
+            let top_symbols = value_array_len(
+                value
+                    .get("summary")
+                    .and_then(|summary| summary.get("top_symbols")),
+            );
+            let comparison_present = u32::from(value.get("comparison").is_some());
+            insert_shape_count(&mut shape_counts, "tool_entries", tool_entries);
+            insert_shape_count(&mut shape_counts, "top_symbols", top_symbols);
+            insert_shape_count(&mut shape_counts, "comparison", comparison_present);
+            (0, 1, 1, shape_counts)
         }
-        "get_workspace_statistics" | "get_health_report" | "get_token_savings_report" => (0, 1),
-        _ => (0, 0),
+        "get_workspace_statistics" => {
+            let sections = object_len_u32(Some(value));
+            insert_shape_count(&mut shape_counts, "sections", sections);
+            (0, 1, 1, shape_counts)
+        }
+        "get_health_report" => {
+            let checks = value_array_len(value.get("checks"));
+            insert_shape_count(&mut shape_counts, "checks", checks);
+            (0, 1, 1, shape_counts)
+        }
+        "get_token_savings_report" => {
+            let report_present = u32::from(value.get("report").is_some());
+            insert_shape_count(&mut shape_counts, "report", report_present);
+            (0, 1, 1, shape_counts)
+        }
+        "get_evaluation_report" => {
+            let agents = value_array_len(value.get("agents"));
+            let anomalies = value_array_len(value.get("anomalies"));
+            let recommendations = value_array_len(value.get("recommendations"));
+            insert_shape_count(&mut shape_counts, "agents", agents);
+            insert_shape_count(&mut shape_counts, "anomalies", anomalies);
+            insert_shape_count(&mut shape_counts, "recommendations", recommendations);
+            (0, 1, 1, shape_counts)
+        }
+        "get_workspace_status" | "get_daemon_status" => {
+            let checks =
+                value_array_len(value.get("health").and_then(|health| health.get("checks")));
+            insert_shape_count(&mut shape_counts, "checks", checks);
+            (0, 1, 1, shape_counts)
+        }
+        "get_mutable_script_retry_metrics" => {
+            insert_shape_count(&mut shape_counts, "retry_snapshot", 1);
+            (0, 1, 1, shape_counts)
+        }
+        _ => (0, 0, 0, shape_counts),
     }
 }
 
@@ -109,6 +180,11 @@ pub async fn dispatch(
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let start = std::time::Instant::now();
+    let request_bytes = params
+        .as_ref()
+        .map(|value| u64::try_from(value.to_string().len()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let estimated_input_tokens = request_bytes / 4;
 
     // Extract agent identity from JSON-RPC _meta before dispatch.
     let agent_role = policy::extract_agent_role(&params);
@@ -135,14 +211,22 @@ pub async fn dispatch(
             metrics::record(UsageEvent {
                 tool_name: method.to_owned(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                request_bytes,
+                estimated_input_tokens,
                 response_bytes: 0,
+                estimated_output_tokens: 0,
                 estimated_tokens: 0,
+                result_count: 0,
+                response_shape_counts: BTreeMap::new(),
                 symbols_returned: 0,
                 results_returned: 0,
                 branch: snap.workspace.branch.clone(),
                 connection_id: None,
                 agent_role: agent_role.clone(),
                 outcome: "denied".to_string(),
+                prompt_tokens_attributed: None,
+                completion_tokens_attributed: None,
+                cached_tokens_attributed: None,
             });
             return Err(EngramError::from(policy_err));
         }
@@ -214,26 +298,42 @@ pub async fn dispatch(
     if should_record_metrics(method) {
         if let Some(snap) = dispatch_snapshot {
             // Compute response stats from the result (zero defaults for errors).
-            let (response_bytes, symbols_returned, results_returned) = match &result {
+            let (
+                response_bytes,
+                estimated_output_tokens,
+                symbols_returned,
+                results_returned,
+                result_count,
+                response_shape_counts,
+            ) = match &result {
                 Ok(value) => {
                     let rb = u64::try_from(value.to_string().len()).unwrap_or(u64::MAX);
-                    let (sym, res) = extract_counts(method, value);
-                    (rb, sym, res)
+                    let (sym, res, result_count, response_shape_counts) =
+                        extract_counts(method, value);
+                    (rb, rb / 4, sym, res, result_count, response_shape_counts)
                 }
-                Err(_) => (0_u64, 0_u32, 0_u32),
+                Err(_) => (0_u64, 0_u64, 0_u32, 0_u32, 0_u32, BTreeMap::new()),
             };
             let outcome = if result.is_ok() { "success" } else { "error" };
             metrics::record(UsageEvent {
                 tool_name: method.to_owned(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                request_bytes,
+                estimated_input_tokens,
                 response_bytes,
-                estimated_tokens: response_bytes / 4,
+                estimated_output_tokens,
+                estimated_tokens: estimated_output_tokens,
+                result_count,
+                response_shape_counts,
                 symbols_returned,
                 results_returned,
                 branch: snap.workspace.branch,
                 connection_id: None,
                 agent_role: agent_role.clone(),
                 outcome: outcome.to_string(),
+                prompt_tokens_attributed: None,
+                completion_tokens_attributed: None,
+                cached_tokens_attributed: None,
             });
         }
     }

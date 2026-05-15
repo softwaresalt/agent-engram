@@ -1,5 +1,6 @@
 use chrono::Utc;
 use proptest::prelude::*;
+use std::collections::BTreeMap;
 
 use engram::models::class::Class;
 use engram::models::code_edge::{CodeEdge, CodeEdgeType};
@@ -45,14 +46,25 @@ fn arb_usage_event() -> impl Strategy<Value = UsageEvent> {
             )| UsageEvent {
                 tool_name,
                 timestamp,
+                request_bytes: response_bytes / 4,
+                estimated_input_tokens: response_bytes / 16,
                 response_bytes,
+                estimated_output_tokens: response_bytes / 4,
                 estimated_tokens: response_bytes / 4,
+                result_count: results_returned,
+                response_shape_counts: BTreeMap::from([(
+                    String::from("results"),
+                    results_returned,
+                )]),
                 symbols_returned,
                 results_returned,
                 branch,
                 connection_id,
                 agent_role: None,
                 outcome: "success".to_string(),
+                prompt_tokens_attributed: None,
+                completion_tokens_attributed: None,
+                cached_tokens_attributed: None,
             },
         )
 }
@@ -63,6 +75,11 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
             let mut by_tool = std::collections::BTreeMap::new();
             let mut total_tool_calls = 0_u64;
             let mut total_tokens = 0_u64;
+            let mut total_request_bytes = 0_u64;
+            let mut total_response_bytes = 0_u64;
+            let mut total_input_tokens = 0_u64;
+            let mut total_output_tokens = 0_u64;
+            let mut total_result_count = 0_u64;
             let mut top_symbols = Vec::new();
 
             for (name, (call_count, tool_tokens)) in raw_metrics {
@@ -75,6 +92,11 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
                 let avg_tokens = (raw_avg * 100.0).round() / 100.0;
                 total_tool_calls += call_count;
                 total_tokens += tool_tokens;
+                total_request_bytes += tool_tokens / 4;
+                total_response_bytes += tool_tokens;
+                total_input_tokens += tool_tokens / 16;
+                total_output_tokens += tool_tokens;
+                total_result_count += call_count;
                 top_symbols.push(SymbolCount {
                     name: name.clone(),
                     count: u32::try_from(call_count).unwrap_or(u32::MAX),
@@ -85,6 +107,11 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
                         call_count,
                         total_tokens: tool_tokens,
                         avg_tokens,
+                        total_request_bytes: tool_tokens / 4,
+                        total_response_bytes: tool_tokens,
+                        total_input_tokens: tool_tokens / 16,
+                        total_output_tokens: tool_tokens,
+                        total_result_count: call_count,
                     },
                 );
             }
@@ -92,6 +119,11 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
             MetricsSummary {
                 total_tool_calls,
                 total_tokens,
+                total_request_bytes,
+                total_response_bytes,
+                total_input_tokens,
+                total_output_tokens,
+                total_result_count,
                 by_tool,
                 top_symbols,
                 time_range: TimeRange {

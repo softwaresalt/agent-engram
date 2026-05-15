@@ -13,14 +13,22 @@ fn t010_01_usage_event_serde_round_trip() {
     let event = UsageEvent {
         tool_name: "map_code".to_string(),
         timestamp: "2026-03-27T12:00:00Z".to_string(),
+        request_bytes: 240,
+        estimated_input_tokens: 60,
         response_bytes: 4800,
+        estimated_output_tokens: 1200,
         estimated_tokens: 1200,
+        result_count: 5,
+        response_shape_counts: BTreeMap::from([(String::from("nodes"), 5)]),
         symbols_returned: 5,
         results_returned: 5,
         branch: "main".to_string(),
         connection_id: Some("uuid-1234".to_string()),
         agent_role: None,
         outcome: "success".to_string(),
+        prompt_tokens_attributed: None,
+        completion_tokens_attributed: None,
+        cached_tokens_attributed: None,
     };
 
     // WHEN serialized to JSON and deserialized back
@@ -39,14 +47,22 @@ fn t010_01_usage_event_none_connection_id_omitted() {
     let event = UsageEvent {
         tool_name: "list_symbols".to_string(),
         timestamp: "2026-03-27T12:00:00Z".to_string(),
+        request_bytes: 80,
+        estimated_input_tokens: 20,
         response_bytes: 200,
+        estimated_output_tokens: 50,
         estimated_tokens: 50,
+        result_count: 10,
+        response_shape_counts: BTreeMap::from([(String::from("symbols"), 10)]),
         symbols_returned: 10,
         results_returned: 10,
         branch: "main".to_string(),
         connection_id: None,
         agent_role: None,
         outcome: "success".to_string(),
+        prompt_tokens_attributed: None,
+        completion_tokens_attributed: None,
+        cached_tokens_attributed: None,
     };
 
     // WHEN serialized to JSON
@@ -77,6 +93,11 @@ fn t010_01_metrics_summary_from_events() {
     // THEN totals are correct
     assert_eq!(summary.total_tool_calls, 5);
     assert_eq!(summary.total_tokens, 1325); // (1000+2000+500+1500+300)/4
+    assert_eq!(summary.total_request_bytes, 1325);
+    assert_eq!(summary.total_response_bytes, 5300);
+    assert_eq!(summary.total_input_tokens, 329);
+    assert_eq!(summary.total_output_tokens, 1325);
+    assert_eq!(summary.total_result_count, 5);
     assert_eq!(summary.by_tool.len(), 2);
     assert!(summary.by_tool.contains_key("map_code"));
     assert!(summary.by_tool.contains_key("list_symbols"));
@@ -119,6 +140,11 @@ fn t010_01_btreemap_deterministic_ordering() {
             call_count: 1,
             total_tokens: 100,
             avg_tokens: 100.0,
+            total_request_bytes: 40,
+            total_response_bytes: 100,
+            total_input_tokens: 10,
+            total_output_tokens: 100,
+            total_result_count: 1,
         },
     );
     by_tool.insert(
@@ -127,12 +153,22 @@ fn t010_01_btreemap_deterministic_ordering() {
             call_count: 2,
             total_tokens: 200,
             avg_tokens: 100.0,
+            total_request_bytes: 80,
+            total_response_bytes: 200,
+            total_input_tokens: 20,
+            total_output_tokens: 200,
+            total_result_count: 2,
         },
     );
 
     let summary = MetricsSummary {
         total_tool_calls: 3,
         total_tokens: 300,
+        total_request_bytes: 120,
+        total_response_bytes: 300,
+        total_input_tokens: 30,
+        total_output_tokens: 300,
+        total_result_count: 3,
         by_tool,
         top_symbols: vec![],
         time_range: TimeRange {
@@ -160,13 +196,21 @@ fn usage_event(tool: &str, response_bytes: u64, timestamp: &str) -> UsageEvent {
     UsageEvent {
         tool_name: tool.to_string(),
         timestamp: timestamp.to_string(),
+        request_bytes: response_bytes / 4,
+        estimated_input_tokens: response_bytes / 16,
         response_bytes,
+        estimated_output_tokens: response_bytes / 4,
         estimated_tokens: response_bytes / 4,
+        result_count: 1,
+        response_shape_counts: BTreeMap::from([(String::from("results"), 1)]),
         symbols_returned: 1,
         results_returned: 1,
         branch: "main".to_string(),
         connection_id: None,
         agent_role: None,
         outcome: "success".to_string(),
+        prompt_tokens_attributed: None,
+        completion_tokens_attributed: None,
+        cached_tokens_attributed: None,
     }
 }

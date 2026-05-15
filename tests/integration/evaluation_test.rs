@@ -11,6 +11,7 @@ use engram::models::evaluation::{
 };
 use engram::models::metrics::UsageEvent;
 use engram::services::evaluation::evaluate;
+use std::collections::BTreeMap;
 
 // ── Section 1: Evaluation model serde (TASK-017.02.01) ──────────────
 
@@ -183,14 +184,22 @@ fn make_event(tool: &str, tokens: u64, agent_role: Option<&str>) -> UsageEvent {
     UsageEvent {
         tool_name: tool.to_string(),
         timestamp: "2026-03-30T12:00:00Z".to_string(),
+        request_bytes: tokens,
+        estimated_input_tokens: tokens / 4,
         response_bytes: tokens * 4,
+        estimated_output_tokens: tokens,
         estimated_tokens: tokens,
+        result_count: 5,
+        response_shape_counts: BTreeMap::from([(String::from("results"), 5)]),
         symbols_returned: 5,
         results_returned: 5,
         branch: "main".to_string(),
         connection_id: Some("test-conn".to_string()),
         agent_role: agent_role.map(String::from),
         outcome: "success".to_string(),
+        prompt_tokens_attributed: None,
+        completion_tokens_attributed: None,
+        cached_tokens_attributed: None,
     }
 }
 
@@ -305,6 +314,7 @@ fn t017_02_02_anomaly_token_ratio_spike() {
     // Spike event with 100x tokens
     let mut spike = make_event("unified_search", 10_000, Some("spike-agent"));
     spike.results_returned = 1;
+    spike.result_count = 1;
     events.push(spike);
 
     let config = EvaluationConfig::default();
@@ -363,6 +373,7 @@ fn t017_02_02_score_clamped_0_100() {
     let mut event = make_event("list_symbols", 50_000, Some("bad-agent"));
     event.outcome = "error".to_string();
     event.results_returned = 0;
+    event.result_count = 0;
 
     let config = EvaluationConfig::default();
     let report = evaluate(&[event], &config);
