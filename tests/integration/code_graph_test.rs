@@ -417,3 +417,73 @@ async fn index_workspace_oversized_file_does_not_block_siblings() {
         "oversized files must not appear in per-file errors"
     );
 }
+
+#[test]
+async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    let limit: u64 = 64;
+    let config = CodeGraphConfig {
+        max_file_size_bytes: limit,
+        ..CodeGraphConfig::default()
+    };
+
+    write_sample_file(ws, "src/lib.rs", "pub fn tracked() {}\n");
+
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert!(
+        q.get_code_file_by_path("src/lib.rs")
+            .await
+            .expect("lookup indexed file")
+            .is_some(),
+        "initial index should persist the file"
+    );
+
+    write_sample_file(
+        ws,
+        "src/lib.rs",
+        &"x".repeat(usize::try_from(limit + 1).expect("limit fits usize")),
+    );
+
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("re-index should succeed");
+
+    assert_eq!(
+        result.oversized_files_skipped, 1,
+        "oversized file should be reported as skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "oversized file should not surface as an error"
+    );
+    assert!(
+        q.get_code_file_by_path("src/lib.rs")
+            .await
+            .expect("lookup oversized file")
+            .is_none(),
+        "stale code_file record should be removed once the file becomes oversized"
+    );
+    assert!(
+        q.get_symbol_identities_for_file("src/lib.rs")
+            .await
+            .expect("lookup stale symbols")
+            .is_empty(),
+        "stale symbols should be removed once the file becomes oversized"
+    );
+    assert!(
+        q.get_all_file_hashes()
+            .await
+            .expect("lookup file hashes")
+            .into_iter()
+            .all(|record| record.file_path != "src/lib.rs"),
+        "stale file-hash metadata should be removed once the file becomes oversized"
+    );
+}
