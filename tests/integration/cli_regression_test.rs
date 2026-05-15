@@ -67,10 +67,7 @@ fn run_direct(workspace: &Path, args: &[&str]) -> (i32, String, String) {
 fn cli_regression_help_flag_exits_zero() {
     let tmp = TempDir::new().expect("tempdir");
     let (code, _stdout, stderr) = run_direct(tmp.path(), &["--help"]);
-    assert_eq!(
-        code, 0,
-        "`engram --help` should exit 0; stderr: {stderr}"
-    );
+    assert_eq!(code, 0, "`engram --help` should exit 0; stderr: {stderr}");
 }
 
 /// `engram --version` must exit 0.
@@ -113,7 +110,11 @@ fn cli_regression_direct_sync_indexes_rust_source_file() {
     init_git(tmp.path());
 
     // Write a small Rust source file.
-    write_file(tmp.path(), "src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n");
+    write_file(
+        tmp.path(),
+        "src/lib.rs",
+        "pub fn hello() -> &'static str { \"hi\" }\n",
+    );
 
     let (code, stdout, stderr) = run_direct(tmp.path(), &["sync", "--direct"]);
 

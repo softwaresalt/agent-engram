@@ -391,7 +391,11 @@ async fn index_workspace_oversized_file_does_not_block_siblings() {
     };
 
     // One oversized file.
-    write_sample_file(ws, "src/big.rs", &"x".repeat(usize::try_from(limit + 100).expect("limit fits usize")));
+    write_sample_file(
+        ws,
+        "src/big.rs",
+        &"x".repeat(usize::try_from(limit + 100).expect("limit fits usize")),
+    );
     // One normal file that should be indexed successfully.
     write_sample_file(ws, "src/small.rs", "pub fn tiny() {}\n");
 

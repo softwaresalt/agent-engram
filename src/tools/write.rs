@@ -356,7 +356,8 @@ fn completed_sync_scan_progress(result: &Value) -> ScanProgress {
     let total = value_u64(result, "files_modified")
         + value_u64(result, "files_added")
         + value_u64(result, "files_deleted")
-        + value_u64(result, "files_unchanged");
+        + value_u64(result, "files_unchanged")
+        + value_u64(result, "oversized_files_skipped");
     completed_scan_progress(total)
 }
 
@@ -518,11 +519,12 @@ mod tests {
             "files_modified": 3,
             "files_added": 2,
             "files_deleted": 1,
-            "files_unchanged": 4
+            "files_unchanged": 4,
+            "oversized_files_skipped": 2
         }));
         assert!(!progress.running, "completed sync should not be running");
-        assert_eq!(progress.files_scanned, 10);
-        assert_eq!(progress.files_total, 10);
+        assert_eq!(progress.files_scanned, 12);
+        assert_eq!(progress.files_total, 12);
         assert!(progress.last_completed_at.is_some());
     }
 
