@@ -10,7 +10,7 @@
 //! * `sync --direct` on a workspace with an oversized file still exits 0 (resilience)
 //!
 //! **Windows note**: daemon-backed tests (those using IPC) are ignored on
-//! Windows due to a CozoDB initialisation issue. The `--direct` tests here do
+//! Windows due to a `CozoDB` initialisation issue. The `--direct` tests here do
 //! not start a daemon and run on all platforms.
 
 use std::fs;
