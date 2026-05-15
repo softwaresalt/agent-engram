@@ -247,4 +247,12 @@ async fn sync_workspace_removes_stale_records_when_file_becomes_oversized() {
             .is_empty(),
         "stale symbols should be removed during sync"
     );
+    assert!(
+        q.get_all_file_hashes()
+            .await
+            .expect("lookup file hashes")
+            .into_iter()
+            .all(|record| record.file_path != "src/tracked.rs"),
+        "stale file-hash metadata should be removed during sync"
+    );
 }

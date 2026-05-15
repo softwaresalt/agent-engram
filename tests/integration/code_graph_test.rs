@@ -478,4 +478,12 @@ async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
             .is_empty(),
         "stale symbols should be removed once the file becomes oversized"
     );
+    assert!(
+        q.get_all_file_hashes()
+            .await
+            .expect("lookup file hashes")
+            .into_iter()
+            .all(|record| record.file_path != "src/lib.rs"),
+        "stale file-hash metadata should be removed once the file becomes oversized"
+    );
 }
