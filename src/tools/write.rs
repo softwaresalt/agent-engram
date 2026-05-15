@@ -170,14 +170,35 @@ async fn index_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result = crate::services::code_graph::index_workspace(
-        ws_path,
-        data_dir,
-        branch,
-        &config,
-        parsed.force,
-    )
-    .await?;
+    let last_completed_at = state
+        .scan_progress_snapshot()
+        .await
+        .and_then(|progress| progress.last_completed_at);
+    let (progress_tx, progress_task) = spawn_scan_progress_updater(state.clone());
+    let result = {
+        let mut progress_callback = move |files_scanned, files_total| {
+            let _ = progress_tx.send(running_scan_progress(
+                files_scanned,
+                files_total,
+                last_completed_at.clone(),
+            ));
+        };
+        crate::services::code_graph::index_workspace_with_progress(
+            ws_path,
+            data_dir,
+            branch,
+            &config,
+            parsed.force,
+            Some(&mut progress_callback),
+        )
+        .await
+    };
+    progress_task.await.map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("scan progress updater failed: {e}"),
+        })
+    })?;
+    let result = result?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -258,8 +279,34 @@ async fn sync_workspace_inner(
         .map(|c| c.code_graph.clone())
         .unwrap_or_default();
 
-    let result =
-        crate::services::code_graph::sync_workspace(ws_path, data_dir, branch, &config).await?;
+    let last_completed_at = state
+        .scan_progress_snapshot()
+        .await
+        .and_then(|progress| progress.last_completed_at);
+    let (progress_tx, progress_task) = spawn_scan_progress_updater(state.clone());
+    let result = {
+        let mut progress_callback = move |files_scanned, files_total| {
+            let _ = progress_tx.send(running_scan_progress(
+                files_scanned,
+                files_total,
+                last_completed_at.clone(),
+            ));
+        };
+        crate::services::code_graph::sync_workspace_with_progress(
+            ws_path,
+            data_dir,
+            branch,
+            &config,
+            Some(&mut progress_callback),
+        )
+        .await
+    };
+    progress_task.await.map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("scan progress updater failed: {e}"),
+        })
+    })?;
+    let result = result?;
 
     serde_json::to_value(result).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -268,13 +315,36 @@ async fn sync_workspace_inner(
     })
 }
 
-fn indexing_started_progress(last_completed_at: Option<String>) -> ScanProgress {
+fn running_scan_progress(
+    files_scanned: u64,
+    files_total: u64,
+    last_completed_at: Option<String>,
+) -> ScanProgress {
     ScanProgress {
         running: true,
-        files_scanned: 0,
-        files_total: 0,
+        files_scanned,
+        files_total,
         last_completed_at,
     }
+}
+
+fn spawn_scan_progress_updater(
+    state: SharedState,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<ScanProgress>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            state.set_scan_progress(Some(progress)).await;
+        }
+    });
+    (tx, handle)
+}
+
+fn indexing_started_progress(last_completed_at: Option<String>) -> ScanProgress {
+    running_scan_progress(0, 0, last_completed_at)
 }
 
 fn completed_index_scan_progress(result: &Value) -> ScanProgress {

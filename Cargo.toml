@@ -627,6 +627,10 @@ path = "tests/integration/release_regression_workflow_test.rs"
 name = "integration_release_smoke_daemon_cli"
 path = "tests/integration/release_smoke_daemon_cli_test.rs"
 
+[[test]]
+name = "integration_prewarm_progress"
+path = "tests/integration/prewarm_progress_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
