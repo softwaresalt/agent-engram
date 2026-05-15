@@ -603,6 +603,10 @@ path = "tests/integration/cli_e2e_test.rs"
 name = "integration_cli_direct"
 path = "tests/integration/cli_direct_test.rs"
 
+[[test]]
+name = "integration_cli_regression"
+path = "tests/integration/cli_regression_test.rs"
+
 # ── 044-F: Indexing resilience (SQLITE_BUSY + sync timeout) ──────────────────
 
 [[test]]

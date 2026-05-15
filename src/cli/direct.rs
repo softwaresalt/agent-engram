@@ -258,6 +258,7 @@ mod tests {
         IndexResult {
             files_parsed: 10,
             files_skipped: 2,
+            oversized_files_skipped: 0,
             functions_indexed: 50,
             classes_indexed: 5,
             interfaces_indexed: 3,
@@ -283,6 +284,7 @@ mod tests {
             concerns_orphaned: 0,
             edges_created: 5,
             cross_file_edges_dropped: 0,
+            oversized_files_skipped: 0,
             errors: vec![],
             duration_ms: 45,
         }

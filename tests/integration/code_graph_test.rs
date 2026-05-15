@@ -295,7 +295,125 @@ async fn index_workspace_skips_oversized_files() {
     );
     assert!(result.files_skipped >= 1);
     assert!(
-        !result.errors.is_empty(),
-        "should report a file-too-large error"
+        result.oversized_files_skipped >= 1,
+        "should track the oversized file in oversized_files_skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "oversized files must not appear in per-file errors"
+    );
+}
+
+/// Boundary: a file whose byte count exactly equals `max_file_size_bytes`
+/// must be parsed (the limit is inclusive — strictly-greater-than triggers skip).
+#[test]
+async fn index_workspace_oversized_boundary_exact_limit_is_parsed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    // Build content whose byte-length is exactly 64.
+    let content = "pub fn f() {}\n".repeat(4); // 14-byte literal × 4 = 56 bytes before padding
+    // Pad to exactly 64 bytes.
+    let padding = 64usize.saturating_sub(content.len());
+    let content = format!("{}{}", content, " ".repeat(padding));
+    assert_eq!(content.len(), 64, "test content must be exactly 64 bytes");
+
+    let config = CodeGraphConfig {
+        max_file_size_bytes: 64,
+        ..CodeGraphConfig::default()
+    };
+
+    write_sample_file(ws, "src/lib.rs", &content);
+
+    let (data_dir, branch) = test_db_params(ws);
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+
+    assert_eq!(
+        result.oversized_files_skipped, 0,
+        "file at exactly the limit must not be counted as oversized"
+    );
+    assert_eq!(
+        result.files_parsed, 1,
+        "file at exactly the limit must be parsed"
+    );
+}
+
+/// Boundary: a file one byte over `max_file_size_bytes` must be skipped and
+/// counted in `oversized_files_skipped`, not in `errors`.
+#[test]
+async fn index_workspace_oversized_boundary_one_over_is_skipped() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    let limit: u64 = 64;
+    // Content that is limit+1 bytes long.
+    let content = "x".repeat(usize::try_from(limit + 1).expect("limit fits usize"));
+
+    let config = CodeGraphConfig {
+        max_file_size_bytes: limit,
+        ..CodeGraphConfig::default()
+    };
+
+    write_sample_file(ws, "src/lib.rs", &content);
+
+    let (data_dir, branch) = test_db_params(ws);
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+
+    assert_eq!(
+        result.files_parsed, 0,
+        "file one byte over the limit must not be parsed"
+    );
+    assert!(
+        result.oversized_files_skipped >= 1,
+        "file one byte over the limit must increment oversized_files_skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "oversized files must not appear in per-file errors"
+    );
+}
+
+/// Resilience: an oversized file in a mixed workspace must not prevent
+/// normally-sized sibling files from being indexed.
+#[test]
+async fn index_workspace_oversized_file_does_not_block_siblings() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    let limit: u64 = 64;
+    let config = CodeGraphConfig {
+        max_file_size_bytes: limit,
+        ..CodeGraphConfig::default()
+    };
+
+    // One oversized file.
+    write_sample_file(
+        ws,
+        "src/big.rs",
+        &"x".repeat(usize::try_from(limit + 100).expect("limit fits usize")),
+    );
+    // One normal file that should be indexed successfully.
+    write_sample_file(ws, "src/small.rs", "pub fn tiny() {}\n");
+
+    let (data_dir, branch) = test_db_params(ws);
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed even with an oversized file present");
+
+    assert_eq!(
+        result.files_parsed, 1,
+        "the normal-sized sibling must be parsed despite the oversized file"
+    );
+    assert_eq!(
+        result.oversized_files_skipped, 1,
+        "the oversized file must be counted in oversized_files_skipped"
+    );
+    assert!(
+        result.errors.is_empty(),
+        "oversized files must not appear in per-file errors"
     );
 }
