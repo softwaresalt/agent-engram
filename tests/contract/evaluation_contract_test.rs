@@ -3,7 +3,9 @@
 //! Validates that `get_evaluation_report` returns a well-formed
 //! [`EvaluationReport`] JSON structure with correct field types.
 
+use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -45,12 +47,11 @@ async fn setup_workspace_with_events(events: &[UsageEvent]) -> (Arc<AppState>, t
             .join("main");
         fs::create_dir_all(&metrics_dir).expect("create metrics dir");
         let events_path = metrics_dir.join("usage.jsonl");
-        let content: String = events
-            .iter()
-            .map(|e| serde_json::to_string(e).expect("serialize event"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        fs::write(&events_path, content).expect("write events file");
+        let mut file = std::fs::File::create(&events_path).expect("create events file");
+        for event in events {
+            let line = serde_json::to_string(event).expect("serialize event");
+            writeln!(file, "{line}").expect("write event line");
+        }
     }
 
     (state, workspace)
@@ -60,14 +61,22 @@ fn make_event(tool: &str, tokens: u64, agent_role: Option<&str>) -> UsageEvent {
     UsageEvent {
         tool_name: tool.to_string(),
         timestamp: "2026-03-30T12:00:00Z".to_string(),
+        request_bytes: tokens,
+        estimated_input_tokens: tokens / 4,
         response_bytes: tokens * 4,
+        estimated_output_tokens: tokens,
         estimated_tokens: tokens,
+        result_count: 5,
+        response_shape_counts: BTreeMap::from([(String::from("results"), 5)]),
         symbols_returned: 5,
         results_returned: 5,
         branch: "main".to_string(),
         connection_id: None,
         agent_role: agent_role.map(String::from),
         outcome: "success".to_string(),
+        prompt_tokens_attributed: None,
+        completion_tokens_attributed: None,
+        cached_tokens_attributed: None,
     }
 }
 

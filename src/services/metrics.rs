@@ -114,6 +114,7 @@ async fn writer_loop(
     while let Some(message) = receiver.recv().await {
         match message {
             MetricsMessage::Event(event) => {
+                let event = *event;
                 let branch = if event.branch.is_empty() {
                     active_branch.as_str()
                 } else {
@@ -131,6 +132,7 @@ async fn writer_loop(
                 while let Ok(pending) = receiver.try_recv() {
                     match pending {
                         MetricsMessage::Event(event) => {
+                            let event = *event;
                             let branch = if event.branch.is_empty() {
                                 active_branch.as_str()
                             } else {
@@ -207,7 +209,7 @@ pub fn record(event: UsageEvent) {
     };
 
     if let Some(sender) = sender {
-        if let Err(error) = sender.try_send(MetricsMessage::Event(event)) {
+        if let Err(error) = sender.try_send(MetricsMessage::Event(Box::new(event))) {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
                     tracing::trace!("metrics_event_dropped");

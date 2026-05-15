@@ -952,6 +952,16 @@ pub async fn get_branch_metrics(
                     .saturating_sub(i64::try_from(comparison.total_tool_calls).unwrap_or(i64::MAX)),
                 "tokens": i64::try_from(summary.total_tokens).unwrap_or(i64::MAX)
                     .saturating_sub(i64::try_from(comparison.total_tokens).unwrap_or(i64::MAX)),
+                "request_bytes": i64::try_from(summary.total_request_bytes).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_request_bytes).unwrap_or(i64::MAX)),
+                "response_bytes": i64::try_from(summary.total_response_bytes).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_response_bytes).unwrap_or(i64::MAX)),
+                "input_tokens": i64::try_from(summary.total_input_tokens).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_input_tokens).unwrap_or(i64::MAX)),
+                "output_tokens": i64::try_from(summary.total_output_tokens).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_output_tokens).unwrap_or(i64::MAX)),
+                "results": i64::try_from(summary.total_result_count).unwrap_or(i64::MAX)
+                    .saturating_sub(i64::try_from(comparison.total_result_count).unwrap_or(i64::MAX)),
             }
         }));
     }
@@ -998,9 +1008,13 @@ pub async fn get_token_savings_report(
     Ok(json!({
         "branch": branch,
         "report": format!(
-            "On branch {branch}, engram delivered {} tokens across {} tool calls. Average {:.2} tokens per call. Most-queried symbols: {top_symbols}.",
-            summary.total_tokens,
+            "On branch {branch}, engram handled {} input tokens / {} output tokens across {} tool calls ({} request bytes, {} response bytes, {} results). Average {:.2} output tokens per call. Most-queried symbols: {top_symbols}.",
+            summary.total_input_tokens,
+            summary.total_output_tokens,
             summary.total_tool_calls,
+            summary.total_request_bytes,
+            summary.total_response_bytes,
+            summary.total_result_count,
             average_tokens,
         ),
     }))

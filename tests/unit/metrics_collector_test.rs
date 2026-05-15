@@ -4,6 +4,7 @@
 //! computation with partial-line tolerance, and channel message handling.
 
 use engram::models::metrics::UsageEvent;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 /// AC#1: `record()` does not block when channel is full.
@@ -104,13 +105,21 @@ fn test_event(tool: &str, response_bytes: u64) -> UsageEvent {
     UsageEvent {
         tool_name: tool.to_string(),
         timestamp: "2026-03-27T12:00:00Z".to_string(),
+        request_bytes: response_bytes / 4,
+        estimated_input_tokens: response_bytes / 16,
         response_bytes,
+        estimated_output_tokens: response_bytes / 4,
         estimated_tokens: response_bytes / 4,
+        result_count: 1,
+        response_shape_counts: BTreeMap::from([(String::from("results"), 1)]),
         symbols_returned: 1,
         results_returned: 1,
         branch: "main".to_string(),
         connection_id: None,
         agent_role: None,
         outcome: "success".to_string(),
+        prompt_tokens_attributed: None,
+        completion_tokens_attributed: None,
+        cached_tokens_attributed: None,
     }
 }

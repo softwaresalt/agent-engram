@@ -38,8 +38,13 @@ fn write_usage_events(path: &std::path::Path, branch: &str, tool: &str, count: u
         let line = serde_json::to_string(&json!({
             "tool_name": tool,
             "timestamp": format!("2026-03-27T12:{index:02}:00Z"),
+            "request_bytes": 120_u64,
+            "estimated_input_tokens": 30_u64,
             "response_bytes": 400_u64,
+            "estimated_output_tokens": 100_u64,
             "estimated_tokens": 100_u64,
+            "result_count": 1_u32,
+            "response_shape_counts": { "results": 1_u32 },
             "symbols_returned": 1_u32,
             "results_returned": 1_u32,
             "branch": branch,
@@ -65,6 +70,8 @@ async fn t010_05_get_branch_metrics_returns_summary() {
     let value = result.unwrap_or_else(|e| panic!("get_branch_metrics should succeed: {e}"));
     assert_eq!(value["branch_name"], "main");
     assert_eq!(value["summary"]["total_tool_calls"], 3);
+    assert_eq!(value["summary"]["total_request_bytes"], 360);
+    assert_eq!(value["summary"]["total_output_tokens"], 300);
 }
 
 /// AC#2: `get_branch_metrics` with non-existent branch returns error 13002.
@@ -161,6 +168,7 @@ async fn t010_05_get_token_savings_report() {
         .unwrap_or_else(|| panic!("report field should be a string"));
     assert!(report.contains("On branch main"));
     assert!(report.contains("tool calls"));
+    assert!(report.contains("input tokens"));
 }
 
 /// AC#6: `get_health_report` includes `metrics_summary` field.
