@@ -137,8 +137,8 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
             (0, 1, 1, shape_counts)
         }
         "get_health_report" => {
-            let checks = value_array_len(value.get("checks"));
-            insert_shape_count(&mut shape_counts, "checks", checks);
+            let sections = object_len_u32(Some(value));
+            insert_shape_count(&mut shape_counts, "sections", sections);
             (0, 1, 1, shape_counts)
         }
         "get_token_savings_report" => {
