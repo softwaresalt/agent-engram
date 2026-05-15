@@ -253,3 +253,140 @@ async fn markdown_query_memory_exposes_fallback_lint_guardrails() {
         "fallback result should expose advisory heading suggestions"
     );
 }
+
+/// Re-ingesting overlapping sources should preserve embeddings for unchanged files.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn ingest_all_sources_scopes_unchanged_detection_to_source_path() {
+    use engram::db::connect_db;
+    use engram::db::queries::CodeGraphQueries;
+    use engram::services::embedding::EMBEDDING_DIM;
+    use engram::services::ingestion::ingest_all_sources;
+    use engram::services::registry::parse_registry_yaml;
+
+    let dir = TempDir::new().expect("tempdir");
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::write(
+        docs.join("shared.md"),
+        "Overview paragraph without headings.\n",
+    )
+    .expect("write markdown");
+
+    let yaml = "sources:\n  - type: docs\n    language: markdown\n    path: .\n    pattern: \"docs/*.md\"\n  - type: docs\n    language: markdown\n    path: docs\n    pattern: \"*.md\"\n";
+    let config = parse_registry_yaml(yaml).expect("parse registry");
+    let db = connect_db(&dir.path().join("data"), "test-branch")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    ingest_all_sources(&config, dir.path(), &queries)
+        .await
+        .expect("initial ingest");
+
+    let records = queries
+        .select_content_records(Some("docs"))
+        .await
+        .expect("select initial docs records");
+    assert_eq!(
+        records.len(),
+        2,
+        "expected one record per overlapping source"
+    );
+
+    let mut embedding = vec![0.0_f32; EMBEDDING_DIM];
+    embedding[0] = 1.0;
+    for record in &records {
+        queries
+            .update_content_record_embedding(record.id.as_str(), embedding.clone())
+            .await
+            .expect("seed embedding");
+    }
+
+    ingest_all_sources(&config, dir.path(), &queries)
+        .await
+        .expect("reingest unchanged sources");
+
+    let records = queries
+        .select_content_records(Some("docs"))
+        .await
+        .expect("select docs records after reingest");
+    assert!(
+        records.iter().all(|record| record.embedding.is_some()),
+        "unchanged overlapping sources should preserve embeddings"
+    );
+}
+
+/// Watched single-file ingestion should skip unchanged files within the same source scope.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn ingest_single_file_scopes_unchanged_detection_to_source_path() {
+    use engram::db::connect_db;
+    use engram::db::queries::CodeGraphQueries;
+    use engram::services::embedding::EMBEDDING_DIM;
+    use engram::services::ingestion::{ingest_all_sources, ingest_single_file};
+    use engram::services::registry::parse_registry_yaml;
+
+    let dir = TempDir::new().expect("tempdir");
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    let file_path = docs.join("shared.md");
+    fs::write(&file_path, "Overview paragraph without headings.\n").expect("write markdown");
+
+    let yaml = "sources:\n  - type: docs\n    language: markdown\n    path: .\n    pattern: \"docs/*.md\"\n  - type: docs\n    language: markdown\n    path: docs\n    pattern: \"*.md\"\n";
+    let config = parse_registry_yaml(yaml).expect("parse registry");
+    let db = connect_db(&dir.path().join("data"), "test-branch")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    ingest_all_sources(&config, dir.path(), &queries)
+        .await
+        .expect("initial ingest");
+
+    let records = queries
+        .select_content_records(Some("docs"))
+        .await
+        .expect("select initial docs records");
+    let docs_record = records
+        .iter()
+        .find(|record| record.source_path == "docs")
+        .expect("docs-scoped record");
+
+    let mut embedding = vec![0.0_f32; EMBEDDING_DIM];
+    embedding[0] = 1.0;
+    queries
+        .update_content_record_embedding(docs_record.id.as_str(), embedding)
+        .await
+        .expect("seed docs embedding");
+
+    let updated = ingest_single_file(
+        &file_path,
+        dir.path(),
+        "docs",
+        "docs",
+        1_048_576,
+        None,
+        &queries,
+    )
+    .await
+    .expect("ingest_single_file");
+
+    assert!(
+        !updated,
+        "unchanged file should not be rewritten because another source shares the path"
+    );
+
+    let records = queries
+        .select_content_records(Some("docs"))
+        .await
+        .expect("select docs records after single-file ingest");
+    let docs_record = records
+        .iter()
+        .find(|record| record.source_path == "docs")
+        .expect("docs-scoped record after single-file ingest");
+    assert!(
+        docs_record.embedding.is_some(),
+        "unchanged single-file ingestion should preserve the existing embedding"
+    );
+}

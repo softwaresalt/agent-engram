@@ -264,15 +264,16 @@ async fn ingest_directory(
                 &content_str,
             )?;
 
-            if existing_by_path
-                .get(&rel_path)
-                .is_some_and(|records| content_records_match(records, &desired_records))
-            {
+            let existing_records =
+                scoped_content_records(existing_by_path.get(&rel_path), source_path);
+            if content_records_match(&existing_records, &desired_records) {
                 summary.unchanged += 1;
                 continue;
             }
 
-            queries.delete_content_record_by_path(&rel_path).await?;
+            queries
+                .delete_content_records_by_scope(&rel_path, content_type, source_path)
+                .await?;
             for record in &desired_records {
                 queries.upsert_content_record(record).await?;
             }
@@ -288,7 +289,11 @@ async fn ingest_directory(
             && removed_paths.insert(existing_record.file_path.clone())
         {
             queries
-                .delete_content_record_by_path(&existing_record.file_path)
+                .delete_content_records_by_scope(
+                    &existing_record.file_path,
+                    existing_record.content_type.as_str(),
+                    existing_record.source_path.as_str(),
+                )
                 .await?;
             summary.removed += 1;
         }
@@ -332,6 +337,21 @@ fn group_content_records_by_path(
             .push(record);
     }
     grouped
+}
+
+fn scoped_content_records(
+    records: Option<&Vec<ContentRecord>>,
+    source_path: &str,
+) -> Vec<ContentRecord> {
+    records
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.source_path == source_path)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn content_records_match(existing: &[ContentRecord], desired: &[ContentRecord]) -> bool {
@@ -595,7 +615,9 @@ pub async fn ingest_single_file(
 
     // Check if file still exists (may have been deleted).
     if !file_path.exists() {
-        queries.delete_content_record_by_path(&rel_path).await?;
+        queries
+            .delete_content_records_by_scope(&rel_path, content_type, source_path)
+            .await?;
         return Ok(true);
     }
 
@@ -632,15 +654,16 @@ pub async fn ingest_single_file(
         &content_hash,
         &content_str,
     )?;
-    let already_current = existing_by_path
-        .get(&rel_path)
-        .is_some_and(|records| content_records_match(records, &desired_records));
+    let existing_records = scoped_content_records(existing_by_path.get(&rel_path), source_path);
+    let already_current = content_records_match(&existing_records, &desired_records);
 
     if already_current {
         return Ok(false);
     }
 
-    queries.delete_content_record_by_path(&rel_path).await?;
+    queries
+        .delete_content_records_by_scope(&rel_path, content_type, source_path)
+        .await?;
     for record in &desired_records {
         queries.upsert_content_record(record).await?;
     }
