@@ -6,8 +6,6 @@ shipment: 046-S
 severity: medium
 ---
 
-# Stash Entries Must Be Archived When Harvested
-
 ## Problem
 
 Stage agents sometimes call `stash_remove` (destructive) instead of
