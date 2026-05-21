@@ -1,10 +1,12 @@
 ---
-session: ship-048-S-post-merge-closure
+title: 048-S Post-Merge Closure Memory
+type: session-memory
 date: 2026-05-21
-agent: ship
+feature: 061-F
+shipment: 048-S
+pr: 161
+merge_sha: 94d0a2e07c94dab8dda04c9a5ebcae4184b09875
 ---
-
-# Ship Session — Post-merge closure for 048-S
 
 ## Items Completed
 
