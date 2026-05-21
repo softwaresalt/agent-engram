@@ -66,6 +66,14 @@ the results in CozoDB. The CLI and MCP surfaces expose two main indexing flows:
 Direct mode exists for startup or prewarm scenarios. `engram sync --direct`
 runs the indexing path in-process instead of routing through the daemon.
 
+Power BI PBIP workspaces now enter the same indexing pipeline through the
+content-ingestion path. A source with `content_type = "powerbi"` bypasses the
+tree-sitter code-symbol path and instead extracts report, page, visual, model,
+table, column, measure, relationship, and data-source entities from JSON-backed
+PBIP files. Those entities are persisted as `ContentRecord` rows so
+`unified_search` and `query_memory` can return object-level Power BI results
+without adding a second search store.
+
 ## Search and graph model
 
 The main read surfaces fall into three groups:
@@ -88,9 +96,9 @@ unless you choose a non-default build.
 | `src/daemon/` | Daemon lifecycle, IPC server, file watching, and idle shutdown |
 | `src/tools/` | MCP tool dispatch and tool handlers |
 | `src/cli/` | CLI parity command implementations and formatting |
-| `src/services/` | Indexing, ingestion, parsing, and higher-level business logic |
-| `src/db/` | CozoDB setup, query helpers, and workspace storage resolution |
-| `src/models/` | Workspace, config, symbol, and metrics models |
+| `src/services/` | Indexing, ingestion, parsing, Power BI extraction, and higher-level business logic |
+| `src/db/` | CozoDB setup, query helpers, content-record persistence, and workspace storage resolution |
+| `src/models/` | Workspace, config, symbol, metrics, and Power BI entity models |
 | `src/installer/` | Workspace install, update, reinstall, uninstall, and client helper generation |
 
 ## Compatibility note
