@@ -29,6 +29,7 @@ use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
 use crate::models::content::ContentRecord;
 use crate::models::powerbi::PowerBiIndexResult;
+use crate::models::powerbi_graph::{PowerBiEdge, PowerBiEdgeType, PowerBiNode, PowerBiNodeKind};
 use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
@@ -266,6 +267,192 @@ fn extract_report_summaries(
     summaries
 }
 
+// ── Graph data builders ───────────────────────────────────────────────────
+
+/// Derive a stable, content-addressable ID for a Power BI graph node.
+///
+/// The ID is a hex-encoded SHA-256 hash of the concatenation of `source_path`,
+/// `file_path`, `kind_str`, and `unique_name`, prefixed with `pbi_`.
+fn make_node_id(source_path: &str, file_path: &str, kind_str: &str, unique_name: &str) -> String {
+    let seed = format!("{source_path}:{file_path}:{kind_str}:{unique_name}");
+    format!("pbi_{}", compute_hash(seed.as_bytes()))
+}
+
+/// Build Power BI graph nodes and edges from a parsed JSON file.
+///
+/// Detects whether the JSON describes a semantic model (`model.bim`) or a
+/// report, then constructs one node per entity and one `pbi_contains` edge
+/// per parent → child relationship.
+///
+/// Returns `(nodes, edges)`. Both `Vec`s are empty when the JSON does not
+/// contain recognisable Power BI structure or the extract helpers return `None`.
+fn build_powerbi_graph_data(
+    json: &serde_json::Value,
+    file_path: &str,
+    source_path: &str,
+    content_hash: &str,
+) -> (Vec<PowerBiNode>, Vec<PowerBiEdge>) {
+    let mut nodes: Vec<PowerBiNode> = Vec::new();
+    let mut edges: Vec<PowerBiEdge> = Vec::new();
+    let now = chrono::Utc::now();
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file_path);
+
+    let is_model = filename.eq_ignore_ascii_case("model.bim")
+        || json.get("model").is_some()
+        || (json.get("tables").is_some() && json.get("reportSections").is_none());
+
+    if is_model {
+        let Some(model) = extract_semantic_model(json, file_path) else {
+            return (nodes, edges);
+        };
+        let model_id = make_node_id(source_path, file_path, "semantic_model", &model.name);
+        nodes.push(PowerBiNode {
+            id: model_id.clone(),
+            name: model.name.clone(),
+            kind: PowerBiNodeKind::SemanticModel,
+            file_path: file_path.to_owned(),
+            source_path: source_path.to_owned(),
+            content_hash: content_hash.to_owned(),
+            ingested_at: now,
+        });
+
+        for table in &model.tables {
+            let table_id = make_node_id(source_path, file_path, "table", &table.name);
+            nodes.push(PowerBiNode {
+                id: table_id.clone(),
+                name: table.name.clone(),
+                kind: PowerBiNodeKind::Table,
+                file_path: file_path.to_owned(),
+                source_path: source_path.to_owned(),
+                content_hash: content_hash.to_owned(),
+                ingested_at: now,
+            });
+            edges.push(PowerBiEdge {
+                from_id: model_id.clone(),
+                to_id: table_id.clone(),
+                edge_type: PowerBiEdgeType::Contains,
+                source_path: source_path.to_owned(),
+            });
+
+            for col in &table.columns {
+                let col_id = make_node_id(
+                    source_path,
+                    file_path,
+                    "column",
+                    &format!("{}.{}", table.name, col.name),
+                );
+                nodes.push(PowerBiNode {
+                    id: col_id.clone(),
+                    name: col.name.clone(),
+                    kind: PowerBiNodeKind::Column,
+                    file_path: file_path.to_owned(),
+                    source_path: source_path.to_owned(),
+                    content_hash: content_hash.to_owned(),
+                    ingested_at: now,
+                });
+                edges.push(PowerBiEdge {
+                    from_id: table_id.clone(),
+                    to_id: col_id,
+                    edge_type: PowerBiEdgeType::Contains,
+                    source_path: source_path.to_owned(),
+                });
+            }
+
+            for measure in &table.measures {
+                let m_id = make_node_id(
+                    source_path,
+                    file_path,
+                    "measure",
+                    &format!("{}.{}", table.name, measure.name),
+                );
+                nodes.push(PowerBiNode {
+                    id: m_id.clone(),
+                    name: measure.name.clone(),
+                    kind: PowerBiNodeKind::Measure,
+                    file_path: file_path.to_owned(),
+                    source_path: source_path.to_owned(),
+                    content_hash: content_hash.to_owned(),
+                    ingested_at: now,
+                });
+                edges.push(PowerBiEdge {
+                    from_id: table_id.clone(),
+                    to_id: m_id,
+                    edge_type: PowerBiEdgeType::Contains,
+                    source_path: source_path.to_owned(),
+                });
+            }
+        }
+    } else {
+        let Some(report) = extract_report(json, file_path) else {
+            return (nodes, edges);
+        };
+        let report_id = make_node_id(source_path, file_path, "report", &report.name);
+        nodes.push(PowerBiNode {
+            id: report_id.clone(),
+            name: report.name.clone(),
+            kind: PowerBiNodeKind::Report,
+            file_path: file_path.to_owned(),
+            source_path: source_path.to_owned(),
+            content_hash: content_hash.to_owned(),
+            ingested_at: now,
+        });
+
+        for page in &report.pages {
+            let page_id = make_node_id(
+                source_path,
+                file_path,
+                "page",
+                &format!("{}/{}", report.name, page.name),
+            );
+            nodes.push(PowerBiNode {
+                id: page_id.clone(),
+                name: page.name.clone(),
+                kind: PowerBiNodeKind::Page,
+                file_path: file_path.to_owned(),
+                source_path: source_path.to_owned(),
+                content_hash: content_hash.to_owned(),
+                ingested_at: now,
+            });
+            edges.push(PowerBiEdge {
+                from_id: report_id.clone(),
+                to_id: page_id.clone(),
+                edge_type: PowerBiEdgeType::Contains,
+                source_path: source_path.to_owned(),
+            });
+
+            for visual in &page.visuals {
+                let v_id = make_node_id(
+                    source_path,
+                    file_path,
+                    "visual",
+                    &format!("{}/{}/{}", report.name, page.name, visual.name),
+                );
+                nodes.push(PowerBiNode {
+                    id: v_id.clone(),
+                    name: visual.name.clone(),
+                    kind: PowerBiNodeKind::Visual,
+                    file_path: file_path.to_owned(),
+                    source_path: source_path.to_owned(),
+                    content_hash: content_hash.to_owned(),
+                    ingested_at: now,
+                });
+                edges.push(PowerBiEdge {
+                    from_id: page_id.clone(),
+                    to_id: v_id,
+                    edge_type: PowerBiEdgeType::Contains,
+                    source_path: source_path.to_owned(),
+                });
+            }
+        }
+    }
+
+    (nodes, edges)
+}
+
 // ── Async indexer ─────────────────────────────────────────────────────────
 
 /// Index all Power BI files from a single content source.
@@ -353,6 +540,8 @@ pub async fn index_powerbi_source(
         queries
             .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
             .await?;
+        // Delete stale graph nodes/edges for this file before upserting.
+        queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
 
         let file_size = metadata.len();
         let now = Utc::now();
@@ -392,6 +581,24 @@ pub async fn index_powerbi_source(
             };
 
             queries.upsert_content_record(&record).await?;
+        }
+
+        // Build and persist Power BI graph nodes and edges for this file.
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(content_str) {
+            let (graph_nodes, graph_edges) =
+                build_powerbi_graph_data(&json, &rel_path, &source.path, &hash);
+            if !graph_nodes.is_empty() {
+                queries.upsert_powerbi_nodes(&graph_nodes).await?;
+                debug!(
+                    path = %rel_path,
+                    nodes = graph_nodes.len(),
+                    edges = graph_edges.len(),
+                    "Power BI graph nodes upserted"
+                );
+            }
+            if !graph_edges.is_empty() {
+                queries.upsert_powerbi_edges(&graph_edges).await?;
+            }
         }
 
         result.ingested += 1;
@@ -440,6 +647,7 @@ pub async fn sweep_deleted_powerbi_files(
         queries
             .delete_content_records_by_scope(path, "powerbi", &source.path)
             .await?;
+        queries.delete_powerbi_nodes_by_file_path(path).await?;
         removed += 1;
     }
 
