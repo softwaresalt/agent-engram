@@ -124,23 +124,15 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
 
 // ── Entity summary extraction ─────────────────────────────────────────────
 
-/// Build indexable entity summaries from a Power BI JSON-backed file's text content.
+/// Classify `json` as a semantic model or report and dispatch to the appropriate
+/// summary builder.
 ///
-/// Detects the file type from the filename and JSON structure, then extracts
-/// one tuple per indexable entity in the form
-/// `(record_kind, object_name, parent_context, content_text)`.
-///
-/// Returns an empty `Vec` when the file content is not valid JSON or does not
-/// contain recognisable Power BI structure.
-#[must_use]
-pub fn extract_entity_summaries(
-    json_content: &str,
+/// Private helper that avoids a second JSON parse when the caller already holds
+/// the parsed value.
+fn extract_entity_summaries_from_value(
+    json: &serde_json::Value,
     file_path: &str,
 ) -> Vec<(String, String, String, String)> {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(json_content) else {
-        return Vec::new();
-    };
-
     let filename = Path::new(file_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -157,12 +149,31 @@ pub fn extract_entity_summaries(
             || json.get("displayName").is_some());
 
     if is_model {
-        extract_model_summaries(&json, file_path)
+        extract_model_summaries(json, file_path)
     } else if is_report {
-        extract_report_summaries(&json, file_path)
+        extract_report_summaries(json, file_path)
     } else {
         Vec::new()
     }
+}
+
+/// Build indexable entity summaries from a Power BI JSON-backed file's text content.
+///
+/// Detects the file type from the filename and JSON structure, then extracts
+/// one tuple per indexable entity in the form
+/// `(record_kind, object_name, parent_context, content_text)`.
+///
+/// Returns an empty `Vec` when the file content is not valid JSON or does not
+/// contain recognisable Power BI structure.
+#[must_use]
+pub fn extract_entity_summaries(
+    json_content: &str,
+    file_path: &str,
+) -> Vec<(String, String, String, String)> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(json_content) else {
+        return Vec::new();
+    };
+    extract_entity_summaries_from_value(&json, file_path)
 }
 
 fn extract_model_summaries(
@@ -273,8 +284,16 @@ fn extract_report_summaries(
 ///
 /// The ID is a hex-encoded SHA-256 hash of the concatenation of `source_path`,
 /// `file_path`, `kind_str`, and `unique_name`, prefixed with `pbi_`.
-fn make_node_id(source_path: &str, file_path: &str, kind_str: &str, unique_name: &str) -> String {
-    let seed = format!("{source_path}:{file_path}:{kind_str}:{unique_name}");
+fn make_node_id(
+    source_path: &str,
+    file_path: &str,
+    kind: PowerBiNodeKind,
+    unique_name: &str,
+) -> String {
+    let seed = format!(
+        "{source_path}:{file_path}:{k}:{unique_name}",
+        k = kind.as_str()
+    );
     format!("pbi_{}", compute_hash(seed.as_bytes()))
 }
 
@@ -309,7 +328,12 @@ fn build_powerbi_graph_data(
         let Some(model) = extract_semantic_model(json, file_path) else {
             return (nodes, edges);
         };
-        let model_id = make_node_id(source_path, file_path, "semantic_model", &model.name);
+        let model_id = make_node_id(
+            source_path,
+            file_path,
+            PowerBiNodeKind::SemanticModel,
+            &model.name,
+        );
         nodes.push(PowerBiNode {
             id: model_id.clone(),
             name: model.name.clone(),
@@ -321,7 +345,8 @@ fn build_powerbi_graph_data(
         });
 
         for table in &model.tables {
-            let table_id = make_node_id(source_path, file_path, "table", &table.name);
+            let table_id =
+                make_node_id(source_path, file_path, PowerBiNodeKind::Table, &table.name);
             nodes.push(PowerBiNode {
                 id: table_id.clone(),
                 name: table.name.clone(),
@@ -342,7 +367,7 @@ fn build_powerbi_graph_data(
                 let col_id = make_node_id(
                     source_path,
                     file_path,
-                    "column",
+                    PowerBiNodeKind::Column,
                     &format!("{}.{}", table.name, col.name),
                 );
                 nodes.push(PowerBiNode {
@@ -366,7 +391,7 @@ fn build_powerbi_graph_data(
                 let m_id = make_node_id(
                     source_path,
                     file_path,
-                    "measure",
+                    PowerBiNodeKind::Measure,
                     &format!("{}.{}", table.name, measure.name),
                 );
                 nodes.push(PowerBiNode {
@@ -394,7 +419,12 @@ fn build_powerbi_graph_data(
                 "{}.{}→{}.{}",
                 rel.from_table, rel.from_column, rel.to_table, rel.to_column
             );
-            let rel_id = make_node_id(source_path, file_path, "relationship", &rel_name);
+            let rel_id = make_node_id(
+                source_path,
+                file_path,
+                PowerBiNodeKind::Relationship,
+                &rel_name,
+            );
             nodes.push(PowerBiNode {
                 id: rel_id.clone(),
                 name: rel_name,
@@ -410,14 +440,24 @@ fn build_powerbi_graph_data(
                 edge_type: PowerBiEdgeType::Contains,
                 source_path: source_path.to_owned(),
             });
-            let from_table_id = make_node_id(source_path, file_path, "table", &rel.from_table);
+            let from_table_id = make_node_id(
+                source_path,
+                file_path,
+                PowerBiNodeKind::Table,
+                &rel.from_table,
+            );
             edges.push(PowerBiEdge {
                 from_id: rel_id.clone(),
                 to_id: from_table_id,
                 edge_type: PowerBiEdgeType::RelatesToTable,
                 source_path: source_path.to_owned(),
             });
-            let to_table_id = make_node_id(source_path, file_path, "table", &rel.to_table);
+            let to_table_id = make_node_id(
+                source_path,
+                file_path,
+                PowerBiNodeKind::Table,
+                &rel.to_table,
+            );
             edges.push(PowerBiEdge {
                 from_id: rel_id,
                 to_id: to_table_id,
@@ -428,7 +468,12 @@ fn build_powerbi_graph_data(
 
         // Emit one DataSource node per model data source.
         for ds in &model.data_sources {
-            let ds_id = make_node_id(source_path, file_path, "data_source", &ds.name);
+            let ds_id = make_node_id(
+                source_path,
+                file_path,
+                PowerBiNodeKind::DataSource,
+                &ds.name,
+            );
             nodes.push(PowerBiNode {
                 id: ds_id.clone(),
                 name: ds.name.clone(),
@@ -449,7 +494,12 @@ fn build_powerbi_graph_data(
         let Some(report) = extract_report(json, file_path) else {
             return (nodes, edges);
         };
-        let report_id = make_node_id(source_path, file_path, "report", &report.name);
+        let report_id = make_node_id(
+            source_path,
+            file_path,
+            PowerBiNodeKind::Report,
+            &report.name,
+        );
         nodes.push(PowerBiNode {
             id: report_id.clone(),
             name: report.name.clone(),
@@ -464,7 +514,7 @@ fn build_powerbi_graph_data(
             let page_id = make_node_id(
                 source_path,
                 file_path,
-                "page",
+                PowerBiNodeKind::Page,
                 &format!("{}/{}", report.name, page.name),
             );
             nodes.push(PowerBiNode {
@@ -487,7 +537,7 @@ fn build_powerbi_graph_data(
                 let v_id = make_node_id(
                     source_path,
                     file_path,
-                    "visual",
+                    PowerBiNodeKind::Visual,
                     &format!("{}/{}/{}", report.name, page.name, visual.name),
                 );
                 nodes.push(PowerBiNode {
@@ -589,18 +639,26 @@ pub async fn index_powerbi_source(
             continue;
         }
 
-        let summaries = extract_entity_summaries(content_str, &rel_path);
+        // Parse JSON once; both summary extraction and graph building consume it.
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(content_str) else {
+            debug!(path = %rel_path, "not valid JSON — skipping file");
+            continue;
+        };
+
+        // Delete stale records whenever the hash changed (even if the new content
+        // produces no recognisable entities), so orphaned rows do not accumulate.
+        if existing_hashes.contains_key(&rel_path) {
+            queries
+                .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
+                .await?;
+            queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
+        }
+
+        let summaries = extract_entity_summaries_from_value(&json, &rel_path);
         if summaries.is_empty() {
             debug!(path = %rel_path, "no Power BI entities found — skipping file");
             continue;
         }
-
-        // Delete stale records for this file before upserting fresh ones.
-        queries
-            .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
-            .await?;
-        // Delete stale graph nodes/edges for this file before upserting.
-        queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
 
         let file_size = metadata.len();
         let now = Utc::now();
@@ -643,21 +701,19 @@ pub async fn index_powerbi_source(
         }
 
         // Build and persist Power BI graph nodes and edges for this file.
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(content_str) {
-            let (graph_nodes, graph_edges) =
-                build_powerbi_graph_data(&json, &rel_path, &source.path, &hash);
-            if !graph_nodes.is_empty() {
-                queries.upsert_powerbi_nodes(&graph_nodes).await?;
-                debug!(
-                    path = %rel_path,
-                    nodes = graph_nodes.len(),
-                    edges = graph_edges.len(),
-                    "Power BI graph nodes upserted"
-                );
-            }
-            if !graph_edges.is_empty() {
-                queries.upsert_powerbi_edges(&graph_edges).await?;
-            }
+        let (graph_nodes, graph_edges) =
+            build_powerbi_graph_data(&json, &rel_path, &source.path, &hash);
+        if !graph_nodes.is_empty() {
+            queries.upsert_powerbi_nodes(&graph_nodes).await?;
+            debug!(
+                path = %rel_path,
+                nodes = graph_nodes.len(),
+                edges = graph_edges.len(),
+                "Power BI graph nodes upserted"
+            );
+        }
+        if !graph_edges.is_empty() {
+            queries.upsert_powerbi_edges(&graph_edges).await?;
         }
 
         result.ingested += 1;
@@ -827,11 +883,16 @@ mod tests {
         );
 
         // Both endpoint table IDs should appear as edge targets.
-        let sales_id = make_node_id("models", "Sales.SemanticModel/model.bim", "table", "Sales");
+        let sales_id = make_node_id(
+            "models",
+            "Sales.SemanticModel/model.bim",
+            PowerBiNodeKind::Table,
+            "Sales",
+        );
         let products_id = make_node_id(
             "models",
             "Sales.SemanticModel/model.bim",
-            "table",
+            PowerBiNodeKind::Table,
             "Products",
         );
         let target_ids: Vec<&str> = rel_edges.iter().map(|e| e.to_id.as_str()).collect();
@@ -843,5 +904,54 @@ mod tests {
             target_ids.contains(&products_id.as_str()),
             "Products table should be a pbi_relates_to_table target"
         );
+    }
+
+    /// S-PBI-04: `extract_entity_summaries` and `extract_entity_summaries_from_value`
+    /// produce identical results for valid JSON (verifies the parse-once refactor).
+    #[test]
+    fn extract_entity_summaries_from_value_matches_string_variant() {
+        let json_str = r#"{
+            "model": {
+                "tables": [
+                    {"name": "Sales", "columns": [{"name": "ID", "dataType": "int64"}], "measures": []}
+                ]
+            }
+        }"#;
+        let json: serde_json::Value = serde_json::from_str(json_str).expect("valid fixture JSON");
+        let from_str = extract_entity_summaries(json_str, "model.bim");
+        let from_value = extract_entity_summaries_from_value(&json, "model.bim");
+        assert_eq!(
+            from_str, from_value,
+            "both functions must produce identical summaries"
+        );
+        assert!(
+            !from_str.is_empty(),
+            "fixture should produce at least one summary"
+        );
+    }
+
+    /// S-PBI-05: `make_node_id` encodes the `PowerBiNodeKind::as_str()` string in
+    /// the hash seed, not an ad-hoc literal.
+    #[test]
+    fn make_node_id_encodes_canonical_kind_string() {
+        for kind in [
+            PowerBiNodeKind::Report,
+            PowerBiNodeKind::Page,
+            PowerBiNodeKind::Visual,
+            PowerBiNodeKind::SemanticModel,
+            PowerBiNodeKind::Table,
+            PowerBiNodeKind::Column,
+            PowerBiNodeKind::Measure,
+            PowerBiNodeKind::Relationship,
+            PowerBiNodeKind::DataSource,
+        ] {
+            let id = make_node_id("src", "file.json", kind, "Entity");
+            let seed = format!("src:file.json:{}:Entity", kind.as_str());
+            let expected = format!("pbi_{}", compute_hash(seed.as_bytes()));
+            assert_eq!(
+                id, expected,
+                "make_node_id must use PowerBiNodeKind::as_str() for kind={kind:?}"
+            );
+        }
     }
 }

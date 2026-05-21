@@ -4459,7 +4459,6 @@ impl CodeGraphQueries {
         &self,
         source_path: Option<&str>,
     ) -> Result<Vec<crate::models::PowerBiNode>, EngramError> {
-        use crate::models::powerbi_graph::PowerBiNodeKind;
         let sp_clause = source_path
             .map(|_| ", source_path = $source_path")
             .unwrap_or("");
@@ -4484,17 +4483,7 @@ impl CodeGraphQueries {
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now());
                 let kind_str = extract_str(row, 2);
-                let kind = match kind_str.as_str() {
-                    "report" => PowerBiNodeKind::Report,
-                    "page" => PowerBiNodeKind::Page,
-                    "visual" => PowerBiNodeKind::Visual,
-                    "semantic_model" => PowerBiNodeKind::SemanticModel,
-                    "table" => PowerBiNodeKind::Table,
-                    "column" => PowerBiNodeKind::Column,
-                    "measure" => PowerBiNodeKind::Measure,
-                    "relationship" => PowerBiNodeKind::Relationship,
-                    _ => PowerBiNodeKind::DataSource,
-                };
+                let kind = parse_powerbi_node_kind(&kind_str)?;
                 Ok(crate::models::PowerBiNode {
                     id: extract_str(row, 0),
                     name: extract_str(row, 1),
@@ -4853,6 +4842,31 @@ fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
 
 // ── Unit tests (040.001-T) ────────────────────────────────────────────────────
 
+/// Map a `kind` string from the `powerbi_node` relation to a [`PowerBiNodeKind`]
+/// variant.
+///
+/// Returns `Err` for any string that is not a recognized variant, preventing
+/// silently-wrong data from masquerading as `DataSource`.
+fn parse_powerbi_node_kind(
+    kind_str: &str,
+) -> Result<crate::models::powerbi_graph::PowerBiNodeKind, EngramError> {
+    use crate::models::powerbi_graph::PowerBiNodeKind;
+    match kind_str {
+        "report" => Ok(PowerBiNodeKind::Report),
+        "page" => Ok(PowerBiNodeKind::Page),
+        "visual" => Ok(PowerBiNodeKind::Visual),
+        "semantic_model" => Ok(PowerBiNodeKind::SemanticModel),
+        "table" => Ok(PowerBiNodeKind::Table),
+        "column" => Ok(PowerBiNodeKind::Column),
+        "measure" => Ok(PowerBiNodeKind::Measure),
+        "relationship" => Ok(PowerBiNodeKind::Relationship),
+        "data_source" => Ok(PowerBiNodeKind::DataSource),
+        _ => Err(map_db_err(format!(
+            "unrecognized powerbi_node kind: {kind_str:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -4904,6 +4918,40 @@ mod tests {
         assert!(
             mutable_script_retry_metrics().last_retry_at.is_some(),
             "last_retry_at must be Some after a simulated retry"
+        );
+    }
+
+    /// S-DBC-PBI-01: `parse_powerbi_node_kind` maps all canonical kind strings and
+    /// errors on unrecognized values.
+    #[test]
+    fn parse_powerbi_node_kind_known_and_unknown() {
+        use crate::models::powerbi_graph::PowerBiNodeKind;
+
+        let cases = [
+            ("report", PowerBiNodeKind::Report),
+            ("page", PowerBiNodeKind::Page),
+            ("visual", PowerBiNodeKind::Visual),
+            ("semantic_model", PowerBiNodeKind::SemanticModel),
+            ("table", PowerBiNodeKind::Table),
+            ("column", PowerBiNodeKind::Column),
+            ("measure", PowerBiNodeKind::Measure),
+            ("relationship", PowerBiNodeKind::Relationship),
+            ("data_source", PowerBiNodeKind::DataSource),
+        ];
+        for (s, expected) in cases {
+            let got = parse_powerbi_node_kind(s)
+                .unwrap_or_else(|e| panic!("expected Ok for {s:?} but got Err: {e}"));
+            assert_eq!(got, expected, "wrong variant for {s:?}");
+        }
+
+        // Unknown kind must be an error, not silently mapped to DataSource.
+        assert!(
+            parse_powerbi_node_kind("unknown_kind").is_err(),
+            "unknown kind should return Err"
+        );
+        assert!(
+            parse_powerbi_node_kind("").is_err(),
+            "empty string should return Err"
         );
     }
 }
