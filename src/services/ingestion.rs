@@ -337,7 +337,7 @@ fn collect_files(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Compute SHA-256 hash of content, returning a hex string.
-fn compute_hash(content: &[u8]) -> String {
+pub(crate) fn compute_hash(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
     hex::encode(hasher.finalize())
@@ -543,7 +543,7 @@ fn markdown_chunk_record(
     }
 }
 
-fn content_record_identity_seed(
+pub(crate) fn content_record_identity_seed(
     rel_path: &str,
     content_type: &str,
     source_path: &str,

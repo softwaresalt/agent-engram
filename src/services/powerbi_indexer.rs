@@ -17,10 +17,9 @@
 //!
 //! * `*.json` — report page descriptors and project manifests
 //! * `*.bim` — tabular model definitions (`model.bim`)
-//! * `*.pbip` — project root descriptors
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -31,7 +30,8 @@ use crate::errors::EngramError;
 use crate::models::content::ContentRecord;
 use crate::models::powerbi::PowerBiIndexResult;
 use crate::models::registry::ContentSource;
-use crate::services::powerbi_extract::{extract_report, extract_semantic_model, synthetic_id};
+use crate::services::ingestion::{compute_hash, content_record_identity_seed};
+use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
 
@@ -59,13 +59,31 @@ pub fn compute_deleted_paths(
 ) -> Vec<String> {
     workspace_relative_paths
         .iter()
-        .filter(|rel| {
-            !workspace_root
-                .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
-                .exists()
+        .filter_map(|rel| {
+            let Some(relative_path) = workspace_relative_path(rel) else {
+                warn!(
+                    path = %rel,
+                    "skipping Power BI deletion sweep path that escapes the workspace root"
+                );
+                return None;
+            };
+
+            (!workspace_root.join(relative_path).exists()).then(|| rel.clone())
         })
-        .cloned()
         .collect()
+}
+
+fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
+    let path = Path::new(rel_path);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            component == Component::ParentDir || matches!(component, Component::Prefix(_))
+        })
+    {
+        return None;
+    }
+
+    Some(path.to_path_buf())
 }
 
 // ── File collection ───────────────────────────────────────────────────────
@@ -73,7 +91,7 @@ pub fn compute_deleted_paths(
 /// Collect all indexable Power BI files under `dir` recursively.
 ///
 /// Returns a sorted list of absolute paths to files with extensions
-/// `.json`, `.bim`, or `.pbip`.
+/// `.json` or `.bim`.
 #[must_use]
 pub fn collect_powerbi_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -94,11 +112,7 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
             let is_target = path
                 .extension()
                 .and_then(|e| e.to_str())
-                .map(|ext| {
-                    ext.eq_ignore_ascii_case("json")
-                        || ext.eq_ignore_ascii_case("bim")
-                        || ext.eq_ignore_ascii_case("pbip")
-                })
+                .map(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("bim"))
                 .unwrap_or(false);
             if is_target {
                 files.push(path);
@@ -109,7 +123,7 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
 
 // ── Entity summary extraction ─────────────────────────────────────────────
 
-/// Build indexable entity summaries from a PBIP JSON file's text content.
+/// Build indexable entity summaries from a Power BI JSON-backed file's text content.
 ///
 /// Detects the file type from the filename and JSON structure, then extracts
 /// one tuple per indexable entity in the form
@@ -256,7 +270,7 @@ fn extract_report_summaries(
 
 /// Index all Power BI files from a single content source.
 ///
-/// Walks the source directory, reads eligible JSON/BIM/PBIP files, extracts
+/// Walks the source directory, reads eligible JSON/BIM files, extracts
 /// entity summaries, and upserts [`ContentRecord`] rows into the
 /// `content_record` relation.  Files whose hash has not changed since the
 /// last run are skipped.
@@ -285,22 +299,13 @@ pub async fn index_powerbi_source(
     result.total_files = files.len();
 
     // Build a map of existing content hashes for change detection.
-    let existing_hashes: HashMap<String, String> =
-        match queries.select_content_records(Some("powerbi")).await {
-            Ok(records) => records
-                .into_iter()
-                .filter(|r| r.source_path == source.path)
-                .map(|r| (r.file_path, r.content_hash))
-                .collect(),
-            Err(e) => {
-                warn!(
-                    source_path = %source.path,
-                    error = %e,
-                    "could not load existing Power BI content hashes — will reindex all files"
-                );
-                HashMap::new()
-            }
-        };
+    let existing_hashes: HashMap<String, String> = queries
+        .select_content_records(Some("powerbi"))
+        .await?
+        .into_iter()
+        .filter(|record| record.source_path == source.path)
+        .map(|record| (record.file_path, record.content_hash))
+        .collect();
 
     for file_path in &files {
         let Ok(metadata) = file_path.metadata() else {
@@ -345,26 +350,22 @@ pub async fn index_powerbi_source(
         }
 
         // Delete stale records for this file before upserting fresh ones.
-        if let Err(e) = queries
+        queries
             .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
-            .await
-        {
-            warn!(
-                path = %rel_path,
-                error = %e,
-                "failed to delete stale Power BI content records"
-            );
-        }
+            .await?;
 
         let file_size = metadata.len();
         let now = Utc::now();
 
         for (object_kind, object_name, parent_context, content_text) in &summaries {
-            let chunk_key = synthetic_id(&format!("{rel_path}:{object_kind}:{object_name}"));
-            let record_id = format!(
-                "powerbi:{}",
-                synthetic_id(&format!("{rel_path}:{chunk_key}"))
+            let chunk_id = format!("{object_name}:{object_kind}");
+            let identity_seed = content_record_identity_seed(
+                &rel_path,
+                "powerbi",
+                &source.path,
+                Some(&format!("{parent_context}:{chunk_id}")),
             );
+            let record_id = format!("cr_{}", compute_hash(identity_seed.as_bytes()));
 
             let record = ContentRecord {
                 id: record_id,
@@ -380,7 +381,7 @@ pub async fn index_powerbi_source(
                 file_size_bytes: file_size,
                 ingested_at: now,
                 record_kind: object_kind.clone(),
-                chunk_id: Some(format!("{object_name}:{object_kind}")),
+                chunk_id: Some(chunk_id),
                 chunk_index: None,
                 heading_path: Vec::new(),
                 line_start: None,
@@ -390,14 +391,7 @@ pub async fn index_powerbi_source(
                 suggestions: Vec::new(),
             };
 
-            if let Err(e) = queries.upsert_content_record(&record).await {
-                warn!(
-                    path = %rel_path,
-                    entity = %object_name,
-                    error = %e,
-                    "failed to upsert Power BI content record — skipping entity"
-                );
-            }
+            queries.upsert_content_record(&record).await?;
         }
 
         result.ingested += 1;
@@ -428,17 +422,7 @@ pub async fn sweep_deleted_powerbi_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
-    let records = match queries.select_content_records(Some("powerbi")).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(
-                source_path = %source.path,
-                error = %e,
-                "could not load Power BI records for deletion sweep"
-            );
-            return Ok(0);
-        }
-    };
+    let records = queries.select_content_records(Some("powerbi")).await?;
 
     // Collect unique workspace-relative file paths for this source.
     let known_paths: Vec<String> = records
@@ -453,17 +437,10 @@ pub async fn sweep_deleted_powerbi_files(
     let mut removed = 0_usize;
 
     for path in &deleted {
-        match queries
+        queries
             .delete_content_records_by_scope(path, "powerbi", &source.path)
-            .await
-        {
-            Ok(()) => removed += 1,
-            Err(e) => warn!(
-                path = %path,
-                error = %e,
-                "failed to delete Power BI content records for removed file"
-            ),
-        }
+            .await?;
+        removed += 1;
     }
 
     Ok(removed)

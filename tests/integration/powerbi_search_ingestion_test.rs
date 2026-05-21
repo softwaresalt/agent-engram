@@ -5,7 +5,7 @@
 //! entity-summary extraction.  These tests run without a `CozoDB` instance,
 //! mirroring the precedent set by `backlog_indexer_test.rs`.
 //!
-//! Tests: S-PIN-01 through S-PIN-08
+//! Tests: S-PIN-01 through S-PIN-13
 
 use std::fs;
 use tempfile::TempDir;
@@ -13,6 +13,13 @@ use tempfile::TempDir;
 use engram::services::powerbi_indexer::{
     collect_powerbi_files, compute_deleted_paths, compute_file_hash, extract_entity_summaries,
 };
+
+#[cfg(feature = "cozo-backend")]
+use engram::db::{connect_db, queries::CodeGraphQueries};
+#[cfg(feature = "cozo-backend")]
+use engram::models::registry::{ContentSource, ContentSourceStatus};
+#[cfg(feature = "cozo-backend")]
+use engram::services::powerbi_indexer::index_powerbi_source;
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
 
@@ -88,6 +95,32 @@ fn compute_deleted_paths_returns_empty_when_all_files_exist() {
     assert!(deleted.is_empty(), "no files should be reported deleted");
 }
 
+/// S-PIN-11: Deletion sweeps ignore paths that could escape the workspace root.
+#[test]
+fn compute_deleted_paths_ignores_escape_attempts() {
+    let dir = TempDir::new().expect("tempdir");
+    let absolute = dir
+        .path()
+        .join("outside.json")
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let deleted = compute_deleted_paths(
+        &[
+            absolute,
+            "../outside.json".to_string(),
+            "gone.json".to_string(),
+        ],
+        dir.path(),
+    );
+
+    assert_eq!(
+        deleted,
+        vec!["gone.json".to_string()],
+        "only safe workspace-relative paths should participate in deletion sweeps"
+    );
+}
+
 // ── File collection ───────────────────────────────────────────────────────
 
 /// S-PIN-05: `collect_powerbi_files` discovers `.json` and `.bim` files.
@@ -124,6 +157,28 @@ fn collect_powerbi_files_is_recursive() {
 
     let files = collect_powerbi_files(dir.path());
     assert_eq!(files.len(), 2, "should find files in subfolders too");
+}
+
+/// S-PIN-12: `.pbip` descriptors are ignored until the indexer can parse them.
+#[test]
+fn collect_powerbi_files_ignores_pbip_descriptors() {
+    let dir = TempDir::new().expect("tempdir");
+    fs::write(dir.path().join("project.pbip"), "{}").expect("write pbip");
+    fs::write(dir.path().join("report.json"), "{}").expect("write json");
+    fs::write(dir.path().join("model.bim"), "{}").expect("write bim");
+
+    let files = collect_powerbi_files(dir.path());
+    let names: Vec<_> = files
+        .iter()
+        .map(|path| path.file_name().unwrap().to_str().unwrap())
+        .collect();
+
+    assert!(names.contains(&"report.json"));
+    assert!(names.contains(&"model.bim"));
+    assert!(
+        !names.contains(&"project.pbip"),
+        "pbip descriptors should not be collected until they yield summaries"
+    );
 }
 
 // ── Entity summary extraction ─────────────────────────────────────────────
@@ -234,5 +289,76 @@ fn extract_entity_summaries_returns_empty_for_invalid_json() {
     assert!(
         summaries.is_empty(),
         "invalid JSON should produce no entity summaries"
+    );
+}
+
+#[cfg(feature = "cozo-backend")]
+fn powerbi_source(path: &str) -> ContentSource {
+    ContentSource {
+        content_type: "powerbi".to_string(),
+        language: None,
+        path: path.to_string(),
+        pattern: None,
+        optional: false,
+        status: ContentSourceStatus::Active,
+    }
+}
+
+/// S-PIN-13: Overlapping Power BI sources keep distinct content records.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_scopes_records_by_source_path() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let reports = workspace.join("reports");
+    fs::create_dir_all(&reports).expect("create reports dir");
+    fs::write(
+        reports.join("report.json"),
+        r#"{
+            "displayName": "Sales Dashboard",
+            "reportSections": [
+                { "displayName": "Overview", "ordinal": 1, "visualContainers": [] }
+            ]
+        }"#,
+    )
+    .expect("write report");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-source-scope")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("."), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index root source");
+    index_powerbi_source(&powerbi_source("reports"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index nested source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let report_records: Vec<_> = records
+        .into_iter()
+        .filter(|record| record.file_path == "reports/report.json")
+        .collect();
+
+    assert_eq!(
+        report_records.len(),
+        2,
+        "overlapping sources should retain distinct records for the same file path"
+    );
+    assert!(
+        report_records
+            .iter()
+            .any(|record| record.source_path == "."),
+        "root source record should be preserved"
+    );
+    assert!(
+        report_records
+            .iter()
+            .any(|record| record.source_path == "reports"),
+        "nested source record should be preserved"
     );
 }

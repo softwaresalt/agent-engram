@@ -36,7 +36,7 @@ pub struct PowerBiPage {
     /// Page display name.
     pub name: String,
 
-    /// Zero-based ordinal position within the report.
+    /// Ordinal position preserved from the Power BI JSON payload.
     pub ordinal: u32,
 
     /// Visual elements placed on this page.

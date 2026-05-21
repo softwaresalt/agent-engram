@@ -3,7 +3,7 @@
 //! Validates [`powerbi_extract`] functions against inline JSON fixtures
 //! representative of real PBIP report and model.bim structures.
 //!
-//! Tests: S-PEX-01 through S-PEX-07
+//! Tests: S-PEX-01 through S-PEX-14
 
 use engram::services::powerbi_extract::{extract_report, extract_semantic_model, synthetic_id};
 

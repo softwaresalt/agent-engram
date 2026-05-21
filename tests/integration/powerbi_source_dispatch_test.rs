@@ -5,7 +5,7 @@
 //! type is routed to the dedicated Power BI indexer rather than the generic
 //! whole-file ingestion path.
 //!
-//! Tests: S-PSD-01, S-PSD-02, S-PSD-03
+//! Tests: S-PSD-01, S-PSD-02, S-PSD-03, S-PSD-04
 
 use engram::models::registry::BUILT_IN_TYPES;
 use engram::services::registry::parse_registry_yaml;
