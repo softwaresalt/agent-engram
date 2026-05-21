@@ -653,6 +653,15 @@ path = "tests/unit/powerbi_extract_json_test.rs"
 name = "integration_powerbi_search_ingestion"
 path = "tests/integration/powerbi_search_ingestion_test.rs"
 
+[[test]]
+name = "unit_powerbi_graph_models"
+path = "tests/unit/powerbi_graph_models_test.rs"
+
+[[test]]
+name = "contract_powerbi_graph_query"
+path = "tests/contract/powerbi_graph_query_test.rs"
+required-features = ["cozo-backend"]
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
