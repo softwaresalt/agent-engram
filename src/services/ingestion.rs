@@ -107,6 +107,23 @@ pub async fn ingest_all_sources(
             continue;
         }
 
+        // Power BI sources use the dedicated PBIP/JSON indexer.
+        if source.content_type == "powerbi" {
+            use crate::services::powerbi_indexer::{
+                index_powerbi_source, sweep_deleted_powerbi_files,
+            };
+
+            let result =
+                index_powerbi_source(source, workspace_root, queries, config.max_file_size_bytes)
+                    .await?;
+            let removed = sweep_deleted_powerbi_files(source, workspace_root, queries).await?;
+            total_summary.ingested += result.ingested;
+            total_summary.unchanged += result.unchanged;
+            total_summary.removed += removed;
+            total_summary.total_files += result.total_files;
+            continue;
+        }
+
         // Build a glob filter from the optional pattern field.
         let glob_filter = build_glob_filter(source.pattern.as_deref());
 

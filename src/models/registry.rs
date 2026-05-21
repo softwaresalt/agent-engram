@@ -43,6 +43,7 @@ pub const BUILT_IN_TYPES: &[&str] = &[
     "context",
     "instructions",
     "backlog",
+    "powerbi",
 ];
 
 /// A single declared content source from `.engram/registry.yaml`.

@@ -639,6 +639,20 @@ path = "tests/integration/prewarm_progress_test.rs"
 name = "integration_sync_workspace_deletion"
 path = "tests/integration/sync_workspace_deletion_test.rs"
 
+# ── 061-F: Power BI search foundation ────────────────────────────────────────
+
+[[test]]
+name = "integration_powerbi_source_dispatch"
+path = "tests/integration/powerbi_source_dispatch_test.rs"
+
+[[test]]
+name = "unit_powerbi_extract_json"
+path = "tests/unit/powerbi_extract_json_test.rs"
+
+[[test]]
+name = "integration_powerbi_search_ingestion"
+path = "tests/integration/powerbi_search_ingestion_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
