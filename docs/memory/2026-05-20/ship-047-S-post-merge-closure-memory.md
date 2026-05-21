@@ -24,7 +24,7 @@ agent: ship
 * `.backlogit/archive/061.004-T.md`
 * `.backlogit/queue/061-F.md`
 * `docs/closure/2026-05-20-047-S-powerbi-search-foundation-closure.md`
-* `docs/ARCHITECTURE.md`
+* `docs/architecture.md`
 
 ## Key Decisions
 

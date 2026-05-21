@@ -51,7 +51,7 @@ extraction, and object-level search ingestion on `main` through PR #158.
 | Feature flags | N/A |
 | Data migration | None |
 | Cross-service dependency | None |
-| Rollback procedure | Revert merge commit `e84fe9260fdaa254f8736ba1bd920c63308aa36d` |
+| Rollback procedure | `git revert --no-edit -m 1 e84fe9260fdaa254f8736ba1bd920c63308aa36d` |
 | Monitoring plan | Manual observation only |
 
 ## Deployment or Rollout Path
@@ -62,7 +62,7 @@ Merge-only release. No separate deploy or phased rollout step is required.
 
 * Confirm backlog state shows `047-S` archived and `061-F` active
 * Confirm queued shipments remain `048-S` then `049-S`
-* Confirm Power BI search support remains documented in `docs/ARCHITECTURE.md`
+* Confirm Power BI search support remains documented in `docs/architecture.md`
 
 ## Risky Action Record
 
@@ -98,8 +98,10 @@ remaining queued shipments from being claimed in order.
 
 ## Rollback Procedure
 
-Revert the closure commit, restore `061-F` to queue status `active`, and resync
-the backlog index before resuming shipment intake.
+Run `git revert --no-edit -m 1 e84fe9260fdaa254f8736ba1bd920c63308aa36d` if the
+merge itself must be undone. For closure-only rollback, revert this closure PR
+commit, restore `061-F` to queue status `active`, and resync the backlog index
+before resuming shipment intake.
 
 ## Validation Window
 
