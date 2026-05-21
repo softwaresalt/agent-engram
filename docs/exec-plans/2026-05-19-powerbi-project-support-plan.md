@@ -247,7 +247,7 @@ same entity and graph schema introduced for JSON-backed workspaces.
 **Files affected**:
 
 * `docs/quickstart.md`
-* `docs/ARCHITECTURE.md`
+* `docs/architecture.md`
 * `docs/closure/2026-05-19-powerbi-project-support-closure-template.md`
 
 **Changes**:
