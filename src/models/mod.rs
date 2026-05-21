@@ -4,8 +4,9 @@
 //! [`Interface`], and [`CodeEdge`]; the file watcher event types
 //! [`WatcherEvent`] and [`WatchEventKind`]; workspace content
 //! intelligence models: [`RegistryConfig`], [`ContentRecord`],
-//! [`BacklogFile`], and [`CommitNode`]; and graph query types
-//! [`TraversalDirection`].
+//! [`BacklogFile`], and [`CommitNode`]; Power BI project entity models
+//! [`PowerBiReport`], [`PowerBiSemanticModel`], and [`PowerBiIndexResult`];
+//! and graph query types [`TraversalDirection`].
 
 pub mod backlog;
 pub mod backlog_graph;
@@ -23,6 +24,7 @@ pub mod health;
 pub mod interface;
 pub mod metrics;
 pub mod policy;
+pub mod powerbi;
 pub mod registry;
 pub mod watcher;
 
@@ -42,5 +44,6 @@ pub use graph_query::TraversalDirection;
 pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
 pub use metrics::MetricsConfig;
+pub use powerbi::PowerBiIndexResult;
 pub use registry::{ContentSource, ContentSourceStatus, RegistryConfig};
 pub use watcher::{WatchEventKind, WatcherEvent};
