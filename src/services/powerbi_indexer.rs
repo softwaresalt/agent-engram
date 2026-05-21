@@ -386,6 +386,65 @@ fn build_powerbi_graph_data(
                 });
             }
         }
+
+        // Emit one Relationship node per model relationship, plus pbi_relates_to_table
+        // edges connecting the relationship node to each of its two endpoint tables.
+        for rel in &model.relationships {
+            let rel_name = format!(
+                "{}.{}→{}.{}",
+                rel.from_table, rel.from_column, rel.to_table, rel.to_column
+            );
+            let rel_id = make_node_id(source_path, file_path, "relationship", &rel_name);
+            nodes.push(PowerBiNode {
+                id: rel_id.clone(),
+                name: rel_name,
+                kind: PowerBiNodeKind::Relationship,
+                file_path: file_path.to_owned(),
+                source_path: source_path.to_owned(),
+                content_hash: content_hash.to_owned(),
+                ingested_at: now,
+            });
+            edges.push(PowerBiEdge {
+                from_id: model_id.clone(),
+                to_id: rel_id.clone(),
+                edge_type: PowerBiEdgeType::Contains,
+                source_path: source_path.to_owned(),
+            });
+            let from_table_id = make_node_id(source_path, file_path, "table", &rel.from_table);
+            edges.push(PowerBiEdge {
+                from_id: rel_id.clone(),
+                to_id: from_table_id,
+                edge_type: PowerBiEdgeType::RelatesToTable,
+                source_path: source_path.to_owned(),
+            });
+            let to_table_id = make_node_id(source_path, file_path, "table", &rel.to_table);
+            edges.push(PowerBiEdge {
+                from_id: rel_id,
+                to_id: to_table_id,
+                edge_type: PowerBiEdgeType::RelatesToTable,
+                source_path: source_path.to_owned(),
+            });
+        }
+
+        // Emit one DataSource node per model data source.
+        for ds in &model.data_sources {
+            let ds_id = make_node_id(source_path, file_path, "data_source", &ds.name);
+            nodes.push(PowerBiNode {
+                id: ds_id.clone(),
+                name: ds.name.clone(),
+                kind: PowerBiNodeKind::DataSource,
+                file_path: file_path.to_owned(),
+                source_path: source_path.to_owned(),
+                content_hash: content_hash.to_owned(),
+                ingested_at: now,
+            });
+            edges.push(PowerBiEdge {
+                from_id: model_id.clone(),
+                to_id: ds_id,
+                edge_type: PowerBiEdgeType::Contains,
+                source_path: source_path.to_owned(),
+            });
+        }
     } else {
         let Some(report) = extract_report(json, file_path) else {
             return (nodes, edges);
@@ -652,4 +711,137 @@ pub async fn sweep_deleted_powerbi_files(
     }
 
     Ok(removed)
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fixture: model.bim JSON with one table, one relationship, and one
+    /// data source.
+    fn model_bim_with_rel_and_ds() -> serde_json::Value {
+        serde_json::json!({
+            "model": {
+                "tables": [
+                    {
+                        "name": "Sales",
+                        "columns": [{ "name": "ProductID", "dataType": "int64" }]
+                    },
+                    {
+                        "name": "Products",
+                        "columns": [{ "name": "ID", "dataType": "int64" }]
+                    }
+                ],
+                "relationships": [
+                    {
+                        "fromTable": "Sales",
+                        "fromColumn": "ProductID",
+                        "toTable": "Products",
+                        "toColumn": "ID"
+                    }
+                ],
+                "dataSources": [
+                    { "name": "SqlWarehouse", "type": "sql" }
+                ]
+            }
+        })
+    }
+
+    /// S-PBI-01: `build_powerbi_graph_data` emits a `Relationship` node for each
+    /// relationship declared in the semantic model.
+    #[test]
+    fn build_graph_emits_relationship_node() {
+        let json = model_bim_with_rel_and_ds();
+        let (nodes, _edges) =
+            build_powerbi_graph_data(&json, "Sales.SemanticModel/model.bim", "models", "hash1");
+
+        let rel_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == PowerBiNodeKind::Relationship)
+            .collect();
+        assert_eq!(
+            rel_nodes.len(),
+            1,
+            "expected exactly one Relationship node; got {}: {rel_nodes:?}",
+            rel_nodes.len()
+        );
+        assert!(
+            rel_nodes[0].name.contains("Sales"),
+            "relationship name should reference the from-table"
+        );
+        assert!(
+            rel_nodes[0].name.contains("Products"),
+            "relationship name should reference the to-table"
+        );
+    }
+
+    /// S-PBI-02: `build_powerbi_graph_data` emits a `DataSource` node for each
+    /// data source declared in the semantic model.
+    #[test]
+    fn build_graph_emits_data_source_node() {
+        let json = model_bim_with_rel_and_ds();
+        let (nodes, _edges) =
+            build_powerbi_graph_data(&json, "Sales.SemanticModel/model.bim", "models", "hash1");
+
+        let ds_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == PowerBiNodeKind::DataSource)
+            .collect();
+        assert_eq!(
+            ds_nodes.len(),
+            1,
+            "expected exactly one DataSource node; got {}: {ds_nodes:?}",
+            ds_nodes.len()
+        );
+        assert_eq!(
+            ds_nodes[0].name, "SqlWarehouse",
+            "DataSource node name should match the declared data source"
+        );
+    }
+
+    /// S-PBI-03: `build_powerbi_graph_data` emits `pbi_relates_to_table` edges
+    /// from the Relationship node to both endpoint tables.
+    #[test]
+    fn build_graph_emits_relates_to_table_edges() {
+        let json = model_bim_with_rel_and_ds();
+        let (nodes, edges) =
+            build_powerbi_graph_data(&json, "Sales.SemanticModel/model.bim", "models", "hash1");
+
+        let rel_node = nodes
+            .iter()
+            .find(|n| n.kind == PowerBiNodeKind::Relationship)
+            .expect("Relationship node must be present");
+
+        let rel_edges: Vec<_> = edges
+            .iter()
+            .filter(|e| e.edge_type == PowerBiEdgeType::RelatesToTable && e.from_id == rel_node.id)
+            .collect();
+
+        assert_eq!(
+            rel_edges.len(),
+            2,
+            "expected two pbi_relates_to_table edges (one per endpoint table); got {}: {rel_edges:?}",
+            rel_edges.len()
+        );
+
+        // Both endpoint table IDs should appear as edge targets.
+        let sales_id = make_node_id("models", "Sales.SemanticModel/model.bim", "table", "Sales");
+        let products_id = make_node_id(
+            "models",
+            "Sales.SemanticModel/model.bim",
+            "table",
+            "Products",
+        );
+        let target_ids: Vec<&str> = rel_edges.iter().map(|e| e.to_id.as_str()).collect();
+        assert!(
+            target_ids.contains(&sales_id.as_str()),
+            "Sales table should be a pbi_relates_to_table target"
+        );
+        assert!(
+            target_ids.contains(&products_id.as_str()),
+            "Products table should be a pbi_relates_to_table target"
+        );
+    }
 }
