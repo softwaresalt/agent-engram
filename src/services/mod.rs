@@ -25,6 +25,7 @@ pub mod parsing;
 pub mod policy;
 pub mod powerbi_extract;
 pub mod powerbi_indexer;
+pub mod powerbi_tmdl;
 pub mod query_stats;
 pub mod registry;
 pub mod search;
