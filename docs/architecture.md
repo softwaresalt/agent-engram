@@ -69,10 +69,20 @@ runs the indexing path in-process instead of routing through the daemon.
 Power BI PBIP workspaces now enter the same indexing pipeline through the
 content-ingestion path. A source with `content_type = "powerbi"` bypasses the
 tree-sitter code-symbol path and instead extracts report, page, visual, model,
-table, column, measure, relationship, and data-source entities from JSON-backed
-PBIP files. Those entities are persisted as `ContentRecord` rows so
-`unified_search` and `query_memory` can return object-level Power BI results
-without adding a second search store.
+table, column, measure, relationship, and data-source entities from:
+
+* JSON-backed PBIP report assets such as `report.json`
+* `model.bim` semantic model files
+* TMDL semantic model folders under `definition/**/*.tmdl`
+
+Those entities are persisted as `ContentRecord` rows so `unified_search` and
+`query_memory` can return object-level Power BI results without adding a second
+search store. The same extracted semantic model shape also feeds the Power BI
+graph persistence path used by `query_graph`.
+
+Current TMDL coverage is structural rather than lineage-aware. We index tables,
+columns, measures, relationships, and data sources, but we do not yet derive
+full DAX dependency graphs from expressions.
 
 ## Search and graph model
 
