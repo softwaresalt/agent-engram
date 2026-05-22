@@ -329,6 +329,38 @@ table Sales
     assert_eq!(measure_count, 1, "should have one measure summary");
 }
 
+/// S-PIN-12: Windows-style `definition` folder paths still route TMDL content
+/// through the semantic-model extractor.
+#[test]
+fn extract_entity_summaries_from_tmdl_windows_definition_path() {
+    let tmdl = r"
+model Sales Model
+
+table Sales
+  column Amount
+    dataType: double
+  measure 'Total Sales' = SUM ( Sales[Amount] )
+";
+
+    let summaries = extract_entity_summaries(tmdl, r"models\Sales.SemanticModel\definition");
+    assert!(
+        !summaries.is_empty(),
+        "TMDL content should produce entity summaries for Windows-style definition paths"
+    );
+
+    let table_count = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_table")
+        .count();
+    let measure_count = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_measure")
+        .count();
+
+    assert_eq!(table_count, 1, "should have one table summary");
+    assert_eq!(measure_count, 1, "should have one measure summary");
+}
+
 #[cfg(feature = "cozo-backend")]
 fn powerbi_source(path: &str) -> ContentSource {
     ContentSource {
@@ -482,5 +514,75 @@ table Products
         relationships.len(),
         1,
         "relationship declarations should produce one relationship node"
+    );
+}
+
+/// S-PIN-15: Multi-file TMDL models keep one semantic-model node even when
+/// explicit model names differ across files.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_unifies_multifile_tmdl_graph_nodes_with_mixed_model_names() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    let tables = definition.join("Tables");
+    fs::create_dir_all(&tables).expect("create tmdl directories");
+
+    fs::write(
+        definition.join("model.tmdl"),
+        r"
+model Sales Dataset
+relationship Sales.ProductID -> Products.ID
+",
+    )
+    .expect("write model.tmdl");
+    fs::write(
+        tables.join("Sales.tmdl"),
+        r"
+table Sales
+  column ProductID
+    dataType: int64
+",
+    )
+    .expect("write sales table");
+    fs::write(
+        tables.join("Products.tmdl"),
+        r"
+table Products
+  column ID
+    dataType: int64
+",
+    )
+    .expect("write products table");
+
+    let db = connect_db(
+        &root.path().join("data"),
+        "powerbi-tmdl-graph-stable-identity",
+    )
+    .await
+    .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("models"))
+        .await
+        .expect("select powerbi nodes");
+
+    let semantic_models: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::SemanticModel)
+        .collect();
+
+    assert_eq!(
+        semantic_models.len(),
+        1,
+        "stable TMDL identity should not split one semantic model into multiple graph nodes"
     );
 }

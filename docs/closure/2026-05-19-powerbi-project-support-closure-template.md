@@ -75,7 +75,8 @@ Rollback if either of these appears after merge:
 
 ## Rollback Procedure
 
-Use `git revert` on the merge commit if runtime behavior regresses on `main`.
+Use `git revert --no-edit -m 1 <merge_commit>` if runtime behavior regresses
+on `main`.
 If the rollback is closure-only, revert the closure artifact commit and restore
 the backlog state that existed before shipment archival.
 
