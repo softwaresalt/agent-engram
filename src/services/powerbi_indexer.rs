@@ -76,6 +76,11 @@ pub fn compute_deleted_paths(
         .collect()
 }
 
+fn last_path_component(path: &str) -> &str {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
+}
+
 fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
     let path = Path::new(rel_path);
     if path.is_absolute()
@@ -179,7 +184,8 @@ pub fn extract_entity_summaries(
     let is_tmdl_path = Path::new(file_path)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"));
-    if is_tmdl_path || file_path.ends_with("/definition") {
+    let is_tmdl_definition = last_path_component(file_path).eq_ignore_ascii_case("definition");
+    if is_tmdl_path || is_tmdl_definition {
         return extract_tmdl_semantic_model(json_content, file_path)
             .map(|model| extract_model_summaries_from_model(&model))
             .unwrap_or_default();
@@ -443,7 +449,7 @@ fn build_powerbi_graph_data_from_model(
         source_path,
         identity_scope,
         PowerBiNodeKind::SemanticModel,
-        &model.name,
+        &model.id,
     );
     nodes.push(PowerBiNode {
         id: model_id.clone(),
