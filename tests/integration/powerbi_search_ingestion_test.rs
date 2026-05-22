@@ -17,6 +17,8 @@ use engram::services::powerbi_indexer::{
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
 #[cfg(feature = "cozo-backend")]
+use engram::models::PowerBiNodeKind;
+#[cfg(feature = "cozo-backend")]
 use engram::models::registry::{ContentSource, ContentSourceStatus};
 #[cfg(feature = "cozo-backend")]
 use engram::services::powerbi_indexer::index_powerbi_source;
@@ -123,16 +125,18 @@ fn compute_deleted_paths_ignores_escape_attempts() {
 
 // ── File collection ───────────────────────────────────────────────────────
 
-/// S-PIN-05: `collect_powerbi_files` discovers `.json` and `.bim` files.
+/// S-PIN-05: `collect_powerbi_files` discovers `.json`, `.bim`, and `.tmdl`
+/// files.
 #[test]
-fn collect_powerbi_files_finds_json_and_bim() {
+fn collect_powerbi_files_finds_json_bim_and_tmdl() {
     let dir = TempDir::new().expect("tempdir");
     fs::write(dir.path().join("report.json"), "{}").expect("write json");
     fs::write(dir.path().join("model.bim"), "{}").expect("write bim");
+    fs::write(dir.path().join("table.tmdl"), "table Sales").expect("write tmdl");
     fs::write(dir.path().join("ignore.md"), "# doc").expect("write md");
 
     let files = collect_powerbi_files(dir.path());
-    assert_eq!(files.len(), 2, "should find exactly 2 Power BI files");
+    assert_eq!(files.len(), 3, "should find exactly 3 Power BI files");
 
     let names: Vec<_> = files
         .iter()
@@ -140,6 +144,7 @@ fn collect_powerbi_files_finds_json_and_bim() {
         .collect();
     assert!(names.contains(&"report.json"), "report.json must be found");
     assert!(names.contains(&"model.bim"), "model.bim must be found");
+    assert!(names.contains(&"table.tmdl"), "table.tmdl must be found");
     assert!(
         !names.contains(&"ignore.md"),
         "markdown files must be ignored"
@@ -292,6 +297,38 @@ fn extract_entity_summaries_returns_empty_for_invalid_json() {
     );
 }
 
+/// S-PIN-11: TMDL content produces table and measure summaries through the
+/// shared semantic model path.
+#[test]
+fn extract_entity_summaries_from_tmdl() {
+    let tmdl = r"
+model Sales Model
+
+table Sales
+  column Amount
+    dataType: double
+  measure 'Total Sales' = SUM ( Sales[Amount] )
+";
+
+    let summaries = extract_entity_summaries(tmdl, "models/Sales.SemanticModel/definition");
+    assert!(
+        !summaries.is_empty(),
+        "TMDL content should produce entity summaries"
+    );
+
+    let table_count = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_table")
+        .count();
+    let measure_count = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_measure")
+        .count();
+
+    assert_eq!(table_count, 1, "should have one table summary");
+    assert_eq!(measure_count, 1, "should have one measure summary");
+}
+
 #[cfg(feature = "cozo-backend")]
 fn powerbi_source(path: &str) -> ContentSource {
     ContentSource {
@@ -360,5 +397,90 @@ async fn index_powerbi_source_scopes_records_by_source_path() {
             .iter()
             .any(|record| record.source_path == "reports"),
         "nested source record should be preserved"
+    );
+}
+
+/// S-PIN-14: Multi-file TMDL models share one semantic-model identity across
+/// table and relationship files.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_unifies_multifile_tmdl_graph_nodes() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    let tables = definition.join("Tables");
+    fs::create_dir_all(&tables).expect("create tmdl directories");
+
+    fs::write(
+        definition.join("model.tmdl"),
+        r"
+model Sales
+relationship Sales.ProductID -> Products.ID
+",
+    )
+    .expect("write model.tmdl");
+    fs::write(
+        tables.join("Sales.tmdl"),
+        r"
+table Sales
+  column ProductID
+    dataType: int64
+",
+    )
+    .expect("write sales table");
+    fs::write(
+        tables.join("Products.tmdl"),
+        r"
+table Products
+  column ID
+    dataType: int64
+",
+    )
+    .expect("write products table");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-graph-identity")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("models"))
+        .await
+        .expect("select powerbi nodes");
+
+    let semantic_models: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::SemanticModel)
+        .collect();
+    let tables: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::Table)
+        .collect();
+    let relationships: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::Relationship)
+        .collect();
+
+    assert_eq!(
+        semantic_models.len(),
+        1,
+        "all TMDL files in one semantic model should converge on a single semantic-model node"
+    );
+    assert_eq!(
+        tables.len(),
+        2,
+        "expected one table node per TMDL table file"
+    );
+    assert_eq!(
+        relationships.len(),
+        1,
+        "relationship declarations should produce one relationship node"
     );
 }
