@@ -135,6 +135,39 @@ Use these variants when you need them:
 * `engram index` is the CLI alias for a full rebuild
 * `engram sync --direct` runs the indexing path in-process and exits when done
 
+## Add a notebook content source
+
+Jupyter notebooks belong on the content-ingestion path, not the code graph.
+Add a `notebook` source to `.engram/registry.yaml` when you want `.ipynb`
+files to appear in `query_memory` and `unified_search`.
+
+```yaml
+sources:
+  - type: notebook
+    path: notebooks
+```
+
+Then refresh the workspace:
+
+```bash
+engram sync
+engram query-memory "SELECT region FROM sales" --format text
+```
+
+Notebook indexing in v1 emits one file-level notebook summary plus one
+content record per author-written markdown or code cell. Stable cell ordinals
+surface through `chunk_id` values such as `cell-0001`.
+
+> [!IMPORTANT]
+> Notebook v1 deliberately excludes outputs, execution state, arbitrary magic
+> parsing, notebook graph edges, and code-graph symbol extraction. Treat
+> notebooks as retrieval content, not as code-graph input.
+
+> [!NOTE]
+> The fixture-backed verification flow for notebook support lives in
+> `tests/fixtures/notebooks/`, `tests/unit/notebook_extract_test.rs`, and
+> `tests/integration/notebook_search_ingestion_test.rs`.
+
 ## Try a few commands
 
 ```bash

@@ -74,6 +74,14 @@ PBIP files. Those entities are persisted as `ContentRecord` rows so
 `unified_search` and `query_memory` can return object-level Power BI results
 without adding a second search store.
 
+Jupyter notebooks follow the same content-ingestion boundary. A source with
+`content_type = "notebook"` collects `.ipynb` files, emits one
+`notebook_summary` record per file, and derives per-cell `ContentRecord` rows
+for author-written markdown and code cells. Notebook v1 preserves stable cell
+ordinals, resolves code-cell language as magic > `language_info.name` >
+`kernelspec.language` > `unknown`, and keeps outputs, execution state, notebook
+graph edges, and code-graph symbol extraction out of scope.
+
 ## Search and graph model
 
 The main read surfaces fall into three groups:
@@ -96,9 +104,9 @@ unless you choose a non-default build.
 | `src/daemon/` | Daemon lifecycle, IPC server, file watching, and idle shutdown |
 | `src/tools/` | MCP tool dispatch and tool handlers |
 | `src/cli/` | CLI parity command implementations and formatting |
-| `src/services/` | Indexing, ingestion, parsing, Power BI extraction, and higher-level business logic |
+| `src/services/` | Indexing, ingestion, parsing, notebook and Power BI extraction, and higher-level business logic |
 | `src/db/` | CozoDB setup, query helpers, content-record persistence, and workspace storage resolution |
-| `src/models/` | Workspace, config, symbol, metrics, and Power BI entity models |
+| `src/models/` | Workspace, config, symbol, metrics, notebook, and Power BI entity models |
 | `src/installer/` | Workspace install, update, reinstall, uninstall, and client helper generation |
 
 ## Compatibility note

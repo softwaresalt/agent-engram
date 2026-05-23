@@ -107,6 +107,23 @@ pub async fn ingest_all_sources(
             continue;
         }
 
+        // Notebook sources use the dedicated Jupyter notebook indexer.
+        if source.content_type == "notebook" {
+            use crate::services::notebook_indexer::{
+                index_notebook_source, sweep_deleted_notebook_files,
+            };
+
+            let result =
+                index_notebook_source(source, workspace_root, queries, config.max_file_size_bytes)
+                    .await?;
+            let removed = sweep_deleted_notebook_files(source, workspace_root, queries).await?;
+            total_summary.ingested += result.ingested;
+            total_summary.unchanged += result.unchanged;
+            total_summary.removed += removed;
+            total_summary.total_files += result.total_files;
+            continue;
+        }
+
         // Power BI sources use the dedicated PBIP/JSON indexer.
         if source.content_type == "powerbi" {
             use crate::services::powerbi_indexer::{
