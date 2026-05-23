@@ -75,12 +75,15 @@ pub fn extract_notebook(json_content: &str, _file_path: &str) -> Option<Extracte
 }
 
 fn notebook_title(markdown_text: &str) -> Option<String> {
-    markdown_text
-        .lines()
-        .find_map(|line| line.strip_prefix('#'))
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .map(ToOwned::to_owned)
+    markdown_text.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') {
+            return None;
+        }
+
+        let title = trimmed.trim_start_matches('#').trim();
+        (!title.is_empty()).then(|| title.to_owned())
+    })
 }
 
 fn resolve_code_language(source_text: &str, metadata: &NotebookMetadata) -> String {

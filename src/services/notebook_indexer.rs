@@ -87,7 +87,7 @@ fn summary_record_content(
         .unwrap_or("Untitled notebook");
 
     format!(
-        "Notebook: {title}. Path: {rel_path}. Default language: {}. Total cells: {}. Indexed author cells: {}. Markdown cells: {}. Code cells: {}.",
+        "Notebook: {title}. Path: {rel_path}. Default language: {}. Total cells: {}. Indexed cells: {}. Markdown cells: {}. Code cells: {}.",
         extracted.summary.default_language,
         extracted.summary.total_cells,
         extracted.summary.indexed_cell_count,

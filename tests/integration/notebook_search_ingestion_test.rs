@@ -92,6 +92,12 @@ async fn index_notebook_source_emits_summary_and_cell_records() {
     );
     assert!(
         records.iter().any(|record| {
+            record.record_kind == "notebook_summary" && record.content.contains("Indexed cells: 2")
+        }),
+        "summary record content must use the indexed_cell_count label"
+    );
+    assert!(
+        records.iter().any(|record| {
             record.record_kind == "notebook_markdown_cell"
                 && record.chunk_id.as_deref() == Some("cell-0001")
                 && record.chunk_index == Some(1)

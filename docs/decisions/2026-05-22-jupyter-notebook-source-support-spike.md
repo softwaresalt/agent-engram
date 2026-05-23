@@ -88,7 +88,7 @@ For the v1 whitelist, recognize at least:
 
 * `%%sql` / `%sql` -> `sql`
 * `%%scala` -> `scala`
-* `%%sparkr` -> `r`
+* `%%sparkr` -> `sparkr`
 * `%%python` -> `python`
 
 Treat PySpark as `python` in v1 unless a stronger magic overrides it.

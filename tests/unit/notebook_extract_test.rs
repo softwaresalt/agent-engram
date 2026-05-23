@@ -27,6 +27,7 @@ fn extract_notebook_builds_summary_and_stable_cell_ordinals() {
     .expect("fixture should parse");
 
     assert_eq!(notebook.summary.default_language, "python");
+    assert_eq!(notebook.summary.title.as_deref(), Some("Notebook title"));
     assert_eq!(notebook.summary.total_cells, 2);
     assert_eq!(notebook.summary.indexed_cell_count, 2);
     assert_eq!(notebook.cells.len(), 2);
@@ -103,6 +104,29 @@ fn extract_notebook_applies_language_precedence() {
     .expect("unknown notebook should still parse");
 
     assert_eq!(unknown.cells[0].language, "unknown");
+}
+
+/// S-NBX-04: Markdown title extraction removes the full ATX heading prefix.
+#[test]
+fn extract_notebook_strips_multi_hash_markdown_titles() {
+    let notebook = extract_notebook(
+        r###"{
+          "cells": [
+            {
+              "cell_type": "markdown",
+              "metadata": {},
+              "source": ["## Nested title\n", "\n", "Details.\n"]
+            }
+          ],
+          "metadata": {},
+          "nbformat": 4,
+          "nbformat_minor": 5
+        }"###,
+        "notebooks/nested-title.ipynb",
+    )
+    .expect("heading-only notebook should parse");
+
+    assert_eq!(notebook.summary.title.as_deref(), Some("Nested title"));
 }
 
 /// S-NBX-03: Malformed notebook JSON returns `None` without panicking.

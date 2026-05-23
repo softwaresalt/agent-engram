@@ -116,7 +116,7 @@ The spike for `063-F` recommends:
 **Files**
 
 * `docs/quickstart.md`
-* `docs/ARCHITECTURE.md`
+* `docs/architecture.md`
 * Ship-owned follow-on closure artifact under `docs/closure/`
 
 **Acceptance focus**
