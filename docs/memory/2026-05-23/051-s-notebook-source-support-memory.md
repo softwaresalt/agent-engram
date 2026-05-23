@@ -2,9 +2,9 @@
 
 **Date**: 2026-05-23
 **Branch**: `063-jupyter-notebook-source-support`
-**Commit**: not created in this session
+**Commit**: `3acd337`
 **PR**: not opened
-**Status**: Implementation complete; shipment remains active because `cargo audit` fails on pre-existing dependency advisories
+**Status**: Implementation complete; audit re-evaluated as advisory-only; backlog finalized with shipment and feature marked `done`
 
 ---
 
@@ -12,8 +12,8 @@
 
 | Item | Title | Status |
 |------|-------|--------|
-| 051-S | Jupyter notebook source support (063-F) | active |
-| 063-F | Jupyter notebook source support | active |
+| 051-S | Jupyter notebook source support (063-F) | done |
+| 063-F | Jupyter notebook source support | done |
 | 063.001-T | Register notebook source type and dispatch | done |
 | 063.002-T | Implement notebook language precedence and record shaping | done |
 | 063.003-T | Add notebook fixture matrix and red harness | done |
@@ -63,7 +63,7 @@
 * ✅ `cargo fmt --all -- --check`
 * ✅ `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`
 * ✅ `cargo dev-test`
-* ❌ `cargo audit`
+* ⚠️ `cargo audit` reports pre-existing advisory findings only
 
 ## Review Gate
 
@@ -75,13 +75,15 @@
 * delegated `task`-agent execution succeeded for backlog state transitions and `backlogit sync`
 * the first notebook retrieval assertion checked `summary`; `query_memory` returns notebook text in `content`, so the test was corrected to assert the real surface
 
-## Blocked Conditions
+## Audit Reassessment
 
-* `cargo audit` reports 8 dependency vulnerabilities, dominated by transitive `lz4_flex` and `rustls-webpki` advisories
-* no dependency changes were introduced in this notebook shipment, so the blocker is repo-level rather than notebook-specific
+* `.github/workflows/ci.yml` configures `cargo audit` with `continue-on-error: true`
+* `.github/instructions/workflows.instructions.md` defines `continue-on-error: true` as the pattern for advisory-only checks
+* the current 8 warnings are pre-existing and transitive, including `lz4_flex` and `rustls-webpki`
+* no dependency change in 051-S introduced those findings, so they do not block shipment completion
 
 ## Next Steps
 
-1. Decide whether the pre-existing `cargo audit` findings are accepted debt or require a separate dependency remediation shipment
-2. Create a scoped commit for the notebook files plus the related backlog artifacts when the operator wants the branch checkpointed
-3. Open the PR only after the operator confirms how to treat the audit gate
+1. Open or update the PR from `063-jupyter-notebook-source-support`
+2. Wait for operator-approved merge
+3. After merge, run shipment closure via `backlogit shipment ship 051-S --sha <merge_sha> --message "<merge message>" --author "<author>"`

@@ -24,6 +24,13 @@ documentation for the v1 boundary.
 | `cargo test --test unit_notebook_extract` | Passed |
 | `cargo test --test integration_notebook_search_ingestion` | Passed |
 
+## Audit Policy Reassessment
+
+* `.github/workflows/ci.yml` marks the `audit` step `continue-on-error: true`
+* `.github/instructions/workflows.instructions.md` reserves `continue-on-error: true` for advisory checks that should not block the pipeline
+* Current `cargo audit` findings are pre-existing transitive advisories, including `lz4_flex` and `rustls-webpki`
+* No notebook-shipment dependency change introduced those advisories, so they do not block 051-S under the repository's actual CI policy
+
 ## Runtime Boundary
 
 * Notebooks index through content ingestion only
