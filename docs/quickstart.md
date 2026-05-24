@@ -168,6 +168,45 @@ surface through `chunk_id` values such as `cell-0001`.
 > `tests/fixtures/notebooks/`, `tests/unit/notebook_extract_test.rs`, and
 > `tests/integration/notebook_search_ingestion_test.rs`.
 
+## Add a Power BI source
+
+If your workspace includes PBIP or TMDL assets, register them in
+`.engram/registry.yaml` so Engram indexes them through the Power BI ingestion
+path instead of the code-symbol path.
+
+```yaml
+sources:
+  - type: powerbi
+    path: analytics
+```
+
+Power BI indexing currently covers:
+
+* `report.json` report descriptors
+* `model.bim` semantic model files
+* `definition/**/*.tmdl` semantic model assets
+
+TMDL support is structural. Tables, columns, measures, relationships, and data
+sources are indexed. Full DAX lineage is not.
+
+## Verify Power BI indexing
+
+After adding the registry source, run:
+
+```bash
+engram sync
+engram search "Total Sales" --content-type powerbi --format text
+engram query-graph --format text
+```
+
+Healthy verification looks like:
+
+* `engram sync` completes without skipping the Power BI source
+* `engram search` returns page, visual, table, or measure records with
+  `content_type = powerbi`
+* `query_graph` can traverse report, page, visual, table, measure, or
+  relationship nodes for the indexed workspace
+
 ## Try a few commands
 
 ```bash

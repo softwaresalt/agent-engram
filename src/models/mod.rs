@@ -6,7 +6,8 @@
 //! intelligence models: [`RegistryConfig`], [`ContentRecord`],
 //! [`BacklogFile`], and [`CommitNode`]; Power BI project entity models
 //! [`PowerBiReport`], [`PowerBiSemanticModel`], and [`PowerBiIndexResult`];
-//! and graph query types [`TraversalDirection`].
+//! Power BI graph models [`PowerBiNode`], [`PowerBiEdge`], and
+//! [`PowerBiEdgeType`]; and graph query types [`TraversalDirection`].
 
 pub mod backlog;
 pub mod backlog_graph;
@@ -26,6 +27,7 @@ pub mod metrics;
 pub mod notebook;
 pub mod policy;
 pub mod powerbi;
+pub mod powerbi_graph;
 pub mod registry;
 pub mod watcher;
 
@@ -47,5 +49,8 @@ pub use interface::Interface;
 pub use metrics::MetricsConfig;
 pub use notebook::NotebookIndexResult;
 pub use powerbi::PowerBiIndexResult;
+pub use powerbi_graph::{
+    PowerBiEdge, PowerBiEdgeType, PowerBiGraphIndexResult, PowerBiNode, PowerBiNodeKind,
+};
 pub use registry::{ContentSource, ContentSourceStatus, RegistryConfig};
 pub use watcher::{WatchEventKind, WatcherEvent};

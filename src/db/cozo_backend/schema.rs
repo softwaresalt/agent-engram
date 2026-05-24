@@ -76,6 +76,9 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         CREATE_BACKLOG_NODE,
         CREATE_BACKLOG_EDGE,
         CREATE_BACKLOG_CONTENT_RECORD,
+        // 061-F: Power BI graph relations
+        CREATE_POWERBI_NODE,
+        CREATE_POWERBI_EDGE,
     ];
 
     for script in &scripts {
@@ -528,5 +531,43 @@ pub const CREATE_BACKLOG_CONTENT_RECORD: &str = r#"
     content: String,
     source_path: String,
     ingested_at: String,
+}
+"#;
+
+// ── 061-F: Power BI graph relations ──────────────────────────────────────
+
+/// CozoScript `:create` for `powerbi_node` — a single Power BI entity node.
+///
+/// Key: `id` — stable synthetic ID derived from the workspace-relative path
+/// and entity name.  Stored separately from code-symbol and backlog tables
+/// to prevent cross-domain key conflicts and keep Power BI traversal queries
+/// isolated.
+pub const CREATE_POWERBI_NODE: &str = r#"
+:create powerbi_node {
+    id: String
+    =>
+    name: String,
+    kind: String,
+    file_path: String,
+    source_path: String,
+    content_hash: String,
+    ingested_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `powerbi_edge` — a directed relationship between
+/// two Power BI nodes.
+///
+/// Key: `(from_id, to_id, edge_type)` — composite key supports multiple
+/// relationship types between the same pair of nodes.  Edge type strings use
+/// the `pbi_` namespace prefix (e.g. `pbi_contains`, `pbi_relates_to_table`)
+/// to avoid collisions with code and backlog edge types in shared traversal.
+pub const CREATE_POWERBI_EDGE: &str = r#"
+:create powerbi_edge {
+    from_id: String,
+    to_id: String,
+    edge_type: String
+    =>
+    source_path: String,
 }
 "#;

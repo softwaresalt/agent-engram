@@ -3427,6 +3427,14 @@ impl CodeGraphQueries {
             ("depends_on", "depends_on"),
             ("backlog_references", "references"),
         ];
+        // (api_label, db_edge_type_value) — all routed through `powerbi_edge` table
+        const POWERBI_EDGE_TYPES: &[(&str, &str)] = &[
+            ("pbi_contains", "pbi_contains"),
+            ("pbi_uses_field", "pbi_uses_field"),
+            ("pbi_depends_on_model", "pbi_depends_on_model"),
+            ("pbi_belongs_to_report", "pbi_belongs_to_report"),
+            ("pbi_relates_to_table", "pbi_relates_to_table"),
+        ];
 
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut nodes: Vec<QueryGraphNode> = Vec::new();
@@ -3654,6 +3662,97 @@ impl CodeGraphQueries {
                         }
                     }
                 }
+
+                // ── Power BI edges ──────────────────────────────────────────
+                for (api_label, db_et) in POWERBI_EDGE_TYPES {
+                    if !allowed_edge_types.is_empty() && !allowed_edge_types.contains(api_label) {
+                        continue;
+                    }
+                    let out_script =
+                        "?[from, to] := *powerbi_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let in_script =
+                        "?[from, to] := *powerbi_edge { from_id, to_id, edge_type }, to_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+
+                    if traverse_out {
+                        let mut p = BTreeMap::new();
+                        p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r = self
+                            .db
+                            .run_script(&out_script, p, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r.rows {
+                            let target = extract_str(row, 1);
+                            if visited.contains(&target) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: node.clone(),
+                                to: target.clone(),
+                            });
+                            visited.insert(target.clone());
+                            let gn = self
+                                .resolve_powerbi_node(&target)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: target.clone(),
+                                    kind: "powerbi_entity".to_owned(),
+                                    name: target.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(target);
+                        }
+                    }
+
+                    if traverse_in {
+                        let mut p2 = BTreeMap::new();
+                        p2.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p2.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r2 = self
+                            .db
+                            .run_script(&in_script, p2, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r2.rows {
+                            let source = extract_str(row, 0);
+                            if visited.contains(&source) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: source.clone(),
+                                to: node.clone(),
+                            });
+                            visited.insert(source.clone());
+                            let gn = self
+                                .resolve_powerbi_node(&source)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: source.clone(),
+                                    kind: "powerbi_entity".to_owned(),
+                                    name: source.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(source);
+                        }
+                    }
+                }
             }
             frontier = next_frontier;
         }
@@ -3748,6 +3847,13 @@ impl CodeGraphQueries {
             ("depends_on", "depends_on"),
             ("backlog_references", "references"),
         ];
+        const POWERBI_EDGE_TYPES_FP: &[(&str, &str)] = &[
+            ("pbi_contains", "pbi_contains"),
+            ("pbi_uses_field", "pbi_uses_field"),
+            ("pbi_depends_on_model", "pbi_depends_on_model"),
+            ("pbi_belongs_to_report", "pbi_belongs_to_report"),
+            ("pbi_relates_to_table", "pbi_relates_to_table"),
+        ];
 
         if from_id == to_id {
             return Ok(FindPathResult {
@@ -3807,6 +3913,36 @@ impl CodeGraphQueries {
                     }
                     let script =
                         "?[from, to] := *backlog_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let mut p = BTreeMap::new();
+                    p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                    p.insert("et".to_owned(), DataValue::from(*db_et));
+                    let r = self
+                        .db
+                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r.rows {
+                        let target = extract_str(row, 1);
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        parent.insert(target.clone(), node.clone());
+                        visited.insert(target.clone());
+                        if target == to_id {
+                            found = true;
+                            break 'outer;
+                        }
+                        next_frontier.push(target);
+                    }
+                }
+
+                // Power BI edges (outgoing only)
+                for (api_label, db_et) in POWERBI_EDGE_TYPES_FP {
+                    if !edge_types.is_empty() && !edge_types.contains(api_label) {
+                        continue;
+                    }
+                    let script =
+                        "?[from, to] := *powerbi_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
                             .to_owned();
                     let mut p = BTreeMap::new();
                     p.insert("node".to_owned(), DataValue::from(node.as_str()));
@@ -4245,6 +4381,273 @@ impl CodeGraphQueries {
         self.run_script_busy_retry_mutable(script, p).await?;
         Ok(())
     }
+
+    // ── Power BI node queries (061-F) ─────────────────────────────────────
+
+    /// Batch upsert Power BI graph nodes into `powerbi_node`.
+    ///
+    /// Each node is inserted as a separate mutable script with SQLITE_BUSY
+    /// retry (per compound learning on per-statement retry granularity).
+    pub async fn upsert_powerbi_nodes(
+        &self,
+        nodes: &[crate::models::PowerBiNode],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[id, name, kind, file_path, source_path, content_hash, ingested_at] <-
+    [[$id, $name, $kind, $file_path, $source_path, $content_hash, $ingested_at]]
+:put powerbi_node {
+    id => name, kind, file_path, source_path, content_hash, ingested_at
+}
+"#;
+        for node in nodes {
+            let mut p = BTreeMap::new();
+            p.insert("id".to_owned(), DataValue::from(node.id.as_str()));
+            p.insert("name".to_owned(), DataValue::from(node.name.as_str()));
+            p.insert("kind".to_owned(), DataValue::from(node.kind.as_str()));
+            p.insert(
+                "file_path".to_owned(),
+                DataValue::from(node.file_path.as_str()),
+            );
+            p.insert(
+                "source_path".to_owned(),
+                DataValue::from(node.source_path.as_str()),
+            );
+            p.insert(
+                "content_hash".to_owned(),
+                DataValue::from(node.content_hash.as_str()),
+            );
+            p.insert(
+                "ingested_at".to_owned(),
+                DataValue::from(node.ingested_at.to_rfc3339().as_str()),
+            );
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch upsert Power BI graph edges into `powerbi_edge`.
+    pub async fn upsert_powerbi_edges(
+        &self,
+        edges: &[crate::models::PowerBiEdge],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[from_id, to_id, edge_type, source_path] <-
+    [[$from_id, $to_id, $edge_type, $source_path]]
+:put powerbi_edge {
+    from_id, to_id, edge_type => source_path
+}
+"#;
+        for edge in edges {
+            let mut p = BTreeMap::new();
+            p.insert("from_id".to_owned(), DataValue::from(edge.from_id.as_str()));
+            p.insert("to_id".to_owned(), DataValue::from(edge.to_id.as_str()));
+            p.insert(
+                "edge_type".to_owned(),
+                DataValue::from(edge.edge_type.as_str()),
+            );
+            p.insert(
+                "source_path".to_owned(),
+                DataValue::from(edge.source_path.as_str()),
+            );
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Return all Power BI nodes, optionally filtered by `source_path`.
+    pub async fn select_powerbi_nodes(
+        &self,
+        source_path: Option<&str>,
+    ) -> Result<Vec<crate::models::PowerBiNode>, EngramError> {
+        let sp_clause = source_path
+            .map(|_| ", source_path = $source_path")
+            .unwrap_or("");
+        let script = format!(
+            r#"?[id, name, kind, file_path, source_path, content_hash, ingested_at] :=
+    *powerbi_node {{ id, name, kind, file_path, source_path, content_hash, ingested_at }}{sp_clause}"#
+        );
+        let mut p = BTreeMap::new();
+        if let Some(sp) = source_path {
+            p.insert("source_path".to_owned(), DataValue::from(sp));
+        }
+        let result = self
+            .db
+            .run_script(&script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                let ingested_str = extract_str(row, 6);
+                let ingested_at = chrono::DateTime::parse_from_rfc3339(&ingested_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                let kind_str = extract_str(row, 2);
+                let kind = parse_powerbi_node_kind(&kind_str)?;
+                Ok(crate::models::PowerBiNode {
+                    id: extract_str(row, 0),
+                    name: extract_str(row, 1),
+                    kind,
+                    file_path: extract_str(row, 3),
+                    source_path: extract_str(row, 4),
+                    content_hash: extract_str(row, 5),
+                    ingested_at,
+                })
+            })
+            .collect()
+    }
+
+    /// Delete all Power BI nodes and edges belonging to a registry source.
+    ///
+    /// Used when an entire Power BI content source is removed from the registry.
+    /// For per-file removal use [`delete_powerbi_nodes_by_file_path`] instead.
+    pub async fn delete_powerbi_nodes_by_source(
+        &self,
+        source_path: &str,
+    ) -> Result<(), EngramError> {
+        // Delete edges for this source.
+        let find_edges = r#"?[from_id, to_id, edge_type] := *powerbi_edge { from_id, to_id, edge_type, source_path }, source_path = $source_path"#;
+        let mut p = BTreeMap::new();
+        p.insert("source_path".to_owned(), DataValue::from(source_path));
+        let edge_rows = self
+            .db
+            .run_script(find_edges, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &edge_rows.rows {
+            let from = extract_str(row, 0);
+            let to = extract_str(row, 1);
+            let et = extract_str(row, 2);
+            let del = r#"?[from_id, to_id, edge_type] <- [[$from_id, $to_id, $edge_type]] :rm powerbi_edge { from_id, to_id, edge_type }"#;
+            let mut dp = BTreeMap::new();
+            dp.insert("from_id".to_owned(), DataValue::from(from.as_str()));
+            dp.insert("to_id".to_owned(), DataValue::from(to.as_str()));
+            dp.insert("edge_type".to_owned(), DataValue::from(et.as_str()));
+            self.run_script_busy_retry_mutable(del, dp).await?;
+        }
+
+        // Delete nodes for this source.
+        let find_nodes =
+            r#"?[id] := *powerbi_node { id, source_path }, source_path = $source_path"#;
+        let mut p2 = BTreeMap::new();
+        p2.insert("source_path".to_owned(), DataValue::from(source_path));
+        let node_rows = self
+            .db
+            .run_script(find_nodes, p2, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        for row in &node_rows.rows {
+            let id = extract_str(row, 0);
+            let del = r#"?[id] <- [[$id]] :rm powerbi_node { id }"#;
+            let mut dp = BTreeMap::new();
+            dp.insert("id".to_owned(), DataValue::from(id.as_str()));
+            self.run_script_busy_retry_mutable(del, dp).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Delete all Power BI nodes whose `file_path` matches, along with all
+    /// edges where any of those node IDs appear as `from_id` or `to_id`.
+    ///
+    /// Used by the deletion sweep when a source file is removed from disk.
+    pub async fn delete_powerbi_nodes_by_file_path(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        let find = r#"?[id] := *powerbi_node { id, file_path }, file_path = $file_path"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        let r = self
+            .db
+            .run_script(find, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+
+        let ids: Vec<String> = r.rows.iter().map(|row| extract_str(row, 0)).collect();
+
+        for id in &ids {
+            // Delete outgoing edges.
+            let find_out = r#"?[from_id, to_id, edge_type] := *powerbi_edge { from_id, to_id, edge_type }, from_id = $id"#;
+            let mut po = BTreeMap::new();
+            po.insert("id".to_owned(), DataValue::from(id.as_str()));
+            let out_rows = self
+                .db
+                .run_script(find_out, po, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &out_rows.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let et = extract_str(row, 2);
+                let del = r#"?[from_id, to_id, edge_type] <- [[$from_id, $to_id, $edge_type]] :rm powerbi_edge { from_id, to_id, edge_type }"#;
+                let mut dp = BTreeMap::new();
+                dp.insert("from_id".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to_id".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("edge_type".to_owned(), DataValue::from(et.as_str()));
+                self.run_script_busy_retry_mutable(del, dp).await?;
+            }
+
+            // Delete incoming edges.
+            let find_in = r#"?[from_id, to_id, edge_type] := *powerbi_edge { from_id, to_id, edge_type }, to_id = $id"#;
+            let mut pi = BTreeMap::new();
+            pi.insert("id".to_owned(), DataValue::from(id.as_str()));
+            let in_rows = self
+                .db
+                .run_script(find_in, pi, ScriptMutability::Immutable)
+                .map_err(|e| map_db_err(e.to_string()))?;
+            for row in &in_rows.rows {
+                let from = extract_str(row, 0);
+                let to = extract_str(row, 1);
+                let et = extract_str(row, 2);
+                let del = r#"?[from_id, to_id, edge_type] <- [[$from_id, $to_id, $edge_type]] :rm powerbi_edge { from_id, to_id, edge_type }"#;
+                let mut dp = BTreeMap::new();
+                dp.insert("from_id".to_owned(), DataValue::from(from.as_str()));
+                dp.insert("to_id".to_owned(), DataValue::from(to.as_str()));
+                dp.insert("edge_type".to_owned(), DataValue::from(et.as_str()));
+                self.run_script_busy_retry_mutable(del, dp).await?;
+            }
+
+            // Delete the node itself.
+            let del_node = r#"?[id] <- [[$id]] :rm powerbi_node { id }"#;
+            let mut pn = BTreeMap::new();
+            pn.insert("id".to_owned(), DataValue::from(id.as_str()));
+            self.run_script_busy_retry_mutable(del_node, pn).await?;
+        }
+        Ok(())
+    }
+
+    /// Resolve a Power BI entity ID to a [`QueryGraphNode`] using `powerbi_node` metadata.
+    ///
+    /// Returns `None` when the ID is not found in `powerbi_node`.
+    async fn resolve_powerbi_node(&self, id: &str) -> Result<Option<QueryGraphNode>, EngramError> {
+        let script =
+            "?[id, name, kind, file_path] := *powerbi_node { id, name, kind, file_path }, id = $id";
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(id));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &result.rows[0];
+        let node_id = extract_str(row, 0);
+        let name = extract_str(row, 1);
+        let kind = extract_str(row, 2);
+        let file_path_val = extract_str(row, 3);
+        Ok(Some(QueryGraphNode {
+            id: node_id,
+            kind: if kind.is_empty() {
+                "powerbi_entity".to_owned()
+            } else {
+                format!("powerbi_{kind}")
+            },
+            name: if name.is_empty() { id.to_owned() } else { name },
+            file_path: if file_path_val.is_empty() {
+                None
+            } else {
+                Some(file_path_val)
+            },
+        }))
+    }
 }
 
 fn extract_str(row: &[DataValue], col: usize) -> String {
@@ -4439,6 +4842,31 @@ fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
 
 // ── Unit tests (040.001-T) ────────────────────────────────────────────────────
 
+/// Map a `kind` string from the `powerbi_node` relation to a [`PowerBiNodeKind`]
+/// variant.
+///
+/// Returns `Err` for any string that is not a recognized variant, preventing
+/// silently-wrong data from masquerading as `DataSource`.
+fn parse_powerbi_node_kind(
+    kind_str: &str,
+) -> Result<crate::models::powerbi_graph::PowerBiNodeKind, EngramError> {
+    use crate::models::powerbi_graph::PowerBiNodeKind;
+    match kind_str {
+        "report" => Ok(PowerBiNodeKind::Report),
+        "page" => Ok(PowerBiNodeKind::Page),
+        "visual" => Ok(PowerBiNodeKind::Visual),
+        "semantic_model" => Ok(PowerBiNodeKind::SemanticModel),
+        "table" => Ok(PowerBiNodeKind::Table),
+        "column" => Ok(PowerBiNodeKind::Column),
+        "measure" => Ok(PowerBiNodeKind::Measure),
+        "relationship" => Ok(PowerBiNodeKind::Relationship),
+        "data_source" => Ok(PowerBiNodeKind::DataSource),
+        _ => Err(map_db_err(format!(
+            "unrecognized powerbi_node kind: {kind_str:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -4490,6 +4918,40 @@ mod tests {
         assert!(
             mutable_script_retry_metrics().last_retry_at.is_some(),
             "last_retry_at must be Some after a simulated retry"
+        );
+    }
+
+    /// S-DBC-PBI-01: `parse_powerbi_node_kind` maps all canonical kind strings and
+    /// errors on unrecognized values.
+    #[test]
+    fn parse_powerbi_node_kind_known_and_unknown() {
+        use crate::models::powerbi_graph::PowerBiNodeKind;
+
+        let cases = [
+            ("report", PowerBiNodeKind::Report),
+            ("page", PowerBiNodeKind::Page),
+            ("visual", PowerBiNodeKind::Visual),
+            ("semantic_model", PowerBiNodeKind::SemanticModel),
+            ("table", PowerBiNodeKind::Table),
+            ("column", PowerBiNodeKind::Column),
+            ("measure", PowerBiNodeKind::Measure),
+            ("relationship", PowerBiNodeKind::Relationship),
+            ("data_source", PowerBiNodeKind::DataSource),
+        ];
+        for (s, expected) in cases {
+            let got = parse_powerbi_node_kind(s)
+                .unwrap_or_else(|e| panic!("expected Ok for {s:?} but got Err: {e}"));
+            assert_eq!(got, expected, "wrong variant for {s:?}");
+        }
+
+        // Unknown kind must be an error, not silently mapped to DataSource.
+        assert!(
+            parse_powerbi_node_kind("unknown_kind").is_err(),
+            "unknown kind should return Err"
+        );
+        assert!(
+            parse_powerbi_node_kind("").is_err(),
+            "empty string should return Err"
         );
     }
 }
