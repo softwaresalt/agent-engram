@@ -24,6 +24,7 @@ pub mod graph_query;
 pub mod health;
 pub mod interface;
 pub mod metrics;
+pub mod notebook;
 pub mod policy;
 pub mod powerbi;
 pub mod powerbi_graph;
@@ -46,6 +47,7 @@ pub use graph_query::TraversalDirection;
 pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
 pub use metrics::MetricsConfig;
+pub use notebook::NotebookIndexResult;
 pub use powerbi::PowerBiIndexResult;
 pub use powerbi_graph::{
     PowerBiEdge, PowerBiEdgeType, PowerBiGraphIndexResult, PowerBiNode, PowerBiNodeKind,

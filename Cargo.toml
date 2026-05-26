@@ -657,6 +657,21 @@ path = "tests/unit/powerbi_extract_tmdl_test.rs"
 name = "integration_powerbi_search_ingestion"
 path = "tests/integration/powerbi_search_ingestion_test.rs"
 
+# ── 063-F: Jupyter notebook source support ───────────────────────────────────
+
+[[test]]
+name = "integration_notebook_source_dispatch"
+path = "tests/integration/notebook_source_dispatch_test.rs"
+
+[[test]]
+name = "unit_notebook_extract"
+path = "tests/unit/notebook_extract_test.rs"
+
+[[test]]
+name = "integration_notebook_search_ingestion"
+path = "tests/integration/notebook_search_ingestion_test.rs"
+required-features = ["cozo-backend"]
+
 [[test]]
 name = "unit_powerbi_graph_models"
 path = "tests/unit/powerbi_graph_models_test.rs"

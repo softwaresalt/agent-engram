@@ -43,6 +43,7 @@ pub const BUILT_IN_TYPES: &[&str] = &[
     "context",
     "instructions",
     "backlog",
+    "notebook",
     "powerbi",
 ];
 

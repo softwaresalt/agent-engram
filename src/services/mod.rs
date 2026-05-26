@@ -20,6 +20,8 @@ pub mod git_graph;
 pub mod hydration;
 pub mod ingestion;
 pub mod metrics;
+pub mod notebook_extract;
+pub mod notebook_indexer;
 pub mod output;
 pub mod parsing;
 pub mod policy;
