@@ -2,9 +2,9 @@
 
 **Date**: 2026-05-28
 **Branch**: `post-merge/063-F-notebook-source-support`
-**Commit**: not created yet
-**PR**: not opened yet
-**Status**: Closure artifacts updated; validation complete; commit, push, and PR creation pending
+**Commit**: initial closure commit `0c7afa425f558f681c9bcf1d721305e83219724c`
+**PR**: `#168`
+**Status**: Closure artifacts committed and pushed; PR #168 is open; the initial CI build passed
 
 ---
 
@@ -27,7 +27,8 @@ pre-merge verification note into a post-merge closure record for PR #167 and
 merge commit `bc85c8930a0e263e4b55f53ebfeed2d33ad9ae1b`.
 
 Retargeted `.backlogit/archive/051-S.md`, `.backlogit/archive/063-F.md`, and
-`.backlogit/archive/063.001-T` through `063.005-T` from feature-head commit
+task archives `.backlogit/archive/063.001-T.md` through
+`.backlogit/archive/063.005-T.md` from feature-head commit
 `3acd3372969b99eebc766cff12c2fae745566c19` to the merge commit so the archived
 shipment, feature, and tasks share the same final traceability anchor.
 
@@ -51,7 +52,7 @@ shipment, feature, and tasks share the same final traceability anchor.
 ## Validation
 
 * Reviewed the rewritten closure doc for post-merge structure, PR metadata, rollback guidance, and release-observability sections.
-* Confirmed the isolated worktree diff is limited to the expected closure doc plus seven archived backlog artifacts.
+* Confirmed the closure-only diff is limited to the expected closure doc plus seven archived backlog artifacts.
 * Confirmed the already-patched archive files and remaining task files all now stage the same merge SHA update.
 
 ## Failed Approaches and Friction
@@ -61,6 +62,6 @@ shipment, feature, and tasks share the same final traceability anchor.
 
 ## Next Steps
 
-1. Commit the closure-only diff on `post-merge/063-F-notebook-source-support`.
-2. Push the branch to `origin`.
-3. Open the post-merge PR and capture the PR number for follow-up review and CI work.
+1. Address any follow-up review comments on PR #168.
+2. Merge PR #168 once review is satisfied.
+3. Archive or retire the branch after the PR lands.

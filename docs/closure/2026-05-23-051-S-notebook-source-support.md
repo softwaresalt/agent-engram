@@ -66,7 +66,7 @@ Merge-only release. No separate deploy or phased rollout step is required.
 
 ## Post-Deploy Checks
 
-* Confirm `.backlogit/archive/051-S.md`, `.backlogit/archive/063-F.md`, and `.backlogit/archive/063.001-T` through `063.005-T` all reference merge commit `bc85c8930a0e263e4b55f53ebfeed2d33ad9ae1b`.
+* Confirm `.backlogit/archive/051-S.md`, `.backlogit/archive/063-F.md`, and task archives `.backlogit/archive/063.001-T.md` through `.backlogit/archive/063.005-T.md` all reference merge commit `bc85c8930a0e263e4b55f53ebfeed2d33ad9ae1b`.
 * Confirm notebook support remains documented in `docs/architecture.md` and `docs/quickstart.md`.
 * Confirm notebook search behavior remains bounded to summary plus per-cell records.
 
