@@ -25,6 +25,7 @@ pub mod health;
 pub mod interface;
 pub mod metrics;
 pub mod notebook;
+pub mod pbip;
 pub mod policy;
 pub mod powerbi;
 pub mod powerbi_graph;
@@ -48,6 +49,7 @@ pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeRes
 pub use interface::Interface;
 pub use metrics::MetricsConfig;
 pub use notebook::NotebookIndexResult;
+pub use pbip::PbipIndexResult;
 pub use powerbi::PowerBiIndexResult;
 pub use powerbi_graph::{
     PowerBiEdge, PowerBiEdgeType, PowerBiGraphIndexResult, PowerBiNode, PowerBiNodeKind,

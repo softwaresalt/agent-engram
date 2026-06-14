@@ -24,6 +24,7 @@ pub mod notebook_extract;
 pub mod notebook_indexer;
 pub mod output;
 pub mod parsing;
+pub mod pbip_indexer;
 pub mod policy;
 pub mod powerbi_extract;
 pub mod powerbi_indexer;
