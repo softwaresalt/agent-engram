@@ -45,7 +45,7 @@ top-level `expressions.tmdl` declarations.
 
 | Gate | Result |
 |---|---|
-| PR merge strategy | Merge commit confirmed (`1475200dedf983fafbad9a4eb273cc01f69d6d98`) — admin override used because branch policy required reviewer approval and operator approved verbally |
+| PR merge strategy | Merge commit confirmed (`1475200dedf983fafbad9a4eb273cc01f69d6d98`) — admin override used because branch policy required reviewer approval and operator approved in chat |
 | `cargo fmt --all -- --check` | Clean on branch HEAD |
 | `cargo clippy --all-targets ... -- -D warnings -D clippy::pedantic` | Clean on branch HEAD |
 | `cargo dev-test ...` | 157 passed, 0 failed |
