@@ -70,7 +70,7 @@ pub async fn index_pbip_source(
 /// # Current behavior (062.001-T scope)
 ///
 /// Returns `0` without touching the database. The deletion sweep gains real
-/// behavior in 062.006-T (Emit PBIP content records and graph edges) once the
+/// behavior in 062.002-T (Emit PBIP content records and graph edges) once the
 /// indexer is persisting records.
 ///
 /// # Errors
