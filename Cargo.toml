@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "crates/powerbi-tmdl-parser"]
 resolver = "2"
 
 [package]
@@ -63,6 +63,7 @@ ignore = "0.4"
 globset = "0.4"
 serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
+powerbi-tmdl-parser = { path = "crates/powerbi-tmdl-parser" }
 
 [features]
 default = ["embeddings", "cozo-backend"]

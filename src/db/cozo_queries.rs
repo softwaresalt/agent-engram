@@ -4859,6 +4859,7 @@ fn parse_powerbi_node_kind(
         "table" => Ok(PowerBiNodeKind::Table),
         "column" => Ok(PowerBiNodeKind::Column),
         "measure" => Ok(PowerBiNodeKind::Measure),
+        "expression" => Ok(PowerBiNodeKind::Expression),
         "relationship" => Ok(PowerBiNodeKind::Relationship),
         "data_source" => Ok(PowerBiNodeKind::DataSource),
         _ => Err(map_db_err(format!(
@@ -4935,6 +4936,7 @@ mod tests {
             ("table", PowerBiNodeKind::Table),
             ("column", PowerBiNodeKind::Column),
             ("measure", PowerBiNodeKind::Measure),
+            ("expression", PowerBiNodeKind::Expression),
             ("relationship", PowerBiNodeKind::Relationship),
             ("data_source", PowerBiNodeKind::DataSource),
         ];

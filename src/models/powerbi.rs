@@ -60,7 +60,8 @@ pub struct PowerBiVisual {
 /// A Power BI semantic model (dataset / `.SemanticModel` folder).
 ///
 /// Corresponds to the `model.bim` file and contains the tabular data model
-/// including tables, measures, columns, relationships, and data sources.
+/// including tables, measures, expressions, columns, relationships, and data
+/// sources.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PowerBiSemanticModel {
     /// Stable synthetic ID derived from the workspace-relative model path.
@@ -79,6 +80,10 @@ pub struct PowerBiSemanticModel {
     /// Relationships between tables.
     #[serde(default)]
     pub relationships: Vec<PowerBiRelationship>,
+
+    /// Top-level expressions or parameter queries defined in the model.
+    #[serde(default)]
+    pub expressions: Vec<PowerBiExpression>,
 
     /// Data sources referenced by this model.
     #[serde(default)]
@@ -127,6 +132,20 @@ pub struct PowerBiMeasure {
     pub name: String,
 
     /// DAX expression (may be truncated for indexing purposes).
+    #[serde(default)]
+    pub expression: Option<String>,
+}
+
+/// A top-level expression or parameter query within a Power BI semantic model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiExpression {
+    /// Stable synthetic ID derived from model ID + expression name.
+    pub id: String,
+
+    /// Expression name.
+    pub name: String,
+
+    /// Expression body text.
     #[serde(default)]
     pub expression: Option<String>,
 }

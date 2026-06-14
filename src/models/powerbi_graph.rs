@@ -34,6 +34,8 @@ pub enum PowerBiNodeKind {
     Column,
     /// A DAX measure within a table.
     Measure,
+    /// A top-level expression or parameter query.
+    Expression,
     /// A relationship between two tables.
     Relationship,
     /// A data source referenced by the semantic model.
@@ -52,6 +54,7 @@ impl PowerBiNodeKind {
             Self::Table => "table",
             Self::Column => "column",
             Self::Measure => "measure",
+            Self::Expression => "expression",
             Self::Relationship => "relationship",
             Self::DataSource => "data_source",
         }

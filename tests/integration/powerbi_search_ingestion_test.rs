@@ -264,15 +264,71 @@ fn extract_entity_summaries_from_model_bim() {
         .iter()
         .filter(|(kind, _, _, _)| kind == "powerbi_measure")
         .count();
+    let semantic_model_count = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_semantic_model")
+        .count();
 
     assert_eq!(table_count, 1, "should have one table summary");
     assert_eq!(measure_count, 1, "should have one measure summary");
+    assert_eq!(
+        semantic_model_count, 1,
+        "should have one semantic-model summary"
+    );
 
     let table = summaries
         .iter()
         .find(|(k, _, _, _)| k == "powerbi_table")
         .unwrap();
     assert_eq!(table.1, "Sales", "table name should be Sales");
+}
+
+/// S-PIN-16: Ref-only `model.tmdl` files still produce a semantic-model
+/// summary so the canonical model file is searchable.
+#[test]
+fn extract_entity_summaries_from_ref_only_model_tmdl() {
+    let tmdl = r"
+model Sales Dataset
+
+ref table Sales
+ref relationship SalesToProducts
+";
+
+    let summaries =
+        extract_entity_summaries(tmdl, "models/Sales.SemanticModel/definition/model.tmdl");
+    let semantic_models: Vec<_> = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_semantic_model")
+        .collect();
+
+    assert_eq!(
+        semantic_models.len(),
+        1,
+        "ref-only model.tmdl should still yield one semantic-model summary"
+    );
+    assert_eq!(semantic_models[0].1, "Sales Dataset");
+}
+
+/// S-PIN-18: `expressions.tmdl` files produce expression summaries through the
+/// shared semantic-model path.
+#[test]
+fn extract_entity_summaries_from_tmdl_expressions() {
+    let tmdl = r#"
+expression SynapseSqlServer = "dp-da-synw-t-cus-01-ondemand.sql.azuresynapse.net" meta [IsParameterQuery=true, Type="Text"]
+
+expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text"]
+"#;
+
+    let summaries = extract_entity_summaries(
+        tmdl,
+        "models/Sales.SemanticModel/definition/expressions.tmdl",
+    );
+    let expression_count = summaries
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "powerbi_expression")
+        .count();
+
+    assert_eq!(expression_count, 2, "should have two expression summaries");
 }
 
 /// S-PIN-09: Unknown JSON that is neither report nor model returns empty summaries.
@@ -584,5 +640,128 @@ table Products
         semantic_models.len(),
         1,
         "stable TMDL identity should not split one semantic model into multiple graph nodes"
+    );
+}
+
+/// S-PIN-17: A ref-only `model.tmdl` file still creates a searchable semantic
+/// model record and graph node.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_indexes_ref_only_model_tmdl() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    fs::create_dir_all(&definition).expect("create definition dir");
+
+    fs::write(
+        definition.join("model.tmdl"),
+        r"
+model Sales Dataset
+
+ref table Sales
+ref relationship SalesToProducts
+",
+    )
+    .expect("write model.tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-model-shell")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let semantic_model_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_semantic_model")
+        .collect();
+    assert_eq!(
+        semantic_model_records.len(),
+        1,
+        "ref-only model.tmdl should still create one semantic-model content record"
+    );
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("models"))
+        .await
+        .expect("select powerbi nodes");
+    let semantic_models: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::SemanticModel)
+        .collect();
+    assert_eq!(
+        semantic_models.len(),
+        1,
+        "ref-only model.tmdl should still create one semantic-model graph node"
+    );
+}
+
+/// S-PIN-19: `expressions.tmdl` files create searchable expression records and
+/// expression graph nodes.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_indexes_tmdl_expressions() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    fs::create_dir_all(&definition).expect("create definition dir");
+
+    fs::write(
+        definition.join("expressions.tmdl"),
+        r#"
+expression SynapseSqlServer = "dp-da-synw-t-cus-01-ondemand.sql.azuresynapse.net" meta [IsParameterQuery=true, Type="Text"]
+
+expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text"]
+"#,
+    )
+    .expect("write expressions.tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-expressions")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let expression_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_expression")
+        .collect();
+    assert_eq!(
+        expression_records.len(),
+        2,
+        "expressions.tmdl should create one content record per expression"
+    );
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("models"))
+        .await
+        .expect("select powerbi nodes");
+    let expression_nodes: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::Expression)
+        .collect();
+    assert_eq!(
+        expression_nodes.len(),
+        2,
+        "expressions.tmdl should create one graph node per expression"
     );
 }
