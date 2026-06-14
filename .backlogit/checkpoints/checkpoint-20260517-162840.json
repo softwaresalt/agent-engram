@@ -1,0 +1,1 @@
+{"task_id":"033.005-T","status":"blocked","blocker":"tree-sitter-sequel 0.3 parses CREATE PROCEDURE as ERROR","memory_file":"docs/memory/2026-05-17/033-005-t-sql-parser-blocked-memory.md"}
