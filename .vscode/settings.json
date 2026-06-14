@@ -2,17 +2,7 @@
     "rust-analyzer.cargo.allTargets": false,
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.check.command": "check",
-    "chat.promptFilesRecommendations": {
-        "speckit.constitution": true,
-        "speckit.specify": true,
-        "speckit.plan": true,
-        "speckit.tasks": true,
-        "build-orchestrator": true,
-        "speckit.implement": true
-    },
     "chat.tools.terminal.autoApprove": {
-        ".specify/scripts/bash/": true,
-        ".specify/scripts/powershell/": true,
         "/^cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
             "approve": true,
             "matchCommandLine": true
@@ -37,15 +27,15 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
+        "/^pwsh -File \\scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
+        "/^pwsh -NoProfile -File \\scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
+        "/^pwsh -NoProfile -File \\scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
             "approve": true,
             "matchCommandLine": true
         }

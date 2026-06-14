@@ -105,3 +105,98 @@ table Sales
 
     assert_eq!(model.name, "Sales");
 }
+
+/// S-PTM-06: Relationship blocks that use `fromColumn:` and `toColumn:` should
+/// produce relationship entities.
+#[test]
+fn extract_tmdl_semantic_model_parses_relationship_blocks() {
+    let model = extract_tmdl_semantic_model(
+        "
+relationship FactToTitle
+  fromColumn: FactVehicleRegistrations.VehicleTitleKey
+  toColumn: DimVehicleTitle.VehicleTitleKey
+",
+        "models/Sales.SemanticModel/definition/relationships.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    assert_eq!(model.relationships.len(), 1);
+    let rel = &model.relationships[0];
+    assert_eq!(rel.from_table, "FactVehicleRegistrations");
+    assert_eq!(rel.from_column, "VehicleTitleKey");
+    assert_eq!(rel.to_table, "DimVehicleTitle");
+    assert_eq!(rel.to_column, "VehicleTitleKey");
+}
+
+/// S-PTM-07: Multiline measure bodies should be preserved as the measure
+/// expression text.
+#[test]
+fn extract_tmdl_semantic_model_preserves_multiline_measure_expression() {
+    let model = extract_tmdl_semantic_model(
+        "
+table Sales
+  measure 'Registrations With Lien Holder' =
+    CALCULATE (
+      [Total Registrations],
+      FILTER ( Sales, Sales[HasLien] = TRUE () )
+    )
+",
+        "models/Sales.SemanticModel/definition/tables/Sales.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    assert_eq!(model.tables.len(), 1);
+    assert_eq!(model.tables[0].measures.len(), 1);
+    assert_eq!(
+        model.tables[0].measures[0].expression.as_deref(),
+        Some("CALCULATE (\n[Total Registrations],\nFILTER ( Sales, Sales[HasLien] = TRUE () )\n)")
+    );
+}
+
+/// S-PTM-08: `model.tmdl` files that only carry refs should still produce a
+/// semantic-model shell so the canonical model file is indexable.
+#[test]
+fn extract_tmdl_semantic_model_keeps_ref_only_model_file() {
+    let model = extract_tmdl_semantic_model(
+        "
+model Sales Dataset
+
+ref table Sales
+ref relationship SalesToProducts
+",
+        "models/Sales.SemanticModel/definition/model.tmdl",
+    )
+    .expect("model.tmdl should still produce a semantic model shell");
+
+    assert_eq!(model.name, "Sales Dataset");
+    assert!(model.tables.is_empty());
+    assert!(model.relationships.is_empty());
+    assert!(model.data_sources.is_empty());
+}
+
+/// S-PTM-09: Top-level `expressions.tmdl` declarations should be preserved as
+/// semantic-model expressions.
+#[test]
+fn extract_tmdl_semantic_model_parses_top_level_expressions() {
+    let model = extract_tmdl_semantic_model(
+        r#"
+expression SynapseSqlServer = "dp-da-synw-t-cus-01-ondemand.sql.azuresynapse.net" meta [IsParameterQuery=true, Type="Text"]
+
+expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text"]
+"#,
+        "models/Sales.SemanticModel/definition/expressions.tmdl",
+    )
+    .expect("expressions.tmdl should produce a semantic model");
+
+    assert_eq!(model.expressions.len(), 2);
+    assert_eq!(model.expressions[0].name, "SynapseSqlServer");
+    assert_eq!(
+        model.expressions[0].expression.as_deref(),
+        Some("\"dp-da-synw-t-cus-01-ondemand.sql.azuresynapse.net\"")
+    );
+    assert_eq!(model.expressions[1].name, "SynapseDatabase");
+    assert_eq!(
+        model.expressions[1].expression.as_deref(),
+        Some("\"ILSOS_EDW\"")
+    );
+}

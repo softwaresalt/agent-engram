@@ -17,6 +17,7 @@ fn powerbi_node_kind_as_str_stable() {
     assert_eq!(PowerBiNodeKind::Table.as_str(), "table");
     assert_eq!(PowerBiNodeKind::Column.as_str(), "column");
     assert_eq!(PowerBiNodeKind::Measure.as_str(), "measure");
+    assert_eq!(PowerBiNodeKind::Expression.as_str(), "expression");
     assert_eq!(PowerBiNodeKind::Relationship.as_str(), "relationship");
     assert_eq!(PowerBiNodeKind::DataSource.as_str(), "data_source");
 }
@@ -126,6 +127,7 @@ fn powerbi_node_kind_display_matches_as_str() {
         PowerBiNodeKind::Table,
         PowerBiNodeKind::Column,
         PowerBiNodeKind::Measure,
+        PowerBiNodeKind::Expression,
         PowerBiNodeKind::Relationship,
         PowerBiNodeKind::DataSource,
     ] {
