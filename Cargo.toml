@@ -696,6 +696,10 @@ name = "unit_pbip_extract_project_definition"
 path = "tests/unit/pbip_extract_project_definition_test.rs"
 
 [[test]]
+name = "unit_pbip_extract_page_visual"
+path = "tests/unit/pbip_extract_page_visual_test.rs"
+
+[[test]]
 name = "unit_powerbi_graph_models"
 path = "tests/unit/powerbi_graph_models_test.rs"
 
