@@ -4,8 +4,11 @@ type: runtime-verification
 date: 2026-05-22
 shipment: 050-S
 feature: 062-F
-status: draft
+status: shipped
 owner: softwaresalt
+pr: 177
+merge_commit: 275faa4e468b6aaf287aa3e5afb0493756f85349
+shipped_on: 2026-06-15
 ---
 
 ## Purpose
