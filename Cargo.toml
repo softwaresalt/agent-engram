@@ -692,6 +692,10 @@ name = "integration_pbip_search_ingestion"
 path = "tests/integration/pbip_search_ingestion_test.rs"
 
 [[test]]
+name = "unit_pbip_extract_project_definition"
+path = "tests/unit/pbip_extract_project_definition_test.rs"
+
+[[test]]
 name = "unit_powerbi_graph_models"
 path = "tests/unit/powerbi_graph_models_test.rs"
 
