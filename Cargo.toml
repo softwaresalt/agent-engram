@@ -680,6 +680,14 @@ name = "integration_pbip_source_dispatch"
 path = "tests/integration/pbip_source_dispatch_test.rs"
 
 [[test]]
+name = "unit_pbip_extract_pbism"
+path = "tests/unit/pbip_extract_pbism_test.rs"
+
+[[test]]
+name = "unit_pbip_extract_tmdl"
+path = "tests/unit/pbip_extract_tmdl_test.rs"
+
+[[test]]
 name = "unit_powerbi_graph_models"
 path = "tests/unit/powerbi_graph_models_test.rs"
 
