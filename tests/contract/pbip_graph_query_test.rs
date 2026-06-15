@@ -19,8 +19,8 @@ use tempfile::TempDir;
 
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
-use engram::models::TraversalDirection;
 use engram::models::registry::{ContentSource, ContentSourceStatus};
+use engram::models::{PowerBiNode, PowerBiNodeKind, TraversalDirection};
 use engram::services::pbip_indexer::{index_pbip_source, sweep_deleted_pbip_files};
 
 const MAX_FILE_SIZE: u64 = 1_048_576;
@@ -317,5 +317,192 @@ async fn sweep_deleted_pbip_files_prunes_removed_files() {
             .iter()
             .any(|r| r.file_path.ends_with("Page1/visuals/v1/visual.json")),
         "swept visual record should be gone"
+    );
+}
+
+/// S-PGQ-05 (Issue A regression): a legacy `powerbi` source registered at the
+/// same registry path keeps its graph nodes across a PBIP re-index. PBIP graph
+/// deletion must be scoped to PBIP-owned file paths, not the whole source.
+#[tokio::test]
+async fn index_pbip_source_preserves_legacy_powerbi_nodes_at_same_path() {
+    let root = TempDir::new().expect("tempdir");
+    write_project(root.path());
+
+    let db = connect_db(&root.path().join("data"), "pbip-legacy-coexist")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    // A legacy `powerbi` node sharing the same registry source_path ("proj"),
+    // anchored to a file the PBIP walker never collects (`.bim` is not a PBIP
+    // extension). The independence boundary requires this node to survive.
+    let legacy = PowerBiNode {
+        id: "pbi_legacy_fixture".to_string(),
+        name: "LegacyModel".to_string(),
+        kind: PowerBiNodeKind::SemanticModel,
+        file_path: "proj/Legacy.SemanticModel/model.bim".to_string(),
+        source_path: "proj".to_string(),
+        content_hash: "deadbeefdeadbeef".to_string(),
+        ingested_at: chrono::Utc::now(),
+    };
+    queries
+        .upsert_powerbi_nodes(std::slice::from_ref(&legacy))
+        .await
+        .expect("seed legacy powerbi node");
+
+    // First PBIP index: must not touch the pre-existing legacy node.
+    index_pbip_source(&pbip_source("proj"), root.path(), &queries, MAX_FILE_SIZE)
+        .await
+        .expect("first pbip index");
+    assert!(
+        queries
+            .select_powerbi_nodes(Some("proj"))
+            .await
+            .expect("nodes after first index")
+            .iter()
+            .any(|n| n.id == "pbi_legacy_fixture"),
+        "legacy powerbi node must survive the first PBIP index"
+    );
+
+    // Change a PBIP file so the next index triggers a full rebuild (delete +
+    // re-emit) of the PBIP graph.
+    write(
+        root.path(),
+        "proj/My.Report/definition/pages/Page1/visuals/v1/visual.json",
+        r#"{"name":"v1","visual":{"visualType":"barChart"}}"#,
+    );
+    index_pbip_source(&pbip_source("proj"), root.path(), &queries, MAX_FILE_SIZE)
+        .await
+        .expect("second pbip index");
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("proj"))
+        .await
+        .expect("nodes after rebuild");
+    assert!(
+        nodes.iter().any(|n| n.id == "pbi_legacy_fixture"),
+        "legacy powerbi node must survive a PBIP re-index rebuild"
+    );
+    // The PBIP graph itself is rebuilt — the report node is present again.
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.kind == PowerBiNodeKind::Report && n.name == "My"),
+        "PBIP report node should be rebuilt by the re-index"
+    );
+}
+
+/// S-PGQ-06 (Issue C regression): an oversized `.tmdl` is excluded from the
+/// snapshot and therefore from semantic-model extraction, exactly as it is
+/// excluded from every other PBIP ingestion path.
+#[tokio::test]
+async fn index_pbip_source_skips_oversized_tmdl() {
+    let root = TempDir::new().expect("tempdir");
+    write(
+        root.path(),
+        "proj/My.pbip",
+        r#"{"version":"1.0","artifacts":[{"report":{"path":"My.Report"}}]}"#,
+    );
+    write(
+        root.path(),
+        "proj/My.Report/definition.pbir",
+        r#"{"version":"1.0","datasetReference":{"byPath":{"path":"../My.SemanticModel"}}}"#,
+    );
+    write(root.path(), "proj/My.Report/definition/report.json", "{}");
+    write(root.path(), "proj/My.SemanticModel/definition.pbism", "{}");
+    // Small in-bounds model file declares the model name.
+    write(
+        root.path(),
+        "proj/My.SemanticModel/definition/model.tmdl",
+        "model Sales Dataset\n",
+    );
+    // Oversized table file: its entities must never be indexed under the cap.
+    let padding = "/// filler comment line to inflate the file size\n".repeat(200);
+    write(
+        root.path(),
+        "proj/My.SemanticModel/definition/tables/Big.tmdl",
+        &format!("table BigTable\n  column HugeColumn\n    dataType: string\n{padding}"),
+    );
+
+    // Cap large enough for the small descriptors, far below the padded file.
+    let cap: u64 = 2_048;
+
+    let db = connect_db(&root.path().join("data"), "pbip-oversized-tmdl")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_pbip_source(&pbip_source("proj"), root.path(), &queries, cap)
+        .await
+        .expect("index pbip source");
+
+    let records = queries
+        .select_content_records(Some("pbip"))
+        .await
+        .expect("select pbip records");
+    assert!(
+        !records
+            .iter()
+            .any(|r| r.content.contains("BigTable") || r.content.contains("HugeColumn")),
+        "oversized .tmdl entities must not be indexed"
+    );
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("proj"))
+        .await
+        .expect("select pbip nodes");
+    assert!(
+        !nodes.iter().any(|n| n.name == "BigTable"),
+        "no graph node should come from the oversized .tmdl"
+    );
+    // The in-bounds model file is still indexed, proving the cap is selective.
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.kind == PowerBiNodeKind::SemanticModel && n.name == "Sales Dataset"),
+        "the in-bounds semantic model should still be indexed"
+    );
+}
+
+/// S-PGQ-07 (Issue D regression): a `pages.json` that exists but cannot be
+/// parsed yields the generic `pbip_file` coverage record, not a misleading
+/// `pbip_page_order` record.
+#[tokio::test]
+async fn index_pbip_source_unparseable_pages_falls_back_to_pbip_file() {
+    let root = TempDir::new().expect("tempdir");
+    write(
+        root.path(),
+        "proj/My.pbip",
+        r#"{"version":"1.0","artifacts":[{"report":{"path":"My.Report"}}]}"#,
+    );
+    write(root.path(), "proj/My.Report/definition/report.json", "{}");
+    write(
+        root.path(),
+        "proj/My.Report/definition/pages/pages.json",
+        "{ this is not valid json",
+    );
+
+    let db = connect_db(&root.path().join("data"), "pbip-bad-pages")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_pbip_source(&pbip_source("proj"), root.path(), &queries, MAX_FILE_SIZE)
+        .await
+        .expect("index pbip source");
+
+    let records = queries
+        .select_content_records(Some("pbip"))
+        .await
+        .expect("select pbip records");
+
+    assert!(
+        !records.iter().any(|r| r.record_kind == "pbip_page_order"),
+        "no page-order record should be emitted for an unparseable pages.json"
+    );
+    assert!(
+        records.iter().any(|r| r.record_kind == "pbip_file"
+            && r.file_path == "proj/My.Report/definition/pages/pages.json"),
+        "the generic pbip_file coverage record should cover the unparseable pages.json"
     );
 }

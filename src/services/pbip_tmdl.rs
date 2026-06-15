@@ -72,6 +72,41 @@ pub fn extract_semantic_model_from_definition(
         return None;
     }
 
+    let mut fragments: Vec<(String, String)> = Vec::new();
+    for file in tmdl_files {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            warn!(path = %file.display(), "skipping unreadable TMDL file");
+            continue;
+        };
+        let Some(file_path) = file.to_str() else {
+            warn!(path = %file.display(), "skipping TMDL file with non-UTF-8 path");
+            continue;
+        };
+        fragments.push((file_path.to_string(), content));
+    }
+
+    merge_semantic_model_fragments(
+        fragments
+            .iter()
+            .map(|(file_path, content)| (file_path.as_str(), content.as_str())),
+    )
+}
+
+/// Merge pre-read TMDL fragments into one canonical [`PowerBiSemanticModel`].
+///
+/// Each fragment is a `(file_path, content)` pair. Unlike
+/// [`extract_semantic_model_from_definition`], the caller reads the files,
+/// which lets ingestion paths apply their own `max_file_size` cap and UTF-8
+/// filtering before handing content over — semantic-model extraction then
+/// honours the same bounds as every other indexed file. `file_path` derives
+/// the model identity and infers the model name exactly as the disk walker
+/// does. Fragments are merged in iteration order, so pass them sorted for a
+/// stable merged identity. Returns `None` when no fragment yields a parseable
+/// TMDL model.
+#[must_use]
+pub fn merge_semantic_model_fragments<'a>(
+    fragments: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<PowerBiSemanticModel> {
     let mut merged_id: Option<String> = None;
     let mut merged_path: Option<String> = None;
     let mut explicit_name: Option<String> = None;
@@ -85,16 +120,8 @@ pub fn extract_semantic_model_from_definition(
     let mut data_sources: HashMap<String, PowerBiDataSource> = HashMap::new();
     let mut data_source_order: Vec<String> = Vec::new();
 
-    for file in tmdl_files {
-        let Ok(content) = std::fs::read_to_string(&file) else {
-            warn!(path = %file.display(), "skipping unreadable TMDL file");
-            continue;
-        };
-        let Some(file_path) = file.to_str() else {
-            warn!(path = %file.display(), "skipping TMDL file with non-UTF-8 path");
-            continue;
-        };
-        let Some(fragment) = extract_tmdl_semantic_model(&content, file_path) else {
+    for (file_path, content) in fragments {
+        let Some(fragment) = extract_tmdl_semantic_model(content, file_path) else {
             continue;
         };
 

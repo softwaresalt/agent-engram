@@ -44,7 +44,7 @@ use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::pbip_extract::{
     parse_page, parse_page_order, parse_pbip_workspace, parse_pbir_link, parse_visual,
 };
-use crate::services::pbip_tmdl::extract_semantic_model_from_definition;
+use crate::services::pbip_tmdl::merge_semantic_model_fragments;
 use crate::services::powerbi_indexer::{
     build_powerbi_graph_data_from_model, compute_file_hash, extract_model_summaries_from_model,
     make_node_id,
@@ -353,12 +353,16 @@ impl<'a> EmissionBuilder<'a> {
             }
         }
 
-        // Report node. Anchor its file_path to report.json when collected,
-        // otherwise to the .pbir descriptor.
+        // Report node. Anchor its file_path to a real collected descriptor:
+        // `report.json` when present, otherwise the `.pbir` descriptor. Skip the
+        // report entirely when neither descriptor was collected so we never emit
+        // a graph node pointing at a non-existent file with an empty hash.
         let report_anchor = if self.file_data.contains_key(&report_file) {
             report_file.clone()
-        } else {
+        } else if self.file_data.contains_key(&pbir_file) {
             pbir_file.clone()
+        } else {
+            return;
         };
         let report_hash = self
             .file_data
@@ -397,21 +401,24 @@ impl<'a> EmissionBuilder<'a> {
             );
         }
 
-        // Pages, ordered by pages.json.
+        // Pages, ordered by pages.json. Emit a page-order record only when
+        // pages.json actually parses. When it exists but cannot be parsed, fall
+        // through to the generic `pbip_file` coverage record (added by the
+        // ensure-coverage pass) instead of emitting a misleading
+        // "Page order …: ." record anchored to an unparseable file.
         let page_order = self
             .file_data
             .get(&pages_file)
             .and_then(|d| parse_page_order(&d.content));
-        if self.file_data.contains_key(&pages_file) {
-            let order = page_order
-                .as_ref()
-                .map(|o| o.order.join(", "))
-                .unwrap_or_default();
+        if let Some(order) = page_order.as_ref() {
             self.push_record(
                 "pbip_page_order",
                 &report_name,
                 report_folder,
-                format!("Page order for report {report_name}: {order}."),
+                format!(
+                    "Page order for report {report_name}: {}.",
+                    order.order.join(", ")
+                ),
                 &pages_file,
             );
         }
@@ -560,8 +567,31 @@ impl<'a> EmissionBuilder<'a> {
     /// extracted from disk.
     fn build_model(&mut self, model_folder: &str) -> Option<(String, String)> {
         let definition_rel = format!("{model_folder}/definition");
-        let definition_abs = self.workspace_root.join(&definition_rel);
-        let model = extract_semantic_model_from_definition(&definition_abs)?;
+        // Source the semantic model from the already-filtered file snapshot
+        // (max_file_size cap + UTF-8 filtering) instead of re-reading the
+        // `definition/` tree from disk. Reading from disk bypassed the
+        // ingestion size cap and UTF-8 filtering, so it could index files the
+        // snapshot intentionally skipped and read unbounded data; sourcing from
+        // the snapshot keeps extraction consistent with change detection and
+        // coverage.
+        let tmdl_prefix = format!("{definition_rel}/");
+        let mut fragments: Vec<(String, String)> = self
+            .file_data
+            .iter()
+            .filter(|(path, _)| path.starts_with(&tmdl_prefix) && has_extension(path, "tmdl"))
+            .map(|(rel, data)| {
+                (
+                    self.workspace_root.join(rel).to_string_lossy().into_owned(),
+                    data.content.clone(),
+                )
+            })
+            .collect();
+        fragments.sort_by(|a, b| a.0.cmp(&b.0));
+        let model = merge_semantic_model_fragments(
+            fragments
+                .iter()
+                .map(|(path, content)| (path.as_str(), content.as_str())),
+        )?;
 
         // Anchor model content records and the node file_path to a real
         // collected file: the `.pbism` descriptor, else the first TMDL file.
@@ -681,11 +711,13 @@ pub async fn index_pbip_source(
         let Ok(text) = std::str::from_utf8(&bytes) else {
             continue;
         };
-        let rel_path = path
-            .strip_prefix(workspace_root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let Some(rel_path) = snapshot_relative_path(path, workspace_root) else {
+            warn!(
+                path = %path.display(),
+                "skipping PBIP file that cannot be made workspace-relative"
+            );
+            continue;
+        };
         file_data.insert(
             rel_path,
             FileData {
@@ -720,13 +752,18 @@ pub async fn index_pbip_source(
         return Ok(result);
     }
 
-    // Full rebuild: clear existing records and graph for this source.
+    // Full rebuild: clear existing records and graph for this source. Scope the
+    // graph deletion to the PBIP-owned file paths (every PBIP node anchors to a
+    // collected file that carries a `pbip` content record) rather than deleting
+    // every `powerbi_node` for the registry path. A legacy `powerbi` source
+    // registered at the same path writes nodes under the same `source_path`, so
+    // a blanket source-scoped delete would erase that independent legacy graph.
     for path in existing.keys() {
         queries
             .delete_content_records_by_scope(path, "pbip", &source.path)
             .await?;
+        queries.delete_powerbi_nodes_by_file_path(path).await?;
     }
-    queries.delete_powerbi_nodes_by_source(&source.path).await?;
 
     let emission = EmissionBuilder::new(&file_data, &source.path, workspace_root).build();
 
@@ -860,6 +897,20 @@ pub async fn sweep_deleted_pbip_files(
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────────
+
+/// Convert an absolute collected path into a forward-slashed,
+/// workspace-relative string.
+///
+/// Returns `None` when `path` is not under `workspace_root`. Downstream
+/// subsystems (the deletion sweep, path-escape guards) assume
+/// [`ContentRecord::file_path`] is workspace-relative, so a collected path that
+/// cannot be made relative is skipped rather than stored as an absolute path
+/// that could later escape the workspace boundary.
+fn snapshot_relative_path(path: &Path, workspace_root: &Path) -> Option<String> {
+    path.strip_prefix(workspace_root)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
 
 /// Whether `path` ends with the given extension (case-insensitive).
 fn has_extension(path: &str, ext: &str) -> bool {
@@ -1103,5 +1154,85 @@ mod tests {
             Some("proj/My.SemanticModel")
         );
         assert_eq!(join_relative("proj", "../../etc"), None);
+    }
+
+    /// S-PIDX-06 (Issue B regression): a report folder whose descriptor files
+    /// were never collected must not emit an orphaned report node anchored to a
+    /// non-existent `definition.pbir` with an empty content hash.
+    #[test]
+    fn report_without_descriptor_emits_no_orphan_node() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "proj/My.pbip".to_string(),
+            fd(r#"{"version":"1.0","artifacts":[{"report":{"path":"My.Report"}}]}"#),
+        );
+        // Deliberately collect neither report.json nor definition.pbir for the
+        // referenced My.Report folder.
+        let emission = build(&files);
+
+        assert!(
+            !emission
+                .nodes
+                .iter()
+                .any(|n| n.kind == PowerBiNodeKind::Report),
+            "no report node should be emitted without a collected descriptor"
+        );
+        assert!(
+            !emission
+                .records
+                .iter()
+                .any(|r| r.record_kind == "pbip_report" || r.record_kind == "pbip_report_link"),
+            "no report records should be emitted without a collected descriptor"
+        );
+        // Every emitted record must still attach to a collected file.
+        for record in &emission.records {
+            assert!(
+                files.contains_key(&record.file_path),
+                "record {} attaches to uncollected file {}",
+                record.record_kind,
+                record.file_path
+            );
+        }
+    }
+
+    /// S-PIDX-07 (Issue D regression): a `pages.json` that exists but cannot be
+    /// parsed must not emit a misleading `pbip_page_order` record.
+    #[test]
+    fn unparseable_page_order_emits_no_page_order_record() {
+        let mut files = sample_project(r#"{"name":"v1","visual":{"visualType":"card"}}"#);
+        // Corrupt pages.json so parse_page_order returns None.
+        files.insert(
+            "proj/My.Report/definition/pages/pages.json".to_string(),
+            fd("{ this is not valid json"),
+        );
+        let emission = build(&files);
+
+        assert!(
+            !emission
+                .records
+                .iter()
+                .any(|r| r.record_kind == "pbip_page_order"),
+            "no page-order record should be emitted when pages.json cannot be parsed"
+        );
+    }
+
+    /// S-PIDX-08 (Issue E regression): a collected path outside the workspace
+    /// root is rejected rather than stored as an absolute `file_path`.
+    #[test]
+    fn snapshot_relative_path_rejects_paths_outside_workspace() {
+        let root = Path::new("ws").join("root");
+        let inside = root.join("a").join("b.tmdl");
+        assert_eq!(
+            snapshot_relative_path(&inside, &root).as_deref(),
+            Some("a/b.tmdl"),
+            "a path under the workspace root is made forward-slashed relative"
+        );
+
+        let outside = Path::new("other").join("x.tmdl");
+        assert_eq!(
+            snapshot_relative_path(&outside, &root),
+            None,
+            "a path outside the workspace root is rejected"
+        );
     }
 }
