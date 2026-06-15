@@ -207,6 +207,71 @@ Healthy verification looks like:
 * `query_graph` can traverse report, page, visual, table, measure, or
   relationship nodes for the indexed workspace
 
+## Add a PBIP project-definition source
+
+The `powerbi` source above targets the legacy, file-at-a-time layout
+(`report.json`, `model.bim`, loose `*.tmdl`). Workspaces saved in the newer
+**PBIP project-definition** format — split `.pbip` / `.pbir` / `.pbism`
+descriptors with per-report/page/visual JSON under `definition/` and a
+folder-based TMDL semantic model — use the dedicated `pbip` source type:
+
+```yaml
+sources:
+  - type: pbip
+    path: analytics
+```
+
+`pbip` indexing assembles each `.pbip` project as a whole rather than treating
+files in isolation. From one project it emits:
+
+* a workspace record per `.pbip` entry and a report-link record per `.pbir`
+* report, page, and visual entities from the `definition/**` JSON
+* semantic-model, table, column, measure, and expression entities merged from
+  the `<Model>.SemanticModel/definition/**/*.tmdl` files
+* a project graph: report → page → visual (`contains`), report → semantic model
+  (`depends_on_model`), the model subgraph (`contains` / `relates_to_table`),
+  and visual → measure/column (`uses_field`)
+
+### `pbip` vs `powerbi`: which to use
+
+| Use `pbip` when… | Use `powerbi` when… |
+|---|---|
+| The workspace is saved as a PBIP project (`*.pbip` plus `.Report/` and `.SemanticModel/` folders with `definition/`) | The workspace is a flat folder of `report.json` / `model.bim` / loose `*.tmdl` files |
+| You want report→page→visual→field graph linkage across descriptors | You only need per-file entity extraction |
+
+The two source types are independent. Records are scoped by `content_type`
+(`pbip` vs `powerbi`) and source path, so a repository can register both without
+collision. **Migration of existing `powerbi` sources to `pbip` is intentionally
+deferred** — the legacy path remains fully supported and is not deprecated by
+this work. Choose the source type that matches each workspace's on-disk layout.
+
+## Verify PBIP indexing
+
+After registering a `pbip` source, run:
+
+```bash
+engram sync
+engram search "Total Sales" --content-type pbip --format text
+engram query-graph --format text
+```
+
+Healthy verification looks like:
+
+* `engram sync` completes without skipping the `pbip` source
+* `engram search` returns workspace, report, page, visual, table, or measure
+  records with `content_type = pbip`
+* `query_graph` can walk report → page → visual via `pbi_contains`, report →
+  semantic model via `pbi_depends_on_model`, and visual → measure/column via
+  `pbi_uses_field` for the indexed project
+
+The project-definition fixture under `tmp/ILSOS-VehicleServices.*` (and the
+contract test `tests/contract/pbip_graph_query_test.rs`) is the reference shape:
+a single `.pbip` workspace, one `.Report` with ordered pages and visuals, and a
+`.SemanticModel` whose `definition/**/*.tmdl` files merge into one model. A
+correct run surfaces a `Total Sales`-style measure both as a searchable
+`pbip` record and as a `uses_field` graph target reachable from the binding
+visual.
+
 ## Try a few commands
 
 ```bash
