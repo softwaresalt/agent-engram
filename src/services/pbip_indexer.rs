@@ -21,6 +21,7 @@
 //!   [`index_pbip_source`] currently uses the walker only to populate
 //!   `total_files` on the returned [`PbipIndexResult`].
 
+use std::fs::FileType;
 use std::path::{Component, Path, PathBuf};
 
 use tracing::{debug, warn};
@@ -47,15 +48,30 @@ const PBIP_EXTENSIONS: &[&str] = &["pbip", "pbir", "pbism", "json", "tmdl"];
 /// or `.tmdl`. Files with other extensions are ignored even when they sit
 /// alongside PBIP files.
 ///
-/// Returns an empty list if `dir` does not exist or cannot be read. A
-/// `warn!` log entry is emitted in the latter case so that field traces can
-/// distinguish "no files" from "could not read directory".
+/// Symbolic links — whether to files or directories — are skipped without
+/// following so a PBIP source cannot escape its workspace root or recurse
+/// into an alias loop. This matches the
+/// [`crate::services::notebook_indexer::collect_notebook_files`] containment
+/// contract.
+///
+/// Returns an empty list if `dir` does not exist, resolves through a
+/// symlink, or cannot be read. A `warn!` log entry is emitted in the
+/// `read_dir` failure case so that field traces can distinguish "no files"
+/// from "could not read directory".
 #[must_use]
 pub fn collect_pbip_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_recursive(dir, &mut files);
+    if physical_file_type(dir).is_some_and(|file_type| file_type.is_dir()) {
+        collect_recursive(dir, &mut files);
+    }
     files.sort();
     files
+}
+
+fn physical_file_type(path: &Path) -> Option<FileType> {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| metadata.file_type())
 }
 
 fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -73,9 +89,17 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let Some(file_type) = physical_file_type(&path) else {
+            continue;
+        };
+
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        if file_type.is_dir() {
             collect_recursive(&path, files);
-        } else if path.is_file() && is_pbip_file(&path) {
+        } else if file_type.is_file() && is_pbip_file(&path) {
             files.push(path);
         }
     }
@@ -166,10 +190,10 @@ pub async fn index_pbip_source(
     let mut result = PbipIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !source_dir.is_dir() {
+    if !physical_file_type(&source_dir).is_some_and(|file_type| file_type.is_dir()) {
         debug!(
             path = %source.path,
-            "PBIP source directory does not exist — skipping"
+            "PBIP source directory does not exist or resolves through a symlink — skipping"
         );
         return Ok(result);
     }

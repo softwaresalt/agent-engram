@@ -3,16 +3,53 @@
 //!
 //! Verifies that `collect_pbip_files` walks a PBIP project tree and finds
 //! `.pbip`, `.pbir`, `.pbism`, project-definition JSON, and `definition/**/*.tmdl`
-//! files while ignoring unrelated noise; and that `compute_deleted_paths`
-//! reports workspace-relative paths whose backing files are gone.
+//! files while ignoring unrelated noise and symbolic links; and that
+//! `compute_deleted_paths` reports workspace-relative paths whose backing
+//! files are gone.
 //!
-//! Tests: S-PFC-01..S-PFC-08
+//! Tests: S-PFC-01..S-PFC-09
 
 use std::fs;
 use std::path::Path;
 
 use engram::services::pbip_indexer::{collect_pbip_files, compute_deleted_paths};
 use tempfile::TempDir;
+
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
+#[cfg(unix)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
+fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+    match symlink_dir(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create directory symlink: {error}"),
+    }
+}
+
+fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+    match symlink_file(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create file symlink: {error}"),
+    }
+}
 
 fn touch(dir: &Path, rel: &str) {
     let path = dir.join(rel);
@@ -234,5 +271,66 @@ fn compute_deleted_paths_rejects_workspace_escape() {
             .iter()
             .any(|p| p.contains("..") || p.starts_with('/')),
         "workspace-escape recorded paths must not be reported as deleted: got {deleted:?}"
+    );
+}
+
+/// S-PFC-09: `collect_pbip_files` skips symlinked files and symlinked
+/// directories so a PBIP source cannot escape its workspace root or recurse
+/// through an alias loop. Matches the
+/// `collect_notebook_files_skips_symlinked_paths` containment contract.
+///
+/// Symlink creation requires elevated privileges on Windows. When the
+/// helpers return `false` (`PermissionDenied`), the test silently skips so
+/// CI on Windows runners without symlink privilege does not fail spuriously.
+#[test]
+fn collect_pbip_files_skips_symlinked_paths() {
+    let workspace = TempDir::new().expect("tempdir");
+    let external = TempDir::new().expect("tempdir");
+
+    let pbip_dir = workspace.path().join("pbip");
+    let nested_dir = pbip_dir.join("Project.SemanticModel").join("definition");
+    fs::create_dir_all(&nested_dir).expect("create nested pbip dir");
+    fs::write(pbip_dir.join("Project.pbip"), "{}").expect("write real pbip");
+    fs::write(nested_dir.join("model.tmdl"), "model X\n").expect("write nested tmdl");
+
+    let escape_dir = external.path().join("escape");
+    fs::create_dir_all(&escape_dir).expect("create external pbip dir");
+    let external_file = escape_dir.join("outside.pbism");
+    fs::write(&external_file, "{}").expect("write external pbism");
+
+    let linked_dir_created = create_symlink_dir(&escape_dir, &pbip_dir.join("linked-dir"));
+    let linked_file_created =
+        create_symlink_file(&external_file, &pbip_dir.join("linked-file.pbism"));
+
+    if !linked_dir_created && !linked_file_created {
+        // Symlink creation requires elevation on Windows; if neither succeeded
+        // there is nothing to assert here.
+        return;
+    }
+
+    let files = collect_pbip_files(workspace.path());
+    let rel_paths: Vec<String> = files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(workspace.path())
+                .expect("path under workspace")
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+
+    assert!(
+        rel_paths.iter().any(|p| p == "pbip/Project.pbip"),
+        "real .pbip should be collected; got {rel_paths:?}"
+    );
+    assert!(
+        rel_paths
+            .iter()
+            .any(|p| p == "pbip/Project.SemanticModel/definition/model.tmdl"),
+        "real nested .tmdl should be collected; got {rel_paths:?}"
+    );
+    assert!(
+        !rel_paths.iter().any(|p| p.contains("linked-")),
+        "symlinked files and directories must be skipped; got {rel_paths:?}"
     );
 }
