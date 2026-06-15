@@ -84,6 +84,24 @@ Current TMDL coverage is structural rather than lineage-aware. We index tables,
 columns, measures, relationships, and data sources, but we do not yet derive
 full DAX dependency graphs from expressions.
 
+PBIP **project-definition** workspaces use a separate, dedicated boundary. A
+source with `content_type = "pbip"` is routed to `pbip_indexer` rather than the
+legacy `powerbi_indexer`, keeping the two contracts independent. The `pbip` path
+assembles a whole project from its split descriptors — `.pbip` workspace entry,
+`.pbir` report links, `.pbism` model descriptor, per-report/page/visual JSON
+under `definition/`, and the folder-based TMDL model under
+`<Model>.SemanticModel/definition/**/*.tmdl` — and emits object-level
+`content_type = "pbip"` `ContentRecord` rows plus a project graph. The graph
+links report → page → visual (`contains`), report → semantic model
+(`depends_on_model`), the reused model subgraph, and visual → measure/column
+(`uses_field`), reusing the shared Power BI graph node/edge model and the
+semantic-model subgraph builder so traversal works through the same
+`query_graph` surface. Because PBIP is inherently cross-file, change detection
+re-indexes the whole source whenever any collected file's hash changes, and a
+deletion sweep prunes records and graph nodes for files removed from disk.
+Migration of legacy `powerbi` sources to `pbip` is intentionally deferred; both
+source types coexist and are selected by on-disk layout.
+
 Jupyter notebooks follow the same content-ingestion boundary. A source with
 `content_type = "notebook"` collects `.ipynb` files, emits one
 `notebook_summary` record per file, and derives per-cell `ContentRecord` rows
