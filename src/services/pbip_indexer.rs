@@ -811,7 +811,7 @@ pub async fn index_pbip_source(
     result.ingested = result.total_files;
     info!(
         ingested = result.ingested,
-        records = emission.records.len() + (file_data.len() - covered.len()),
+        records = emission.records.len() + (file_data.len().saturating_sub(covered.len())),
         nodes = emission.nodes.len(),
         edges = emission.edges.len(),
         source = %source.path,
@@ -892,10 +892,13 @@ fn parent_dir(path: &str) -> String {
 /// `.Report` suffix (case-insensitive) when present.
 fn report_display_name(report_folder: &str) -> String {
     let leaf = report_folder.rsplit('/').next().unwrap_or(report_folder);
-    if leaf.len() >= 7 && leaf[leaf.len() - 7..].eq_ignore_ascii_case(".report") {
-        leaf[..leaf.len() - 7].to_string()
-    } else {
-        leaf.to_string()
+    // Trim a trailing ".report" (7 bytes, ASCII) only at a valid char boundary
+    // so a non-ASCII leaf derived from untrusted `.pbip` content cannot panic.
+    match leaf.len().checked_sub(7) {
+        Some(idx) if leaf.is_char_boundary(idx) && leaf[idx..].eq_ignore_ascii_case(".report") => {
+            leaf[..idx].to_string()
+        }
+        _ => leaf.to_string(),
     }
 }
 
@@ -1081,6 +1084,10 @@ mod tests {
         assert_eq!(report_display_name("proj/Sales.Report"), "Sales");
         assert_eq!(report_display_name("proj/Sales.REPORT"), "Sales");
         assert_eq!(report_display_name("proj/Dashboard"), "Dashboard");
+        // Non-ASCII leaf derived from untrusted `.pbip` content must not panic
+        // on the byte-length suffix check (regression for char-boundary slice).
+        assert_eq!(report_display_name("proj/éabcdef"), "éabcdef");
+        assert_eq!(report_display_name("proj/Ventés.Report"), "Ventés");
     }
 
     /// S-PIDX-05: `join_relative` collapses `..` and rejects escapes above the
