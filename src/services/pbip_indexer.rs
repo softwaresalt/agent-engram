@@ -575,14 +575,21 @@ impl<'a> EmissionBuilder<'a> {
         // the snapshot keeps extraction consistent with change detection and
         // coverage.
         let tmdl_prefix = format!("{definition_rel}/");
-        let mut fragments: Vec<(String, String)> = self
+        // Borrow each TMDL fragment's body (`&str`) straight from the snapshot
+        // instead of cloning it into `fragments`. The same content already
+        // lives in `self.file_data`, so cloning doubled peak memory during a
+        // rebuild of a large semantic model. Only the absolute path string is
+        // owned — a small per-file allocation that `merge_semantic_model_fragments`
+        // needs to derive the model identity — while the TMDL bodies stay
+        // zero-copy references into the snapshot.
+        let mut fragments: Vec<(String, &str)> = self
             .file_data
             .iter()
             .filter(|(path, _)| path.starts_with(&tmdl_prefix) && has_extension(path, "tmdl"))
             .map(|(rel, data)| {
                 (
                     self.workspace_root.join(rel).to_string_lossy().into_owned(),
-                    data.content.clone(),
+                    data.content.as_str(),
                 )
             })
             .collect();
@@ -590,7 +597,7 @@ impl<'a> EmissionBuilder<'a> {
         let model = merge_semantic_model_fragments(
             fragments
                 .iter()
-                .map(|(path, content)| (path.as_str(), content.as_str())),
+                .map(|(path, content)| (path.as_str(), *content)),
         )?;
 
         // Anchor model content records and the node file_path to a real
