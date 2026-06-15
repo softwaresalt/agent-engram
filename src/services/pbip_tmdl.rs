@@ -254,8 +254,16 @@ fn drain_ordered<T>(mut map: HashMap<String, T>, order: &[String]) -> Vec<T> {
 
 fn collect_tmdl_files_recursive(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return files;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!(
+                path = %dir.display(),
+                error = %err,
+                "skipping TMDL directory that could not be read"
+            );
+            return files;
+        }
     };
 
     for entry in entries.flatten() {
