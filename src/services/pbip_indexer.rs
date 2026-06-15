@@ -750,9 +750,15 @@ pub async fn index_pbip_source(
         .collect();
 
     if current == existing {
-        result.unchanged = result.total_files;
+        // `unchanged` counts files that were actually considered for hashing —
+        // i.e. the snapshotted set (`file_data`), not `total_files`, which also
+        // includes files skipped during snapshotting (oversized / non-UTF-8 /
+        // unreadable). This keeps the field consistent with its doc comment and
+        // with the other indexers.
+        result.unchanged = file_data.len();
         debug!(
             path = %source.path,
+            considered = result.unchanged,
             total_files = result.total_files,
             "PBIP source unchanged — skipping re-index"
         );
@@ -852,7 +858,11 @@ pub async fn index_pbip_source(
         queries.upsert_powerbi_edges(&emission.edges).await?;
     }
 
-    result.ingested = result.total_files;
+    // `ingested` reports the files actually snapshotted and re-indexed this run
+    // (the considered set), not `total_files`, which over-reports because it
+    // still includes files skipped during snapshotting (oversized / non-UTF-8 /
+    // unreadable). Matches the meaning used by the other indexers.
+    result.ingested = file_data.len();
     info!(
         ingested = result.ingested,
         records = emission.records.len() + (file_data.len().saturating_sub(covered.len())),
@@ -1240,6 +1250,97 @@ mod tests {
             snapshot_relative_path(&outside, &root),
             None,
             "a path outside the workspace root is rejected"
+        );
+    }
+
+    /// Copilot PR #177 regression: files collected by the walker but skipped
+    /// during snapshotting (oversized / non-UTF-8 / unreadable) must NOT inflate
+    /// `ingested` or `unchanged`. Those counters reflect the considered set
+    /// (`file_data`), while `total_files` still reflects every collected file.
+    #[tokio::test]
+    async fn ingested_and_unchanged_exclude_skipped_files() {
+        use tempfile::TempDir;
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let db_dir = TempDir::new().expect("db tempdir");
+        let root = workspace.path();
+
+        let report_def = root.join("proj").join("My.Report").join("definition");
+        let pages = report_def.join("pages");
+        let visual_dir = pages.join("Page1").join("visuals").join("v1");
+        std::fs::create_dir_all(&visual_dir).expect("create project tree");
+
+        // Five valid, in-bounds, UTF-8 PBIP files.
+        std::fs::write(
+            root.join("proj").join("My.pbip"),
+            r#"{"version":"1.0","artifacts":[{"report":{"path":"My.Report"}}]}"#,
+        )
+        .expect("write .pbip");
+        std::fs::write(report_def.join("report.json"), "{}").expect("write report.json");
+        std::fs::write(
+            pages.join("pages.json"),
+            r#"{"pageOrder":["Page1"],"activePageName":"Page1"}"#,
+        )
+        .expect("write pages.json");
+        std::fs::write(
+            pages.join("Page1").join("page.json"),
+            r#"{"name":"Page1","displayName":"First Page"}"#,
+        )
+        .expect("write page.json");
+        std::fs::write(visual_dir.join("visual.json"), "{}").expect("write visual.json");
+
+        // One collected-but-skipped file: a `.json` (a PBIP extension, so the
+        // walker collects it) whose bytes are not valid UTF-8, so the snapshot
+        // step drops it before hashing/indexing.
+        let invalid_utf8: [u8; 4] = [0xff, 0xfe, 0xff, 0x00];
+        std::fs::write(report_def.join("invalid.json"), invalid_utf8)
+            .expect("write non-UTF-8 json");
+
+        let source = ContentSource {
+            content_type: "pbip".to_string(),
+            language: None,
+            path: "proj".to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        };
+
+        let db = crate::db::connect_db(db_dir.path(), "pbip-count-test")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+
+        // First run performs a full rebuild: `ingested` is the considered set
+        // (5), not `total_files` (6, which includes the skipped non-UTF-8 file).
+        let first = index_pbip_source(&source, root, &queries, 1_048_576)
+            .await
+            .expect("first index run");
+        assert_eq!(
+            first.total_files, 6,
+            "total_files counts every collected file, including the skipped one"
+        );
+        assert_eq!(
+            first.ingested, 5,
+            "ingested excludes the collected-but-skipped non-UTF-8 file"
+        );
+        assert_eq!(
+            first.unchanged, 0,
+            "a rebuild leaves nothing in the unchanged count"
+        );
+
+        // Second run with no on-disk changes takes the unchanged branch:
+        // `unchanged` is likewise the considered set (5), not `total_files`.
+        let second = index_pbip_source(&source, root, &queries, 1_048_576)
+            .await
+            .expect("second index run");
+        assert_eq!(second.total_files, 6, "total_files is stable across runs");
+        assert_eq!(
+            second.unchanged, 5,
+            "unchanged excludes the collected-but-skipped non-UTF-8 file"
+        );
+        assert_eq!(
+            second.ingested, 0,
+            "the unchanged branch performs no ingestion"
         );
     }
 }
