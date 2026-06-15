@@ -208,7 +208,7 @@ fn extract_model_summaries(
     extract_model_summaries_from_model(&model)
 }
 
-fn extract_model_summaries_from_model(
+pub(crate) fn extract_model_summaries_from_model(
     model: &crate::models::powerbi::PowerBiSemanticModel,
 ) -> Vec<(String, String, String, String)> {
     let mut summaries = Vec::new();
@@ -343,7 +343,11 @@ fn extract_report_summaries(
 ///
 /// The ID is a hex-encoded SHA-256 hash of the concatenation of `source_path`,
 /// `file_path`, `kind_str`, and `unique_name`, prefixed with `pbi_`.
-fn make_node_id(
+///
+/// Exposed to `pub(crate)` so the dedicated PBIP indexer
+/// ([`crate::services::pbip_indexer`]) can compute matching node IDs when
+/// linking report and visual nodes to the shared semantic-model subgraph.
+pub(crate) fn make_node_id(
     source_path: &str,
     file_path: &str,
     kind: PowerBiNodeKind,
@@ -466,7 +470,7 @@ fn build_powerbi_graph_data(
     (nodes, edges)
 }
 
-fn build_powerbi_graph_data_from_model(
+pub(crate) fn build_powerbi_graph_data_from_model(
     model: &crate::models::powerbi::PowerBiSemanticModel,
     identity_scope: &str,
     file_path: &str,
