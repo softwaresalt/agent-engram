@@ -77,12 +77,11 @@ model_routing:
     model: claude-opus-4.8              # Frontier: planning, architecture, analysis (e.g., claude-opus-4.6)
     reasoning_effort: "high"
     model_provider: "anthropic"
-    model_family: "claude-opus-4.8 "
+    model_family: "claude-opus-4.8"
   orchestrator:
     model_family: "claude-opus-4.8"     # Orchestrator model override (default: claude-opus-4.8)
     reasoning_effort: "high"
     model_provider: "anthropic"
-    model_family: "claude-opus-4.8 "
 
 # AI CLI tool startup configuration
 # Resolves copilot in the generated start.ps1 and start.sh scripts.
