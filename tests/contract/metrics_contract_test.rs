@@ -6,6 +6,7 @@ use std::sync::Arc;
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use engram::tools;
 use serde_json::json;
+use serial_test::serial;
 
 async fn bind_test_workspace(state: &Arc<AppState>, path: &std::path::Path, branch: &str) {
     let snapshot = WorkspaceSnapshot {
@@ -27,6 +28,7 @@ async fn bind_test_workspace(state: &Arc<AppState>, path: &std::path::Path, bran
 
 /// AC#1: dispatch records the expanded telemetry envelope for read tools.
 #[tokio::test]
+#[serial]
 async fn t010_03_dispatch_records_usage_event_for_read_tools() {
     // GIVEN a minimal AppState with a workspace bound
     let state = Arc::new(AppState::new(10));
@@ -62,6 +64,7 @@ async fn t010_03_dispatch_records_usage_event_for_read_tools() {
 
 /// AC#2: workspace-oriented tools emit the same telemetry envelope.
 #[tokio::test]
+#[serial]
 async fn t010_03_dispatch_records_usage_event_for_workspace_tools() {
     // GIVEN a minimal AppState
     let state = Arc::new(AppState::new(10));
@@ -124,6 +127,7 @@ async fn t010_03_dispatch_records_usage_event_for_workspace_tools() {
 
 /// AC#3: `estimated_tokens` equals `response_bytes` / 4.
 #[tokio::test]
+#[serial]
 async fn t010_03_estimated_tokens_equals_bytes_div_4() {
     // GIVEN a tool response of known byte size
     let state = Arc::new(AppState::new(10));
@@ -145,6 +149,7 @@ async fn t010_03_estimated_tokens_equals_bytes_div_4() {
 
 /// AC#4: health report telemetry reflects the actual flat response shape.
 #[tokio::test]
+#[serial]
 async fn t010_03_health_report_records_section_counts() {
     // GIVEN a minimal AppState with a workspace bound
     let state = Arc::new(AppState::new(10));
