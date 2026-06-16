@@ -4,6 +4,11 @@ description: "Manages the backlog-to-shipped pipeline for autoharness template d
 maturity: stable
 tools: vscode, execute, read, agent, edit, search, 'engram/*', web, 'microsoft-docs/*', 'backlogit/*', ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo
 model_routing: "Tier 2 (Standard)"
+model_tier: 2
+max_subagent_tier: 2
+reasoning_effort: "high"
+model_provider: "anthropic"
+model_family: "claude-sonnet-4.6"
 subagent_depth: 2
 ---
 

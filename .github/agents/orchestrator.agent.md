@@ -6,9 +6,9 @@ tools: vscode, execute, read, agent, edit, search, web, 'microsoft-docs/*', 'bac
 model_routing: "Tier 2 (Standard)"  # DEPRECATED — use model_tier
 model_tier: 2
 max_subagent_tier: 3
-reasoning_effort: ""
-model_provider: ""
-model_family: "gpt-5.4"
+reasoning_effort: "high"
+model_provider: "anthropic"
+model_family: "claude-opus-4.8"
 subagent_depth: 3
 ---
 
