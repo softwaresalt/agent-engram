@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+## [0.2.0] - 2026-06-15
+
 ### Added
 
 - Power BI PBIP project-definition indexing: dedicated `.pbip`/`.pbir`/`.pbism` source type and dispatch, project-definition file collector with deletion sweep, page/visual/report-identity extraction, `.pbism` descriptor + TMDL semantic-model assembly, and PBIP content records plus project graph edges
@@ -50,5 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 43 MCP tools for task management, code graph, and workspace operations
 
 <!-- next-url -->
-[Unreleased]: https://github.com/softwaresalt/agent-engram/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/softwaresalt/agent-engram/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/softwaresalt/agent-engram/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/softwaresalt/agent-engram/releases/tag/v0.1.0
