@@ -22,7 +22,7 @@ out-of-band operator approval (P-009). Merge commit `275faa4` has two parents:
 
 | Item | Status |
 |---|---|
-| 050-S | archived (status: shipped → archived) |
+| 050-S | archived (status: active → archived) |
 | 062-F | archived |
 | 062.001-T | archived (prior) |
 | 062.002-T | archived |
