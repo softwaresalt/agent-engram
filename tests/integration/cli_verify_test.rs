@@ -6,7 +6,9 @@
 //! 1. a conformant fixture exits `0`;
 //! 2. a malformed-frontmatter fixture exits non-zero;
 //! 3. a Windows-style backslash path is normalized and accepted;
-//! 4. a `..` traversal path escaping the workspace root is rejected (exit `2`).
+//! 4. a `..` traversal path escaping the workspace root is rejected (exit `2`);
+//! 5. a relative `<path>` is resolved against the `--workspace` root, not the
+//!    process CWD, when the two differ (Constitution Principle III/IV).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,25 @@ fn verify_in(cwd: &Path, arg: &str) -> (i32, String, String) {
     let output = Command::new(engram_bin())
         .arg("verify")
         .arg(arg)
+        .current_dir(cwd)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run engram verify: {e}"));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let code = output.status.code().unwrap_or(-1);
+    (code, stdout, stderr)
+}
+
+/// Run `engram verify <arg> --workspace <workspace>` with cwd set to `cwd`, and
+/// with `ENGRAM_WORKSPACE` cleared so only the explicit flag governs the root.
+/// Returns `(code, stdout, stderr)`.
+fn verify_ws(cwd: &Path, workspace: &Path, arg: &str) -> (i32, String, String) {
+    let output = Command::new(engram_bin())
+        .arg("verify")
+        .arg(arg)
+        .arg("--workspace")
+        .arg(workspace)
+        .env_remove("ENGRAM_WORKSPACE")
         .current_dir(cwd)
         .output()
         .unwrap_or_else(|e| panic!("failed to run engram verify: {e}"));
@@ -81,5 +102,50 @@ fn parent_traversal_path_is_rejected() {
     assert_eq!(
         code, 2,
         "a '..' path escaping the workspace root must be rejected with exit 2"
+    );
+}
+
+/// I-VF-05: a relative `<path>` resolves against the `--workspace` root, not the
+/// process CWD, when the two differ.
+///
+/// Containment (Constitution Principle III/IV) means a relative target is read
+/// under the declared workspace root. A conformant file that exists only under
+/// the CWD (outside the workspace) must NOT be read: it resolves under the
+/// workspace, is missing there, and exits `2` — never silently reading CWD.
+/// Conversely, a file under the workspace root resolves and exits `0` even when
+/// the CWD differs from that root.
+#[test]
+fn relative_path_resolves_against_workspace_not_cwd() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let cwd = TempDir::new().expect("cwd tempdir");
+
+    // A conformant file that exists ONLY under the CWD, not the workspace root.
+    fs::write(
+        cwd.path().join("only-in-cwd.md"),
+        "---\nid: cwd\ntitle: Only In Cwd\n---\n\n# Only In Cwd\n\nReachable only via the CWD.\n",
+    )
+    .expect("write cwd-only fixture");
+
+    // Resolving `<path>` under the workspace (not the CWD) means this file is
+    // missing under the workspace root -> exit 2. It must never be read from the
+    // CWD, which would undermine containment.
+    let (code, _stdout, _stderr) = verify_ws(cwd.path(), workspace.path(), "only-in-cwd.md");
+    assert_eq!(
+        code, 2,
+        "a relative <path> must resolve under --workspace (missing there -> exit 2), \
+         not be read from the CWD"
+    );
+
+    // A conformant file under the WORKSPACE root resolves and exits 0 even when
+    // the process CWD differs from the workspace root.
+    fs::write(
+        workspace.path().join("in-workspace.md"),
+        "---\nid: ws\ntitle: In Workspace\n---\n\n# In Workspace\n\nResolved under the workspace root.\n",
+    )
+    .expect("write workspace fixture");
+    let (code, _stdout, stderr) = verify_ws(cwd.path(), workspace.path(), "in-workspace.md");
+    assert_eq!(
+        code, 0,
+        "a relative <path> under the workspace root must resolve and exit 0; stderr: {stderr}"
     );
 }
