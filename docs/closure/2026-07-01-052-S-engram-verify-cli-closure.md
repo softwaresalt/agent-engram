@@ -62,7 +62,7 @@ cozo-backend,embeddings`):
 |---|---|
 | `cargo fmt --all -- --check` | pass (local + CI) |
 | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` | pass (local + CI) |
-| `cargo test --all-targets` | all 13 verify tests pass (4 unit + 4 contract + 5 integration); unrelated environmental flakes only (see Failure Signals) |
+| `cargo test --all-targets` | all 14 verify tests pass (4 unit + 4 contract + 6 integration); unrelated environmental flakes only (see Failure Signals) |
 | `cargo audit` | advisory-only, CI `continue-on-error`; no new advisories (dependency graph inherited from `main`) |
 
 ## Review Disposition
@@ -71,10 +71,14 @@ An independent Rust review raised two items initially tagged P1; both were
 adjudicated against the authoritative plan and downgraded to non-blocking
 follow-ups:
 
-1. *Non-markdown should exit 2* — REJECTED. The plan explicitly pins
-   non-markdown → exit `0` (§4 task spec, contract scenario, risk table, and
-   resolved open-question Q6). Implementation is correct per contract. The minor
-   existence-before-extension ordering is captured as a P3 follow-up.
+1. *Non-markdown should exit 2* — PARTIALLY ACCEPTED. The plan pins an
+   **existing** non-markdown target → exit `0` (§4 task spec, contract scenario,
+   risk table, and resolved open-question Q6); that behavior is unchanged and the
+   pinned `non-markdown → exit 0` contract test stays green. The distinct
+   existence-before-extension ordering gap — a **missing/unreadable** non-markdown
+   path short-circuiting to exit `0` instead of `2` — was re-raised by Copilot
+   (thread `PRRT_kwDORJEduc6NqWC8`) and is now **FIXED in this PR** (see the
+   Copilot re-review disposition below).
 2. *Relative-path containment when `--workspace` ≠ CWD* — **FIXED in this PR
    (Phase 1a)**. Originally deferred to Phase 1b, but the operator authorized
    closing the gap here. `run_verify`/`contain_path` now resolve a relative
@@ -92,6 +96,37 @@ follow-ups:
 Max review-fix cycles (3) not exceeded. The Copilot-flagged relative-path
 containment gap (thread `PRRT_kwDORJEduc6NhCGy`) was subsequently authorized and
 fixed test-first in this PR (see Review Disposition item 2).
+
+### Copilot Re-Review Disposition (2026-07-01)
+
+The operator authorized fixing two in-scope Copilot re-review nits on PR #185;
+both are now fixed and their threads resolved:
+
+* **nit-2 — missing/unreadable non-markdown → exit 2** (thread
+  `PRRT_kwDORJEduc6NqWC8`, `verify.rs:56`). The non-markdown short-circuit
+  returned `EXIT_CONFORMANT (0)` before any existence/readability check, so
+  `engram verify does-not-exist.txt` exited `0` rather than the contractual `2`.
+  Fixed test-first: `run_verify` now confirms the resolved `target.read` is an
+  existing, readable file via `tokio::fs::metadata` **before** branching on
+  markdown vs non-markdown, mapping a NotFound/other error (or a non-file) to
+  `EXIT_ERROR (2)` with the existing `cannot read '{display}'`-style message.
+  An **existing** non-markdown file still exits `0` (pinned contract preserved).
+  RED→GREEN integration test `nonmarkdown_missing_file_exits_error` (I-VF-06):
+  pre-fix exit `0` → post-fix exit `2`. Commits: `faeb31e` (`test:`) →
+  `00b0788` (`fix:`). Task 064.002-T.
+* **nit-3 — `--quiet` interaction with the stdout summary** (thread
+  `PRRT_kwDORJEduc6NqWDV`, `verify.rs:14`). `OutputFormatter::success()`
+  suppresses stdout under the global `--quiet` flag, which the module docstring
+  did not mention. Documented the exception (chosen over special-casing `verify`
+  to keep global `--quiet` semantics uniform): the stdout summary envelope is
+  written **except** under `--quiet`; findings still go to stderr and the exit
+  code is unaffected, so the autoharness gate keeps working under `--quiet`.
+  Documentation-only, no behavior change. Commit: `1e61b4b` (`docs:`).
+  Task 064.002-T.
+
+Thread [4] (`docs/memory/2026-06-30-stage-B87680AB-session.md` frontmatter
+style, thread `PRRT_kwDORJEduc6NqWDp`) was operator-deferred to a later docs pass
+and is intentionally left unresolved and untouched.
 
 ## Runtime Verification
 
@@ -138,7 +173,7 @@ after the binary is rebuilt/reinstalled. autoharness config wires
 ## Healthy Signals
 
 * fmt + clippy green locally and on CI (ubuntu-latest).
-* All 13 verify tests (4 unit + 4 contract + 5 integration) green.
+* All 14 verify tests (4 unit + 4 contract + 6 integration) green.
 * Runtime exit contract holds cross-shell.
 
 ## Failure Signals (environmental, not introduced by this change)
@@ -159,15 +194,15 @@ after the binary is rebuilt/reinstalled. autoharness config wires
 * ~~Phase 1b: workspace-root canonicalize + join containment for
   `engram verify`~~ — **DONE in this PR** (commits `9f0bb3d` → `93d670b`);
   relative `<path>` now resolves under the workspace root, not the CWD.
-* Verify file existence before the non-markdown extension short-circuit (avoid a
-  mistyped extension silently passing the gate). *(Copilot re-review 2026-07-01,
-  thread `PRRT_kwDORJEduc6NqWC8` — valid but pre-existing; ordering unchanged by
-  the containment fix and would alter the pinned `non-markdown → exit 0`
-  contract, so deferred, not fixed in this PR.)*
-* Clarify the `--quiet` interaction with the stdout summary envelope in the
-  `verify` module docs (or bypass quiet for the summary). *(Copilot re-review
-  2026-07-01, thread `PRRT_kwDORJEduc6NqWDV` — pre-existing docstring, out of the
-  operator-authorized containment scope for this PR.)*
+* ~~Verify file existence before the non-markdown extension short-circuit (avoid
+  a mistyped extension silently passing the gate).~~ — **DONE in this PR**
+  (thread `PRRT_kwDORJEduc6NqWC8`; commits `faeb31e` → `00b0788`). A
+  missing/unreadable non-markdown target now returns exit `2` uniformly; an
+  existing non-markdown target still exits `0` per the pinned contract.
+* ~~Clarify the `--quiet` interaction with the stdout summary envelope in the
+  `verify` module docs.~~ — **DONE in this PR** (thread `PRRT_kwDORJEduc6NqWDV`;
+  commit `1e61b4b`). The docstring now notes `--quiet` suppresses the stdout
+  summary; findings remain on stderr and exit codes are unaffected.
 * Backlog ID-reuse reconciliation: distinct `064-F` features and duplicate
   `064.00X-T` task IDs across the powerbi and verify workstreams.
 * Deferred Phase 1a+ tasks: `064.004-T`, `064.005-T`, `064.006-T`.
