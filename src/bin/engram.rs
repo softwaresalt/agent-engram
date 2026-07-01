@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use engram::cli::commands::{indexing, lifecycle, manifest, report, search};
+use engram::cli::commands::{indexing, lifecycle, manifest, report, search, verify};
 use engram::cli::flags::GlobalFlags;
 use engram::cli::output::OutputFormatter;
 
@@ -105,6 +105,16 @@ enum Command {
 
     /// List MCP tools registered in the compile-time catalog (local, no daemon required).
     Manifest,
+
+    /// Structurally verify a markdown file for graph-ingestion conformance (local, no daemon).
+    ///
+    /// Runs the deterministic linter used as the autoharness `pre_task_completion`
+    /// gate. Exit codes: `0` conformant, `1` non-conformant (findings on stderr),
+    /// `2` I/O or usage error. Non-markdown targets exit `0`.
+    Verify {
+        /// Path to the file to verify.
+        path: String,
+    },
 
     /// Search across tasks, context records, and code symbols (`unified_search`).
     Search {
@@ -341,6 +351,11 @@ async fn main() -> Result<()> {
         Command::Manifest => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = manifest::run_manifest(&flags, &fmt);
+            std::process::exit(code);
+        }
+        Command::Verify { path } => {
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
+            let code = verify::run_verify(path, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Search {

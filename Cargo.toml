@@ -685,6 +685,10 @@ required-features = ["cozo-backend"]
 name = "unit_verify_core"
 path = "tests/unit/verify_core_test.rs"
 
+[[test]]
+name = "contract_verify"
+path = "tests/contract/verify_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
