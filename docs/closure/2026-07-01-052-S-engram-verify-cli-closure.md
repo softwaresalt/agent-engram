@@ -124,6 +124,31 @@ both are now fixed and their threads resolved:
   Documentation-only, no behavior change. Commit: `1e61b4b` (`docs:`).
   Task 064.002-T.
 
+Copilot auto-generated five additional inline findings across two re-review
+rounds (on `acbc553` and `c7373f5`). Disposition:
+
+* **doc-list staleness** (thread `PRRT_kwDORJEduc6NrAdT`, `cli_verify_test.rs`)
+  — VALID and in-scope: the module header listed 5 scenarios but I-VF-06 made 6.
+  Fixed in `c7373f5`; resolved.
+* **clap help staleness** (thread `PRRT_kwDORJEduc6NrQtH`, `engram.rs`) — VALID
+  and in-scope: the `verify` help said "Non-markdown targets exit 0", stale after
+  the nit-2 contract change. Fixed in `9b4a342` (help now reads missing/unreadable
+  → `2` regardless of extension; existing non-markdown → `0`); resolved.
+* **`emit_summary` "will not compile"** (thread `PRRT_kwDORJEduc6NrAc0`,
+  `verify.rs:228`) — FALSE POSITIVE: `serde_json::json!` serializes by reference,
+  the crate builds cleanly (clippy pedantic + full suite green), and the line is
+  unchanged by these fixes. Replied with evidence; left open for operator triage.
+* **`body.empty` rule lacks a test** (thread `PRRT_kwDORJEduc6NrAdB`,
+  `services/verify.rs:92`) — reasonable coverage suggestion but out of the
+  authorized scope (task 064.001-T service, untouched here). Replied; recommended
+  as a backlog follow-up; left open.
+* **Windows verbatim-prefix containment** (thread `PRRT_kwDORJEduc6NrQsy`,
+  `contain_path`) — cross-platform robustness nit that does NOT affect the pinned
+  exit-code contract (existing/readable targets canonicalize on both sides; only a
+  missing absolute path can mismatch, and missing → exit `2` regardless). In the
+  already-resolved containment area, out of the authorized scope. Replied;
+  recommended as a backlog follow-up (`normalize_canonical`); left open.
+
 Thread [4] (`docs/memory/2026-06-30-stage-B87680AB-session.md` frontmatter
 style, thread `PRRT_kwDORJEduc6NqWDp`) was operator-deferred to a later docs pass
 and is intentionally left unresolved and untouched.
@@ -188,6 +213,11 @@ after the binary is rebuilt/reinstalled. autoharness config wires
   instability (repo pins cozo 0.7.6; "unblock on cozo ≥ 0.8"). `main`'s own CI
   shows ~2/6 recent runs failing on this class of flake. Addressed via CI
   re-run.
+* `c018_07_denied_metrics_event_carries_agent_role`
+  (`contract_atomic_policy_snapshot`) — flaked once on CI for `acbc553`
+  (`denied metrics event ... got 0 event(s)`), a metrics-recorder emission/timing
+  race unrelated to `verify`. Passed on `gh run rerun --failed` and on the
+  subsequent `c7373f5` CI run.
 
 ## Follow-on Backlog
 
@@ -205,6 +235,15 @@ after the binary is rebuilt/reinstalled. autoharness config wires
   summary; findings remain on stderr and exit codes are unaffected.
 * Backlog ID-reuse reconciliation: distinct `064-F` features and duplicate
   `064.00X-T` task IDs across the powerbi and verify workstreams.
+* Add unit/contract coverage for the `body.empty` rule in `services/verify.rs`
+  (empty-body markdown → `body.empty` finding, `conformant == false`). *(Copilot
+  re-review 2026-07-01, thread `PRRT_kwDORJEduc6NrAdB` — valid coverage gap on the
+  064.001-T service, out of the operator-authorized nit-2/nit-3 scope.)*
+* Uniform Windows verbatim-prefix (`\\?\`) handling in `contain_path`: normalize
+  both sides via `crate::db::workspace::normalize_canonical` before the
+  `starts_with` containment check. *(Copilot re-review 2026-07-01, thread
+  `PRRT_kwDORJEduc6NrQsy` — robustness only; does not change the pinned exit-code
+  contract since missing paths already exit `2`.)*
 * Deferred Phase 1a+ tasks: `064.004-T`, `064.005-T`, `064.006-T`.
 * Pre-existing `otlp-export` feature build breakage (opentelemetry API drift) —
   outside freeze-scope.
