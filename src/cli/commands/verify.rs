@@ -11,7 +11,9 @@
 //!
 //! Findings are written to **stderr** so autoharness can inject them into the
 //! agent's context window; a machine-readable summary envelope is written to
-//! stdout.
+//! stdout — except under the global `--quiet` flag, which suppresses the stdout
+//! summary. Findings still go to stderr and the exit code is unaffected, so the
+//! autoharness gate keeps working under `--quiet`.
 
 use std::path::{Component, Path, PathBuf};
 
