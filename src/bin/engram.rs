@@ -110,7 +110,8 @@ enum Command {
     ///
     /// Runs the deterministic linter used as the autoharness `pre_task_completion`
     /// gate. Exit codes: `0` conformant, `1` non-conformant (findings on stderr),
-    /// `2` I/O or usage error. Non-markdown targets exit `0`.
+    /// `2` I/O or usage error (missing/unreadable file, regardless of extension).
+    /// An existing non-markdown target has nothing to validate and exits `0`.
     Verify {
         /// Path to the file to verify.
         path: String,
