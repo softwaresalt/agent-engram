@@ -62,7 +62,7 @@ cozo-backend,embeddings`):
 |---|---|
 | `cargo fmt --all -- --check` | pass (local + CI) |
 | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` | pass (local + CI) |
-| `cargo test --all-targets` | all 12 verify tests pass; unrelated environmental flakes only (see Failure Signals) |
+| `cargo test --all-targets` | all 13 verify tests pass (4 unit + 4 contract + 5 integration); unrelated environmental flakes only (see Failure Signals) |
 | `cargo audit` | advisory-only, CI `continue-on-error`; no new advisories (dependency graph inherited from `main`) |
 
 ## Review Disposition
@@ -75,14 +75,23 @@ follow-ups:
    non-markdown → exit `0` (§4 task spec, contract scenario, risk table, and
    resolved open-question Q6). Implementation is correct per contract. The minor
    existence-before-extension ordering is captured as a P3 follow-up.
-2. *Relative-path containment when `--workspace` ≠ CWD* — DEFERRED to Phase 1b.
-   All pinned containment scenarios (reject `..` / outside-workspace absolute)
-   are satisfied and tested; the bypass requires a workspace ≠ CWD, outside the
-   Phase-1a per-file autoharness usage model; verify is read-only (bounded
-   impact). Expanding to canonicalize+join would change missing-file/non-markdown
-   semantics and exceed the declared `careful`/freeze-scope without a RED test.
+2. *Relative-path containment when `--workspace` ≠ CWD* — **FIXED in this PR
+   (Phase 1a)**. Originally deferred to Phase 1b, but the operator authorized
+   closing the gap here. `run_verify`/`contain_path` now resolve a relative
+   `<path>` under the canonicalized workspace root (never the process CWD) and
+   enforce `starts_with(workspace_root)` on the resolved target (canonicalized
+   when it exists, lexically joined when missing). Added RED→GREEN integration
+   test `relative_path_resolves_against_workspace_not_cwd` (I-VF-05) proving a
+   file that exists only under the CWD is NOT read (resolves under the workspace,
+   missing there → exit 2), and a file under the workspace root resolves →
+   exit 0. All previously pinned scenarios (`..` → exit 2, absolute-outside →
+   exit 2, missing → exit 2, non-markdown → exit 0, malformed/absent
+   frontmatter, backslash normalization, forward-slash display) remain intact.
+   Commits: `9f0bb3d` (`test:`) → `93d670b` (`fix:`). Tasks 064.002-T/064.003-T.
 
-Max review-fix cycles (3) not exceeded (0 code changes required).
+Max review-fix cycles (3) not exceeded. The Copilot-flagged relative-path
+containment gap (thread `PRRT_kwDORJEduc6NhCGy`) was subsequently authorized and
+fixed test-first in this PR (see Review Disposition item 2).
 
 ## Runtime Verification
 
@@ -129,7 +138,7 @@ after the binary is rebuilt/reinstalled. autoharness config wires
 ## Healthy Signals
 
 * fmt + clippy green locally and on CI (ubuntu-latest).
-* All 12 verify tests (4 unit + 4 contract + 4 integration) green.
+* All 13 verify tests (4 unit + 4 contract + 5 integration) green.
 * Runtime exit contract holds cross-shell.
 
 ## Failure Signals (environmental, not introduced by this change)
@@ -147,8 +156,9 @@ after the binary is rebuilt/reinstalled. autoharness config wires
 
 ## Follow-on Backlog
 
-* Phase 1b: workspace-root canonicalize + join containment for
-  `engram verify` (close the `--workspace` ≠ CWD relative-path gap).
+* ~~Phase 1b: workspace-root canonicalize + join containment for
+  `engram verify`~~ — **DONE in this PR** (commits `9f0bb3d` → `93d670b`);
+  relative `<path>` now resolves under the workspace root, not the CWD.
 * Verify file existence before the non-markdown extension short-circuit (avoid a
   mistyped extension silently passing the gate).
 * Backlog ID-reuse reconciliation: distinct `064-F` features and duplicate

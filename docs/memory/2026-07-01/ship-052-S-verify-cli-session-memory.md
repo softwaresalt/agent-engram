@@ -94,3 +94,70 @@ New: `src/services/verify.rs`, `src/cli/commands/verify.rs`,
 Modified: `src/services/mod.rs`, `src/cli/commands/mod.rs`, `src/bin/engram.rs`,
 `Cargo.toml` (3 `[[test]]` entries).
 Closure: `docs/closure/2026-07-01-052-S-engram-verify-cli-closure.md`.
+
+---
+
+## Addendum — resumed session 2026-07-01 (containment fix, operator-authorized)
+
+### Context
+Operator flagged an unresolved Copilot review thread (`PRRT_kwDORJEduc6NhCGy`,
+`src/cli/commands/verify.rs:64`) as a real bug and authorized fixing the
+relative-path containment gap **in this PR** — reversing lesson #6's earlier
+Phase-1b deferral. Ship resumed ownership of PR #185.
+
+### The bug (confirmed)
+`run_verify` resolved a `workspace` for containment but read
+`tokio::fs::read_to_string(&normalized)` with the raw user path. `contain_path`
+rejected `..` and absolute-outside paths but returned a **relative** path
+unchanged, so line 58 read it relative to the process CWD. When
+`--workspace` / `ENGRAM_WORKSPACE` ≠ CWD, a relative `<path>` was read outside
+the declared workspace root (violates Constitution Principle III/IV).
+
+### Fix (test-first, RED→GREEN)
+- **RED** (`9f0bb3d`, `test:`): integration test
+  `relative_path_resolves_against_workspace_not_cwd` (I-VF-05) in
+  `tests/integration/cli_verify_test.rs`. New `verify_ws()` helper passes
+  `--workspace <root>` (+ `env_remove("ENGRAM_WORKSPACE")`) with `current_dir`
+  set to a *different* tmp dir. Observed FAIL: pre-fix reads the CWD-only file →
+  exit 0, expected 2.
+- **GREEN** (`93d670b`, `fix:`): `contain_path` now returns
+  `ResolvedTarget { read: PathBuf, display: String }`. A relative `<path>` is
+  joined under the **canonicalized** workspace root (never CWD); containment is
+  enforced with `read.starts_with(workspace_root)` — canonicalize when the file
+  exists, lexical join when missing (so missing → clean exit 2, not an escape).
+  `run_verify` reads `target.read` but keeps `target.display` (forward-slash) for
+  stdout/stderr, preserving the display convention. No unwrap/expect;
+  EXIT_ERROR (2) on any resolve/canonicalize error.
+
+### Hard-won lesson #7 — canonicalize BOTH sides for `starts_with` containment
+On Windows, `Path::canonicalize` returns a `\\?\` verbatim-prefixed path and
+resolves 8.3 short names (e.g. `DEWILL~1`). A containment check that compares a
+canonicalized file path against a **non**-canonicalized workspace root silently
+fails `starts_with` (prefix/short-name mismatch). Canonicalize the workspace
+root up front, then `workspace_root.join(candidate)` for relative targets so
+both operands share the same normalized form. For **missing** files (can't
+canonicalize), join under the already-canonical root and rely on the earlier
+`..`-rejection to keep the lexical join contained.
+
+### Lesson #8 — never `gh ... -b @file` for review replies
+The prior reply on this thread was corrupted to the literal text
+`@C:\Users\DEWILL~1\AppData\Local\Temp\reply.txt` — `gh`'s `-b/--body @file`
+expansion did not fire in that invocation and posted the raw arg. Fixed by
+`gh api -X PATCH /repos/.../pulls/comments/<databaseId> -f body=@-` (stdin) /
+inline `-f body='...'`, then re-reading the thread to confirm the rendered body.
+Resolve bot-authored threads via the `resolveReviewThread` GraphQL mutation only
+**after** the fix is pushed and a substantive correct reply is posted.
+
+### Gates (this session)
+`cargo fmt --all -- --check` OK; `clippy --no-default-features --features
+cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic` OK;
+all **13** verify tests GREEN (4 unit + 4 contract + 5 integration);
+`--all-targets --no-run` compiles clean (no cross-target regression);
+`cargo audit` only pre-existing advisories (no Cargo.lock change → 0 new). Still
+**STOPPED at the operator merge gate — did NOT merge.**
+
+### Note on commit tracking
+`backlogit_track_commit` is MCP-only; no CLI equivalent exists in the installed
+`backlogit.exe`. Commit→task association (`9f0bb3d`, `93d670b` →
+064.002-T/064.003-T) is recorded here and in the closure doc (degraded-mode
+substitute).
