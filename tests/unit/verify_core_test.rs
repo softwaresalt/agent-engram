@@ -12,7 +12,8 @@ use engram::services::verify::verify_markdown;
 /// S-VC-01: well-formed frontmatter + body is conformant with no findings.
 #[test]
 fn valid_markdown_with_frontmatter_is_conformant() {
-    let content = "---\nid: 001-T\ntitle: My Task\nstatus: queued\n---\n\n# Heading\n\nBody content here.\n";
+    let content =
+        "---\nid: 001-T\ntitle: My Task\nstatus: queued\n---\n\n# Heading\n\nBody content here.\n";
     let report = verify_markdown("docs/example.md", content).expect("verify must not error");
 
     assert!(

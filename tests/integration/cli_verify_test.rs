@@ -40,16 +40,14 @@ fn verify_in(cwd: &Path, arg: &str) -> (i32, String, String) {
 /// I-VF-01: a conformant fixture (forward-slash relative path) exits 0.
 #[test]
 fn conformant_fixture_exits_zero() {
-    let (code, _stdout, stderr) =
-        verify_in(&crate_root(), "tests/fixtures/verify/conformant.md");
+    let (code, _stdout, stderr) = verify_in(&crate_root(), "tests/fixtures/verify/conformant.md");
     assert_eq!(code, 0, "conformant fixture must exit 0; stderr: {stderr}");
 }
 
 /// I-VF-02: a malformed-frontmatter fixture exits non-zero.
 #[test]
 fn malformed_fixture_exits_nonzero() {
-    let (code, _stdout, _stderr) =
-        verify_in(&crate_root(), "tests/fixtures/verify/malformed.md");
+    let (code, _stdout, _stderr) = verify_in(&crate_root(), "tests/fixtures/verify/malformed.md");
     assert_eq!(code, 1, "malformed fixture must exit 1 (non-conformant)");
 }
 
