@@ -13,7 +13,7 @@
 //! agent's context window; a machine-readable summary envelope is written to
 //! stdout.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
@@ -40,9 +40,9 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
         }
     };
 
-    // Normalize to the forward-slash convention and enforce workspace containment.
-    let normalized = match contain_path(&path, &workspace) {
-        Ok(normalized) => normalized,
+    // Resolve the target against the workspace root and enforce containment.
+    let target = match contain_path(&path, &workspace) {
+        Ok(target) => target,
         Err(err) => {
             fmt.cli_error(&err);
             return EXIT_ERROR;
@@ -50,23 +50,26 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
     };
 
     // Non-markdown targets carry no graph markdown to validate in Phase 1a.
-    if !is_markdown_path(&normalized) {
-        emit_summary(&normalized, true, &[], flags, fmt);
+    if !is_markdown_path(&target.display) {
+        emit_summary(&target.display, true, &[], flags, fmt);
         return EXIT_CONFORMANT;
     }
 
-    let content = match tokio::fs::read_to_string(&normalized).await {
+    let content = match tokio::fs::read_to_string(&target.read).await {
         Ok(text) => text,
         Err(err) => {
-            fmt.cli_error(&format!("cannot read '{normalized}': {err}"));
+            fmt.cli_error(&format!("cannot read '{}': {err}", target.display));
             return EXIT_ERROR;
         }
     };
 
-    let report = match verify::verify_markdown(&normalized, &content) {
+    let report = match verify::verify_markdown(&target.display, &content) {
         Ok(report) => report,
         Err(err) => {
-            fmt.cli_error(&format!("verification error for '{normalized}': {err}"));
+            fmt.cli_error(&format!(
+                "verification error for '{}': {err}",
+                target.display
+            ));
             return EXIT_ERROR;
         }
     };
@@ -76,7 +79,13 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
             emit_finding_to_stderr(finding);
         }
     }
-    emit_summary(&normalized, report.conformant, &report.findings, flags, fmt);
+    emit_summary(
+        &target.display,
+        report.conformant,
+        &report.findings,
+        flags,
+        fmt,
+    );
 
     if report.conformant {
         EXIT_CONFORMANT
@@ -85,17 +94,36 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
     }
 }
 
-/// Normalize `path` to the forward-slash convention and enforce workspace
-/// containment (Constitution Principle III).
+/// A verify target resolved against the workspace root.
+///
+/// `read` is the absolute path actually opened; a relative `<path>` is joined
+/// under the workspace root — never the process CWD. `display` is the
+/// forward-slash convention string used in the stdout summary and stderr
+/// diagnostics so output stays stable and platform-independent.
+struct ResolvedTarget {
+    read: PathBuf,
+    display: String,
+}
+
+/// Resolve `path` against the `workspace` root and enforce containment
+/// (Constitution Principle III/IV).
 ///
 /// The established `.replace('\\', "/")` convention is applied so Windows-style
-/// backslash paths resolve identically on Linux. Any `..` parent-directory
-/// component — or an absolute path outside `workspace` — is rejected so the gate
-/// cannot be pointed at files beyond the workspace root.
-fn contain_path(path: &str, workspace: &Path) -> Result<String, String> {
+/// backslash paths resolve identically on Linux and drive the forward-slash
+/// `display` string. A relative `<path>` is joined under `workspace` — not the
+/// process CWD — so containment holds even when `--workspace` /
+/// `ENGRAM_WORKSPACE` differs from the CWD.
+///
+/// Any `..` parent-directory component is rejected outright. The resolved target
+/// (canonicalized when it exists, lexically joined under the canonical root when
+/// missing) must remain within the canonicalized workspace root; an absolute
+/// path — or any resolution — outside the root is rejected so the gate cannot be
+/// pointed at files beyond the workspace.
+fn contain_path(path: &str, workspace: &Path) -> Result<ResolvedTarget, String> {
     let normalized = path.replace('\\', "/");
     let candidate = Path::new(&normalized);
 
+    // Reject explicit parent-directory traversal outright.
     if candidate
         .components()
         .any(|component| matches!(component, Component::ParentDir))
@@ -105,11 +133,42 @@ fn contain_path(path: &str, workspace: &Path) -> Result<String, String> {
         ));
     }
 
-    if candidate.is_absolute() && !candidate.starts_with(workspace) {
+    // Canonicalize the workspace root so containment comparisons are stable
+    // across symlinks and platform-specific path forms (e.g. Windows 8.3 names).
+    let workspace_root = workspace.canonicalize().map_err(|err| {
+        format!(
+            "cannot resolve workspace root '{}': {err}",
+            workspace.display()
+        )
+    })?;
+
+    // A relative <path> is resolved under the workspace root, not the CWD, so a
+    // workspace that differs from the CWD cannot be bypassed.
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace_root.join(candidate)
+    };
+
+    // Enforce containment on the resolved target: canonicalize when it exists;
+    // otherwise keep the lexical join (already free of `..`) so a missing file
+    // yields a clean exit-2 read error rather than escaping the root.
+    let read = if joined.exists() {
+        joined
+            .canonicalize()
+            .map_err(|err| format!("cannot resolve path '{path}': {err}"))?
+    } else {
+        joined
+    };
+
+    if !read.starts_with(&workspace_root) {
         return Err(format!("path '{path}' is outside the workspace root"));
     }
 
-    Ok(normalized)
+    Ok(ResolvedTarget {
+        read,
+        display: normalized,
+    })
 }
 
 /// Whether `path` names a markdown document (`.md` / `.markdown`).
