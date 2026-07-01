@@ -49,6 +49,26 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
         }
     };
 
+    // Confirm the resolved target is an existing, readable file before branching
+    // on markdown vs non-markdown. This makes missing/unreadable paths return
+    // EXIT_ERROR (2) uniformly: a non-markdown target no longer short-circuits to
+    // EXIT_CONFORMANT (0) merely because it carries no markdown to validate, so a
+    // mistyped extension cannot silently pass the autoharness gate.
+    match tokio::fs::metadata(&target.read).await {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            fmt.cli_error(&format!(
+                "cannot read '{}': not a regular file",
+                target.display
+            ));
+            return EXIT_ERROR;
+        }
+        Err(err) => {
+            fmt.cli_error(&format!("cannot read '{}': {err}", target.display));
+            return EXIT_ERROR;
+        }
+    }
+
     // Non-markdown targets carry no graph markdown to validate in Phase 1a.
     if !is_markdown_path(&target.display) {
         emit_summary(&target.display, true, &[], flags, fmt);
