@@ -689,6 +689,10 @@ path = "tests/unit/verify_core_test.rs"
 name = "contract_verify"
 path = "tests/contract/verify_test.rs"
 
+[[test]]
+name = "integration_cli_verify"
+path = "tests/integration/cli_verify_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
