@@ -160,7 +160,14 @@ after the binary is rebuilt/reinstalled. autoharness config wires
   `engram verify`~~ — **DONE in this PR** (commits `9f0bb3d` → `93d670b`);
   relative `<path>` now resolves under the workspace root, not the CWD.
 * Verify file existence before the non-markdown extension short-circuit (avoid a
-  mistyped extension silently passing the gate).
+  mistyped extension silently passing the gate). *(Copilot re-review 2026-07-01,
+  thread `PRRT_kwDORJEduc6NqWC8` — valid but pre-existing; ordering unchanged by
+  the containment fix and would alter the pinned `non-markdown → exit 0`
+  contract, so deferred, not fixed in this PR.)*
+* Clarify the `--quiet` interaction with the stdout summary envelope in the
+  `verify` module docs (or bypass quiet for the summary). *(Copilot re-review
+  2026-07-01, thread `PRRT_kwDORJEduc6NqWDV` — pre-existing docstring, out of the
+  operator-authorized containment scope for this PR.)*
 * Backlog ID-reuse reconciliation: distinct `064-F` features and duplicate
   `064.00X-T` task IDs across the powerbi and verify workstreams.
 * Deferred Phase 1a+ tasks: `064.004-T`, `064.005-T`, `064.006-T`.

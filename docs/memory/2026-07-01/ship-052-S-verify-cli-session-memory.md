@@ -131,7 +131,7 @@ the declared workspace root (violates Constitution Principle III/IV).
 
 ### Hard-won lesson #7 — canonicalize BOTH sides for `starts_with` containment
 On Windows, `Path::canonicalize` returns a `\\?\` verbatim-prefixed path and
-resolves 8.3 short names (e.g. `DEWILL~1`). A containment check that compares a
+resolves 8.3 short names (e.g. `USERNA~1`). A containment check that compares a
 canonicalized file path against a **non**-canonicalized workspace root silently
 fails `starts_with` (prefix/short-name mismatch). Canonicalize the workspace
 root up front, then `workspace_root.join(candidate)` for relative targets so
@@ -141,7 +141,7 @@ canonicalize), join under the already-canonical root and rely on the earlier
 
 ### Lesson #8 — never `gh ... -b @file` for review replies
 The prior reply on this thread was corrupted to the literal text
-`@C:\Users\DEWILL~1\AppData\Local\Temp\reply.txt` — `gh`'s `-b/--body @file`
+`@%TEMP%\reply.txt` (a redacted local temp path) — `gh`'s `-b/--body @file`
 expansion did not fire in that invocation and posted the raw arg. Fixed by
 `gh api -X PATCH /repos/.../pulls/comments/<databaseId> -f body=@-` (stdin) /
 inline `-f body='...'`, then re-reading the thread to confirm the rendered body.
