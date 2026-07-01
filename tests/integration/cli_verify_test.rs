@@ -8,7 +8,10 @@
 //! 3. a Windows-style backslash path is normalized and accepted;
 //! 4. a `..` traversal path escaping the workspace root is rejected (exit `2`);
 //! 5. a relative `<path>` is resolved against the `--workspace` root, not the
-//!    process CWD, when the two differ (Constitution Principle III/IV).
+//!    process CWD, when the two differ (Constitution Principle III/IV);
+//! 6. a missing non-markdown `<path>` (resolved under the workspace) exits `2`,
+//!    not `0` — the missing/unreadable-file contract holds for non-markdown
+//!    targets too.
 
 use std::fs;
 use std::path::{Path, PathBuf};
