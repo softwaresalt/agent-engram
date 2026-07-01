@@ -237,6 +237,33 @@ fn extract_semantic_model_returns_none_for_non_model_json() {
     );
 }
 
+/// S-PEX-15: Top-level semantic-model expressions are extracted when present.
+#[test]
+fn extract_semantic_model_top_level_expressions() {
+    let json = serde_json::json!({
+        "model": {
+            "tables": [
+                { "name": "Sales" }
+            ],
+            "expressions": [
+                {
+                    "name": "SynapseDatabase",
+                    "expression": "\"ILSOS_EDW\""
+                }
+            ]
+        }
+    });
+    let model = extract_semantic_model(&json, "semantic/model.bim")
+        .expect("fixture should produce a model");
+
+    assert_eq!(model.expressions.len(), 1);
+    assert_eq!(model.expressions[0].name, "SynapseDatabase");
+    assert_eq!(
+        model.expressions[0].expression.as_deref(),
+        Some("\"ILSOS_EDW\"")
+    );
+}
+
 // ── Synthetic ID stability tests ──────────────────────────────────────────
 
 /// S-PEX-13: `synthetic_id` is deterministic — the same input always produces

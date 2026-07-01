@@ -86,3 +86,5 @@ queue_layout:
           types:
             - subtask
     name_format: '{NNN}'
+checkpoint_retention:
+    retention_days: 7

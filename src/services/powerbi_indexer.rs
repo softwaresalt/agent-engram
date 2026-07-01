@@ -208,10 +208,23 @@ fn extract_model_summaries(
     extract_model_summaries_from_model(&model)
 }
 
-fn extract_model_summaries_from_model(
+pub(crate) fn extract_model_summaries_from_model(
     model: &crate::models::powerbi::PowerBiSemanticModel,
 ) -> Vec<(String, String, String, String)> {
     let mut summaries = Vec::new();
+    summaries.push((
+        "powerbi_semantic_model".to_string(),
+        model.name.clone(),
+        model.path.clone(),
+        format!(
+            "Semantic model {}. Tables: {}. Relationships: {}. Expressions: {}. Data sources: {}.",
+            model.name,
+            model.tables.len(),
+            model.relationships.len(),
+            model.expressions.len(),
+            model.data_sources.len()
+        ),
+    ));
 
     for table in &model.tables {
         // One record per table.
@@ -253,6 +266,25 @@ fn extract_model_summaries_from_model(
                 ),
             ));
         }
+    }
+
+    for expression in &model.expressions {
+        let expr_hint = expression
+            .expression
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        summaries.push((
+            "powerbi_expression".to_string(),
+            expression.name.clone(),
+            model.name.clone(),
+            format!(
+                "Expression {} in semantic model {}. Definition: {}",
+                expression.name, model.name, expr_hint
+            ),
+        ));
     }
 
     summaries
@@ -311,7 +343,11 @@ fn extract_report_summaries(
 ///
 /// The ID is a hex-encoded SHA-256 hash of the concatenation of `source_path`,
 /// `file_path`, `kind_str`, and `unique_name`, prefixed with `pbi_`.
-fn make_node_id(
+///
+/// Exposed to `pub(crate)` so the dedicated PBIP indexer
+/// ([`crate::services::pbip_indexer`]) can compute matching node IDs when
+/// linking report and visual nodes to the shared semantic-model subgraph.
+pub(crate) fn make_node_id(
     source_path: &str,
     file_path: &str,
     kind: PowerBiNodeKind,
@@ -434,7 +470,7 @@ fn build_powerbi_graph_data(
     (nodes, edges)
 }
 
-fn build_powerbi_graph_data_from_model(
+pub(crate) fn build_powerbi_graph_data_from_model(
     model: &crate::models::powerbi::PowerBiSemanticModel,
     identity_scope: &str,
     file_path: &str,
@@ -583,6 +619,30 @@ fn build_powerbi_graph_data_from_model(
             from_id: rel_id,
             to_id: to_table_id,
             edge_type: PowerBiEdgeType::RelatesToTable,
+            source_path: source_path.to_owned(),
+        });
+    }
+
+    for expression in &model.expressions {
+        let expression_id = make_node_id(
+            source_path,
+            identity_scope,
+            PowerBiNodeKind::Expression,
+            &expression.name,
+        );
+        nodes.push(PowerBiNode {
+            id: expression_id.clone(),
+            name: expression.name.clone(),
+            kind: PowerBiNodeKind::Expression,
+            file_path: file_path.to_owned(),
+            source_path: source_path.to_owned(),
+            content_hash: content_hash.to_owned(),
+            ingested_at: now,
+        });
+        edges.push(PowerBiEdge {
+            from_id: model_id.clone(),
+            to_id: expression_id,
+            edge_type: PowerBiEdgeType::Contains,
             source_path: source_path.to_owned(),
         });
     }

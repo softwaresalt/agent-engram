@@ -1,10 +1,10 @@
 [workspace]
-members = ["."]
+members = [".", "crates/powerbi-tmdl-parser"]
 resolver = "2"
 
 [package]
 name = "engram"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Agent Engram MCP daemon"
@@ -63,6 +63,7 @@ ignore = "0.4"
 globset = "0.4"
 serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
+powerbi-tmdl-parser = { path = "crates/powerbi-tmdl-parser" }
 
 [features]
 default = ["embeddings", "cozo-backend"]
@@ -672,6 +673,32 @@ name = "integration_notebook_search_ingestion"
 path = "tests/integration/notebook_search_ingestion_test.rs"
 required-features = ["cozo-backend"]
 
+# ── 062-F: Dedicated PBIP project-definition indexing ────────────────────────
+
+[[test]]
+name = "integration_pbip_source_dispatch"
+path = "tests/integration/pbip_source_dispatch_test.rs"
+
+[[test]]
+name = "unit_pbip_extract_pbism"
+path = "tests/unit/pbip_extract_pbism_test.rs"
+
+[[test]]
+name = "unit_pbip_extract_tmdl"
+path = "tests/unit/pbip_extract_tmdl_test.rs"
+
+[[test]]
+name = "integration_pbip_search_ingestion"
+path = "tests/integration/pbip_search_ingestion_test.rs"
+
+[[test]]
+name = "unit_pbip_extract_project_definition"
+path = "tests/unit/pbip_extract_project_definition_test.rs"
+
+[[test]]
+name = "unit_pbip_extract_page_visual"
+path = "tests/unit/pbip_extract_page_visual_test.rs"
+
 [[test]]
 name = "unit_powerbi_graph_models"
 path = "tests/unit/powerbi_graph_models_test.rs"
@@ -692,6 +719,11 @@ path = "tests/contract/verify_test.rs"
 [[test]]
 name = "integration_cli_verify"
 path = "tests/integration/cli_verify_test.rs"
+
+[[test]]
+name = "contract_pbip_graph_query"
+path = "tests/contract/pbip_graph_query_test.rs"
+required-features = ["cozo-backend"]
 
 [[example]]
 name = "cozo_api_spike"

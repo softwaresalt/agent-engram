@@ -1,0 +1,13 @@
+[package]
+name = "powerbi-tmdl-parser"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Power BI-oriented TMDL parsing crate for Engram"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

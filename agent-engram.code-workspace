@@ -6,21 +6,15 @@
 	],
 	"settings": {
 		"chat.agentFilesLocations": {
-			//"lib/hve-core/.github/agents": true,
-			".github/agents": true,
-			".github/local-agents": true
+			".github/agents": true
 		},
 		"chat.promptFilesLocations": {
-			"lib/hve-core/.github/prompts": true,
 			".github/prompts": true
 		},
 		"chat.instructionsFilesLocations": {
-			"lib/hve-core/.github/instructions": true,
 			".github/instructions": true
 		},
     "chat.tools.terminal.autoApprove": {
-        ".specify/scripts/bash/": true,
-        ".specify/scripts/powershell/": true,
         "/^cargo (build|test|run|clippy|fmt|check|doc|update|install|search|publish|login|logout|new|init|add|upgrade|version|help|info|bench)(\\s[^;|&`]*)?(\\s*(>|>>|2>&1|\\|\\s*(Out-File|Set-Content|Out-String))\\s*[^;|&`]*)*$/": {
             "approve": true,
             "matchCommandLine": true
@@ -45,27 +39,27 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
+        "/^pwsh -File \\scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
+        "/^pwsh -NoProfile -File \\scripts/powershell/check-prerequisites\\.ps1 -Json -RequireTasks -IncludeTasks$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^pwsh -NoProfile -File \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
+        "/^pwsh -NoProfile -File \\scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^& \\.specify/scripts/powershell/setup-plan\\.ps1 -Json$/": {
+        "/^& \\scripts/powershell/setup-plan\\.ps1 -Json$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^& \\.specify/scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
+        "/^& \\scripts/powershell/check-prerequisites\\.ps1 -Json$/": {
             "approve": true,
             "matchCommandLine": true
         },
-        "/^& \\.specify/scripts/powershell/update-agent-context\\.ps1 -AgentType copilot$/": {
+        "/^& \\scripts/powershell/update-agent-context\\.ps1 -AgentType copilot$/": {
             "approve": true,
             "matchCommandLine": true
         },

@@ -141,6 +141,23 @@ pub async fn ingest_all_sources(
             continue;
         }
 
+        // PBIP sources use the dedicated PBIP project-definition indexer.
+        // Kept distinct from `powerbi` so the legacy JSON/BIM path stays stable
+        // while the newer project-definition contract evolves under 062-F.
+        if source.content_type == "pbip" {
+            use crate::services::pbip_indexer::{index_pbip_source, sweep_deleted_pbip_files};
+
+            let result =
+                index_pbip_source(source, workspace_root, queries, config.max_file_size_bytes)
+                    .await?;
+            let removed = sweep_deleted_pbip_files(source, workspace_root, queries).await?;
+            total_summary.ingested += result.ingested;
+            total_summary.unchanged += result.unchanged;
+            total_summary.removed += removed;
+            total_summary.total_files += result.total_files;
+            continue;
+        }
+
         // Build a glob filter from the optional pattern field.
         let glob_filter = build_glob_filter(source.pattern.as_deref());
 

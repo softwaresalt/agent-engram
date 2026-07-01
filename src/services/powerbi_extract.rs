@@ -17,8 +17,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::models::powerbi::{
-    PowerBiColumn, PowerBiDataSource, PowerBiMeasure, PowerBiPage, PowerBiRelationship,
-    PowerBiReport, PowerBiSemanticModel, PowerBiTable, PowerBiVisual,
+    PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure, PowerBiPage,
+    PowerBiRelationship, PowerBiReport, PowerBiSemanticModel, PowerBiTable, PowerBiVisual,
 };
 
 // ── ID derivation ─────────────────────────────────────────────────────────
@@ -220,6 +220,16 @@ pub fn extract_semantic_model(json: &Value, model_path: &str) -> Option<PowerBiS
         })
         .unwrap_or_default();
 
+    let expressions = model_root
+        .get("expressions")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|expression| extract_expression(expression, &id))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let data_sources = model_root
         .get("dataSources")
         .or_else(|| model_root.get("datasources"))
@@ -250,6 +260,7 @@ pub fn extract_semantic_model(json: &Value, model_path: &str) -> Option<PowerBiS
         path: model_path.to_string(),
         tables,
         relationships,
+        expressions,
         data_sources,
     })
 }
@@ -309,6 +320,22 @@ fn extract_measure(measure: &Value, table_id: &str) -> Option<PowerBiMeasure> {
         id,
         name,
         expression,
+    })
+}
+
+/// Extract a [`PowerBiExpression`] from a model expression JSON object.
+fn extract_expression(expression: &Value, model_id: &str) -> Option<PowerBiExpression> {
+    let name = expression.get("name").and_then(Value::as_str)?.to_string();
+    let id = synthetic_id(&format!("expression:{model_id}:{name}"));
+    let expression_text = expression
+        .get("expression")
+        .and_then(Value::as_str)
+        .map(String::from);
+
+    Some(PowerBiExpression {
+        id,
+        name,
+        expression: expression_text,
     })
 }
 
