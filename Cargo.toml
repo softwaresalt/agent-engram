@@ -681,6 +681,10 @@ name = "contract_powerbi_graph_query"
 path = "tests/contract/powerbi_graph_query_test.rs"
 required-features = ["cozo-backend"]
 
+[[test]]
+name = "unit_verify_core"
+path = "tests/unit/verify_core_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
