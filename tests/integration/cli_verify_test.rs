@@ -149,3 +149,24 @@ fn relative_path_resolves_against_workspace_not_cwd() {
         "a relative <path> under the workspace root must resolve and exit 0; stderr: {stderr}"
     );
 }
+
+/// I-VF-06: a non-markdown target that does not exist under the workspace root
+/// is an I/O error and exits `2` — it must NOT short-circuit to `0` merely
+/// because a non-markdown target carries no markdown to validate in Phase 1a.
+///
+/// This pins the missing/unreadable-file semantics uniformly across markdown and
+/// non-markdown targets (exit-code contract: `2` for missing/unreadable files),
+/// so a mistyped extension cannot silently pass the autoharness gate.
+#[test]
+fn nonmarkdown_missing_file_exits_error() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+
+    // A non-markdown path that does not exist under the workspace root must be
+    // an I/O error (exit 2), not a silent exit-0 non-markdown short-circuit.
+    let (code, _stdout, _stderr) =
+        verify_ws(workspace.path(), workspace.path(), "does-not-exist.txt");
+    assert_eq!(
+        code, 2,
+        "a missing non-markdown target must exit 2 (I/O error), not short-circuit to exit 0"
+    );
+}
