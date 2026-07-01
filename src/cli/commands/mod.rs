@@ -5,3 +5,4 @@ pub mod lifecycle;
 pub mod manifest;
 pub mod report;
 pub mod search;
+pub mod verify;

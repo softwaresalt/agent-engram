@@ -709,6 +709,18 @@ path = "tests/contract/powerbi_graph_query_test.rs"
 required-features = ["cozo-backend"]
 
 [[test]]
+name = "unit_verify_core"
+path = "tests/unit/verify_core_test.rs"
+
+[[test]]
+name = "contract_verify"
+path = "tests/contract/verify_test.rs"
+
+[[test]]
+name = "integration_cli_verify"
+path = "tests/integration/cli_verify_test.rs"
+
+[[test]]
 name = "contract_pbip_graph_query"
 path = "tests/contract/pbip_graph_query_test.rs"
 required-features = ["cozo-backend"]

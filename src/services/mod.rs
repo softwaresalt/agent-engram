@@ -34,3 +34,4 @@ pub mod powerbi_tmdl;
 pub mod query_stats;
 pub mod registry;
 pub mod search;
+pub mod verify;
