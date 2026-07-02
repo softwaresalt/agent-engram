@@ -58,6 +58,36 @@ workspaces to share the same database path. If you need a non-default data
 directory, set it in the daemon's own environment, run the daemon manually, or
 use direct mode for the CLI indexing path.
 
+## Daemonless direct indexing
+
+The indexing commands normally route through the workspace daemon over IPC. When
+the daemon is slow to reach its ready state or the sync call times out, use direct
+mode as the escape hatch. Direct mode opens the database in the current process,
+runs the index, and exits without spawning or requiring a daemon.
+
+Three entry points select direct mode:
+
+| Entry point | Effect |
+|---|---|
+| `engram index --direct` | Full re-index without a daemon |
+| `engram sync --full --direct` | Same full re-index; `engram index` is shorthand for `engram sync --full` |
+| `ENGRAM_DIRECT=1` | Enables direct mode for `engram sync` and `engram index` without passing the flag |
+
+The `ENGRAM_DIRECT` environment variable is the scriptable form that startup
+pre-warm flows use, so a script can export it once instead of adding `--direct` to
+every call.
+
+Direct mode and the daemon never write the same workspace at the same time.
+Direct mode acquires the workspace lock before it opens the database; if a daemon
+already holds the workspace, the command exits with a lock error instead of
+risking a concurrent write. Stop the daemon, or omit `--direct`, to route through
+IPC.
+
+Use direct mode for one-shot terminal indexing and for pre-warming the index
+before an agent session. Omit it for normal editor and MCP traffic, where the shim
+manages the daemon for you. When a daemon-startup or IPC timeout is the symptom,
+see [troubleshooting.md](troubleshooting.md#daemon-startup-or-ipc-timeout).
+
 ## Workspace files under `.engram/`
 
 | Path | Purpose |
