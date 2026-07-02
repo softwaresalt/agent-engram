@@ -65,9 +65,9 @@ engram search "hello" --format text
 
 ### Daemonless indexing (`--direct`)
 
-`engram install` and `engram sync` manage a workspace daemon for you. If daemon
-startup or the sync IPC call times out, index without the daemon using direct
-mode:
+`engram sync` starts and manages a workspace daemon for you (`engram install`
+scaffolds the `.engram/` workspace and agent hooks). If daemon startup or the
+sync IPC call times out, index without the daemon using direct mode:
 
 ```bash
 engram index --direct         # full re-index; no daemon
