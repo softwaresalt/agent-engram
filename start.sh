@@ -30,6 +30,12 @@ set -euo pipefail
 #
 export COPILOT_HOME="${COPILOT_HOME:-./.copilot}"
 # export ENGRAM_DATA_DIR="./.engram"   # Uncomment when the agent-engram capability pack is active
+#
+# Optional: pre-warm the Engram code graph before launching your agent. Direct
+# mode indexes in one process without leaving a daemon running, and is the
+# daemon-startup / IPC-timeout escape hatch:
+#   engram index --direct        # or: ENGRAM_DIRECT=1 engram sync
+# Reference: docs/configuration.md (Daemonless direct indexing).
 if [ -z "${GITHUB_TOKEN:-}" ]; then
 	if command -v gh >/dev/null 2>&1; then
 		GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"

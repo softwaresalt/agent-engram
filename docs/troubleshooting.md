@@ -67,10 +67,28 @@ When indexing is the issue, use this order:
 1. `engram workspace-status --format text`
 2. `engram sync --format text`
 3. `engram sync --full --format text` or `engram index --format text`
-4. `engram sync --direct --format text` if you need to bypass daemon startup while debugging
+4. `engram index --direct --format text` (or set `ENGRAM_DIRECT=1`) when daemon startup or the sync IPC call times out
 
 `engram index` and `engram sync --full` are both full rebuild paths. Use them
 when incremental sync is not enough.
+
+### Daemon startup or IPC timeout
+
+When the daemon is slow to reach its ready state, or the sync or index IPC call
+times out (for example, a `Daemon failed to reach Ready state` error), reach for
+direct mode as the escape hatch. It indexes in the current process without
+spawning or waiting on a daemon:
+
+```bash
+engram index --direct --format text
+engram sync --full --direct --format text
+ENGRAM_DIRECT=1 engram sync --format text
+```
+
+Direct mode acquires the workspace lock first, so stop any running daemon before
+you retry; otherwise the command exits with a lock error. See
+[configuration.md](configuration.md#daemonless-direct-indexing) for the full
+reference.
 
 ## Runtime cleanup
 

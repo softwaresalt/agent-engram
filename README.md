@@ -63,6 +63,26 @@ engram sync
 engram search "hello" --format text
 ```
 
+### Daemonless indexing (`--direct`)
+
+`engram sync` starts and manages a workspace daemon for you (`engram install`
+scaffolds the `.engram/` workspace and agent hooks). If daemon startup or the
+sync IPC call times out, index without the daemon using direct mode:
+
+```bash
+engram index --direct         # full re-index; no daemon
+engram sync --full --direct   # equivalent to the line above
+ENGRAM_DIRECT=1 engram sync   # env-var form for scripts and pre-warm
+```
+
+Direct mode opens the database in the current process and exits when indexing
+finishes. It is the escape hatch for daemon-startup or IPC-timeout symptoms, and
+the pattern the startup scripts use to pre-warm the index. See
+[docs/configuration.md](docs/configuration.md#daemonless-direct-indexing) for the
+reference and
+[docs/troubleshooting.md](docs/troubleshooting.md#daemon-startup-or-ipc-timeout)
+for symptom-based recovery.
+
 > [!TIP]
 > Prefer to build from source? Clone the repo and run `cargo build --release`.
 > See [docs/quickstart.md](docs/quickstart.md) for the full guide.
