@@ -5,8 +5,14 @@ date: 2026-07-01
 feature: 064-F
 shipment: 052-S
 pr: 185
-merge_sha: pending-operator-approval
+merge_sha: f3f7f2f078e46e2ba8c029392fc17f2859e66b8f
+merged_by: softwaresalt
+merged_at: 2026-07-01T18:14:02Z
+merge_message: "Merge pull request #185: engram verify structural linter CLI (052-S / 064-F)"
 branch: 064-engram-verify-cli
+status: shipped
+shipment_status: done
+feature_status: active
 ---
 
 ## Summary
@@ -15,8 +21,11 @@ Executed shipment `052-S` — Phase 1a of feature `064-F` (Deterministic gates &
 telemetry): a local, no-daemon `engram verify <path>` structural-conformance
 linter CLI that unblocks the autoharness `pre_task_completion` gate. The command
 is architecturally modeled on `engram manifest` (in-process, no daemon, no DB).
-PR #185 is open against `main`; **merge is operator-gated and has NOT been
-performed** (this closure is prepared pre-merge and awaits approval).
+
+> **SHIPPED / CLOSED (2026-07-01).** PR #185 was merged into `main` by
+> `softwaresalt` at 2026-07-01T18:14:02Z via merge commit
+> **`f3f7f2f078e46e2ba8c029392fc17f2859e66b8f`**. Shipment `052-S` is `done`;
+> feature `064-F` remains `active` for the deferred Phase 1b/2c/2d follow-ons.
 
 ## Tasks Completed
 
@@ -40,15 +49,23 @@ stdout. Scope is per-file (no glob).
 
 ## Shipment Reconciliation
 
-* Shipment `052-S` and feature `064-F` set to `active`; tasks `064.001-T`,
-  `064.002-T`, `064.003-T` set to `done`.
-* Task specs are retained in `.backlogit/queue/` (NOT relocated to
-  `.backlogit/archive/`) because backlogit reused these IDs from the previously
-  shipped powerbi-tmdl feature (PR #169, closure
-  `2026-06-14-064-S-tmdl-parser-closure.md`, merge `1475200d…`). Relocating to
-  archive would collide with those existing records on `main`. This is a backlog
-  data-integrity issue (two distinct `064-F` features / duplicate `064.00X-T`
-  IDs) that Stage/operator should reconcile — out of Ship scope.
+* **Post-merge (2026-07-01):** shipment `052-S` transitioned `active → done`
+  (relocated `queue/052-S.md → archive/052-S.md`) via a surgical single-artifact
+  `backlogit move 052-S --status done`; the merge commit was recorded on `052-S`
+  via `backlogit update 052-S --commit f3f7f2f…`. `backlogit shipment ship` was
+  **deliberately NOT used**: it archives the released scope (including `064-F`
+  and the `064.00X-T` tasks), which would (a) violate keeping `064-F` active and
+  (b) collide destructively with the pre-existing archived TMDL `064-F` /
+  `064.00X-T` records (verified: all eight collided `064` queue+archive files
+  are byte-identical before and after the transition).
+* Feature `064-F` left **`active`** (deferred children below). A ship-note was
+  appended directly to `.backlogit/queue/064-F.md` recording the Phase-1a merge —
+  `backlogit update 064-F` could NOT be used because backlogit's ID resolver
+  returns the archived TMDL `064-F` for that ID (the collision documented below).
+* Tasks `064.001-T`, `064.002-T`, `064.003-T` remain `done`, retained in
+  `.backlogit/queue/` (NOT relocated to `.backlogit/archive/`) because backlogit
+  reused these IDs from the previously shipped powerbi-tmdl feature (PR #169,
+  closure `2026-06-14-064-S-tmdl-parser-closure.md`, merge `1475200d…`).
 * Deferred tasks `064.004-T`, `064.005-T`, `064.006-T` are NOT in this shipment.
   `064.005-T` / `064.006-T` already exist on `main` (older powerbi content) and
   were intentionally excluded from this PR.
