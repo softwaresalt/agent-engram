@@ -91,13 +91,18 @@ if ($backlogitCmd) {
     }
 }
 
+# Pre-warm the Engram code graph before launching Copilot. Direct mode
+# (engram sync --direct) runs indexing in this process and leaves no daemon
+# behind; the shim spawns the daemon later on the first MCP call. Direct mode is
+# also the daemon-startup / IPC-timeout escape hatch.
+# Reference: docs/configuration.md (Daemonless direct indexing).
 $engramCmd = Get-Command engram -ErrorAction SilentlyContinue
 if ($engramCmd) {
     try {
         Invoke-EngramCommandWithProgress `
             -Executable $engramCmd.Source `
             -Subcommand "sync" `
-            -GlobalArguments @("--timeout", "300") `
+            -GlobalArguments @("--timeout", "3000") `
             -Arguments @("--direct") `
             -Activity "Synchronizing Engram index" `
             -Status "Direct pre-warm before Copilot startup"
@@ -108,7 +113,7 @@ if ($engramCmd) {
             Invoke-EngramCommandWithProgress `
                 -Executable $engramCmd.Source `
                 -Subcommand "sync" `
-                -GlobalArguments @("--timeout", "300") `
+                -GlobalArguments @("--timeout", "3000") `
                 -Activity "Synchronizing Engram index" `
                 -Status "Daemon-backed pre-warm fallback"
         } catch {
