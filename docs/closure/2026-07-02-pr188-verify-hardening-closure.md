@@ -1,5 +1,5 @@
 ---
-title: "PR #188 verify hardening — PR #185 review follow-up — Closure (pre-merge)"
+title: "PR #188 verify hardening — PR #185 review follow-up — Closure (merged)"
 type: closure
 date: 2026-07-02
 feature: 064-F
@@ -7,7 +7,10 @@ task: 064.004-T
 pr: 188
 follows_pr: 185
 branch: 064-verify-hardening
-status: pre-merge-operator-gated
+status: merged
+merge_sha: c38b85519fae1585f8e7a4e399b3b0fad709894c
+merged_by: softwaresalt
+merged_at: 2026-07-03T05:57:07Z
 shipment_status: n/a
 feature_status: active
 ---
@@ -89,6 +92,16 @@ backlog-hygiene debt the operator directed to leave untouched, and risks the
 
 ## Merge gate
 
-**STOPPED at merge gate (NON-NEGOTIABLE).** PR #188 is open with 0 unresolved
-review threads and green CI. Awaiting explicit operator merge approval. Ship did
-NOT merge.
+**MERGED.** PR #188 was merged into `main` by `softwaresalt` at
+2026-07-03T05:57:07Z via merge commit
+**`c38b85519fae1585f8e7a4e399b3b0fad709894c`** (== current `main` HEAD), with 0
+unresolved review threads and green CI. The 064.004-T Phase 1b **hardening
+subset** shipped here (workspace-containment normalization, `body.empty`
+coverage, CRLF malformed-frontmatter guard); the deferred daemon
+**reactive-sync** scope of 064.004-T remains **pending** for a future code
+shipment. Ship stopped at the merge gate and did NOT self-merge.
+
+> Reconciliation note: the **operator** performed the merge (Ship did not
+> self-merge). This closure was updated from `pre-merge` to `merged` after the
+> fact during backlog hygiene, which is why the status now reads `merged` even
+> though Ship halted at the merge gate at the time of writing.
