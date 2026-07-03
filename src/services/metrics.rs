@@ -60,8 +60,10 @@ fn remember_recent_event(event: UsageEvent) {
 ///
 /// The override may be absolute or relative; relative overrides are joined to
 /// `workspace_path`. In both cases the resolved path is lexically normalized and
-/// rejected when it escapes the workspace root, so a misconfigured override can
-/// never redirect telemetry outside the workspace.
+/// rejected when it escapes the workspace root. Containment is a lexical
+/// `starts_with` check that does not resolve symlinks: it defends against `..`
+/// and absolute-path escapes, but a symlink placed inside the workspace could
+/// still redirect writes outside the root.
 ///
 /// # Errors
 ///
@@ -151,14 +153,20 @@ async fn rotate_usage_file(base: &Path, max_rotated_files: usize) -> Result<(), 
         return Ok(());
     }
 
-    // Drop the oldest generation that would exceed retention.
-    let oldest = rotated_path(base, max_rotated_files);
-    if path_exists(&oldest).await {
-        tokio::fs::remove_file(&oldest).await.map_err(|error| {
-            EngramError::Metrics(MetricsError::WriteFailed {
-                reason: format!("failed to prune rotated usage file: {error}"),
-            })
-        })?;
+    // Drop the oldest retained generation plus any stale generations left at or
+    // above the current retention (e.g. produced by a previously higher
+    // `max_rotated_files`), so history stays bounded even after the cap is
+    // lowered.
+    let mut stale = max_rotated_files;
+    while path_exists(&rotated_path(base, stale)).await {
+        tokio::fs::remove_file(rotated_path(base, stale))
+            .await
+            .map_err(|error| {
+                EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!("failed to prune rotated usage file: {error}"),
+                })
+            })?;
+        stale += 1;
     }
 
     // Shift remaining generations up by one (highest first to avoid clobber).

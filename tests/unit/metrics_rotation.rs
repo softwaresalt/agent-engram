@@ -78,6 +78,40 @@ async fn t067_003_retention_drops_oldest_beyond_max() {
     );
 }
 
+/// Stale generations at or above the retention cap — e.g. left behind by a
+/// previously higher `max_rotated_files` — are pruned on the next rotation so
+/// history stays bounded after the cap is lowered.
+#[tokio::test]
+async fn t067_003_rotation_prunes_stale_generations_above_max() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let usage = dir.path().join("usage.jsonl");
+
+    // Simulate a prior run with retention 6: a live file already at the cap plus
+    // contiguous rotated generations 1..=6.
+    std::fs::write(&usage, "old-live-line-well-over-ten-bytes\n").expect("seed live");
+    for n in 1..=6 {
+        std::fs::write(rotated(&usage, n), format!("gen-{n}\n")).expect("seed gen");
+    }
+
+    // One append with retention lowered to 5 must rotate and prune gen 6.
+    append_usage_line(&usage, &sample_event("evt"), 10, 5)
+        .await
+        .expect("append");
+
+    assert!(
+        !rotated(&usage, 6).exists(),
+        "generation 6 (beyond retention 5) must be pruned"
+    );
+    assert!(
+        !rotated(&usage, 7).exists(),
+        "no generation beyond retention may survive"
+    );
+    assert!(
+        rotated(&usage, 5).exists(),
+        "generation 5 (the retention boundary) is retained"
+    );
+}
+
 /// A zero byte cap disables size-cap rotation entirely.
 #[tokio::test]
 async fn t067_003_zero_cap_disables_rotation() {
