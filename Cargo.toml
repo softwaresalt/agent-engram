@@ -448,6 +448,10 @@ name = "unit_metrics_rotation"
 path = "tests/unit/metrics_rotation.rs"
 
 [[test]]
+name = "unit_cli_correlation_id"
+path = "tests/unit/cli_correlation_id.rs"
+
+[[test]]
 name = "unit_metrics_collector"
 path = "tests/unit/metrics_collector_test.rs"
 

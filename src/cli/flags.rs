@@ -32,6 +32,18 @@ pub struct GlobalFlags {
     /// Env: ENGRAM_CLI_TIMEOUT
     #[arg(long, global = true, value_name = "SECS", env = "ENGRAM_CLI_TIMEOUT")]
     pub timeout: Option<u64>,
+
+    /// Caller-supplied correlation id stamped onto emitted usage-telemetry
+    /// records (dual-source with MCP `_meta.correlation_id`). Precedence:
+    /// `--correlation-id` flag > `ENGRAM_CORRELATION_ID` env > unset. Rejected
+    /// when it contains control characters or exceeds 128 characters.
+    #[arg(
+        long,
+        global = true,
+        value_name = "ID",
+        env = "ENGRAM_CORRELATION_ID"
+    )]
+    pub correlation_id: Option<String>,
 }
 
 impl GlobalFlags {
@@ -63,5 +75,22 @@ impl GlobalFlags {
             return Ok(std::path::PathBuf::from(ws));
         }
         std::env::current_dir().map_err(|e| format!("cannot determine workspace: {e}"))
+    }
+
+    /// Resolve and validate the caller-supplied correlation id.
+    ///
+    /// clap already applies the flag → `ENGRAM_CORRELATION_ID` precedence. This
+    /// applies the strict CLI/direct policy (reject control chars / over-128),
+    /// treating an empty value as unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string when the id contains control characters or
+    /// exceeds the length cap.
+    pub fn resolve_correlation_id(&self) -> Result<Option<String>, String> {
+        match self.correlation_id.as_deref() {
+            Some(raw) => crate::models::metrics::validate_correlation_id(raw),
+            None => Ok(None),
+        }
     }
 }

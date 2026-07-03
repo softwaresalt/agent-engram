@@ -167,6 +167,39 @@ async fn send_request_with_optional_progress(
     }
 }
 
+/// Inject a validated correlation id into a request's `_meta.correlation_id`
+/// envelope field, preserving any existing params and `_meta` entries.
+///
+/// Returns `params` unchanged when `correlation_id` is `None`. When present and
+/// `params` is absent, a fresh `{ "_meta": { "correlation_id": id } }` object is
+/// created; when `params` is a non-object value it is left untouched (the
+/// daemon rejects malformed params on its own terms).
+fn inject_correlation_id(params: Option<Value>, correlation_id: Option<&str>) -> Option<Value> {
+    let Some(correlation_id) = correlation_id else {
+        return params;
+    };
+
+    let mut params = params.unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    let Some(object) = params.as_object_mut() else {
+        return Some(params);
+    };
+
+    let meta = object
+        .entry("_meta")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(meta_object) = meta.as_object_mut() {
+        meta_object.insert(
+            "correlation_id".to_owned(),
+            Value::String(correlation_id.to_owned()),
+        );
+    } else {
+        // Existing `_meta` was not an object — replace it with a valid envelope.
+        *meta = serde_json::json!({ "correlation_id": correlation_id });
+    }
+
+    Some(params)
+}
+
 /// Run a single tool call through the daemon IPC and print the result.
 ///
 /// `command_default_secs` is the per-command timeout default, which may be
@@ -233,6 +266,16 @@ pub async fn run_tool_timed(
     // `null` is rejected by the daemon validator.
     let id = flags.id_value().unwrap_or_else(|| Value::from(1_u64));
 
+    // Resolve + validate the caller-supplied correlation id and inject it into
+    // the request envelope (`params._meta.correlation_id`) so the daemon
+    // dispatch choke point stamps it onto the emitted usage record. No per-tool
+    // schema change — this is envelope-level metadata.
+    let correlation_id = match flags.resolve_correlation_id() {
+        Ok(value) => value,
+        Err(e) => return formatter.cli_error(&format!("invalid --correlation-id: {e}")),
+    };
+    let params = inject_correlation_id(params, correlation_id.as_deref());
+
     let request = IpcRequest {
         jsonrpc: "2.0".to_owned(),
         id: Some(id.clone()),
@@ -269,7 +312,7 @@ mod tests {
 
     use super::{
         INDEX_IN_PROGRESS_CODE, JSONRPC_INTERNAL_ERROR_CODE, extract_indexing_progress,
-        friendly_error_message, render_indexing_progress,
+        friendly_error_message, inject_correlation_id, render_indexing_progress,
     };
 
     fn make_formatter() -> OutputFormatter {
@@ -284,6 +327,7 @@ mod tests {
             format: None,
             quiet: false,
             timeout,
+            correlation_id: None,
         }
     }
 
@@ -316,6 +360,50 @@ mod tests {
         let flags = make_flags(None);
         assert_eq!(flags.ipc_timeout(30), Duration::from_secs(30));
         assert_eq!(flags.ipc_timeout(300), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn inject_correlation_id_none_leaves_params_untouched() {
+        let params = Some(json!({ "query": "fn main" }));
+        let out = inject_correlation_id(params.clone(), None);
+        assert_eq!(out, params);
+    }
+
+    #[test]
+    fn inject_correlation_id_creates_meta_when_params_absent() {
+        let out = inject_correlation_id(None, Some("corr-1"));
+        assert_eq!(out, Some(json!({ "_meta": { "correlation_id": "corr-1" } })));
+    }
+
+    #[test]
+    fn inject_correlation_id_adds_to_existing_params_and_meta() {
+        let params = Some(json!({
+            "query": "fn main",
+            "_meta": { "agent_role": "reviewer" }
+        }));
+        let out = inject_correlation_id(params, Some("corr-2")).expect("params");
+        assert_eq!(out["query"], json!("fn main"));
+        assert_eq!(out["_meta"]["agent_role"], json!("reviewer"));
+        assert_eq!(out["_meta"]["correlation_id"], json!("corr-2"));
+    }
+
+    #[test]
+    fn resolve_correlation_id_rejects_control_chars() {
+        let mut flags = make_flags(None);
+        flags.correlation_id = Some("bad\nid".to_owned());
+        assert!(flags.resolve_correlation_id().is_err());
+    }
+
+    #[test]
+    fn resolve_correlation_id_accepts_valid_and_empty() {
+        let mut flags = make_flags(None);
+        flags.correlation_id = Some("corr-ok".to_owned());
+        assert_eq!(
+            flags.resolve_correlation_id().expect("valid"),
+            Some("corr-ok".to_owned())
+        );
+        flags.correlation_id = Some(String::new());
+        assert_eq!(flags.resolve_correlation_id().expect("empty"), None);
     }
 
     #[test]
