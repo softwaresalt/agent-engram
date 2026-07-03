@@ -248,6 +248,7 @@ pub async fn dispatch(
                 prompt_tokens_attributed: None,
                 completion_tokens_attributed: None,
                 cached_tokens_attributed: None,
+                ..UsageEvent::default()
             });
             return Err(EngramError::from(policy_err));
         }
@@ -355,6 +356,7 @@ pub async fn dispatch(
                 prompt_tokens_attributed: None,
                 completion_tokens_attributed: None,
                 cached_tokens_attributed: None,
+                ..UsageEvent::default()
             });
         }
     }

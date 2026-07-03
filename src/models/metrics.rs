@@ -7,8 +7,84 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Current usage-telemetry record schema version (pinned public contract).
+///
+/// Autoharness parses `.engram/metrics/{branch}/usage.jsonl` against this
+/// version. New fields are additive-only; existing fields are never renamed
+/// or removed so older records keep deserializing.
+pub const USAGE_SCHEMA_VERSION: u32 = 2;
+
+/// Maximum accepted length (in characters) for a caller-supplied correlation id.
+pub const CORRELATION_ID_MAX_LEN: usize = 128;
+
 fn default_outcome() -> String {
     "success".to_string()
+}
+
+fn default_schema_version() -> u32 {
+    USAGE_SCHEMA_VERSION
+}
+
+/// Deterministic, non-cryptographic hex hash (FNV-1a, 64-bit) of `input`.
+///
+/// Stable across processes and platforms so a persisted `query_hash` is a
+/// usable bucket key for autoharness. Not for security use.
+#[must_use]
+pub fn stable_hash_hex(input: &str) -> String {
+    // FNV-1a, 64-bit.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Sanitize a caller-supplied correlation id for safe persistence in a JSONL line.
+///
+/// Strips control characters (including `\n`/`\r`/`\t`) that could forge or split
+/// a JSONL record, then truncates to [`CORRELATION_ID_MAX_LEN`] characters. Returns
+/// `None` when nothing usable remains (empty or all-control input).
+///
+/// This is the **envelope** policy (MCP `_meta.correlation_id`): never fail a live
+/// tool call — sanitize-and-truncate instead.
+#[must_use]
+pub fn sanitize_correlation_id(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(CORRELATION_ID_MAX_LEN)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Validate a caller-supplied correlation id, rejecting invalid input.
+///
+/// This is the **CLI/direct** policy: fail fast for a human-driven surface.
+/// An empty id yields `Ok(None)` (treated as "not supplied").
+///
+/// # Errors
+///
+/// Returns `Err(String)` describing why the id was rejected when it contains
+/// control characters (JSONL line-integrity risk) or exceeds
+/// [`CORRELATION_ID_MAX_LEN`] characters.
+pub fn validate_correlation_id(raw: &str) -> Result<Option<String>, String> {
+    if raw.chars().count() > CORRELATION_ID_MAX_LEN {
+        return Err(format!(
+            "correlation id exceeds {CORRELATION_ID_MAX_LEN} characters"
+        ));
+    }
+    if raw.chars().any(char::is_control) {
+        return Err("correlation id contains control characters".to_owned());
+    }
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(raw.to_owned()))
 }
 
 fn default_response_shape_counts() -> BTreeMap<String, u32> {
@@ -81,6 +157,93 @@ pub struct UsageEvent {
     /// Runtime-attributed cached tokens when available from a higher layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_tokens_attributed: Option<u64>,
+    /// Telemetry record schema version (pinned; autoharness contract).
+    ///
+    /// Defaults to [`USAGE_SCHEMA_VERSION`] for records written before this
+    /// field existed (back-compat deserialization).
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    /// Caller-supplied correlation id (dual-source: MCP `_meta.correlation_id`
+    /// or CLI `--correlation-id`/`ENGRAM_CORRELATION_ID`). Omitted when neither
+    /// source supplied one. Validated (control-char strip, 128-char cap) before
+    /// persistence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    /// Dispatch latency in milliseconds (measures the tool call, not emission).
+    #[serde(default)]
+    pub latency_ms: u64,
+    /// Workspace root path (already resolved).
+    #[serde(default)]
+    pub workspace: String,
+    /// Coarse, privacy-preserving parameter summary (never raw query text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_summary: Option<CoarseParams>,
+}
+
+/// Coarse, privacy-preserving summary of request parameters.
+///
+/// Never stores raw query text — only a stable hash, the query length, and any
+/// caller-supplied result limit — so autoharness can bucket queries without
+/// leaking source content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CoarseParams {
+    /// Stable non-cryptographic hash of the query text (hex), when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_hash: Option<String>,
+    /// Length in characters of the query text, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_len: Option<u64>,
+    /// Caller-supplied result limit, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+impl CoarseParams {
+    /// Build a coarse summary from an optional query string and result limit.
+    ///
+    /// Returns `None` when neither a query nor a limit is present, so the
+    /// enclosing `params_summary` field is omitted.
+    #[must_use]
+    pub fn from_parts(query: Option<&str>, limit: Option<u64>) -> Option<Self> {
+        if query.is_none() && limit.is_none() {
+            return None;
+        }
+        Some(Self {
+            query_hash: query.map(stable_hash_hex),
+            query_len: query.map(|q| u64::try_from(q.chars().count()).unwrap_or(u64::MAX)),
+            limit,
+        })
+    }
+}
+
+impl Default for UsageEvent {
+    fn default() -> Self {
+        Self {
+            tool_name: String::new(),
+            timestamp: String::new(),
+            request_bytes: 0,
+            estimated_input_tokens: 0,
+            response_bytes: 0,
+            estimated_output_tokens: 0,
+            estimated_tokens: 0,
+            result_count: 0,
+            response_shape_counts: BTreeMap::new(),
+            symbols_returned: 0,
+            results_returned: 0,
+            branch: String::new(),
+            connection_id: None,
+            agent_role: None,
+            outcome: default_outcome(),
+            prompt_tokens_attributed: None,
+            completion_tokens_attributed: None,
+            cached_tokens_attributed: None,
+            schema_version: default_schema_version(),
+            correlation_id: None,
+            latency_ms: 0,
+            workspace: String::new(),
+            params_summary: None,
+        }
+    }
 }
 
 /// Aggregated metrics for a branch.
@@ -150,7 +313,7 @@ pub struct TimeRange {
 }
 
 /// Configuration for the metrics subsystem.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricsConfig {
     /// Whether metrics collection is enabled.
     #[serde(default = "default_metrics_enabled")]
@@ -158,6 +321,18 @@ pub struct MetricsConfig {
     /// Bounded channel buffer size for the background writer.
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
+    /// Optional override for the usage.jsonl path.
+    ///
+    /// May be absolute or relative to the workspace root, but MUST resolve
+    /// **within** the workspace root (containment is validated before use).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_path_override: Option<String>,
+    /// Maximum bytes before usage.jsonl is rotated (`0` = unbounded/no rotation).
+    #[serde(default = "default_max_file_bytes")]
+    pub max_file_bytes: u64,
+    /// Maximum number of rotated `usage.N.jsonl` files retained.
+    #[serde(default = "default_max_rotated_files")]
+    pub max_rotated_files: usize,
 }
 
 fn default_metrics_enabled() -> bool {
@@ -168,11 +343,22 @@ fn default_buffer_size() -> usize {
     1024
 }
 
+const fn default_max_file_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+
+const fn default_max_rotated_files() -> usize {
+    5
+}
+
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_metrics_enabled(),
             buffer_size: default_buffer_size(),
+            usage_path_override: None,
+            max_file_bytes: default_max_file_bytes(),
+            max_rotated_files: default_max_rotated_files(),
         }
     }
 }

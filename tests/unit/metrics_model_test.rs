@@ -29,6 +29,7 @@ fn t010_01_usage_event_serde_round_trip() {
         prompt_tokens_attributed: None,
         completion_tokens_attributed: None,
         cached_tokens_attributed: None,
+        ..Default::default()
     };
 
     // WHEN serialized to JSON and deserialized back
@@ -63,6 +64,7 @@ fn t010_01_usage_event_none_connection_id_omitted() {
         prompt_tokens_attributed: None,
         completion_tokens_attributed: None,
         cached_tokens_attributed: None,
+        ..Default::default()
     };
 
     // WHEN serialized to JSON
@@ -212,5 +214,6 @@ fn usage_event(tool: &str, response_bytes: u64, timestamp: &str) -> UsageEvent {
         prompt_tokens_attributed: None,
         completion_tokens_attributed: None,
         cached_tokens_attributed: None,
+        ..Default::default()
     }
 }

@@ -200,6 +200,7 @@ fn make_event(tool: &str, tokens: u64, agent_role: Option<&str>) -> UsageEvent {
         prompt_tokens_attributed: None,
         completion_tokens_attributed: None,
         cached_tokens_attributed: None,
+        ..Default::default()
     }
 }
 
