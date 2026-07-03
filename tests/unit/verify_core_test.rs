@@ -86,3 +86,54 @@ fn valid_markdown_without_frontmatter_is_conformant() {
         "plain markdown should carry no findings"
     );
 }
+
+/// S-VC-05: a markdown document with an empty body (after well-formed
+/// frontmatter) yields a `body.empty` finding and is non-conformant.
+///
+/// The `body.empty` rule existed but was previously unasserted; this is the
+/// coverage guard for PR #185 review thread [3].
+#[test]
+fn empty_body_after_frontmatter_is_non_conformant() {
+    // Well-formed frontmatter, but no body text follows the closing `---`.
+    let content = "---\nid: 001-T\ntitle: Empty Body\n---\n";
+    let report = verify_markdown("docs/empty.md", content).expect("verify must not error");
+
+    assert!(
+        !report.conformant,
+        "an empty body after frontmatter must be non-conformant, findings: {:?}",
+        report.findings
+    );
+    assert!(
+        report.findings.iter().any(|f| f.rule == "body.empty"),
+        "expected a body.empty finding, got: {:?}",
+        report.findings
+    );
+}
+
+/// S-VC-06: CRLF (`\r\n`) line endings with present-but-malformed frontmatter
+/// must still be detected as malformed (non-conformant).
+///
+/// `str::lines()` treats `\r\n` as a line terminator and does not include the
+/// trailing `\r` in the yielded line, so the `---` delimiters and the malformed
+/// YAML block are recognized on CRLF input exactly as on LF input. This pins
+/// that behaviour as a regression guard for PR #185 review thread [5].
+#[test]
+fn crlf_malformed_frontmatter_is_non_conformant() {
+    // CRLF line endings, frontmatter delimiters present, enclosed YAML malformed.
+    let content = "---\r\n: invalid: yaml: {\r\n---\r\n\r\n# Body\r\n\r\nText.\r\n";
+    let report = verify_markdown("docs/crlf.md", content).expect("verify must not error");
+
+    assert!(
+        !report.conformant,
+        "CRLF input with malformed frontmatter must be non-conformant, findings: {:?}",
+        report.findings
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.rule == "frontmatter.malformed"),
+        "expected a frontmatter.malformed finding on CRLF input, got: {:?}",
+        report.findings
+    );
+}
