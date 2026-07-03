@@ -2,7 +2,8 @@
 id: decision-017
 title: Engram usage-telemetry EMIT (not ingest) — pivot from telemetry SINK to SOURCE
 date: 2026-07-02
-status: Accepted
+amended: 2026-07-03
+status: Accepted (amended 2026-07-03 — see Amendment 1)
 author: stage
 supersedes_scope:
   - "064-F Phase 2c — ExecutionEpoch CozoDB schema (telemetry ingestion)"
@@ -127,6 +128,10 @@ for clean width isolation, shipment isolation, and traceability, `related_to`
 `docs/decisions/2026-07-01-064-id-namespace-collision-reconciliation.md`).
 
 ### D9 — Scope emission to daemon-served calls (via `tools::dispatch`)
+> ⚠️ **SUPERSEDED by Amendment 1 (2026-07-03, §A3).** CLI-direct emission is now
+> IN scope because the operator's MCP-fallback scenario is precisely "daemon
+> unavailable → use the CLI (`--direct`)". Retained below for history.
+
 CLI-direct/daemonless mode (`run_direct_sync`) bypasses the choke point and is a
 narrow index/sync path, not the query surface autoharness measures. **Chosen:**
 daemon-served emission only for this feature; CLI-direct coverage is an explicit
@@ -198,4 +203,112 @@ degraded session).
   init and no-op (D7 nuance) — accepted.
 - **A1:** autoharness consumes branch-aware paths (or uses `usage_path_override`).
 - **A2:** daemon-served emission is sufficient for autoharness effectiveness
-  measurement; CLI-direct is out of scope (D9).
+  measurement; CLI-direct is out of scope (D9). — ⚠️ **SUPERSEDED by Amendment 1
+  (§A3):** CLI-direct emission is now required for the MCP-fallback scenario.
+
+---
+
+## Amendment 1 (2026-07-03) — CLI `--correlation-id` + CLI-direct emission (MCP fallback)
+
+**Trigger.** Operator directive (2026-07-03). `_meta.correlation_id` is accepted for
+MCP mode (D2 stands), but engram is **also** invoked via the CLI, and when the harness
+loses MCP access it MUST fall back to the CLI. Therefore (1) the engram CLI MUST accept
+a correlation id as an argument on the emitting command(s) and thread it to the same
+`usage.jsonl` `correlation_id` field; and (2) the CLI-direct (daemonless) tool-call path
+MUST also emit usage telemetry.
+
+This amendment is **additive** to the merged plan (PR #189 @ `f2835847`): it introduces
+new surface but renames/removes no shipped field and no prior record semantics.
+`schema_version` stays `2`; additive/back-compat discipline (D3) is preserved.
+
+### A3.pre — Grounding correction: daemon and direct do NOT share a choke point
+Direct source inspection (2026-07-03) confirms the operator's "confirm shared choke
+point" premise is **false**:
+
+- `src/tools/mod.rs::dispatch()` is reached **only** by the daemon IPC path
+  (`src/daemon/ipc_server.rs` → `dispatch`). Both existing `metrics::record` sites live
+  here.
+- `src/cli/direct.rs::run_direct_sync` (invoked by `engram sync|index --direct` /
+  `ENGRAM_DIRECT=1`) **bypasses `dispatch` entirely** and calls
+  `services::code_graph::{index_workspace_with_progress, sync_workspace_with_progress}`
+  directly. It never initializes or emits metrics today.
+
+⇒ There is **no shared emit hook** for direct mode. A **minimal dedicated hook** in
+`run_direct_sync` is required (see A3).
+
+### A1 — CLI `--correlation-id` argument (new; decided: global flag + env fallback)
+Add an optional `--correlation-id <string>` as a **global** CLI flag in
+`GlobalFlags` (`src/cli/flags.rs`), mirroring the existing `--workspace`
+(`global = true`), with env fallback **`ENGRAM_CORRELATION_ID`** (mirrors
+`ENGRAM_WORKSPACE` / `ENGRAM_DIRECT` / `ENGRAM_CLI_TIMEOUT`).
+**Precedence:** explicit `--correlation-id` flag > `ENGRAM_CORRELATION_ID` env > unset.
+
+*Rationale (global + env chosen over per-subcommand arg):* zero per-subcommand churn,
+uniform availability, and — decisively — the harness can export the id **once** for
+every fallback CLI call in the exact MCP-loss scenario without rewriting each command
+line. clap `global = true` is exactly how `--workspace` already behaves.
+
+**Emitting subcommands** (reach a recorded tool → the arg is meaningful):
+`search`(`unified_search`), `query-memory`(`query_memory`), `symbols`(`list_symbols`),
+`map-code`(`map_code`), `impact`(`impact_analysis`), `query-graph`(`query_graph`),
+`sync`(`sync_workspace`), `index`(`index_workspace`), `bind`(`set_workspace`, once D7
+coverage lands), plus the `report`/`stats`/`health`/`branch-metrics`/`workspace-status`/
+`daemon-status` `get_*` reads already in `should_record_metrics`. The flag is inert
+(harmless) on non-emitting subcommands (`install`/`uninstall`/`manifest`/`verify`).
+
+### A2 — Threading the CLI id to the emit choke point (per transport)
+- **IPC / daemon path** (`src/cli/runner.rs::run_tool_timed`): when
+  `flags.correlation_id` is set, merge it into the outgoing request params as
+  `_meta.correlation_id` (creating the `_meta` object if absent) **before** building the
+  `IpcRequest`. The daemon then extracts it at the **same single choke point**
+  `src/tools/mod.rs::dispatch` via a new `extract_correlation_id` helper that mirrors
+  `policy::extract_agent_role` (`_meta.agent_role`). One injection site (CLI), one
+  extraction site (daemon). No per-command builder churn (`&flags` is already threaded).
+- **CLI-direct path** (`src/cli/direct.rs::run_direct_sync`): the id is passed as a
+  function parameter (from `flags.correlation_id` via `indexing::run_sync`/`run_index`)
+  and written straight onto the `UsageEvent.correlation_id` field (see A3).
+
+Because `_meta.correlation_id` is **envelope-level** (not a per-tool input field), there
+is **no MCP per-tool input-schema change** — D2 is unaffected. The CLI `--correlation-id`
+is a **CLI-surface (clap) addition only**.
+
+### A3 — OVERTURN of D9 / assumption A2: CLI-direct emission is IN scope
+In `run_direct_sync`, after the `code_graph` call returns, construct a `UsageEvent`
+(`tool_name` = `sync_workspace` | `index_workspace`; pinned ISO-8601-UTC `timestamp`;
+`latency_ms` from the already-measured `started_at.elapsed()`; `workspace`; `branch`;
+`outcome` = success/error; `correlation_id` from the CLI arg; `schema_version = 2`) and
+emit it by driving the **existing** emitter in-process:
+`metrics::initialize` → `metrics::record` → `metrics::shutdown().await` (the shutdown
+drains the mpsc queue before the short-lived direct process exits, so the record is not
+lost). This reuses the same `append_event_line` + rotation path (t3), so **direct-mode
+output is byte-compatible with daemon output**.
+
+**Concurrency (resolves the "two writers to one file" concern):** `run_direct_sync`
+holds the `DaemonLock` for the whole run, so a daemon cannot be writing the same
+`.engram/metrics/{branch}/usage.jsonl` concurrently (and vice-versa). The two writers
+are **mutually exclusive by construction** — there is no cross-mode append race.
+
+This **supersedes D9** ("daemon-served only") and **assumption A2** ("CLI-direct out of
+scope").
+
+### A4 — Dual-source `correlation_id` population (record contract unchanged)
+`correlation_id` remains `Option<String>`, `schema_version = 2`,
+`skip_serializing_if = "Option::is_none"`. It is now populated from **either** source:
+MCP `_meta.correlation_id` **OR** CLI `--correlation-id` / `ENGRAM_CORRELATION_ID`;
+**omitted** when neither is supplied. The pinned ISO-8601-UTC `timestamp` requirement is
+unchanged. No field renamed or removed.
+
+### A5 — Hardening (new attacker/user-controlled surface)
+A caller-supplied free-text id is now written verbatim into a JSONL line. **Both** sources
+(MCP `_meta` and CLI arg/env) MUST be validated before persistence:
+
+- **Line integrity:** strip/reject control characters and newlines (`\n`/`\r`) so a
+  crafted id cannot forge or split JSONL records.
+- **Bounded length:** cap at 128 chars (truncate-or-reject; decided: reject with a clear
+  CLI error for the direct/CLI path, sanitize-and-truncate for the envelope path to avoid
+  failing daemon calls). Documented in the exec-plan plan-harden addendum.
+- **No PII amplification:** only the opaque id is persisted; no additional caller context
+  is captured beyond existing fields.
+
+See exec-plan `2026-07-02-engram-usage-telemetry-emit-plan.md` §6 (plan-harden) and §7
+(plan-review) Amendment for the folded requirements and review outcome.
