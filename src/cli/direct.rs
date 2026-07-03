@@ -16,6 +16,7 @@ use crate::cli::output::OutputFormatter;
 use crate::daemon::lockfile::DaemonLock;
 use crate::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
 use crate::errors::{EngramError, LockError};
+use crate::models::metrics::{MetricsConfig, USAGE_SCHEMA_VERSION, UsageEvent};
 use crate::services::code_graph::{
     IndexResult, ProgressCallback, SyncResult, index_workspace_with_progress,
     sync_workspace_with_progress,
@@ -44,6 +45,7 @@ pub async fn run_direct_sync(
     workspace: &Path,
     full: bool,
     id: Option<serde_json::Value>,
+    correlation_id: Option<String>,
     formatter: &OutputFormatter,
 ) -> i32 {
     // Default to `1` when no --id provided; matches the IPC runner path (runner.rs).
@@ -145,8 +147,8 @@ pub async fn run_direct_sync(
         None
     };
 
-    if full {
-        match index_workspace_with_progress(
+    let call_result: Result<Value, EngramError> = if full {
+        index_workspace_with_progress(
             &ws_path,
             &data_dir,
             &branch,
@@ -155,39 +157,98 @@ pub async fn run_direct_sync(
             progress,
         )
         .await
-        {
-            Ok(result) => formatter.success(Some(effective_id), index_result_to_json(&result)),
-            Err(e) => {
-                let resp = e.to_response().error;
-                formatter.tool_error(
-                    Some(effective_id),
-                    i64::from(resp.code),
-                    &resp.message,
-                    resp.details,
-                )
-            }
-        }
+        .map(|result| index_result_to_json(&result))
     } else {
-        match sync_workspace_with_progress(
-            &ws_path,
-            &data_dir,
-            &branch,
-            &config.code_graph,
-            progress,
-        )
-        .await
-        {
-            Ok(result) => formatter.success(Some(effective_id), sync_result_to_json(&result)),
-            Err(e) => {
-                let resp = e.to_response().error;
-                formatter.tool_error(
-                    Some(effective_id),
-                    i64::from(resp.code),
-                    &resp.message,
-                    resp.details,
-                )
-            }
+        sync_workspace_with_progress(&ws_path, &data_dir, &branch, &config.code_graph, progress)
+            .await
+            .map(|result| sync_result_to_json(&result))
+    };
+
+    // Emit a usage-telemetry record for the direct (daemonless) path, mirroring
+    // the daemon dispatch choke point. `run_direct_sync` bypasses tools::dispatch,
+    // so this is the only emit site for daemonless runs. Concurrency-safe: direct
+    // mode holds DaemonLock for its whole run, so daemon and direct never write
+    // usage.jsonl concurrently. The writer is drained (shutdown().await) before
+    // this short-lived process exits.
+    emit_direct_usage(
+        &ws_path,
+        &branch,
+        if full { "index_workspace" } else { "sync_workspace" },
+        &call_result,
+        correlation_id,
+        started_at.elapsed(),
+        &config.metrics,
+    )
+    .await;
+
+    match call_result {
+        Ok(value) => formatter.success(Some(effective_id), value),
+        Err(e) => {
+            let resp = e.to_response().error;
+            formatter.tool_error(
+                Some(effective_id),
+                i64::from(resp.code),
+                &resp.message,
+                resp.details,
+            )
         }
+    }
+}
+
+/// Emit a single usage-telemetry record for a direct-mode run.
+///
+/// Drives the process-global metrics writer end-to-end for the short-lived
+/// direct process: `initialize` (spawns the writer honoring rotation + path
+/// override), `record`, then `shutdown().await` to DRAIN before exit. Honors
+/// `MetricsConfig::enabled` (a disabled config makes `initialize` a no-op sink).
+/// Failures are logged and never surfaced to the caller — telemetry must never
+/// fail a user-facing command.
+async fn emit_direct_usage(
+    workspace_path: &Path,
+    branch: &str,
+    tool_name: &str,
+    result: &Result<Value, EngramError>,
+    correlation_id: Option<String>,
+    elapsed: std::time::Duration,
+    metrics_config: &MetricsConfig,
+) {
+    if !metrics_config.enabled {
+        return;
+    }
+
+    if let Err(error) =
+        crate::services::metrics::initialize(workspace_path, branch, metrics_config).await
+    {
+        warn!(error = %error, "failed to initialize direct-mode metrics writer");
+        return;
+    }
+
+    let (response_bytes, outcome) = match result {
+        Ok(value) => (
+            u64::try_from(value.to_string().len()).unwrap_or(u64::MAX),
+            "success",
+        ),
+        Err(_) => (0_u64, "error"),
+    };
+
+    let estimated_output_tokens = response_bytes / 4;
+    crate::services::metrics::record(UsageEvent {
+        tool_name: tool_name.to_owned(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        response_bytes,
+        estimated_output_tokens,
+        estimated_tokens: estimated_output_tokens,
+        branch: branch.to_owned(),
+        outcome: outcome.to_owned(),
+        schema_version: USAGE_SCHEMA_VERSION,
+        correlation_id,
+        latency_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        workspace: workspace_path.display().to_string(),
+        ..Default::default()
+    });
+
+    if let Err(error) = crate::services::metrics::shutdown().await {
+        warn!(error = %error, "failed to drain direct-mode metrics writer");
     }
 }
 

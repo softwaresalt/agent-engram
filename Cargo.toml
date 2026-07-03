@@ -621,6 +621,10 @@ name = "integration_cli_direct"
 path = "tests/integration/cli_direct_test.rs"
 
 [[test]]
+name = "integration_cli_direct_usage_emit"
+path = "tests/integration/cli_direct_usage_emit.rs"
+
+[[test]]
 name = "integration_cli_regression"
 path = "tests/integration/cli_regression_test.rs"
 
