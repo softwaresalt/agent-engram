@@ -452,6 +452,14 @@ name = "unit_cli_correlation_id"
 path = "tests/unit/cli_correlation_id.rs"
 
 [[test]]
+name = "contract_usage_telemetry_record"
+path = "tests/contract/usage_telemetry_record.rs"
+
+[[test]]
+name = "integration_usage_telemetry_emit"
+path = "tests/integration/usage_telemetry_emit.rs"
+
+[[test]]
 name = "unit_metrics_collector"
 path = "tests/unit/metrics_collector_test.rs"
 

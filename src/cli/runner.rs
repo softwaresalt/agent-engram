@@ -174,7 +174,11 @@ async fn send_request_with_optional_progress(
 /// `params` is absent, a fresh `{ "_meta": { "correlation_id": id } }` object is
 /// created; when `params` is a non-object value it is left untouched (the
 /// daemon rejects malformed params on its own terms).
-fn inject_correlation_id(params: Option<Value>, correlation_id: Option<&str>) -> Option<Value> {
+///
+/// Exposed (crate-public API) so the dual-source correlation-id contract can be
+/// proven end-to-end through the real daemon dispatch path.
+#[must_use]
+pub fn inject_correlation_id(params: Option<Value>, correlation_id: Option<&str>) -> Option<Value> {
     let Some(correlation_id) = correlation_id else {
         return params;
     };
