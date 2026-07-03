@@ -19,6 +19,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
+use crate::db::workspace::normalize_canonical;
 use crate::services::verify::{self, VerifyFinding};
 
 /// Conformant document (or non-markdown target).
@@ -157,12 +158,14 @@ fn contain_path(path: &str, workspace: &Path) -> Result<ResolvedTarget, String> 
 
     // Canonicalize the workspace root so containment comparisons are stable
     // across symlinks and platform-specific path forms (e.g. Windows 8.3 names).
-    let workspace_root = workspace.canonicalize().map_err(|err| {
+    // Normalize away any Windows verbatim (`\\?\`) prefix so the comparison base
+    // matches the (possibly non-verbatim) candidate below.
+    let workspace_root = normalize_canonical(workspace.canonicalize().map_err(|err| {
         format!(
             "cannot resolve workspace root '{}': {err}",
             workspace.display()
         )
-    })?;
+    })?);
 
     // A relative <path> is resolved under the workspace root, not the CWD, so a
     // workspace that differs from the CWD cannot be bypassed.
@@ -174,13 +177,19 @@ fn contain_path(path: &str, workspace: &Path) -> Result<ResolvedTarget, String> 
 
     // Enforce containment on the resolved target: canonicalize when it exists;
     // otherwise keep the lexical join (already free of `..`) so a missing file
-    // yields a clean exit-2 read error rather than escaping the root.
+    // yields a clean exit-2 read error rather than escaping the root. Both sides
+    // are run through `normalize_canonical` so a verbatim-prefixed canonical root
+    // is never compared against a non-verbatim candidate (Windows
+    // `Path::canonicalize()` yields `\\?\...`), which would misclassify an
+    // in-workspace path as outside.
     let read = if joined.exists() {
-        joined
-            .canonicalize()
-            .map_err(|err| format!("cannot resolve path '{path}': {err}"))?
+        normalize_canonical(
+            joined
+                .canonicalize()
+                .map_err(|err| format!("cannot resolve path '{path}': {err}"))?,
+        )
     } else {
-        joined
+        normalize_canonical(joined)
     };
 
     if !read.starts_with(&workspace_root) {
@@ -236,4 +245,42 @@ fn emit_summary(
             "findings": findings_json,
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// S-VF-CANON-01: an absolute path that is *inside* the workspace root but
+    /// does not exist must PASS containment (its missing-ness is caught later by
+    /// the metadata read, exit 2) — it must not be misclassified as "outside the
+    /// workspace root".
+    ///
+    /// On Windows `Path::canonicalize()` yields verbatim-prefixed paths
+    /// (`\\?\C:\...`). Because a missing target cannot be canonicalized, the
+    /// containment comparison must normalize BOTH sides with
+    /// `crate::db::workspace::normalize_canonical` so a verbatim workspace root is
+    /// not compared against a non-verbatim candidate. RED before that fix on
+    /// Windows; GREEN after. On non-Windows platforms `normalize_canonical` is a
+    /// no-op and this stands as a regression guard. (PR #185 review thread [4].)
+    #[test]
+    fn absolute_missing_path_inside_workspace_passes_containment() {
+        let tmp = TempDir::new().expect("tempdir");
+        // Use the canonical, prefix-normalized workspace root so the (missing,
+        // therefore non-canonicalizable) target shares an identical component
+        // prefix — isolating the verbatim-vs-plain mismatch this test pins.
+        let workspace_root = crate::db::workspace::normalize_canonical(
+            tmp.path().canonicalize().expect("canonicalize workspace"),
+        );
+        let target = workspace_root.join("missing.md");
+
+        let outcome = contain_path(target.to_string_lossy().as_ref(), &workspace_root);
+
+        assert!(
+            outcome.is_ok(),
+            "an absolute in-workspace (but missing) path must pass containment, got err: {}",
+            outcome.err().unwrap_or_default()
+        );
+    }
 }
