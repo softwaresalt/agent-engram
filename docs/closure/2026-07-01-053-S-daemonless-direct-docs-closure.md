@@ -4,7 +4,11 @@ type: closure
 date: 2026-07-01
 feature: 065-F
 shipment: 053-S
-merge_sha: pending
+merge_sha: ad0b63297e104054261abeb28aa9790a2b67dbd7
+merged_by: softwaresalt
+merged_at: 2026-07-02T18:42:19Z
+status: shipped
+shipment_status: done
 prs:
   - 187
 ---
@@ -21,9 +25,11 @@ this shipment is net-new documentation with zero Rust source changes.
 
 ## Merge Confirmation
 
-- **PR #187** (`065-daemonless-direct-docs` → `main`): OPEN, MERGEABLE, awaiting
-  operator merge. **Not merged** — this closure records pre-merge execution
-  readiness. Update `merge_sha` and this section once the operator merges.
+- **PR #187** (`065-daemonless-direct-docs` → `main`): **MERGED** by
+  `softwaresalt` at 2026-07-02T18:42:19Z via merge commit
+  **`ad0b63297e104054261abeb28aa9790a2b67dbd7`**. Shipment `053-S` is `done`
+  (relocated to `.backlogit/archive/053-S.md`); feature `065-F` was reopened
+  active for the deferred `065.004-T` code task.
 
 ## Tasks Completed
 
@@ -109,5 +115,5 @@ Documented entry points (`engram index --direct`, `engram sync --full --direct`,
 ## Rollback
 
 ```bash
-git revert --no-edit <merge_sha>   # fill in after merge
+git revert --no-edit ad0b63297e104054261abeb28aa9790a2b67dbd7   # PR #187 merge commit
 ```
