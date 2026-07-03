@@ -27,6 +27,23 @@ pub fn extract_agent_role(params: &Option<Value>) -> Option<String> {
         .map(String::from)
 }
 
+/// Extract a caller-supplied correlation id from `_meta.correlation_id`.
+///
+/// Mirrors [`extract_agent_role`] but applies the **envelope** validation policy:
+/// the raw value is sanitized (control characters / newlines stripped, truncated
+/// to `CORRELATION_ID_MAX_LEN`) rather than rejected, so a live daemon tool call
+/// is never failed by a malformed id. Returns `None` when absent or when nothing
+/// usable remains after sanitization.
+#[must_use]
+pub fn extract_correlation_id(params: &Option<Value>) -> Option<String> {
+    let params = params.as_ref()?;
+    params
+        .get("_meta")
+        .and_then(|m| m.get("correlation_id"))
+        .and_then(Value::as_str)
+        .and_then(crate::models::metrics::sanitize_correlation_id)
+}
+
 /// Evaluate whether an agent role is permitted to call a tool.
 ///
 /// Returns `Ok(())` if allowed, `Err(PolicyError::Denied)` if blocked.

@@ -440,6 +440,10 @@ name = "unit_metrics_record_schema"
 path = "tests/unit/metrics_record_schema.rs"
 
 [[test]]
+name = "unit_dispatch_usage_hook"
+path = "tests/unit/dispatch_usage_hook.rs"
+
+[[test]]
 name = "unit_metrics_collector"
 path = "tests/unit/metrics_collector_test.rs"
 
