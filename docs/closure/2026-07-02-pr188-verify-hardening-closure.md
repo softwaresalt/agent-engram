@@ -100,3 +100,8 @@ subset** shipped here (workspace-containment normalization, `body.empty`
 coverage, CRLF malformed-frontmatter guard); the deferred daemon
 **reactive-sync** scope of 064.004-T remains **pending** for a future code
 shipment. Ship stopped at the merge gate and did NOT self-merge.
+
+> Reconciliation note: the **operator** performed the merge (Ship did not
+> self-merge). This closure was updated from `pre-merge` to `merged` after the
+> fact during backlog hygiene, which is why the status now reads `merged` even
+> though Ship halted at the merge gate at the time of writing.
