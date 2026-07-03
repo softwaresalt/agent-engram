@@ -444,6 +444,10 @@ name = "unit_dispatch_usage_hook"
 path = "tests/unit/dispatch_usage_hook.rs"
 
 [[test]]
+name = "unit_metrics_rotation"
+path = "tests/unit/metrics_rotation.rs"
+
+[[test]]
 name = "unit_metrics_collector"
 path = "tests/unit/metrics_collector_test.rs"
 

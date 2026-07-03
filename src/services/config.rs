@@ -52,11 +52,27 @@ pub fn parse_config(workspace_root: &Path) -> Result<WorkspaceConfig, EngramErro
 ///
 /// Returns `Err(EngramError::Config(ConfigError::InvalidValue))` for:
 /// * `batch.max_size == 0` or `> 1000`
+/// * `metrics.usage_path_override` set but empty/whitespace
+/// * `metrics.max_rotated_files > 1000`
 pub fn validate_config(config: &WorkspaceConfig) -> Result<(), EngramError> {
     if config.batch.max_size == 0 || config.batch.max_size > 1000 {
         return Err(EngramError::Config(ConfigError::InvalidValue {
             key: "batch.max_size".to_owned(),
             reason: "must be between 1 and 1000".to_owned(),
+        }));
+    }
+    if let Some(path_override) = config.metrics.usage_path_override.as_deref() {
+        if path_override.trim().is_empty() {
+            return Err(EngramError::Config(ConfigError::InvalidValue {
+                key: "metrics.usage_path_override".to_owned(),
+                reason: "must not be empty when set".to_owned(),
+            }));
+        }
+    }
+    if config.metrics.max_rotated_files > 1000 {
+        return Err(EngramError::Config(ConfigError::InvalidValue {
+            key: "metrics.max_rotated_files".to_owned(),
+            reason: "must be 1000 or fewer".to_owned(),
         }));
     }
     Ok(())
