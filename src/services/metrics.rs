@@ -338,7 +338,10 @@ pub async fn initialize(
         return Ok(());
     }
 
-    let (sender, receiver) = mpsc::channel(config.buffer_size);
+    // Clamp to >= 1: `tokio::sync::mpsc::channel` panics on a zero buffer.
+    // `validate_config` also rejects `buffer_size == 0`, so this is
+    // defense-in-depth against a config that bypasses validation.
+    let (sender, receiver) = mpsc::channel(config.buffer_size.max(1));
     {
         let mut sender_guard = sender_slot()
             .lock()

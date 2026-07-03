@@ -54,6 +54,7 @@ pub fn parse_config(workspace_root: &Path) -> Result<WorkspaceConfig, EngramErro
 /// * `batch.max_size == 0` or `> 1000`
 /// * `metrics.usage_path_override` set but empty/whitespace
 /// * `metrics.max_rotated_files > 1000`
+/// * `metrics.buffer_size == 0`
 pub fn validate_config(config: &WorkspaceConfig) -> Result<(), EngramError> {
     if config.batch.max_size == 0 || config.batch.max_size > 1000 {
         return Err(EngramError::Config(ConfigError::InvalidValue {
@@ -75,6 +76,12 @@ pub fn validate_config(config: &WorkspaceConfig) -> Result<(), EngramError> {
             reason: "must be 1000 or fewer".to_owned(),
         }));
     }
+    if config.metrics.buffer_size == 0 {
+        return Err(EngramError::Config(ConfigError::InvalidValue {
+            key: "metrics.buffer_size".to_owned(),
+            reason: "must be at least 1".to_owned(),
+        }));
+    }
     Ok(())
 }
 
@@ -91,4 +98,34 @@ pub fn load_workspace_config(
     let content = std::fs::read_to_string(&config_path)?;
     let config: WorkspaceConfig = toml::from_str(&content)?;
     Ok(Some(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_config;
+    use crate::errors::{ConfigError, EngramError};
+    use crate::models::config::WorkspaceConfig;
+
+    /// `metrics.buffer_size == 0` must be rejected: it would otherwise reach
+    /// `tokio::sync::mpsc::channel(0)` and panic at writer initialization,
+    /// violating the "telemetry must never crash a user-facing command"
+    /// invariant.
+    #[test]
+    fn rejects_zero_metrics_buffer_size() {
+        let mut config = WorkspaceConfig::default();
+        config.metrics.buffer_size = 0;
+        match validate_config(&config) {
+            Err(EngramError::Config(ConfigError::InvalidValue { key, .. })) => {
+                assert_eq!(key, "metrics.buffer_size");
+            }
+            other => panic!("expected InvalidValue for metrics.buffer_size, got {other:?}"),
+        }
+    }
+
+    /// A default config (non-zero buffer) passes validation.
+    #[test]
+    fn accepts_default_metrics_buffer_size() {
+        let config = WorkspaceConfig::default();
+        assert!(validate_config(&config).is_ok());
+    }
 }
