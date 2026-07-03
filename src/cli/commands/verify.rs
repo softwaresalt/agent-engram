@@ -158,14 +158,15 @@ fn contain_path(path: &str, workspace: &Path) -> Result<ResolvedTarget, String> 
 
     // Canonicalize the workspace root so containment comparisons are stable
     // across symlinks and platform-specific path forms (e.g. Windows 8.3 names).
-    // Normalize away any Windows verbatim (`\\?\`) prefix so the comparison base
-    // matches the (possibly non-verbatim) candidate below.
-    let workspace_root = normalize_canonical(workspace.canonicalize().map_err(|err| {
+    // The canonical root keeps its original prefix (a Windows verbatim `\\?\...`
+    // prefix on canonicalize) so it can serve as the base for actual file I/O;
+    // prefix normalization below is applied to the containment comparison only.
+    let workspace_root = workspace.canonicalize().map_err(|err| {
         format!(
             "cannot resolve workspace root '{}': {err}",
             workspace.display()
         )
-    })?);
+    })?;
 
     // A relative <path> is resolved under the workspace root, not the CWD, so a
     // workspace that differs from the CWD cannot be bypassed.
@@ -175,24 +176,24 @@ fn contain_path(path: &str, workspace: &Path) -> Result<ResolvedTarget, String> 
         workspace_root.join(candidate)
     };
 
-    // Enforce containment on the resolved target: canonicalize when it exists;
+    // The path actually opened: canonicalize when it exists (preserving any
+    // Windows verbatim `\\?\` prefix so extended-length path I/O keeps working);
     // otherwise keep the lexical join (already free of `..`) so a missing file
-    // yields a clean exit-2 read error rather than escaping the root. Both sides
-    // are run through `normalize_canonical` so a verbatim-prefixed canonical root
-    // is never compared against a non-verbatim candidate (Windows
-    // `Path::canonicalize()` yields `\\?\...`), which would misclassify an
-    // in-workspace path as outside.
+    // yields a clean exit-2 read error rather than escaping the root.
     let read = if joined.exists() {
-        normalize_canonical(
-            joined
-                .canonicalize()
-                .map_err(|err| format!("cannot resolve path '{path}': {err}"))?,
-        )
+        joined
+            .canonicalize()
+            .map_err(|err| format!("cannot resolve path '{path}': {err}"))?
     } else {
-        normalize_canonical(joined)
+        joined
     };
 
-    if !read.starts_with(&workspace_root) {
+    // Containment is checked on prefix-normalized copies of BOTH sides so a
+    // verbatim-prefixed canonical root (Windows `Path::canonicalize()` yields
+    // `\\?\...`) is never compared against a non-verbatim candidate, which would
+    // misclassify an in-workspace path as outside. Normalization is
+    // comparison-only: `read` retains its original prefix for file I/O.
+    if !normalize_canonical(read.clone()).starts_with(normalize_canonical(workspace_root)) {
         return Err(format!("path '{path}' is outside the workspace root"));
     }
 
