@@ -248,6 +248,16 @@ pub async fn append_usage_line(
         })
     })?;
 
+    // Drain the tokio file's pending write to the OS before returning.
+    // `write_all` alone does not guarantee the bytes have landed; a subsequent
+    // rotation `rename` could otherwise run before the write completes and drop
+    // a just-recorded line.
+    file.flush().await.map_err(|error| {
+        EngramError::Metrics(MetricsError::WriteFailed {
+            reason: format!("failed to flush usage event: {error}"),
+        })
+    })?;
+
     Ok(())
 }
 
