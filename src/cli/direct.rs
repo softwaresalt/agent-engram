@@ -173,7 +173,11 @@ pub async fn run_direct_sync(
     emit_direct_usage(
         &ws_path,
         &branch,
-        if full { "index_workspace" } else { "sync_workspace" },
+        if full {
+            "index_workspace"
+        } else {
+            "sync_workspace"
+        },
         &call_result,
         correlation_id,
         started_at.elapsed(),

@@ -66,7 +66,7 @@ fn read_records(workspace: &Path) -> Vec<Value> {
 }
 
 /// A flag-supplied correlation id lands on the emitted direct-mode record with a
-/// pinned ISO-8601-UTC timestamp and schema_version 2.
+/// pinned ISO-8601-UTC timestamp and `schema_version` 2.
 #[test]
 fn direct_sync_flag_correlation_id_recorded() {
     let tmp = TempDir::new().expect("tempdir");
@@ -75,7 +75,13 @@ fn direct_sync_flag_correlation_id_recorded() {
 
     let (code, stderr) = run(
         &ws,
-        &["sync", "--direct", "--json", "--correlation-id", "corr-direct-1"],
+        &[
+            "sync",
+            "--direct",
+            "--json",
+            "--correlation-id",
+            "corr-direct-1",
+        ],
         &[],
     );
     assert_eq!(code, 0, "sync --direct must exit 0; stderr: {stderr}");
@@ -113,7 +119,10 @@ fn direct_sync_env_correlation_id_recorded() {
 
     let records = read_records(&ws);
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["correlation_id"], Value::String("env-corr-9".into()));
+    assert_eq!(
+        records[0]["correlation_id"],
+        Value::String("env-corr-9".into())
+    );
 }
 
 /// When no correlation id is supplied the field is omitted from the record.
@@ -134,7 +143,11 @@ fn direct_sync_omits_correlation_id_when_absent() {
         records[0]
     );
     // The pinned timestamp is present regardless of correlation id.
-    assert!(records[0]["timestamp"].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(
+        records[0]["timestamp"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty())
+    );
 }
 
 /// `index --direct` records the `index_workspace` tool name.
@@ -146,15 +159,27 @@ fn direct_index_records_index_workspace() {
 
     let (code, stderr) = run(
         &ws,
-        &["index", "--direct", "--json", "--correlation-id", "corr-idx"],
+        &[
+            "index",
+            "--direct",
+            "--json",
+            "--correlation-id",
+            "corr-idx",
+        ],
         &[],
     );
     assert_eq!(code, 0, "index --direct must exit 0; stderr: {stderr}");
 
     let records = read_records(&ws);
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["tool_name"], Value::String("index_workspace".into()));
-    assert_eq!(records[0]["correlation_id"], Value::String("corr-idx".into()));
+    assert_eq!(
+        records[0]["tool_name"],
+        Value::String("index_workspace".into())
+    );
+    assert_eq!(
+        records[0]["correlation_id"],
+        Value::String("corr-idx".into())
+    );
 }
 
 /// An invalid `--correlation-id` (over the 128-char cap) is rejected with exit 2

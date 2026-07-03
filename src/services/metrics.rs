@@ -285,7 +285,8 @@ async fn writer_loop(
                 } else {
                     event.branch.as_str()
                 };
-                if let Err(error) = append_event_line(&workspace_path, branch, &event, &config).await
+                if let Err(error) =
+                    append_event_line(&workspace_path, branch, &event, &config).await
                 {
                     tracing::warn!(error = %error, branch, "failed to persist metrics event");
                 }

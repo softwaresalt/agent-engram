@@ -17,9 +17,9 @@ fn base_event() -> UsageEvent {
     }
 }
 
-/// A pre-schema (v1) record — one that predates schema_version / correlation_id /
-/// latency_ms / workspace / params_summary — must still deserialize, with the new
-/// fields taking their documented defaults (schema_version = 2, correlation_id
+/// A pre-schema (v1) record — one that predates `schema_version` / `correlation_id` /
+/// `latency_ms` / `workspace` / `params_summary` — must still deserialize, with the new
+/// fields taking their documented defaults (`schema_version` = 2, `correlation_id`
 /// absent).
 #[test]
 fn t067_004_v1_record_back_compat_deserializes() {

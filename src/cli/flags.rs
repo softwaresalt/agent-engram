@@ -37,12 +37,7 @@ pub struct GlobalFlags {
     /// records (dual-source with MCP `_meta.correlation_id`). Precedence:
     /// `--correlation-id` flag > `ENGRAM_CORRELATION_ID` env > unset. Rejected
     /// when it contains control characters or exceeds 128 characters.
-    #[arg(
-        long,
-        global = true,
-        value_name = "ID",
-        env = "ENGRAM_CORRELATION_ID"
-    )]
+    #[arg(long, global = true, value_name = "ID", env = "ENGRAM_CORRELATION_ID")]
     pub correlation_id: Option<String>,
 }
 

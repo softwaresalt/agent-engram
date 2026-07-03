@@ -26,7 +26,14 @@ pub async fn run_sync(
             Ok(v) => v,
             Err(e) => return formatter.cli_error(&format!("invalid --correlation-id: {e}")),
         };
-        return run_direct_sync(&workspace, full, flags.id_value(), correlation_id, formatter).await;
+        return run_direct_sync(
+            &workspace,
+            full,
+            flags.id_value(),
+            correlation_id,
+            formatter,
+        )
+        .await;
     }
     if full {
         // Full re-index can take minutes on large workspaces — use extended timeout.
@@ -54,7 +61,14 @@ pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputForm
             Ok(v) => v,
             Err(e) => return formatter.cli_error(&format!("invalid --correlation-id: {e}")),
         };
-        return run_direct_sync(&workspace, true, flags.id_value(), correlation_id, formatter).await;
+        return run_direct_sync(
+            &workspace,
+            true,
+            flags.id_value(),
+            correlation_id,
+            formatter,
+        )
+        .await;
     }
     // Full re-index can take minutes on large workspaces — use extended timeout.
     run_tool_timed(

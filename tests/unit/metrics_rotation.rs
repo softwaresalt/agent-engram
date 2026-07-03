@@ -1,4 +1,4 @@
-//! Unit tests for usage.jsonl size-cap rotation, retention, path-override
+//! Unit tests for `usage.jsonl` size-cap rotation, retention, path-override
 //! containment, and JSONL line integrity (067.003-T / t3).
 //!
 //! These exercise the file-level primitives directly with explicit temp paths
@@ -130,7 +130,10 @@ fn t067_003_path_override_honored_and_contained() {
         resolved.starts_with(root),
         "resolved override must stay within the workspace root"
     );
-    assert!(resolved.ends_with("telemetry/custom.jsonl") || resolved.ends_with("telemetry\\custom.jsonl"));
+    assert!(
+        resolved.ends_with("telemetry/custom.jsonl")
+            || resolved.ends_with("telemetry\\custom.jsonl")
+    );
 }
 
 /// An override that escapes the workspace root is rejected.

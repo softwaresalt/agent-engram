@@ -5,13 +5,13 @@
 //! REAL metrics writer in-process, proving:
 //!   (a) MCP `_meta.correlation_id` → written record,
 //!   (b) CLI `--correlation-id` (parsed → injected into `_meta`) → written record,
-//!   (d) every record carries a pinned ISO-8601-UTC timestamp + schema_version 2
+//!   (d) every record carries a pinned ISO-8601-UTC timestamp + `schema_version` 2
 //!       on the branch-aware `.engram/metrics/<branch>/usage.jsonl` path.
 //! The daemonless direct path (proof c) is covered by
 //! `tests/integration/cli_direct_usage_emit.rs`.
 //!
 //! `set_workspace` binds the workspace AND initializes the process-global metrics
-//! writer (lifecycle.rs), and is in `should_record_metrics`, so re-binding with a
+//! writer (`lifecycle.rs`), and is in `should_record_metrics`, so re-binding with a
 //! correlation id both routes and records through the production path. All
 //! singleton usage is consolidated into a single test to avoid cross-test races
 //! on the process-global writer.
@@ -54,7 +54,11 @@ fn read_records(usage_path: &Path) -> Vec<Value> {
 }
 
 fn assert_utc_schema2(rec: &Value) {
-    assert_eq!(rec["schema_version"], Value::from(2), "schema_version must be 2");
+    assert_eq!(
+        rec["schema_version"],
+        Value::from(2),
+        "schema_version must be 2"
+    );
     let ts = rec["timestamp"].as_str().expect("timestamp present");
     let parsed = chrono::DateTime::parse_from_rfc3339(ts).expect("timestamp is ISO-8601");
     assert_eq!(
@@ -66,7 +70,7 @@ fn assert_utc_schema2(rec: &Value) {
 
 /// Proofs (a) + (b) + (d): both the MCP envelope id and the CLI-parsed id reach
 /// distinct written records via the real dispatch + writer, each UTC-stamped and
-/// schema_version 2, on the branch-aware path.
+/// `schema_version` 2, on the branch-aware path.
 #[tokio::test]
 async fn t067_004_dual_source_correlation_id_emits_records() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -78,9 +82,13 @@ async fn t067_004_dual_source_correlation_id_emits_records() {
 
     // Bind once: no record (pre-bind snapshot is None) but the metrics writer is
     // now initialized against this workspace.
-    tools::dispatch(state.clone(), "set_workspace", Some(json!({ "path": path })))
-        .await
-        .expect("initial set_workspace bind");
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("initial set_workspace bind");
 
     // (a) MCP _meta.correlation_id → record.
     tools::dispatch(

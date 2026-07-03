@@ -376,7 +376,10 @@ mod tests {
     #[test]
     fn inject_correlation_id_creates_meta_when_params_absent() {
         let out = inject_correlation_id(None, Some("corr-1"));
-        assert_eq!(out, Some(json!({ "_meta": { "correlation_id": "corr-1" } })));
+        assert_eq!(
+            out,
+            Some(json!({ "_meta": { "correlation_id": "corr-1" } }))
+        );
     }
 
     #[test]
