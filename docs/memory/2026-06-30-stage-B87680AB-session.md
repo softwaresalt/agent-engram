@@ -1,3 +1,15 @@
+---
+title: "Stage session — 2026-06-30 — stash B87680AB (engram evals/gates)"
+date: 2026-06-30
+agent: stage
+scope: stash-triage
+stash_id: B87680AB
+deliberation_id: 011-D
+feature: 064-F
+shipment: 052-S
+outcome: queued shipment 052-S (Phase 1a engram verify CLI) — Phases 1b/2c/2d deferred under 064-F, stash archived
+---
+
 # Stage session — 2026-06-30 — stash B87680AB (engram evals/gates)
 
 ## Summary
