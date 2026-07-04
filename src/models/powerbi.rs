@@ -144,8 +144,9 @@ pub struct PowerBiTable {
 ///
 /// Captures the physical load definition for a table, including the source kind
 /// (`m` for Power Query / M partitions), the storage `mode`, and the opaque
-/// embedded source body (typically an M expression). The source body is stored
-/// verbatim for search and is never evaluated.
+/// embedded source body (typically an M expression). The source body is
+/// lightly normalized for search — each line is trimmed and blank lines are
+/// dropped before joining with `\n` — and is never evaluated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PowerBiPartition {
     /// Stable synthetic ID derived from table ID + partition name.

@@ -55,8 +55,10 @@ pub struct TmdlTable {
 /// Partitions bind a table to a physical load definition. The `= <kind>` token
 /// after the partition name records the source kind (for example `m` for a
 /// Power Query / M partition), `mode:` records the storage mode, and the
-/// triple-backtick-fenced `source =` payload is captured verbatim as an opaque
-/// M body — the parser never evaluates it.
+/// triple-backtick-fenced `source =` payload is captured as an opaque M body
+/// that the parser never evaluates. The body is lightly normalized: each line
+/// is trimmed and blank lines are dropped, then the remaining lines are joined
+/// with `\n` (original indentation and blank-line spacing are not preserved).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TmdlPartition {
     /// Partition name.
@@ -65,7 +67,9 @@ pub struct TmdlPartition {
     pub source_kind: Option<String>,
     /// Optional `mode:` property (e.g. `import`, `directQuery`).
     pub mode: Option<String>,
-    /// Opaque embedded source body (typically an M expression).
+    /// Opaque embedded source body (typically an M expression). Lightly
+    /// normalized: each captured line is trimmed and blank lines are dropped
+    /// before joining with `\n`, so exact original whitespace is not retained.
     pub source_expression: Option<String>,
 }
 
