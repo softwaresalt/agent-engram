@@ -40,9 +40,9 @@ pub struct TmdlTable {
 ///
 /// Partitions bind a table to a physical load definition. The `= <kind>` token
 /// after the partition name records the source kind (for example `m` for a
-/// Power Query / M partition), `mode:` records the storage mode, and the fenced
-/// ```` source = ``` ... ``` ```` payload is captured verbatim as an opaque M
-/// body — the parser never evaluates it.
+/// Power Query / M partition), `mode:` records the storage mode, and the
+/// triple-backtick-fenced `source =` payload is captured verbatim as an opaque
+/// M body — the parser never evaluates it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TmdlPartition {
     /// Partition name.
@@ -115,6 +115,7 @@ struct TmdlTableDraft {
     name: String,
     columns: Vec<TmdlColumn>,
     measures: Vec<TmdlMeasure>,
+    partitions: Vec<TmdlPartition>,
     last_member: Option<TmdlMemberKind>,
 }
 
@@ -123,6 +124,19 @@ struct PendingMeasureBody {
     indent: usize,
     measure_index: usize,
     lines: Vec<String>,
+}
+
+/// Capture state for a partition block that is still being read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct PendingPartition {
+    /// Indent width of the `partition` declaration line.
+    indent: usize,
+    /// Index of the partition inside the current table draft.
+    partition_index: usize,
+    /// Whether a triple-backtick-fenced source body is currently open.
+    fence_open: bool,
+    /// Captured (trimmed) source body lines.
+    source_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -143,6 +157,7 @@ struct ParseState {
     pending_relationship: Option<PendingRelationship>,
     data_sources: Vec<TmdlDataSource>,
     pending_measure_body: Option<PendingMeasureBody>,
+    pending_partition: Option<PendingPartition>,
 }
 
 /// Parse a TMDL document into semantic-model objects.
@@ -153,6 +168,18 @@ pub fn parse_tmdl_document(source: &str) -> Option<TmdlModel> {
     let mut state = ParseState::default();
 
     for raw_line in source.lines() {
+        // While a fenced partition source body is open, capture lines verbatim
+        // (trimmed of surrounding whitespace) until the closing fence so that M
+        // content is never misinterpreted as TMDL declarations or properties.
+        if state
+            .pending_partition
+            .as_ref()
+            .is_some_and(|partition| partition.fence_open)
+        {
+            capture_partition_source_line(&mut state.pending_partition, raw_line);
+            continue;
+        }
+
         let line = raw_line.trim_end();
         let trimmed = line.trim();
 
@@ -184,6 +211,10 @@ fn prepare_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) {
     if should_finish_relationship(state.pending_relationship.as_ref(), indent) {
         finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
     }
+
+    if should_finish_partition(state.pending_partition.as_ref(), indent) {
+        finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
+    }
 }
 
 fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -> bool {
@@ -193,6 +224,12 @@ fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -
         indent,
         trimmed,
     ) || capture_relationship_property(&mut state.pending_relationship, indent, trimmed)
+        || capture_partition_property(
+            &mut state.current_table,
+            &mut state.pending_partition,
+            indent,
+            trimmed,
+        )
 }
 
 fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> bool {
@@ -204,11 +241,13 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
     if let Some(rest) = trimmed.strip_prefix("table ") {
         finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
         finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
+        finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
         flush_table(&mut state.tables, &mut state.current_table);
         state.current_table = Some(TmdlTableDraft {
             name: parse_identifier(rest),
             columns: Vec::new(),
             measures: Vec::new(),
+            partitions: Vec::new(),
             last_member: None,
         });
         return true;
@@ -256,6 +295,15 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
         return set_measure_expression(state.current_table.as_mut(), rest);
     }
 
+    if let Some(rest) = trimmed.strip_prefix("partition ") {
+        return start_partition(
+            &mut state.current_table,
+            &mut state.pending_partition,
+            indent,
+            rest,
+        );
+    }
+
     if let Some(rest) = trimmed.strip_prefix("dataSource ") {
         state.data_sources.push(TmdlDataSource {
             name: parse_identifier(rest),
@@ -269,6 +317,7 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
 fn finalize_parse_state(mut state: ParseState) -> Option<TmdlModel> {
     finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
     finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
+    finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
     flush_table(&mut state.tables, &mut state.current_table);
 
     if state.model_name.is_none()
@@ -327,6 +376,40 @@ fn start_measure(
     true
 }
 
+fn start_partition(
+    current_table: &mut Option<TmdlTableDraft>,
+    pending_partition: &mut Option<PendingPartition>,
+    indent: usize,
+    rest: &str,
+) -> bool {
+    // Close any partition block that was still open before starting a new one.
+    finish_pending_partition(current_table, pending_partition);
+
+    let Some(table) = current_table.as_mut() else {
+        return false;
+    };
+
+    let (name, source_kind) = parse_partition_declaration(rest);
+    table.partitions.push(TmdlPartition {
+        name,
+        source_kind,
+        mode: None,
+        source_expression: None,
+    });
+    let partition_index = table.partitions.len() - 1;
+    // A partition is not a column/measure member; clear the last member so a
+    // stray `dataType:`/`expression:` cannot attach to a prior column/measure.
+    table.last_member = None;
+    *pending_partition = Some(PendingPartition {
+        indent,
+        partition_index,
+        fence_open: false,
+        source_lines: Vec::new(),
+    });
+
+    true
+}
+
 fn set_column_data_type(current_table: Option<&mut TmdlTableDraft>, rest: &str) -> bool {
     let Some(table) = current_table else {
         return false;
@@ -363,6 +446,10 @@ fn should_finish_measure_capture(
 
 fn should_finish_relationship(pending: Option<&PendingRelationship>, indent: usize) -> bool {
     pending.is_some_and(|relationship| indent <= relationship.indent)
+}
+
+fn should_finish_partition(pending: Option<&PendingPartition>, indent: usize) -> bool {
+    pending.is_some_and(|partition| indent <= partition.indent)
 }
 
 fn capture_measure_body_line(
@@ -412,6 +499,111 @@ fn capture_relationship_property(
     }
 
     false
+}
+
+/// Capture a property line inside an open partition block.
+///
+/// Recognizes `mode:` and `source =`, and treats any other deeper-indented line
+/// as opaque block content that belongs to the partition (so it does not fall
+/// through to declaration handling and prematurely end the block).
+fn capture_partition_property(
+    current_table: &mut Option<TmdlTableDraft>,
+    pending: &mut Option<PendingPartition>,
+    indent: usize,
+    trimmed: &str,
+) -> bool {
+    let Some(partition_pending) = pending.as_mut() else {
+        return false;
+    };
+
+    if indent <= partition_pending.indent {
+        return false;
+    }
+
+    let Some(table) = current_table.as_mut() else {
+        return false;
+    };
+    let partition = &mut table.partitions[partition_pending.partition_index];
+
+    if let Some(rest) = trimmed.strip_prefix("mode:") {
+        partition.mode = Some(parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed
+        .strip_prefix("source =")
+        .or_else(|| trimmed.strip_prefix("source="))
+    {
+        begin_partition_source(partition_pending, partition, rest);
+        return true;
+    }
+
+    // Deeper-indented content inside the partition block is consumed opaquely.
+    true
+}
+
+/// Begin reading a partition `source` payload.
+///
+/// A triple-backtick-fenced value opens a fenced multi-line body; any other
+/// non-empty value is treated as an inline single-line source expression.
+fn begin_partition_source(
+    pending: &mut PendingPartition,
+    partition: &mut TmdlPartition,
+    rest: &str,
+) {
+    let value = rest.trim();
+
+    if let Some(after_fence) = value.strip_prefix("```") {
+        pending.fence_open = true;
+        let after_fence = after_fence.trim();
+        if !after_fence.is_empty() && after_fence != "```" {
+            pending.source_lines.push(after_fence.to_string());
+        }
+        return;
+    }
+
+    if !value.is_empty() {
+        partition.source_expression = Some(value.to_string());
+    }
+}
+
+/// Capture one raw line of a fenced partition source body.
+///
+/// The closing triple-backtick fence ends capture; blank lines are dropped and
+/// all other lines are stored trimmed of surrounding whitespace.
+fn capture_partition_source_line(pending: &mut Option<PendingPartition>, raw_line: &str) {
+    let Some(partition_pending) = pending.as_mut() else {
+        return;
+    };
+
+    let trimmed = raw_line.trim();
+    if trimmed == "```" {
+        partition_pending.fence_open = false;
+    } else if !trimmed.is_empty() {
+        partition_pending.source_lines.push(trimmed.to_string());
+    }
+}
+
+fn finish_pending_partition(
+    current_table: &mut Option<TmdlTableDraft>,
+    pending: &mut Option<PendingPartition>,
+) {
+    let Some(partition_pending) = pending.take() else {
+        return;
+    };
+
+    if partition_pending.source_lines.is_empty() {
+        return;
+    }
+
+    let Some(table) = current_table.as_mut() else {
+        return;
+    };
+
+    let partition = &mut table.partitions[partition_pending.partition_index];
+    if partition.source_expression.is_none() {
+        partition.source_expression = Some(partition_pending.source_lines.join("\n"));
+    }
 }
 
 fn finish_pending_measure_body(
@@ -466,7 +658,7 @@ fn flush_table(tables: &mut Vec<TmdlTable>, current_table: &mut Option<TmdlTable
         name: table.name,
         columns: table.columns,
         measures: table.measures,
-        partitions: Vec::new(),
+        partitions: table.partitions,
     });
 }
 
@@ -479,6 +671,17 @@ fn parse_measure_declaration(rest: &str) -> (String, Option<String>) {
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
     (name, expression)
+}
+
+fn parse_partition_declaration(rest: &str) -> (String, Option<String>) {
+    let mut parts = rest.splitn(2, '=');
+    let name = parse_identifier(parts.next().unwrap_or_default());
+    let source_kind = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    (name, source_kind)
 }
 
 fn parse_expression_declaration(rest: &str) -> TmdlExpression {

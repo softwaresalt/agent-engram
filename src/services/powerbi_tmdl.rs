@@ -11,8 +11,8 @@ use powerbi_tmdl_parser::{
 };
 
 use crate::models::powerbi::{
-    PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure, PowerBiRelationship,
-    PowerBiSemanticModel, PowerBiTable,
+    PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure, PowerBiPartition,
+    PowerBiRelationship, PowerBiSemanticModel, PowerBiTable,
 };
 use crate::services::powerbi_extract::synthetic_id;
 
@@ -104,13 +104,24 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
             expression: measure.expression,
         })
         .collect();
+    let partitions = table
+        .partitions
+        .into_iter()
+        .map(|partition| PowerBiPartition {
+            id: synthetic_id(&format!("partition:{table_id}:{}", partition.name)),
+            name: partition.name,
+            source_kind: partition.source_kind,
+            mode: partition.mode,
+            source_expression: partition.source_expression,
+        })
+        .collect();
 
     PowerBiTable {
         id: table_id,
         name: table.name,
         columns,
         measures,
-        partitions: Vec::new(),
+        partitions,
     }
 }
 

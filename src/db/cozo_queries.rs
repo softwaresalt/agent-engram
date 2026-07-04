@@ -4862,6 +4862,7 @@ fn parse_powerbi_node_kind(
         "expression" => Ok(PowerBiNodeKind::Expression),
         "relationship" => Ok(PowerBiNodeKind::Relationship),
         "data_source" => Ok(PowerBiNodeKind::DataSource),
+        "partition" => Ok(PowerBiNodeKind::Partition),
         _ => Err(map_db_err(format!(
             "unrecognized powerbi_node kind: {kind_str:?}"
         ))),
@@ -4939,6 +4940,7 @@ mod tests {
             ("expression", PowerBiNodeKind::Expression),
             ("relationship", PowerBiNodeKind::Relationship),
             ("data_source", PowerBiNodeKind::DataSource),
+            ("partition", PowerBiNodeKind::Partition),
         ];
         for (s, expected) in cases {
             let got = parse_powerbi_node_kind(s)

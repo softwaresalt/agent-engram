@@ -266,6 +266,37 @@ pub(crate) fn extract_model_summaries_from_model(
                 ),
             ));
         }
+
+        // One record per partition.
+        for partition in &table.partitions {
+            let kind_hint = partition
+                .source_kind
+                .as_deref()
+                .map(|kind| format!(" Source kind: {kind}."))
+                .unwrap_or_default();
+            let mode_hint = partition
+                .mode
+                .as_deref()
+                .map(|mode| format!(" Mode: {mode}."))
+                .unwrap_or_default();
+            let body_hint = partition
+                .source_expression
+                .as_deref()
+                .map(|body| {
+                    let snippet: String = body.chars().take(200).collect();
+                    format!(" Source: {snippet}")
+                })
+                .unwrap_or_default();
+            summaries.push((
+                "powerbi_partition".to_string(),
+                partition.name.clone(),
+                format!("{}.{}", model.name, table.name),
+                format!(
+                    "Partition {} in table {}.{}{}{}",
+                    partition.name, table.name, kind_hint, mode_hint, body_hint
+                ),
+            ));
+        }
     }
 
     for expression in &model.expressions {
@@ -563,6 +594,30 @@ pub(crate) fn build_powerbi_graph_data_from_model(
             edges.push(PowerBiEdge {
                 from_id: table_id.clone(),
                 to_id: measure_id,
+                edge_type: PowerBiEdgeType::Contains,
+                source_path: source_path.to_owned(),
+            });
+        }
+
+        for partition in &table.partitions {
+            let partition_id = make_node_id(
+                source_path,
+                identity_scope,
+                PowerBiNodeKind::Partition,
+                &format!("{}.{}", table.name, partition.name),
+            );
+            nodes.push(PowerBiNode {
+                id: partition_id.clone(),
+                name: partition.name.clone(),
+                kind: PowerBiNodeKind::Partition,
+                file_path: file_path.to_owned(),
+                source_path: source_path.to_owned(),
+                content_hash: content_hash.to_owned(),
+                ingested_at: now,
+            });
+            edges.push(PowerBiEdge {
+                from_id: table_id.clone(),
+                to_id: partition_id,
                 edge_type: PowerBiEdgeType::Contains,
                 source_path: source_path.to_owned(),
             });
