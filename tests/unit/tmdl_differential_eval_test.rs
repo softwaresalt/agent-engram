@@ -248,16 +248,33 @@ fn s_ptm_21_block_relationship_endpoints_captured() {
 fn s_ptm_21_relationship_qualifiers_dropped() {
     let model = parse(fixture_relationships());
 
-    // `SalesToDate` is declared `isActive: false`, yet nothing in the parsed
-    // relationship distinguishes it from the active `SalesToProduct`: both are
-    // reduced to endpoints only.
+    // `SalesToDate` is declared `isActive: false`, `crossFilteringBehavior:
+    // bothDirections`, and `joinOnDateBehavior: datePartOnly`, but
+    // `TmdlRelationship` carries only endpoints, so every qualifier is dropped.
+    // Pin the loss: none of the distinctive qualifier tokens survive anywhere in
+    // the parsed model. If the parser were ever extended to capture a qualifier,
+    // its value would appear here and this test would fail, forcing the finding
+    // to be re-derived.
+    let dump = format!("{model:#?}");
+    assert!(
+        !dump.contains("bothDirections"),
+        "crossFilteringBehavior value must be dropped, found: {dump}"
+    );
+    assert!(
+        !dump.contains("datePartOnly"),
+        "joinOnDateBehavior value must be dropped, found: {dump}"
+    );
+    assert!(
+        !dump.contains("false"),
+        "isActive:false must be dropped — no active/inactive flag is represented"
+    );
+
+    // Consequently the inactive relationship is indistinguishable from the
+    // active one in every represented field except its declared name.
     let inactive = &model.relationships[0];
     let active = &model.relationships[1];
-
-    // Endpoints survive; qualifiers are unrepresentable and therefore lost.
     assert_eq!(inactive.from_table, active.from_table);
-    // No field exists to carry `isActive`/`crossFilteringBehavior`/
-    // `joinOnDateBehavior`; the drop is total and silent.
+    assert_ne!(inactive.name, active.name);
 }
 
 /// S-PTM-22: the complex-table core is captured — columns with `dataType:`, a
@@ -461,79 +478,79 @@ fn s_ptm_28_calc_column_miss_reaches_indexed_entity() {
 
 // ── Finding anchor: aggregate delta summary ──────────────────────────────────
 
-/// S-PTM-29: emit the per-construct correctness delta and assert the aggregate
-/// gate result. This is the machine-checked anchor for the recorded finding: if
-/// the parser's fidelity changes, the counts change and this test forces the
-/// finding to be re-derived.
-#[test]
-fn s_ptm_29_differential_summary_and_gate() {
-    // (fixture, construct, verdict, failure_mode, grammar_would_fix)
-    let rows = [
-        ("S-PTM-20", "model.tmdl metadata + refs", "PASS", "-", "n/a"),
-        ("S-PTM-21", "relationship endpoints", "PASS", "-", "n/a"),
-        (
-            "S-PTM-21",
-            "relationship qualifiers",
-            "MISS",
-            "dropped",
-            "no (model-richness)",
-        ),
-        ("S-PTM-22", "complex table core", "PASS", "-", "n/a"),
-        (
-            "S-PTM-23",
-            "hierarchy/level block",
-            "MISS",
-            "dropped",
-            "no (model-richness)",
-        ),
-        (
-            "S-PTM-24",
-            "calculated column",
-            "MISS",
-            "mis-scoped",
-            "incremental fix",
-        ),
-        (
-            "S-PTM-25",
-            "colon-in-DAX measure",
-            "MISS",
-            "truncated",
-            "incremental fix",
-        ),
-        (
-            "S-PTM-26",
-            "calculationGroup",
-            "MISS",
-            "dropped",
-            "no (model-richness)",
-        ),
-        (
-            "S-PTM-27",
-            "RLS role",
-            "MISS",
-            "dropped",
-            "no (model-richness)",
-        ),
+/// Re-derive the differential gate counts from live `parse_tmdl_document`
+/// output. Returns `(passes, misses, model_richness_misses, heuristic_misses)`.
+/// Because every verdict is computed from parser output, a fidelity change moves
+/// these counts and fails the anchor test below.
+fn differential_gate_counts() -> (usize, usize, usize, usize) {
+    let model_tmdl = parse(fixture_model_tmdl());
+    let rels = parse(fixture_relationships());
+    let complex = parse(fixture_complex_table());
+    let complex_table = &complex.tables[0];
+    let calc_col = parse(fixture_calc_column());
+    let colon = parse(fixture_colon_in_dax());
+    let calc_group = parse(fixture_calc_group());
+    let role = parse(fixture_role());
+
+    // PASS verdicts (true == the construct is faithfully captured).
+    let pass = [
+        model_tmdl.model_name.as_deref() == Some("My Model") && model_tmdl.refs.len() == 5,
+        rels.relationships.len() == 2 && rels.relationships[0].to_table == "Date",
+        complex_table.columns.len() == 1
+            && complex_table.measures.len() == 1
+            && complex_table.measures[0].expression.is_some()
+            && complex_table.partitions.len() == 1,
     ];
 
-    eprintln!("\nTMDL safe-parser differential-evaluation delta (066.008-T):");
-    eprintln!("| Fixture | Construct | Verdict | Failure mode | Grammar fixes? |");
-    eprintln!("|---|---|---|---|---|");
-    for (fixture, construct, verdict, mode, grammar) in rows {
-        eprintln!("| {fixture} | {construct} | {verdict} | {mode} | {grammar} |");
-    }
+    // MISS verdicts (true == the loss is still present in parser output),
+    // grouped by class. `model` == model-richness gap a grammar would not close
+    // without extending the model types; `heur` == incrementally-fixable
+    // heuristic parse bug.
+    let model_misses = [
+        !format!("{rels:#?}").contains("bothDirections"),
+        complex_table
+            .columns
+            .iter()
+            .all(|c| c.name != "Year" && c.name != "Month")
+            && !complex_table
+                .annotations
+                .iter()
+                .any(|a| a.name == "HierAnno"),
+        calc_group.tables[0].measures.is_empty(),
+        role.tables.len() == 1 && role.tables[0].name == "Sales",
+    ];
+    let heur_misses = [
+        calc_col.tables[0].columns[0].name.contains('='),
+        colon.tables[0].measures[0].expression.is_none(),
+    ];
 
-    let passes = rows.iter().filter(|r| r.2 == "PASS").count();
-    let misses = rows.iter().filter(|r| r.2 == "MISS").count();
-    let model_richness = rows.iter().filter(|r| r.4.starts_with("no")).count();
-    let heuristic_bugs = rows.iter().filter(|r| r.4 == "incremental fix").count();
+    let passes = pass.iter().filter(|&&v| v).count();
+    let model_richness = model_misses.iter().filter(|&&v| v).count();
+    let heuristic = heur_misses.iter().filter(|&&v| v).count();
+    (
+        passes,
+        model_richness + heuristic,
+        model_richness,
+        heuristic,
+    )
+}
+
+/// S-PTM-29: assert the aggregate gate result. Every count is re-derived from
+/// live `parse_tmdl_document` output (see [`differential_gate_counts`]), so this
+/// is a genuine machine-checked anchor: if the parser's fidelity changes, the
+/// counts change and this test forces the finding to be re-derived. The full
+/// per-construct delta table lives in this module's docs and in
+/// `docs/decisions/2026-07-04-tmdl-eval-gate-finding.md`.
+#[test]
+fn s_ptm_29_differential_summary_and_gate() {
+    let (passes, misses, model_richness, heuristic_bugs) = differential_gate_counts();
 
     // Core structural constructs the safe parser handles faithfully.
     assert_eq!(
         passes, 3,
         "expected three faithfully-captured core constructs"
     );
-    // Every recorded miss.
+    // Every recorded miss is still present.
     assert_eq!(misses, 6, "expected six recorded misses");
     // Gate rationale: the misses are overwhelmingly model-richness gaps a
     // grammar does NOT close on its own, plus a small, incrementally-fixable
@@ -549,7 +566,8 @@ fn s_ptm_29_differential_summary_and_gate() {
     );
 
     eprintln!(
-        "\nGate: {passes} PASS / {misses} MISS ({model_richness} model-richness, \
-         {heuristic_bugs} incrementally-fixable heuristic bugs) → recommend DECLINE."
+        "\nTMDL differential gate (066.008-T): {passes} PASS / {misses} MISS \
+         ({model_richness} model-richness, {heuristic_bugs} incrementally-fixable \
+         heuristic) → recommend DECLINE."
     );
 }
