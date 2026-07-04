@@ -15,6 +15,53 @@ tags:
   - "parsing"
 ---
 
+## 2026-07-04 Correction — the "unsafe/constitution" blocker was a mischaracterization
+
+> **This addendum supersedes Finding #3 and Recommendation #2 below.** It was
+> added after the same unsafe-myth correction was applied to the TMDL
+> tree-sitter path. The spike's **conclusion (defer) still stands** — but for the
+> correct reason (no consumer for symbolic DAX yet), **not** because tree-sitter
+> is safety-blocked.
+>
+> Finding #3 ("the grammar-backed path inherits the same `unsafe` constraint …
+> incompatible with both gates without an approved exception") and
+> Recommendation #2 ("Do not adopt a tree-sitter DAX grammar before …
+> grammar safety boundary is resolved") are **factually wrong**, verified
+> against the code:
+>
+> - The main crate already consumes **ten C-based tree-sitter grammar crates**
+>   (`Cargo.toml:51-61`) across **eleven safe `set_language(&tree_sitter_x::LANGUAGE.into())`
+>   call sites** in `src/services/parsing/*.rs`, with **zero `unsafe`** — the only
+>   `unsafe` token in `src/`+`crates/` is a comment at `src/cli/output.rs:46`.
+> - `#![forbid(unsafe_code)]` (present in `src/lib.rs:10` and
+>   `crates/powerbi-tmdl-parser/src/lib.rs:9`) forbids `unsafe` in a crate's
+>   **own source, not its dependencies**. A grammar binding crate encapsulates
+>   its generated FFI/`unsafe` (incl. any `scanner.c`) behind a safe `LANGUAGE`
+>   surface. So a DAX grammar would consume the **same safe pattern already
+>   shipped eleven times**; `#![forbid(unsafe_code)]` would still hold.
+>
+> There is therefore **no safety/constitution boundary** blocking a DAX grammar,
+> and no "shared blocked decision" with the TMDL gate.
+>
+> **Stale references (for the record):** the TMDL grammar task cited here as
+> `064.008-T` (blocked) is now `066.008-T` — **unblocked** and re-scoped to a
+> differential-evaluation harness (see
+> `docs/decisions/2026-07-04-tmdl-tree-sitter-safe-consumption-correction-spike.md`
+> and umbrella `069-F`). The `tmp/ILSOS-VehicleServices…` fixture referenced in
+> Finding #2 / References is **not committed**; any future DAX corpus must use
+> inline `r"..."` or committed test fixtures.
+>
+> **Corrected defer rationale (unchanged conclusion):** DAX still has **no
+> in-repo consumer beyond opaque measure text** (`PowerBiMeasure.expression`),
+> and DAX only appears **embedded inside TMDL measure bodies**, never as a
+> standalone file type. Defer because there is no consumer to justify a symbolic
+> DAX parser — not because of safety. When a concrete consumer appears
+> (column-impact analysis, "find DAX references to this column", DAX lint), reopen
+> with that consumer as the success metric; prefer a **safe hand-written DAX
+> tokenizer** first, and only weigh a tree-sitter DAX grammar on the same
+> sourcing/scanner/ABI/ROI axes as `066.008-T` — all of which are engineering
+> cost, none of which are safety. Stash entry `F7E89921` remains **parked**.
+
 ## Goal
 
 **Question.** Should agent-engram add a Rust-native tree-sitter parser for Data Analysis Expressions (DAX), and if so, what shape should it take?
