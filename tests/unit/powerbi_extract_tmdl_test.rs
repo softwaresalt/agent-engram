@@ -248,3 +248,38 @@ table FactVehicleRegistrations
         "captured body must not include the fence delimiters"
     );
 }
+
+/// S-PTM-11: Data source blocks expose richer connection properties
+/// (`kind`/`provider`/`connectionString`/`server`/`database`) on
+/// `PowerBiDataSource`.
+#[test]
+fn extract_tmdl_semantic_model_parses_data_source_properties() {
+    let model = extract_tmdl_semantic_model(
+        "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+",
+        "models/Sales.SemanticModel/definition/dataSources.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    assert_eq!(model.data_sources.len(), 1);
+    let ds = &model.data_sources[0];
+    assert_eq!(ds.name, "SqlWarehouse");
+    assert_eq!(ds.kind.as_deref(), Some("sql"));
+    assert_eq!(ds.provider.as_deref(), Some("System.Data.SqlClient"));
+    assert_eq!(
+        ds.connection_string.as_deref(),
+        Some("Data Source=myserver;Initial Catalog=EDW")
+    );
+    assert_eq!(ds.server.as_deref(), Some("myserver"));
+    assert_eq!(ds.database.as_deref(), Some("EDW"));
+    assert!(
+        !ds.id.is_empty(),
+        "data source IDs should be generated through the shared semantic model schema"
+    );
+}

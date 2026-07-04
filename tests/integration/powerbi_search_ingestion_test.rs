@@ -835,3 +835,58 @@ table FactVehicleRegistrations
         "partition tmdl should create one Partition graph node"
     );
 }
+
+/// S-PIN-21: A `dataSources.tmdl` file with connection properties creates a
+/// searchable `powerbi_data_source` content record.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_indexes_tmdl_data_sources() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    fs::create_dir_all(&definition).expect("create definition dir");
+
+    fs::write(
+        definition.join("dataSources.tmdl"),
+        "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+",
+    )
+    .expect("write tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-data-sources")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let ds_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_data_source")
+        .collect();
+    assert_eq!(
+        ds_records.len(),
+        1,
+        "dataSources.tmdl should create one powerbi_data_source content record"
+    );
+    assert!(
+        ds_records[0].content.contains("myserver"),
+        "data source record should carry connection context: {}",
+        ds_records[0].content
+    );
+}

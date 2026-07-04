@@ -212,6 +212,26 @@ pub struct PowerBiDataSource {
     /// Data source kind string (e.g. `"sql"`, `"sharepoint"`, `"excel"`).
     #[serde(default)]
     pub source_type: Option<String>,
+
+    /// Data source `kind`/`type` token declared in TMDL (e.g. `"sql"`).
+    #[serde(default)]
+    pub kind: Option<String>,
+
+    /// Underlying provider (e.g. `"System.Data.SqlClient"`).
+    #[serde(default)]
+    pub provider: Option<String>,
+
+    /// Connection string, when declared inline.
+    #[serde(default)]
+    pub connection_string: Option<String>,
+
+    /// Server / address the data source connects to.
+    #[serde(default)]
+    pub server: Option<String>,
+
+    /// Database / catalog the data source targets.
+    #[serde(default)]
+    pub database: Option<String>,
 }
 
 /// Aggregated result from a Power BI indexer run over one content source.

@@ -248,6 +248,11 @@ pub fn extract_semantic_model(json: &Value, model_path: &str) -> Option<PowerBiS
                         id: synthetic_id(&format!("datasource:{id}:{i}")),
                         name: ds_name,
                         source_type,
+                        kind: None,
+                        provider: None,
+                        connection_string: None,
+                        server: None,
+                        database: None,
                     }
                 })
                 .collect()

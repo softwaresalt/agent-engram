@@ -102,6 +102,16 @@ pub struct TmdlExpression {
 pub struct TmdlDataSource {
     /// Data source name.
     pub name: String,
+    /// Data source `kind`/`type` token (e.g. `sql`, `structured`).
+    pub kind: Option<String>,
+    /// Underlying provider (e.g. `System.Data.SqlClient`).
+    pub provider: Option<String>,
+    /// Connection string, when declared inline.
+    pub connection_string: Option<String>,
+    /// Server / address the data source connects to.
+    pub server: Option<String>,
+    /// Database / catalog the data source targets.
+    pub database: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,6 +317,7 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
     if let Some(rest) = trimmed.strip_prefix("dataSource ") {
         state.data_sources.push(TmdlDataSource {
             name: parse_identifier(rest),
+            ..TmdlDataSource::default()
         });
         return true;
     }
@@ -877,5 +888,33 @@ table FactVehicleRegistrations
         // The column that precedes the partition must still parse.
         assert_eq!(table.columns.len(), 1);
         assert_eq!(table.columns[0].name, "Amount");
+    }
+
+    #[test]
+    fn parse_data_source_properties() {
+        let Some(model) = parse_tmdl_document(
+            "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+",
+        ) else {
+            panic!("fixture should parse");
+        };
+
+        assert_eq!(model.data_sources.len(), 1);
+        let ds = &model.data_sources[0];
+        assert_eq!(ds.name, "SqlWarehouse");
+        assert_eq!(ds.kind.as_deref(), Some("sql"));
+        assert_eq!(ds.provider.as_deref(), Some("System.Data.SqlClient"));
+        assert_eq!(
+            ds.connection_string.as_deref(),
+            Some("Data Source=myserver;Initial Catalog=EDW")
+        );
+        assert_eq!(ds.server.as_deref(), Some("myserver"));
+        assert_eq!(ds.database.as_deref(), Some("EDW"));
     }
 }

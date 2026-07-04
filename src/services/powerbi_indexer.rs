@@ -1258,4 +1258,41 @@ table Sales
             "expected a pbi_contains edge from the table to its partition node"
         );
     }
+
+    /// S-PBI-07: `extract_model_summaries_from_model` emits a `powerbi_data_source`
+    /// summary record carrying the captured connection properties.
+    #[test]
+    fn extract_model_summaries_emits_data_source_record() {
+        let tmdl = "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/dataSources.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+        let ds_summaries: Vec<_> = summaries
+            .iter()
+            .filter(|(kind, _, _, _)| kind == "powerbi_data_source")
+            .collect();
+        assert_eq!(
+            ds_summaries.len(),
+            1,
+            "expected exactly one powerbi_data_source summary; got {}: {ds_summaries:?}",
+            ds_summaries.len()
+        );
+        let (_, name, _, content) = ds_summaries[0];
+        assert_eq!(name, "SqlWarehouse");
+        assert!(
+            content.contains("sql") && content.contains("myserver"),
+            "data source summary should carry connection context: {content}"
+        );
+    }
 }

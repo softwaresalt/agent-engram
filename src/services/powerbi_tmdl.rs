@@ -156,6 +156,11 @@ fn build_data_source(data_source: TmdlDataSource, model_id: &str) -> PowerBiData
         id: synthetic_id(&format!("datasource:{model_id}:{}", data_source.name)),
         name: data_source.name,
         source_type: None,
+        kind: None,
+        provider: None,
+        connection_string: None,
+        server: None,
+        database: None,
     }
 }
 
