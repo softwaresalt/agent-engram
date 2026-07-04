@@ -24,7 +24,7 @@
 //! | S-PTM-22 | complex table core (columns+dataType, multiline DAX measure, partition + fenced M, scoped annotations/lineageTag) | PASS | — | n/a |
 //! | S-PTM-23 | nested member block `hierarchy`/`level` | MISS | dropped (cleanly, no corruption) | NO — model-richness gap (no `hierarchies` field) |
 //! | S-PTM-24 | calculated column (`column X = <DAX>`) | PASS | fixed in 070-S: name split on `=`, DAX captured into `TmdlColumn.expression` | n/a |
-//! | S-PTM-25 | measure DAX body containing a `:` (e.g. `FORMAT(..,"HH:mm:ss")`) | MISS | truncated (whole body dropped) | YES — but incrementally fixable (refine property heuristic) |
+//! | S-PTM-25 | measure DAX body containing a `:` (e.g. `FORMAT(..,"HH:mm:ss")`) | PASS | fixed in 070-S: `looks_like_tmdl_property` requires a property-shaped `key:` | n/a |
 //! | S-PTM-26 | `calculationGroup`/`calculationItem` | MISS | dropped | NO — model-richness gap (no calc-group type) |
 //! | S-PTM-27 | RLS `role`/`tablePermission` | MISS | dropped | NO — model-richness gap (no role type) |
 //!
@@ -43,6 +43,12 @@
 //! mis-parse that is hard to fix incrementally." Recommendation: **DECLINE** —
 //! the safe parser is sufficient; a tree-sitter grammar is not ROI-positive.
 //! See `docs/decisions/2026-07-04-tmdl-eval-gate-finding.md`.
+//!
+//! **Update (070-S):** the two heuristic parse bugs (S-PTM-24 calculated-column
+//! mis-scope, S-PTM-25 colon-in-DAX truncation) were subsequently fixed in the
+//! safe parser, as the finding proposed. Those rows now read PASS and the
+//! aggregate anchor asserts `heuristic_bugs == 0`; the four remaining misses are
+//! all model-richness gaps, so the DECLINE recommendation stands.
 
 use engram::services::powerbi_tmdl::extract_tmdl_semantic_model;
 use powerbi_tmdl_parser::{TmdlModel, parse_tmdl_document};
@@ -394,24 +400,25 @@ fn s_ptm_24_calculated_column_expression_captured() {
     assert!(table.measures.is_empty());
 }
 
-/// S-PTM-25: a measure whose DAX body contains a colon is TRUNCATED — the whole
-/// body is dropped because a `:` trips the "looks like a TMDL property" guard.
+/// S-PTM-25: a measure whose DAX body contains a colon is captured in full
+/// (fixed in 070-S / 070.002-T).
 ///
-/// Failure mode: **truncated**. A grammar would not be fooled by a colon inside
-/// a string literal, but this is also incrementally fixable by tightening the
-/// property heuristic. A sibling single-line measure is unaffected.
+/// `looks_like_tmdl_property` now requires a property-shaped `key:` (a bare
+/// identifier before the colon), so a colon inside a string literal or call —
+/// `FORMAT ( NOW (), "HH:mm:ss" )` — no longer ends the measure-body capture. A
+/// sibling single-line measure is unaffected.
 #[test]
-fn s_ptm_25_colon_in_dax_measure_truncated() {
+fn s_ptm_25_colon_in_dax_measure_captured() {
     let model = parse(fixture_colon_in_dax());
     let table = &model.tables[0];
 
     assert_eq!(table.measures.len(), 2);
 
-    // The `FORMAT ( NOW (), "HH:mm:ss" )` body is dropped: expression is None.
+    // The `FORMAT ( NOW (), "HH:mm:ss" )` body is captured despite the colon.
     assert_eq!(table.measures[0].name, "Clock");
     assert_eq!(
-        table.measures[0].expression, None,
-        "colon in the DAX body truncates the whole measure expression"
+        table.measures[0].expression.as_deref(),
+        Some("FORMAT ( NOW (), \"HH:mm:ss\" )")
     );
 
     // A single-line measure with no colon is captured normally.
@@ -509,6 +516,10 @@ fn differential_gate_counts() -> (usize, usize, usize, usize) {
         calc_col.tables[0].columns[0].name == "Margin"
             && calc_col.tables[0].columns[0].expression.as_deref()
                 == Some("[SalesAmount] - [TotalCost]"),
+        // S-PTM-25 (fixed in 070.002-T): the colon-bearing DAX body is captured
+        // in full rather than truncated at the colon.
+        colon.tables[0].measures[0].expression.as_deref()
+            == Some("FORMAT ( NOW (), \"HH:mm:ss\" )"),
     ];
 
     // MISS verdicts (true == the loss is still present in parser output),
@@ -558,24 +569,24 @@ fn differential_gate_counts() -> (usize, usize, usize, usize) {
 fn s_ptm_29_differential_summary_and_gate() {
     let (passes, misses, model_richness, heuristic_bugs) = differential_gate_counts();
 
-    // Constructs the safe parser handles faithfully, including the S-PTM-24
-    // calculated-column capture fixed in 070.001-T.
+    // Constructs the safe parser handles faithfully, including the two heuristic
+    // bugs (S-PTM-24 calc-column, S-PTM-25 colon-in-DAX) fixed in 070-S.
     assert_eq!(
-        passes, 4,
-        "expected four faithfully-captured constructs after the calc-column fix"
+        passes, 5,
+        "expected five faithfully-captured constructs after both 070-S fixes"
     );
-    // Recorded misses still present; one heuristic bug remains (S-PTM-25).
-    assert_eq!(misses, 5, "expected five recorded misses");
-    // Gate rationale: the remaining misses are overwhelmingly model-richness gaps
-    // a grammar does NOT close on its own, plus a single incrementally-fixable
-    // heuristic bug (S-PTM-25, fixed next in 070.002-T).
+    // Only the model-richness misses remain.
+    assert_eq!(misses, 4, "expected four recorded misses");
+    // Gate rationale: the remaining misses are all model-richness gaps a grammar
+    // does NOT close on its own; the two incrementally-fixable heuristic bugs are
+    // now fixed, so no heuristic parse bug remains.
     assert_eq!(
         model_richness, 4,
-        "most misses are model-richness gaps independent of parse technology"
+        "the remaining misses are all model-richness gaps independent of parse technology"
     );
     assert_eq!(
-        heuristic_bugs, 1,
-        "one heuristic parse bug remains (S-PTM-25 colon-in-DAX)"
+        heuristic_bugs, 0,
+        "both heuristic parse bugs (S-PTM-24, S-PTM-25) are fixed"
     );
 
     eprintln!(

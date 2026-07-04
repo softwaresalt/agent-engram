@@ -1174,8 +1174,19 @@ fn strip_trailing_meta_clause(value: &str) -> &str {
         .map_or(value, |(expression, _)| expression)
 }
 
+/// Return `true` when a line looks like a TMDL `key: value` property rather than
+/// free-form expression content. The heuristic requires a property-shaped key:
+/// the text before the first `:` must be a non-empty bare TMDL identifier (ASCII
+/// letters, digits, or `_`) with no spaces, parentheses, or quotes. This keeps
+/// real properties (`dataType:`, `lineageTag:`, `formatString: "HH:mm:ss"`)
+/// recognized while a DAX body line whose only colon sits inside a call or string
+/// literal — e.g. `FORMAT ( NOW (), "HH:mm:ss" )` — is not misclassified as a
+/// property (which would otherwise truncate the measure/column body capture).
 fn looks_like_tmdl_property(trimmed: &str) -> bool {
-    trimmed.contains(':')
+    let Some((key, _)) = trimmed.split_once(':') else {
+        return false;
+    };
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_declaration_line(trimmed: &str) -> bool {
