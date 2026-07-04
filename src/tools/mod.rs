@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::errors::{EngramError, SystemError};
-use crate::models::metrics::UsageEvent;
+use crate::models::metrics::{CoarseParams, UsageEvent};
 use crate::server::state::SharedState;
 use crate::services::{metrics, policy};
 
@@ -48,7 +48,21 @@ fn should_record_metrics(method: &str) -> bool {
             | "get_token_savings_report"
             | "get_evaluation_report"
             | "get_mutable_script_retry_metrics"
+            | "set_workspace"
+            | "sync_workspace"
+            | "index_workspace"
     ) || cfg!(feature = "git-graph") && method == "query_changes"
+}
+
+/// Build a coarse, privacy-preserving `params_summary` from request params.
+///
+/// Extracts only a stable hash + length of any `query` string and a caller
+/// `limit` — never the raw query text. Returns `None` when neither is present.
+fn coarse_params(params: Option<&Value>) -> Option<CoarseParams> {
+    let params = params?;
+    let query = params.get("query").and_then(Value::as_str);
+    let limit = params.get("limit").and_then(Value::as_u64);
+    CoarseParams::from_parts(query, limit)
 }
 
 fn value_array_len(value: Option<&Value>) -> u32 {
@@ -210,6 +224,12 @@ pub async fn dispatch(
     // Extract agent identity from JSON-RPC _meta before dispatch.
     let agent_role = policy::extract_agent_role(&params);
 
+    // Extract the caller-supplied correlation id (envelope policy: sanitize, do
+    // not fail the call) and a coarse params summary before `params` is consumed
+    // by the dispatch match below. Both feed every usage record for this call.
+    let correlation_id = policy::extract_correlation_id(&params);
+    let params_summary = coarse_params(params.as_ref());
+
     // Take an atomic snapshot of workspace binding + config at dispatch entry.
     //
     // Both locks are acquired and released inside `snapshot_dispatch_context`,
@@ -248,6 +268,11 @@ pub async fn dispatch(
                 prompt_tokens_attributed: None,
                 completion_tokens_attributed: None,
                 cached_tokens_attributed: None,
+                schema_version: crate::models::metrics::USAGE_SCHEMA_VERSION,
+                correlation_id: correlation_id.clone(),
+                latency_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                workspace: snap.workspace.path.clone(),
+                params_summary: params_summary.clone(),
             });
             return Err(EngramError::from(policy_err));
         }
@@ -336,6 +361,7 @@ pub async fn dispatch(
                 Err(_) => (0_u64, 0_u64, 0_u32, 0_u32, 0_u32, BTreeMap::new()),
             };
             let outcome = if result.is_ok() { "success" } else { "error" };
+            let workspace = snap.workspace.path;
             metrics::record(UsageEvent {
                 tool_name: method.to_owned(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
@@ -355,6 +381,11 @@ pub async fn dispatch(
                 prompt_tokens_attributed: None,
                 completion_tokens_attributed: None,
                 cached_tokens_attributed: None,
+                schema_version: crate::models::metrics::USAGE_SCHEMA_VERSION,
+                correlation_id: correlation_id.clone(),
+                latency_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                workspace,
+                params_summary: params_summary.clone(),
             });
         }
     }
@@ -364,8 +395,38 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::extract_counts;
+    use super::{coarse_params, extract_counts, should_record_metrics};
     use serde_json::json;
+
+    #[test]
+    fn should_record_metrics_covers_lifecycle_indexing_tools() {
+        // 067.002-T: coverage gap closed for these three lifecycle/indexing tools.
+        assert!(should_record_metrics("set_workspace"));
+        assert!(should_record_metrics("sync_workspace"));
+        assert!(should_record_metrics("index_workspace"));
+        // Existing coverage retained.
+        assert!(should_record_metrics("unified_search"));
+        // Non-emitting method stays excluded.
+        assert!(!should_record_metrics("flush_state"));
+    }
+
+    #[test]
+    fn coarse_params_hashes_query_and_reads_limit_without_raw_text() {
+        let params = json!({ "query": "secret text", "limit": 7 });
+        let summary = coarse_params(Some(&params)).expect("summary present");
+        assert_eq!(summary.query_len, Some(11));
+        assert_eq!(summary.limit, Some(7));
+        assert!(summary.query_hash.is_some());
+        // Raw query text must never appear in the serialized summary.
+        let serialized = serde_json::to_string(&summary).expect("serialize");
+        assert!(!serialized.contains("secret text"));
+    }
+
+    #[test]
+    fn coarse_params_none_when_no_query_or_limit() {
+        assert!(coarse_params(Some(&json!({ "other": 1 }))).is_none());
+        assert!(coarse_params(None).is_none());
+    }
 
     #[test]
     fn query_memory_preserves_legacy_symbol_count_compatibility() {

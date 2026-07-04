@@ -121,5 +121,6 @@ fn test_event(tool: &str, response_bytes: u64) -> UsageEvent {
         prompt_tokens_attributed: None,
         completion_tokens_attributed: None,
         cached_tokens_attributed: None,
+        ..Default::default()
     }
 }

@@ -37,6 +37,7 @@ mod tests {
             format: None,
             quiet: false,
             timeout: None,
+            correlation_id: None,
         }
     }
 

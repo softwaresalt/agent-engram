@@ -65,6 +65,7 @@ fn arb_usage_event() -> impl Strategy<Value = UsageEvent> {
                 prompt_tokens_attributed: None,
                 completion_tokens_attributed: None,
                 cached_tokens_attributed: None,
+                ..Default::default()
             },
         )
 }

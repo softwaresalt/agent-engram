@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use tokio::io::AsyncWriteExt;
@@ -55,33 +55,181 @@ fn remember_recent_event(event: UsageEvent) {
     recent_events.push_back(event);
 }
 
-async fn append_event_line(
+/// Resolve the target `usage.jsonl` path for a workspace/branch, honoring an
+/// optional `usage_path_override` from configuration.
+///
+/// The override may be absolute or relative; relative overrides are joined to
+/// `workspace_path`. In both cases the resolved path is lexically normalized and
+/// rejected when it escapes the workspace root. Containment is a lexical
+/// `starts_with` check that does not resolve symlinks: it defends against `..`
+/// and absolute-path escapes, but a symlink placed inside the workspace could
+/// still redirect writes outside the root.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::WriteFailed`] when the override escapes the workspace
+/// root.
+pub fn resolve_usage_path(
     workspace_path: &Path,
     branch: &str,
+    config: &MetricsConfig,
+) -> Result<PathBuf, EngramError> {
+    let Some(raw_override) = config.usage_path_override.as_deref() else {
+        return Ok(usage_path(workspace_path, branch));
+    };
+    let raw_override = raw_override.trim();
+    if raw_override.is_empty() {
+        return Ok(usage_path(workspace_path, branch));
+    }
+
+    let over = Path::new(raw_override);
+    let candidate = if over.is_absolute() {
+        over.to_path_buf()
+    } else {
+        workspace_path.join(over)
+    };
+
+    let normalized = normalize_lexical(&candidate);
+    let root = normalize_lexical(workspace_path);
+    if !normalized.starts_with(&root) {
+        return Err(EngramError::Metrics(MetricsError::WriteFailed {
+            reason: format!(
+                "usage_path_override '{raw_override}' escapes the workspace root '{}'",
+                workspace_path.display()
+            ),
+        }));
+    }
+
+    Ok(normalized)
+}
+
+/// Lexically normalize a path by resolving `.`/`..` components without touching
+/// the filesystem. A `..` that cannot pop is retained so an escaping relative
+/// path fails a subsequent containment check rather than silently resolving.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Compute the rotated filename for generation `n` (1-based). For a base of
+/// `usage.jsonl`, generation `1` is `usage.1.jsonl`.
+fn rotated_path(base: &Path, n: usize) -> PathBuf {
+    let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("usage");
+    let name = match base.extension().and_then(|s| s.to_str()) {
+        Some(ext) => format!("{stem}.{n}.{ext}"),
+        None => format!("{stem}.{n}"),
+    };
+    base.with_file_name(name)
+}
+
+async fn path_exists(path: &Path) -> bool {
+    tokio::fs::try_exists(path).await.unwrap_or(false)
+}
+
+/// Rotate the usage file: `usage.jsonl` → `usage.1.jsonl`, existing
+/// `usage.N.jsonl` → `usage.(N+1).jsonl`, dropping generations beyond
+/// `max_rotated_files`. When `max_rotated_files` is `0`, no history is retained
+/// and the current file is removed.
+async fn rotate_usage_file(base: &Path, max_rotated_files: usize) -> Result<(), EngramError> {
+    if max_rotated_files == 0 {
+        if path_exists(base).await {
+            tokio::fs::remove_file(base).await.map_err(|error| {
+                EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!("failed to drop usage file during rotation: {error}"),
+                })
+            })?;
+        }
+        return Ok(());
+    }
+
+    // Drop the oldest retained generation plus any stale generations left at or
+    // above the current retention (e.g. produced by a previously higher
+    // `max_rotated_files`), so history stays bounded even after the cap is
+    // lowered.
+    let mut stale = max_rotated_files;
+    while path_exists(&rotated_path(base, stale)).await {
+        tokio::fs::remove_file(rotated_path(base, stale))
+            .await
+            .map_err(|error| {
+                EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!("failed to prune rotated usage file: {error}"),
+                })
+            })?;
+        stale += 1;
+    }
+
+    // Shift remaining generations up by one (highest first to avoid clobber).
+    for n in (1..max_rotated_files).rev() {
+        let from = rotated_path(base, n);
+        if path_exists(&from).await {
+            let to = rotated_path(base, n + 1);
+            tokio::fs::rename(&from, &to).await.map_err(|error| {
+                EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!("failed to shift rotated usage file: {error}"),
+                })
+            })?;
+        }
+    }
+
+    // Move the live file to generation 1.
+    if path_exists(base).await {
+        tokio::fs::rename(base, rotated_path(base, 1))
+            .await
+            .map_err(|error| {
+                EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!("failed to rotate live usage file: {error}"),
+                })
+            })?;
+    }
+
+    Ok(())
+}
+
+/// Append one serialized [`UsageEvent`] line to `usage_path`, rotating first
+/// when the existing file has reached `max_file_bytes` (`0` disables size-cap
+/// rotation). The parent directory is created as needed. The serialized line and
+/// its terminator are written in a single append to preserve JSONL line
+/// integrity.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::WriteFailed`] on directory, rotation, serialization,
+/// or write failure.
+pub async fn append_usage_line(
+    usage_path: &Path,
     event: &UsageEvent,
+    max_file_bytes: u64,
+    max_rotated_files: usize,
 ) -> Result<(), EngramError> {
-    let directory = metrics_dir(workspace_path, branch);
-    tokio::fs::create_dir_all(&directory)
-        .await
-        .map_err(|error| {
+    if let Some(parent) = usage_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
             EngramError::Metrics(MetricsError::WriteFailed {
                 reason: format!(
                     "failed to create metrics directory '{}': {error}",
-                    directory.display()
+                    parent.display()
                 ),
             })
         })?;
+    }
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(usage_path(workspace_path, branch))
-        .await
-        .map_err(|error| {
-            EngramError::Metrics(MetricsError::WriteFailed {
-                reason: format!("failed to open usage.jsonl for append: {error}"),
-            })
-        })?;
+    if max_file_bytes > 0 {
+        if let Ok(meta) = tokio::fs::metadata(usage_path).await {
+            if meta.len() >= max_file_bytes {
+                rotate_usage_file(usage_path, max_rotated_files).await?;
+            }
+        }
+    }
 
     let line = serde_json::to_string(event).map_err(|error| {
         EngramError::Metrics(MetricsError::WriteFailed {
@@ -89,25 +237,60 @@ async fn append_event_line(
         })
     })?;
 
-    file.write_all(line.as_bytes()).await.map_err(|error| {
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(usage_path)
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!("failed to open usage.jsonl for append: {error}"),
+            })
+        })?;
+
+    let mut buffer = line.into_bytes();
+    buffer.push(b'\n');
+    file.write_all(&buffer).await.map_err(|error| {
         EngramError::Metrics(MetricsError::WriteFailed {
             reason: format!("failed to write usage event: {error}"),
         })
     })?;
-    file.write_all(b"\n").await.map_err(|error| {
+
+    // Drain the tokio file's pending write to the OS before returning.
+    // `write_all` alone does not guarantee the bytes have landed; a subsequent
+    // rotation `rename` could otherwise run before the write completes and drop
+    // a just-recorded line.
+    file.flush().await.map_err(|error| {
         EngramError::Metrics(MetricsError::WriteFailed {
-            reason: format!("failed to terminate usage event line: {error}"),
+            reason: format!("failed to flush usage event: {error}"),
         })
     })?;
 
     Ok(())
 }
 
-#[tracing::instrument(skip(receiver))]
+async fn append_event_line(
+    workspace_path: &Path,
+    branch: &str,
+    event: &UsageEvent,
+    config: &MetricsConfig,
+) -> Result<(), EngramError> {
+    let target = resolve_usage_path(workspace_path, branch, config)?;
+    append_usage_line(
+        &target,
+        event,
+        config.max_file_bytes,
+        config.max_rotated_files,
+    )
+    .await
+}
+
+#[tracing::instrument(skip(receiver, config))]
 async fn writer_loop(
     workspace_path: PathBuf,
     initial_branch: String,
     mut receiver: mpsc::Receiver<MetricsMessage>,
+    config: MetricsConfig,
 ) {
     let mut active_branch = initial_branch;
 
@@ -120,7 +303,9 @@ async fn writer_loop(
                 } else {
                     event.branch.as_str()
                 };
-                if let Err(error) = append_event_line(&workspace_path, branch, &event).await {
+                if let Err(error) =
+                    append_event_line(&workspace_path, branch, &event, &config).await
+                {
                     tracing::warn!(error = %error, branch, "failed to persist metrics event");
                 }
             }
@@ -139,7 +324,7 @@ async fn writer_loop(
                                 event.branch.as_str()
                             };
                             if let Err(error) =
-                                append_event_line(&workspace_path, branch, &event).await
+                                append_event_line(&workspace_path, branch, &event, &config).await
                             {
                                 tracing::warn!(error = %error, branch, "failed to persist drained metrics event");
                             }
@@ -171,7 +356,10 @@ pub async fn initialize(
         return Ok(());
     }
 
-    let (sender, receiver) = mpsc::channel(config.buffer_size);
+    // Clamp to >= 1: `tokio::sync::mpsc::channel` panics on a zero buffer.
+    // `validate_config` also rejects `buffer_size == 0`, so this is
+    // defense-in-depth against a config that bypasses validation.
+    let (sender, receiver) = mpsc::channel(config.buffer_size.max(1));
     {
         let mut sender_guard = sender_slot()
             .lock()
@@ -183,6 +371,7 @@ pub async fn initialize(
         workspace_path.to_path_buf(),
         branch.to_owned(),
         receiver,
+        config.clone(),
     ));
     {
         let mut handle_guard = handle_slot()
