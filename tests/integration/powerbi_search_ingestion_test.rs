@@ -890,3 +890,65 @@ dataSource SqlWarehouse
         ds_records[0].content
     );
 }
+
+/// S-PIN-22: A `model.tmdl` carrying `ref`/`annotation`/`lineageTag`/`culture`
+/// metadata folds that context into the searchable `powerbi_semantic_model`
+/// content record instead of dropping it.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_folds_model_metadata_into_summary() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    fs::create_dir_all(&definition).expect("create definition dir");
+
+    fs::write(
+        definition.join("model.tmdl"),
+        "
+model Sales Model
+  culture: en-US
+  defaultMode: import
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+",
+    )
+    .expect("write tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-model-metadata")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let model_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_semantic_model")
+        .collect();
+    assert_eq!(
+        model_records.len(),
+        1,
+        "model.tmdl should create one powerbi_semantic_model content record"
+    );
+    assert!(
+        model_records[0].content.contains("en-US"),
+        "semantic model record should carry culture metadata: {}",
+        model_records[0].content
+    );
+    assert!(
+        model_records[0].content.contains("model-guid-1"),
+        "semantic model record should carry lineage tag metadata: {}",
+        model_records[0].content
+    );
+}

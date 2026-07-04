@@ -88,6 +88,26 @@ pub struct PowerBiSemanticModel {
     /// Data sources referenced by this model.
     #[serde(default)]
     pub data_sources: Vec<PowerBiDataSource>,
+
+    /// `ref` statements declared at model scope (e.g. `ref table Sales`).
+    #[serde(default)]
+    pub refs: Vec<PowerBiRef>,
+
+    /// Annotations attached at model scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Model culture metadata (e.g. `"en-US"`).
+    #[serde(default)]
+    pub culture: Option<String>,
+
+    /// Model default storage mode (e.g. `"import"`, `"directQuery"`).
+    #[serde(default)]
+    pub default_mode: Option<String>,
+
+    /// Model lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
 }
 
 /// A table within a Power BI semantic model.
@@ -110,6 +130,14 @@ pub struct PowerBiTable {
     /// Partitions defined on this table.
     #[serde(default)]
     pub partitions: Vec<PowerBiPartition>,
+
+    /// Annotations attached at table scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Table lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
 }
 
 /// A partition within a Power BI table.
@@ -151,6 +179,14 @@ pub struct PowerBiColumn {
     /// Data type string (e.g. `"string"`, `"int64"`, `"dateTime"`).
     #[serde(default)]
     pub data_type: Option<String>,
+
+    /// Annotations attached at column scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Column lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
 }
 
 /// A DAX measure within a Power BI table.
@@ -165,6 +201,38 @@ pub struct PowerBiMeasure {
     /// DAX expression (may be truncated for indexing purposes).
     #[serde(default)]
     pub expression: Option<String>,
+
+    /// Annotations attached at measure scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Measure lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
+}
+
+/// An annotation (`annotation <Name> = <Value>`) attached to a Power BI object.
+///
+/// Annotations are surfaced as metadata on their parent entity (model, table,
+/// column, or measure) rather than as standalone graph nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiAnnotation {
+    /// Annotation name.
+    pub name: String,
+
+    /// Annotation value, when present.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+/// A `ref` statement recorded at Power BI semantic-model scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiRef {
+    /// Referenced object kind (e.g. `"table"`, `"cultureInfo"`).
+    pub kind: String,
+
+    /// Referenced object name.
+    pub name: String,
 }
 
 /// A top-level expression or parameter query within a Power BI semantic model.

@@ -21,6 +21,16 @@ pub struct TmdlModel {
     pub expressions: Vec<TmdlExpression>,
     /// Data sources declared in the document.
     pub data_sources: Vec<TmdlDataSource>,
+    /// `ref` statements declared at model scope (e.g. `ref table Sales`).
+    pub refs: Vec<TmdlRef>,
+    /// Annotations attached at model scope.
+    pub annotations: Vec<TmdlAnnotation>,
+    /// Model `culture:` metadata (e.g. `en-US`).
+    pub culture: Option<String>,
+    /// Model `defaultMode:` metadata (e.g. `import`, `directQuery`).
+    pub default_mode: Option<String>,
+    /// Model `lineageTag:` metadata.
+    pub lineage_tag: Option<String>,
 }
 
 /// A parsed TMDL table.
@@ -34,6 +44,10 @@ pub struct TmdlTable {
     pub measures: Vec<TmdlMeasure>,
     /// Partitions declared on the table.
     pub partitions: Vec<TmdlPartition>,
+    /// Annotations attached at table scope.
+    pub annotations: Vec<TmdlAnnotation>,
+    /// Table `lineageTag:` metadata.
+    pub lineage_tag: Option<String>,
 }
 
 /// A parsed TMDL partition.
@@ -62,6 +76,10 @@ pub struct TmdlColumn {
     pub name: String,
     /// Optional `dataType:` property.
     pub data_type: Option<String>,
+    /// Annotations attached at column scope.
+    pub annotations: Vec<TmdlAnnotation>,
+    /// Column `lineageTag:` metadata.
+    pub lineage_tag: Option<String>,
 }
 
 /// A parsed TMDL measure.
@@ -71,6 +89,10 @@ pub struct TmdlMeasure {
     pub name: String,
     /// Measure expression text.
     pub expression: Option<String>,
+    /// Annotations attached at measure scope.
+    pub annotations: Vec<TmdlAnnotation>,
+    /// Measure `lineageTag:` metadata.
+    pub lineage_tag: Option<String>,
 }
 
 /// A parsed TMDL relationship.
@@ -114,6 +136,27 @@ pub struct TmdlDataSource {
     pub database: Option<String>,
 }
 
+/// A parsed TMDL `annotation <Name> = <Value>` statement.
+///
+/// Annotations are attached to the nearest enclosing object (model, table,
+/// column, or measure) rather than surfaced as standalone graph nodes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TmdlAnnotation {
+    /// Annotation name.
+    pub name: String,
+    /// Annotation value following `=`, when present.
+    pub value: Option<String>,
+}
+
+/// A parsed TMDL `ref <kind> <name>` statement, recorded at model scope.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TmdlRef {
+    /// Referenced object kind (e.g. `table`, `cultureInfo`, `relationship`).
+    pub kind: String,
+    /// Referenced object name.
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TmdlMemberKind {
     Column(usize),
@@ -127,6 +170,13 @@ struct TmdlTableDraft {
     measures: Vec<TmdlMeasure>,
     partitions: Vec<TmdlPartition>,
     last_member: Option<TmdlMemberKind>,
+    /// Indent width of the current open column/measure member, used to scope
+    /// `annotation`/`lineageTag:` lines to the member versus the table.
+    member_indent: Option<usize>,
+    /// Annotations attached at table scope.
+    annotations: Vec<TmdlAnnotation>,
+    /// Table `lineageTag:` metadata.
+    lineage_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +228,11 @@ struct ParseState {
     pending_measure_body: Option<PendingMeasureBody>,
     pending_partition: Option<PendingPartition>,
     pending_data_source: Option<PendingDataSource>,
+    model_refs: Vec<TmdlRef>,
+    model_annotations: Vec<TmdlAnnotation>,
+    model_culture: Option<String>,
+    model_default_mode: Option<String>,
+    model_lineage_tag: Option<String>,
 }
 
 /// Parse a TMDL document into semantic-model objects.
@@ -279,6 +334,9 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
             measures: Vec::new(),
             partitions: Vec::new(),
             last_member: None,
+            member_indent: None,
+            annotations: Vec::new(),
+            lineage_tag: None,
         });
         return true;
     }
@@ -370,6 +428,11 @@ fn finalize_parse_state(mut state: ParseState) -> Option<TmdlModel> {
         relationships: state.relationships,
         expressions: state.expressions,
         data_sources: state.data_sources,
+        refs: state.model_refs,
+        annotations: state.model_annotations,
+        culture: state.model_culture,
+        default_mode: state.model_default_mode,
+        lineage_tag: state.model_lineage_tag,
     })
 }
 
@@ -381,6 +444,7 @@ fn start_column(current_table: Option<&mut TmdlTableDraft>, rest: &str) -> bool 
     table.columns.push(TmdlColumn {
         name: parse_identifier(rest),
         data_type: None,
+        ..TmdlColumn::default()
     });
     table.last_member = Some(TmdlMemberKind::Column(table.columns.len() - 1));
     true
@@ -397,7 +461,11 @@ fn start_measure(
     };
 
     let (name, expression) = parse_measure_declaration(rest);
-    table.measures.push(TmdlMeasure { name, expression });
+    table.measures.push(TmdlMeasure {
+        name,
+        expression,
+        ..TmdlMeasure::default()
+    });
     let measure_index = table.measures.len() - 1;
     table.last_member = Some(TmdlMemberKind::Measure(measure_index));
     if table.measures[measure_index].expression.is_none() {
@@ -757,6 +825,8 @@ fn flush_table(tables: &mut Vec<TmdlTable>, current_table: &mut Option<TmdlTable
         columns: table.columns,
         measures: table.measures,
         partitions: table.partitions,
+        annotations: table.annotations,
+        lineage_tag: table.lineage_tag,
     });
 }
 
@@ -1003,5 +1073,74 @@ dataSource SqlWarehouse
         );
         assert_eq!(ds.server.as_deref(), Some("myserver"));
         assert_eq!(ds.database.as_deref(), Some("EDW"));
+    }
+
+    #[test]
+    fn parse_refs_annotations_and_lineage() {
+        let Some(model) = parse_tmdl_document(
+            "
+model Sales Model
+  culture: en-US
+  defaultMode: import
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+  ref cultureInfo en-US
+
+table Sales
+  lineageTag: table-guid-1
+  annotation IsHidden = false
+
+  column Amount
+    dataType: double
+    lineageTag: column-guid-1
+    annotation Format = \"#,0\"
+
+  measure 'Total' = SUM(Sales[Amount])
+    lineageTag: measure-guid-1
+    annotation DisplayFolder = KPIs
+",
+        ) else {
+            panic!("fixture should parse");
+        };
+
+        // Model-level metadata.
+        assert_eq!(model.culture.as_deref(), Some("en-US"));
+        assert_eq!(model.default_mode.as_deref(), Some("import"));
+        assert_eq!(model.lineage_tag.as_deref(), Some("model-guid-1"));
+        assert_eq!(model.annotations.len(), 1);
+        assert_eq!(model.annotations[0].name, "PBI_QueryOrder");
+        assert_eq!(model.annotations[0].value.as_deref(), Some("[\"Sales\"]"));
+
+        // Model-level refs.
+        assert_eq!(model.refs.len(), 2);
+        assert_eq!(model.refs[0].kind, "table");
+        assert_eq!(model.refs[0].name, "Sales");
+        assert_eq!(model.refs[1].kind, "cultureInfo");
+        assert_eq!(model.refs[1].name, "en-US");
+
+        // Table-scoped metadata.
+        assert_eq!(model.tables.len(), 1);
+        let table = &model.tables[0];
+        assert_eq!(table.lineage_tag.as_deref(), Some("table-guid-1"));
+        assert_eq!(table.annotations.len(), 1);
+        assert_eq!(table.annotations[0].name, "IsHidden");
+        assert_eq!(table.annotations[0].value.as_deref(), Some("false"));
+
+        // Column-scoped metadata.
+        assert_eq!(table.columns.len(), 1);
+        let column = &table.columns[0];
+        assert_eq!(column.data_type.as_deref(), Some("double"));
+        assert_eq!(column.lineage_tag.as_deref(), Some("column-guid-1"));
+        assert_eq!(column.annotations.len(), 1);
+        assert_eq!(column.annotations[0].name, "Format");
+
+        // Measure-scoped metadata.
+        assert_eq!(table.measures.len(), 1);
+        let measure = &table.measures[0];
+        assert_eq!(measure.lineage_tag.as_deref(), Some("measure-guid-1"));
+        assert_eq!(measure.annotations.len(), 1);
+        assert_eq!(measure.annotations[0].name, "DisplayFolder");
     }
 }

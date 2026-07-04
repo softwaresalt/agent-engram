@@ -283,3 +283,67 @@ dataSource SqlWarehouse
         "data source IDs should be generated through the shared semantic model schema"
     );
 }
+
+/// S-PTM-12: `ref` statements, `annotation` blocks (model/table/column/measure
+/// scope), and `lineageTag`/`culture`/`defaultMode` metadata are surfaced on the
+/// extracted semantic model rather than silently dropped.
+#[test]
+fn extract_tmdl_semantic_model_parses_refs_annotations_and_lineage() {
+    let model = extract_tmdl_semantic_model(
+        "
+model Sales Model
+  culture: en-US
+  defaultMode: import
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+  ref cultureInfo en-US
+
+table Sales
+  lineageTag: table-guid-1
+  annotation IsHidden = false
+
+  column Amount
+    dataType: double
+    lineageTag: column-guid-1
+    annotation Format = \"#,0\"
+
+  measure 'Total' = SUM(Sales[Amount])
+    lineageTag: measure-guid-1
+    annotation DisplayFolder = KPIs
+",
+        "models/Sales.SemanticModel/definition/model.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    // Model-level metadata.
+    assert_eq!(model.culture.as_deref(), Some("en-US"));
+    assert_eq!(model.default_mode.as_deref(), Some("import"));
+    assert_eq!(model.lineage_tag.as_deref(), Some("model-guid-1"));
+    assert_eq!(model.annotations.len(), 1);
+    assert_eq!(model.annotations[0].name, "PBI_QueryOrder");
+
+    // Model-level refs.
+    assert_eq!(model.refs.len(), 2);
+    assert_eq!(model.refs[0].kind, "table");
+    assert_eq!(model.refs[0].name, "Sales");
+    assert_eq!(model.refs[1].kind, "cultureInfo");
+    assert_eq!(model.refs[1].name, "en-US");
+
+    // Table / column / measure scoped metadata.
+    let table = &model.tables[0];
+    assert_eq!(table.lineage_tag.as_deref(), Some("table-guid-1"));
+    assert_eq!(table.annotations.len(), 1);
+    assert_eq!(table.annotations[0].name, "IsHidden");
+
+    let column = &table.columns[0];
+    assert_eq!(column.lineage_tag.as_deref(), Some("column-guid-1"));
+    assert_eq!(column.annotations.len(), 1);
+    assert_eq!(column.annotations[0].name, "Format");
+
+    let measure = &table.measures[0];
+    assert_eq!(measure.lineage_tag.as_deref(), Some("measure-guid-1"));
+    assert_eq!(measure.annotations.len(), 1);
+    assert_eq!(measure.annotations[0].name, "DisplayFolder");
+}

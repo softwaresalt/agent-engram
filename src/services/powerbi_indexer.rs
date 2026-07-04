@@ -1332,4 +1332,81 @@ dataSource SqlWarehouse
             "data source summary should carry connection context: {content}"
         );
     }
+
+    /// S-PBI-08: `extract_model_summaries_from_model` folds `ref`/`annotation`/
+    /// `lineageTag`/`culture` metadata into the existing parent summaries rather
+    /// than emitting standalone records.
+    #[test]
+    fn extract_model_summaries_fold_refs_annotations_and_lineage() {
+        let tmdl = "
+model Sales Model
+  culture: en-US
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+
+table Sales
+  lineageTag: table-guid-1
+
+  measure 'Total' = SUM(Sales[Amount])
+    lineageTag: measure-guid-1
+    annotation DisplayFolder = KPIs
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/model.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+
+        // No standalone annotation/ref/lineage record kinds are introduced.
+        assert!(
+            summaries.iter().all(|(kind, _, _, _)| kind != "powerbi_annotation"
+                && kind != "powerbi_ref"
+                && kind != "powerbi_lineage_tag"),
+            "task 003 metadata must fold into parent summaries, not new record kinds"
+        );
+
+        let model_summary = summaries
+            .iter()
+            .find(|(kind, _, _, _)| kind == "powerbi_semantic_model")
+            .expect("a semantic model summary should exist");
+        assert!(
+            model_summary.3.contains("en-US"),
+            "model summary should carry culture: {}",
+            model_summary.3
+        );
+        assert!(
+            model_summary.3.contains("model-guid-1"),
+            "model summary should carry lineage tag: {}",
+            model_summary.3
+        );
+
+        let table_summary = summaries
+            .iter()
+            .find(|(kind, name, _, _)| kind == "powerbi_table" && name == "Sales")
+            .expect("a table summary should exist");
+        assert!(
+            table_summary.3.contains("table-guid-1"),
+            "table summary should carry lineage tag: {}",
+            table_summary.3
+        );
+
+        let measure_summary = summaries
+            .iter()
+            .find(|(kind, name, _, _)| kind == "powerbi_measure" && name == "Total")
+            .expect("a measure summary should exist");
+        assert!(
+            measure_summary.3.contains("measure-guid-1"),
+            "measure summary should carry lineage tag: {}",
+            measure_summary.3
+        );
+        assert!(
+            measure_summary.3.contains("DisplayFolder"),
+            "measure summary should carry annotation context: {}",
+            measure_summary.3
+        );
+    }
 }

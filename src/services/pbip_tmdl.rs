@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use crate::models::powerbi::{
-    PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure, PowerBiRelationship,
-    PowerBiSemanticModel, PowerBiTable,
+    PowerBiAnnotation, PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure,
+    PowerBiRef, PowerBiRelationship, PowerBiSemanticModel, PowerBiTable,
 };
 use crate::services::powerbi_tmdl::extract_tmdl_semantic_model;
 
@@ -119,6 +119,11 @@ pub fn merge_semantic_model_fragments<'a>(
     let mut expression_order: Vec<String> = Vec::new();
     let mut data_sources: HashMap<String, PowerBiDataSource> = HashMap::new();
     let mut data_source_order: Vec<String> = Vec::new();
+    let mut refs: Vec<PowerBiRef> = Vec::new();
+    let mut annotations: Vec<PowerBiAnnotation> = Vec::new();
+    let mut culture: Option<String> = None;
+    let mut default_mode: Option<String> = None;
+    let mut lineage_tag: Option<String> = None;
 
     for (file_path, content) in fragments {
         let Some(fragment) = extract_tmdl_semantic_model(content, file_path) else {
@@ -164,6 +169,18 @@ pub fn merge_semantic_model_fragments<'a>(
                 data_source,
             );
         }
+
+        refs.extend(fragment.refs);
+        annotations.extend(fragment.annotations);
+        if culture.is_none() {
+            culture = fragment.culture;
+        }
+        if default_mode.is_none() {
+            default_mode = fragment.default_mode;
+        }
+        if lineage_tag.is_none() {
+            lineage_tag = fragment.lineage_tag;
+        }
     }
 
     let id = merged_id?;
@@ -180,6 +197,11 @@ pub fn merge_semantic_model_fragments<'a>(
         relationships: drain_ordered(relationships, &relationship_order),
         expressions: drain_ordered(expressions, &expression_order),
         data_sources: drain_ordered(data_sources, &data_source_order),
+        refs,
+        annotations,
+        culture,
+        default_mode,
+        lineage_tag,
     })
 }
 
