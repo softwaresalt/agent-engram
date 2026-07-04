@@ -23,7 +23,7 @@
 //! | S-PTM-21 | relationship qualifiers (`isActive`/`crossFilteringBehavior`/`joinOnDateBehavior`) | MISS | dropped | NO — model-richness gap (no field to hold them) |
 //! | S-PTM-22 | complex table core (columns+dataType, multiline DAX measure, partition + fenced M, scoped annotations/lineageTag) | PASS | — | n/a |
 //! | S-PTM-23 | nested member block `hierarchy`/`level` | MISS | dropped (cleanly, no corruption) | NO — model-richness gap (no `hierarchies` field) |
-//! | S-PTM-24 | calculated column (`column X = <DAX>`) | MISS | mis-scoped (name absorbs `= <DAX>`; expression lost) | PARTLY — but incrementally fixable (split name on `=`) |
+//! | S-PTM-24 | calculated column (`column X = <DAX>`) | PASS | fixed in 070-S: name split on `=`, DAX captured into `TmdlColumn.expression` | n/a |
 //! | S-PTM-25 | measure DAX body containing a `:` (e.g. `FORMAT(..,"HH:mm:ss")`) | MISS | truncated (whole body dropped) | YES — but incrementally fixable (refine property heuristic) |
 //! | S-PTM-26 | `calculationGroup`/`calculationItem` | MISS | dropped | NO — model-richness gap (no calc-group type) |
 //! | S-PTM-27 | RLS `role`/`tablePermission` | MISS | dropped | NO — model-richness gap (no role type) |
@@ -358,32 +358,39 @@ fn s_ptm_23_hierarchy_member_block_dropped() {
     // No representation of the hierarchy exists anywhere on the model.
 }
 
-/// S-PTM-24: a calculated column (`column X = <DAX>`) is MIS-SCOPED — the DAX is
-/// absorbed into the column name and the expression is lost.
+/// S-PTM-24: a calculated column (`column X = <DAX>`) captures its name and DAX
+/// expression correctly (fixed in 070-S / 070.001-T).
 ///
-/// Failure mode: **mis-scoped**. This is the one case where the heuristic
-/// mis-parses in-model structure; it is incrementally fixable (split the name on
-/// `=`, add an optional column expression) without a grammar.
+/// Both the single-line (`column Margin = <DAX>`) and multi-line
+/// (`column FullName =` with the DAX on the following deeper-indented line) forms
+/// split the name on the first `=` and capture the DAX into
+/// `TmdlColumn.expression`, mirroring how measures capture their expression.
+/// `dataType:` still attaches to the column.
 #[test]
-fn s_ptm_24_calculated_column_mis_scoped() {
+fn s_ptm_24_calculated_column_expression_captured() {
     let model = parse(fixture_calc_column());
     let table = &model.tables[0];
 
     assert_eq!(table.columns.len(), 2);
 
-    // Single-line calc column: the whole `= <DAX>` is swallowed by the name.
+    // Single-line calc column: the name is split on `=`; the DAX is captured.
+    assert_eq!(table.columns[0].name, "Margin");
     assert_eq!(
-        table.columns[0].name,
-        "Margin = [SalesAmount] - [TotalCost]"
+        table.columns[0].expression.as_deref(),
+        Some("[SalesAmount] - [TotalCost]")
     );
     assert_eq!(table.columns[0].data_type.as_deref(), Some("decimal"));
 
-    // Multi-line calc column: name keeps the trailing `=`; the DAX body line is
-    // dropped entirely (no column expression field exists to hold it).
-    assert_eq!(table.columns[1].name, "FullName =");
+    // Multi-line calc column: the trailing `=` opens a body capture that gathers
+    // the deeper-indented DAX line into the expression.
+    assert_eq!(table.columns[1].name, "FullName");
+    assert_eq!(
+        table.columns[1].expression.as_deref(),
+        Some("[FirstName] & \" \" & [LastName]")
+    );
     assert_eq!(table.columns[1].data_type.as_deref(), Some("string"));
 
-    // No measure or expression captured the calculated logic.
+    // The calculated logic is captured as a column expression, not as a measure.
     assert!(table.measures.is_empty());
 }
 
@@ -454,12 +461,12 @@ fn s_ptm_27_rls_role_dropped() {
 
 // ── Ingestion impact: one downstream assertion (per plan) ────────────────────
 
-/// S-PTM-28: the calculated-column mis-scope propagates through the ingestion
-/// adapter (`extract_tmdl_semantic_model`) into the indexed `PowerBiColumn`
-/// name, demonstrating the parse miss affects search/ingestion, not just the raw
-/// parse. The corrupted name also feeds the column's synthetic id.
+/// S-PTM-28: the calculated-column fix propagates through the ingestion adapter
+/// (`extract_tmdl_semantic_model`) so the indexed `PowerBiColumn` name is the
+/// clean column name (`Margin`), not the whole DAX expression. The adapter flows
+/// the parser `name` through unchanged, so no adapter change was required.
 #[test]
-fn s_ptm_28_calc_column_miss_reaches_indexed_entity() {
+fn s_ptm_28_calc_column_name_reaches_indexed_entity() {
     let model = extract_tmdl_semantic_model(
         fixture_calc_column(),
         "models/Sales.SemanticModel/definition/tables/Sales.tmdl",
@@ -467,12 +474,9 @@ fn s_ptm_28_calc_column_miss_reaches_indexed_entity() {
     .expect("fixture should produce a semantic model");
 
     let table = &model.tables[0];
-    // The indexed column name is the whole DAX expression, not "Margin".
-    assert_eq!(
-        table.columns[0].name,
-        "Margin = [SalesAmount] - [TotalCost]"
-    );
-    // A non-empty synthetic id is still generated (over the corrupted name).
+    // The indexed column name is the clean "Margin", not the DAX expression.
+    assert_eq!(table.columns[0].name, "Margin");
+    // A non-empty synthetic id is still generated over the clean name.
     assert!(!table.columns[0].id.is_empty());
 }
 
@@ -500,6 +504,11 @@ fn differential_gate_counts() -> (usize, usize, usize, usize) {
             && complex_table.measures.len() == 1
             && complex_table.measures[0].expression.is_some()
             && complex_table.partitions.len() == 1,
+        // S-PTM-24 (fixed in 070.001-T): the calculated column splits its name on
+        // `=` and captures the DAX into the column expression.
+        calc_col.tables[0].columns[0].name == "Margin"
+            && calc_col.tables[0].columns[0].expression.as_deref()
+                == Some("[SalesAmount] - [TotalCost]"),
     ];
 
     // MISS verdicts (true == the loss is still present in parser output),
@@ -519,6 +528,10 @@ fn differential_gate_counts() -> (usize, usize, usize, usize) {
         calc_group.tables[0].measures.is_empty(),
         role.tables.len() == 1 && role.tables[0].name == "Sales",
     ];
+    // Heuristic parse bugs (S-PTM-24 calc-column, S-PTM-25 colon-in-DAX). Each
+    // entry is `true` only while its bug is still present, so `heuristic` counts
+    // the remaining unfixed bugs. Retained as live regression guards: a
+    // regression re-inflates the count and re-fails the anchor test below.
     let heur_misses = [
         calc_col.tables[0].columns[0].name.contains('='),
         colon.tables[0].measures[0].expression.is_none(),
@@ -545,24 +558,24 @@ fn differential_gate_counts() -> (usize, usize, usize, usize) {
 fn s_ptm_29_differential_summary_and_gate() {
     let (passes, misses, model_richness, heuristic_bugs) = differential_gate_counts();
 
-    // Core structural constructs the safe parser handles faithfully.
+    // Constructs the safe parser handles faithfully, including the S-PTM-24
+    // calculated-column capture fixed in 070.001-T.
     assert_eq!(
-        passes, 3,
-        "expected three faithfully-captured core constructs"
+        passes, 4,
+        "expected four faithfully-captured constructs after the calc-column fix"
     );
-    // Every recorded miss is still present.
-    assert_eq!(misses, 6, "expected six recorded misses");
-    // Gate rationale: the misses are overwhelmingly model-richness gaps a
-    // grammar does NOT close on its own, plus a small, incrementally-fixable
-    // heuristic tail. None is a material mis-parse that is hard to fix
-    // incrementally → recommendation is DECLINE.
+    // Recorded misses still present; one heuristic bug remains (S-PTM-25).
+    assert_eq!(misses, 5, "expected five recorded misses");
+    // Gate rationale: the remaining misses are overwhelmingly model-richness gaps
+    // a grammar does NOT close on its own, plus a single incrementally-fixable
+    // heuristic bug (S-PTM-25, fixed next in 070.002-T).
     assert_eq!(
         model_richness, 4,
         "most misses are model-richness gaps independent of parse technology"
     );
     assert_eq!(
-        heuristic_bugs, 2,
-        "only two misses are heuristic parse bugs, both incrementally fixable"
+        heuristic_bugs, 1,
+        "one heuristic parse bug remains (S-PTM-25 colon-in-DAX)"
     );
 
     eprintln!(

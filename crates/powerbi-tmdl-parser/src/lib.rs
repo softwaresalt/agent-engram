@@ -80,6 +80,11 @@ pub struct TmdlColumn {
     pub name: String,
     /// Optional `dataType:` property.
     pub data_type: Option<String>,
+    /// Optional calculated-column DAX expression captured from
+    /// `column <name> = <DAX>` (both the single-line and next-line body forms).
+    /// `None` for a plain, non-calculated column. Additive and back-compatible:
+    /// `Default` resolves to `None`.
+    pub expression: Option<String>,
     /// Annotations attached at column scope.
     pub annotations: Vec<TmdlAnnotation>,
     /// Column `lineageTag:` metadata.
@@ -189,9 +194,9 @@ struct TmdlTableDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingMeasureBody {
+struct PendingMemberBody {
     indent: usize,
-    measure_index: usize,
+    member: TmdlMemberKind,
     lines: Vec<String>,
 }
 
@@ -234,7 +239,7 @@ struct ParseState {
     expressions: Vec<TmdlExpression>,
     pending_relationship: Option<PendingRelationship>,
     data_sources: Vec<TmdlDataSource>,
-    pending_measure_body: Option<PendingMeasureBody>,
+    pending_member_body: Option<PendingMemberBody>,
     pending_partition: Option<PendingPartition>,
     pending_data_source: Option<PendingDataSource>,
     model_refs: Vec<TmdlRef>,
@@ -289,8 +294,8 @@ fn leading_indent_width(line: &str) -> usize {
 }
 
 fn prepare_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) {
-    if should_finish_measure_capture(state.pending_measure_body.as_ref(), indent, trimmed) {
-        finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
+    if should_finish_member_capture(state.pending_member_body.as_ref(), indent, trimmed) {
+        finish_pending_member_body(&mut state.current_table, &mut state.pending_member_body);
     }
 
     if should_finish_relationship(state.pending_relationship.as_ref(), indent) {
@@ -318,9 +323,9 @@ fn prepare_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) {
 }
 
 fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -> bool {
-    capture_measure_body_line(
+    capture_member_body_line(
         &mut state.current_table,
-        &mut state.pending_measure_body,
+        &mut state.pending_member_body,
         indent,
         trimmed,
     ) || capture_relationship_property(&mut state.pending_relationship, indent, trimmed)
@@ -341,7 +346,7 @@ fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -
 /// Open a new `table` declaration, finishing any pending measure/relationship/
 /// partition blocks and flushing the previous table draft first.
 fn start_table(state: &mut ParseState, rest: &str) {
-    finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
+    finish_pending_member_body(&mut state.current_table, &mut state.pending_member_body);
     finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
     finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
     flush_table(&mut state.tables, &mut state.current_table);
@@ -370,20 +375,25 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
     }
 
     if let Some(rest) = trimmed.strip_prefix("column ") {
-        return start_column(state.current_table.as_mut(), indent, rest);
+        return start_column(
+            state.current_table.as_mut(),
+            &mut state.pending_member_body,
+            indent,
+            rest,
+        );
     }
 
     if let Some(rest) = trimmed.strip_prefix("measure ") {
         return start_measure(
             state.current_table.as_mut(),
-            &mut state.pending_measure_body,
+            &mut state.pending_member_body,
             indent,
             rest,
         );
     }
 
     if let Some(rest) = trimmed.strip_prefix("relationship ") {
-        finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
+        finish_pending_member_body(&mut state.current_table, &mut state.pending_member_body);
         finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
         if let Some(relationship) = parse_inline_relationship(rest) {
             state.relationships.push(relationship);
@@ -492,7 +502,7 @@ fn enter_unmodeled_member_block(state: &mut ParseState, indent: usize) {
 }
 
 fn finalize_parse_state(mut state: ParseState) -> Option<TmdlModel> {
-    finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
+    finish_pending_member_body(&mut state.current_table, &mut state.pending_member_body);
     finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
     finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
     flush_table(&mut state.tables, &mut state.current_table);
@@ -520,24 +530,44 @@ fn finalize_parse_state(mut state: ParseState) -> Option<TmdlModel> {
     })
 }
 
-fn start_column(current_table: Option<&mut TmdlTableDraft>, indent: usize, rest: &str) -> bool {
+fn start_column(
+    current_table: Option<&mut TmdlTableDraft>,
+    pending_member_body: &mut Option<PendingMemberBody>,
+    indent: usize,
+    rest: &str,
+) -> bool {
     let Some(table) = current_table else {
         return false;
     };
 
+    let (name, expression) = parse_column_declaration(rest);
+    // A plain column (`column Amount`) carries no `=`, so it must not open an
+    // expression-body capture; its `dataType:`/`lineageTag:` properties attach to
+    // the column normally. Only `column X = ...` (calculated) can capture a body.
+    let has_assignment = rest.contains('=');
     table.columns.push(TmdlColumn {
-        name: parse_identifier(rest),
-        data_type: None,
+        name,
+        expression,
         ..TmdlColumn::default()
     });
-    table.last_member = Some(TmdlMemberKind::Column(table.columns.len() - 1));
+    let column_index = table.columns.len() - 1;
+    table.last_member = Some(TmdlMemberKind::Column(column_index));
     table.member_indent = Some(indent);
+    // Multi-line calculated column (`column X =` with the DAX on the following
+    // deeper-indented line(s)): open a member-body capture, mirroring measures.
+    if has_assignment && table.columns[column_index].expression.is_none() {
+        *pending_member_body = Some(PendingMemberBody {
+            indent,
+            member: TmdlMemberKind::Column(column_index),
+            lines: Vec::new(),
+        });
+    }
     true
 }
 
 fn start_measure(
     current_table: Option<&mut TmdlTableDraft>,
-    pending_measure_body: &mut Option<PendingMeasureBody>,
+    pending_member_body: &mut Option<PendingMemberBody>,
     indent: usize,
     rest: &str,
 ) -> bool {
@@ -555,9 +585,9 @@ fn start_measure(
     table.last_member = Some(TmdlMemberKind::Measure(measure_index));
     table.member_indent = Some(indent);
     if table.measures[measure_index].expression.is_none() {
-        *pending_measure_body = Some(PendingMeasureBody {
+        *pending_member_body = Some(PendingMemberBody {
             indent,
-            measure_index,
+            member: TmdlMemberKind::Measure(measure_index),
             lines: Vec::new(),
         });
     }
@@ -624,8 +654,8 @@ fn set_measure_expression(current_table: Option<&mut TmdlTableDraft>, rest: &str
     true
 }
 
-fn should_finish_measure_capture(
-    pending: Option<&PendingMeasureBody>,
+fn should_finish_member_capture(
+    pending: Option<&PendingMemberBody>,
     indent: usize,
     trimmed: &str,
 ) -> bool {
@@ -642,9 +672,9 @@ fn should_finish_partition(pending: Option<&PendingPartition>, indent: usize) ->
     pending.is_some_and(|partition| indent <= partition.indent)
 }
 
-fn capture_measure_body_line(
+fn capture_member_body_line(
     current_table: &mut Option<TmdlTableDraft>,
-    pending: &mut Option<PendingMeasureBody>,
+    pending: &mut Option<PendingMemberBody>,
     indent: usize,
     trimmed: &str,
 ) -> bool {
@@ -660,7 +690,7 @@ fn capture_measure_body_line(
         return false;
     };
 
-    table.last_member = Some(TmdlMemberKind::Measure(body.measure_index));
+    table.last_member = Some(body.member.clone());
     body.lines.push(trimmed.to_string());
     true
 }
@@ -859,9 +889,9 @@ fn capture_data_source_property(
     true
 }
 
-fn finish_pending_measure_body(
+fn finish_pending_member_body(
     current_table: &mut Option<TmdlTableDraft>,
-    pending: &mut Option<PendingMeasureBody>,
+    pending: &mut Option<PendingMemberBody>,
 ) {
     let Some(body) = pending.take() else {
         return;
@@ -876,7 +906,10 @@ fn finish_pending_measure_body(
     }
 
     let expression = body.lines.join("\n");
-    table.measures[body.measure_index].expression = Some(expression);
+    match body.member {
+        TmdlMemberKind::Column(index) => table.columns[index].expression = Some(expression),
+        TmdlMemberKind::Measure(index) => table.measures[index].expression = Some(expression),
+    }
 }
 
 fn finish_pending_relationship(
@@ -918,6 +951,22 @@ fn flush_table(tables: &mut Vec<TmdlTable>, current_table: &mut Option<TmdlTable
 }
 
 fn parse_measure_declaration(rest: &str) -> (String, Option<String>) {
+    let mut parts = rest.splitn(2, '=');
+    let name = parse_identifier(parts.next().unwrap_or_default());
+    let expression = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    (name, expression)
+}
+
+/// Split a `column <name> = <DAX>` declaration into its name and optional inline
+/// calculated-column expression, mirroring [`parse_measure_declaration`]. A plain
+/// column (no `=`) yields `(name, None)`; a trailing `=` with the DAX on the next
+/// line also yields `None` here and the body is captured by the member-body
+/// machinery.
+fn parse_column_declaration(rest: &str) -> (String, Option<String>) {
     let mut parts = rest.splitn(2, '=');
     let name = parse_identifier(parts.next().unwrap_or_default());
     let expression = parts
