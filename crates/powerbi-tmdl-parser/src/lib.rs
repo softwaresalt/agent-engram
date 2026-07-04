@@ -342,7 +342,7 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
     }
 
     if let Some(rest) = trimmed.strip_prefix("column ") {
-        return start_column(state.current_table.as_mut(), rest);
+        return start_column(state.current_table.as_mut(), indent, rest);
     }
 
     if let Some(rest) = trimmed.strip_prefix("measure ") {
@@ -404,6 +404,33 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
         return true;
     }
 
+    if let Some(rest) = trimmed.strip_prefix("ref ") {
+        if let Some(reference) = parse_ref_declaration(rest) {
+            state.model_refs.push(reference);
+        }
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("annotation ") {
+        attach_annotation(state, indent, parse_annotation_declaration(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("lineageTag:") {
+        attach_lineage_tag(state, indent, parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("culture:") {
+        state.model_culture = Some(parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("defaultMode:") {
+        state.model_default_mode = Some(parse_identifier(rest));
+        return true;
+    }
+
     false
 }
 
@@ -436,7 +463,7 @@ fn finalize_parse_state(mut state: ParseState) -> Option<TmdlModel> {
     })
 }
 
-fn start_column(current_table: Option<&mut TmdlTableDraft>, rest: &str) -> bool {
+fn start_column(current_table: Option<&mut TmdlTableDraft>, indent: usize, rest: &str) -> bool {
     let Some(table) = current_table else {
         return false;
     };
@@ -447,6 +474,7 @@ fn start_column(current_table: Option<&mut TmdlTableDraft>, rest: &str) -> bool 
         ..TmdlColumn::default()
     });
     table.last_member = Some(TmdlMemberKind::Column(table.columns.len() - 1));
+    table.member_indent = Some(indent);
     true
 }
 
@@ -468,6 +496,7 @@ fn start_measure(
     });
     let measure_index = table.measures.len() - 1;
     table.last_member = Some(TmdlMemberKind::Measure(measure_index));
+    table.member_indent = Some(indent);
     if table.measures[measure_index].expression.is_none() {
         *pending_measure_body = Some(PendingMeasureBody {
             indent,
@@ -503,6 +532,7 @@ fn start_partition(
     // A partition is not a column/measure member; clear the last member so a
     // stray `dataType:`/`expression:` cannot attach to a prior column/measure.
     table.last_member = None;
+    table.member_indent = None;
     *pending_partition = Some(PendingPartition {
         indent,
         partition_index,
@@ -850,6 +880,130 @@ fn parse_partition_declaration(rest: &str) -> (String, Option<String>) {
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
     (name, source_kind)
+}
+
+/// The object an `annotation`/`lineageTag:` line attaches to, resolved by the
+/// current table draft state and the line indent.
+enum MetadataTarget {
+    Model,
+    Table,
+    Column(usize),
+    Measure(usize),
+}
+
+/// Resolve which object a scope-sensitive metadata line (`annotation` or
+/// `lineageTag:`) attaches to.
+///
+/// When no table is open the target is the model. Inside a table, a line
+/// indented deeper than the current column/measure member attaches to that
+/// member; otherwise it attaches to the table itself.
+fn resolve_metadata_target(
+    current_table: Option<&TmdlTableDraft>,
+    indent: usize,
+) -> MetadataTarget {
+    let Some(table) = current_table else {
+        return MetadataTarget::Model;
+    };
+
+    if let (Some(member), Some(member_indent)) = (table.last_member.as_ref(), table.member_indent) {
+        if indent > member_indent {
+            return match member {
+                TmdlMemberKind::Column(index) => MetadataTarget::Column(*index),
+                TmdlMemberKind::Measure(index) => MetadataTarget::Measure(*index),
+            };
+        }
+    }
+
+    MetadataTarget::Table
+}
+
+/// Attach an annotation to the object resolved for `indent`.
+fn attach_annotation(state: &mut ParseState, indent: usize, annotation: TmdlAnnotation) {
+    match resolve_metadata_target(state.current_table.as_ref(), indent) {
+        MetadataTarget::Model => state.model_annotations.push(annotation),
+        MetadataTarget::Table => {
+            if let Some(table) = state.current_table.as_mut() {
+                table.annotations.push(annotation);
+            }
+        }
+        MetadataTarget::Column(index) => {
+            if let Some(column) = state
+                .current_table
+                .as_mut()
+                .and_then(|table| table.columns.get_mut(index))
+            {
+                column.annotations.push(annotation);
+            }
+        }
+        MetadataTarget::Measure(index) => {
+            if let Some(measure) = state
+                .current_table
+                .as_mut()
+                .and_then(|table| table.measures.get_mut(index))
+            {
+                measure.annotations.push(annotation);
+            }
+        }
+    }
+}
+
+/// Attach a `lineageTag:` value to the object resolved for `indent`.
+fn attach_lineage_tag(state: &mut ParseState, indent: usize, value: String) {
+    match resolve_metadata_target(state.current_table.as_ref(), indent) {
+        MetadataTarget::Model => state.model_lineage_tag = Some(value),
+        MetadataTarget::Table => {
+            if let Some(table) = state.current_table.as_mut() {
+                table.lineage_tag = Some(value);
+            }
+        }
+        MetadataTarget::Column(index) => {
+            if let Some(column) = state
+                .current_table
+                .as_mut()
+                .and_then(|table| table.columns.get_mut(index))
+            {
+                column.lineage_tag = Some(value);
+            }
+        }
+        MetadataTarget::Measure(index) => {
+            if let Some(measure) = state
+                .current_table
+                .as_mut()
+                .and_then(|table| table.measures.get_mut(index))
+            {
+                measure.lineage_tag = Some(value);
+            }
+        }
+    }
+}
+
+/// Parse a `ref <kind> <name>` statement into a [`TmdlRef`].
+///
+/// Returns `None` when the statement lacks a kind or name token.
+fn parse_ref_declaration(rest: &str) -> Option<TmdlRef> {
+    let (kind, name) = rest.trim().split_once(char::is_whitespace)?;
+    let name = parse_identifier(name);
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(TmdlRef {
+        kind: kind.trim().to_string(),
+        name,
+    })
+}
+
+/// Parse an `annotation <Name> = <Value>` statement into a [`TmdlAnnotation`].
+fn parse_annotation_declaration(rest: &str) -> TmdlAnnotation {
+    let mut parts = rest.splitn(2, '=');
+    let name = parse_identifier(parts.next().unwrap_or_default());
+    let value = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    TmdlAnnotation { name, value }
 }
 
 fn parse_expression_declaration(rest: &str) -> TmdlExpression {

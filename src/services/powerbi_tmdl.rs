@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use powerbi_tmdl_parser::{
-    TmdlAnnotation, TmdlDataSource, TmdlExpression, TmdlModel, TmdlRef, TmdlRelationship, TmdlTable,
-    parse_tmdl_document,
+    TmdlAnnotation, TmdlDataSource, TmdlExpression, TmdlModel, TmdlRef, TmdlRelationship,
+    TmdlTable, parse_tmdl_document,
 };
 
 use crate::models::powerbi::{
@@ -106,7 +106,11 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
             id: synthetic_id(&format!("column:{table_id}:{}", column.name)),
             name: column.name,
             data_type: column.data_type,
-            annotations: column.annotations.into_iter().map(build_annotation).collect(),
+            annotations: column
+                .annotations
+                .into_iter()
+                .map(build_annotation)
+                .collect(),
             lineage_tag: column.lineage_tag,
         })
         .collect();
@@ -143,7 +147,11 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
         columns,
         measures,
         partitions,
-        annotations: table.annotations.into_iter().map(build_annotation).collect(),
+        annotations: table
+            .annotations
+            .into_iter()
+            .map(build_annotation)
+            .collect(),
         lineage_tag: table.lineage_tag,
     }
 }

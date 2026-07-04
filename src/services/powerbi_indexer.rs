@@ -208,21 +208,71 @@ fn extract_model_summaries(
     extract_model_summaries_from_model(&model)
 }
 
+/// Build a trailing hint fragment carrying a `lineageTag` and/or annotation
+/// names for a table or measure summary. Returns an empty string when neither is
+/// present so existing summary text is unchanged for models without the metadata.
+fn annotation_lineage_hint(
+    lineage_tag: Option<&str>,
+    annotations: &[crate::models::powerbi::PowerBiAnnotation],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(lineage) = lineage_tag {
+        parts.push(format!("Lineage tag: {lineage}."));
+    }
+    if !annotations.is_empty() {
+        let names: Vec<_> = annotations.iter().map(|a| a.name.as_str()).collect();
+        parts.push(format!("Annotations: {}.", names.join(", ")));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
+}
+
 pub(crate) fn extract_model_summaries_from_model(
     model: &crate::models::powerbi::PowerBiSemanticModel,
 ) -> Vec<(String, String, String, String)> {
     let mut summaries = Vec::new();
+    let mut model_meta_parts: Vec<String> = Vec::new();
+    if let Some(culture) = model.culture.as_deref() {
+        model_meta_parts.push(format!("Culture: {culture}."));
+    }
+    if let Some(default_mode) = model.default_mode.as_deref() {
+        model_meta_parts.push(format!("Default mode: {default_mode}."));
+    }
+    if let Some(lineage) = model.lineage_tag.as_deref() {
+        model_meta_parts.push(format!("Lineage tag: {lineage}."));
+    }
+    if !model.refs.is_empty() {
+        let refs: Vec<String> = model
+            .refs
+            .iter()
+            .map(|reference| format!("{} {}", reference.kind, reference.name))
+            .collect();
+        model_meta_parts.push(format!("Refs: {}.", refs.join(", ")));
+    }
+    if !model.annotations.is_empty() {
+        let names: Vec<_> = model.annotations.iter().map(|a| a.name.as_str()).collect();
+        model_meta_parts.push(format!("Annotations: {}.", names.join(", ")));
+    }
+    let model_meta = if model_meta_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", model_meta_parts.join(" "))
+    };
     summaries.push((
         "powerbi_semantic_model".to_string(),
         model.name.clone(),
         model.path.clone(),
         format!(
-            "Semantic model {}. Tables: {}. Relationships: {}. Expressions: {}. Data sources: {}.",
+            "Semantic model {}. Tables: {}. Relationships: {}. Expressions: {}. Data sources: {}.{}",
             model.name,
             model.tables.len(),
             model.relationships.len(),
             model.expressions.len(),
-            model.data_sources.len()
+            model.data_sources.len(),
+            model_meta
         ),
     ));
 
@@ -244,7 +294,13 @@ pub(crate) fn extract_model_summaries_from_model(
             "powerbi_table".to_string(),
             table.name.clone(),
             model.name.clone(),
-            format!("Table {}{}{}", table.name, col_hint, meas_hint),
+            format!(
+                "Table {}{}{}{}",
+                table.name,
+                col_hint,
+                meas_hint,
+                annotation_lineage_hint(table.lineage_tag.as_deref(), &table.annotations)
+            ),
         ));
 
         // One record per measure.
@@ -261,8 +317,11 @@ pub(crate) fn extract_model_summaries_from_model(
                 measure.name.clone(),
                 format!("{}.{}", model.name, table.name),
                 format!(
-                    "Measure {} in table {}. Expression: {}",
-                    measure.name, table.name, expr_hint
+                    "Measure {} in table {}. Expression: {}{}",
+                    measure.name,
+                    table.name,
+                    expr_hint,
+                    annotation_lineage_hint(measure.lineage_tag.as_deref(), &measure.annotations)
                 ),
             ));
         }
@@ -1363,9 +1422,11 @@ table Sales
 
         // No standalone annotation/ref/lineage record kinds are introduced.
         assert!(
-            summaries.iter().all(|(kind, _, _, _)| kind != "powerbi_annotation"
-                && kind != "powerbi_ref"
-                && kind != "powerbi_lineage_tag"),
+            summaries
+                .iter()
+                .all(|(kind, _, _, _)| kind != "powerbi_annotation"
+                    && kind != "powerbi_ref"
+                    && kind != "powerbi_lineage_tag"),
             "task 003 metadata must fold into parent summaries, not new record kinds"
         );
 
