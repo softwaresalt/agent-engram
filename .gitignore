@@ -26,8 +26,11 @@ Thumbs.db
 .engram-dev-data/
 .engram-dev-data-alt/
 
-# Environment and secrets
+
+# Local environment files (secrets) — never commit. Only .env.example may be tracked.
 .env
+.env.local
+.env.*.local
 .env.*
 *.env
 .copilot/
