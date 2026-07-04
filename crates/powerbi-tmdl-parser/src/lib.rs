@@ -252,9 +252,10 @@ pub fn parse_tmdl_document(source: &str) -> Option<TmdlModel> {
     let mut state = ParseState::default();
 
     for raw_line in source.lines() {
-        // While a fenced partition source body is open, capture lines verbatim
-        // (trimmed of surrounding whitespace) until the closing fence so that M
-        // content is never misinterpreted as TMDL declarations or properties.
+        // While a fenced partition source body is open, capture its lines
+        // (lightly normalized: each line trimmed, blank lines dropped, later
+        // joined with `\n`) until the closing fence so that M content is never
+        // misinterpreted as TMDL declarations or properties.
         if state
             .pending_partition
             .as_ref()
