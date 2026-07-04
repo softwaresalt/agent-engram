@@ -11,6 +11,7 @@ status: pr-open-awaiting-merge-approval
 base: main
 review_artifact: 068.001-R
 plan: docs/exec-plans/2026-07-03-tmdl-extractor-depth-plan.md
+head_commit: 7b99add
 ---
 
 # Ship — 068-S TMDL extractor depth (partitions, datasource props, lineage)
@@ -35,6 +36,8 @@ Additional commits:
 - `143490b` fix(tmdl): P2 review fix — hierarchy/level-nested metadata skip window.
 - `c882f79` chore(backlog): archive 068.001/002/003-T done; 068-S active.
 - `dfd9516` docs(powerbi): correct partition source-body normalization docs (Copilot review).
+- `f9fc811` docs(memory): Ship session memory + hierarchy compound learning.
+- `7b99add` fix(powerbi): stop embedding raw connection strings / partition M bodies in search summaries (Copilot security review) + S-PBI-09/10 regression tests.
 
 068.001-T did NOT need the pre-authorized split — it landed as one red+green pair
 within budget.
@@ -65,22 +68,35 @@ within budget.
    `start_table`/`enter_unmodeled_member_block` helpers to stay under
    clippy::too_many_lines (100). See compound doc
    `docs/compound/tmdl-declaration-keyword-without-handler-misattributes-nested-metadata-2026-07-04.md`.
-2. **Copilot review** (auto, `copilot-pull-request-reviewer`): 2 inline comments,
-   both the same doc-accuracy nit — partition `source` M body docs said "verbatim"
-   but `capture_partition_source_line` trims each line and drops blanks. Fixed the
-   docs (not the behavior — normalization is relied on by tests) in `dfd9516`,
-   replied to both comments, and resolved both threads via GraphQL
-   `resolveReviewThread`. Review-fix cycles used: 1 (P2) + 1 (docs), well under the
-   circuit breakers.
+2. **Copilot review** (auto, `copilot-pull-request-reviewer`) — TWO rounds:
+   - Round 1 (2 inline comments): partition `source` M body docs said "verbatim"
+     but `capture_partition_source_line` trims each line and drops blanks. Fixed
+     the docs (not the behavior — normalization is relied on by tests) in
+     `dfd9516`, replied to both, resolved both threads.
+   - Round 2 (2 inline SECURITY comments): the searchable summaries embedded the
+     raw partition M `source_expression` (first 200 chars) and the full data
+     source `connection_string` — both can carry secrets (tokens/keys/passwords).
+     Fixed in `7b99add`: emit only a non-sensitive size hint (`Source length: N
+     chars.` / `Connection length: N chars.`) in the summary while KEEPING the
+     full values in the structured `source_expression`/`connection_string` model
+     fields (reviewer-endorsed approach). Non-secret server/database/provider/kind
+     context stays searchable (surfaced from separate structured fields). Added
+     regression tests S-PBI-09 (connection-string secret non-leak) and S-PBI-10
+     (partition M-body secret non-leak). Replied to both, resolved both threads.
+   - Review-fix cycles: doc-nit round + P2 hierarchy + security round — at most 2
+     per task, under the 3-cycle circuit breaker. Zero unresolved threads at HEAD
+     `7b99add`. Copilot had reviewed through `f9fc811`; a courtesy re-review of the
+     final `7b99add` may still land (nothing outstanding).
 
 ## Quality gates (CI feature set — NOT --all-features)
 
 - `cargo fmt --all -- --check` — clean
 - `cargo clippy --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic` — clean
-- Tests: parser crate 7, lib powerbi 9, `unit_powerbi_extract_tmdl` 12,
-  `integration_powerbi_search_ingestion` 24 — all green.
-- **CI (PR #192, ubuntu-latest, `build` check)**: PASS on both `c882f79` and
-  `dfd9516` (~3m each).
+- Tests: parser crate 7, lib powerbi 11 (incl. S-PBI-09/10 secret guards),
+  `unit_powerbi_extract_tmdl` 12, `integration_powerbi_search_ingestion` 24 —
+  all green.
+- **CI (PR #192, ubuntu-latest, `build` check)**: PASS on every pushed commit
+  (`c882f79`, `dfd9516`, `f9fc811`, `7b99add`), ~3m each.
 
 ## Runtime verification
 
