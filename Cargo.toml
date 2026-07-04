@@ -683,6 +683,10 @@ name = "unit_powerbi_extract_tmdl"
 path = "tests/unit/powerbi_extract_tmdl_test.rs"
 
 [[test]]
+name = "unit_tmdl_differential_eval"
+path = "tests/unit/tmdl_differential_eval_test.rs"
+
+[[test]]
 name = "integration_powerbi_search_ingestion"
 path = "tests/integration/powerbi_search_ingestion_test.rs"
 
