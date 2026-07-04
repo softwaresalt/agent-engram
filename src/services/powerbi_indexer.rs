@@ -342,8 +342,12 @@ pub(crate) fn extract_model_summaries_from_model(
                 .source_expression
                 .as_deref()
                 .map(|body| {
-                    let snippet: String = body.chars().take(200).collect();
-                    format!(" Source: {snippet}")
+                    // Do NOT embed the raw M body in the searchable summary: M
+                    // partition source can contain hard-coded secrets (tokens,
+                    // keys, credentials). The full body stays in the structured
+                    // `source_expression` model field; the summary carries only a
+                    // non-sensitive size hint so the partition is still findable.
+                    format!(" Source length: {} chars.", body.chars().count())
                 })
                 .unwrap_or_default();
             summaries.push((
@@ -396,7 +400,15 @@ pub(crate) fn extract_model_summaries_from_model(
             details.push(format!("Database: {database}."));
         }
         if let Some(connection) = data_source.connection_string.as_deref() {
-            details.push(format!("Connection: {connection}."));
+            // Connection strings frequently embed credentials (`Password=`,
+            // `User ID=`, tokens, account keys). Keep the raw value in the
+            // structured `connection_string` model field but emit only a
+            // non-sensitive size hint into the searchable summary; the
+            // non-secret server/database/provider context above stays searchable.
+            details.push(format!(
+                "Connection length: {} chars.",
+                connection.chars().count()
+            ));
         }
         let detail_hint = if details.is_empty() {
             String::new()
@@ -1389,6 +1401,82 @@ dataSource SqlWarehouse
         assert!(
             content.contains("sql") && content.contains("myserver"),
             "data source summary should carry connection context: {content}"
+        );
+    }
+
+    /// S-PBI-09: the data source summary must NOT embed the raw connection string
+    /// (credential-exposure guard); it emits only a non-sensitive size hint while
+    /// keeping non-secret server/database context searchable.
+    #[test]
+    fn extract_model_summaries_redacts_connection_string_secrets() {
+        let tmdl = "
+dataSource SecretWarehouse
+  kind: sql
+  server: myserver
+  database: EDW
+  connectionString: Data Source=myserver;Initial Catalog=EDW;User ID=admin;Password=sup3rs3cret
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/dataSources.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+        let (_, _, _, content) = summaries
+            .iter()
+            .find(|(kind, _, _, _)| kind == "powerbi_data_source")
+            .expect("expected a powerbi_data_source summary");
+
+        assert!(
+            !content.contains("sup3rs3cret") && !content.to_lowercase().contains("password"),
+            "connection string secrets must not leak into the search summary: {content}"
+        );
+        // Non-secret context stays searchable.
+        assert!(
+            content.contains("myserver") && content.contains("EDW"),
+            "non-secret server/database context should remain: {content}"
+        );
+    }
+
+    /// S-PBI-10: the partition summary must NOT embed the raw M source body
+    /// (which can contain hard-coded secrets); it emits only a non-sensitive size
+    /// hint while keeping the partition findable by name/table.
+    #[test]
+    fn extract_model_summaries_omits_partition_source_body() {
+        let tmdl = "
+table Secrets
+  column A
+    dataType: string
+
+  partition SecretLoad = m
+    mode: import
+    source = ```
+      let Source = Web.Contents(\"https://api.example.com\", [ApiKey=\"leaked-token-xyz\"])
+      in Source
+    ```
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/tables/Secrets.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+        let (_, name, _, content) = summaries
+            .iter()
+            .find(|(kind, _, _, _)| kind == "powerbi_partition")
+            .expect("expected a powerbi_partition summary");
+
+        assert_eq!(name, "SecretLoad");
+        assert!(
+            !content.contains("leaked-token-xyz") && !content.contains("ApiKey"),
+            "partition M-body secrets must not leak into the search summary: {content}"
+        );
+        // Partition remains findable by name/table.
+        assert!(
+            content.contains("SecretLoad") && content.contains("Secrets"),
+            "partition summary should still reference name/table: {content}"
         );
     }
 
