@@ -765,3 +765,190 @@ expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text
         "expressions.tmdl should create one graph node per expression"
     );
 }
+
+/// S-PIN-20: A table `.tmdl` file with a fenced M partition creates a searchable
+/// `powerbi_partition` content record and a `Partition` graph node.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_indexes_tmdl_partitions() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let tables = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition")
+        .join("tables");
+    fs::create_dir_all(&tables).expect("create tmdl directories");
+
+    fs::write(
+        tables.join("FactVehicleRegistrations.tmdl"),
+        "
+table FactVehicleRegistrations
+  column Amount
+    dataType: double
+  partition FactVehicleRegistrations = m
+    mode: import
+    source = ```
+        let
+            Source = Sql.Database(\"server\", \"db\")
+        in
+            Source
+        ```
+",
+    )
+    .expect("write tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-partitions")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let partition_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_partition")
+        .collect();
+    assert_eq!(
+        partition_records.len(),
+        1,
+        "partition tmdl should create one powerbi_partition content record"
+    );
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("models"))
+        .await
+        .expect("select powerbi nodes");
+    let partition_nodes: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::Partition)
+        .collect();
+    assert_eq!(
+        partition_nodes.len(),
+        1,
+        "partition tmdl should create one Partition graph node"
+    );
+}
+
+/// S-PIN-21: A `dataSources.tmdl` file with connection properties creates a
+/// searchable `powerbi_data_source` content record.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_indexes_tmdl_data_sources() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    fs::create_dir_all(&definition).expect("create definition dir");
+
+    fs::write(
+        definition.join("dataSources.tmdl"),
+        "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+",
+    )
+    .expect("write tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-data-sources")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let ds_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_data_source")
+        .collect();
+    assert_eq!(
+        ds_records.len(),
+        1,
+        "dataSources.tmdl should create one powerbi_data_source content record"
+    );
+    assert!(
+        ds_records[0].content.contains("myserver"),
+        "data source record should carry connection context: {}",
+        ds_records[0].content
+    );
+}
+
+/// S-PIN-22: A `model.tmdl` carrying `ref`/`annotation`/`lineageTag`/`culture`
+/// metadata folds that context into the searchable `powerbi_semantic_model`
+/// content record instead of dropping it.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_folds_model_metadata_into_summary() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let definition = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition");
+    fs::create_dir_all(&definition).expect("create definition dir");
+
+    fs::write(
+        definition.join("model.tmdl"),
+        "
+model Sales Model
+  culture: en-US
+  defaultMode: import
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+",
+    )
+    .expect("write tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-model-metadata")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let model_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_semantic_model")
+        .collect();
+    assert_eq!(
+        model_records.len(),
+        1,
+        "model.tmdl should create one powerbi_semantic_model content record"
+    );
+    assert!(
+        model_records[0].content.contains("en-US"),
+        "semantic model record should carry culture metadata: {}",
+        model_records[0].content
+    );
+    assert!(
+        model_records[0].content.contains("model-guid-1"),
+        "semantic model record should carry lineage tag metadata: {}",
+        model_records[0].content
+    );
+}

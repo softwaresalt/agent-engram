@@ -208,21 +208,71 @@ fn extract_model_summaries(
     extract_model_summaries_from_model(&model)
 }
 
+/// Build a trailing hint fragment carrying a `lineageTag` and/or annotation
+/// names for a table or measure summary. Returns an empty string when neither is
+/// present so existing summary text is unchanged for models without the metadata.
+fn annotation_lineage_hint(
+    lineage_tag: Option<&str>,
+    annotations: &[crate::models::powerbi::PowerBiAnnotation],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(lineage) = lineage_tag {
+        parts.push(format!("Lineage tag: {lineage}."));
+    }
+    if !annotations.is_empty() {
+        let names: Vec<_> = annotations.iter().map(|a| a.name.as_str()).collect();
+        parts.push(format!("Annotations: {}.", names.join(", ")));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
+}
+
 pub(crate) fn extract_model_summaries_from_model(
     model: &crate::models::powerbi::PowerBiSemanticModel,
 ) -> Vec<(String, String, String, String)> {
     let mut summaries = Vec::new();
+    let mut model_meta_parts: Vec<String> = Vec::new();
+    if let Some(culture) = model.culture.as_deref() {
+        model_meta_parts.push(format!("Culture: {culture}."));
+    }
+    if let Some(default_mode) = model.default_mode.as_deref() {
+        model_meta_parts.push(format!("Default mode: {default_mode}."));
+    }
+    if let Some(lineage) = model.lineage_tag.as_deref() {
+        model_meta_parts.push(format!("Lineage tag: {lineage}."));
+    }
+    if !model.refs.is_empty() {
+        let refs: Vec<String> = model
+            .refs
+            .iter()
+            .map(|reference| format!("{} {}", reference.kind, reference.name))
+            .collect();
+        model_meta_parts.push(format!("Refs: {}.", refs.join(", ")));
+    }
+    if !model.annotations.is_empty() {
+        let names: Vec<_> = model.annotations.iter().map(|a| a.name.as_str()).collect();
+        model_meta_parts.push(format!("Annotations: {}.", names.join(", ")));
+    }
+    let model_meta = if model_meta_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", model_meta_parts.join(" "))
+    };
     summaries.push((
         "powerbi_semantic_model".to_string(),
         model.name.clone(),
         model.path.clone(),
         format!(
-            "Semantic model {}. Tables: {}. Relationships: {}. Expressions: {}. Data sources: {}.",
+            "Semantic model {}. Tables: {}. Relationships: {}. Expressions: {}. Data sources: {}.{}",
             model.name,
             model.tables.len(),
             model.relationships.len(),
             model.expressions.len(),
-            model.data_sources.len()
+            model.data_sources.len(),
+            model_meta
         ),
     ));
 
@@ -244,7 +294,13 @@ pub(crate) fn extract_model_summaries_from_model(
             "powerbi_table".to_string(),
             table.name.clone(),
             model.name.clone(),
-            format!("Table {}{}{}", table.name, col_hint, meas_hint),
+            format!(
+                "Table {}{}{}{}",
+                table.name,
+                col_hint,
+                meas_hint,
+                annotation_lineage_hint(table.lineage_tag.as_deref(), &table.annotations)
+            ),
         ));
 
         // One record per measure.
@@ -261,8 +317,46 @@ pub(crate) fn extract_model_summaries_from_model(
                 measure.name.clone(),
                 format!("{}.{}", model.name, table.name),
                 format!(
-                    "Measure {} in table {}. Expression: {}",
-                    measure.name, table.name, expr_hint
+                    "Measure {} in table {}. Expression: {}{}",
+                    measure.name,
+                    table.name,
+                    expr_hint,
+                    annotation_lineage_hint(measure.lineage_tag.as_deref(), &measure.annotations)
+                ),
+            ));
+        }
+
+        // One record per partition.
+        for partition in &table.partitions {
+            let kind_hint = partition
+                .source_kind
+                .as_deref()
+                .map(|kind| format!(" Source kind: {kind}."))
+                .unwrap_or_default();
+            let mode_hint = partition
+                .mode
+                .as_deref()
+                .map(|mode| format!(" Mode: {mode}."))
+                .unwrap_or_default();
+            let body_hint = partition
+                .source_expression
+                .as_deref()
+                .map(|body| {
+                    // Do NOT embed the raw M body in the searchable summary: M
+                    // partition source can contain hard-coded secrets (tokens,
+                    // keys, credentials). The full body stays in the structured
+                    // `source_expression` model field; the summary carries only a
+                    // non-sensitive size hint so the partition is still findable.
+                    format!(" Source length: {} chars.", body.chars().count())
+                })
+                .unwrap_or_default();
+            summaries.push((
+                "powerbi_partition".to_string(),
+                partition.name.clone(),
+                format!("{}.{}", model.name, table.name),
+                format!(
+                    "Partition {} in table {}.{}{}{}",
+                    partition.name, table.name, kind_hint, mode_hint, body_hint
                 ),
             ));
         }
@@ -283,6 +377,51 @@ pub(crate) fn extract_model_summaries_from_model(
             format!(
                 "Expression {} in semantic model {}. Definition: {}",
                 expression.name, model.name, expr_hint
+            ),
+        ));
+    }
+
+    for data_source in &model.data_sources {
+        let mut details: Vec<String> = Vec::new();
+        if let Some(kind) = data_source
+            .kind
+            .as_deref()
+            .or(data_source.source_type.as_deref())
+        {
+            details.push(format!("Kind: {kind}."));
+        }
+        if let Some(provider) = data_source.provider.as_deref() {
+            details.push(format!("Provider: {provider}."));
+        }
+        if let Some(server) = data_source.server.as_deref() {
+            details.push(format!("Server: {server}."));
+        }
+        if let Some(database) = data_source.database.as_deref() {
+            details.push(format!("Database: {database}."));
+        }
+        if let Some(connection) = data_source.connection_string.as_deref() {
+            // Connection strings frequently embed credentials (`Password=`,
+            // `User ID=`, tokens, account keys). Keep the raw value in the
+            // structured `connection_string` model field but emit only a
+            // non-sensitive size hint into the searchable summary; the
+            // non-secret server/database/provider context above stays searchable.
+            details.push(format!(
+                "Connection length: {} chars.",
+                connection.chars().count()
+            ));
+        }
+        let detail_hint = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", details.join(" "))
+        };
+        summaries.push((
+            "powerbi_data_source".to_string(),
+            data_source.name.clone(),
+            model.name.clone(),
+            format!(
+                "Data source {} in semantic model {}.{}",
+                data_source.name, model.name, detail_hint
             ),
         ));
     }
@@ -563,6 +702,30 @@ pub(crate) fn build_powerbi_graph_data_from_model(
             edges.push(PowerBiEdge {
                 from_id: table_id.clone(),
                 to_id: measure_id,
+                edge_type: PowerBiEdgeType::Contains,
+                source_path: source_path.to_owned(),
+            });
+        }
+
+        for partition in &table.partitions {
+            let partition_id = make_node_id(
+                source_path,
+                identity_scope,
+                PowerBiNodeKind::Partition,
+                &format!("{}.{}", table.name, partition.name),
+            );
+            nodes.push(PowerBiNode {
+                id: partition_id.clone(),
+                name: partition.name.clone(),
+                kind: PowerBiNodeKind::Partition,
+                file_path: file_path.to_owned(),
+                source_path: source_path.to_owned(),
+                content_hash: content_hash.to_owned(),
+                ingested_at: now,
+            });
+            edges.push(PowerBiEdge {
+                from_id: table_id.clone(),
+                to_id: partition_id,
                 edge_type: PowerBiEdgeType::Contains,
                 source_path: source_path.to_owned(),
             });
@@ -1135,6 +1298,7 @@ mod tests {
             PowerBiNodeKind::Measure,
             PowerBiNodeKind::Relationship,
             PowerBiNodeKind::DataSource,
+            PowerBiNodeKind::Partition,
         ] {
             let id = make_node_id("src", "file.json", kind, "Entity");
             let seed = format!("src:file.json:{}:Entity", kind.as_str());
@@ -1144,5 +1308,254 @@ mod tests {
                 "make_node_id must use PowerBiNodeKind::as_str() for kind={kind:?}"
             );
         }
+    }
+
+    /// S-PBI-06: `build_powerbi_graph_data_from_model` emits a `Partition` node
+    /// for each partition and a `pbi_contains` edge from its table.
+    #[test]
+    fn build_graph_emits_partition_node_and_contains_edge() {
+        let tmdl = "
+table Sales
+  column Amount
+    dataType: double
+  partition Sales = m
+    mode: import
+    source = ```
+        let Source = 1 in Source
+        ```
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/tables/Sales.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let (nodes, edges) = build_powerbi_graph_data_from_model(
+            &model,
+            "Sales.SemanticModel/definition",
+            "Sales.SemanticModel/definition/tables/Sales.tmdl",
+            "models",
+            "hash1",
+        );
+
+        let partition_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == PowerBiNodeKind::Partition)
+            .collect();
+        assert_eq!(
+            partition_nodes.len(),
+            1,
+            "expected exactly one Partition node; got {}: {partition_nodes:?}",
+            partition_nodes.len()
+        );
+        assert_eq!(partition_nodes[0].name, "Sales");
+
+        let table_id = make_node_id(
+            "models",
+            "Sales.SemanticModel/definition",
+            PowerBiNodeKind::Table,
+            "Sales",
+        );
+        let contains = edges.iter().any(|e| {
+            e.edge_type == PowerBiEdgeType::Contains
+                && e.from_id == table_id
+                && e.to_id == partition_nodes[0].id
+        });
+        assert!(
+            contains,
+            "expected a pbi_contains edge from the table to its partition node"
+        );
+    }
+
+    /// S-PBI-07: `extract_model_summaries_from_model` emits a `powerbi_data_source`
+    /// summary record carrying the captured connection properties.
+    #[test]
+    fn extract_model_summaries_emits_data_source_record() {
+        let tmdl = "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/dataSources.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+        let ds_summaries: Vec<_> = summaries
+            .iter()
+            .filter(|(kind, _, _, _)| kind == "powerbi_data_source")
+            .collect();
+        assert_eq!(
+            ds_summaries.len(),
+            1,
+            "expected exactly one powerbi_data_source summary; got {}: {ds_summaries:?}",
+            ds_summaries.len()
+        );
+        let (_, name, _, content) = ds_summaries[0];
+        assert_eq!(name, "SqlWarehouse");
+        assert!(
+            content.contains("sql") && content.contains("myserver"),
+            "data source summary should carry connection context: {content}"
+        );
+    }
+
+    /// S-PBI-09: the data source summary must NOT embed the raw connection string
+    /// (credential-exposure guard); it emits only a non-sensitive size hint while
+    /// keeping non-secret server/database context searchable.
+    #[test]
+    fn extract_model_summaries_redacts_connection_string_secrets() {
+        let tmdl = "
+dataSource SecretWarehouse
+  kind: sql
+  server: myserver
+  database: EDW
+  connectionString: Data Source=myserver;Initial Catalog=EDW;User ID=admin;Password=sup3rs3cret
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/dataSources.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+        let (_, _, _, content) = summaries
+            .iter()
+            .find(|(kind, _, _, _)| kind == "powerbi_data_source")
+            .expect("expected a powerbi_data_source summary");
+
+        assert!(
+            !content.contains("sup3rs3cret") && !content.to_lowercase().contains("password"),
+            "connection string secrets must not leak into the search summary: {content}"
+        );
+        // Non-secret context stays searchable.
+        assert!(
+            content.contains("myserver") && content.contains("EDW"),
+            "non-secret server/database context should remain: {content}"
+        );
+    }
+
+    /// S-PBI-10: the partition summary must NOT embed the raw M source body
+    /// (which can contain hard-coded secrets); it emits only a non-sensitive size
+    /// hint while keeping the partition findable by name/table.
+    #[test]
+    fn extract_model_summaries_omits_partition_source_body() {
+        let tmdl = "
+table Secrets
+  column A
+    dataType: string
+
+  partition SecretLoad = m
+    mode: import
+    source = ```
+      let Source = Web.Contents(\"https://api.example.com\", [ApiKey=\"leaked-token-xyz\"])
+      in Source
+    ```
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/tables/Secrets.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+        let (_, name, _, content) = summaries
+            .iter()
+            .find(|(kind, _, _, _)| kind == "powerbi_partition")
+            .expect("expected a powerbi_partition summary");
+
+        assert_eq!(name, "SecretLoad");
+        assert!(
+            !content.contains("leaked-token-xyz") && !content.contains("ApiKey"),
+            "partition M-body secrets must not leak into the search summary: {content}"
+        );
+        // Partition remains findable by name/table.
+        assert!(
+            content.contains("SecretLoad") && content.contains("Secrets"),
+            "partition summary should still reference name/table: {content}"
+        );
+    }
+
+    /// S-PBI-08: `extract_model_summaries_from_model` folds `ref`/`annotation`/
+    /// `lineageTag`/`culture` metadata into the existing parent summaries rather
+    /// than emitting standalone records.
+    #[test]
+    fn extract_model_summaries_fold_refs_annotations_and_lineage() {
+        let tmdl = "
+model Sales Model
+  culture: en-US
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+
+table Sales
+  lineageTag: table-guid-1
+
+  measure 'Total' = SUM(Sales[Amount])
+    lineageTag: measure-guid-1
+    annotation DisplayFolder = KPIs
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/model.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let summaries = extract_model_summaries_from_model(&model);
+
+        // No standalone annotation/ref/lineage record kinds are introduced.
+        assert!(
+            summaries
+                .iter()
+                .all(|(kind, _, _, _)| kind != "powerbi_annotation"
+                    && kind != "powerbi_ref"
+                    && kind != "powerbi_lineage_tag"),
+            "task 003 metadata must fold into parent summaries, not new record kinds"
+        );
+
+        let model_summary = summaries
+            .iter()
+            .find(|(kind, _, _, _)| kind == "powerbi_semantic_model")
+            .expect("a semantic model summary should exist");
+        assert!(
+            model_summary.3.contains("en-US"),
+            "model summary should carry culture: {}",
+            model_summary.3
+        );
+        assert!(
+            model_summary.3.contains("model-guid-1"),
+            "model summary should carry lineage tag: {}",
+            model_summary.3
+        );
+
+        let table_summary = summaries
+            .iter()
+            .find(|(kind, name, _, _)| kind == "powerbi_table" && name == "Sales")
+            .expect("a table summary should exist");
+        assert!(
+            table_summary.3.contains("table-guid-1"),
+            "table summary should carry lineage tag: {}",
+            table_summary.3
+        );
+
+        let measure_summary = summaries
+            .iter()
+            .find(|(kind, name, _, _)| kind == "powerbi_measure" && name == "Total")
+            .expect("a measure summary should exist");
+        assert!(
+            measure_summary.3.contains("measure-guid-1"),
+            "measure summary should carry lineage tag: {}",
+            measure_summary.3
+        );
+        assert!(
+            measure_summary.3.contains("DisplayFolder"),
+            "measure summary should carry annotation context: {}",
+            measure_summary.3
+        );
     }
 }

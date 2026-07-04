@@ -7,12 +7,13 @@
 use std::path::Path;
 
 use powerbi_tmdl_parser::{
-    TmdlDataSource, TmdlExpression, TmdlModel, TmdlRelationship, TmdlTable, parse_tmdl_document,
+    TmdlAnnotation, TmdlDataSource, TmdlExpression, TmdlModel, TmdlRef, TmdlRelationship,
+    TmdlTable, parse_tmdl_document,
 };
 
 use crate::models::powerbi::{
-    PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure, PowerBiRelationship,
-    PowerBiSemanticModel, PowerBiTable,
+    PowerBiAnnotation, PowerBiColumn, PowerBiDataSource, PowerBiExpression, PowerBiMeasure,
+    PowerBiPartition, PowerBiRef, PowerBiRelationship, PowerBiSemanticModel, PowerBiTable,
 };
 use crate::services::powerbi_extract::synthetic_id;
 
@@ -33,6 +34,11 @@ pub fn extract_tmdl_semantic_model(
         relationships,
         expressions,
         data_sources,
+        refs,
+        annotations,
+        culture,
+        default_mode,
+        lineage_tag,
     } = parsed;
     let model_name = model_name.unwrap_or_else(|| {
         infer_model_name(&model_scope).unwrap_or_else(|| "Unknown Model".to_string())
@@ -55,6 +61,8 @@ pub fn extract_tmdl_semantic_model(
         .into_iter()
         .map(|data_source| build_data_source(data_source, &model_id))
         .collect();
+    let refs = refs.into_iter().map(build_ref).collect();
+    let annotations = annotations.into_iter().map(build_annotation).collect();
 
     Some(PowerBiSemanticModel {
         id: model_id,
@@ -64,6 +72,11 @@ pub fn extract_tmdl_semantic_model(
         relationships,
         expressions,
         data_sources,
+        refs,
+        annotations,
+        culture,
+        default_mode,
+        lineage_tag,
     })
 }
 
@@ -93,6 +106,12 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
             id: synthetic_id(&format!("column:{table_id}:{}", column.name)),
             name: column.name,
             data_type: column.data_type,
+            annotations: column
+                .annotations
+                .into_iter()
+                .map(build_annotation)
+                .collect(),
+            lineage_tag: column.lineage_tag,
         })
         .collect();
     let measures = table
@@ -102,6 +121,23 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
             id: synthetic_id(&format!("measure:{table_id}:{}", measure.name)),
             name: measure.name,
             expression: measure.expression,
+            annotations: measure
+                .annotations
+                .into_iter()
+                .map(build_annotation)
+                .collect(),
+            lineage_tag: measure.lineage_tag,
+        })
+        .collect();
+    let partitions = table
+        .partitions
+        .into_iter()
+        .map(|partition| PowerBiPartition {
+            id: synthetic_id(&format!("partition:{table_id}:{}", partition.name)),
+            name: partition.name,
+            source_kind: partition.source_kind,
+            mode: partition.mode,
+            source_expression: partition.source_expression,
         })
         .collect();
 
@@ -110,6 +146,27 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
         name: table.name,
         columns,
         measures,
+        partitions,
+        annotations: table
+            .annotations
+            .into_iter()
+            .map(build_annotation)
+            .collect(),
+        lineage_tag: table.lineage_tag,
+    }
+}
+
+fn build_annotation(annotation: TmdlAnnotation) -> PowerBiAnnotation {
+    PowerBiAnnotation {
+        name: annotation.name,
+        value: annotation.value,
+    }
+}
+
+fn build_ref(reference: TmdlRef) -> PowerBiRef {
+    PowerBiRef {
+        kind: reference.kind,
+        name: reference.name,
     }
 }
 
@@ -144,6 +201,11 @@ fn build_data_source(data_source: TmdlDataSource, model_id: &str) -> PowerBiData
         id: synthetic_id(&format!("datasource:{model_id}:{}", data_source.name)),
         name: data_source.name,
         source_type: None,
+        kind: data_source.kind,
+        provider: data_source.provider,
+        connection_string: data_source.connection_string,
+        server: data_source.server,
+        database: data_source.database,
     }
 }
 

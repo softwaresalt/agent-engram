@@ -200,3 +200,150 @@ expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text
         Some("\"ILSOS_EDW\"")
     );
 }
+
+/// S-PTM-10: Partition blocks with a fenced M source body surface a partition
+/// entity on the table, preserving name, source kind, mode, and opaque M body.
+#[test]
+fn extract_tmdl_semantic_model_parses_partition_with_fenced_m_body() {
+    let model = extract_tmdl_semantic_model(
+        "
+table FactVehicleRegistrations
+  column Amount
+    dataType: double
+  partition FactVehicleRegistrations = m
+    mode: import
+    source = ```
+        let
+            Source = Sql.Database(\"server\", \"db\")
+        in
+            Source
+        ```
+",
+        "models/Sales.SemanticModel/definition/tables/FactVehicleRegistrations.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    assert_eq!(model.tables.len(), 1);
+    let table = &model.tables[0];
+    assert_eq!(
+        table.partitions.len(),
+        1,
+        "the table should surface exactly one partition entity"
+    );
+    let partition = &table.partitions[0];
+    assert_eq!(partition.name, "FactVehicleRegistrations");
+    assert_eq!(partition.source_kind.as_deref(), Some("m"));
+    assert_eq!(partition.mode.as_deref(), Some("import"));
+    assert!(
+        !partition.id.is_empty(),
+        "partition IDs should be generated through the shared semantic model schema"
+    );
+    let body = partition
+        .source_expression
+        .as_deref()
+        .expect("partition should capture the embedded M body");
+    assert!(body.contains("Sql.Database"), "M body should be preserved");
+    assert!(
+        !body.contains("```"),
+        "captured body must not include the fence delimiters"
+    );
+}
+
+/// S-PTM-11: Data source blocks expose richer connection properties
+/// (`kind`/`provider`/`connectionString`/`server`/`database`) on
+/// `PowerBiDataSource`.
+#[test]
+fn extract_tmdl_semantic_model_parses_data_source_properties() {
+    let model = extract_tmdl_semantic_model(
+        "
+dataSource SqlWarehouse
+  kind: sql
+  provider: System.Data.SqlClient
+  connectionString: Data Source=myserver;Initial Catalog=EDW
+  server: myserver
+  database: EDW
+",
+        "models/Sales.SemanticModel/definition/dataSources.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    assert_eq!(model.data_sources.len(), 1);
+    let ds = &model.data_sources[0];
+    assert_eq!(ds.name, "SqlWarehouse");
+    assert_eq!(ds.kind.as_deref(), Some("sql"));
+    assert_eq!(ds.provider.as_deref(), Some("System.Data.SqlClient"));
+    assert_eq!(
+        ds.connection_string.as_deref(),
+        Some("Data Source=myserver;Initial Catalog=EDW")
+    );
+    assert_eq!(ds.server.as_deref(), Some("myserver"));
+    assert_eq!(ds.database.as_deref(), Some("EDW"));
+    assert!(
+        !ds.id.is_empty(),
+        "data source IDs should be generated through the shared semantic model schema"
+    );
+}
+
+/// S-PTM-12: `ref` statements, `annotation` blocks (model/table/column/measure
+/// scope), and `lineageTag`/`culture`/`defaultMode` metadata are surfaced on the
+/// extracted semantic model rather than silently dropped.
+#[test]
+fn extract_tmdl_semantic_model_parses_refs_annotations_and_lineage() {
+    let model = extract_tmdl_semantic_model(
+        "
+model Sales Model
+  culture: en-US
+  defaultMode: import
+  lineageTag: model-guid-1
+  annotation PBI_QueryOrder = [\"Sales\"]
+
+  ref table Sales
+  ref cultureInfo en-US
+
+table Sales
+  lineageTag: table-guid-1
+  annotation IsHidden = false
+
+  column Amount
+    dataType: double
+    lineageTag: column-guid-1
+    annotation Format = \"#,0\"
+
+  measure 'Total' = SUM(Sales[Amount])
+    lineageTag: measure-guid-1
+    annotation DisplayFolder = KPIs
+",
+        "models/Sales.SemanticModel/definition/model.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    // Model-level metadata.
+    assert_eq!(model.culture.as_deref(), Some("en-US"));
+    assert_eq!(model.default_mode.as_deref(), Some("import"));
+    assert_eq!(model.lineage_tag.as_deref(), Some("model-guid-1"));
+    assert_eq!(model.annotations.len(), 1);
+    assert_eq!(model.annotations[0].name, "PBI_QueryOrder");
+
+    // Model-level refs.
+    assert_eq!(model.refs.len(), 2);
+    assert_eq!(model.refs[0].kind, "table");
+    assert_eq!(model.refs[0].name, "Sales");
+    assert_eq!(model.refs[1].kind, "cultureInfo");
+    assert_eq!(model.refs[1].name, "en-US");
+
+    // Table / column / measure scoped metadata.
+    let table = &model.tables[0];
+    assert_eq!(table.lineage_tag.as_deref(), Some("table-guid-1"));
+    assert_eq!(table.annotations.len(), 1);
+    assert_eq!(table.annotations[0].name, "IsHidden");
+
+    let column = &table.columns[0];
+    assert_eq!(column.lineage_tag.as_deref(), Some("column-guid-1"));
+    assert_eq!(column.annotations.len(), 1);
+    assert_eq!(column.annotations[0].name, "Format");
+
+    let measure = &table.measures[0];
+    assert_eq!(measure.lineage_tag.as_deref(), Some("measure-guid-1"));
+    assert_eq!(measure.annotations.len(), 1);
+    assert_eq!(measure.annotations[0].name, "DisplayFolder");
+}

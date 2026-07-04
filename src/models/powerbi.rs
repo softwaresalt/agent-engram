@@ -88,6 +88,26 @@ pub struct PowerBiSemanticModel {
     /// Data sources referenced by this model.
     #[serde(default)]
     pub data_sources: Vec<PowerBiDataSource>,
+
+    /// `ref` statements declared at model scope (e.g. `ref table Sales`).
+    #[serde(default)]
+    pub refs: Vec<PowerBiRef>,
+
+    /// Annotations attached at model scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Model culture metadata (e.g. `"en-US"`).
+    #[serde(default)]
+    pub culture: Option<String>,
+
+    /// Model default storage mode (e.g. `"import"`, `"directQuery"`).
+    #[serde(default)]
+    pub default_mode: Option<String>,
+
+    /// Model lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
 }
 
 /// A table within a Power BI semantic model.
@@ -106,6 +126,46 @@ pub struct PowerBiTable {
     /// Measures defined on this table.
     #[serde(default)]
     pub measures: Vec<PowerBiMeasure>,
+
+    /// Partitions defined on this table.
+    #[serde(default)]
+    pub partitions: Vec<PowerBiPartition>,
+
+    /// Annotations attached at table scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Table lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
+}
+
+/// A partition within a Power BI table.
+///
+/// Captures the physical load definition for a table, including the source kind
+/// (`m` for Power Query / M partitions), the storage `mode`, and the opaque
+/// embedded source body (typically an M expression). The source body is
+/// lightly normalized for search — each line is trimmed and blank lines are
+/// dropped before joining with `\n` — and is never evaluated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiPartition {
+    /// Stable synthetic ID derived from table ID + partition name.
+    pub id: String,
+
+    /// Partition name.
+    pub name: String,
+
+    /// Source kind token (e.g. `"m"`, `"calculated"`, `"entity"`).
+    #[serde(default)]
+    pub source_kind: Option<String>,
+
+    /// Storage mode (e.g. `"import"`, `"directQuery"`).
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// Opaque embedded source body (typically an M expression).
+    #[serde(default)]
+    pub source_expression: Option<String>,
 }
 
 /// A column within a Power BI table.
@@ -120,6 +180,14 @@ pub struct PowerBiColumn {
     /// Data type string (e.g. `"string"`, `"int64"`, `"dateTime"`).
     #[serde(default)]
     pub data_type: Option<String>,
+
+    /// Annotations attached at column scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Column lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
 }
 
 /// A DAX measure within a Power BI table.
@@ -134,6 +202,38 @@ pub struct PowerBiMeasure {
     /// DAX expression (may be truncated for indexing purposes).
     #[serde(default)]
     pub expression: Option<String>,
+
+    /// Annotations attached at measure scope.
+    #[serde(default)]
+    pub annotations: Vec<PowerBiAnnotation>,
+
+    /// Measure lineage tag.
+    #[serde(default)]
+    pub lineage_tag: Option<String>,
+}
+
+/// An annotation (`annotation <Name> = <Value>`) attached to a Power BI object.
+///
+/// Annotations are surfaced as metadata on their parent entity (model, table,
+/// column, or measure) rather than as standalone graph nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiAnnotation {
+    /// Annotation name.
+    pub name: String,
+
+    /// Annotation value, when present.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+/// A `ref` statement recorded at Power BI semantic-model scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiRef {
+    /// Referenced object kind (e.g. `"table"`, `"cultureInfo"`).
+    pub kind: String,
+
+    /// Referenced object name.
+    pub name: String,
 }
 
 /// A top-level expression or parameter query within a Power BI semantic model.
@@ -181,6 +281,26 @@ pub struct PowerBiDataSource {
     /// Data source kind string (e.g. `"sql"`, `"sharepoint"`, `"excel"`).
     #[serde(default)]
     pub source_type: Option<String>,
+
+    /// Data source `kind`/`type` token declared in TMDL (e.g. `"sql"`).
+    #[serde(default)]
+    pub kind: Option<String>,
+
+    /// Underlying provider (e.g. `"System.Data.SqlClient"`).
+    #[serde(default)]
+    pub provider: Option<String>,
+
+    /// Connection string, when declared inline.
+    #[serde(default)]
+    pub connection_string: Option<String>,
+
+    /// Server / address the data source connects to.
+    #[serde(default)]
+    pub server: Option<String>,
+
+    /// Database / catalog the data source targets.
+    #[serde(default)]
+    pub database: Option<String>,
 }
 
 /// Aggregated result from a Power BI indexer run over one content source.

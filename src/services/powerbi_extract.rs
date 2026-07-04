@@ -248,6 +248,11 @@ pub fn extract_semantic_model(json: &Value, model_path: &str) -> Option<PowerBiS
                         id: synthetic_id(&format!("datasource:{id}:{i}")),
                         name: ds_name,
                         source_type,
+                        kind: None,
+                        provider: None,
+                        connection_string: None,
+                        server: None,
+                        database: None,
                     }
                 })
                 .collect()
@@ -262,6 +267,11 @@ pub fn extract_semantic_model(json: &Value, model_path: &str) -> Option<PowerBiS
         relationships,
         expressions,
         data_sources,
+        refs: Vec::new(),
+        annotations: Vec::new(),
+        culture: None,
+        default_mode: None,
+        lineage_tag: None,
     })
 }
 
@@ -287,6 +297,9 @@ fn extract_table(table: &Value, model_id: &str) -> Option<PowerBiTable> {
         name,
         columns,
         measures,
+        partitions: Vec::new(),
+        annotations: Vec::new(),
+        lineage_tag: None,
     })
 }
 
@@ -304,6 +317,8 @@ fn extract_column(column: &Value, table_id: &str) -> Option<PowerBiColumn> {
         id,
         name,
         data_type,
+        annotations: Vec::new(),
+        lineage_tag: None,
     })
 }
 
@@ -320,6 +335,8 @@ fn extract_measure(measure: &Value, table_id: &str) -> Option<PowerBiMeasure> {
         id,
         name,
         expression,
+        annotations: Vec::new(),
+        lineage_tag: None,
     })
 }
 
