@@ -1135,6 +1135,7 @@ mod tests {
             PowerBiNodeKind::Measure,
             PowerBiNodeKind::Relationship,
             PowerBiNodeKind::DataSource,
+            PowerBiNodeKind::Partition,
         ] {
             let id = make_node_id("src", "file.json", kind, "Entity");
             let seed = format!("src:file.json:{}:Entity", kind.as_str());
@@ -1144,5 +1145,62 @@ mod tests {
                 "make_node_id must use PowerBiNodeKind::as_str() for kind={kind:?}"
             );
         }
+    }
+
+    /// S-PBI-06: `build_powerbi_graph_data_from_model` emits a `Partition` node
+    /// for each partition and a `pbi_contains` edge from its table.
+    #[test]
+    fn build_graph_emits_partition_node_and_contains_edge() {
+        let tmdl = "
+table Sales
+  column Amount
+    dataType: double
+  partition Sales = m
+    mode: import
+    source = ```
+        let Source = 1 in Source
+        ```
+";
+        let model = crate::services::powerbi_tmdl::extract_tmdl_semantic_model(
+            tmdl,
+            "models/Sales.SemanticModel/definition/tables/Sales.tmdl",
+        )
+        .expect("tmdl fixture should produce a semantic model");
+
+        let (nodes, edges) = build_powerbi_graph_data_from_model(
+            &model,
+            "Sales.SemanticModel/definition",
+            "Sales.SemanticModel/definition/tables/Sales.tmdl",
+            "models",
+            "hash1",
+        );
+
+        let partition_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == PowerBiNodeKind::Partition)
+            .collect();
+        assert_eq!(
+            partition_nodes.len(),
+            1,
+            "expected exactly one Partition node; got {}: {partition_nodes:?}",
+            partition_nodes.len()
+        );
+        assert_eq!(partition_nodes[0].name, "Sales");
+
+        let table_id = make_node_id(
+            "models",
+            "Sales.SemanticModel/definition",
+            PowerBiNodeKind::Table,
+            "Sales",
+        );
+        let contains = edges.iter().any(|e| {
+            e.edge_type == PowerBiEdgeType::Contains
+                && e.from_id == table_id
+                && e.to_id == partition_nodes[0].id
+        });
+        assert!(
+            contains,
+            "expected a pbi_contains edge from the table to its partition node"
+        );
     }
 }

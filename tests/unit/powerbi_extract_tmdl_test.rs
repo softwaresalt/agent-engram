@@ -200,3 +200,51 @@ expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text
         Some("\"ILSOS_EDW\"")
     );
 }
+
+/// S-PTM-10: Partition blocks with a fenced M source body surface a partition
+/// entity on the table, preserving name, source kind, mode, and opaque M body.
+#[test]
+fn extract_tmdl_semantic_model_parses_partition_with_fenced_m_body() {
+    let model = extract_tmdl_semantic_model(
+        "
+table FactVehicleRegistrations
+  column Amount
+    dataType: double
+  partition FactVehicleRegistrations = m
+    mode: import
+    source = ```
+        let
+            Source = Sql.Database(\"server\", \"db\")
+        in
+            Source
+        ```
+",
+        "models/Sales.SemanticModel/definition/tables/FactVehicleRegistrations.tmdl",
+    )
+    .expect("fixture should produce a semantic model");
+
+    assert_eq!(model.tables.len(), 1);
+    let table = &model.tables[0];
+    assert_eq!(
+        table.partitions.len(),
+        1,
+        "the table should surface exactly one partition entity"
+    );
+    let partition = &table.partitions[0];
+    assert_eq!(partition.name, "FactVehicleRegistrations");
+    assert_eq!(partition.source_kind.as_deref(), Some("m"));
+    assert_eq!(partition.mode.as_deref(), Some("import"));
+    assert!(
+        !partition.id.is_empty(),
+        "partition IDs should be generated through the shared semantic model schema"
+    );
+    let body = partition
+        .source_expression
+        .as_deref()
+        .expect("partition should capture the embedded M body");
+    assert!(body.contains("Sql.Database"), "M body should be preserved");
+    assert!(
+        !body.contains("```"),
+        "captured body must not include the fence delimiters"
+    );
+}

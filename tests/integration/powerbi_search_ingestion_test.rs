@@ -765,3 +765,73 @@ expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text
         "expressions.tmdl should create one graph node per expression"
     );
 }
+
+/// S-PIN-20: A table `.tmdl` file with a fenced M partition creates a searchable
+/// `powerbi_partition` content record and a `Partition` graph node.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn index_powerbi_source_indexes_tmdl_partitions() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let tables = workspace
+        .join("models")
+        .join("Sales.SemanticModel")
+        .join("definition")
+        .join("tables");
+    fs::create_dir_all(&tables).expect("create tmdl directories");
+
+    fs::write(
+        tables.join("FactVehicleRegistrations.tmdl"),
+        "
+table FactVehicleRegistrations
+  column Amount
+    dataType: double
+  partition FactVehicleRegistrations = m
+    mode: import
+    source = ```
+        let
+            Source = Sql.Database(\"server\", \"db\")
+        in
+            Source
+        ```
+",
+    )
+    .expect("write tmdl");
+
+    let db = connect_db(&root.path().join("data"), "powerbi-tmdl-partitions")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_powerbi_source(&powerbi_source("models"), &workspace, &queries, 1_048_576)
+        .await
+        .expect("index tmdl source");
+
+    let records = queries
+        .select_content_records(Some("powerbi"))
+        .await
+        .expect("select content records");
+    let partition_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.record_kind == "powerbi_partition")
+        .collect();
+    assert_eq!(
+        partition_records.len(),
+        1,
+        "partition tmdl should create one powerbi_partition content record"
+    );
+
+    let nodes = queries
+        .select_powerbi_nodes(Some("models"))
+        .await
+        .expect("select powerbi nodes");
+    let partition_nodes: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == PowerBiNodeKind::Partition)
+        .collect();
+    assert_eq!(
+        partition_nodes.len(),
+        1,
+        "partition tmdl should create one Partition graph node"
+    );
+}

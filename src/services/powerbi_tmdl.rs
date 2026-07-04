@@ -110,6 +110,7 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
         name: table.name,
         columns,
         measures,
+        partitions: Vec::new(),
     }
 }
 

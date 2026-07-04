@@ -20,6 +20,7 @@ fn powerbi_node_kind_as_str_stable() {
     assert_eq!(PowerBiNodeKind::Expression.as_str(), "expression");
     assert_eq!(PowerBiNodeKind::Relationship.as_str(), "relationship");
     assert_eq!(PowerBiNodeKind::DataSource.as_str(), "data_source");
+    assert_eq!(PowerBiNodeKind::Partition.as_str(), "partition");
 }
 
 /// S-PBG-02: `PowerBiNode` constructs with expected field values.
@@ -130,6 +131,7 @@ fn powerbi_node_kind_display_matches_as_str() {
         PowerBiNodeKind::Expression,
         PowerBiNodeKind::Relationship,
         PowerBiNodeKind::DataSource,
+        PowerBiNodeKind::Partition,
     ] {
         assert_eq!(kind.to_string(), kind.as_str());
     }

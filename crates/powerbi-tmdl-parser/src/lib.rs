@@ -32,6 +32,27 @@ pub struct TmdlTable {
     pub columns: Vec<TmdlColumn>,
     /// Measures declared on the table.
     pub measures: Vec<TmdlMeasure>,
+    /// Partitions declared on the table.
+    pub partitions: Vec<TmdlPartition>,
+}
+
+/// A parsed TMDL partition.
+///
+/// Partitions bind a table to a physical load definition. The `= <kind>` token
+/// after the partition name records the source kind (for example `m` for a
+/// Power Query / M partition), `mode:` records the storage mode, and the fenced
+/// ```` source = ``` ... ``` ```` payload is captured verbatim as an opaque M
+/// body — the parser never evaluates it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TmdlPartition {
+    /// Partition name.
+    pub name: String,
+    /// Source kind token following `= ` on the declaration line (e.g. `m`).
+    pub source_kind: Option<String>,
+    /// Optional `mode:` property (e.g. `import`, `directQuery`).
+    pub mode: Option<String>,
+    /// Opaque embedded source body (typically an M expression).
+    pub source_expression: Option<String>,
 }
 
 /// A parsed TMDL column.
@@ -445,6 +466,7 @@ fn flush_table(tables: &mut Vec<TmdlTable>, current_table: &mut Option<TmdlTable
         name: table.name,
         columns: table.columns,
         measures: table.measures,
+        partitions: Vec::new(),
     });
 }
 
@@ -607,5 +629,50 @@ expression SynapseDatabase = "ILSOS_EDW" meta [IsParameterQuery=true, Type="Text
             model.expressions[1].expression.as_deref(),
             Some("\"ILSOS_EDW\"")
         );
+    }
+
+    #[test]
+    fn parse_partition_with_fenced_m_source() {
+        let Some(model) = parse_tmdl_document(
+            "
+table FactVehicleRegistrations
+  column Amount
+    dataType: double
+  partition FactVehicleRegistrations = m
+    mode: import
+    source = ```
+        let
+            Source = Sql.Database(\"server\", \"db\")
+        in
+            Source
+        ```
+",
+        ) else {
+            panic!("fixture should parse");
+        };
+
+        assert_eq!(model.tables.len(), 1);
+        let table = &model.tables[0];
+        assert_eq!(table.partitions.len(), 1);
+        let partition = &table.partitions[0];
+        assert_eq!(partition.name, "FactVehicleRegistrations");
+        assert_eq!(partition.source_kind.as_deref(), Some("m"));
+        assert_eq!(partition.mode.as_deref(), Some("import"));
+        let body = partition
+            .source_expression
+            .as_deref()
+            .expect("partition should capture the fenced M body");
+        assert!(body.contains("let"), "M body should retain the let keyword");
+        assert!(
+            body.contains("Sql.Database"),
+            "M body should retain the source function call"
+        );
+        assert!(
+            !body.contains("```"),
+            "captured body must not include the fence delimiters"
+        );
+        // The column that precedes the partition must still parse.
+        assert_eq!(table.columns.len(), 1);
+        assert_eq!(table.columns[0].name, "Amount");
     }
 }

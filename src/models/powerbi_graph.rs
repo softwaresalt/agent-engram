@@ -40,6 +40,8 @@ pub enum PowerBiNodeKind {
     Relationship,
     /// A data source referenced by the semantic model.
     DataSource,
+    /// A partition binding a table to a physical load definition.
+    Partition,
 }
 
 impl PowerBiNodeKind {
@@ -57,6 +59,7 @@ impl PowerBiNodeKind {
             Self::Expression => "expression",
             Self::Relationship => "relationship",
             Self::DataSource => "data_source",
+            Self::Partition => "partition",
         }
     }
 }

@@ -106,6 +106,37 @@ pub struct PowerBiTable {
     /// Measures defined on this table.
     #[serde(default)]
     pub measures: Vec<PowerBiMeasure>,
+
+    /// Partitions defined on this table.
+    #[serde(default)]
+    pub partitions: Vec<PowerBiPartition>,
+}
+
+/// A partition within a Power BI table.
+///
+/// Captures the physical load definition for a table, including the source kind
+/// (`m` for Power Query / M partitions), the storage `mode`, and the opaque
+/// embedded source body (typically an M expression). The source body is stored
+/// verbatim for search and is never evaluated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBiPartition {
+    /// Stable synthetic ID derived from table ID + partition name.
+    pub id: String,
+
+    /// Partition name.
+    pub name: String,
+
+    /// Source kind token (e.g. `"m"`, `"calculated"`, `"entity"`).
+    #[serde(default)]
+    pub source_kind: Option<String>,
+
+    /// Storage mode (e.g. `"import"`, `"directQuery"`).
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// Opaque embedded source body (typically an M expression).
+    #[serde(default)]
+    pub source_expression: Option<String>,
 }
 
 /// A column within a Power BI table.

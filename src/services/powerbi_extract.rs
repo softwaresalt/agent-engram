@@ -287,6 +287,7 @@ fn extract_table(table: &Value, model_id: &str) -> Option<PowerBiTable> {
         name,
         columns,
         measures,
+        partitions: Vec::new(),
     })
 }
 
