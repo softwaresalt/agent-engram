@@ -6,7 +6,8 @@ shipment: 067-S
 feature: 067-F
 pr: 190
 branch: 067-usage-telemetry-emit
-status: green-awaiting-user-approved-merge
+status: merged-closed
+merge_commit: d7c3168b3a5bb60cfc8a85ca41ca086935b03387
 ---
 
 # Ship — 067-S Engram usage-telemetry EMIT (resumed after restart)
@@ -62,9 +63,26 @@ branch was un-pushed with no PR. This session resumed from the pre-PR steps.
   (merge_commit only; squash/rebase disabled).
 - Copilot review could NOT be auto-requested via `gh` CLI (`copilot` reviewer
   slug unresolved; no MCP tool available) — degraded, non-blocking.
-- **Next**: operator approves + merges PR #190 (merge commit). Then Ship
-  post-merge closure: shipment-reconcile (067-S → archived), compound-refresh,
-  compact-context.
 - Compound-learning candidate: "tokio::fs::File append needs explicit
   flush().await before any rename/rotation or data can be lost — reproduces on
   Linux, not always on Windows."
+
+## Closure (2026-07-04)
+
+- **Two Copilot review rounds addressed** (11 threads total, all replied +
+  resolved via GraphQL): round 1 — 5x `archived_from` provenance, rotation
+  stale-generation prune (+ regression test), symlink-doc softening, 1 declined
+  false-positive (`json!` use-after-move); round 2 — `start.ps1` `.env.local`
+  `Test-Path` guard, untracked `.backlogit/telemetry.jsonl` (+ gitignore), and
+  PR-description reconciliation for operator harness/editor config committed in
+  `68fe014`/`73d3bac`.
+- **PR #190 MERGED** via merge commit `d7c3168b3a5bb60cfc8a85ca41ca086935b03387`
+  (operator-approved; `gh pr merge --merge --admin` to satisfy the review
+  ruleset). Merged by softwaresalt 2026-07-04T01:32:00Z.
+- **Post-merge closure**: local `main` fast-forwarded to `d7c3168`; feature
+  branch pruned local + remote; shipment `067-S` archived
+  (`.backlogit/archive/067-S.md`, `status: archived`, merge SHA recorded).
+- **GI/GR gate PASS**: all manifest items (067-F, 067.001-T..067.006-T) archived
+  `done`; 067-S archived; nothing left in `.backlogit/queue/067*`.
+- Compound learning already persisted:
+  `docs/compound/tokio-fs-file-flush-before-rename-2026-07-03.md`.
