@@ -318,6 +318,43 @@ pub(crate) fn extract_model_summaries_from_model(
         ));
     }
 
+    for data_source in &model.data_sources {
+        let mut details: Vec<String> = Vec::new();
+        if let Some(kind) = data_source
+            .kind
+            .as_deref()
+            .or(data_source.source_type.as_deref())
+        {
+            details.push(format!("Kind: {kind}."));
+        }
+        if let Some(provider) = data_source.provider.as_deref() {
+            details.push(format!("Provider: {provider}."));
+        }
+        if let Some(server) = data_source.server.as_deref() {
+            details.push(format!("Server: {server}."));
+        }
+        if let Some(database) = data_source.database.as_deref() {
+            details.push(format!("Database: {database}."));
+        }
+        if let Some(connection) = data_source.connection_string.as_deref() {
+            details.push(format!("Connection: {connection}."));
+        }
+        let detail_hint = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", details.join(" "))
+        };
+        summaries.push((
+            "powerbi_data_source".to_string(),
+            data_source.name.clone(),
+            model.name.clone(),
+            format!(
+                "Data source {} in semantic model {}.{}",
+                data_source.name, model.name, detail_hint
+            ),
+        ));
+    }
+
     summaries
 }
 

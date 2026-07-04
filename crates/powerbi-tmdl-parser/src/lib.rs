@@ -149,6 +149,15 @@ struct PendingPartition {
     source_lines: Vec<String>,
 }
 
+/// Capture state for a `dataSource` block that is still being read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct PendingDataSource {
+    /// Indent width of the `dataSource` declaration line.
+    indent: usize,
+    /// Index of the data source inside the parse state.
+    index: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct PendingRelationship {
     indent: usize,
@@ -168,6 +177,7 @@ struct ParseState {
     data_sources: Vec<TmdlDataSource>,
     pending_measure_body: Option<PendingMeasureBody>,
     pending_partition: Option<PendingPartition>,
+    pending_data_source: Option<PendingDataSource>,
 }
 
 /// Parse a TMDL document into semantic-model objects.
@@ -225,6 +235,10 @@ fn prepare_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) {
     if should_finish_partition(state.pending_partition.as_ref(), indent) {
         finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
     }
+
+    if should_finish_data_source(state.pending_data_source.as_ref(), indent) {
+        state.pending_data_source = None;
+    }
 }
 
 fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -> bool {
@@ -237,6 +251,12 @@ fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -
         || capture_partition_property(
             &mut state.current_table,
             &mut state.pending_partition,
+            indent,
+            trimmed,
+        )
+        || capture_data_source_property(
+            &mut state.data_sources,
+            state.pending_data_source.as_ref(),
             indent,
             trimmed,
         )
@@ -318,6 +338,10 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
         state.data_sources.push(TmdlDataSource {
             name: parse_identifier(rest),
             ..TmdlDataSource::default()
+        });
+        state.pending_data_source = Some(PendingDataSource {
+            indent,
+            index: state.data_sources.len() - 1,
         });
         return true;
     }
@@ -615,6 +639,69 @@ fn finish_pending_partition(
     if partition.source_expression.is_none() {
         partition.source_expression = Some(partition_pending.source_lines.join("\n"));
     }
+}
+
+fn should_finish_data_source(pending: Option<&PendingDataSource>, indent: usize) -> bool {
+    pending.is_some_and(|data_source| indent <= data_source.indent)
+}
+
+/// Capture a property line inside an open `dataSource` block.
+///
+/// Recognizes the connection-oriented keys and consumes any other deeper line
+/// opaquely so it does not fall through to declaration handling and end the
+/// block prematurely.
+fn capture_data_source_property(
+    data_sources: &mut [TmdlDataSource],
+    pending: Option<&PendingDataSource>,
+    indent: usize,
+    trimmed: &str,
+) -> bool {
+    let Some(ds_pending) = pending else {
+        return false;
+    };
+
+    if indent <= ds_pending.indent {
+        return false;
+    }
+
+    let Some(data_source) = data_sources.get_mut(ds_pending.index) else {
+        return false;
+    };
+
+    if let Some(rest) = trimmed.strip_prefix("kind:") {
+        data_source.kind = Some(parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("type:") {
+        if data_source.kind.is_none() {
+            data_source.kind = Some(parse_identifier(rest));
+        }
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("provider:") {
+        data_source.provider = Some(parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("connectionString:") {
+        data_source.connection_string = Some(parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("server:") {
+        data_source.server = Some(parse_identifier(rest));
+        return true;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("database:") {
+        data_source.database = Some(parse_identifier(rest));
+        return true;
+    }
+
+    // Deeper-indented content inside the data source block is consumed opaquely.
+    true
 }
 
 fn finish_pending_measure_body(
