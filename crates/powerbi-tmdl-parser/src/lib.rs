@@ -173,6 +173,11 @@ struct TmdlTableDraft {
     /// Indent width of the current open column/measure member, used to scope
     /// `annotation`/`lineageTag:` lines to the member versus the table.
     member_indent: Option<usize>,
+    /// Indent width at which an unmodeled member-level block (e.g. `hierarchy`,
+    /// `level`, `role`) opened. While set, deeper-indented `annotation`/
+    /// `lineageTag:` lines are dropped rather than mis-attached to the preceding
+    /// column/measure or the table.
+    skip_below_indent: Option<usize>,
     /// Annotations attached at table scope.
     annotations: Vec<TmdlAnnotation>,
     /// Table `lineageTag:` metadata.
@@ -294,6 +299,17 @@ fn prepare_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) {
     if should_finish_data_source(state.pending_data_source.as_ref(), indent) {
         state.pending_data_source = None;
     }
+
+    // Close an unmodeled member-block skip window once the parser dedents back to
+    // or above the indent where the block opened.
+    if let Some(table) = state.current_table.as_mut() {
+        if table
+            .skip_below_indent
+            .is_some_and(|opened| indent <= opened)
+        {
+            table.skip_below_indent = None;
+        }
+    }
 }
 
 fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -> bool {
@@ -317,6 +333,26 @@ fn capture_pending_state(state: &mut ParseState, indent: usize, trimmed: &str) -
         )
 }
 
+/// Open a new `table` declaration, finishing any pending measure/relationship/
+/// partition blocks and flushing the previous table draft first.
+fn start_table(state: &mut ParseState, rest: &str) {
+    finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
+    finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
+    finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
+    flush_table(&mut state.tables, &mut state.current_table);
+    state.current_table = Some(TmdlTableDraft {
+        name: parse_identifier(rest),
+        columns: Vec::new(),
+        measures: Vec::new(),
+        partitions: Vec::new(),
+        last_member: None,
+        member_indent: None,
+        skip_below_indent: None,
+        annotations: Vec::new(),
+        lineage_tag: None,
+    });
+}
+
 fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> bool {
     if let Some(rest) = trimmed.strip_prefix("model ") {
         state.model_name = Some(parse_identifier(rest));
@@ -324,20 +360,7 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
     }
 
     if let Some(rest) = trimmed.strip_prefix("table ") {
-        finish_pending_measure_body(&mut state.current_table, &mut state.pending_measure_body);
-        finish_pending_relationship(&mut state.relationships, &mut state.pending_relationship);
-        finish_pending_partition(&mut state.current_table, &mut state.pending_partition);
-        flush_table(&mut state.tables, &mut state.current_table);
-        state.current_table = Some(TmdlTableDraft {
-            name: parse_identifier(rest),
-            columns: Vec::new(),
-            measures: Vec::new(),
-            partitions: Vec::new(),
-            last_member: None,
-            member_indent: None,
-            annotations: Vec::new(),
-            lineage_tag: None,
-        });
+        start_table(state, rest);
         return true;
     }
 
@@ -431,7 +454,36 @@ fn handle_declaration(state: &mut ParseState, indent: usize, trimmed: &str) -> b
         return true;
     }
 
+    // Unmodeled declaration-boundary keywords (`hierarchy`, `level`, `role`,
+    // `function`, `culture` block form, ...) open blocks this parser does not
+    // model. Inside a table, opening one clears column/measure member scope and
+    // marks a skip window so a stray nested `lineageTag:`/`annotation` is dropped
+    // rather than mis-attached to (and overwriting) the preceding column/measure.
+    if is_declaration_line(trimmed) {
+        enter_unmodeled_member_block(state, indent);
+        return true;
+    }
+
     false
+}
+
+/// Handle an `is_declaration_line` keyword this parser does not model
+/// (`hierarchy`, `level`, `role`, ...) encountered inside a table.
+///
+/// Clears the current column/measure member scope and opens (or widens) a skip
+/// window so nested `lineageTag:`/`annotation` lines are dropped rather than
+/// mis-attributed to the preceding member.
+fn enter_unmodeled_member_block(state: &mut ParseState, indent: usize) {
+    if let Some(table) = state.current_table.as_mut() {
+        table.last_member = None;
+        table.member_indent = None;
+        let widen = table
+            .skip_below_indent
+            .is_none_or(|existing| indent <= existing);
+        if widen {
+            table.skip_below_indent = Some(indent);
+        }
+    }
 }
 
 fn finalize_parse_state(mut state: ParseState) -> Option<TmdlModel> {
@@ -889,14 +941,18 @@ enum MetadataTarget {
     Table,
     Column(usize),
     Measure(usize),
+    /// The line falls inside an unmodeled member block (e.g. a `hierarchy`) and
+    /// must be dropped rather than attached to any modeled object.
+    Skip,
 }
 
 /// Resolve which object a scope-sensitive metadata line (`annotation` or
 /// `lineageTag:`) attaches to.
 ///
-/// When no table is open the target is the model. Inside a table, a line
-/// indented deeper than the current column/measure member attaches to that
-/// member; otherwise it attaches to the table itself.
+/// When no table is open the target is the model. A line indented deeper than an
+/// open unmodeled member block is skipped. Otherwise a line indented deeper than
+/// the current column/measure member attaches to that member; failing that it
+/// attaches to the table itself.
 fn resolve_metadata_target(
     current_table: Option<&TmdlTableDraft>,
     indent: usize,
@@ -904,6 +960,13 @@ fn resolve_metadata_target(
     let Some(table) = current_table else {
         return MetadataTarget::Model;
     };
+
+    if table
+        .skip_below_indent
+        .is_some_and(|opened| indent > opened)
+    {
+        return MetadataTarget::Skip;
+    }
 
     if let (Some(member), Some(member_indent)) = (table.last_member.as_ref(), table.member_indent) {
         if indent > member_indent {
@@ -920,6 +983,7 @@ fn resolve_metadata_target(
 /// Attach an annotation to the object resolved for `indent`.
 fn attach_annotation(state: &mut ParseState, indent: usize, annotation: TmdlAnnotation) {
     match resolve_metadata_target(state.current_table.as_ref(), indent) {
+        MetadataTarget::Skip => {}
         MetadataTarget::Model => state.model_annotations.push(annotation),
         MetadataTarget::Table => {
             if let Some(table) = state.current_table.as_mut() {
@@ -950,6 +1014,7 @@ fn attach_annotation(state: &mut ParseState, indent: usize, annotation: TmdlAnno
 /// Attach a `lineageTag:` value to the object resolved for `indent`.
 fn attach_lineage_tag(state: &mut ParseState, indent: usize, value: String) {
     match resolve_metadata_target(state.current_table.as_ref(), indent) {
+        MetadataTarget::Skip => {}
         MetadataTarget::Model => state.model_lineage_tag = Some(value),
         MetadataTarget::Table => {
             if let Some(table) = state.current_table.as_mut() {
@@ -1296,5 +1361,39 @@ table Sales
         assert_eq!(measure.lineage_tag.as_deref(), Some("measure-guid-1"));
         assert_eq!(measure.annotations.len(), 1);
         assert_eq!(measure.annotations[0].name, "DisplayFolder");
+    }
+
+    #[test]
+    fn parse_hierarchy_does_not_corrupt_member_metadata() {
+        let Some(model) = parse_tmdl_document(
+            "
+table Date
+  column Year
+    dataType: int64
+    lineageTag: column-guid-1
+    annotation ColAnno = colval
+
+  hierarchy 'Calendar'
+    lineageTag: hierarchy-guid
+    annotation HierAnno = hierval
+    level Year
+      column: Year
+",
+        ) else {
+            panic!("fixture should parse");
+        };
+
+        assert_eq!(model.tables.len(), 1);
+        let table = &model.tables[0];
+        assert_eq!(table.columns.len(), 1);
+        let column = &table.columns[0];
+        // The hierarchy's nested lineageTag/annotation must NOT overwrite or
+        // pollute the preceding column's own metadata.
+        assert_eq!(column.lineage_tag.as_deref(), Some("column-guid-1"));
+        assert_eq!(column.annotations.len(), 1);
+        assert_eq!(column.annotations[0].name, "ColAnno");
+        // The hierarchy metadata is dropped, not mis-attached to the table.
+        assert_eq!(table.lineage_tag, None);
+        assert!(table.annotations.is_empty());
     }
 }
