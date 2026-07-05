@@ -158,7 +158,9 @@ pub enum IpcError {
 pub enum DaemonError {
     #[error("Failed to spawn daemon process: {reason}")]
     SpawnFailed { reason: String },
-    #[error("Daemon failed to reach Ready state within {timeout_ms}ms")]
+    #[error(
+        "Daemon failed to reach Ready state within {timeout_ms}ms; if startup keeps timing out, run 'engram index --direct' (or set ENGRAM_DIRECT=1) to index without the daemon"
+    )]
     NotReady { timeout_ms: u64 },
 }
 
@@ -728,5 +730,38 @@ mod tests {
         let payload = err.to_response();
         assert_eq!(payload.error.code, WORKSPACE_NOT_FOUND);
         assert_eq!(payload.error.name, "WorkspaceNotFound");
+    }
+
+    #[test]
+    fn not_ready_message_points_at_direct() {
+        let msg = DaemonError::NotReady { timeout_ms: 5000 }.to_string();
+        // The runtime timeout interpolation is preserved.
+        assert!(
+            msg.contains("5000ms"),
+            "NotReady message should retain the timeout value: {msg}"
+        );
+        // The message signposts the daemonless escape hatch.
+        assert!(
+            msg.contains("--direct"),
+            "NotReady message should mention `--direct`: {msg}"
+        );
+        assert!(
+            msg.contains("ENGRAM_DIRECT=1"),
+            "NotReady message should mention `ENGRAM_DIRECT=1`: {msg}"
+        );
+        // No stray thiserror braces leaked into the rendered string.
+        assert!(
+            !msg.contains('{') && !msg.contains('}'),
+            "NotReady message must not contain literal braces: {msg}"
+        );
+    }
+
+    #[test]
+    fn not_ready_wire_contract_unchanged() {
+        let payload = EngramError::from(DaemonError::NotReady { timeout_ms: 5000 }).to_response();
+        // The machine-readable contract is string-independent and must not move
+        // when the human-facing message text changes.
+        assert_eq!(payload.error.code, DAEMON_NOT_READY);
+        assert_eq!(payload.error.name, "DaemonNotReady");
     }
 }
