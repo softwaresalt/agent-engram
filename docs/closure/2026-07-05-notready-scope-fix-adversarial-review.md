@@ -1,3 +1,24 @@
+---
+title: "Adversarial multi-model review — 074-S / 072.001-T NotReady --direct scope fix"
+type: closure
+date: 2026-07-05
+slug: notready-scope-fix-adversarial-review
+subject_commit: 2daf6054145590f11e2b17f630779717957c2a22
+subject_branch: 074-notready-scope-fix
+task: 072.001-T
+feature: 072-F
+shipment: 074-S
+scope: "src/errors/mod.rs, src/errors/codes.rs, src/shim/lifecycle.rs"
+reviewers: 3
+review_models:
+  - reviewer-a: gemini-3.5-flash (Tier 1)
+  - reviewer-b: gpt-5.4 (Tier 2)
+  - reviewer-c: claude-opus-4.8 (Tier 3)
+assembler_agents: 2
+verdict: APPROVE
+gate_blocking: false
+---
+
 # Adversarial Review — 074-S NotReady `--direct` scope fix
 
 - **Date:** 2026-07-05
