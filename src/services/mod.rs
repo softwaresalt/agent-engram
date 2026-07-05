@@ -32,6 +32,7 @@ pub mod powerbi_extract;
 pub mod powerbi_indexer;
 pub mod powerbi_tmdl;
 pub mod query_stats;
+pub mod reactive_sync;
 pub mod registry;
 pub mod search;
 pub mod verify;

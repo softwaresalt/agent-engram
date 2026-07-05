@@ -31,6 +31,14 @@ use crate::models::{WatchEventKind, WatcherEvent};
 /// Other file types reset the idle TTL but do not enqueue code-graph work.
 const INDEXED_EXTENSIONS: &[&str] = &["rs", "toml"];
 
+/// Markdown extensions whose changes should trigger content re-ingestion.
+///
+/// Mutations to these files map to [`ServiceAction::ReingestContent`], which the
+/// daemon's live v2 auto-sync loop drives through the `verify_markdown`
+/// conformance gate before writing content records. `mdx` is intentionally
+/// excluded: it is not ingested by the content pipeline today.
+const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown"];
+
 /// Action to take in response to a debounced [`WatcherEvent`].
 ///
 /// The daemon event consumer uses this to decide what service operation,
@@ -63,12 +71,19 @@ pub enum ServiceAction {
 /// embedding service interfaces.  Mapping rules:
 ///
 /// - `Created` or `Modified` on a supported source file → [`ServiceAction::ReindexFile`]
+/// - `Created` or `Modified` on a markdown file → [`ServiceAction::ReingestContent`]
 /// - Any event on an unsupported file type → [`ServiceAction::Skip`]
 /// - `Deleted` or `Renamed` → [`ServiceAction::Skip`]
 ///
 /// Deletions and renames map to `Skip` because a workspace-level
 /// `sync_workspace` call is required to cleanly remove orphaned nodes and edges
 /// from the code graph; a targeted per-file deletion would leave stale entries.
+/// The same rationale applies to markdown: a deleted/renamed document leaves a
+/// stale content node until the next workspace-level ingest sweeps it.
+///
+/// Markdown re-ingestion is produced here but only *consumed* by the live v2
+/// consumer loop, where it is gated on `verify_markdown` conformance. Code files
+/// take precedence over markdown when an extension somehow satisfies both sets.
 ///
 /// # Examples
 ///
@@ -93,6 +108,10 @@ pub fn adapt_event(event: &WatcherEvent) -> ServiceAction {
                 ServiceAction::ReindexFile {
                     path: event.path.clone(),
                 }
+            } else if is_markdown_file(&event.path) {
+                ServiceAction::ReingestContent {
+                    path: event.path.clone(),
+                }
             } else {
                 ServiceAction::Skip
             }
@@ -107,6 +126,13 @@ fn is_code_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| INDEXED_EXTENSIONS.contains(&ext))
+}
+
+/// Return `true` if `path` is a markdown document eligible for content reingest.
+fn is_markdown_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| MARKDOWN_EXTENSIONS.contains(&ext))
 }
 
 #[cfg(test)]
@@ -153,8 +179,59 @@ mod tests {
     }
 
     #[test]
-    fn markdown_file_modified_skips() {
+    fn markdown_modified_produces_reingest_content() {
         let event = make_event("README.md", WatchEventKind::Modified);
+        assert!(matches!(
+            adapt_event(&event),
+            ServiceAction::ReingestContent { .. }
+        ));
+    }
+
+    #[test]
+    fn markdown_created_produces_reingest_content() {
+        let event = make_event("docs/notes.md", WatchEventKind::Created);
+        assert!(matches!(
+            adapt_event(&event),
+            ServiceAction::ReingestContent { .. }
+        ));
+    }
+
+    #[test]
+    fn markdown_dot_markdown_ext_produces_reingest() {
+        let event = make_event("docs/guide.markdown", WatchEventKind::Modified);
+        assert!(matches!(
+            adapt_event(&event),
+            ServiceAction::ReingestContent { .. }
+        ));
+    }
+
+    #[test]
+    fn reingest_path_matches_event_path() {
+        let event = make_event("docs/deep/notes.md", WatchEventKind::Modified);
+        match adapt_event(&event) {
+            ServiceAction::ReingestContent { path } => {
+                assert_eq!(path, PathBuf::from("docs/deep/notes.md"));
+            }
+            other => panic!("expected ReingestContent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_deleted_skips() {
+        let event = make_event("docs/old.md", WatchEventKind::Deleted);
+        assert_eq!(adapt_event(&event), ServiceAction::Skip);
+    }
+
+    #[test]
+    fn markdown_renamed_skips() {
+        let event = make_event("docs/moved.md", WatchEventKind::Renamed);
+        assert_eq!(adapt_event(&event), ServiceAction::Skip);
+    }
+
+    #[test]
+    fn mdx_extension_skips() {
+        // `mdx` is not ingested by the content pipeline; it must not reingest.
+        let event = make_event("docs/component.mdx", WatchEventKind::Modified);
         assert_eq!(adapt_event(&event), ServiceAction::Skip);
     }
 
