@@ -1,3 +1,17 @@
+---
+date: 2026-07-04
+agent: Stage
+mode: stash-triage + grounding-spike + impl-plan + plan-review + harvest + shipment-assembly
+new_feature: 071-F
+new_shipment: 071-S
+review_gate: 071.001-R
+source_stash: FC881353
+spike_doc: docs/decisions/2026-07-04-ci-build-skip-required-check-spike.md
+plan_doc: docs/exec-plans/2026-07-04-ci-build-skip-non-code-prs-plan.md
+scope: .github/workflows/ci.yml
+status: reviewed-backlog-ready (queued for Ship to claim)
+---
+
 # Stage session memory — 2026-07-04 — 071-S CI build-skip on doc/backlog-only PRs
 
 ## Task
