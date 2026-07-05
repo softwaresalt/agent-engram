@@ -199,7 +199,7 @@ pub async fn ingest_all_sources(
 /// Returns `None` when no pattern is provided or when the pattern is invalid
 /// (a warning is logged for invalid patterns so the source is ingested in full
 /// rather than silently dropped).
-fn build_glob_filter(pattern: Option<&str>) -> Option<GlobSet> {
+pub(crate) fn build_glob_filter(pattern: Option<&str>) -> Option<GlobSet> {
     let pat = pattern?;
     let glob = match Glob::new(pat) {
         Ok(g) => g,

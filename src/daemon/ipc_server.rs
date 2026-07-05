@@ -635,6 +635,11 @@ pub async fn run_with_shutdown(
     // daemon::run). Batches events for a 2-second quiet window, then triggers
     // sync_workspace so the code graph stays current without explicit MCP calls.
     // Follows each sync with a flush_state to persist updated graph to disk.
+    //
+    // NOTE: this is the legacy v1 loop. Reactive, verify-gated markdown reingest
+    // (ServiceAction::ReingestContent) is wired into the live v2 loop only
+    // (run_with_shutdown_v2). v1 remains ReindexFile-only by design; v1↔v2 parity
+    // for markdown reingest is deferred to a separate item (064.004-T / Q2).
     {
         let state_watcher = Arc::clone(&state);
         let ttl_watcher = Arc::clone(&ttl);
@@ -1084,25 +1089,44 @@ pub async fn run_with_shutdown_v2(
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 ttl_watcher.reset();
-                let mut pending_reindex = matches!(
-                    crate::daemon::debounce::adapt_event(&event),
-                    crate::daemon::debounce::ServiceAction::ReindexFile { .. }
-                );
+                // Accumulate code-file reindex intent and (verify-gated) markdown
+                // reingest intent across the debounce window. `pending_reingest`
+                // is deduplicated by path so repeated saves collapse to one gate.
+                let mut pending_reingest: std::collections::BTreeSet<std::path::PathBuf> =
+                    std::collections::BTreeSet::new();
+                let mut pending_reindex = match crate::daemon::debounce::adapt_event(&event) {
+                    crate::daemon::debounce::ServiceAction::ReindexFile { .. } => true,
+                    crate::daemon::debounce::ServiceAction::ReingestContent { path } => {
+                        pending_reingest.insert(path);
+                        false
+                    }
+                    crate::daemon::debounce::ServiceAction::Skip => false,
+                };
 
                 while let Ok(Some(ev)) =
                     tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await
                 {
                     ttl_watcher.reset();
-                    if matches!(
-                        crate::daemon::debounce::adapt_event(&ev),
-                        crate::daemon::debounce::ServiceAction::ReindexFile { .. }
-                    ) {
-                        pending_reindex = true;
+                    match crate::daemon::debounce::adapt_event(&ev) {
+                        crate::daemon::debounce::ServiceAction::ReindexFile { .. } => {
+                            pending_reindex = true;
+                        }
+                        crate::daemon::debounce::ServiceAction::ReingestContent { path } => {
+                            pending_reingest.insert(path);
+                        }
+                        crate::daemon::debounce::ServiceAction::Skip => {}
                     }
                 }
 
-                if pending_reindex && state_watcher.try_start_indexing() {
+                if (pending_reindex || !pending_reingest.is_empty())
+                    && state_watcher.try_start_indexing()
+                {
+                    // ── Code-file reindex path (unchanged; guarded so it is a
+                    //    no-op when only markdown changed) ─────────────────────
                     let should_flush = 'sync: {
+                        if !pending_reindex {
+                            break 'sync false;
+                        }
                         let Some(snapshot) = state_watcher.snapshot_workspace().await else {
                             break 'sync false;
                         };
@@ -1132,6 +1156,25 @@ pub async fn run_with_shutdown_v2(
                             }
                         }
                     };
+
+                    // ── Reactive markdown reingest, verify-gated ──────────────
+                    // v2 consumer only: the legacy v1 `run_with_shutdown` loop is
+                    // intentionally left ReindexFile-only (v1 parity is a separate
+                    // item). Gate/verify/ingest errors log-and-continue inside the
+                    // orchestrator, so this never breaks the receive loop.
+                    if !pending_reingest.is_empty() {
+                        if let Some(snapshot) = state_watcher.snapshot_workspace().await {
+                            let ws_path = std::path::PathBuf::from(&snapshot.path);
+                            crate::services::reactive_sync::reingest_pending_markdown(
+                                &ws_path,
+                                &snapshot.data_dir,
+                                &snapshot.branch,
+                                &pending_reingest,
+                            )
+                            .await;
+                        }
+                    }
+
                     finish_indexing_and_drain_pending_sync(&state_watcher).await;
                     if should_flush {
                         if let Err(e) =
