@@ -1,3 +1,23 @@
+---
+title: "Adversarial multi-model review — 073-S / 065.004-T NotReady --direct hint"
+type: closure
+date: 2026-07-04
+slug: notready-direct-hint-adversarial-review
+subject_commit: c73553ca559f1ffba25e570283cb207f56543549
+subject_branch: 073-notready-direct-hint
+task: 065.004-T
+feature: 065-F
+shipment: 073-S
+scope: src/errors/mod.rs
+reviewers: 3
+review_models:
+  - reviewer-a2: claude-haiku-4.5 (Tier 1)
+  - reviewer-b: gpt-5.4 (Tier 2)
+  - reviewer-c: claude-opus-4.8 (Tier 3)
+verdict: APPROVE
+gate_blocking: false
+---
+
 # Adversarial Multi-Model Review — 073-S / 065.004-T NotReady `--direct` hint
 
 - **Date:** 2026-07-04
