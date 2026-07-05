@@ -62,6 +62,9 @@ pub const DAEMON_NOT_READY: u16 = 8006;
 pub const LOCK_ACQUISITION_FAILED: u16 = 8007;
 pub const LOCK_ALREADY_HELD: u16 = 8008;
 pub const WATCHER_INIT_FAILED: u16 = 8009;
+/// Respawn shutdown-wait timeout: the previous daemon failed to exit within the
+/// deadline and still holds the workspace lock (distinct from [`DAEMON_NOT_READY`]).
+pub const DAEMON_SHUTDOWN_TIMEOUT: u16 = 8010;
 
 /// Installer error codes (9xxx)
 pub const INSTALL_FAILED: u16 = 9001;

@@ -162,6 +162,15 @@ pub enum DaemonError {
         "Daemon failed to reach Ready state within {timeout_ms}ms; if startup keeps timing out, run 'engram index --direct' (or set ENGRAM_DIRECT=1) to index without the daemon"
     )]
     NotReady { timeout_ms: u64 },
+    /// The previous daemon failed to exit within the shutdown-wait deadline
+    /// during a respawn. Unlike [`DaemonError::NotReady`] (a genuine startup
+    /// timeout), the stuck daemon still holds the workspace lock, so
+    /// `--direct` / `ENGRAM_DIRECT=1` is *not* a valid escape hatch here — the
+    /// operator must stop the running daemon process first.
+    #[error(
+        "Daemon failed to shut down within {timeout_ms}ms during respawn; the previous daemon is still running and holds the workspace lock — stop the running engram daemon process, then retry"
+    )]
+    ShutdownTimeout { timeout_ms: u64 },
 }
 
 #[derive(Debug, Error)]
@@ -493,6 +502,12 @@ impl EngramError {
                     inner.to_string(),
                     Some(json!({ "timeout_ms": timeout_ms })),
                 ),
+                DaemonError::ShutdownTimeout { timeout_ms } => (
+                    DAEMON_SHUTDOWN_TIMEOUT,
+                    "DaemonShutdownTimeout",
+                    inner.to_string(),
+                    Some(json!({ "timeout_ms": timeout_ms })),
+                ),
             },
             EngramError::Lock(inner) => match inner {
                 LockError::AcquisitionFailed { path, .. } => (
@@ -762,6 +777,53 @@ mod tests {
         // The machine-readable contract is string-independent and must not move
         // when the human-facing message text changes.
         assert_eq!(payload.error.code, DAEMON_NOT_READY);
+        // Pin the literal external number so a future renumber is a visible break.
+        assert_eq!(payload.error.code, 8006);
         assert_eq!(payload.error.name, "DaemonNotReady");
+    }
+
+    #[test]
+    fn shutdown_timeout_message_omits_direct() {
+        let msg = DaemonError::ShutdownTimeout { timeout_ms: 2000 }.to_string();
+        // The runtime timeout interpolation is preserved.
+        assert!(
+            msg.contains("2000ms"),
+            "ShutdownTimeout message should retain the timeout value: {msg}"
+        );
+        // The shutdown-wait path must NOT steer users to `--direct`: the stuck
+        // daemon still holds the workspace lock, so daemonless indexing fails.
+        assert!(
+            !msg.contains("--direct"),
+            "ShutdownTimeout message must not mention `--direct`: {msg}"
+        );
+        assert!(
+            !msg.contains("ENGRAM_DIRECT"),
+            "ShutdownTimeout message must not mention `ENGRAM_DIRECT`: {msg}"
+        );
+        // It is a shutdown-oriented message that points at the held lock.
+        assert!(
+            msg.to_lowercase().contains("shut down"),
+            "ShutdownTimeout message should describe a shutdown timeout: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("lock"),
+            "ShutdownTimeout message should mention the held workspace lock: {msg}"
+        );
+        // No stray thiserror braces leaked into the rendered string.
+        assert!(
+            !msg.contains('{') && !msg.contains('}'),
+            "ShutdownTimeout message must not contain literal braces: {msg}"
+        );
+    }
+
+    #[test]
+    fn shutdown_timeout_wire_contract() {
+        let payload =
+            EngramError::from(DaemonError::ShutdownTimeout { timeout_ms: 2000 }).to_response();
+        assert_eq!(payload.error.code, DAEMON_SHUTDOWN_TIMEOUT);
+        // Pin the literal external number so a future renumber is a visible break.
+        assert_eq!(payload.error.code, 8010);
+        assert_eq!(payload.error.name, "DaemonShutdownTimeout");
+        assert_eq!(payload.error.details, Some(json!({ "timeout_ms": 2000 })));
     }
 }
