@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, IngestionError};
-use crate::models::registry::{ContentSource, RegistryConfig};
+use crate::models::registry::{ContentSource, ContentSourceStatus, RegistryConfig};
 use crate::services::ingestion::{build_glob_filter, ingest_single_file};
 use crate::services::verify::{VerifyFinding, verify_markdown};
 
@@ -58,6 +58,9 @@ pub enum ReingestOutcome {
     SkippedNonConformant,
     /// The path is not owned by any ingestible content source; skipped.
     SkippedUnowned,
+    /// The file exceeds the registry's `max_file_size_bytes`; skipped by a
+    /// metadata precheck without reading the document into memory.
+    SkippedOversize,
 }
 
 /// Pure verify-gate decision for a markdown document.
@@ -85,14 +88,33 @@ pub fn markdown_gate_decision(rel_path: &str, content: &str) -> Result<GateDecis
     }
 }
 
+/// Content-source types that the startup
+/// [`ingest_all_sources`](crate::services::ingestion::ingest_all_sources) path
+/// routes to **dedicated indexers** (code-graph, backlog, notebook, Power BI,
+/// PBIP) instead of the generic markdown/content path. A `.md` mutation
+/// physically under one of these sources must be skipped reactively: the startup
+/// re-index would never write a generic `content_record` for it, so ingesting it
+/// here would diverge the database from a fresh restart re-index (finding C-2).
+///
+/// This is an allowlist expressed by exclusion so it stays a faithful mirror of
+/// the startup routing: every *other* type — the built-in generic types
+/// (`docs`/`memory`/`spec`/`context`/`instructions`/…) **and** any custom
+/// content type — falls through to the generic path in `ingest_all_sources` and
+/// is therefore ingestible here. Enumerating an explicit positive allowlist
+/// would wrongly skip custom generic types the startup path *does* ingest.
+const DEDICATED_INDEXER_TYPES: &[&str] = &["code", "backlog", "notebook", "powerbi", "pbip"];
+
 /// Resolve the content source that owns `rel_path` by longest path-prefix match.
 ///
-/// Sources whose `content_type` is `code` or `backlog` are excluded: code uses
-/// the code-graph indexer and backlog uses the dedicated backlog indexer, so
-/// neither participates in the generic markdown content path. Among the
-/// remaining sources, the one whose declared `path` is the longest prefix of
-/// `rel_path` (on a `/`-segment boundary) wins. Returns `None` when no source
-/// owns the path.
+/// Only `Active` sources (per [`ContentSourceStatus`]) whose `content_type` uses
+/// the generic markdown content path are eligible. Sources routed to dedicated
+/// indexers (see [`DEDICATED_INDEXER_TYPES`]) and sources that failed validation
+/// (`Missing`/`Error`/`Unknown`) are excluded, mirroring the startup
+/// [`ingest_all_sources`](crate::services::ingestion::ingest_all_sources)
+/// behaviour so a reactive ingest never diverges from a fresh restart re-index.
+/// Among the remaining sources, the one whose declared `path` is the longest
+/// prefix of `rel_path` (on a `/`-segment boundary) wins. Returns `None` when no
+/// eligible source owns the path.
 ///
 /// `rel_path` is expected workspace-relative; both it and each source path are
 /// normalised so `\` separators (Windows) and trailing slashes do not affect
@@ -106,7 +128,15 @@ pub fn resolve_content_source<'a>(
     let mut best: Option<&ContentSource> = None;
     let mut best_len: Option<usize> = None;
     for source in sources {
-        if source.content_type == "code" || source.content_type == "backlog" {
+        // C-3/R2: only ingest into validated, active sources. A Missing/Error
+        // source is skipped exactly as the startup ingest path skips it.
+        if source.status != ContentSourceStatus::Active {
+            continue;
+        }
+        // C-2/R1: skip content types routed to dedicated indexers; ingesting a
+        // `.md` under them via the generic content path would create records the
+        // startup re-index never writes (DB divergence after a restart).
+        if DEDICATED_INDEXER_TYPES.contains(&source.content_type.as_str()) {
             continue;
         }
         let src_owned = source.path.replace('\\', "/");
@@ -132,8 +162,10 @@ pub fn resolve_content_source<'a>(
 ///
 /// Resolves the file's owning [`ContentSource`] via [`resolve_content_source`];
 /// if unowned, returns [`ReingestOutcome::SkippedUnowned`] without reading the
-/// file or touching the database. Otherwise the file is read and passed through
-/// [`markdown_gate_decision`]: conformant documents are ingested via
+/// file or touching the database. A metadata size precheck then rejects files
+/// larger than `max_file_size_bytes` ([`ReingestOutcome::SkippedOversize`])
+/// before the document is buffered. Otherwise the file is read and passed
+/// through [`markdown_gate_decision`]: conformant documents are ingested via
 /// [`ingest_single_file`](crate::services::ingestion::ingest_single_file);
 /// non-conformant documents are logged at `warn` and skipped
 /// ([`ReingestOutcome::SkippedNonConformant`]).
@@ -167,6 +199,26 @@ pub async fn verify_gated_reingest(
         );
         return Ok(ReingestOutcome::SkippedUnowned);
     };
+
+    // C-4/R3: reject oversize files by metadata before buffering the whole
+    // document, matching the `max_file_size_bytes` limit `ingest_single_file`
+    // enforces (which is only reached *after* this read). Avoids pulling a large
+    // file into memory just to gate it.
+    let metadata = tokio::fs::metadata(file_path)
+        .await
+        .map_err(|e| IngestionError::Failed {
+            path: rel_path.clone(),
+            reason: format!("cannot stat markdown for verify gate: {e}"),
+        })?;
+    if metadata.len() > config.max_file_size_bytes {
+        warn!(
+            path = %rel_path,
+            size = metadata.len(),
+            max = config.max_file_size_bytes,
+            "reactive reingest: skipped oversize markdown"
+        );
+        return Ok(ReingestOutcome::SkippedOversize);
+    }
 
     let content =
         tokio::fs::read_to_string(file_path)
@@ -258,7 +310,11 @@ pub async fn reingest_pending_markdown(
         let file_path = workspace_root.join(rel);
         match verify_gated_reingest(&file_path, workspace_root, &config, &queries).await {
             Ok(ReingestOutcome::Ingested) => ingested += 1,
-            Ok(ReingestOutcome::SkippedNonConformant | ReingestOutcome::SkippedUnowned) => {
+            Ok(
+                ReingestOutcome::SkippedNonConformant
+                | ReingestOutcome::SkippedUnowned
+                | ReingestOutcome::SkippedOversize,
+            ) => {
                 skipped += 1;
             }
             Err(e) => {
@@ -395,6 +451,53 @@ mod tests {
         // A markdown file under a code source is not owned by the content path.
         assert!(resolve_content_source("src/README.md", &sources).is_none());
         assert!(resolve_content_source(".backlogit/queue/x.md", &sources).is_none());
+    }
+
+    #[test]
+    fn resolve_excludes_dedicated_indexer_sources() {
+        // `.md` physically under a dedicated-indexer source must not resolve to
+        // the generic content path: startup routes these to their own indexers,
+        // so a reactive generic ingest would diverge the DB from a restart
+        // re-index (finding C-2/R1).
+        for content_type in ["powerbi", "notebook", "pbip", "code", "backlog"] {
+            let source = ContentSource {
+                content_type: content_type.to_string(),
+                language: None,
+                path: "reports".to_string(),
+                pattern: None,
+                optional: false,
+                status: ContentSourceStatus::Active,
+            };
+            assert!(
+                resolve_content_source("reports/readme.md", std::slice::from_ref(&source))
+                    .is_none(),
+                "a .md under a `{content_type}` source must not resolve to the generic path"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_skips_inactive_source() {
+        // A source that failed validation (Missing/Error) or is unhydrated
+        // (Unknown) is skipped, mirroring the startup ingest path (C-3/R2).
+        for status in [
+            ContentSourceStatus::Missing,
+            ContentSourceStatus::Error,
+            ContentSourceStatus::Unknown,
+        ] {
+            let source = ContentSource {
+                content_type: "docs".to_string(),
+                language: None,
+                path: "docs".to_string(),
+                pattern: None,
+                optional: false,
+                status,
+            };
+            assert!(
+                resolve_content_source("docs/notes.md", std::slice::from_ref(&source)).is_none(),
+                "a non-Active ({status:?}) source must not own any path"
+            );
+        }
     }
 
     #[test]
@@ -559,6 +662,80 @@ mod tests {
         assert!(
             docs.is_empty(),
             "unowned path must not ingest into any source"
+        );
+    }
+
+    #[tokio::test]
+    async fn markdown_under_dedicated_indexer_source_is_not_ingested() {
+        // Regression for C-2/R1: a conformant `.md` physically under a powerbi
+        // source must be skipped (as unowned by the generic path), never
+        // ingested — otherwise the reactive path writes a generic content_record
+        // the startup powerbi indexer would never create, diverging the DB.
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let db_dir = TempDir::new().expect("db tempdir");
+        let queries = setup_db(&db_dir, "powerbi-md").await;
+        let powerbi = ContentSource {
+            content_type: "powerbi".to_string(),
+            language: None,
+            path: "reports".to_string(),
+            pattern: None,
+            optional: false,
+            status: ContentSourceStatus::Active,
+        };
+        let config = config_with(vec![powerbi]);
+
+        let file = write_markdown(
+            workspace.path(),
+            "reports/model.md",
+            "# Model\n\nConformant, but under a dedicated-indexer source.\n",
+        );
+
+        let outcome = verify_gated_reingest(&file, workspace.path(), &config, &queries)
+            .await
+            .expect("gate should not error");
+        assert_eq!(outcome, ReingestOutcome::SkippedUnowned);
+
+        let records = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select powerbi content records");
+        assert!(
+            records.is_empty(),
+            "a .md under a powerbi source must not create a generic content record"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversize_markdown_is_skipped_by_metadata_precheck() {
+        // C-4/R3: an otherwise-conformant file larger than max_file_size_bytes
+        // is rejected by the metadata precheck without ingesting.
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let db_dir = TempDir::new().expect("db tempdir");
+        let queries = setup_db(&db_dir, "oversize-md").await;
+        let config = RegistryConfig {
+            sources: vec![docs_source()],
+            max_file_size_bytes: 8, // tiny limit; the document below exceeds it
+            batch_size: 50,
+        };
+
+        let file = write_markdown(
+            workspace.path(),
+            "docs/big.md",
+            "# Big\n\nThis conformant document exceeds the tiny size limit.\n",
+        );
+
+        let outcome = verify_gated_reingest(&file, workspace.path(), &config, &queries)
+            .await
+            .expect("gate should not error on oversize markdown");
+        assert_eq!(outcome, ReingestOutcome::SkippedOversize);
+
+        let records = queries
+            .select_content_records(Some("docs"))
+            .await
+            .expect("select docs content records");
+        assert!(
+            records.is_empty(),
+            "oversize markdown must not write any content record"
         );
     }
 }
