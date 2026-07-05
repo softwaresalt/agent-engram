@@ -390,7 +390,7 @@ async fn wait_for_daemon_exit(endpoint: &str, pid_hint: Option<u32>) -> Result<(
         }
 
         if tokio::time::Instant::now() >= deadline {
-            return Err(EngramError::Daemon(DaemonError::NotReady {
+            return Err(EngramError::Daemon(DaemonError::ShutdownTimeout {
                 timeout_ms: SHUTDOWN_WAIT_TIMEOUT_MS,
             }));
         }
