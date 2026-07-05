@@ -1,10 +1,47 @@
 name: CI
 
+# Trigger filtering (071-S): skip the Rust build on doc/backlog-only changes.
+# `paths-ignore` uses all-match semantics — a push/PR is skipped ONLY when every
+# changed file matches a pattern below. Any non-ignored file (**/*.rs, Cargo.toml,
+# Cargo.lock, **/*.toml, .github/workflows/**, src/**, crates/**, scripts/**,
+# examples/**) re-arms the FULL fmt → clippy → test → audit sequence, so code-PR
+# coverage is never weakened.
+#
+# Markdown is SCOPED, not blanket: only doc markdown is ignored (docs/**, root
+# *.md, .github/**/*.md, scripts/**/*.md). EXECUTABLE markdown re-arms CI on
+# purpose — notably tests/**/*.md, i.e. the verify fixtures
+# tests/fixtures/verify/{conformant,malformed}.md consumed by
+# tests/integration/cli_verify_test.rs (asserting exit 0/1), plus any future
+# crate README wired into the build via include_str!/doctests. A blanket **/*.md
+# would under-run and let fixture breakage merge silently (adversarial-review P1;
+# docs/closure/2026-07-04-ci-build-skip-adversarial-review.md).
+#
+# REQUIRED-CHECK CONTINGENCY: safe today only because `build` is NOT a required
+# status check on `main`
+# (docs/decisions/2026-07-04-ci-build-skip-required-check-spike.md). If `build` is
+# ever promoted to a required status check, paths-ignore would make doc-only PRs
+# hang on "Expected — Waiting for status to be reported"; at that point replace
+# paths-ignore with a companion always-passing job publishing the same `build`
+# check name (docs/exec-plans/2026-07-04-ci-build-skip-non-code-prs-plan.md).
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '.backlogit/**'
+      - 'docs/**'
+      - '.autoharness/**'
+      - '*.md'                # root README/CHANGELOG/AGENTS.md
+      - '.github/**/*.md'     # instructions/prompts/agents
+      - 'scripts/**/*.md'     # scripts/metrics/README.md
   pull_request:
+    paths-ignore:
+      - '.backlogit/**'
+      - 'docs/**'
+      - '.autoharness/**'
+      - '*.md'                # root README/CHANGELOG/AGENTS.md
+      - '.github/**/*.md'     # instructions/prompts/agents
+      - 'scripts/**/*.md'     # scripts/metrics/README.md
 
 permissions:
   contents: read

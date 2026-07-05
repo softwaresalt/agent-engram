@@ -82,14 +82,18 @@ on:
     paths-ignore:
       - '.backlogit/**'
       - 'docs/**'
-      - '**/*.md'
       - '.autoharness/**'
+      - '*.md'                # root README/CHANGELOG/AGENTS.md
+      - '.github/**/*.md'     # instructions/prompts/agents
+      - 'scripts/**/*.md'     # scripts/metrics/README.md
   pull_request:
     paths-ignore:
       - '.backlogit/**'
       - 'docs/**'
-      - '**/*.md'
       - '.autoharness/**'
+      - '*.md'                # root README/CHANGELOG/AGENTS.md
+      - '.github/**/*.md'     # instructions/prompts/agents
+      - 'scripts/**/*.md'     # scripts/metrics/README.md
 ```
 
 ### Path-set rationale (deliberately tight — bias to over-run, never under-run)
@@ -98,14 +102,30 @@ on:
 |---|---|---|
 | `.backlogit/**` | Backlog markdown/JSONL; queue↔archive moves. Source of the 067-S..070-S closure-PR waste. | — |
 | `docs/**` | decisions / exec-plans / memory / guides. All spike & planning PRs. | — |
-| `**/*.md` | README, CHANGELOG, crate READMEs, `.github/instructions/*.md` anywhere. | — |
+| `*.md` (root only) | README, CHANGELOG, AGENTS.md at repo root. `*` does not cross `/`, so this is root-only. | Markdown deeper in the tree unless matched by a scoped pattern below — notably `tests/**/*.md` (executable), which re-arms CI. |
+| `.github/**/*.md` | `.github/instructions/*.md`, prompts, agents docs. | — |
+| `scripts/**/*.md` | `scripts/**` READMEs / metrics docs. | — |
 | `.autoharness/**` | Harness registry/staging state (non-code), touched by staging PRs. | — |
+
+> **Why scoped markdown globs, not a blanket `**/*.md` (never under-run).**
+> Adversarial review (`docs/closure/2026-07-04-ci-build-skip-adversarial-review.md`,
+> unanimous P1) found that a blanket `**/*.md` matches the **executable** verify
+> fixtures `tests/fixtures/verify/{conformant,malformed}.md` — on-disk inputs
+> consumed by `tests/integration/cli_verify_test.rs` (`verify_in` asserting exit
+> 0/1). A fixture-only edit under a blanket `**/*.md` would **skip CI and let
+> breakage merge silently**, violating the "never under-run" invariant. The
+> markdown ignore is therefore scoped to doc surfaces (`*.md` root, `.github/**/*.md`,
+> `scripts/**/*.md`; `docs/**` already covers doc markdown), so `tests/fixtures/**/*.md`
+> — and any future crate README wired into the build via `include_str!`/doctests —
+> re-arm CI. GitHub does **not** reliably support `!`-negation in `paths-ignore`,
+> so a scoped-glob allow-list is used rather than a `!tests/**/*.md` exclusion.
 
 **Intentionally NOT ignored (so CI still runs):** `**/*.rs`, `Cargo.toml`,
 `Cargo.lock`, `*.toml` (incl. `rust-toolchain.toml`, `release.toml`),
 `.github/workflows/**` (validate CI config changes), `scripts/**`,
-`examples/**`, `crates/**` source, `src/**`. Any of these in a PR re-arms the
-full build. This is the safe default: a mixed doc+code PR always runs.
+`examples/**`, `crates/**` source, `src/**`, and **`tests/**/*.md`** (executable
+verify fixtures — see the scoped-markdown note above). Any of these in a PR
+re-arms the full build. This is the safe default: a mixed doc+code PR always runs.
 
 ### paths-ignore semantics we are relying on (documented, not assumed)
 
