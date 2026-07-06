@@ -3,7 +3,9 @@
 //! Validates serde round-trip, summary aggregation, config defaults,
 //! and `BTreeMap` deterministic ordering.
 
-use engram::models::metrics::{MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent};
+use engram::models::metrics::{
+    MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent, correlation_metrics,
+};
 use std::collections::BTreeMap;
 
 /// AC#1: `UsageEvent` serializes to JSON and round-trips via `serde_json`.
@@ -105,6 +107,70 @@ fn t010_01_metrics_summary_from_events() {
     assert!(summary.by_tool.contains_key("list_symbols"));
 }
 
+/// 075-S: `from_events` computes per-correlation-id adoption metrics.
+#[test]
+fn t075_metrics_summary_correlation_aggregation() {
+    // GIVEN events across two harness tasks (correlation ids) plus one
+    // uncorrelated event.
+    let events = vec![
+        usage_event_with_correlation("map_code", 1000, "2026-07-05T10:00:00Z", Some("task-A")),
+        usage_event_with_correlation("list_symbols", 500, "2026-07-05T10:01:00Z", Some("task-A")),
+        usage_event_with_correlation("map_code", 800, "2026-07-05T10:05:00Z", Some("task-A")),
+        usage_event_with_correlation(
+            "unified_search",
+            400,
+            "2026-07-05T11:00:00Z",
+            Some("task-B"),
+        ),
+        usage_event_with_correlation("map_code", 300, "2026-07-05T12:00:00Z", None),
+    ];
+
+    // WHEN computing a summary
+    let summary = MetricsSummary::from_events(&events);
+    let by_correlation_id = correlation_metrics(&events);
+
+    // THEN adoption breadth counts every distinct tool (map_code, list_symbols,
+    // unified_search) across all events, including the uncorrelated one.
+    assert_eq!(summary.unique_tools_exercised, 3);
+
+    // AND adoption reach counts only distinct non-empty correlation ids.
+    assert_eq!(summary.distinct_correlation_ids, 2);
+    assert_eq!(by_correlation_id.len(), 2);
+
+    // AND task-A rolls up its three calls across two distinct tools.
+    let task_a = by_correlation_id
+        .get("task-A")
+        .unwrap_or_else(|| panic!("task-A should be present"));
+    assert_eq!(task_a.call_count, 3);
+    assert_eq!(task_a.unique_tools, 2);
+    assert_eq!(task_a.time_range.start, "2026-07-05T10:00:00Z");
+    assert_eq!(task_a.time_range.end, "2026-07-05T10:05:00Z");
+
+    // AND task-B has a single call to a single tool.
+    let task_b = by_correlation_id
+        .get("task-B")
+        .unwrap_or_else(|| panic!("task-B should be present"));
+    assert_eq!(task_b.call_count, 1);
+    assert_eq!(task_b.unique_tools, 1);
+
+    // AND the uncorrelated event still counts toward the top-level total.
+    assert_eq!(summary.total_tool_calls, 5);
+}
+
+/// 075-S: an empty correlation id is treated as "not supplied".
+#[test]
+fn t075_empty_correlation_id_excluded() {
+    let events = vec![
+        usage_event_with_correlation("map_code", 100, "2026-07-05T10:00:00Z", Some("")),
+        usage_event_with_correlation("map_code", 100, "2026-07-05T10:01:00Z", Some("real-task")),
+    ];
+    let summary = MetricsSummary::from_events(&events);
+    let by_correlation_id = correlation_metrics(&events);
+    assert_eq!(summary.distinct_correlation_ids, 1);
+    assert!(by_correlation_id.contains_key("real-task"));
+    assert!(!by_correlation_id.contains_key(""));
+}
+
 /// AC#3: `MetricsConfig` defaults to `enabled=true`, `buffer_size=1024`.
 #[test]
 fn t010_01_metrics_config_defaults() {
@@ -178,6 +244,8 @@ fn t010_01_btreemap_deterministic_ordering() {
             end: "2026-03-27T00:00:00Z".to_string(),
         },
         session_count: 1,
+        unique_tools_exercised: 2,
+        distinct_correlation_ids: 0,
     };
 
     // WHEN serialized to JSON
@@ -215,5 +283,17 @@ fn usage_event(tool: &str, response_bytes: u64, timestamp: &str) -> UsageEvent {
         completion_tokens_attributed: None,
         cached_tokens_attributed: None,
         ..Default::default()
+    }
+}
+
+fn usage_event_with_correlation(
+    tool: &str,
+    response_bytes: u64,
+    timestamp: &str,
+    correlation_id: Option<&str>,
+) -> UsageEvent {
+    UsageEvent {
+        correlation_id: correlation_id.map(str::to_owned),
+        ..usage_event(tool, response_bytes, timestamp)
     }
 }

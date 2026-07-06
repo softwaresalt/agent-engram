@@ -132,6 +132,8 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
                     end: "2026-03-27T12:59:00Z".to_owned(),
                 },
                 session_count: 0,
+                unique_tools_exercised: 0,
+                distinct_correlation_ids: 0,
             }
         },
     )

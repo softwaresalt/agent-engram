@@ -50,8 +50,12 @@ tmp/
 # Contains mutation testing data
 **/mutants.out*/
 
-# engram plugin (workspace-local state)
+# Engram runtime data (keep templates/, registry.yaml, .version)
 .engram/
+!.engram/.version
+!.engram/.workspace-id
+!.engram/config.toml
+!.engram/registry.yaml
 
 # Agent file locks (autoharness file-lock skill)
 .*.lock
@@ -59,10 +63,6 @@ tmp/
 
 # fd-lock advisory lock sidecar for CozoDB SQLite (transient, OS-managed)
 **/*.db.lock
-
-# Global harness management agents injected by start.ps1 at CLI launch
-# These are copies from the autoharness global install — not workspace-owned.
-.github/local-agents/
 
 # Autoharness staging verification reports (machine-specific paths, not portable)
 .autoharness/backups/
