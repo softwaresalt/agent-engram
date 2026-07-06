@@ -159,7 +159,7 @@ pub enum DaemonError {
     #[error("Failed to spawn daemon process: {reason}")]
     SpawnFailed { reason: String },
     #[error(
-        "Daemon failed to reach Ready state within {timeout_ms}ms; if startup keeps timing out, run 'engram index --direct' (or set ENGRAM_DIRECT=1) to index without the daemon"
+        "Daemon failed to reach Ready state within {timeout_ms}ms. If the engram daemon process has exited, run 'engram index --direct' (or set ENGRAM_DIRECT=1) to index without the daemon. If a daemon process is still running, --direct will fail while it holds the workspace lock — wait and retry if it is still starting up, or stop that engram process if it appears stuck."
     )]
     NotReady { timeout_ms: u64 },
     /// The previous daemon failed to exit within the shutdown-wait deadline
@@ -763,6 +763,23 @@ mod tests {
         assert!(
             msg.contains("ENGRAM_DIRECT=1"),
             "NotReady message should mention `ENGRAM_DIRECT=1`: {msg}"
+        );
+        // F1 (E0659C5C): the hint must also cover the startup-hydration-hang
+        // sub-case where a daemon is still running and holds the workspace lock,
+        // so `--direct` would fail with AlreadyHeld. The message must both name
+        // the exited-daemon branch (where `--direct` is valid) and tell the user
+        // to stop a stuck daemon, otherwise the `--direct` hint is misleading.
+        assert!(
+            msg.contains("exited"),
+            "NotReady message should name the exited-daemon branch: {msg}"
+        );
+        assert!(
+            msg.contains("stop"),
+            "NotReady message should tell the user to stop a stuck daemon: {msg}"
+        );
+        assert!(
+            msg.contains("lock"),
+            "NotReady message should mention the held workspace lock: {msg}"
         );
         // No stray thiserror braces leaked into the rendered string.
         assert!(
