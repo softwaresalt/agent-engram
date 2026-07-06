@@ -3,7 +3,7 @@
 //! Provides usage event recording, summary aggregation, and configuration
 //! types for measuring engram's token delivery to AI coding assistants.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -271,6 +271,43 @@ pub struct MetricsSummary {
     pub time_range: TimeRange,
     /// Distinct session count.
     pub session_count: u32,
+    /// Count of distinct tools exercised across all recorded events.
+    ///
+    /// Adoption-breadth signal: how many of engram's tool surfaces the harness
+    /// actually touched. Equals `by_tool.len()`. Defaults to `0` for summaries
+    /// deserialized from records written before this field existed.
+    #[serde(default)]
+    pub unique_tools_exercised: u32,
+    /// Count of distinct non-empty correlation ids observed.
+    ///
+    /// Adoption-reach signal: how many distinct harness tasks/sessions
+    /// (identified by `correlation_id`) invoked engram at least once. Events
+    /// without a correlation id do not contribute to this count.
+    #[serde(default)]
+    pub distinct_correlation_ids: u32,
+    /// Per-correlation-id usage breakdown (deterministic ordering via `BTreeMap`).
+    ///
+    /// Keyed by the caller-supplied `correlation_id`, so autoharness can tie
+    /// engram usage back to a specific harness task or session. Events without
+    /// a correlation id are excluded from this map (but still counted in the
+    /// top-level totals). Defaults to empty for back-compat deserialization.
+    #[serde(default)]
+    pub by_correlation_id: BTreeMap<String, CorrelationMetrics>,
+}
+
+/// Per-correlation-id usage metrics.
+///
+/// Answers "how much did a single harness task/session use engram?" for one
+/// `correlation_id`. Used to quantify the extent of engram adoption per unit of
+/// harness work.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CorrelationMetrics {
+    /// Number of tool calls recorded for this correlation id.
+    pub call_count: u64,
+    /// Count of distinct tools exercised under this correlation id.
+    pub unique_tools: u32,
+    /// Time range spanned by this correlation id's events.
+    pub time_range: TimeRange,
 }
 
 /// Per-tool metrics breakdown.
@@ -304,7 +341,7 @@ pub struct SymbolCount {
 }
 
 /// Time range for a metrics collection period.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TimeRange {
     /// RFC 3339 start timestamp.
     pub start: String,
@@ -376,6 +413,9 @@ impl MetricsSummary {
         let mut total_output_tokens = 0_u64;
         let mut total_result_count = 0_u64;
         let mut session_ids = std::collections::BTreeSet::new();
+        // Per-correlation-id accumulators: (call_count, distinct tools, min_ts, max_ts).
+        let mut correlation_acc: BTreeMap<String, (u64, BTreeSet<String>, String, String)> =
+            BTreeMap::new();
 
         for event in events {
             let output_tokens = event.output_tokens();
@@ -421,6 +461,28 @@ impl MetricsSummary {
             if let Some(connection_id) = &event.connection_id {
                 session_ids.insert(connection_id.clone());
             }
+
+            if let Some(correlation_id) = event.correlation_id.as_ref().filter(|id| !id.is_empty())
+            {
+                let entry = correlation_acc
+                    .entry(correlation_id.clone())
+                    .or_insert_with(|| {
+                        (
+                            0,
+                            BTreeSet::new(),
+                            event.timestamp.clone(),
+                            event.timestamp.clone(),
+                        )
+                    });
+                entry.0 = entry.0.saturating_add(1);
+                entry.1.insert(event.tool_name.clone());
+                if event.timestamp < entry.2 {
+                    entry.2.clone_from(&event.timestamp);
+                }
+                if event.timestamp > entry.3 {
+                    entry.3.clone_from(&event.timestamp);
+                }
+            }
         }
 
         for metrics in by_tool.values_mut() {
@@ -458,6 +520,20 @@ impl MetricsSummary {
             }
         };
 
+        let by_correlation_id: BTreeMap<String, CorrelationMetrics> = correlation_acc
+            .into_iter()
+            .map(|(id, (call_count, tools, start, end))| {
+                (
+                    id,
+                    CorrelationMetrics {
+                        call_count,
+                        unique_tools: u32::try_from(tools.len()).unwrap_or(u32::MAX),
+                        time_range: TimeRange { start, end },
+                    },
+                )
+            })
+            .collect();
+
         Self {
             total_tool_calls: u64::try_from(events.len()).unwrap_or(u64::MAX),
             total_tokens,
@@ -466,6 +542,9 @@ impl MetricsSummary {
             total_input_tokens,
             total_output_tokens,
             total_result_count,
+            unique_tools_exercised: u32::try_from(by_tool.len()).unwrap_or(u32::MAX),
+            distinct_correlation_ids: u32::try_from(by_correlation_id.len()).unwrap_or(u32::MAX),
+            by_correlation_id,
             by_tool,
             top_symbols,
             time_range,

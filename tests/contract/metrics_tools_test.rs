@@ -54,6 +54,43 @@ fn write_usage_events(path: &std::path::Path, branch: &str, tool: &str, count: u
     }
 }
 
+/// Append usage events carrying a `correlation_id` for adoption-metric tests.
+fn append_usage_events_with_correlation(
+    path: &std::path::Path,
+    branch: &str,
+    tool: &str,
+    correlation_id: &str,
+    count: usize,
+) {
+    use std::io::Write as _;
+    let metrics_dir = path.join(".engram").join("metrics").join(branch);
+    std::fs::create_dir_all(&metrics_dir).unwrap_or_else(|e| panic!("create_dir failed: {e}"));
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(metrics_dir.join("usage.jsonl"))
+        .unwrap_or_else(|e| panic!("open file failed: {e}"));
+    for index in 0..count {
+        let line = serde_json::to_string(&json!({
+            "tool_name": tool,
+            "timestamp": format!("2026-07-05T12:{index:02}:00Z"),
+            "request_bytes": 120_u64,
+            "estimated_input_tokens": 30_u64,
+            "response_bytes": 400_u64,
+            "estimated_output_tokens": 100_u64,
+            "estimated_tokens": 100_u64,
+            "result_count": 1_u32,
+            "response_shape_counts": { "results": 1_u32 },
+            "symbols_returned": 1_u32,
+            "results_returned": 1_u32,
+            "branch": branch,
+            "correlation_id": correlation_id,
+        }))
+        .unwrap_or_else(|e| panic!("serialize failed: {e}"));
+        writeln!(file, "{line}").unwrap_or_else(|e| panic!("write failed: {e}"));
+    }
+}
+
 /// AC#1: `get_branch_metrics` returns valid `MetricsSummary` after recording events.
 #[tokio::test]
 async fn t010_05_get_branch_metrics_returns_summary() {
@@ -169,6 +206,37 @@ async fn t010_05_get_token_savings_report() {
     assert!(report.contains("On branch main"));
     assert!(report.contains("tool calls"));
     assert!(report.contains("input tokens"));
+}
+
+/// 075-S: `get_token_savings_report` exposes structured adoption metrics.
+#[tokio::test]
+async fn t075_token_savings_report_includes_adoption_metrics() {
+    // GIVEN a workspace whose usage.jsonl spans two harness tasks.
+    let state = Arc::new(AppState::new(10));
+    let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
+    bind_workspace(&state, workspace.path(), "main").await;
+    append_usage_events_with_correlation(workspace.path(), "main", "map_code", "task-A", 2);
+    append_usage_events_with_correlation(workspace.path(), "main", "list_symbols", "task-A", 1);
+    append_usage_events_with_correlation(workspace.path(), "main", "unified_search", "task-B", 1);
+
+    // WHEN dispatching get_token_savings_report
+    let result = tools::dispatch(state.clone(), "get_token_savings_report", None).await;
+
+    // THEN the response carries a structured `metrics` object alongside the
+    // existing prose `report`, without breaking the legacy fields.
+    let value = result.unwrap_or_else(|e| panic!("report should succeed: {e}"));
+    assert!(value["report"].is_string(), "legacy report field retained");
+    let metrics = &value["metrics"];
+    assert_eq!(metrics["total_tool_calls"], 4);
+    assert_eq!(metrics["unique_tools_exercised"], 3);
+    assert_eq!(metrics["distinct_correlation_ids"], 2);
+    assert_eq!(metrics["by_correlation_id"]["task-A"]["call_count"], 3);
+    assert_eq!(metrics["by_correlation_id"]["task-A"]["unique_tools"], 2);
+    assert_eq!(metrics["by_correlation_id"]["task-B"]["call_count"], 1);
+    assert!(
+        metrics["schema_version"].is_number(),
+        "adoption metrics carry the pinned usage schema version"
+    );
 }
 
 /// AC#6: `get_health_report` includes `metrics_summary` field.

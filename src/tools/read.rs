@@ -1017,6 +1017,19 @@ pub async fn get_token_savings_report(
             summary.total_result_count,
             average_tokens,
         ),
+        // 075-S adoption metrics: structured breakdown so autoharness can
+        // quantify how much it exercises engram. Additive — the `branch` and
+        // `report` fields above are unchanged for existing consumers.
+        "metrics": {
+            "schema_version": crate::models::metrics::USAGE_SCHEMA_VERSION,
+            "total_tool_calls": summary.total_tool_calls,
+            "unique_tools_exercised": summary.unique_tools_exercised,
+            "distinct_correlation_ids": summary.distinct_correlation_ids,
+            "session_count": summary.session_count,
+            "time_range": summary.time_range,
+            "by_tool": summary.by_tool,
+            "by_correlation_id": summary.by_correlation_id,
+        },
     }))
 }
 

@@ -51,7 +51,7 @@ fn should_record_metrics(method: &str) -> bool {
             | "set_workspace"
             | "sync_workspace"
             | "index_workspace"
-    ) || cfg!(feature = "git-graph") && method == "query_changes"
+    ) || cfg!(feature = "git-graph") && matches!(method, "query_changes" | "index_git_history")
 }
 
 /// Build a coarse, privacy-preserving `params_summary` from request params.
@@ -406,8 +406,20 @@ mod tests {
         assert!(should_record_metrics("index_workspace"));
         // Existing coverage retained.
         assert!(should_record_metrics("unified_search"));
-        // Non-emitting method stays excluded.
+        // 075-S: flush_state stays excluded — it is an internal lifecycle
+        // operation, not an agent-facing query, so it is intentionally not part
+        // of the adoption-measurement surface.
         assert!(!should_record_metrics("flush_state"));
+    }
+
+    #[cfg(feature = "git-graph")]
+    #[test]
+    fn should_record_metrics_covers_git_graph_tools() {
+        // 075-S: close the coverage gap so index_git_history (an agent-facing
+        // analysis tool) is measured alongside query_changes when git-graph is
+        // compiled in.
+        assert!(should_record_metrics("query_changes"));
+        assert!(should_record_metrics("index_git_history"));
     }
 
     #[test]
