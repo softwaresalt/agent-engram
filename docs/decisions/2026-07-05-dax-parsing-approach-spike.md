@@ -17,8 +17,6 @@ tags:
   - impact-analysis
 ---
 
-# DAX parsing for Power BI workspaces — approach & design
-
 ## Why this reopens the 2026-06-13 defer
 
 The prior spike (`docs/decisions/2026-06-13-dax-tree-sitter-spike.md`) concluded

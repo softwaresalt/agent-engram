@@ -7,8 +7,6 @@ shipments: [075-S, 076-S]
 prs: [213, 214, 215, 216]
 ---
 
-# Session memory — usage MEASUREMENT + F1 hint fix (075-S, 076-S)
-
 ## Objective
 
 Autonomous AFK pipeline run: drain the stash/queue to completion, adversarial

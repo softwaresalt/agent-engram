@@ -13,8 +13,6 @@ related:
   - docs/design-docs/engram-usage-telemetry-consumption-contract.md
 ---
 
-# Decision — Engram usage MEASUREMENT
-
 ## Context
 
 Shipment 067-S delivered usage-telemetry **emission**: every measured engram

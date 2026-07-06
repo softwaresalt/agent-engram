@@ -7,8 +7,6 @@ reviewer: gpt-5.4 (cross-model rubber-duck)
 verdict: ship (no blocking issues)
 ---
 
-# Review — 076-S NotReady hint fix (F1)
-
 Cross-model review (gpt-5.4) of the `DaemonError::NotReady` reword.
 
 ## Verdict
