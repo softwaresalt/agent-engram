@@ -5,6 +5,7 @@ date: 2026-06-13
 time_box: "2h"
 conclusion: "defer"
 confidence: "medium"
+superseded_by: "docs/decisions/2026-07-05-dax-parsing-approach-spike.md (consumer appeared; approach reopened)"
 linked_parent_work_item: null
 stash_id: "F7E89921"
 promoted_to: ["none"]
