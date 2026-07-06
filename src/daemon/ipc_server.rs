@@ -1222,6 +1222,26 @@ fn backfill_completed_progress(done: usize, completed_at: String) -> ScanProgres
     }
 }
 
+/// Decide the `scan_status` snapshot to write once the backfill finishes.
+///
+/// Returns a `running: false` completed snapshot whenever any `running`
+/// progress was relayed — even if `embedded == 0` (model unavailable or every
+/// write-back failed). This clears a `running: true` status that would
+/// otherwise persist forever, since `finish_indexing` does not touch
+/// `scan_progress`. Returns `None` when no running progress was relayed (there
+/// was nothing to clear).
+fn backfill_completion_snapshot(
+    relayed_running: bool,
+    embedded: usize,
+    completed_at: String,
+) -> Option<ScanProgress> {
+    if relayed_running {
+        Some(backfill_completed_progress(embedded, completed_at))
+    } else {
+        None
+    }
+}
+
 /// Run the content-embedding backfill while mirroring its progress into
 /// [`AppState::scan_progress`].
 ///
@@ -1230,8 +1250,9 @@ fn backfill_completed_progress(done: usize, completed_at: String) -> ScanProgres
 /// (potentially long) embedding phase. Relaying [`BackfillProgress`] updates
 /// keeps every status surface — `get_workspace_status`, the CLI `index`
 /// progress poller, and health — honest about the embedding phase regardless
-/// of which path triggered it. A `running: false` snapshot is written once the
-/// backfill embeds at least one record.
+/// of which path triggered it. Whenever running progress was relayed, a
+/// `running: false` snapshot is written on completion — even if nothing was
+/// embedded — so status never gets stuck reporting an in-flight backfill.
 async fn backfill_with_scan_progress(
     state: &SharedState,
     queries: &crate::db::queries::CodeGraphQueries,
@@ -1239,26 +1260,25 @@ async fn backfill_with_scan_progress(
     let (tx, mut rx) = mpsc::unbounded_channel::<crate::services::ingestion::BackfillProgress>();
     let relay_state = Arc::clone(state);
     let updater = tokio::spawn(async move {
+        let mut relayed = false;
         while let Some(p) = rx.recv().await {
+            relayed = true;
             relay_state
                 .set_scan_progress(Some(backfill_running_progress(p.done, p.total)))
                 .await;
         }
+        relayed
     });
 
     let result = crate::services::ingestion::backfill_content_embeddings(queries, Some(&tx)).await;
     drop(tx);
-    let _ = updater.await;
+    let relayed_running = updater.await.unwrap_or(false);
 
-    if let Ok(updated) = &result
-        && *updated > 0
+    let embedded = *result.as_ref().unwrap_or(&0);
+    if let Some(snapshot) =
+        backfill_completion_snapshot(relayed_running, embedded, Utc::now().to_rfc3339())
     {
-        state
-            .set_scan_progress(Some(backfill_completed_progress(
-                *updated,
-                Utc::now().to_rfc3339(),
-            )))
-            .await;
+        state.set_scan_progress(Some(snapshot)).await;
     }
 
     result
@@ -1425,6 +1445,35 @@ mod tests {
         assert_eq!(
             progress.last_completed_at.as_deref(),
             Some("2026-07-06T07:28:21Z")
+        );
+    }
+
+    #[test]
+    fn backfill_completion_snapshot_clears_running_even_when_nothing_embedded() {
+        // Regression: when running progress was relayed but the model was
+        // unavailable (embedded == 0), status must still be cleared to
+        // `running: false` — otherwise it reports indexing forever.
+        let snapshot = backfill_completion_snapshot(true, 0, "2026-07-06T07:28:21Z".to_owned())
+            .expect("relayed progress must yield a completion snapshot");
+        assert!(!snapshot.running, "status must be cleared to not-running");
+        assert_eq!(snapshot.files_scanned, 0);
+    }
+
+    #[test]
+    fn backfill_completion_snapshot_reports_embedded_count() {
+        let snapshot = backfill_completion_snapshot(true, 42, "2026-07-06T07:28:21Z".to_owned())
+            .expect("relayed progress must yield a completion snapshot");
+        assert!(!snapshot.running);
+        assert_eq!(snapshot.files_scanned, 42);
+    }
+
+    #[test]
+    fn backfill_completion_snapshot_is_none_when_no_progress_relayed() {
+        // Nothing was set to running (no pending records), so there is nothing
+        // to clear and the existing scan_status must be left untouched.
+        assert!(
+            backfill_completion_snapshot(false, 0, "2026-07-06T07:28:21Z".to_owned()).is_none(),
+            "no relayed progress means no completion snapshot"
         );
     }
 
