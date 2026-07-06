@@ -19,6 +19,15 @@ use tracing::{debug, info, warn};
 /// model token budgets and prevent excessive memory usage during backfill.
 const MAX_EMBED_CHARS: usize = 4_096;
 
+/// Number of content records processed per embedding backfill chunk.
+///
+/// Bounds both peak memory (only one chunk of texts and their vectors is in
+/// flight at a time) and progress granularity (scan status is updated once per
+/// chunk). Without chunking the backfill embeds every pending record in a
+/// single call, which pins gigabytes of ONNX runtime memory and reports no
+/// progress until it finishes.
+const EMBED_BACKFILL_CHUNK: usize = 128;
+
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, IngestionError};
 use crate::models::content::ContentRecord;
@@ -721,23 +730,46 @@ pub async fn ingest_single_file(
     Ok(true)
 }
 
+/// Progress update emitted by [`backfill_content_embeddings`] after each chunk.
+///
+/// Lets callers mirror embedding-backfill progress onto a status surface
+/// (e.g. the daemon relays this into `scan_status`) so that indexing reports
+/// progress regardless of which path triggered the backfill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackfillProgress {
+    /// Records processed so far.
+    pub done: usize,
+    /// Total records requiring an embedding.
+    pub total: usize,
+}
+
 /// Generate and store embeddings for content records that currently have none.
 ///
 /// Queries all content records, filters those lacking an embedding vector,
-/// truncates content to [`MAX_EMBED_CHARS`] characters, batch-embeds via
-/// [`crate::services::embedding::embed_texts`], and writes each vector back
-/// using [`CodeGraphQueries::update_content_record_embedding`].
+/// then processes them in [`EMBED_BACKFILL_CHUNK`]-sized chunks: each chunk is
+/// truncated to [`MAX_EMBED_CHARS`] characters, batch-embedded via
+/// [`crate::services::embedding::embed_texts`], and written back using
+/// [`CodeGraphQueries::update_content_record_embedding`]. Chunking bounds peak
+/// memory and lets progress be reported incrementally.
 ///
-/// Non-fatal: if the `embeddings` feature is disabled or the ONNX model
-/// cannot be loaded, the function returns `Ok(0)` immediately after a
-/// debug-level trace event.
+/// When `progress` is provided, a [`BackfillProgress`] update is sent before
+/// the first chunk (`done = 0`) and after each chunk completes. Send failures
+/// are ignored so a dropped receiver never aborts the backfill.
+///
+/// Non-fatal: if the `embeddings` feature is disabled or the ONNX model cannot
+/// be loaded, the function stops after a debug-level trace and returns the
+/// number of records embedded so far (`Ok(0)` when the model is unavailable
+/// from the outset).
 ///
 /// Returns the number of records that received a new embedding.
 ///
 /// # Errors
 ///
 /// Returns `EngramError` only on database query failures.
-pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<usize, EngramError> {
+pub async fn backfill_content_embeddings(
+    queries: &CodeGraphQueries,
+    progress: Option<&tokio::sync::mpsc::UnboundedSender<BackfillProgress>>,
+) -> Result<usize, EngramError> {
     let records = queries.select_content_records(None).await?;
 
     let pending: Vec<_> = records
@@ -745,49 +777,69 @@ pub async fn backfill_content_embeddings(queries: &CodeGraphQueries) -> Result<u
         .filter(|r| r.embedding.as_ref().is_none_or(Vec::is_empty))
         .collect();
 
-    if pending.is_empty() {
+    let total = pending.len();
+    if total == 0 {
         debug!("content embedding backfill: all records already have embeddings");
         return Ok(0);
     }
 
     info!(
-        count = pending.len(),
+        count = total,
         "content embedding backfill: generating embeddings for content records"
     );
 
-    let texts: Vec<String> = pending
-        .iter()
-        .map(|r| r.content.chars().take(MAX_EMBED_CHARS).collect())
-        .collect();
-
-    let vectors = match crate::services::embedding::embed_texts(&texts) {
-        Ok(vecs) => vecs,
-        Err(e) => {
-            debug!(
-                error = %e,
-                "content embedding model unavailable — backfill skipped"
-            );
-            return Ok(0);
-        }
-    };
-
-    let mut updated = 0usize;
-    for (record, vector) in pending.iter().zip(vectors) {
-        if let Err(e) = queries
-            .update_content_record_embedding(&record.id, vector)
-            .await
-        {
-            debug!(
-                error = %e,
-                record_id = %record.id,
-                "content embedding write-back failed"
-            );
-        } else {
-            updated += 1;
-        }
+    if let Some(tx) = progress {
+        let _ = tx.send(BackfillProgress { done: 0, total });
     }
 
-    info!(updated, "content embedding backfill complete");
+    let mut processed = 0usize;
+    let mut updated = 0usize;
+    for chunk in pending.chunks(EMBED_BACKFILL_CHUNK) {
+        let texts: Vec<String> = chunk
+            .iter()
+            .map(|r| r.content.chars().take(MAX_EMBED_CHARS).collect())
+            .collect();
+
+        let vectors = match crate::services::embedding::embed_texts(&texts) {
+            Ok(vecs) => vecs,
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "content embedding model unavailable — backfill stopped"
+                );
+                break;
+            }
+        };
+
+        for (record, vector) in chunk.iter().zip(vectors) {
+            if let Err(e) = queries
+                .update_content_record_embedding(&record.id, vector)
+                .await
+            {
+                debug!(
+                    error = %e,
+                    record_id = %record.id,
+                    "content embedding write-back failed"
+                );
+            } else {
+                updated += 1;
+            }
+        }
+
+        processed += chunk.len();
+        if let Some(tx) = progress {
+            let _ = tx.send(BackfillProgress {
+                done: processed,
+                total,
+            });
+        }
+        debug!(
+            processed,
+            total, updated, "content embedding backfill progress"
+        );
+    }
+
+    info!(updated, total, "content embedding backfill complete");
     Ok(updated)
 }
 
