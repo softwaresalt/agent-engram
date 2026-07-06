@@ -199,6 +199,11 @@ name = "integration_embedding"
 path = "tests/integration/embedding_test.rs"
 
 [[test]]
+name = "integration_embedding_backfill_progress"
+path = "tests/integration/embedding_backfill_progress_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "contract_error_codes"
 path = "tests/contract/error_codes_test.rs"
 
