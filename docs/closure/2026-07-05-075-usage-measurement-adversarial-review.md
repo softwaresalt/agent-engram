@@ -10,8 +10,6 @@ reviewers:
 verdict: ship (no gate-blocking defects)
 ---
 
-# Adversarial review — 075-S
-
 Multi-model adversarial review of the usage-MEASUREMENT diff (`main...075-usage-measurement`).
 Three independent reviewers across model tiers; consensus-weighted findings.
 

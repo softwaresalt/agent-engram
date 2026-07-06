@@ -10,8 +10,6 @@ related:
   - src/models/metrics.rs
 ---
 
-# Engram usage-telemetry consumption contract
-
 This document is the **stable, versioned contract** autoharness (or any consumer)
 uses to measure how much it exercises engram. It describes the on-disk usage
 record, the derived adoption metrics, and where to read them.

@@ -12,8 +12,6 @@ related:
   - docs/design-docs/autoharness-evals-gates-design.md
 ---
 
-# DAX intelligence for Power BI — design & architecture
-
 Scope decided by operator (2026-07-05): implement **Option B** (hand-written DAX
 reference extractor), **plus DAX lint**, **plus extend code `impact_analysis` to
 span Power BI nodes**. This document is design + architecture only. No code is to
