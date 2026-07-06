@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use interprocess::local_socket::{
     ListenerOptions,
     tokio::{Listener, Stream, prelude::*},
@@ -31,6 +32,7 @@ use crate::daemon::watcher::{WatcherConfig, start_watcher};
 use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
+use crate::models::health::ScanProgress;
 use crate::server::state::{AppState, SharedState};
 use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
@@ -581,11 +583,7 @@ pub async fn run_with_shutdown(
                                     }
 
                                     // Backfill embeddings for content records with no vector.
-                                    match crate::services::ingestion::backfill_content_embeddings(
-                                        &queries,
-                                    )
-                                    .await
-                                    {
+                                    match backfill_with_scan_progress(&state_auto, &queries).await {
                                         Ok(0) => {}
                                         Ok(n) => {
                                             info!(
@@ -985,11 +983,7 @@ pub async fn run_with_shutdown_v2(
                                         }
                                     }
 
-                                    match crate::services::ingestion::backfill_content_embeddings(
-                                        &queries,
-                                    )
-                                    .await
-                                    {
+                                    match backfill_with_scan_progress(&state_auto, &queries).await {
                                         Ok(0) => {}
                                         Ok(n) => {
                                             info!(
@@ -1208,6 +1202,88 @@ async fn finish_indexing_and_drain_pending_sync(state: &AppState) {
     crate::tools::lifecycle::drain_pending_sync(state).await;
 }
 
+/// Build a `running` scan-status snapshot reflecting embedding-backfill progress.
+fn backfill_running_progress(done: usize, total: usize) -> ScanProgress {
+    ScanProgress {
+        running: true,
+        files_scanned: done as u64,
+        files_total: total as u64,
+        last_completed_at: None,
+    }
+}
+
+/// Build a completed scan-status snapshot for a finished embedding backfill.
+fn backfill_completed_progress(done: usize, completed_at: String) -> ScanProgress {
+    ScanProgress {
+        running: false,
+        files_scanned: done as u64,
+        files_total: done as u64,
+        last_completed_at: Some(completed_at),
+    }
+}
+
+/// Decide the `scan_status` snapshot to write once the backfill finishes.
+///
+/// Returns a `running: false` completed snapshot whenever any `running`
+/// progress was relayed — even if `embedded == 0` (model unavailable or every
+/// write-back failed). This clears a `running: true` status that would
+/// otherwise persist forever, since `finish_indexing` does not touch
+/// `scan_progress`. Returns `None` when no running progress was relayed (there
+/// was nothing to clear).
+fn backfill_completion_snapshot(
+    relayed_running: bool,
+    embedded: usize,
+    completed_at: String,
+) -> Option<ScanProgress> {
+    if relayed_running {
+        Some(backfill_completed_progress(embedded, completed_at))
+    } else {
+        None
+    }
+}
+
+/// Run the content-embedding backfill while mirroring its progress into
+/// [`AppState::scan_progress`].
+///
+/// The backfill runs after the code-graph scan has already completed, so
+/// `scan_status` would otherwise report `running: false` for the entire
+/// (potentially long) embedding phase. Relaying [`BackfillProgress`] updates
+/// keeps every status surface — `get_workspace_status`, the CLI `index`
+/// progress poller, and health — honest about the embedding phase regardless
+/// of which path triggered it. Whenever running progress was relayed, a
+/// `running: false` snapshot is written on completion — even if nothing was
+/// embedded — so status never gets stuck reporting an in-flight backfill.
+async fn backfill_with_scan_progress(
+    state: &SharedState,
+    queries: &crate::db::queries::CodeGraphQueries,
+) -> Result<usize, EngramError> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<crate::services::ingestion::BackfillProgress>();
+    let relay_state = Arc::clone(state);
+    let updater = tokio::spawn(async move {
+        let mut relayed = false;
+        while let Some(p) = rx.recv().await {
+            relayed = true;
+            relay_state
+                .set_scan_progress(Some(backfill_running_progress(p.done, p.total)))
+                .await;
+        }
+        relayed
+    });
+
+    let result = crate::services::ingestion::backfill_content_embeddings(queries, Some(&tx)).await;
+    drop(tx);
+    let relayed_running = updater.await.unwrap_or(false);
+
+    let embedded = *result.as_ref().unwrap_or(&0);
+    if let Some(snapshot) =
+        backfill_completion_snapshot(relayed_running, embedded, Utc::now().to_rfc3339())
+    {
+        state.set_scan_progress(Some(snapshot)).await;
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1343,5 +1419,94 @@ mod tests {
             !state.take_pending_sync(),
             "finish helper must drain the queued pending sync flag"
         );
+    }
+
+    #[test]
+    fn backfill_running_progress_marks_scan_active_with_counts() {
+        let progress = backfill_running_progress(128, 2441);
+        assert!(progress.running, "backfill in flight must report running");
+        assert_eq!(progress.files_scanned, 128);
+        assert_eq!(progress.files_total, 2441);
+        assert!(
+            progress.last_completed_at.is_none(),
+            "an in-flight backfill has no completion timestamp"
+        );
+    }
+
+    #[test]
+    fn backfill_completed_progress_marks_scan_finished() {
+        let progress = backfill_completed_progress(2441, "2026-07-06T07:28:21Z".to_owned());
+        assert!(!progress.running, "finished backfill must clear running");
+        assert_eq!(progress.files_scanned, 2441);
+        assert_eq!(
+            progress.files_total, progress.files_scanned,
+            "completed snapshot reports the embedded record count as the total"
+        );
+        assert_eq!(
+            progress.last_completed_at.as_deref(),
+            Some("2026-07-06T07:28:21Z")
+        );
+    }
+
+    #[test]
+    fn backfill_completion_snapshot_clears_running_even_when_nothing_embedded() {
+        // Regression: when running progress was relayed but the model was
+        // unavailable (embedded == 0), status must still be cleared to
+        // `running: false` — otherwise it reports indexing forever.
+        let snapshot = backfill_completion_snapshot(true, 0, "2026-07-06T07:28:21Z".to_owned())
+            .expect("relayed progress must yield a completion snapshot");
+        assert!(!snapshot.running, "status must be cleared to not-running");
+        assert_eq!(snapshot.files_scanned, 0);
+    }
+
+    #[test]
+    fn backfill_completion_snapshot_reports_embedded_count() {
+        let snapshot = backfill_completion_snapshot(true, 42, "2026-07-06T07:28:21Z".to_owned())
+            .expect("relayed progress must yield a completion snapshot");
+        assert!(!snapshot.running);
+        assert_eq!(snapshot.files_scanned, 42);
+    }
+
+    #[test]
+    fn backfill_completion_snapshot_is_none_when_no_progress_relayed() {
+        // Nothing was set to running (no pending records), so there is nothing
+        // to clear and the existing scan_status must be left untouched.
+        assert!(
+            backfill_completion_snapshot(false, 0, "2026-07-06T07:28:21Z".to_owned()).is_none(),
+            "no relayed progress means no completion snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_progress_relay_updates_scan_status() {
+        // Mirror the relay task used by `backfill_with_scan_progress`: progress
+        // sent on the channel must be reflected in `scan_status`.
+        let state: SharedState = Arc::new(AppState::new(1));
+        let (tx, mut rx) =
+            mpsc::unbounded_channel::<crate::services::ingestion::BackfillProgress>();
+        let relay_state = Arc::clone(&state);
+        let updater = tokio::spawn(async move {
+            while let Some(p) = rx.recv().await {
+                relay_state
+                    .set_scan_progress(Some(backfill_running_progress(p.done, p.total)))
+                    .await;
+            }
+        });
+
+        tx.send(crate::services::ingestion::BackfillProgress {
+            done: 256,
+            total: 1000,
+        })
+        .expect("send progress");
+        drop(tx);
+        updater.await.expect("relay task joins");
+
+        let snapshot = state
+            .scan_progress_snapshot()
+            .await
+            .expect("scan status populated by relay");
+        assert!(snapshot.running);
+        assert_eq!(snapshot.files_scanned, 256);
+        assert_eq!(snapshot.files_total, 1000);
     }
 }

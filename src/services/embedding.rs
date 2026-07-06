@@ -24,6 +24,16 @@ pub const EMBEDDING_MODEL: &str = "bge-small-en-v1.5";
 /// Maximum query length in characters (rough proxy for 500 tokens).
 pub const MAX_QUERY_CHARS: usize = 2000;
 
+/// Maximum number of texts embedded per ONNX inference batch.
+///
+/// The ONNX runtime (`ort`) sizes its work buffers to the largest batch it
+/// processes and retains that arena for the life of the session. Passing an
+/// unbounded batch of thousands of records (e.g. a full content-embedding
+/// backfill) therefore inflates *and pins* gigabytes of RAM even after the
+/// call returns. A small fixed batch keeps both peak and retained memory low
+/// while still amortising per-inference model overhead.
+pub const EMBED_BATCH_SIZE: usize = 16;
+
 /// Return the model cache directory, creating it if needed.
 #[must_use]
 pub fn model_cache_dir() -> PathBuf {
@@ -134,7 +144,7 @@ pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, EngramError> {
         return Ok(Vec::new());
     }
     let mut model = get_model()?;
-    let vectors = model.embed(texts, None).map_err(|e| {
+    let vectors = model.embed(texts, Some(EMBED_BATCH_SIZE)).map_err(|e| {
         EngramError::Query(QueryError::SearchFailed {
             reason: e.to_string(),
         })
