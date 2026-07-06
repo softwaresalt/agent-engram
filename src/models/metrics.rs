@@ -275,24 +275,21 @@ pub struct MetricsSummary {
     ///
     /// Adoption-breadth signal: how many of engram's tool surfaces the harness
     /// actually touched. Equals `by_tool.len()`. Defaults to `0` for summaries
-    /// deserialized from records written before this field existed.
+    /// deserialized from records written before this field existed. Cheap
+    /// scalar — safe to surface on every metrics-bearing tool.
     #[serde(default)]
     pub unique_tools_exercised: u32,
     /// Count of distinct non-empty correlation ids observed.
     ///
     /// Adoption-reach signal: how many distinct harness tasks/sessions
     /// (identified by `correlation_id`) invoked engram at least once. Events
-    /// without a correlation id do not contribute to this count.
+    /// without a correlation id do not contribute to this count. Cheap scalar —
+    /// safe to surface on every metrics-bearing tool. The full per-correlation
+    /// breakdown ([`correlation_metrics`]) is intentionally kept off this shared
+    /// struct so it does not bloat frequently-polled tools like
+    /// `get_health_report`; it is surfaced only by `get_token_savings_report`.
     #[serde(default)]
     pub distinct_correlation_ids: u32,
-    /// Per-correlation-id usage breakdown (deterministic ordering via `BTreeMap`).
-    ///
-    /// Keyed by the caller-supplied `correlation_id`, so autoharness can tie
-    /// engram usage back to a specific harness task or session. Events without
-    /// a correlation id are excluded from this map (but still counted in the
-    /// top-level totals). Defaults to empty for back-compat deserialization.
-    #[serde(default)]
-    pub by_correlation_id: BTreeMap<String, CorrelationMetrics>,
 }
 
 /// Per-correlation-id usage metrics.
@@ -413,9 +410,10 @@ impl MetricsSummary {
         let mut total_output_tokens = 0_u64;
         let mut total_result_count = 0_u64;
         let mut session_ids = std::collections::BTreeSet::new();
-        // Per-correlation-id accumulators: (call_count, distinct tools, min_ts, max_ts).
-        let mut correlation_acc: BTreeMap<String, (u64, BTreeSet<String>, String, String)> =
-            BTreeMap::new();
+        // Distinct non-empty correlation ids (adoption-reach scalar). The full
+        // per-correlation breakdown is computed separately by
+        // `correlation_metrics` so it does not bloat the shared summary.
+        let mut correlation_ids: BTreeSet<&str> = BTreeSet::new();
 
         for event in events {
             let output_tokens = event.output_tokens();
@@ -462,26 +460,10 @@ impl MetricsSummary {
                 session_ids.insert(connection_id.clone());
             }
 
-            if let Some(correlation_id) = event.correlation_id.as_ref().filter(|id| !id.is_empty())
+            if let Some(correlation_id) =
+                event.correlation_id.as_deref().filter(|id| !id.is_empty())
             {
-                let entry = correlation_acc
-                    .entry(correlation_id.clone())
-                    .or_insert_with(|| {
-                        (
-                            0,
-                            BTreeSet::new(),
-                            event.timestamp.clone(),
-                            event.timestamp.clone(),
-                        )
-                    });
-                entry.0 = entry.0.saturating_add(1);
-                entry.1.insert(event.tool_name.clone());
-                if event.timestamp < entry.2 {
-                    entry.2.clone_from(&event.timestamp);
-                }
-                if event.timestamp > entry.3 {
-                    entry.3.clone_from(&event.timestamp);
-                }
+                correlation_ids.insert(correlation_id);
             }
         }
 
@@ -509,8 +491,21 @@ impl MetricsSummary {
         top_symbols.truncate(10);
 
         let time_range = {
-            let min_ts = events.iter().map(|e| &e.timestamp).min().cloned();
-            let max_ts = events.iter().map(|e| &e.timestamp).max().cloned();
+            // Skip empty-string sentinels so a malformed record cannot pin the
+            // range start to "". Emitter timestamps are canonical RFC-3339 with
+            // a fixed `+00:00` offset, which is lexicographically orderable.
+            let min_ts = events
+                .iter()
+                .map(|e| &e.timestamp)
+                .filter(|t| !t.is_empty())
+                .min()
+                .cloned();
+            let max_ts = events
+                .iter()
+                .map(|e| &e.timestamp)
+                .filter(|t| !t.is_empty())
+                .max()
+                .cloned();
             match (min_ts, max_ts) {
                 (Some(start), Some(end)) => TimeRange { start, end },
                 _ => TimeRange {
@@ -519,20 +514,6 @@ impl MetricsSummary {
                 },
             }
         };
-
-        let by_correlation_id: BTreeMap<String, CorrelationMetrics> = correlation_acc
-            .into_iter()
-            .map(|(id, (call_count, tools, start, end))| {
-                (
-                    id,
-                    CorrelationMetrics {
-                        call_count,
-                        unique_tools: u32::try_from(tools.len()).unwrap_or(u32::MAX),
-                        time_range: TimeRange { start, end },
-                    },
-                )
-            })
-            .collect();
 
         Self {
             total_tool_calls: u64::try_from(events.len()).unwrap_or(u64::MAX),
@@ -543,14 +524,63 @@ impl MetricsSummary {
             total_output_tokens,
             total_result_count,
             unique_tools_exercised: u32::try_from(by_tool.len()).unwrap_or(u32::MAX),
-            distinct_correlation_ids: u32::try_from(by_correlation_id.len()).unwrap_or(u32::MAX),
-            by_correlation_id,
+            distinct_correlation_ids: u32::try_from(correlation_ids.len()).unwrap_or(u32::MAX),
             by_tool,
             top_symbols,
             time_range,
             session_count: u32::try_from(session_ids.len()).unwrap_or(u32::MAX),
         }
     }
+}
+
+/// Compute the per-correlation-id usage breakdown from raw events.
+///
+/// Kept separate from [`MetricsSummary`] so this potentially large,
+/// history-growing map is surfaced only by `get_token_savings_report` and never
+/// bloats frequently-polled tools (`get_health_report`, `get_branch_metrics`) or
+/// the persisted `summary.json`.
+///
+/// Events without a non-empty `correlation_id` are excluded (they still count in
+/// the summary totals). Timestamps are assumed canonical RFC-3339 with a fixed
+/// `+00:00` offset, so lexicographic min/max is order-preserving.
+#[must_use]
+pub fn correlation_metrics(events: &[UsageEvent]) -> BTreeMap<String, CorrelationMetrics> {
+    // Accumulators: (call_count, distinct tools, min_ts, max_ts).
+    let mut acc: BTreeMap<String, (u64, BTreeSet<String>, String, String)> = BTreeMap::new();
+    for event in events {
+        let Some(correlation_id) = event.correlation_id.as_deref().filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let entry = acc.entry(correlation_id.to_owned()).or_insert_with(|| {
+            (
+                0,
+                BTreeSet::new(),
+                event.timestamp.clone(),
+                event.timestamp.clone(),
+            )
+        });
+        entry.0 = entry.0.saturating_add(1);
+        entry.1.insert(event.tool_name.clone());
+        if !event.timestamp.is_empty() && (entry.2.is_empty() || event.timestamp < entry.2) {
+            entry.2.clone_from(&event.timestamp);
+        }
+        if event.timestamp > entry.3 {
+            entry.3.clone_from(&event.timestamp);
+        }
+    }
+    acc.into_iter()
+        .map(|(id, (call_count, tools, start, end))| {
+            (
+                id,
+                CorrelationMetrics {
+                    call_count,
+                    unique_tools: u32::try_from(tools.len()).unwrap_or(u32::MAX),
+                    time_range: TimeRange { start, end },
+                },
+            )
+        })
+        .collect()
 }
 
 impl UsageEvent {

@@ -52,13 +52,26 @@ a specific harness task/session.
 
 Extend the existing `get_token_savings_report` MCP tool with an **additive**
 structured `metrics` object (the prose `report` and `branch` fields are
-unchanged). The aggregation (`MetricsSummary::from_events`) now also computes:
+unchanged). The aggregation (`MetricsSummary::from_events`) now also computes two
+cheap scalar counts:
 
 - `unique_tools_exercised` — adoption **breadth** (distinct tools touched).
 - `distinct_correlation_ids` — adoption **reach** (distinct harness
   tasks/sessions that invoked engram at least once).
+
+The heavy per-correlation breakdown is computed by a dedicated
+`correlation_metrics(&events)` function and surfaced **only** by
+`get_token_savings_report`:
+
 - `by_correlation_id` — per-task/session rollup (`call_count`, `unique_tools`,
   `time_range`) so usage can be attributed to individual harness work units.
+
+Keeping the map off the shared `MetricsSummary` struct prevents it from bloating
+frequently-polled tools (`get_health_report`, `get_branch_metrics`) or the
+persisted `summary.json` — the two scalar counts are cheap enough to appear
+everywhere `MetricsSummary` is serialized. `session_count` (derived from a
+`connection_id` that no production path currently sets) is deliberately excluded
+from the adoption `metrics` object because it is always `0` today.
 
 Events without a `correlation_id` still count toward the top-level totals but do
 not create a `by_correlation_id` bucket.

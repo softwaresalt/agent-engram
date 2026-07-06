@@ -134,7 +134,6 @@ fn arb_metrics_summary() -> impl Strategy<Value = MetricsSummary> {
                 session_count: 0,
                 unique_tools_exercised: 0,
                 distinct_correlation_ids: 0,
-                by_correlation_id: std::collections::BTreeMap::new(),
             }
         },
     )

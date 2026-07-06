@@ -980,13 +980,20 @@ pub async fn get_token_savings_report(
     let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
     let wp = workspace_path.clone();
     let br = branch.clone();
-    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
-        .await
-        .map_err(|error| {
-            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                reason: format!("metrics computation task panicked: {error}"),
-            })
-        })??;
+    // Load events once, then derive both the summary and the (report-only)
+    // per-correlation breakdown from the same read.
+    let (summary, by_correlation_id) = tokio::task::spawn_blocking(move || {
+        let events = metrics::load_events(&wp, &br)?;
+        let summary = crate::models::metrics::MetricsSummary::from_events(&events);
+        let by_correlation_id = crate::models::metrics::correlation_metrics(&events);
+        Ok::<_, EngramError>((summary, by_correlation_id))
+    })
+    .await
+    .map_err(|error| {
+        EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
+            reason: format!("metrics computation task panicked: {error}"),
+        })
+    })??;
     #[allow(clippy::cast_precision_loss)]
     let average_tokens = if summary.total_tool_calls == 0 {
         0.0
@@ -1019,16 +1026,16 @@ pub async fn get_token_savings_report(
         ),
         // 075-S adoption metrics: structured breakdown so autoharness can
         // quantify how much it exercises engram. Additive — the `branch` and
-        // `report` fields above are unchanged for existing consumers.
+        // `report` fields above are unchanged for existing consumers. This is
+        // the only surface that emits the heavy `by_correlation_id` map.
         "metrics": {
             "schema_version": crate::models::metrics::USAGE_SCHEMA_VERSION,
             "total_tool_calls": summary.total_tool_calls,
             "unique_tools_exercised": summary.unique_tools_exercised,
             "distinct_correlation_ids": summary.distinct_correlation_ids,
-            "session_count": summary.session_count,
             "time_range": summary.time_range,
             "by_tool": summary.by_tool,
-            "by_correlation_id": summary.by_correlation_id,
+            "by_correlation_id": by_correlation_id,
         },
     }))
 }

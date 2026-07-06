@@ -3,7 +3,9 @@
 //! Validates serde round-trip, summary aggregation, config defaults,
 //! and `BTreeMap` deterministic ordering.
 
-use engram::models::metrics::{MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent};
+use engram::models::metrics::{
+    MetricsConfig, MetricsSummary, TimeRange, ToolMetrics, UsageEvent, correlation_metrics,
+};
 use std::collections::BTreeMap;
 
 /// AC#1: `UsageEvent` serializes to JSON and round-trips via `serde_json`.
@@ -125,6 +127,7 @@ fn t075_metrics_summary_correlation_aggregation() {
 
     // WHEN computing a summary
     let summary = MetricsSummary::from_events(&events);
+    let by_correlation_id = correlation_metrics(&events);
 
     // THEN adoption breadth counts every distinct tool (map_code, list_symbols,
     // unified_search) across all events, including the uncorrelated one.
@@ -132,11 +135,10 @@ fn t075_metrics_summary_correlation_aggregation() {
 
     // AND adoption reach counts only distinct non-empty correlation ids.
     assert_eq!(summary.distinct_correlation_ids, 2);
-    assert_eq!(summary.by_correlation_id.len(), 2);
+    assert_eq!(by_correlation_id.len(), 2);
 
     // AND task-A rolls up its three calls across two distinct tools.
-    let task_a = summary
-        .by_correlation_id
+    let task_a = by_correlation_id
         .get("task-A")
         .unwrap_or_else(|| panic!("task-A should be present"));
     assert_eq!(task_a.call_count, 3);
@@ -145,8 +147,7 @@ fn t075_metrics_summary_correlation_aggregation() {
     assert_eq!(task_a.time_range.end, "2026-07-05T10:05:00Z");
 
     // AND task-B has a single call to a single tool.
-    let task_b = summary
-        .by_correlation_id
+    let task_b = by_correlation_id
         .get("task-B")
         .unwrap_or_else(|| panic!("task-B should be present"));
     assert_eq!(task_b.call_count, 1);
@@ -164,9 +165,10 @@ fn t075_empty_correlation_id_excluded() {
         usage_event_with_correlation("map_code", 100, "2026-07-05T10:01:00Z", Some("real-task")),
     ];
     let summary = MetricsSummary::from_events(&events);
+    let by_correlation_id = correlation_metrics(&events);
     assert_eq!(summary.distinct_correlation_ids, 1);
-    assert!(summary.by_correlation_id.contains_key("real-task"));
-    assert!(!summary.by_correlation_id.contains_key(""));
+    assert!(by_correlation_id.contains_key("real-task"));
+    assert!(!by_correlation_id.contains_key(""));
 }
 
 /// AC#3: `MetricsConfig` defaults to `enabled=true`, `buffer_size=1024`.
@@ -244,7 +246,6 @@ fn t010_01_btreemap_deterministic_ordering() {
         session_count: 1,
         unique_tools_exercised: 2,
         distinct_correlation_ids: 0,
-        by_correlation_id: BTreeMap::new(),
     };
 
     // WHEN serialized to JSON

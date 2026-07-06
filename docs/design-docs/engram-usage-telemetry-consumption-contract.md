@@ -79,7 +79,6 @@ and prose `report` fields, the response carries an additive `metrics` object:
     "total_tool_calls": 42,
     "unique_tools_exercised": 7,        // adoption BREADTH
     "distinct_correlation_ids": 5,      // adoption REACH
-    "session_count": 3,
     "time_range": { "start": "...", "end": "..." },
     "by_tool": { "map_code": { "call_count": 12, ... }, ... },
     "by_correlation_id": {
@@ -92,6 +91,18 @@ and prose `report` fields, the response carries an additive `metrics` object:
   }
 }
 ```
+
+**Surface placement.** The two cheap scalar counts (`unique_tools_exercised`,
+`distinct_correlation_ids`) also appear additively on `MetricsSummary` wherever
+it is serialized — `get_branch_metrics`, `get_health_report`'s `metrics_summary`,
+and the on-disk `summary.json`. The heavy `by_correlation_id` map is emitted
+**only** by `get_token_savings_report`, so frequently-polled tools stay lean.
+
+> **Note on `session_count`.** `MetricsSummary` also carries a `session_count`
+> field derived from `connection_id`. No production emit path currently sets
+> `connection_id`, so `session_count` is effectively always `0` today. It is
+> intentionally **not** part of the adoption `metrics` object. Do not use it as
+> an adoption signal until connection plumbing lands.
 
 ### 3.2 Compute from `usage.jsonl` directly
 
