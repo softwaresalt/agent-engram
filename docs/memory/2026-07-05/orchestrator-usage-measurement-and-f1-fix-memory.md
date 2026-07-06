@@ -1,5 +1,6 @@
 ---
 type: session-memory
+title: Session memory — usage MEASUREMENT + F1 hint fix (075-S, 076-S)
 date: 2026-07-05
 agent: orchestrator
 session: autonomous AFK run — stash drain (075-S, 076-S)
