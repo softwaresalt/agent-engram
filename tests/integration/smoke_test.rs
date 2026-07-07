@@ -338,18 +338,19 @@ pub fn use_widget() -> Widget {
     .await
     .expect("set_workspace must succeed");
 
-    // set_workspace spawns background hydration that acquires the indexing lock.
-    // Wait for it to finish before manually indexing to avoid CozoDB
-    // single-writer contention. A short initial delay lets the task acquire the
-    // lock so the wait loop is meaningful.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // set_workspace spawns background hydration that acquires the indexing lock
+    // via the synchronous `try_start_indexing`. Acquire that same lock before
+    // indexing so our manual index cannot overlap the background CozoDB work,
+    // removing any reliance on timing: if the background task holds the lock we
+    // wait for it to release; if we win the lock first the background task sees
+    // it held and exits immediately.
     let deadline = Instant::now() + Duration::from_secs(15);
-    while state.is_indexing() {
+    while !state.try_start_indexing() {
         assert!(
             Instant::now() < deadline,
-            "background hydration did not release the indexing lock in time"
+            "could not acquire the indexing lock from background hydration"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
     // Index into the same data_dir/branch that get_workspace_status reads.
@@ -367,6 +368,7 @@ pub fn use_widget() -> Widget {
     )
     .await
     .expect("index_workspace should succeed");
+    state.finish_indexing().await;
     assert!(
         index.functions_indexed >= 2,
         "fixture must index at least two functions, got {}",
