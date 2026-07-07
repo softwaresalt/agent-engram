@@ -287,19 +287,66 @@ async fn s071_full_workspace_status_response() {
     assert!(cg["edges"].is_number(), "code_graph.edges must be a number");
 }
 
-/// S072: Without the `git-graph` feature, `code_graph` stats remain zero.
+/// S072 (revised for 078.002-T): `get_workspace_status` reports real code-graph
+/// counts in the default (shipped) build.
 ///
-/// When the git-graph feature is disabled, the code graph indexer is inactive
-/// so all `code_graph` sub-fields must be zero after workspace binding.
-#[cfg(not(feature = "git-graph"))]
+/// The code-graph stats were previously gated behind the `git-graph` feature and
+/// returned zero without it — even when the graph was fully populated — because
+/// of a false assumption that "the code-graph indexer is inactive without
+/// git-graph." The code-graph indexer is always active; `git-graph` only gates
+/// git commit-history tooling. This test indexes a real workspace and asserts the
+/// counts surface through `get_workspace_status`, and match `get_workspace_statistics`.
 #[tokio::test]
-async fn s072_status_without_git_graph_feature() {
+async fn s072_workspace_status_reports_code_graph_counts() {
+    use engram::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
+    use engram::models::config::CodeGraphConfig;
+    use engram::services::code_graph;
+
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
+    fs::create_dir_all(workspace.path().join("src")).expect("create src");
+    fs::write(
+        workspace.path().join("src").join("lib.rs"),
+        r"
+/// A sample struct.
+pub struct Widget {
+    pub id: u32,
+}
 
-    let state = Arc::new(AppState::new(10));
+/// Build a widget.
+pub fn make_widget(id: u32) -> Widget {
+    Widget { id }
+}
+
+/// Use the widget builder (creates a call edge to `make_widget`).
+pub fn use_widget() -> Widget {
+    make_widget(7)
+}
+",
+    )
+    .expect("write sample source");
+
     let path = workspace.path().to_string_lossy().to_string();
 
+    // Index the workspace BEFORE binding, resolving data_dir/branch exactly as
+    // set_workspace does. Populating the DB up front means set_workspace's
+    // background hydration hits hydrate_code_graph's "DB already populated"
+    // fast-path (no JSONL reload, no writes) and only performs reads — so there
+    // is no concurrent CozoDB writer and no reliance on scheduler timing.
+    let canonical = canonicalize_workspace(&path).expect("canonicalize workspace");
+    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
+    let data_dir = resolve_data_dir(&canonical);
+    let config = CodeGraphConfig::default();
+    let index = code_graph::index_workspace(&canonical, &data_dir, &branch, &config, false)
+        .await
+        .expect("index_workspace should succeed");
+    assert!(
+        index.functions_indexed >= 2,
+        "fixture must index at least two functions, got {}",
+        index.functions_indexed
+    );
+
+    let state = Arc::new(AppState::new(10));
     tools::dispatch(
         state.clone(),
         "set_workspace",
@@ -313,10 +360,27 @@ async fn s072_status_without_git_graph_feature() {
         .expect("get_workspace_status must succeed");
 
     let cg = &result["code_graph"];
+    assert!(
+        cg["functions"].as_u64().unwrap_or(0) >= 2,
+        "workspace_status must report indexed functions, got {result}"
+    );
+    assert!(
+        cg["classes"].as_u64().unwrap_or(0) >= 1,
+        "workspace_status must report indexed structs/classes, got {result}"
+    );
+    assert!(
+        cg["edges"].as_u64().unwrap_or(0) >= 1,
+        "workspace_status must report code edges, got {result}"
+    );
+
+    // The already-ungated statistics tool must agree with the status tool.
+    let statistics = tools::dispatch(state.clone(), "get_workspace_statistics", None)
+        .await
+        .expect("get_workspace_statistics must succeed");
     assert_eq!(
-        cg["code_files"].as_u64().unwrap_or(0),
-        0,
-        "code_files must be 0 without git-graph feature"
+        cg["functions"].as_u64(),
+        statistics["functions"].as_u64(),
+        "workspace_status and workspace_statistics must report equal function counts"
     );
 }
 

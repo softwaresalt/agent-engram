@@ -4,20 +4,16 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::json;
-use sysinfo::System;
 
 use crate::server::{mcp::mcp_handler, sse::sse_handler, state::SharedState};
 
 async fn health_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let mut sys = System::new();
-    sys.refresh_memory();
-
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": state.uptime_seconds(),
         "active_workspaces": state.active_workspaces().await,
         "active_connections": state.active_connections(),
-        "memory_bytes": sys.used_memory() * 1024,
+        "memory_bytes": crate::services::process_memory::current_process_memory_bytes().unwrap_or(0),
     }))
 }
 

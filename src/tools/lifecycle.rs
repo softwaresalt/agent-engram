@@ -4,7 +4,6 @@ use std::sync::atomic::Ordering;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sysinfo::System;
 use uuid::Uuid;
 
 use crate::db::connect_db;
@@ -424,9 +423,7 @@ pub async fn drain_pending_sync(state: &AppState) {
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
-    let mut sys = System::new();
-    sys.refresh_memory();
-    let memory_bytes = sys.used_memory(); // sysinfo 0.30+ returns bytes
+    let memory_bytes = crate::services::process_memory::current_process_memory_bytes().unwrap_or(0);
 
     let model_loaded = crate::services::embedding::is_available();
     let model_name = if model_loaded {
@@ -476,28 +473,30 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
                 .await;
         }
 
-        // Gather code graph stats from the database (only when git-graph feature is active).
-        // Without git-graph, the code-graph indexer is inactive so the counts must stay zero.
-        #[cfg(feature = "git-graph")]
-        let code_graph = if let Ok(db) = connect_db(&snapshot.data_dir, &snapshot.branch).await {
-            let cg_queries = CodeGraphQueries::new(db);
-            let code_files = cg_queries.count_code_files().await.unwrap_or(0);
-            let functions = cg_queries.count_functions().await.unwrap_or(0);
-            let classes = cg_queries.count_classes().await.unwrap_or(0);
-            let interfaces = cg_queries.count_interfaces().await.unwrap_or(0);
-            let edges = cg_queries.count_code_edges().await.unwrap_or(0);
-            CodeGraphStats {
-                code_files,
-                functions,
-                classes,
-                interfaces,
-                edges,
+        // Gather code-graph stats from the database. The code-graph indexer is
+        // always active in every build; the `git-graph` feature only gates git
+        // commit-history tooling, so these counts must not be gated behind it.
+        // Mirrors `get_workspace_statistics`, which reads the same counts
+        // unconditionally.
+        let code_graph = match connect_db(&snapshot.data_dir, &snapshot.branch).await {
+            Ok(db) => {
+                let cg_queries = CodeGraphQueries::new(db);
+                CodeGraphStats {
+                    code_files: cg_queries.count_code_files().await.unwrap_or(0),
+                    functions: cg_queries.count_functions().await.unwrap_or(0),
+                    classes: cg_queries.count_classes().await.unwrap_or(0),
+                    interfaces: cg_queries.count_interfaces().await.unwrap_or(0),
+                    edges: cg_queries.count_code_edges().await.unwrap_or(0),
+                }
             }
-        } else {
-            CodeGraphStats::default()
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "get_workspace_status: code-graph DB connect failed; reporting zero counts"
+                );
+                CodeGraphStats::default()
+            }
         };
-        #[cfg(not(feature = "git-graph"))]
-        let code_graph = CodeGraphStats::default();
 
         let branch_safe = snapshot.branch.replace(['/', '\\', ':'], "_");
         let db_path = snapshot
@@ -521,4 +520,44 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
     }
 
     Err(EngramError::Workspace(WorkspaceError::NotSet))
+}
+
+#[cfg(test)]
+mod tests {
+    use sysinfo::System;
+
+    use super::get_daemon_status;
+    use crate::server::state::AppState;
+
+    /// Regression guard for 078.001-T: `get_daemon_status.memory_bytes` must
+    /// report this process's resident memory, not system-wide RAM. Prior to the
+    /// fix it returned `System::used_memory()` (whole-machine usage), which on a
+    /// busy host overstated engram's footprint by more than an order of
+    /// magnitude.
+    #[tokio::test]
+    async fn daemon_status_memory_reflects_process_not_system() {
+        let state = AppState::new(10);
+        let status = get_daemon_status(&state)
+            .await
+            .expect("get_daemon_status should succeed");
+
+        // Independently sample this process's resident memory.
+        let mut sys = System::new();
+        let pid = sysinfo::get_current_pid().expect("current process pid");
+        sys.refresh_process(pid);
+        let process_bytes = sys
+            .process(pid)
+            .expect("current process present in sysinfo")
+            .memory();
+
+        let tolerance = std::cmp::max(64 * 1024 * 1024, process_bytes / 4);
+        let diff = status.memory_bytes.abs_diff(process_bytes);
+        assert!(
+            diff <= tolerance,
+            "daemon_status.memory_bytes ({}) must reflect this process's memory \
+             ({process_bytes} bytes); diff {diff} exceeds tolerance {tolerance} — \
+             likely reporting system-wide RAM",
+            status.memory_bytes,
+        );
+    }
 }
