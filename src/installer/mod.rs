@@ -183,7 +183,7 @@ fn generate_default_registry(workspace: &Path, engram_dir: &Path) -> Result<(), 
 /// Writes or updates:
 /// - `.github/copilot-instructions.md` — GitHub Copilot instructions (marker-based)
 /// - `.claude/instructions.md` — Claude Code instructions (marker-based)
-/// - `.cursor/mcp.json` — Cursor MCP configuration (JSON merge)
+/// - `.mcp.json` — workspace-root MCP config (engram entry added only if absent)
 ///
 /// If a file already contains `<!-- engram:start -->` / `<!-- engram:end -->` markers,
 /// only the content between the markers is replaced. If no markers are found, the
@@ -205,11 +205,14 @@ pub fn generate_hooks(workspace: &Path, port: u16) -> Result<(), EngramError> {
     apply_markdown_hook(&claude_path, &claude_content)?;
     info!("wrote Claude Code hook: .claude/instructions.md");
 
-    // Cursor: .cursor/mcp.json  (JSON merge — no text markers)
-    let cursor_path = workspace.join(".cursor").join("mcp.json");
-    let cursor_content = templates::cursor_mcp_json(port);
-    apply_cursor_hook(&cursor_path, &cursor_content)?;
-    info!("wrote Cursor hook: .cursor/mcp.json");
+    // Workspace-root .mcp.json: register engram only if no entry exists yet
+    // (never overwrites a hand-maintained config).
+    let mcp_path = workspace.join(".mcp.json");
+    if apply_root_mcp_hook(&mcp_path, templates::ROOT_MCP_JSON)? {
+        info!("registered engram in .mcp.json");
+    } else {
+        info!("engram already present in .mcp.json — left unchanged");
+    }
 
     Ok(())
 }
@@ -274,20 +277,34 @@ fn replace_marker_content(existing: &str, new_content: &str) -> Option<String> {
     ))
 }
 
-/// Apply the engram MCP server entry to a Cursor `.cursor/mcp.json` file using
-/// a JSON merge strategy (no text markers).
+/// Register the engram MCP server in the workspace-root `.mcp.json` using
+/// add-if-absent semantics.
 ///
-/// If the file does not exist, it is created with the new content. If it exists
-/// and contains a valid JSON object, the `mcpServers.engram` key is upserted.
-/// Unparseable existing files are overwritten rather than corrupted further.
+/// - **No file**: creates `.mcp.json` from `template_json`.
+/// - **Valid JSON, no `mcpServers.engram`**: inserts the engram entry,
+///   preserving every other server and top-level key.
+/// - **Valid JSON with `mcpServers.engram` present**: no-op — an existing entry
+///   is never overwritten.
+/// - **Not valid JSON or an unexpected shape**: left untouched with a warning,
+///   to protect a hand-maintained configuration.
+///
+/// Returns `Ok(true)` when the file was written, `Ok(false)` when no change was
+/// made.
 ///
 /// # Errors
 ///
-/// Returns [`InstallError::Failed`] if the file cannot be read or written.
-pub fn apply_cursor_hook(path: &PathBuf, new_mcp_json: &str) -> Result<(), EngramError> {
+/// Returns [`InstallError::Failed`] if the file cannot be read or written, or if
+/// `template_json` is not valid JSON containing `mcpServers.engram`.
+pub fn apply_root_mcp_hook(path: &PathBuf, template_json: &str) -> Result<bool, EngramError> {
+    let template: serde_json::Value = serde_json::from_str(template_json).map_err(|e| {
+        EngramError::Install(InstallError::Failed {
+            reason: format!(".mcp.json template is not valid JSON: {e}"),
+        })
+    })?;
+
     if !path.exists() {
-        write_file(path, new_mcp_json)?;
-        return Ok(());
+        write_file(path, &format!("{template_json}\n"))?;
+        return Ok(true);
     }
 
     let existing_text = std::fs::read_to_string(path).map_err(|e| {
@@ -296,52 +313,58 @@ pub fn apply_cursor_hook(path: &PathBuf, new_mcp_json: &str) -> Result<(), Engra
         })
     })?;
 
-    // Parse the new entry first — it must always be valid.
-    let new_json: serde_json::Value = serde_json::from_str(new_mcp_json).map_err(|e| {
+    let Ok(mut existing) = serde_json::from_str::<serde_json::Value>(&existing_text) else {
+        warn!(
+            path = %path.display(),
+            "existing .mcp.json is not valid JSON; leaving it untouched"
+        );
+        return Ok(false);
+    };
+
+    let Some(root) = existing.as_object_mut() else {
+        warn!(
+            path = %path.display(),
+            ".mcp.json is not a JSON object; leaving it untouched"
+        );
+        return Ok(false);
+    };
+
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    let Some(servers) = servers.as_object_mut() else {
+        warn!(
+            path = %path.display(),
+            ".mcp.json 'mcpServers' is not an object; leaving it untouched"
+        );
+        return Ok(false);
+    };
+
+    if servers.contains_key("engram") {
+        // Add-if-absent: an existing engram entry is never overwritten.
+        return Ok(false);
+    }
+
+    let engram_entry = template
+        .get("mcpServers")
+        .and_then(|v| v.get("engram"))
+        .ok_or_else(|| {
+            EngramError::Install(InstallError::Failed {
+                reason: ".mcp.json template is missing mcpServers.engram".to_owned(),
+            })
+        })?
+        .clone();
+
+    servers.insert("engram".to_owned(), engram_entry);
+
+    let merged = serde_json::to_string_pretty(&existing).map_err(|e| {
         EngramError::Install(InstallError::Failed {
-            reason: format!("cursor template is not valid JSON: {e}"),
+            reason: format!("cannot serialise merged .mcp.json: {e}"),
         })
     })?;
-
-    // Attempt to merge into existing JSON; fall back to overwrite on parse error.
-    let merged =
-        if let Ok(mut existing_json) = serde_json::from_str::<serde_json::Value>(&existing_text) {
-            if let (Some(existing_servers), Some(new_servers)) = (
-                existing_json
-                    .get_mut("mcpServers")
-                    .and_then(|v| v.as_object_mut()),
-                new_json.get("mcpServers").and_then(|v| v.as_object()),
-            ) {
-                for (k, v) in new_servers {
-                    existing_servers.insert(k.clone(), v.clone());
-                }
-                serde_json::to_string_pretty(&existing_json).map_err(|e| {
-                    EngramError::Install(InstallError::Failed {
-                        reason: format!("cannot serialise merged cursor JSON: {e}"),
-                    })
-                })?
-            } else {
-                // Existing JSON has no mcpServers object — write our entry wholesale.
-                serde_json::to_string_pretty(&new_json).map_err(|e| {
-                    EngramError::Install(InstallError::Failed {
-                        reason: format!("cannot serialise cursor JSON: {e}"),
-                    })
-                })?
-            }
-        } else {
-            // Existing file is not valid JSON — overwrite with the new entry.
-            warn!(
-                path = %path.display(),
-                "existing .cursor/mcp.json is not valid JSON; overwriting"
-            );
-            serde_json::to_string_pretty(&new_json).map_err(|e| {
-                EngramError::Install(InstallError::Failed {
-                    reason: format!("cannot serialise cursor JSON: {e}"),
-                })
-            })?
-        };
-
-    write_file(path, &format!("{merged}\n"))
+    write_file(path, &format!("{merged}\n"))?;
+    Ok(true)
 }
 
 // ── Private file-system helpers ───────────────────────────────────────────────
@@ -367,15 +390,6 @@ fn create_dir(path: &PathBuf) -> Result<(), EngramError> {
     std::fs::create_dir_all(path).map_err(|e| {
         EngramError::Install(InstallError::Failed {
             reason: format!("cannot create directory '{}': {e}", path.display()),
-        })
-    })
-}
-
-/// Resolve the path to the currently-running engram executable.
-fn current_exe() -> Result<PathBuf, EngramError> {
-    std::env::current_exe().map_err(|e| {
-        EngramError::Install(InstallError::Failed {
-            reason: format!("cannot locate engram executable: {e}"),
         })
     })
 }
@@ -415,8 +429,9 @@ async fn stop_daemon(workspace: &Path) {
 /// Install the engram plugin into `workspace`.
 ///
 /// Creates the `.engram/` directory structure, writes stub configuration files
-/// (`.version`, `config.toml`), generates `.vscode/mcp.json`, and appends
-/// `.gitignore` entries if a `.gitignore` file already exists.
+/// (`.version`, `config.toml`), and appends `.gitignore` entries if a
+/// `.gitignore` file already exists. Agent hooks (unless `--no-hooks`) register
+/// engram in the workspace-root `.mcp.json` (add-if-absent).
 ///
 /// Behaviour is controlled by `opts`:
 /// - `opts.hooks_only = true`: skips `.engram/` data file creation and generates
@@ -456,11 +471,6 @@ pub async fn install(workspace: &Path, opts: &InstallOptions) -> Result<(), Engr
         write_file(&engram_dir.join(".version"), SCHEMA_VERSION)?;
         write_file(&engram_dir.join("config.toml"), CONFIG_TOML_STUB)?;
 
-        // Generate .vscode/mcp.json.
-        let exe = current_exe()?;
-        let mcp_content = templates::mcp_json(&exe);
-        write_file(&workspace.join(".vscode").join("mcp.json"), &mcp_content)?;
-
         // Append .gitignore entries if a .gitignore already exists.
         let gitignore_path = workspace.join(".gitignore");
         if gitignore_path.is_file() {
@@ -495,8 +505,9 @@ pub async fn install(workspace: &Path, opts: &InstallOptions) -> Result<(), Engr
 
 /// Update the engram plugin runtime artifacts in `workspace`.
 ///
-/// Regenerates `.vscode/mcp.json` and updates `.engram/.version`. Does **not**
-/// modify user data files (`config.toml`).
+/// Registers engram in the workspace-root `.mcp.json` (add-if-absent) and
+/// updates `.engram/.version`. Does **not** modify user data files
+/// (`config.toml`).
 ///
 /// # Errors
 ///
@@ -538,19 +549,9 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
         })
     })?;
 
-    let exe = current_exe()?;
-    let mcp_content = templates::mcp_json(&exe);
-    let vscode_dir = workspace.join(".vscode");
-    std::fs::create_dir_all(&vscode_dir).map_err(|e| {
-        EngramError::Install(InstallError::UpdateFailed {
-            reason: format!("cannot create .vscode/: {e}"),
-        })
-    })?;
-    std::fs::write(vscode_dir.join("mcp.json"), mcp_content).map_err(|e| {
-        EngramError::Install(InstallError::UpdateFailed {
-            reason: format!("cannot write .vscode/mcp.json: {e}"),
-        })
-    })?;
+    // Register engram in the workspace-root .mcp.json (add-if-absent).
+    let mcp_path = workspace.join(".mcp.json");
+    apply_root_mcp_hook(&mcp_path, templates::ROOT_MCP_JSON)?;
 
     // Generate registry.yaml only if it does not already exist, to avoid
     // overwriting user-edited source entries on update.
@@ -565,8 +566,8 @@ pub async fn update(workspace: &Path) -> Result<(), EngramError> {
 /// Reinstall the engram plugin in `workspace`.
 ///
 /// Removes and recreates runtime directories (`.engram/run/`, `.engram/logs/`),
-/// regenerates `.vscode/mcp.json`, and updates `.engram/.version`. User data
-/// files (`config.toml`) are preserved.
+/// registers engram in the workspace-root `.mcp.json` (add-if-absent), and
+/// updates `.engram/.version`. User data files (`config.toml`) are preserved.
 ///
 /// # Errors
 ///
@@ -621,19 +622,9 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
         })
     })?;
 
-    let exe = current_exe()?;
-    let mcp_content = templates::mcp_json(&exe);
-    let vscode_dir = workspace.join(".vscode");
-    std::fs::create_dir_all(&vscode_dir).map_err(|e| {
-        EngramError::Install(InstallError::Failed {
-            reason: format!("cannot create .vscode/: {e}"),
-        })
-    })?;
-    std::fs::write(vscode_dir.join("mcp.json"), mcp_content).map_err(|e| {
-        EngramError::Install(InstallError::Failed {
-            reason: format!("cannot write .vscode/mcp.json: {e}"),
-        })
-    })?;
+    // Register engram in the workspace-root .mcp.json (add-if-absent).
+    let mcp_path = workspace.join(".mcp.json");
+    apply_root_mcp_hook(&mcp_path, templates::ROOT_MCP_JSON)?;
 
     // Always regenerate registry.yaml on reinstall.
     generate_default_registry(workspace, &engram_dir)?;
@@ -647,10 +638,10 @@ pub async fn reinstall(workspace: &Path) -> Result<(), EngramError> {
 /// If a daemon is running, sends `_shutdown` and waits up to 2 s for it to stop.
 ///
 /// - `keep_data = true`: removes runtime artifacts (`.engram/run/`,
-///   `.engram/logs/`, `.engram/.version`, `.vscode/mcp.json`) while preserving
-///   `config.toml`.
-/// - `keep_data = false`: removes the entire `.engram/` directory and
-///   `.vscode/mcp.json`.
+///   `.engram/logs/`, `.engram/.version`) and legacy IDE MCP files while
+///   preserving `config.toml`.
+/// - `keep_data = false`: removes the entire `.engram/` directory and legacy
+///   IDE MCP files. The workspace-root `.mcp.json` is left untouched.
 ///
 /// # Errors
 ///
@@ -705,14 +696,19 @@ pub async fn uninstall(workspace: &Path, keep_data: bool) -> Result<(), EngramEr
         })?;
     }
 
-    // Remove .vscode/mcp.json unconditionally.
-    let mcp_json = workspace.join(".vscode").join("mcp.json");
-    if mcp_json.is_file() {
-        std::fs::remove_file(&mcp_json).map_err(|e| {
-            EngramError::Install(InstallError::UninstallFailed {
-                reason: format!("cannot remove .vscode/mcp.json: {e}"),
-            })
-        })?;
+    // Remove legacy IDE-specific MCP config files (no longer generated). The
+    // workspace-root .mcp.json is left untouched — it is user-maintained.
+    for legacy in [
+        workspace.join(".vscode").join("mcp.json"),
+        workspace.join(".cursor").join("mcp.json"),
+    ] {
+        if legacy.is_file() {
+            std::fs::remove_file(&legacy).map_err(|e| {
+                EngramError::Install(InstallError::UninstallFailed {
+                    reason: format!("cannot remove '{}': {e}", legacy.display()),
+                })
+            })?;
+        }
     }
 
     info!("engram plugin uninstalled successfully");
