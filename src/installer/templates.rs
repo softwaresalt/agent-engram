@@ -1,47 +1,39 @@
 //! Configuration file templates for the engram plugin installer.
 //!
 //! Provides template strings and generation functions for:
-//! - `.vscode/mcp.json` — VS Code MCP client configuration
+//! - `.mcp.json` — workspace-root MCP client configuration (engram entry)
 //! - `.gitignore` entries — exclude runtime artifacts from version control
 //! - `.github/copilot-instructions.md` — GitHub Copilot agent instructions
 //! - `.claude/instructions.md` — Claude Code agent instructions
-//! - `.cursor/mcp.json` — Cursor MCP configuration
 
-use std::path::Path;
-
-/// Generate the contents of `.vscode/mcp.json` for the given engram executable.
+/// Workspace-root `.mcp.json` content registering engram as a stdio MCP server.
 ///
-/// The generated configuration registers the engram binary as an MCP stdio
-/// server. The shim discovers the workspace from its current working directory
-/// at startup, so no workspace argument is required in the configuration.
-///
-/// Path separators are normalised to forward slashes for cross-platform JSON
-/// compatibility.
+/// Applied with add-if-absent semantics: when a workspace has no `.mcp.json`
+/// this is written verbatim; when one exists without an `engram` entry, the
+/// `mcpServers.engram` object is merged in, preserving all other servers. The
+/// shim resolves the workspace from `ENGRAM_WORKSPACE` (expanded by the MCP
+/// client to the workspace folder).
 ///
 /// # Examples
 ///
 /// ```
-/// use std::path::Path;
-/// let json = engram::installer::templates::mcp_json(Path::new("/usr/local/bin/engram"));
-/// assert!(json.contains("mcpServers"));
-/// assert!(json.contains("stdio"));
+/// let s = engram::installer::templates::ROOT_MCP_JSON;
+/// assert!(s.contains("\"engram\""));
+/// assert!(s.contains("stdio"));
+/// assert!(s.contains("shim"));
 /// ```
-pub fn mcp_json(engram_exe: &Path) -> String {
-    let exe_str = engram_exe.to_string_lossy();
-    // Normalise backslashes so the JSON is valid on Windows too.
-    let exe_normalized = exe_str.replace('\\', "/");
-    format!(
-        r#"{{
-  "mcpServers": {{
-    "engram": {{
+pub const ROOT_MCP_JSON: &str = r#"{
+  "mcpServers": {
+    "engram": {
       "type": "stdio",
-      "command": "{exe_normalized}",
-      "args": []
-    }}
-  }}
-}}"#
-    )
-}
+      "command": "engram",
+      "args": ["shim"],
+      "env": {
+        "ENGRAM_WORKSPACE": "${workspaceFolder}"
+      }
+    }
+  }
+}"#;
 
 /// Return the `.gitignore` entries that should be appended for engram.
 ///
@@ -139,30 +131,5 @@ Engram is running as an MCP server at `http://127.0.0.1:{port}/mcp`.
 3. **Task management**: Track all work items with `create_task` and `update_task`.
 4. **Code exploration**: Use `map_code` before navigating unfamiliar modules.
 5. **Change awareness**: Use `query_changes` to understand what changed recently."#
-    )
-}
-
-/// Generate the Cursor MCP configuration JSON for `.cursor/mcp.json`.
-///
-/// The generated JSON registers the Engram HTTP SSE endpoint. Unlike the
-/// Markdown hook files, this uses a JSON merge strategy — the `engram` key is
-/// upserted into `mcpServers` without removing other entries.
-///
-/// # Examples
-///
-/// ```
-/// let json = engram::installer::templates::cursor_mcp_json(7437);
-/// assert!(json.contains("http://127.0.0.1:7437/mcp"));
-/// assert!(json.contains("mcpServers"));
-/// ```
-pub fn cursor_mcp_json(port: u16) -> String {
-    format!(
-        r#"{{
-  "mcpServers": {{
-    "engram": {{
-      "url": "http://127.0.0.1:{port}/mcp"
-    }}
-  }}
-}}"#
     )
 }

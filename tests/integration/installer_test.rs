@@ -15,7 +15,6 @@
 //! - S080: `.backlogit/` auto-detected during install
 
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 
 use engram::errors::{EngramError, InstallError};
@@ -72,8 +71,8 @@ async fn s067_install_clean_workspace() {
         ".engram/config.toml must exist"
     );
     assert!(
-        workspace.join(".vscode/mcp.json").is_file(),
-        ".vscode/mcp.json must exist"
+        workspace.join(".mcp.json").is_file(),
+        "root .mcp.json must exist"
     );
 }
 
@@ -149,7 +148,7 @@ async fn s069_update_not_installed() {
     assert_not_installed(&err);
 }
 
-/// S069: `update` refreshes `.version` and regenerates `mcp.json`.
+/// S069: `update` refreshes `.version` and re-registers engram in `.mcp.json`.
 #[tokio::test]
 async fn s069_update_refreshes_artifacts() {
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -159,9 +158,10 @@ async fn s069_update_refreshes_artifacts() {
         .await
         .expect("install");
 
-    // Clobber version and mcp.json to verify update rewrites them.
+    // Clobber version and remove the engram entry from .mcp.json to verify
+    // update refreshes .version and re-adds engram (add-if-absent).
     fs::write(workspace.join(".engram/.version"), "0.0.0").expect("write stale version");
-    fs::write(workspace.join(".vscode/mcp.json"), "{}").expect("write stale mcp.json");
+    fs::write(workspace.join(".mcp.json"), "{}").expect("write empty mcp.json");
 
     installer::update(workspace)
         .await
@@ -174,10 +174,11 @@ async fn s069_update_refreshes_artifacts() {
         ".version must match SCHEMA_VERSION"
     );
 
-    let mcp = fs::read_to_string(workspace.join(".vscode/mcp.json")).expect("read mcp.json");
+    let raw = fs::read_to_string(workspace.join(".mcp.json")).expect("read .mcp.json");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
     assert!(
-        mcp.contains("mcpServers"),
-        "mcp.json must contain mcpServers"
+        parsed["mcpServers"]["engram"].is_object(),
+        ".mcp.json must register engram after update"
     );
 }
 
@@ -255,6 +256,12 @@ async fn s071_uninstall_keep_data_preserves_config_toml() {
     let custom = "[batch]\nmax_size = 5\n";
     fs::write(workspace.join(".engram/config.toml"), custom).expect("write config.toml");
 
+    // Simulate a legacy install that generated IDE-specific MCP files.
+    fs::create_dir_all(workspace.join(".vscode")).expect("mk .vscode");
+    fs::write(workspace.join(".vscode/mcp.json"), "{}").expect("legacy vscode mcp");
+    fs::create_dir_all(workspace.join(".cursor")).expect("mk .cursor");
+    fs::write(workspace.join(".cursor/mcp.json"), "{}").expect("legacy cursor mcp");
+
     installer::uninstall(workspace, true)
         .await
         .expect("uninstall --keep-data should succeed");
@@ -274,7 +281,15 @@ async fn s071_uninstall_keep_data_preserves_config_toml() {
     );
     assert!(
         !workspace.join(".vscode/mcp.json").is_file(),
-        "mcp.json must be removed"
+        "legacy .vscode/mcp.json must be removed"
+    );
+    assert!(
+        !workspace.join(".cursor/mcp.json").is_file(),
+        "legacy .cursor/mcp.json must be removed"
+    );
+    assert!(
+        workspace.join(".mcp.json").is_file(),
+        "root .mcp.json must be left untouched by uninstall"
     );
 
     // Data files must survive.
@@ -292,7 +307,7 @@ async fn s071_uninstall_keep_data_preserves_config_toml() {
 
 // ── S072: full uninstall ──────────────────────────────────────────────────────
 
-/// S072: Full uninstall removes the entire `.engram/` directory and `mcp.json`.
+/// S072: Full uninstall removes the entire `.engram/` directory and legacy IDE MCP files.
 #[tokio::test]
 async fn s072_uninstall_full_removal() {
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -301,6 +316,12 @@ async fn s072_uninstall_full_removal() {
     installer::install(workspace, &installer::InstallOptions::default())
         .await
         .expect("install");
+
+    // Simulate a legacy install that generated IDE-specific MCP files.
+    fs::create_dir_all(workspace.join(".vscode")).expect("mk .vscode");
+    fs::write(workspace.join(".vscode/mcp.json"), "{}").expect("legacy vscode mcp");
+    fs::create_dir_all(workspace.join(".cursor")).expect("mk .cursor");
+    fs::write(workspace.join(".cursor/mcp.json"), "{}").expect("legacy cursor mcp");
 
     installer::uninstall(workspace, false)
         .await
@@ -312,7 +333,15 @@ async fn s072_uninstall_full_removal() {
     );
     assert!(
         !workspace.join(".vscode/mcp.json").is_file(),
-        "mcp.json must be removed after full uninstall"
+        "legacy .vscode/mcp.json must be removed after full uninstall"
+    );
+    assert!(
+        !workspace.join(".cursor/mcp.json").is_file(),
+        "legacy .cursor/mcp.json must be removed after full uninstall"
+    );
+    assert!(
+        workspace.join(".mcp.json").is_file(),
+        "root .mcp.json must be left untouched by full uninstall"
     );
 }
 
@@ -358,7 +387,7 @@ async fn s074_uninstall_stops_daemon_first() {
 
 // ── S075: MCP config content ──────────────────────────────────────────────────
 
-/// S075: The generated `.vscode/mcp.json` contains the correct MCP structure.
+/// S075: The generated root `.mcp.json` contains the correct MCP structure.
 #[tokio::test]
 async fn s075_mcp_json_structure() {
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -368,55 +397,37 @@ async fn s075_mcp_json_structure() {
         .await
         .expect("install");
 
-    let raw = fs::read_to_string(workspace.join(".vscode/mcp.json")).expect("read mcp.json");
+    let raw = fs::read_to_string(workspace.join(".mcp.json")).expect("read .mcp.json");
     let parsed: serde_json::Value =
-        serde_json::from_str(&raw).expect("mcp.json must be valid JSON");
+        serde_json::from_str(&raw).expect(".mcp.json must be valid JSON");
 
-    // Must have mcpServers.engram with type=stdio and non-empty command.
+    // Must have mcpServers.engram as a stdio shim registration.
     let server = &parsed["mcpServers"]["engram"];
     assert_eq!(server["type"], "stdio", "type must be 'stdio'");
-    let command = server["command"]
-        .as_str()
-        .expect("command must be a string");
-    assert!(!command.is_empty(), "command must be non-empty");
-    // Forward-slash path (no raw backslashes).
-    assert!(
-        !command.contains('\\'),
-        "command must not contain backslashes"
-    );
+    assert_eq!(server["command"], "engram", "command must be 'engram'");
     assert_eq!(
         server["args"],
-        serde_json::json!([]),
-        "args must be empty array"
+        serde_json::json!(["shim"]),
+        "args must be [\"shim\"]"
+    );
+    assert_eq!(
+        server["env"]["ENGRAM_WORKSPACE"], "${workspaceFolder}",
+        "env must set ENGRAM_WORKSPACE"
     );
 }
 
-/// S075: Templates produce correct `mcp_json` output.
+/// S075: The `ROOT_MCP_JSON` template is a valid stdio engram registration.
 #[test]
-fn s075_templates_mcp_json_direct() {
+fn s075_templates_root_mcp_json() {
     use engram::installer::templates;
 
-    let exe = Path::new("/usr/local/bin/engram");
-    let json = templates::mcp_json(exe);
-
-    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(templates::ROOT_MCP_JSON).expect("valid JSON");
     let server = &parsed["mcpServers"]["engram"];
     assert_eq!(server["type"], "stdio");
-    assert_eq!(server["command"], "/usr/local/bin/engram");
-    assert_eq!(server["args"], serde_json::json!([]));
-}
-
-/// S075: Templates produce correct `mcp_json` with Windows-style paths.
-#[test]
-fn s075_templates_mcp_json_windows_path() {
-    use engram::installer::templates;
-
-    let exe = Path::new(r"C:\Users\me\.cargo\bin\engram.exe");
-    let json = templates::mcp_json(exe);
-    assert!(
-        !json.contains('\\'),
-        "backslashes must be normalized to forward slashes"
-    );
+    assert_eq!(server["command"], "engram");
+    assert_eq!(server["args"], serde_json::json!(["shim"]));
+    assert_eq!(server["env"]["ENGRAM_WORKSPACE"], "${workspaceFolder}");
 }
 
 /// S075: `gitignore_entries` contains the `.engram/` exclusion pattern.
@@ -442,10 +453,10 @@ async fn s076_install_path_with_spaces() {
         .expect("install in path with spaces should succeed");
 
     assert!(workspace.join(".engram").is_dir());
-    assert!(workspace.join(".vscode/mcp.json").is_file());
+    assert!(workspace.join(".mcp.json").is_file());
 
-    // mcp.json must be parseable and contain the engram key.
-    let raw = fs::read_to_string(workspace.join(".vscode/mcp.json")).expect("read mcp.json");
+    // .mcp.json must be parseable and contain the engram key.
+    let raw = fs::read_to_string(workspace.join(".mcp.json")).expect("read .mcp.json");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
     assert!(parsed["mcpServers"]["engram"].is_object());
 }
@@ -608,17 +619,19 @@ async fn s064_fresh_install_creates_hook_files() {
         "claude hook must mention set_workspace tool"
     );
 
-    // Cursor hook
-    let cursor = workspace.join(".cursor").join("mcp.json");
-    assert!(cursor.is_file(), ".cursor/mcp.json must exist");
-    let cursor_content = fs::read_to_string(&cursor).expect("read cursor hook");
+    // Root .mcp.json hook
+    let mcp = workspace.join(".mcp.json");
+    assert!(mcp.is_file(), "root .mcp.json must exist");
+    let mcp_content = fs::read_to_string(&mcp).expect("read .mcp.json hook");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&mcp_content).expect(".mcp.json must be valid JSON");
     assert!(
-        cursor_content.contains("mcpServers"),
-        "cursor hook must contain mcpServers key"
+        parsed["mcpServers"]["engram"].is_object(),
+        ".mcp.json must register the engram server"
     );
-    assert!(
-        cursor_content.contains("http://127.0.0.1:7437/mcp"),
-        "cursor hook must contain default MCP endpoint URL"
+    assert_eq!(
+        parsed["mcpServers"]["engram"]["command"], "engram",
+        "engram entry must use the stdio shim command"
     );
 }
 
@@ -741,8 +754,8 @@ async fn s067_hooks_only_skips_data_files() {
         "claude hook must be created by hooks-only install"
     );
     assert!(
-        workspace.join(".cursor").join("mcp.json").is_file(),
-        "cursor hook must be created by hooks-only install"
+        workspace.join(".mcp.json").is_file(),
+        "root .mcp.json must be created by hooks-only install"
     );
 
     // .engram/ data files must NOT exist.
@@ -788,14 +801,6 @@ async fn s068_custom_port_in_hook_urls() {
         claude_content.contains("http://127.0.0.1:8090/mcp"),
         "claude hook must use custom port 8090"
     );
-
-    // Cursor hook must use custom port.
-    let cursor_content =
-        fs::read_to_string(workspace.join(".cursor").join("mcp.json")).expect("read cursor hook");
-    assert!(
-        cursor_content.contains("http://127.0.0.1:8090/mcp"),
-        "cursor hook must use custom port 8090"
-    );
 }
 
 /// S069: `--no-hooks` skips all agent hook file generation.
@@ -833,8 +838,8 @@ async fn s069_no_hooks_skips_hook_generation() {
         "claude hook must NOT be created when --no-hooks is set"
     );
     assert!(
-        !workspace.join(".cursor").join("mcp.json").is_file(),
-        "cursor hook must NOT be created when --no-hooks is set"
+        !workspace.join(".mcp.json").is_file(),
+        "root .mcp.json must NOT be created when --no-hooks is set"
     );
 }
 
@@ -870,15 +875,14 @@ fn marker_replace_content_between_markers() {
     drop(path); // suppress unused warning
 }
 
-/// Cursor JSON merge: existing mcpServers entry preserved when engram is added.
+/// Root `.mcp.json` add-if-absent: existing servers preserved, engram added
+/// when absent, and an existing engram entry is never overwritten.
 #[test]
-fn cursor_hook_merges_existing_servers() {
+fn root_mcp_hook_adds_when_absent_and_noops_when_present() {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let cursor_dir = tmp.path().join(".cursor");
-    std::fs::create_dir_all(&cursor_dir).expect("create .cursor dir");
-    let cursor_path = cursor_dir.join("mcp.json");
+    let mcp_path = tmp.path().join(".mcp.json");
 
-    // Pre-existing cursor config with another server.
+    // Pre-existing config with another server and no engram entry.
     let existing_json = r#"{
   "mcpServers": {
     "other-server": {
@@ -886,29 +890,92 @@ fn cursor_hook_merges_existing_servers() {
     }
   }
 }"#;
-    std::fs::write(&cursor_path, existing_json).expect("write existing cursor json");
+    std::fs::write(&mcp_path, existing_json).expect("write existing .mcp.json");
 
-    engram::installer::apply_cursor_hook(
-        &cursor_path,
-        &engram::installer::templates::cursor_mcp_json(7437),
+    // First application adds engram while preserving the other server.
+    let added = engram::installer::apply_root_mcp_hook(
+        &mcp_path,
+        engram::installer::templates::ROOT_MCP_JSON,
     )
-    .expect("apply_cursor_hook must succeed");
+    .expect("apply_root_mcp_hook must succeed");
+    assert!(added, "engram must be added when absent");
 
-    let result = std::fs::read_to_string(&cursor_path).expect("read cursor json");
+    let result = std::fs::read_to_string(&mcp_path).expect("read .mcp.json");
     let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
-
-    // Both servers must be present.
     assert!(
         parsed["mcpServers"]["other-server"].is_object(),
         "pre-existing server must be preserved"
     );
-    assert!(
-        parsed["mcpServers"]["engram"].is_object(),
-        "engram server must be added"
-    );
     assert_eq!(
-        parsed["mcpServers"]["engram"]["url"], "http://127.0.0.1:7437/mcp",
-        "engram server URL must be correct"
+        parsed["mcpServers"]["engram"]["command"], "engram",
+        "engram entry must be the stdio shim registration"
+    );
+
+    // A user-customised engram entry must never be overwritten (no-op).
+    let sentinel = r#"{
+  "mcpServers": {
+    "other-server": { "url": "http://localhost:9000/mcp" },
+    "engram": { "type": "stdio", "command": "custom-engram", "args": [] }
+  }
+}"#;
+    std::fs::write(&mcp_path, sentinel).expect("write sentinel .mcp.json");
+
+    let added_again = engram::installer::apply_root_mcp_hook(
+        &mcp_path,
+        engram::installer::templates::ROOT_MCP_JSON,
+    )
+    .expect("apply_root_mcp_hook must succeed");
+    assert!(
+        !added_again,
+        "an existing engram entry must not be overwritten"
+    );
+
+    let result2 = std::fs::read_to_string(&mcp_path).expect("read .mcp.json");
+    let parsed2: serde_json::Value = serde_json::from_str(&result2).expect("valid JSON");
+    assert_eq!(
+        parsed2["mcpServers"]["engram"]["command"], "custom-engram",
+        "user's existing engram entry must be preserved unchanged"
+    );
+}
+
+/// Root `.mcp.json` safety: a file that is not valid JSON (or whose
+/// `mcpServers` is not an object) is left untouched byte-for-byte, protecting a
+/// hand-maintained config from being clobbered.
+#[test]
+fn root_mcp_hook_leaves_invalid_config_untouched() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mcp_path = tmp.path().join(".mcp.json");
+
+    // Malformed JSON must be preserved byte-for-byte.
+    let malformed = "{ this is not valid json ";
+    std::fs::write(&mcp_path, malformed).expect("write malformed .mcp.json");
+
+    let added = engram::installer::apply_root_mcp_hook(
+        &mcp_path,
+        engram::installer::templates::ROOT_MCP_JSON,
+    )
+    .expect("apply_root_mcp_hook must not error on malformed input");
+    assert!(!added, "malformed .mcp.json must not be modified");
+    assert_eq!(
+        std::fs::read_to_string(&mcp_path).expect("read .mcp.json"),
+        malformed,
+        "malformed .mcp.json must be preserved byte-for-byte"
+    );
+
+    // A `mcpServers` that is not an object is also left untouched.
+    let wrong_shape = r#"{"mcpServers": "not-an-object"}"#;
+    std::fs::write(&mcp_path, wrong_shape).expect("write wrong-shape .mcp.json");
+
+    let added = engram::installer::apply_root_mcp_hook(
+        &mcp_path,
+        engram::installer::templates::ROOT_MCP_JSON,
+    )
+    .expect("apply_root_mcp_hook must not error on unexpected shape");
+    assert!(!added, "unexpected mcpServers shape must not be modified");
+    assert_eq!(
+        std::fs::read_to_string(&mcp_path).expect("read .mcp.json"),
+        wrong_shape,
+        "unexpected-shape .mcp.json must be preserved byte-for-byte"
     );
 }
 
