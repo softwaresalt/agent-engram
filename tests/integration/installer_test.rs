@@ -938,6 +938,47 @@ fn root_mcp_hook_adds_when_absent_and_noops_when_present() {
     );
 }
 
+/// Root `.mcp.json` safety: a file that is not valid JSON (or whose
+/// `mcpServers` is not an object) is left untouched byte-for-byte, protecting a
+/// hand-maintained config from being clobbered.
+#[test]
+fn root_mcp_hook_leaves_invalid_config_untouched() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mcp_path = tmp.path().join(".mcp.json");
+
+    // Malformed JSON must be preserved byte-for-byte.
+    let malformed = "{ this is not valid json ";
+    std::fs::write(&mcp_path, malformed).expect("write malformed .mcp.json");
+
+    let added = engram::installer::apply_root_mcp_hook(
+        &mcp_path,
+        engram::installer::templates::ROOT_MCP_JSON,
+    )
+    .expect("apply_root_mcp_hook must not error on malformed input");
+    assert!(!added, "malformed .mcp.json must not be modified");
+    assert_eq!(
+        std::fs::read_to_string(&mcp_path).expect("read .mcp.json"),
+        malformed,
+        "malformed .mcp.json must be preserved byte-for-byte"
+    );
+
+    // A `mcpServers` that is not an object is also left untouched.
+    let wrong_shape = r#"{"mcpServers": "not-an-object"}"#;
+    std::fs::write(&mcp_path, wrong_shape).expect("write wrong-shape .mcp.json");
+
+    let added = engram::installer::apply_root_mcp_hook(
+        &mcp_path,
+        engram::installer::templates::ROOT_MCP_JSON,
+    )
+    .expect("apply_root_mcp_hook must not error on unexpected shape");
+    assert!(!added, "unexpected mcpServers shape must not be modified");
+    assert_eq!(
+        std::fs::read_to_string(&mcp_path).expect("read .mcp.json"),
+        wrong_shape,
+        "unexpected-shape .mcp.json must be preserved byte-for-byte"
+    );
+}
+
 // ── T059: Version migration detection ────────────────────────────────────────
 
 /// T059: `update` writes the current schema version to `.engram/.version`.

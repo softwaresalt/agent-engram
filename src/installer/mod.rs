@@ -293,8 +293,10 @@ fn replace_marker_content(existing: &str, new_content: &str) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Returns [`InstallError::Failed`] if the file cannot be read or written, or if
-/// `template_json` is not valid JSON containing `mcpServers.engram`.
+/// Returns [`InstallError::Failed`] if the file cannot be read or written, if
+/// `template_json` is not valid JSON, or — when merging into an existing file —
+/// if `template_json` does not contain `mcpServers.engram`. On the create path
+/// (no existing file) the template is written verbatim.
 pub fn apply_root_mcp_hook(path: &PathBuf, template_json: &str) -> Result<bool, EngramError> {
     let template: serde_json::Value = serde_json::from_str(template_json).map_err(|e| {
         EngramError::Install(InstallError::Failed {
