@@ -11,7 +11,7 @@ use engram::cli::output::OutputFormatter;
 /// The shim subcommand (default) is the MCP client entry point; the daemon
 /// subcommand is spawned automatically by the shim.
 #[derive(Debug, Parser)]
-#[command(name = "engram", version, about)]
+#[command(name = "engram", version = engram::shim::version::ENGRAM_BUILD_HASH, about)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
