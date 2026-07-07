@@ -31,6 +31,7 @@ pub mod policy;
 pub mod powerbi_extract;
 pub mod powerbi_indexer;
 pub mod powerbi_tmdl;
+pub mod process_memory;
 pub mod query_stats;
 pub mod reactive_sync;
 pub mod registry;

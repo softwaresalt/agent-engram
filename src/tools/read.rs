@@ -835,8 +835,6 @@ pub async fn get_health_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    use sysinfo::System;
-
     let version = env!("CARGO_PKG_VERSION");
     let uptime_secs = state.uptime_seconds();
     let connections = state.active_connections();
@@ -846,14 +844,8 @@ pub async fn get_health_report(
     let (p50, p95, p99) = state.latency_percentiles().await;
     let (watcher_events, last_watcher_event) = state.watcher_stats().await;
 
-    let mut sys = System::new();
-    let pid = sysinfo::get_current_pid().ok();
-    if let Some(pid) = pid {
-        sys.refresh_process(pid);
-    }
-    let memory_mb = pid
-        .and_then(|pid| sys.process(pid))
-        .map(|proc| proc.memory() / 1_048_576);
+    let memory_mb = crate::services::process_memory::current_process_memory_bytes()
+        .map(|bytes| bytes / 1_048_576);
 
     // Collect embedding status — no workspace needed for the basic availability check.
     let embedding_status = embedding::status(None).await?;
