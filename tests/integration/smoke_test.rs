@@ -298,8 +298,7 @@ async fn s071_full_workspace_status_response() {
 /// counts surface through `get_workspace_status`, and match `get_workspace_statistics`.
 #[tokio::test]
 async fn s072_workspace_status_reports_code_graph_counts() {
-    use std::time::{Duration, Instant};
-
+    use engram::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
     use engram::models::config::CodeGraphConfig;
     use engram::services::code_graph;
 
@@ -327,9 +326,27 @@ pub fn use_widget() -> Widget {
     )
     .expect("write sample source");
 
-    let state = Arc::new(AppState::new(10));
     let path = workspace.path().to_string_lossy().to_string();
 
+    // Index the workspace BEFORE binding, resolving data_dir/branch exactly as
+    // set_workspace does. Populating the DB up front means set_workspace's
+    // background hydration hits hydrate_code_graph's "DB already populated"
+    // fast-path (no JSONL reload, no writes) and only performs reads — so there
+    // is no concurrent CozoDB writer and no reliance on scheduler timing.
+    let canonical = canonicalize_workspace(&path).expect("canonicalize workspace");
+    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
+    let data_dir = resolve_data_dir(&canonical);
+    let config = CodeGraphConfig::default();
+    let index = code_graph::index_workspace(&canonical, &data_dir, &branch, &config, false)
+        .await
+        .expect("index_workspace should succeed");
+    assert!(
+        index.functions_indexed >= 2,
+        "fixture must index at least two functions, got {}",
+        index.functions_indexed
+    );
+
+    let state = Arc::new(AppState::new(10));
     tools::dispatch(
         state.clone(),
         "set_workspace",
@@ -337,43 +354,6 @@ pub fn use_widget() -> Widget {
     )
     .await
     .expect("set_workspace must succeed");
-
-    // set_workspace spawns background hydration that acquires the indexing lock
-    // via the synchronous `try_start_indexing`. Acquire that same lock before
-    // indexing so our manual index cannot overlap the background CozoDB work,
-    // removing any reliance on timing: if the background task holds the lock we
-    // wait for it to release; if we win the lock first the background task sees
-    // it held and exits immediately.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !state.try_start_indexing() {
-        assert!(
-            Instant::now() < deadline,
-            "could not acquire the indexing lock from background hydration"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-
-    // Index into the same data_dir/branch that get_workspace_status reads.
-    let snapshot = state
-        .snapshot_workspace()
-        .await
-        .expect("workspace snapshot after bind");
-    let config = CodeGraphConfig::default();
-    let index = code_graph::index_workspace(
-        workspace.path(),
-        &snapshot.data_dir,
-        &snapshot.branch,
-        &config,
-        false,
-    )
-    .await
-    .expect("index_workspace should succeed");
-    state.finish_indexing().await;
-    assert!(
-        index.functions_indexed >= 2,
-        "fixture must index at least two functions, got {}",
-        index.functions_indexed
-    );
 
     let result = tools::dispatch(state.clone(), "get_workspace_status", None)
         .await
