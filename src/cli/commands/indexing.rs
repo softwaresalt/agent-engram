@@ -1,18 +1,24 @@
 //! Indexing subcommands: sync and index (the critical preloading commands).
 
+use serde_json::json;
+
 use crate::cli::direct::run_direct_sync;
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
 use crate::cli::runner::{INDEXING_TIMEOUT_SECS, run_tool, run_tool_timed};
 
-/// `engram sync [--full] [--direct]` — incremental or full workspace index.
+/// `engram sync [--full] [--force] [--direct]` — incremental or full workspace index.
 ///
 /// Without `--direct`, routes through the IPC daemon (auto-spawned if needed).
 /// With `--direct`, acquires the daemon lock and runs service functions in-process,
 /// then exits when complete. Useful for pre-loading the index from a startup script
 /// before launching an MCP host.
+///
+/// `--force` re-parses and re-embeds all discovered files (bypassing the
+/// content-hash skip) and implies the full-scan path.
 pub async fn run_sync(
     full: bool,
+    force: bool,
     direct: bool,
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
@@ -29,17 +35,18 @@ pub async fn run_sync(
         return run_direct_sync(
             &workspace,
             full,
+            force,
             flags.id_value(),
             correlation_id,
             formatter,
         )
         .await;
     }
-    if full {
+    if full || force {
         // Full re-index can take minutes on large workspaces — use extended timeout.
         run_tool_timed(
             "index_workspace",
-            None,
+            force_params(force),
             flags,
             formatter,
             INDEXING_TIMEOUT_SECS,
@@ -50,8 +57,13 @@ pub async fn run_sync(
     }
 }
 
-/// `engram index [--direct]` — alias for `engram sync --full [--direct]`.
-pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputFormatter) -> i32 {
+/// `engram index [--force] [--direct]` — full scan; alias for `engram sync --full`.
+pub async fn run_index(
+    force: bool,
+    direct: bool,
+    flags: &GlobalFlags,
+    formatter: &OutputFormatter,
+) -> i32 {
     if direct {
         let workspace = match flags.resolve_workspace() {
             Ok(p) => p,
@@ -64,6 +76,7 @@ pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputForm
         return run_direct_sync(
             &workspace,
             true,
+            force,
             flags.id_value(),
             correlation_id,
             formatter,
@@ -73,12 +86,22 @@ pub async fn run_index(direct: bool, flags: &GlobalFlags, formatter: &OutputForm
     // Full re-index can take minutes on large workspaces — use extended timeout.
     run_tool_timed(
         "index_workspace",
-        None,
+        force_params(force),
         flags,
         formatter,
         INDEXING_TIMEOUT_SECS,
     )
     .await
+}
+
+/// Build `index_workspace` params for the `force` flag: `Some({"force": true})`
+/// when forcing a re-parse, `None` otherwise (preserving the default fast path).
+fn force_params(force: bool) -> Option<serde_json::Value> {
+    if force {
+        Some(json!({ "force": true }))
+    } else {
+        None
+    }
 }
 
 // Routing behaviour is covered by tests/integration/cli_direct_test.rs which
