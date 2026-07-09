@@ -229,3 +229,81 @@ fn direct_sync_detects_locked_database() {
         "stderr must mention 'locked by another process'; got: {stderr}"
     );
 }
+
+/// Create a git workspace containing one Rust source file. The returned
+/// `TempDir` must be kept alive for the duration of the test.
+fn workspace_with_source() -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+    fs::create_dir_all(ws.join("src")).expect("create src");
+    fs::write(
+        ws.join("src").join("lib.rs"),
+        "pub fn greet() -> &'static str {\n    \"hi\"\n}\n",
+    )
+    .expect("write source");
+    (tmp, ws)
+}
+
+/// Extract `result.files_parsed` from a `--json` index/sync envelope.
+fn files_parsed(stdout: &str) -> u64 {
+    let v: serde_json::Value = serde_json::from_str(stdout)
+        .unwrap_or_else(|e| panic!("index output must be JSON ({e}): {stdout}"));
+    v["result"]["files_parsed"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("missing result.files_parsed: {stdout}"))
+}
+
+/// 079-F: `index --force` re-parses unchanged files; a plain re-index hash-skips.
+#[test]
+fn direct_index_force_reparses_unchanged_files() {
+    let (_tmp, ws) = workspace_with_source();
+
+    let (c1, out1, err1) = run_direct(&ws, &["index", "--direct", "--json"]);
+    assert_eq!(c1, 0, "first index must succeed; stderr: {err1}");
+    assert!(
+        files_parsed(&out1) >= 1,
+        "first index must parse the source file: {out1}"
+    );
+
+    let (c2, out2, err2) = run_direct(&ws, &["index", "--direct", "--json"]);
+    assert_eq!(c2, 0, "second index must succeed; stderr: {err2}");
+    assert_eq!(
+        files_parsed(&out2),
+        0,
+        "unchanged file must be hash-skipped without --force: {out2}"
+    );
+
+    let (c3, out3, err3) = run_direct(&ws, &["index", "--force", "--direct", "--json"]);
+    assert_eq!(c3, 0, "force index must succeed; stderr: {err3}");
+    assert!(
+        files_parsed(&out3) >= 1,
+        "--force must re-parse unchanged files: {out3}"
+    );
+}
+
+/// 079-F: `sync --force` takes the full-index path and re-parses unchanged files,
+/// while plain `sync --full` still hash-skips them.
+#[test]
+fn direct_sync_force_reparses_unchanged_files() {
+    let (_tmp, ws) = workspace_with_source();
+
+    let (c1, out1, err1) = run_direct(&ws, &["index", "--direct", "--json"]);
+    assert_eq!(c1, 0, "priming index must succeed; stderr: {err1}");
+    assert!(files_parsed(&out1) >= 1, "priming index must parse: {out1}");
+
+    let (c2, out2, err2) = run_direct(&ws, &["sync", "--full", "--direct", "--json"]);
+    assert_eq!(c2, 0, "sync --full must succeed; stderr: {err2}");
+    assert_eq!(
+        files_parsed(&out2),
+        0,
+        "sync --full must hash-skip unchanged files: {out2}"
+    );
+
+    let (c3, out3, err3) = run_direct(&ws, &["sync", "--force", "--direct", "--json"]);
+    assert_eq!(c3, 0, "sync --force must succeed; stderr: {err3}");
+    assert!(
+        files_parsed(&out3) >= 1,
+        "sync --force must re-parse unchanged files: {out3}"
+    );
+}

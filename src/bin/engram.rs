@@ -80,12 +80,17 @@ enum Command {
     /// Persist in-memory workspace state to disk (`flush_state`).
     Flush,
 
-    /// Incrementally synchronize changed source files into the code graph (`sync_workspace`).
-    /// Use --full to force a complete re-index.
+    /// Synchronize source files into the code graph. Without flags, performs an
+    /// incremental sync of changed and deleted files (`sync_workspace`).
     Sync {
-        /// Force full re-index instead of incremental sync.
+        /// Scan all workspace files (`index_workspace`), skipping unchanged
+        /// files by content hash. Use `--force` to also re-parse unchanged files.
         #[arg(long)]
         full: bool,
+        /// Re-parse and re-embed all discovered files, bypassing the
+        /// content-hash skip. Implies the full-scan path (`--full`).
+        #[arg(long)]
+        force: bool,
         /// Run without spawning a daemon: acquire the lock and call service
         /// functions directly. The process exits when indexing completes.
         /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
@@ -93,9 +98,13 @@ enum Command {
         direct: bool,
     },
 
-    /// Parse and index all workspace source files into the code graph (`index_workspace`).
-    /// Equivalent to `engram sync --full`.
+    /// Scan all workspace source files into the code graph (`index_workspace`),
+    /// skipping unchanged files by content hash. Equivalent to `engram sync --full`.
     Index {
+        /// Re-parse and re-embed all discovered files, bypassing the
+        /// content-hash skip.
+        #[arg(long)]
+        force: bool,
         /// Run without spawning a daemon: acquire the lock and call service
         /// functions directly. The process exits when indexing completes.
         /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
@@ -339,14 +348,18 @@ async fn main() -> Result<()> {
             let code = lifecycle::run_flush(&flags, &fmt).await;
             std::process::exit(code);
         }
-        Command::Sync { full, direct } => {
+        Command::Sync {
+            full,
+            force,
+            direct,
+        } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = indexing::run_sync(full, direct, &flags, &fmt).await;
+            let code = indexing::run_sync(full, force, direct, &flags, &fmt).await;
             std::process::exit(code);
         }
-        Command::Index { direct } => {
+        Command::Index { force, direct } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = indexing::run_index(direct, &flags, &fmt).await;
+            let code = indexing::run_index(force, direct, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Manifest => {

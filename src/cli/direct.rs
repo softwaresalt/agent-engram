@@ -44,6 +44,7 @@ use crate::services::config::parse_config;
 pub async fn run_direct_sync(
     workspace: &Path,
     full: bool,
+    force: bool,
     id: Option<serde_json::Value>,
     correlation_id: Option<String>,
     formatter: &OutputFormatter,
@@ -147,13 +148,17 @@ pub async fn run_direct_sync(
         None
     };
 
-    let call_result: Result<Value, EngramError> = if full {
+    // `--force` (or `--full --force`) takes the full-scan index path and
+    // re-parses all discovered files; plain `--full` scans all files but
+    // hash-skips unchanged ones; otherwise perform an incremental sync.
+    let use_index = full || force;
+    let call_result: Result<Value, EngramError> = if use_index {
         index_workspace_with_progress(
             &ws_path,
             &data_dir,
             &branch,
             &config.code_graph,
-            false,
+            force,
             progress,
         )
         .await
@@ -173,7 +178,7 @@ pub async fn run_direct_sync(
     emit_direct_usage(
         &ws_path,
         &branch,
-        if full {
+        if use_index {
             "index_workspace"
         } else {
             "sync_workspace"
