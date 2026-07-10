@@ -42,8 +42,9 @@ Sort by `rank_key` descending. Consequences:
   exactly "code-first within a score gap."
 - Within a region, order is unchanged (every code result gets the same boost, so
   relative order is preserved; content is untouched).
-- The reported `score` field stays the **true cosine** — the boost affects
-  ordering only, preserving score transparency for callers.
+- The reported `score` field is unchanged — the unboosted per-source score
+  (raw cosine for embedding KNN, or a keyword ratio for the content fallback
+  path). The boost affects ordering only, preserving score transparency.
 
 `CODE_RANK_BOOST = 0.10` (module const, documented as the tunable knob). Rationale:
 flips marginal prose-query cases (docs beating code by <0.10) to code-first while
@@ -51,10 +52,14 @@ still surfacing a genuinely-more-relevant doc (>0.10 higher). Cosine scores are
 in [0,1]; 0.10 is a meaningful but not absolute preference.
 
 ### Scope
-- Only the default `region:"all"` merge path. `region:"code"`, content-only, and
-  single-region searches are unaffected (within-region order unchanged).
-- `vector_search_symbols_native`, `hybrid_graph_vector_search`, and `hybrid_search`
-  are lower-level and do not go through `merge_unified_results` — untouched.
+- The default `region:"all"` merge path gains code-first ordering.
+- `region:"code"` is **fixed** here: its filter was previously validated but
+  ignored (content was still returned); it now isolates code symbols. There is
+  no content-only region in `unified_search` (`query_memory` is the content-only
+  tool).
+- Within-region order is unchanged. `vector_search_symbols_native`,
+  `hybrid_graph_vector_search`, and `hybrid_search` are lower-level and do not
+  go through `merge_unified_results` — untouched.
 
 ## Regression analysis
 
@@ -83,7 +88,7 @@ same code-intent queries should surface the implementing code at/near the top.
 
 ## Constitution check
 - Safety-First Rust: pure function; no `unsafe`; no `unwrap`/`expect` in prod
-  (`partial_cmp(...).unwrap_or(Equal)` retained). Clippy pedantic clean.
+  (sorts via total-order `f32::total_cmp`). Clippy pedantic clean.
 - Test-First: red merge tests observed to fail before implementation.
 - Single Responsibility: no new deps; one const + one helper.
 - Context efficiency: unchanged (same result payload).
