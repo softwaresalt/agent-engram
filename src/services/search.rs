@@ -169,6 +169,9 @@ pub fn merge_unified_results(
         Vec::with_capacity(code_results.len() + task_results.len());
     merged.extend(code_results);
     merged.extend(task_results);
+    // Descending by rank key (note `b, a` order). Requires a STABLE sort so that
+    // gap-boundary ties (equal rank keys) keep code — extended first — ahead of
+    // content. Do not switch to `sort_unstable_by` or flip the argument order.
     merged.sort_by(|a, b| rank_key(b).total_cmp(&rank_key(a)));
     merged.truncate(limit);
     merged
