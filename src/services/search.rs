@@ -407,7 +407,7 @@ mod tests {
         ];
 
         let results = hybrid_search("user login", &candidates, 10).unwrap();
-        assert!(results.len() == 2);
+        assert_eq!(results.len(), 2);
         assert!(
             results[0].score >= results[1].score,
             "results should be sorted descending"
