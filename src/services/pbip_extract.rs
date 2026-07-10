@@ -292,10 +292,9 @@ fn extract_visual_bindings(visual: &serde_json::Value) -> Vec<PbipBinding> {
 fn extract_field_binding(field: &serde_json::Value) -> Option<PbipBinding> {
     let (kind, payload) = if let Some(measure) = field.get("Measure") {
         (PbipBindingKind::Measure, measure)
-    } else if let Some(column) = field.get("Column") {
-        (PbipBindingKind::Column, column)
     } else {
-        return None;
+        let column = field.get("Column")?;
+        (PbipBindingKind::Column, column)
     };
 
     let entity = payload

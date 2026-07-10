@@ -144,9 +144,10 @@ pub(crate) fn should_include_content(region: &str) -> bool {
     region != "code"
 }
 
-/// Rank key used to order [`UnifiedSearchResult`]s: the raw cosine score plus a
-/// code-region boost (the "score gap"). Ordering only — the result's reported
-/// `score` field keeps the true cosine.
+/// Rank key used to order [`UnifiedSearchResult`]s: the result's per-source
+/// score plus a code-region boost (the "score gap"). Ordering only — the
+/// result's reported `score` field is left unchanged (raw cosine for embedding
+/// KNN, or a keyword ratio for the content fallback path).
 fn rank_key(result: &UnifiedSearchResult) -> f32 {
     match result.region {
         SearchRegion::Code => result.score + CODE_RANK_BOOST,
@@ -155,10 +156,11 @@ fn rank_key(result: &UnifiedSearchResult) -> f32 {
 }
 
 /// Merge code-region and content-region results into a single list, ranked by a
-/// code-biased key (raw cosine plus [`CODE_RANK_BOOST`] for code), truncated to
-/// `limit` (FR-131). Code ranks above content unless a content result is more
-/// relevant by more than the boost. The reported `score` on each result stays
-/// the raw cosine — the boost affects ordering only.
+/// code-biased key (per-source `score` plus [`CODE_RANK_BOOST`] for code),
+/// truncated to `limit` (FR-131). Code ranks above content unless a content
+/// result is more relevant by more than the boost. The reported `score` on each
+/// result is left unchanged (raw cosine for KNN, or a keyword ratio for the
+/// content fallback) — the boost affects ordering only.
 #[must_use]
 pub fn merge_unified_results(
     code_results: Vec<UnifiedSearchResult>,
@@ -434,7 +436,7 @@ mod tests {
         ];
 
         let results = hybrid_search("user login", &candidates, 10).unwrap();
-        assert!(results.len() == 2);
+        assert_eq!(results.len(), 2);
         assert!(
             results[0].score >= results[1].score,
             "results should be sorted descending"

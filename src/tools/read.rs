@@ -456,12 +456,13 @@ const fn default_unified_limit() -> usize {
 
 /// Unified semantic search across the code graph and content records (FR-128/FR-131).
 ///
-/// Scoring: raw cosine similarity on embedding vectors for code symbols;
-/// keyword scoring for content records. Results are merged and ranked by a
-/// code-biased key (code ranks above content unless a content result is more
-/// relevant by more than [`crate::services::search::CODE_RANK_BOOST`]); the
-/// reported `score` on each result stays the raw cosine. `region: "code"`
-/// restricts results to code symbols only.
+/// Scoring: cosine similarity on embedding vectors for code symbols and content
+/// records; content falls back to a keyword ratio when no embedded records exist
+/// yet. Results are merged and ranked by a code-biased key (code ranks above
+/// content unless a content result is more relevant by more than
+/// [`crate::services::search::CODE_RANK_BOOST`]); the reported `score` on each
+/// result is its unboosted per-source score (the boost affects ordering only).
+/// `region: "code"` restricts results to code symbols only.
 ///
 /// Returns summary text only, not full bodies (FR-148 exemption).
 ///
