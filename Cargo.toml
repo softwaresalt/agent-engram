@@ -204,6 +204,11 @@ path = "tests/integration/embedding_backfill_progress_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_unified_search_region"
+path = "tests/integration/unified_search_region_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "contract_error_codes"
 path = "tests/contract/error_codes_test.rs"
 

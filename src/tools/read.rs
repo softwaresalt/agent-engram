@@ -456,9 +456,13 @@ const fn default_unified_limit() -> usize {
 
 /// Unified semantic search across the code graph and content records (FR-128/FR-131).
 ///
-/// Scoring: raw cosine similarity on embedding vectors for code symbols;
-/// keyword scoring for content records. Results are merged into a single
-/// list sorted by descending score.
+/// Scoring: cosine similarity on embedding vectors for code symbols and content
+/// records; content falls back to a keyword ratio when no embedded records exist
+/// yet. Results are merged and ranked by a code-biased key (code ranks above
+/// content unless a content result is more relevant by more than
+/// [`crate::services::search::CODE_RANK_BOOST`]); the reported `score` on each
+/// result is its unboosted per-source score (the boost affects ordering only).
+/// `region: "code"` restricts results to code symbols only.
 ///
 /// Returns summary text only, not full bodies (FR-148 exemption).
 ///
@@ -584,43 +588,53 @@ pub async fn unified_search(
     // Requires embeddings feature; the cfg guard at the top of this
     // function already returned an error for non-embeddings builds, so
     // we are guaranteed to have a valid query_embedding here.
-    let content_results: Vec<UnifiedSearchResult> = {
-        let knn = queries
-            .vector_search_content_native(&query_embedding, limit, parsed.content_type.as_deref())
-            .await?;
-
-        // If no embedded records exist yet (backfill still in progress),
-        // fall back to keyword scoring so the tool stays useful.
-        if knn.is_empty() {
-            let query_words: Vec<&str> = trimmed.split_whitespace().collect();
-            let all_records = queries
-                .select_content_records(parsed.content_type.as_deref())
+    //
+    // `region: "code"` restricts results to code symbols only — skip the
+    // content fetch entirely (search::should_include_content).
+    let content_results: Vec<UnifiedSearchResult> =
+        if crate::services::search::should_include_content(&parsed.region) {
+            let knn = queries
+                .vector_search_content_native(
+                    &query_embedding,
+                    limit,
+                    parsed.content_type.as_deref(),
+                )
                 .await?;
-            all_records
-                .into_iter()
-                .filter_map(|cr| {
-                    if query_words.is_empty() {
-                        return None;
-                    }
-                    let haystack = cr.content.to_lowercase();
-                    let matched = query_words
-                        .iter()
-                        .filter(|w| haystack.contains(&w.to_lowercase()[..]))
-                        .count();
-                    let score = matched as f32 / query_words.len() as f32;
-                    if score > 0.0 {
-                        Some(content_record_unified_result(score, cr))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+
+            // If no embedded records exist yet (backfill still in progress),
+            // fall back to keyword scoring so the tool stays useful.
+            if knn.is_empty() {
+                let query_words: Vec<&str> = trimmed.split_whitespace().collect();
+                let all_records = queries
+                    .select_content_records(parsed.content_type.as_deref())
+                    .await?;
+                all_records
+                    .into_iter()
+                    .filter_map(|cr| {
+                        if query_words.is_empty() {
+                            return None;
+                        }
+                        let haystack = cr.content.to_lowercase();
+                        let matched = query_words
+                            .iter()
+                            .filter(|w| haystack.contains(&w.to_lowercase()[..]))
+                            .count();
+                        let score = matched as f32 / query_words.len() as f32;
+                        if score > 0.0 {
+                            Some(content_record_unified_result(score, cr))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                knn.into_iter()
+                    .map(|(score, cr)| content_record_unified_result(score, cr))
+                    .collect()
+            }
         } else {
-            knn.into_iter()
-                .map(|(score, cr)| content_record_unified_result(score, cr))
-                .collect()
-        }
-    };
+            Vec::new()
+        };
 
     // ── Merge and rank ───────────────────────────────────────────────
     let merged = merge_unified_results(code_results, content_results, limit);

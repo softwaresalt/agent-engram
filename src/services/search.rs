@@ -127,10 +127,40 @@ pub struct UnifiedSearchResult {
     pub suggestions: Vec<String>,
 }
 
-/// Merge code-region and task-region results into a single list sorted by
-/// descending cosine score, truncated to `limit` (FR-131).
+/// Additive ranking boost applied to code-region results so code ranks above
+/// docs/backlog unless a content result is more relevant by more than this
+/// margin (a "score gap"). engram's primary purpose is code search; docs and
+/// backlog are secondary. Provisional and tunable — the merge ordering tests
+/// encode the semantics independently of the exact value.
+pub(crate) const CODE_RANK_BOOST: f32 = 0.10;
+
+/// Whether `unified_search` should include content (docs/backlog) results.
 ///
-/// No cross-region normalization or boosting in v0.
+/// `region = "code"` restricts results to code symbols only; any other value
+/// (e.g. `"all"`) includes content. Pure, so it is unit-testable without a
+/// workspace.
+#[must_use]
+pub(crate) fn should_include_content(region: &str) -> bool {
+    region != "code"
+}
+
+/// Rank key used to order [`UnifiedSearchResult`]s: the result's per-source
+/// score plus a code-region boost (the "score gap"). Ordering only — the
+/// result's reported `score` field is left unchanged (raw cosine for embedding
+/// KNN, or a keyword ratio for the content fallback path).
+fn rank_key(result: &UnifiedSearchResult) -> f32 {
+    match result.region {
+        SearchRegion::Code => result.score + CODE_RANK_BOOST,
+        SearchRegion::Task => result.score,
+    }
+}
+
+/// Merge code-region and content-region results into a single list, ranked by a
+/// code-biased key (per-source `score` plus [`CODE_RANK_BOOST`] for code),
+/// truncated to `limit` (FR-131). Code ranks above content unless a content
+/// result is more relevant by more than the boost. The reported `score` on each
+/// result is left unchanged (raw cosine for KNN, or a keyword ratio for the
+/// content fallback) — the boost affects ordering only.
 #[must_use]
 pub fn merge_unified_results(
     code_results: Vec<UnifiedSearchResult>,
@@ -141,11 +171,10 @@ pub fn merge_unified_results(
         Vec::with_capacity(code_results.len() + task_results.len());
     merged.extend(code_results);
     merged.extend(task_results);
-    merged.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Descending by rank key (note `b, a` order). Requires a STABLE sort so that
+    // gap-boundary ties (equal rank keys) keep code — extended first — ahead of
+    // content. Do not switch to `sort_unstable_by` or flip the argument order.
+    merged.sort_by(|a, b| rank_key(b).total_cmp(&rank_key(a)));
     merged.truncate(limit);
     merged
 }
@@ -445,5 +474,119 @@ mod tests {
         let err = hybrid_search(&long_query, &candidates, 10).unwrap_err();
         let code = err.to_response().error.code;
         assert_eq!(code, crate::errors::codes::QUERY_TOO_LONG);
+    }
+
+    // ── merge_unified_results: code-first (score gap) ─────────────────
+
+    fn unified(region: SearchRegion, id: &str, score: f32) -> UnifiedSearchResult {
+        UnifiedSearchResult {
+            region,
+            score,
+            node_type: "function".to_owned(),
+            id: id.to_owned(),
+            title: None,
+            file_path: None,
+            line_range: None,
+            summary: None,
+            status: None,
+            linked_symbols: None,
+            record_kind: None,
+            heading_path: Vec::new(),
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn code_ranks_before_content_within_gap() {
+        // Content beats code on raw score, but by less than the gap → code first.
+        let code = unified(SearchRegion::Code, "code", 0.70);
+        let content = unified(SearchRegion::Task, "doc", 0.70 + CODE_RANK_BOOST / 2.0);
+        let merged = merge_unified_results(vec![code], vec![content], 10);
+        assert_eq!(
+            merged[0].region,
+            SearchRegion::Code,
+            "code must rank first within the score gap"
+        );
+        assert_eq!(merged[1].region, SearchRegion::Task);
+    }
+
+    #[test]
+    fn boundary_content_equal_to_gap_ranks_code_first() {
+        // Strict `>`: content must exceed code + gap; equality keeps code first.
+        let code = unified(SearchRegion::Code, "code", 0.70);
+        let content = unified(SearchRegion::Task, "doc", 0.70 + CODE_RANK_BOOST);
+        let merged = merge_unified_results(vec![code], vec![content], 10);
+        assert_eq!(
+            merged[0].region,
+            SearchRegion::Code,
+            "a tie at the gap boundary must prefer code"
+        );
+    }
+
+    #[test]
+    fn strongly_better_content_outranks_code() {
+        // Content beats code by more than the gap → content first (escape hatch).
+        let code = unified(SearchRegion::Code, "code", 0.70);
+        let content = unified(SearchRegion::Task, "doc", 0.70 + CODE_RANK_BOOST * 2.0);
+        let merged = merge_unified_results(vec![code], vec![content], 10);
+        assert_eq!(
+            merged[0].region,
+            SearchRegion::Task,
+            "clearly-more-relevant content must surface above code"
+        );
+    }
+
+    #[test]
+    fn code_results_sorted_by_score_within_region() {
+        let lo = unified(SearchRegion::Code, "lo", 0.60);
+        let hi = unified(SearchRegion::Code, "hi", 0.90);
+        let merged = merge_unified_results(vec![lo, hi], vec![], 10);
+        assert_eq!(merged[0].id, "hi");
+        assert_eq!(merged[1].id, "lo");
+    }
+
+    #[test]
+    fn content_results_sorted_by_score_within_region() {
+        let lo = unified(SearchRegion::Task, "lo", 0.60);
+        let hi = unified(SearchRegion::Task, "hi", 0.90);
+        let merged = merge_unified_results(vec![], vec![lo, hi], 10);
+        assert_eq!(merged[0].id, "hi");
+        assert_eq!(merged[1].id, "lo");
+    }
+
+    #[test]
+    fn reported_score_is_unboosted_cosine() {
+        let code = unified(SearchRegion::Code, "code", 0.72);
+        let merged = merge_unified_results(vec![code], vec![], 10);
+        assert!(
+            (merged[0].score - 0.72).abs() < f32::EPSILON,
+            "reported score must be the raw cosine, not the boosted rank key"
+        );
+    }
+
+    #[test]
+    fn truncation_keeps_code_when_content_within_gap() {
+        let code = unified(SearchRegion::Code, "code", 0.70);
+        let content = unified(SearchRegion::Task, "doc", 0.70 + CODE_RANK_BOOST / 2.0);
+        let merged = merge_unified_results(vec![code], vec![content], 1);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].region, SearchRegion::Code);
+    }
+
+    #[test]
+    fn truncation_keeps_content_when_beyond_gap() {
+        let code = unified(SearchRegion::Code, "code", 0.70);
+        let content = unified(SearchRegion::Task, "doc", 0.70 + CODE_RANK_BOOST * 2.0);
+        let merged = merge_unified_results(vec![code], vec![content], 1);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].region, SearchRegion::Task);
+    }
+
+    #[test]
+    fn should_include_content_gates_on_region() {
+        assert!(should_include_content("all"));
+        assert!(!should_include_content("code"));
     }
 }
