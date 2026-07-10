@@ -6,14 +6,17 @@ feature: 080-F
 tasks: [080.001-T]
 prs: [233, 234]
 merge_sha: 4ff6c0e
-harvested_stash: B791DE7B
+source_stash: B791DE7B
 status: complete
 ---
 
 ## Summary
 
 Implemented the operator's decision to rank code above docs/backlog in
-`unified_search` via a **score gap** (harvested from stashed Rec #3). Shipped as
+`unified_search` via a **score gap**. The decision originated from stashed
+Rec #3 (`B791DE7B`), which was archived directly (`reason: "archived"`, no
+harvest link) rather than harvested into a work item; 080-F was created
+separately. Shipped as
 080-F; a required clippy-1.97 toolchain fix was split into an atomic chore PR
 (#234) per Copilot review.
 
