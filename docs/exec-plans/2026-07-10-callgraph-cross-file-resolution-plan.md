@@ -91,25 +91,43 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
 ### 082.002-T — Record unresolved `Calls` edges instead of dropping them  *(domain: core indexing)*
 - **Files:** `src/services/code_graph.rs` (index path `:466-475` + sync path `:1070-1077`:
   when `find_function_id` misses, stage the unresolved callee name rather than discarding),
-  `src/db/cozo_queries.rs` (persist/retrieve unresolved-call staging rows). Test:
+  `src/db/cozo_backend/schema.rs` (new `staged_call` relation) + `src/db/cozo_queries.rs`
+  (persist/retrieve/**clear** staging rows). Test:
   `tests/integration/unresolved_calls_capture_test.rs` (new).
+- **Staging relation & lifecycle:** define `staged_call { caller_id, callee_name, source_file => created_at }`
+  keyed so every staged row carries its **source file**. A file's staged rows MUST be cleared
+  before that file is (re-)indexed — both the full-index path and the incremental sync path clear
+  a file's prior `staged_call` rows before re-staging, so a changed or removed call never leaves a
+  stale staged row that a later forced post-pass could resolve into a stale edge. File deletion
+  clears the deleted file's staged rows.
 - **Behavior:** a within-file resolvable call still creates a direct `calls` edge immediately
-  (unchanged); an unresolved callee is recorded (caller id + callee name) for the post-pass.
-  Both index and sync paths behave identically. Preserve `cross_file_edges_dropped` accounting
-  semantics.
-- **Integration scenarios (4):** cross-file callee is recorded (not silently dropped); in-file
+  (unchanged, provenance `direct` — see 082.003-T); an unresolved callee is recorded (caller id +
+  callee name + source file) for the post-pass. Both index and sync paths behave identically.
+  Preserve `cross_file_edges_dropped` accounting semantics.
+- **Integration scenarios (6):** cross-file callee is recorded (not silently dropped); in-file
   callee still yields a direct edge; sync path parity with index path; blocklisted names never
-  recorded.
+  recorded; **re-indexing a file whose call changed clears the old staged row (no stale carry-over)**;
+  **deleting a file clears its staged rows**.
 - **Depends on:** 082.001-T.
 
 ### 082.003-T — Unambiguous post-pass resolution + `calls_resolved_singleton` provenance  *(domain: core indexing/post-pass)*
-- **Files:** `src/db/cozo_queries.rs` (new `reresolve_calls_edges` modeled on
+- **Files:** `src/db/cozo_backend/schema.rs` + `src/models/code_edge.rs` (**provenance storage**,
+  see below), `src/db/cozo_queries.rs` (new `reresolve_calls_edges` modeled on
   `reresolve_references_edges:1357`; resolve each staged callee against a workspace-global
   `name → [function_id]` index, create an edge **only when exactly one** match, tag provenance
   `calls_resolved_singleton`), `src/services/code_graph.rs` (invoke the post-pass in the
   **full/`--force` index** path only — alongside `reresolve_references_edges` at `:543` — and
   **NOT** in the incremental sync path at `:1152`). Test:
   `tests/integration/calls_postpass_resolution_test.rs` (new).
+- **Provenance storage (prerequisite for the tag AND for 082.004-T edge enumeration):** today
+  `calls_edge` stores only `(from, to) => created_at` (`src/db/cozo_backend/schema.rs:319`) and
+  `CodeEdge` has no provenance field (`src/models/code_edge.rs:34`). Extend the `calls_edge`
+  schema with a `resolution: String` attribute (migration: pre-existing rows default to
+  `"direct"`) and add `CodeEdge.resolution: Option<String>`. Direct in-file edges (082.002-T)
+  write `resolution = "direct"`; post-pass singleton edges write `resolution =
+  "resolved_singleton"`. Add a read query (e.g. `count_calls_edges_by_resolution` and an
+  enumerate-`resolved_singleton`-edges query) so 082.004-T can list the tagged edges it validates.
+  Cover with schema-migration, `CodeEdge` model round-trip, and query tests.
 - **Behavior:** unique cross-file name (e.g. `get_health_report_for_daemon`) → one tagged edge;
   ambiguous name (≥2 defs) → skipped (bounds false edges); non-existent def → no edge;
   incremental sync does not run the global post-pass (performance gate).
@@ -140,15 +158,20 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
   names contribute no edge (skipped, not mis-resolved).
 - **Depends on:** 082.003-T, **081.001-T (S1 contract/model)**, **081.005-T (S3 graph metric)**.
 
-### 082.005-T — Fan-out to peer tree-sitter extractors  *(domain: parser/extraction — DEFERRED follow-on, NOT in first shipment)*
-- **Scope:** apply the `field_expression`/method-capture + record-unresolved + post-pass pattern
-  to `src/services/parsing/{python,typescript,go}.rs`. To be **decomposed into one task per
-  language** at harvest time for the follow-on shipment (each ≤3 files, single width). Tracked
-  here as a queued placeholder under 082-F.
-- **Depends on:** 082.003-T.
+### 082.005-T / 082.006-T / 082.007-T — Fan-out to peer tree-sitter extractors  *(domain: parser/extraction — DEFERRED follow-on, NOT in first shipment)*
+Decomposed one task per language (each ≤3 files, single width, all depend on 082.003-T), queued
+under 082-F for a follow-on shipment:
+- **082.005-T — Python:** apply the `field_expression`/method-capture + record-unresolved +
+  post-pass pattern to `src/services/parsing/python.rs`.
+- **082.006-T — TypeScript:** same pattern for `src/services/parsing/typescript.rs`.
+- **082.007-T — Go:** same pattern for `src/services/parsing/go.rs`.
+- **Depends on:** 082.003-T (all three).
 
-**Dependency chain (first shipment):** 082.001-T → 082.002-T → 082.003-T → 082.004-T;
-082.004-T additionally depends on 081.001-T and 081.005-T. 082.005-T is deferred (post-first-ship).
+**Dependency chain (first shipment 078-S):** 082.001-T → 082.002-T → 082.003-T → 082.004-T;
+082.004-T additionally depends on 081.001-T and 081.005-T. The peer-language tasks (082.005-T
+Python, 082.006-T TypeScript, 082.007-T Go) are deferred to a follow-on shipment; 078-S ships only
+082.001-004-T and does **NOT** archive 082-F, which stays active until the peer-language tasks
+complete.
 
 ## 6. Constitution Check
 
