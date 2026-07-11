@@ -88,9 +88,11 @@ under it).
   F137D72E, D07F0919, 54848E3D, 4CF046A5, 78AA205D, CA401F5F, 2894ACB5, 14B33F9F, 635EE7C0, 00C7F3CC, 2C420C96,
   30CE5DD6) plus B0E2B374 (DAX) / 30F372C8 (CLI-MCP parity) — NOT touched this session.
 
-## Protected files (left untouched, unstaged)
-`.github/agents/auto-mergeinstall.agent.md` and `.github/agents/auto-tune.agent.md` — the two intentional deletions.
-Committed with explicit per-file `git add` only.
+## Protected files (pre-existing deletions, intentionally left unstaged)
+`.github/agents/auto-mergeinstall.agent.md` and `.github/agents/auto-tune.agent.md` were deleted in a
+prior session and are intentionally kept as UNCOMMITTED deletions in the working tree (status `D`).
+This branch does NOT modify, restore, or commit them — they remain unstaged across every commit here.
+All backlog commits used explicit per-file `git add` (never `git add -A`) to preserve that state.
 
 ## Next steps (Orchestrator / Ship)
 - The eval-subsystem gate (SHIP-1 / 077-S / 081-F, including 081.001-T + 081.005-T) is **ALREADY SHIPPED and archived
