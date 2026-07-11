@@ -37,7 +37,7 @@
 
 ## Shipments (both queued for Ship to claim)
 - **077-S = SHIP-1** — 081-F eval subsystem (081-F + 001..007-T). covering_feature 081-F.
-- **078-S = SHIP-2** — 082-F rec1 (082-F + 001..004-T; 082.005-T deferred, excluded). covering_feature 082-F.
+- **078-S = SHIP-2** — 082-F rec1 (082.001-T..004-T only; parent 082-F excluded from the manifest so its deferred children 082.005/006/007-T are not orphaned; 082.005-T+ deferred). covering_feature 082-F.
 - **Recommended Ship order: 077-S (SHIP-1) then 078-S (SHIP-2).** SHIP-2 acceptance (082.004-T) cannot pass until SHIP-1 delivers 081.001-T + 081.005-T.
 
 ## Grounding anchors used (for Ship)
@@ -55,6 +55,6 @@
 - No branches, no PRs, no cargo/builds (Ship's role). All artifacts left uncommitted in the working tree for operator/Ship.
 
 ## Next steps for Ship
-1. Claim 077-S; execute 081.001-T→081.007-T test-first in dependency order; ship eval subsystem.
-2. Then claim 078-S; execute 082.001-T→082.004-T; 082.004-T gates on the 081-F eval metrics.
-3. After SHIP-2, Stage decomposes 082.005-T into per-language tasks (python/ts/go) for a follow-on shipment.
+1. Claim 077-S; execute 081.001-T→081.007-T test-first in dependency order; ship eval subsystem. (DONE — 077-S shipped via PR #238.)
+2. Do NOT claim 078-S yet: it is `blocked`. A Stage re-harvest of 082-F (stash CC5D369E) must first split the over-limit tasks (082.002-T/082.003-T/082.004-T) into single-width items, propagate the staged_call lifecycle + resolution migration + read-query contract into the task bodies, and rewire the 078-S manifest. Only then unblock and claim 078-S; 082.004-T gates on the 081-F eval metrics.
+3. Peer-language work is already decomposed into 082.005-T (Python), 082.006-T (TypeScript), 082.007-T (Go); after 078-S ships, package/execute them as a follow-on shipment.

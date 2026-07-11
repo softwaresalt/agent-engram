@@ -1,7 +1,7 @@
 # Exec Plan — rec1-calledges: cross-file & method-call resolution
 
 **Date:** 2026-07-10
-**Status:** Decided / Ready for harvest
+**Status:** Decided — ⚠ RE-HARVEST REQUIRED before 078-S executes (Constitution Check §6 flags over-limit tasks; tracked by stash CC5D369E). Not executable as currently decomposed; 078-S is `blocked`.
 **Stage owner:** stage agent
 **Deliberation:** `docs/decisions/2026-07-08-callgraph-cross-file-resolution-deliberation.md` (signed off 2026-07-10)
 **Feature (umbrella):** 082-F
@@ -185,15 +185,15 @@ complete.
 | IV. CLI Workspace Containment | No new CLI surface; behavior rides existing index/sync commands. |
 | V. Destructive Command Approval | None — additive edges + provenance tag; no deletions of existing edge semantics. |
 | VI. Safety Modes | Elevated blast radius (core-indexing change affecting every workspace's edge counts) → `careful` + `freeze-scope` (see §7). |
-| Task Granularity | ⚠ **Two units exceed limits and MUST be split by a Stage re-harvest before 078-S executes:** 082.002-T defines 6 scenarios (>4) and 082.003-T touches 4 source files (>3, after the provenance-storage addition). All other units comply (≤3 files / ≤4 scenarios, single width). Language fan-out is deferred and per-language split (082.005/006/007-T). |
+| Task Granularity | ⚠ **Three units exceed limits and MUST be split/reduced by a Stage re-harvest before 078-S executes:** 082.002-T defines 6 scenarios (>4), 082.003-T touches 4 source files (>3, after the provenance-storage addition), and 082.004-T defines 5 integration scenarios (>4, see lines 157–160). The remaining units comply (≤3 files / ≤4 scenarios, single width). Language fan-out is deferred and per-language split (082.005/006/007-T). |
 
 > **Harvest follow-up (Copilot review #239):** before 078-S is routed to Ship, a Stage re-harvest
 > MUST (a) split 082.002-T into staging *capture* vs *lifecycle* (clear-before-reindex + deletion +
-> stale-resolved-edge retraction) and 082.003-T into provenance *storage* vs *post-pass resolution*
-> so every executable task is single-width and ≤4 scenarios, (b) propagate the full `staged_call`
-> lifecycle + `resolution` migration + read-query contract into the executable queue task items
-> (not just this plan), and (c) carry the call-edge retraction design from §7. Tracked as a stash
-> follow-up.
+> stale-resolved-edge retraction), 082.003-T into provenance *storage* vs *post-pass resolution*,
+> and reduce/split 082.004-T (5 scenarios → ≤4) so every executable task is single-width and
+> ≤4 scenarios, (b) propagate the full `staged_call` lifecycle + `resolution` migration + read-query
+> contract into the executable queue task items (not just this plan), and (c) carry the call-edge
+> retraction design from §7. Tracked as stash follow-up CC5D369E. 078-S is `blocked` until done.
 
 ## 7. Plan-Harden (risk-triggered)
 
@@ -251,4 +251,6 @@ API/contract), 1 cycle.
   082.004-T → 081.005-T) and enforced by shipment ordering.
 - The operator-chosen false-edge-rate threshold is read from `RetrievalEvalConfig.thresholds`
   (081.001-T); 082.004 asserts against it.
-- Peer-language extractors (082.005-T) are a deferred follow-on, decomposed per language later.
+- Peer-language extractors are already decomposed into 082.005-T (Python), 082.006-T (TypeScript),
+  and 082.007-T (Go), each queued under 082-F. The remaining work is packaging and executing that
+  follow-on shipment after 078-S ships; no further decomposition is needed.
