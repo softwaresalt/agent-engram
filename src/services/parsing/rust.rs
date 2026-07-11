@@ -260,6 +260,13 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<String> {
                 .last()
                 .map(|n| super::node_text(n, source))
         }
+        // Method / receiver calls: `x.foo()`, `self.bar()`. The `function`
+        // child is a `field_expression` whose `field` names the called method.
+        // Extraction-only; the blocklist below still applies so idiomatic
+        // no-ops (`x.clone()`, `x.unwrap()`) stay dropped.
+        "field_expression" => function_node
+            .child_by_field_name("field")
+            .map(|n| super::node_text(n, source)),
         _ => None,
     };
     name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
