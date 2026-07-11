@@ -21,7 +21,9 @@ edges are tagged with distinct provenance (`calls_resolved_singleton`) so the ev
 other consumers can weight them.
 
 Acceptance is **measured by 081-F** (the retrieval-eval subsystem): graph resolution-recall must
-rise and false-edge rate must stay within the operator-chosen threshold.
+rise AND every `calls_resolved_singleton` edge must match the fixture expected-edges manifest
+(target-correctness). The aggregate false-edge rate staying within the operator threshold is a
+supporting lower-bound signal only (see §§ on the metric caveat and 082.004), not the sole gate.
 
 ## 2. Operator-confirmed design parameters (2026-07-10)
 
@@ -224,9 +226,15 @@ callees after a post-pass.
 | Unmeasured recall/precision tradeoff | High (product decision) | Acceptance defined by 082.004: resolution recall must rise AND every `calls_resolved_singleton` edge must match the fixture expected-edges manifest (target-correctness). The aggregate 081.005 `false_edge_rate ≤ threshold` is a supporting lower-bound signal only, not the sole gate. |
 | Provenance tag consumers unaware of new edge kind | Low | `calls_resolved_singleton` distinct tag; consumers/eval can weight; existing direct `calls` edges unchanged. |
 
-**Rollback:** additive. Reverting removes the `field_expression` arm, the unresolved-call
-staging, and the `reresolve_calls_edges` post-pass; a subsequent full reindex restores prior edge
-counts (no destructive migration).
+**Rollback:** NOT purely additive once the persisted `calls_edge.resolution` provenance field
+lands. Reverting the code removes the `field_expression` arm, the unresolved-call staging, and the
+`reresolve_calls_edges` post-pass, but the current reindex paths (`src/services/code_graph.rs:293-300`,
+`:1181-1204`) do NOT clear `calls_edge` rows, so a full reindex alone leaves prior
+`calls_resolved_singleton` edges behind and the reverted (old-schema) writer may be incompatible
+with the migrated relation. The Stage re-harvest (stash CC5D369E) MUST define and test an explicit
+pre-revert cleanup / down-migration: retract `calls_resolved_singleton` edges and drop/ignore the
+`resolution` column before or during the reverting reindex. Until that down-migration exists, treat
+rollback as requiring a manual edge cleanup step, not a plain reindex.
 
 ## 8. Plan-Review (gate)
 
@@ -236,13 +244,20 @@ API/contract), 1 cycle.
 | # | Persona | Finding | Severity | Disposition |
 |---|---|---|---|---|
 | 1 | Indexing/graph | Ambiguous-name resolution could inject false edges across all workspaces | P1 | RESOLVED — exactly-one-match guard; 082.003 scenarios pin ambiguous→skip, no-def→no-edge. |
-| 2 | Test-first / product | Recall/precision tradeoff must be empirically validated, not asserted | P1 | RESOLVED — 082.004 gates on 081.005 metrics (recall↑, false-edge ≤ threshold) — hard dependency on S1+S3. |
+| 2 | Test-first / product | Recall/precision tradeoff must be empirically validated, not asserted | P1 | RESOLVED — 082.004 gates on recall↑ AND the fixture expected-edges manifest target-correctness check (every `calls_resolved_singleton` edge matches the correct callee). The aggregate 081.005 `false_edge_rate ≤ threshold` is a lower-bound signal only — it detects dangling targets, NOT wrong-but-existing targets (lines 149–156; follow-up D07F0919) — so it cannot close this finding alone. Hard dependency on S1+S3. |
 | 3 | Performance/ops | Global post-pass cost on large workspaces | P1 | RESOLVED — gated to full/`--force` index only; incremental sync skips (082.003 scenario). |
 | 4 | Rust-safety | `field_expression` extraction must not regress blocklist or panic on odd trees | P2 | RESOLVED — `CALL_BLOCKLIST` preserved; `resolve_call_name` returns `Option`; 082.001 blocklist + chained scenarios. |
 | 5 | API/contract | New edge provenance could confuse existing `calls` consumers | P2 | RESOLVED — distinct `calls_resolved_singleton` tag; direct edges unchanged; documented. |
 | 6 | Ops | Language fan-out risks width creep if bundled | P3 | RESOLVED — 082.005 deferred + split per-language at harvest; not in first shipment. |
 
-**Gate outcome: PASS.** No unresolved P0/P1. Two P2 resolved. Proceed to harvest.
+**Gate outcome (original review): PASS** — no unresolved P0/P1 at first review.
+
+> **SUPERSEDED by Copilot review #239 (2026-07-11):** this plan is NO LONGER "proceed to harvest"
+> as-is. A subsequent Stage re-harvest is REQUIRED before 078-S executes (see the **Status** line
+> and Constitution Check §6): three units exceed granularity limits (082.002-T, 082.003-T,
+> 082.004-T), the executable task bodies must carry the full `staged_call` lifecycle + `resolution`
+> migration + read-query contract, and the rollback needs an explicit down-migration (§7). 078-S is
+> `blocked` until the re-harvest rewrites the manifest. Tracked by stash CC5D369E.
 
 ## 9. Assumptions & open items
 
