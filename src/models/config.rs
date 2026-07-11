@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::models::evaluation::EvaluationConfig;
 use crate::models::metrics::MetricsConfig;
 use crate::models::policy::PolicyConfig;
+use crate::models::retrieval_eval::RetrievalEvalConfig;
 
 /// Top-level workspace configuration read from `.engram/config.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +29,12 @@ pub struct WorkspaceConfig {
     /// Agent efficiency evaluation configuration.
     #[serde(default)]
     pub evaluation: EvaluationConfig,
+    /// Portable retrieval + graph-recall evaluation configuration.
+    ///
+    /// Distinct from the agent-efficiency [`EvaluationConfig`]; disabled by
+    /// default. Read from the `[retrieval_eval]` section.
+    #[serde(default)]
+    pub retrieval_eval: RetrievalEvalConfig,
     /// Timeout in milliseconds for sandboxed graph queries (`query_graph` tool).
     ///
     /// Queries that exceed this limit are cancelled with a `QUERY_TIMEOUT` error.
@@ -49,6 +56,7 @@ impl Default for WorkspaceConfig {
             metrics: MetricsConfig::default(),
             policy: PolicyConfig::default(),
             evaluation: EvaluationConfig::default(),
+            retrieval_eval: RetrievalEvalConfig::default(),
             query_timeout_ms: default_query_timeout_ms(),
             query_row_limit: default_query_row_limit(),
         }

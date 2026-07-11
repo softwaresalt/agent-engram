@@ -267,10 +267,10 @@ fn t010_05_tool_count_matches_catalog() {
     let tools = engram::shim::tools_catalog::all_tools();
 
     // THEN the tool count matches the declared constant
-    // (After adding get_mutable_script_retry_metrics in 040-F, TOOL_COUNT is 18)
+    // (081-F added run_retrieval_eval + get_retrieval_eval_report → TOOL_COUNT is 20)
     assert_eq!(
         tools.len(),
-        18,
-        "Expected 18 tools after adding get_mutable_script_retry_metrics"
+        20,
+        "Expected 20 tools after adding the retrieval-eval tools"
     );
 }

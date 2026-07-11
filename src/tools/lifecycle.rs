@@ -69,6 +69,10 @@ pub struct WorkspaceStatus {
     pub code_graph: CodeGraphStats,
     /// Background scan progress snapshot; `null` until the first scan is queued (029-F WS-6).
     pub scan_status: Option<ScanProgress>,
+    /// Whether the retrieval-evaluation subsystem is enabled for this workspace
+    /// (081-F). Exposed for autoharness capability discovery without parsing
+    /// `.engram/config.toml`.
+    pub retrieval_eval_enabled: bool,
 }
 
 /// Summary statistics for the indexed code graph.
@@ -507,6 +511,14 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             .display()
             .to_string();
 
+        // Expose the retrieval-eval opt-in flag for autoharness discovery.
+        let retrieval_eval_enabled = state
+            .workspace_config()
+            .await
+            .unwrap_or_default()
+            .retrieval_eval
+            .enabled;
+
         return Ok(WorkspaceStatus {
             path: snapshot.path,
             branch: snapshot.branch,
@@ -516,6 +528,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
             connection_count: state.active_connections(),
             code_graph,
             scan_status: state.scan_progress_snapshot().await,
+            retrieval_eval_enabled,
         });
     }
 

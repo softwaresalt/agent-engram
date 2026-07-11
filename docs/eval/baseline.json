@@ -1,0 +1,8 @@
+{
+  "min_precision_at_k": 0.05,
+  "min_recall_at_k": 0.9,
+  "min_mrr": 0.9,
+  "min_ndcg": 0.9,
+  "min_resolution_recall": 0.5,
+  "max_false_edge_rate": 0.2
+}
