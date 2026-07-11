@@ -129,5 +129,5 @@ path within its ≤3-source cap (EdgeLine :230 + serialize mapping :390, all in 
 082.003-T; deps [003,011]); inserted 012 into 078-S after 011. (2) **rollback trigger** — 082.010-T had no invocation
 path; kept it as reusable logic exposing `rollback_calls_resolution` and split the operator trigger into **082.013-T**
 (maintenance CLI subcommand `engram migrate-down calls-resolution`; deps [010]); inserted 013 into 078-S after 010.
-(4) updated 082.005-T handoff summary to the full current manifest. DAG re-verified acyclic; every construction site
+(3) updated 082.005-T handoff summary to the full current manifest. DAG re-verified acyclic; every construction site
 kept buildable-per-commit (2-arg create_calls_edge signature unchanged, ~30 callers untouched).
