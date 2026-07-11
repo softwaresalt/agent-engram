@@ -9,7 +9,7 @@
 //! empty [`RetrievalEvalReport`] that reflects the configured `enabled` flag.
 //! Semantic and graph compute plus persistence land in later tasks.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -18,6 +18,7 @@ use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::retrieval_eval::{RetrievalEvalConfig, RetrievalEvalReport};
 use crate::server::state::SharedState;
+use crate::services::parsing::Language;
 use crate::services::retrieval_eval;
 
 /// Resolve the active branch and retrieval-eval config, requiring a workspace.
@@ -27,18 +28,28 @@ use crate::services::retrieval_eval;
 async fn branch_and_config(
     state: &SharedState,
 ) -> Result<(String, RetrievalEvalConfig), EngramError> {
-    let (_, branch, config) = snapshot_parts(state).await?;
-    Ok((branch, config))
+    let parts = snapshot_parts(state).await?;
+    Ok((parts.branch, parts.config))
 }
 
-/// Resolve the workspace data directory, active branch and retrieval-eval
-/// config, requiring a workspace.
+/// Workspace facts needed to run a retrieval-evaluation.
+struct SnapshotParts {
+    /// Absolute workspace root (for reading indexed source files).
+    workspace_path: PathBuf,
+    /// `.engram` data directory (for the code-graph database).
+    data_dir: PathBuf,
+    /// Active branch.
+    branch: String,
+    /// Retrieval-eval configuration.
+    config: RetrievalEvalConfig,
+}
+
+/// Resolve the workspace paths, active branch and retrieval-eval config,
+/// requiring a bound workspace.
 ///
 /// # Errors
 /// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
-async fn snapshot_parts(
-    state: &SharedState,
-) -> Result<(PathBuf, String, RetrievalEvalConfig), EngramError> {
+async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramError> {
     let snapshot = state
         .snapshot_workspace()
         .await
@@ -48,7 +59,54 @@ async fn snapshot_parts(
         .await
         .unwrap_or_default()
         .retrieval_eval;
-    Ok((snapshot.data_dir, snapshot.branch, config))
+    Ok(SnapshotParts {
+        workspace_path: PathBuf::from(snapshot.path),
+        data_dir: snapshot.data_dir,
+        branch: snapshot.branch,
+        config,
+    })
+}
+
+/// Count the parser call-site inventory across indexed source files.
+///
+/// Reads each indexed file that passes the language gate and parses it to count
+/// `ExtractedEdge::Calls` occurrences (the graph-metric denominator). File-read
+/// and parse failures are skipped so a single bad file never aborts the run.
+async fn count_workspace_call_sites(
+    workspace_path: &Path,
+    queries: &CodeGraphQueries,
+    config: &RetrievalEvalConfig,
+) -> usize {
+    let files = queries.list_code_files().await.unwrap_or_default();
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for file in files {
+        let gated = config.languages.is_empty()
+            || config
+                .languages
+                .iter()
+                .any(|lang| lang.eq_ignore_ascii_case(&file.language));
+        if !gated {
+            continue;
+        }
+        let full = workspace_path.join(&file.path);
+        if let Ok(source) = tokio::fs::read_to_string(&full).await {
+            sources.push((file.language, source));
+        }
+    }
+
+    // Parsing is CPU-bound; run the whole batch off the async runtime.
+    tokio::task::spawn_blocking(move || {
+        sources
+            .iter()
+            .filter_map(|(lang, source)| {
+                Language::try_from(lang.as_str())
+                    .ok()
+                    .map(|language| retrieval_eval::count_call_sites(source, language))
+            })
+            .sum()
+    })
+    .await
+    .unwrap_or(0)
 }
 
 /// Serialize a report to a JSON value, mapping failures to a database error.
@@ -75,25 +133,35 @@ pub async fn run_retrieval_eval(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (data_dir, branch, config) = snapshot_parts(&state).await?;
-    if !config.enabled {
-        return to_value(&RetrievalEvalReport::empty(false, branch));
+    let parts = snapshot_parts(&state).await?;
+    if !parts.config.enabled {
+        return to_value(&RetrievalEvalReport::empty(false, parts.branch));
     }
 
     // Read the indexed function corpus. A brand-new or un-indexed workspace has
     // no function relations yet; treat that as an empty corpus (zero report)
     // rather than surfacing a database error.
-    let db = connect_db(&data_dir, &branch).await?;
+    let db = connect_db(&parts.data_dir, &parts.branch).await?;
     let queries = CodeGraphQueries::new(db);
     let functions = queries.all_functions().await.unwrap_or_default();
 
-    let semantic = retrieval_eval::evaluate_semantic(&functions, &config)?;
+    let semantic = retrieval_eval::evaluate_semantic(&functions, &parts.config)?;
 
-    let mut report = RetrievalEvalReport::empty(true, branch);
-    report.k = config.k;
-    report.sample_size = config.sample_size;
-    report.languages.clone_from(&config.languages);
+    // Graph resolution metrics (081.005-T): denominator = parser call-site
+    // inventory over indexed source; numerator = resolved `calls` edges;
+    // false edges = resolved edges whose callee matches no known definition.
+    let call_sites =
+        count_workspace_call_sites(&parts.workspace_path, &queries, &parts.config).await;
+    let resolved = queries.count_calls_edges().await.unwrap_or(0);
+    let false_edges = queries.count_dangling_calls_edges().await.unwrap_or(0);
+    let graph = retrieval_eval::compute_graph_metrics(call_sites, resolved, false_edges);
+
+    let mut report = RetrievalEvalReport::empty(true, parts.branch);
+    report.k = parts.config.k;
+    report.sample_size = parts.config.sample_size;
+    report.languages.clone_from(&parts.config.languages);
     report.semantic = semantic;
+    report.graph = graph;
     to_value(&report)
 }
 

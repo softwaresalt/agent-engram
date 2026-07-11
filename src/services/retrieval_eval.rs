@@ -17,7 +17,8 @@
 
 use crate::errors::EngramError;
 use crate::models::Function;
-use crate::models::retrieval_eval::{RetrievalEvalConfig, SemanticMetrics};
+use crate::models::retrieval_eval::{GraphMetrics, RetrievalEvalConfig, SemanticMetrics};
+use crate::services::parsing::{ExtractedEdge, Language, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_search};
 
 /// Maximum bytes retained from a derived known-item query.
@@ -207,6 +208,55 @@ pub fn evaluate_semantic(
     }
 
     Ok(compute_semantic_metrics(&ranks, k))
+}
+
+/// Count identifier / path call sites in a source string.
+///
+/// This is the graph metric *denominator*: the parser call-site inventory
+/// (`ExtractedEdge::Calls`) discovered by [`parse_source`]. Method calls and
+/// blocklisted helpers (`clone`, `unwrap`, …) are excluded by the parser, so
+/// the count reflects the same visible call sites the indexer attempts to
+/// resolve. A parse failure yields `0` (the file contributes nothing).
+#[must_use]
+pub fn count_call_sites(source: &str, language: Language) -> usize {
+    parse_source(source, language).map_or(0, |result| {
+        result
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge, ExtractedEdge::Calls { .. }))
+            .count()
+    })
+}
+
+/// Compute graph resolution metrics from raw counts.
+///
+/// * `resolution_recall` = resolved ÷ visible call sites, clamped to `[0, 1]`
+///   (`0.0` when there are no call sites);
+/// * `false_edge_rate` = false edges ÷ resolved (`0.0` when nothing resolved).
+///
+/// `resolution_recall` is clamped because `resolved` (distinct edges in the
+/// graph) and `call_sites` (raw parser occurrences re-counted from disk) are
+/// gathered independently and could momentarily disagree.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64) -> GraphMetrics {
+    let resolution_recall = if call_sites == 0 {
+        0.0
+    } else {
+        (resolved as f64 / call_sites as f64).clamp(0.0, 1.0)
+    };
+    let false_edge_rate = if resolved == 0 {
+        0.0
+    } else {
+        (false_edges as f64 / resolved as f64).clamp(0.0, 1.0)
+    };
+    GraphMetrics {
+        resolution_recall,
+        false_edge_rate,
+        call_sites,
+        resolved,
+        false_edges,
+    }
 }
 
 #[cfg(test)]
