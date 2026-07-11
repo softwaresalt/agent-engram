@@ -5,9 +5,12 @@
 //! deliberately separate from the agent-efficiency evaluation surface in
 //! [`crate::tools::read::get_evaluation_report`].
 //!
-//! For the empty-state milestone (081.002-T) both handlers return a well-formed
-//! empty [`RetrievalEvalReport`] that reflects the configured `enabled` flag.
-//! Semantic and graph compute plus persistence land in later tasks.
+//! When the subsystem is disabled (the default), both handlers return a
+//! well-formed empty [`RetrievalEvalReport`] whose `enabled` flag is `false`.
+//! When enabled, `run_retrieval_eval` computes semantic self-retrieval and
+//! graph resolution metrics and persists the run under `.engram/eval/{branch}/`;
+//! `get_retrieval_eval_report` returns the latest persisted run, or an empty
+//! report when none exists yet.
 
 use std::path::{Path, PathBuf};
 
@@ -119,7 +122,8 @@ fn to_value(report: &RetrievalEvalReport) -> Result<Value, EngramError> {
 ///
 /// When the subsystem is disabled, returns an empty [`RetrievalEvalReport`].
 /// When enabled, computes semantic self-retrieval metrics over the indexed
-/// function corpus (081.004-T); graph metrics remain zeroed until 081.005-T.
+/// function corpus and graph resolution metrics (resolution-recall and
+/// false-edge-rate) from the parser call-site inventory, then persists the run.
 /// Unknown params are ignored.
 ///
 /// # Errors
