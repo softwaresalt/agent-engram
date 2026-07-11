@@ -21,17 +21,6 @@ use crate::server::state::SharedState;
 use crate::services::parsing::Language;
 use crate::services::retrieval_eval;
 
-/// Resolve the active branch and retrieval-eval config, requiring a workspace.
-///
-/// # Errors
-/// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
-async fn branch_and_config(
-    state: &SharedState,
-) -> Result<(String, RetrievalEvalConfig), EngramError> {
-    let parts = snapshot_parts(state).await?;
-    Ok((parts.branch, parts.config))
-}
-
 /// Workspace facts needed to run a retrieval-evaluation.
 struct SnapshotParts {
     /// Absolute workspace root (for reading indexed source files).
@@ -162,22 +151,36 @@ pub async fn run_retrieval_eval(
     report.languages.clone_from(&parts.config.languages);
     report.semantic = semantic;
     report.graph = graph;
+
+    // Persist the run under `.engram/eval/{branch}/` for autoharness feedback
+    // and so `get_retrieval_eval_report` can return the latest run.
+    let engram_dir = parts.workspace_path.join(".engram");
+    retrieval_eval::persist_report(&engram_dir, &report).await?;
+
     to_value(&report)
 }
 
 /// `get_retrieval_eval_report` — return the latest retrieval-evaluation report.
 ///
-/// Empty-state milestone: returns an empty [`RetrievalEvalReport`] because no
-/// run has been persisted yet. Unknown params are ignored.
+/// Reads the newest run persisted under `.engram/eval/{branch}/`. When no run
+/// has been persisted, returns an empty [`RetrievalEvalReport`] reflecting the
+/// configured `enabled` flag. Unknown params are ignored.
 ///
 /// # Errors
-/// Returns [`WorkspaceError::NotSet`] when no workspace is bound, or a
-/// serialization error if the report cannot be encoded.
+/// Returns [`WorkspaceError::NotSet`] when no workspace is bound, a system error
+/// if a persisted run cannot be read, or a serialization error if the report
+/// cannot be encoded.
 pub async fn get_retrieval_eval_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (branch, config) = branch_and_config(&state).await?;
-    let report = RetrievalEvalReport::empty(config.enabled, branch);
-    to_value(&report)
+    let parts = snapshot_parts(&state).await?;
+    let engram_dir = parts.workspace_path.join(".engram");
+    if let Some(report) = retrieval_eval::latest_report(&engram_dir, &parts.branch).await? {
+        return to_value(&report);
+    }
+    to_value(&RetrievalEvalReport::empty(
+        parts.config.enabled,
+        parts.branch,
+    ))
 }

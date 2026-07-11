@@ -15,9 +15,13 @@
 //! [`crate::services::evaluation`] surface. The two subsystems measure different
 //! things (`retrieval_eval` vs `evaluation`) and must not be conflated.
 
-use crate::errors::EngramError;
+use std::path::{Path, PathBuf};
+
+use crate::errors::{EngramError, SystemError};
 use crate::models::Function;
-use crate::models::retrieval_eval::{GraphMetrics, RetrievalEvalConfig, SemanticMetrics};
+use crate::models::retrieval_eval::{
+    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, SemanticMetrics,
+};
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_search};
 
@@ -257,6 +261,116 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
         resolved,
         false_edges,
     }
+}
+
+// ── Persistence (081.006-T) ──────────────────────────────────────────────
+
+/// Wrap a filesystem error as an [`EngramError`] with contextual detail.
+fn io_err(context: &str, error: &std::io::Error) -> EngramError {
+    EngramError::System(SystemError::DatabaseError {
+        reason: format!("retrieval eval {context}: {error}"),
+    })
+}
+
+/// Sanitize a branch name for use as a single filesystem path component.
+///
+/// Mirrors the branch sanitization used for the code-graph DB subdirectory so a
+/// branch like `feat/foo` maps to `feat_foo`.
+fn branch_dir_component(branch: &str) -> String {
+    branch.replace(['/', '\\', ':'], "_")
+}
+
+/// Directory holding persisted retrieval-eval runs for a branch:
+/// `{engram_dir}/eval/{branch}`.
+#[must_use]
+pub fn eval_dir(engram_dir: &Path, branch: &str) -> PathBuf {
+    engram_dir.join("eval").join(branch_dir_component(branch))
+}
+
+/// Persist a retrieval-eval run as JSON under `{engram_dir}/eval/{branch}/`.
+///
+/// The filename is a high-resolution timestamp so runs sort chronologically and
+/// [`latest_report`] can pick the newest. Returns the written file path.
+///
+/// # Errors
+/// Returns a system error if the directory cannot be created or the report
+/// cannot be serialized or written.
+pub async fn persist_report(
+    engram_dir: &Path,
+    report: &RetrievalEvalReport,
+) -> Result<PathBuf, EngramError> {
+    let dir = eval_dir(engram_dir, &report.branch);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| io_err("create run directory", &e))?;
+
+    let stamp = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_micros());
+    let path = dir.join(format!("{stamp}.json"));
+
+    let json = serde_json::to_string_pretty(report).map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("failed to serialize retrieval eval report: {e}"),
+        })
+    })?;
+    tokio::fs::write(&path, json)
+        .await
+        .map_err(|e| io_err("write run file", &e))?;
+    Ok(path)
+}
+
+/// Read the most recent persisted retrieval-eval run for a branch.
+///
+/// Returns `None` when no run has been persisted. The newest run is the file
+/// with the greatest timestamp stem.
+///
+/// # Errors
+/// Returns a system error if the directory listing or a file read fails, or if
+/// the newest run cannot be deserialized.
+pub async fn latest_report(
+    engram_dir: &Path,
+    branch: &str,
+) -> Result<Option<RetrievalEvalReport>, EngramError> {
+    let dir = eval_dir(engram_dir, branch);
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err("open run directory", &e)),
+    };
+
+    let mut best: Option<(i128, PathBuf)> = None;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| io_err("read run directory", &e))?
+    {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let stamp = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.parse::<i128>().ok())
+            .unwrap_or(0);
+        if best.as_ref().is_none_or(|(current, _)| stamp >= *current) {
+            best = Some((stamp, path));
+        }
+    }
+
+    let Some((_, path)) = best else {
+        return Ok(None);
+    };
+    let contents = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| io_err("read run file", &e))?;
+    let report = serde_json::from_str(&contents).map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("failed to deserialize retrieval eval report: {e}"),
+        })
+    })?;
+    Ok(Some(report))
 }
 
 #[cfg(test)]
