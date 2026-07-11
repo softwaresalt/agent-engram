@@ -767,6 +767,12 @@ name = "contract_pbip_graph_query"
 path = "tests/contract/pbip_graph_query_test.rs"
 required-features = ["cozo-backend"]
 
+# ── 081-F: Portable retrieval + graph-recall eval subsystem ──────────────────
+
+[[test]]
+name = "unit_retrieval_eval_model"
+path = "tests/unit/retrieval_eval_model_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

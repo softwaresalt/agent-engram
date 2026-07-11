@@ -30,6 +30,7 @@ pub mod policy;
 pub mod powerbi;
 pub mod powerbi_graph;
 pub mod registry;
+pub mod retrieval_eval;
 pub mod watcher;
 
 pub use backlog::{BacklogArtifacts, BacklogFile, BacklogItem, BacklogRef, ProjectManifest};
@@ -55,4 +56,8 @@ pub use powerbi_graph::{
     PowerBiEdge, PowerBiEdgeType, PowerBiGraphIndexResult, PowerBiNode, PowerBiNodeKind,
 };
 pub use registry::{ContentSource, ContentSourceStatus, RegistryConfig};
+pub use retrieval_eval::{
+    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds,
+    SemanticMetrics,
+};
 pub use watcher::{WatchEventKind, WatcherEvent};

@@ -1,0 +1,209 @@
+//! Retrieval-evaluation data models (081-F).
+//!
+//! Defines the configuration and report shapes for the portable, in-product
+//! retrieval + graph-recall evaluation subsystem. The subsystem measures how
+//! well the workspace index answers known-item queries (semantic
+//! self-retrieval) and how completely the code graph resolves syntactic call
+//! sites (graph resolution recall).
+//!
+//! This surface is intentionally distinct from the agent-efficiency
+//! [`crate::models::evaluation`] surface (`EvaluationConfig` /
+//! `EvaluationReport` / `get_evaluation_report`). The two subsystems measure
+//! different things and must not be conflated; naming here is `retrieval_eval`
+//! everywhere.
+//!
+//! # Ground truth is auto-derived (no manual labels)
+//!
+//! * **Semantic** — each indexed symbol's docstring / qualified name becomes a
+//!   known-item query whose single expected hit is that same symbol.
+//! * **Graph** — the tree-sitter call-site inventory is the denominator; the
+//!   resolved `calls` edges are the numerator.
+
+use serde::{Deserialize, Serialize};
+
+/// Configuration for the retrieval-evaluation subsystem.
+///
+/// Read from the `[retrieval_eval]` section of `.engram/config.toml`. The
+/// subsystem is **disabled by default**; a workspace opts in by setting
+/// `enabled = true`. Follows the `#[serde(default)]` section pattern used by
+/// [`crate::models::config::CodeGraphConfig`] and
+/// [`crate::models::evaluation::EvaluationConfig`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetrievalEvalConfig {
+    /// Whether the subsystem is enabled. Defaults to `false` (opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Languages to include when deriving semantic queries and call-site
+    /// inventories. Defaults to `["rust"]`.
+    #[serde(default = "default_languages")]
+    pub languages: Vec<String>,
+    /// Cut-off rank `k` for precision@k / recall@k / nDCG@k. Defaults to `10`.
+    #[serde(default = "default_k")]
+    pub k: usize,
+    /// Maximum number of symbols sampled as known-item queries. Bounds eval
+    /// cost on large workspaces. Defaults to `200`.
+    #[serde(default = "default_sample_size")]
+    pub sample_size: usize,
+    /// Baseline thresholds used by the regression tier to detect metric
+    /// regressions.
+    #[serde(default)]
+    pub thresholds: RetrievalEvalThresholds,
+}
+
+impl Default for RetrievalEvalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            languages: default_languages(),
+            k: default_k(),
+            sample_size: default_sample_size(),
+            thresholds: RetrievalEvalThresholds::default(),
+        }
+    }
+}
+
+fn default_languages() -> Vec<String> {
+    vec!["rust".to_owned()]
+}
+
+const fn default_k() -> usize {
+    10
+}
+
+const fn default_sample_size() -> usize {
+    200
+}
+
+/// Baseline thresholds for the retrieval-evaluation regression tier.
+///
+/// Semantic metrics have `min_*` floors (higher is better); the false-edge rate
+/// has a `max_*` ceiling (lower is better). Defaults are permissive
+/// (all floors `0.0`, the ceiling `1.0`) so an unconfigured workspace never
+/// fails a threshold check.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetrievalEvalThresholds {
+    /// Minimum acceptable precision@k.
+    #[serde(default)]
+    pub min_precision_at_k: f64,
+    /// Minimum acceptable recall@k.
+    #[serde(default)]
+    pub min_recall_at_k: f64,
+    /// Minimum acceptable mean reciprocal rank.
+    #[serde(default)]
+    pub min_mrr: f64,
+    /// Minimum acceptable nDCG@k.
+    #[serde(default)]
+    pub min_ndcg: f64,
+    /// Minimum acceptable graph resolution recall.
+    #[serde(default)]
+    pub min_resolution_recall: f64,
+    /// Maximum acceptable graph false-edge rate.
+    #[serde(default = "default_max_false_edge_rate")]
+    pub max_false_edge_rate: f64,
+}
+
+impl Default for RetrievalEvalThresholds {
+    fn default() -> Self {
+        Self {
+            min_precision_at_k: 0.0,
+            min_recall_at_k: 0.0,
+            min_mrr: 0.0,
+            min_ndcg: 0.0,
+            min_resolution_recall: 0.0,
+            max_false_edge_rate: default_max_false_edge_rate(),
+        }
+    }
+}
+
+fn default_max_false_edge_rate() -> f64 {
+    1.0
+}
+
+/// Semantic self-retrieval metrics over known-item queries.
+///
+/// Each query has exactly one relevant document (its source symbol), so the
+/// metrics reduce to the single-relevant-item forms:
+/// * `recall_at_k` — fraction of queries whose symbol appears in the top `k`.
+/// * `precision_at_k` — mean of `1/k` over hits (single relevant per query).
+/// * `mrr` — mean reciprocal rank of the source symbol.
+/// * `ndcg` — mean `1/log2(rank+1)` for hits within `k` (ideal DCG is `1`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SemanticMetrics {
+    /// Precision@k averaged over evaluated queries.
+    pub precision_at_k: f64,
+    /// Recall@k averaged over evaluated queries.
+    pub recall_at_k: f64,
+    /// Mean reciprocal rank.
+    pub mrr: f64,
+    /// Normalized discounted cumulative gain at `k`.
+    pub ndcg: f64,
+    /// Number of known-item queries evaluated.
+    pub queries: usize,
+}
+
+/// Graph resolution-recall metrics derived from the call-site inventory.
+///
+/// * `resolution_recall` — resolved `calls` edges ÷ visible call sites.
+/// * `false_edge_rate` — resolved edges whose callee resolves to no known
+///   definition ÷ resolved edges.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GraphMetrics {
+    /// Resolved edges ÷ visible call sites (`0.0` when no call sites).
+    pub resolution_recall: f64,
+    /// False edges ÷ resolved edges (`0.0` when no resolved edges).
+    pub false_edge_rate: f64,
+    /// Total syntactic call sites inventoried by the parser (denominator).
+    pub call_sites: usize,
+    /// Total resolved `calls` edges in the graph (numerator).
+    pub resolved: u64,
+    /// Resolved edges whose callee matches no known definition.
+    pub false_edges: u64,
+}
+
+/// A single retrieval-evaluation run report.
+///
+/// Emitted as structured JSON by the `run_retrieval_eval` /
+/// `get_retrieval_eval_report` MCP tools and the `engram eval` CLI. The
+/// empty-state shape (via [`RetrievalEvalReport::empty`]) is defined before any
+/// compute so autoharness can integrate against a stable contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetrievalEvalReport {
+    /// Whether the subsystem was enabled for this run.
+    pub enabled: bool,
+    /// Branch the run was evaluated on.
+    pub branch: String,
+    /// Evaluation timestamp (RFC 3339).
+    pub evaluated_at: String,
+    /// Cut-off rank `k` used for the semantic metrics.
+    pub k: usize,
+    /// Number of symbols sampled as known-item queries.
+    pub sample_size: usize,
+    /// Languages included in this run.
+    #[serde(default)]
+    pub languages: Vec<String>,
+    /// Semantic self-retrieval metrics.
+    pub semantic: SemanticMetrics,
+    /// Graph resolution-recall metrics.
+    pub graph: GraphMetrics,
+}
+
+impl RetrievalEvalReport {
+    /// Build an empty-state report with zeroed metrics.
+    ///
+    /// Used when the subsystem is disabled, when no run has been persisted yet,
+    /// or when the workspace has nothing to evaluate. The shape matches a
+    /// populated report so consumers parse one schema regardless of state.
+    #[must_use]
+    pub fn empty(enabled: bool, branch: impl Into<String>) -> Self {
+        Self {
+            enabled,
+            branch: branch.into(),
+            evaluated_at: chrono::Utc::now().to_rfc3339(),
+            k: 0,
+            sample_size: 0,
+            languages: Vec::new(),
+            semantic: SemanticMetrics::default(),
+            graph: GraphMetrics::default(),
+        }
+    }
+}
