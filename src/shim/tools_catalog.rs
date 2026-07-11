@@ -18,7 +18,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
 /// Total number of tools registered in the dispatch table and this catalog.
-pub const TOOL_COUNT: usize = 18;
+pub const TOOL_COUNT: usize = 20;
 
 /// Build a `serde_json::Map` from a JSON object literal.
 ///
@@ -283,6 +283,23 @@ pub fn all_tools() -> Vec<Tool> {
         Tool::new(
             "get_evaluation_report",
             "Compute an agent efficiency evaluation report from recorded usage events. Returns per-agent scoring, anomaly flags (token ratio spikes, error bursts, tool hammering), and actionable recommendations.",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        // ── Retrieval + graph-recall evaluation (081-F) ────────────────────
+        Tool::new(
+            "run_retrieval_eval",
+            "Run the portable retrieval + graph-recall evaluation over the indexed workspace. Derives ground truth automatically (semantic self-retrieval from symbol docstrings/qualified names; graph resolution recall from the parser call-site inventory) and returns a structured RetrievalEvalReport with semantic (precision@k, recall@k, MRR, nDCG) and graph (resolution_recall, false_edge_rate) metrics. Disabled by default; returns an empty report unless enabled via the [retrieval_eval] config section. Distinct from get_evaluation_report (agent efficiency).",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        Tool::new(
+            "get_retrieval_eval_report",
+            "Return the latest persisted retrieval + graph-recall evaluation report (RetrievalEvalReport) for the current branch, or a well-formed empty report when no run exists. Distinct from get_evaluation_report (agent efficiency).",
             schema(json!({
                 "type": "object",
                 "properties": {}

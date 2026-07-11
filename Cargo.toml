@@ -773,6 +773,10 @@ required-features = ["cozo-backend"]
 name = "unit_retrieval_eval_model"
 path = "tests/unit/retrieval_eval_model_test.rs"
 
+[[test]]
+name = "contract_retrieval_eval_tools"
+path = "tests/contract/retrieval_eval_tools_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

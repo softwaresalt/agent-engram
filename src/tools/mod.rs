@@ -19,6 +19,8 @@ pub mod lifecycle;
 pub mod read;
 pub mod write;
 
+pub mod eval;
+
 #[derive(Debug, Deserialize)]
 struct WorkspaceParams {
     #[serde(default)]
@@ -48,6 +50,8 @@ fn should_record_metrics(method: &str) -> bool {
             | "get_token_savings_report"
             | "get_evaluation_report"
             | "get_mutable_script_retry_metrics"
+            | "run_retrieval_eval"
+            | "get_retrieval_eval_report"
             | "set_workspace"
             | "sync_workspace"
             | "index_workspace"
@@ -322,6 +326,8 @@ pub async fn dispatch(
         "get_branch_metrics" => read::get_branch_metrics(state.clone(), params).await,
         "get_token_savings_report" => read::get_token_savings_report(state.clone(), params).await,
         "get_evaluation_report" => read::get_evaluation_report(state.clone(), params).await,
+        "run_retrieval_eval" => eval::run_retrieval_eval(state.clone(), params).await,
+        "get_retrieval_eval_report" => eval::get_retrieval_eval_report(state.clone(), params).await,
         "query_graph" => read::query_graph(state.clone(), params).await,
         "get_mutable_script_retry_metrics" => {
             read::get_mutable_script_retry_metrics(state.clone(), params).await
