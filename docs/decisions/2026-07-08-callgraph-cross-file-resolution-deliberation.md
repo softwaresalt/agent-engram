@@ -2,14 +2,27 @@
 title: "Call-graph cross-file & method-call resolution — design deliberation"
 type: deliberation
 date: 2026-07-08
-status: awaiting-operator-input
+status: decided
+signed_off_by: operator
+signed_off_on: 2026-07-10
 stash_id: 3AF329FF
-related: [079-F, engram-graph-quality-assessment]
+harvested_to: 082-F
+plan: docs/exec-plans/2026-07-10-callgraph-cross-file-resolution-plan.md
+related: [079-F, engram-graph-quality-assessment, 081-F, 082-F]
 ---
 
 # Call-graph cross-file & method-call resolution
 
-**Status: stashed for operator input.** This is the highest-leverage of the
+**Status: DECIDED — operator signed off on 2026-07-10.** Option B (deferred post-pass +
+unambiguous-name guard) accepted. Operator answers to the four open questions:
+(1) precision policy = **unambiguous-name-only** (skip ambiguous, precision-first);
+(2) edge provenance = **tag post-pass-resolved calls distinctly** (`calls_resolved_singleton`);
+(3) performance = **gate the global post-pass behind full/`--force` index only** (incremental
+sync skips it); (4) scope = **Rust-first as slice 1**, fan out to peer tree-sitter extractors
+as follow-on tasks. Acceptance is gated by the retrieval-eval subsystem (081-F slices S1+S3):
+resolution recall must rise and false-edge rate stay within the operator-chosen threshold.
+Harvested into feature **082-F**; plan at
+`docs/exec-plans/2026-07-10-callgraph-cross-file-resolution-plan.md`. This is the highest-leverage of the
 three graph/search quality recommendations from the 2026-07-08 assessment, but
 it reshapes graph semantics for every indexed workspace with real precision/recall
 tradeoffs, so it should not be shipped autonomously.
