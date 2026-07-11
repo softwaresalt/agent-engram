@@ -793,6 +793,10 @@ path = "tests/integration/retrieval_eval_semantic_test.rs"
 name = "integration_retrieval_eval_graph"
 path = "tests/integration/retrieval_eval_graph_test.rs"
 
+[[test]]
+name = "integration_retrieval_eval_regression"
+path = "tests/integration/retrieval_eval_regression_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::errors::{EngramError, SystemError};
 use crate::models::Function;
 use crate::models::retrieval_eval::{
-    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, SemanticMetrics,
+    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds,
+    SemanticMetrics,
 };
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_search};
@@ -371,6 +372,80 @@ pub async fn latest_report(
         })
     })?;
     Ok(Some(report))
+}
+
+// ── Threshold comparison (081.007-T) ─────────────────────────────────────
+
+/// Outcome of comparing a report's metrics against baseline thresholds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThresholdCheck {
+    /// Whether every configured threshold was satisfied.
+    pub passed: bool,
+    /// Human-readable descriptions of each breached threshold (empty on pass).
+    pub breaches: Vec<String>,
+}
+
+/// Record a breach when `actual` falls below a `min_*` floor (higher is better).
+fn check_floor(name: &str, actual: f64, floor: f64, breaches: &mut Vec<String>) {
+    if actual < floor {
+        breaches.push(format!("{name} {actual:.4} below floor {floor:.4}"));
+    }
+}
+
+/// Record a breach when `actual` exceeds a `max_*` ceiling (lower is better).
+fn check_ceiling(name: &str, actual: f64, ceiling: f64, breaches: &mut Vec<String>) {
+    if actual > ceiling {
+        breaches.push(format!("{name} {actual:.4} above ceiling {ceiling:.4}"));
+    }
+}
+
+/// Compare a report's metrics against baseline thresholds.
+///
+/// Semantic metrics and graph `resolution_recall` have `min_*` floors (higher
+/// is better); `false_edge_rate` has a `max_*` ceiling (lower is better). The
+/// returned [`ThresholdCheck`] lists every breach; `passed` is `true` only when
+/// no threshold is violated. Used by the regression tier to guard against
+/// metric regressions on a fixture corpus.
+#[must_use]
+pub fn check_thresholds(
+    report: &RetrievalEvalReport,
+    thresholds: &RetrievalEvalThresholds,
+) -> ThresholdCheck {
+    let mut breaches = Vec::new();
+    let semantic = &report.semantic;
+    let graph = &report.graph;
+
+    check_floor(
+        "precision_at_k",
+        semantic.precision_at_k,
+        thresholds.min_precision_at_k,
+        &mut breaches,
+    );
+    check_floor(
+        "recall_at_k",
+        semantic.recall_at_k,
+        thresholds.min_recall_at_k,
+        &mut breaches,
+    );
+    check_floor("mrr", semantic.mrr, thresholds.min_mrr, &mut breaches);
+    check_floor("ndcg", semantic.ndcg, thresholds.min_ndcg, &mut breaches);
+    check_floor(
+        "resolution_recall",
+        graph.resolution_recall,
+        thresholds.min_resolution_recall,
+        &mut breaches,
+    );
+    check_ceiling(
+        "false_edge_rate",
+        graph.false_edge_rate,
+        thresholds.max_false_edge_rate,
+        &mut breaches,
+    );
+
+    ThresholdCheck {
+        passed: breaches.is_empty(),
+        breaches,
+    }
 }
 
 #[cfg(test)]
