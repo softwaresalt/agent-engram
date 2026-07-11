@@ -35,5 +35,6 @@ pub mod process_memory;
 pub mod query_stats;
 pub mod reactive_sync;
 pub mod registry;
+pub mod retrieval_eval;
 pub mod search;
 pub mod verify;

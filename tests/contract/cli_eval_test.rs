@@ -18,7 +18,7 @@ use std::time::Duration;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Run the `engram` binary with `args` and capture (exit_code, stdout, stderr).
+/// Run the `engram` binary with `args` and capture (`exit_code`, stdout, stderr).
 fn run_cli(args: &[&str]) -> (i32, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_engram"))
         .args(args)
