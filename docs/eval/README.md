@@ -12,8 +12,10 @@ tuning and guard against metric regressions.
 The `retrieval_eval` subsystem answers two auto-derivable questions about a
 workspace index (no manual relevance labels required):
 
-* **Semantic self-retrieval** — each indexed symbol's docstring / qualified name
-  becomes a known-item query whose single expected hit is that same symbol.
+* **Semantic self-retrieval** — each indexed function's docstring (falling back
+  to its name) becomes a known-item query whose single expected hit is that same
+  function. Matching is by function id, so the metric is scoped to indexed
+  functions in this baseline (broader symbol kinds are follow-up work).
   Reported as `precision@k`, `recall@k`, `MRR`, and `nDCG@k`. This is a *proxy*
   signal (it rewards name/doc recall) and is read as one signal alongside the
   graph metrics.

@@ -1,9 +1,9 @@
 //! Retrieval-evaluation compute (081-F).
 //!
-//! Semantic self-retrieval: each indexed function's docstring / qualified name
-//! becomes a known-item query whose single expected hit is that same function.
-//! Running those queries through [`hybrid_search`] and recording the rank of the
-//! source function yields precision@k, recall@k, MRR and nDCG@k.
+//! Semantic self-retrieval: each indexed function's docstring (falling back to
+//! its name) becomes a known-item query whose single expected hit is that same
+//! function. Running those queries through [`hybrid_search`] and recording the
+//! rank of the source function yields precision@k, recall@k, MRR and nDCG@k.
 //!
 //! The semantic corpus is scoped to **functions** in this baseline. Extending
 //! the candidate/query abstraction to other indexed symbol kinds (classes,
@@ -81,8 +81,12 @@ fn bound_query(raw: &str) -> String {
 /// Derive a known-item query for a function symbol.
 ///
 /// Prefers the first non-empty line of the docstring (natural-language intent),
-/// falling back to the symbol name when no docstring is present. The result is
+/// falling back to the function name when no docstring is present. The result is
 /// trimmed and length-bounded.
+///
+/// Matching is by function id (not by name), so a non-unique fallback name only
+/// makes the ranking harder (a fair recall signal); it never resolves to the
+/// wrong symbol.
 #[must_use]
 pub fn derive_query(function: &Function) -> String {
     let raw = match function.docstring.as_deref() {
@@ -191,16 +195,29 @@ pub fn evaluate_semantic(
 ) -> Result<SemanticMetrics, EngramError> {
     let k = config.k.max(1);
 
-    let selected: Vec<&Function> = functions
-        .iter()
-        .filter(|f| {
-            config.languages.is_empty()
-                || config
-                    .languages
-                    .iter()
-                    .any(|lang| lang.eq_ignore_ascii_case(language_of(&f.file_path)))
-        })
-        .collect();
+    let selected: Vec<&Function> = {
+        let mut v: Vec<&Function> = functions
+            .iter()
+            .filter(|f| {
+                config.languages.is_empty()
+                    || config
+                        .languages
+                        .iter()
+                        .any(|lang| lang.eq_ignore_ascii_case(language_of(&f.file_path)))
+            })
+            .collect();
+        // Deterministic order (stable source identity) so the same unchanged
+        // workspace yields the same sample and the same metrics regardless of
+        // database row order — this report is used as a regression gate.
+        v.sort_by(|a, b| {
+            (a.file_path.as_str(), a.line_start, a.name.as_str()).cmp(&(
+                b.file_path.as_str(),
+                b.line_start,
+                b.name.as_str(),
+            ))
+        });
+        v
+    };
 
     let candidates: Vec<SearchCandidate> = selected.iter().map(|f| func_to_candidate(f)).collect();
 

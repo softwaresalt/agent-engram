@@ -14,10 +14,10 @@
 //!
 //! # Ground truth is auto-derived (no manual labels)
 //!
-//! * **Semantic** — each indexed function's docstring / qualified name becomes a
-//!   known-item query whose single expected hit is that same function. (The
-//!   semantic corpus is scoped to functions in this baseline; broader symbol
-//!   kinds are follow-up work.)
+//! * **Semantic** — each indexed function's docstring (falling back to its name)
+//!   becomes a known-item query whose single expected hit is that same function.
+//!   (The semantic corpus is scoped to functions in this baseline; broader
+//!   symbol kinds are follow-up work.)
 //! * **Graph** — the tree-sitter call-site inventory is the denominator; the
 //!   resolved `calls` edges are the numerator.
 
