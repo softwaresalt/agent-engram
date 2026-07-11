@@ -135,12 +135,12 @@ passed the full sweep. Confirmed 8/8 green after the test-scoped retry.
 
 | Stash | Kind | Pri | Summary |
 |---|---|---|---|
-| D6F70DCC | — | — | resolution_recall language-scope mismatch (review gate) |
-| 88B5FAFD | — | — | C1 call-site multiplicity |
-| D07F0919 | — | — | C2 false-edge true-detection (vs. dangling-only) |
-| F137D72E | — | — | C7 regression real-path |
-| 54848E3D | — | — | denominator/index consistency |
-| 4CF046A5 | — | — | hybrid_search perf / spawn_blocking offload |
+| D6F70DCC | bug  | med | resolution_recall language-scope mismatch (review gate) |
+| 88B5FAFD | bug  | med | C1 call-site multiplicity |
+| D07F0919 | bug  | med | C2 false-edge true-detection (vs. dangling-only) |
+| F137D72E | task | med | C7 regression real-path |
+| 54848E3D | bug  | med | denominator/index consistency |
+| 4CF046A5 | task | low | hybrid_search perf / spawn_blocking offload |
 | 78AA205D | task | low | all_functions INNER JOIN corpus completeness (LEFT JOIN + name fallback) |
 | CA401F5F | task | low | graph-eval whole-corpus memory bound (batch parsing) |
 | 30CE5DD6 | task | med | durable connect_db reopen-retry as a separate reliability change |

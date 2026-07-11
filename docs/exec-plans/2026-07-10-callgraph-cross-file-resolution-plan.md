@@ -121,13 +121,23 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
 ### 082.004-T — Acceptance verification via 081-F eval subsystem  *(domain: verification/eval)*
 - **Files:** `tests/integration/calls_recall_acceptance_test.rs` (new — index a fixture
   before/after, run the 081.005-T graph resolution-recall + false-edge-rate metric, assert
-  recall **rises** and false-edge rate stays within the operator threshold). Small doc note in
-  the plan/changelog is Ship-side.
+  recall **rises** and false-edge rate stays within the operator threshold) plus a hand-authored
+  **expected-edges manifest** for the fixture (ground-truth `caller → callee` id pairs). Small doc
+  note in the plan/changelog is Ship-side.
 - **Behavior:** this is the empirical gate that closes the deliberation's acceptance criterion.
   It consumes the eval subsystem's graph metric (081.005-T) and the report contract/model
-  (081.001-T).
-- **Integration scenarios (4):** post-change resolution_recall > pre-change; false_edge_rate ≤
-  threshold; `calls_resolved_singleton` edges counted; ambiguous names contribute no false edges.
+  (081.001-T). **Metric caveat:** the 081-F `false_edge_rate` (`count_dangling_calls_edges`,
+  `src/db/cozo_queries.rs:2409`) is a conservative lower bound — it detects *dangling* callees
+  only, not calls resolved to an existing-but-wrong function, which is exactly the false edge
+  rec1's unambiguous-name guard could introduce (tracked follow-up `D07F0919`). The aggregate
+  metric therefore CANNOT gate mis-resolution on its own, so this task adds a **fixture
+  ground-truth target-correctness assertion**: every `calls_resolved_singleton` edge produced for
+  the fixture MUST match the expected-edges manifest (correct callee id), detecting wrong-target
+  resolution directly and independently of the aggregate metric.
+- **Integration scenarios (5):** post-change resolution_recall > pre-change; aggregate
+  false_edge_rate ≤ threshold; **every `calls_resolved_singleton` edge matches the expected-edges
+  manifest (no wrong-target resolution)**; `calls_resolved_singleton` edges counted; ambiguous
+  names contribute no edge (skipped, not mis-resolved).
 - **Depends on:** 082.003-T, **081.001-T (S1 contract/model)**, **081.005-T (S3 graph metric)**.
 
 ### 082.005-T — Fan-out to peer tree-sitter extractors  *(domain: parser/extraction — DEFERRED follow-on, NOT in first shipment)*
