@@ -291,7 +291,7 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Retrieval + graph-recall evaluation (081-F) ────────────────────
         Tool::new(
             "run_retrieval_eval",
-            "Run the portable retrieval + graph-recall evaluation over the indexed workspace. Derives ground truth automatically (semantic self-retrieval from symbol docstrings/qualified names; graph resolution recall from the parser call-site inventory) and returns a structured RetrievalEvalReport with semantic (precision@k, recall@k, MRR, nDCG) and graph (resolution_recall, false_edge_rate) metrics. Disabled by default; returns an empty report unless enabled via the [retrieval_eval] config section. Distinct from get_evaluation_report (agent efficiency).",
+            "Run the portable retrieval + graph-recall evaluation over the indexed workspace. Derives ground truth automatically (semantic self-retrieval from indexed function docstrings, falling back to the function name; graph resolution recall from the parser call-site inventory) and returns a structured RetrievalEvalReport with semantic (precision@k, recall@k, MRR, nDCG) and graph (resolution_recall, false_edge_rate) metrics. Evaluates functions only — not arbitrary symbols or qualified-name uniqueness. Disabled by default; returns an empty report unless enabled via the [retrieval_eval] config section. Distinct from get_evaluation_report (agent efficiency).",
             schema(json!({
                 "type": "object",
                 "properties": {}

@@ -5,12 +5,14 @@
 //! deliberately separate from the agent-efficiency evaluation surface in
 //! [`crate::tools::read::get_evaluation_report`].
 //!
-//! When the subsystem is disabled (the default), both handlers return a
+//! When the subsystem is disabled (the default), `run_retrieval_eval` returns a
 //! well-formed empty [`RetrievalEvalReport`] whose `enabled` flag is `false`.
 //! When enabled, `run_retrieval_eval` computes semantic self-retrieval and
-//! graph resolution metrics and persists the run under `.engram/eval/{branch}/`;
-//! `get_retrieval_eval_report` returns the latest persisted run, or an empty
-//! report when none exists yet.
+//! graph resolution metrics and persists the run under `.engram/eval/{branch}/`.
+//! `get_retrieval_eval_report` reads persistence first, so it returns the latest
+//! persisted run — which may be an earlier `enabled: true` run captured before
+//! the subsystem was disabled — and only falls back to an empty report when no
+//! run has ever been persisted for the branch.
 
 use std::path::{Path, PathBuf};
 
@@ -74,6 +76,14 @@ async fn count_workspace_call_sites(
     config: &RetrievalEvalConfig,
 ) -> Result<usize, EngramError> {
     let files = queries.list_code_files().await?;
+    // Canonical workspace root for the containment check below. The bound
+    // workspace is canonicalized at `set_workspace` time, so this is expected
+    // to succeed; a failure is surfaced rather than silently skewing metrics.
+    let ws_root = tokio::fs::canonicalize(workspace_path).await.map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("cannot resolve workspace root for eval containment check: {e}"),
+        })
+    })?;
     let mut sources: Vec<(String, String)> = Vec::new();
     for file in files {
         let gated = config.languages.is_empty()
@@ -85,7 +95,19 @@ async fn count_workspace_call_sites(
             continue;
         }
         let full = workspace_path.join(&file.path);
-        if let Ok(source) = tokio::fs::read_to_string(&full).await {
+        // Workspace-isolation invariant (no traversal): resolve the target
+        // (following symlinks and `..`) and require it to stay under the
+        // canonical workspace root before reading. An absolute path, `..`
+        // component, or in-workspace symlink that escapes the workspace is
+        // skipped rather than read. Unresolvable paths are skipped too, which
+        // matches this function's existing skip-on-read-failure contract.
+        let Ok(canon) = tokio::fs::canonicalize(&full).await else {
+            continue;
+        };
+        if !canon.starts_with(&ws_root) {
+            continue;
+        }
+        if let Ok(source) = tokio::fs::read_to_string(&canon).await {
             sources.push((file.language, source));
         }
     }
