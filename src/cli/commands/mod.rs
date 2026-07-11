@@ -1,5 +1,6 @@
 //! CLI subcommand implementations.
 
+pub mod eval;
 pub mod indexing;
 pub mod lifecycle;
 pub mod manifest;

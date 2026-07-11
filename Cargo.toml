@@ -777,6 +777,10 @@ path = "tests/unit/retrieval_eval_model_test.rs"
 name = "contract_retrieval_eval_tools"
 path = "tests/contract/retrieval_eval_tools_test.rs"
 
+[[test]]
+name = "contract_cli_eval"
+path = "tests/contract/cli_eval_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

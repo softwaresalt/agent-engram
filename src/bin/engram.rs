@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use engram::cli::commands::{indexing, lifecycle, manifest, report, search, verify};
+use engram::cli::commands::{eval, indexing, lifecycle, manifest, report, search, verify};
 use engram::cli::flags::GlobalFlags;
 use engram::cli::output::OutputFormatter;
 
@@ -260,6 +260,14 @@ enum Command {
         #[command(subcommand)]
         subcommand: ReportCommand,
     },
+
+    /// Run the retrieval + graph-recall evaluation over the indexed workspace.
+    ///
+    /// Emits a structured `RetrievalEvalReport` as JSON to stdout. Disabled by
+    /// default; enable via the `[retrieval_eval]` section of
+    /// `.engram/config.toml`. Distinct from `engram report eval` (agent
+    /// efficiency).
+    Eval,
 }
 
 #[derive(Debug, Subcommand)]
@@ -465,6 +473,11 @@ async fn main() -> Result<()> {
                 ReportCommand::Eval => report::run_eval(&flags, &fmt).await,
                 ReportCommand::RetryMetrics => report::run_retry_metrics(&flags, &fmt).await,
             };
+            std::process::exit(code);
+        }
+        Command::Eval => {
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
+            let code = eval::run_eval_retrieval(&flags, &fmt).await;
             std::process::exit(code);
         }
     }
