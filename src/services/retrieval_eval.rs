@@ -416,7 +416,12 @@ pub async fn latest_report(
 // ── Threshold comparison (081.007-T) ─────────────────────────────────────
 
 /// Outcome of comparing a report's metrics against baseline thresholds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Default` is intentionally not derived: a zero-valued default would be
+/// `{ passed: false, breaches: [] }`, which contradicts the invariant that
+/// `passed` is `true` exactly when `breaches` is empty. Construct via
+/// [`check_thresholds`] so `passed` and `breaches` stay consistent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThresholdCheck {
     /// Whether every configured threshold was satisfied.
     pub passed: bool,

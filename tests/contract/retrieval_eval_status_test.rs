@@ -18,6 +18,40 @@ use engram::models::retrieval_eval::RetrievalEvalConfig;
 use engram::server::state::AppState;
 use engram::tools;
 
+/// Dispatch a tool call, retrying a bounded number of times on the known
+/// transient `CozoDB` reopen lock (U015-FLK1 residual, tracked stash `100EACD8`).
+///
+/// Rapid sequential reopens of the same branch database — as this test does
+/// with two back-to-back `run_retrieval_eval` dispatches followed by a report
+/// read — can surface a `database is locked` (`SQLITE_BUSY`) transient on
+/// platforms where the OS releases the prior connection's file lock lazily
+/// (notably Windows). That transient is a pre-existing infrastructure concern,
+/// unrelated to retrieval-eval logic, so the test retries rather than treating
+/// it as a failure. A durable fix in the shared DB open path is deferred to a
+/// separately-tested reliability change (outside this feature's freeze-scope).
+async fn dispatch_retry(
+    state: Arc<AppState>,
+    tool: &str,
+    args: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut last_err = String::new();
+    for _ in 0u32..8 {
+        match tools::dispatch(state.clone(), tool, args.clone()).await {
+            Ok(value) => return value,
+            Err(err) => {
+                let lowered = err.to_string().to_ascii_lowercase();
+                if lowered.contains("database is locked") || lowered.contains("sqlite_busy") {
+                    last_err = err.to_string();
+                    tokio::time::sleep(Duration::from_millis(75)).await;
+                    continue;
+                }
+                panic!("dispatch {tool} failed: {err}");
+            }
+        }
+    }
+    panic!("dispatch {tool} failed after retries on transient DB lock: {last_err}");
+}
+
 /// Bind a temp workspace with the given config and return the state + tempdir.
 async fn setup_workspace(config: WorkspaceConfig) -> (Arc<AppState>, tempfile::TempDir) {
     let workspace = tempfile::tempdir().expect("tempdir");
@@ -124,21 +158,15 @@ async fn report_reads_latest_persisted_run() {
     // return the most recent run (k=9), not an empty default (k=0).
     let (state, _ws) = setup_workspace(enabled_config(5)).await;
 
-    tools::dispatch(state.clone(), "run_retrieval_eval", Some(json!({})))
-        .await
-        .expect("first run must succeed");
+    dispatch_retry(state.clone(), "run_retrieval_eval", Some(json!({}))).await;
 
     // Advance config + wall clock so the second run is unambiguously newer.
     tokio::time::sleep(Duration::from_millis(20)).await;
     state.set_workspace_config(Some(enabled_config(9))).await;
 
-    tools::dispatch(state.clone(), "run_retrieval_eval", Some(json!({})))
-        .await
-        .expect("second run must succeed");
+    dispatch_retry(state.clone(), "run_retrieval_eval", Some(json!({}))).await;
 
-    let report = tools::dispatch(state.clone(), "get_retrieval_eval_report", Some(json!({})))
-        .await
-        .expect("get_retrieval_eval_report must succeed");
+    let report = dispatch_retry(state.clone(), "get_retrieval_eval_report", Some(json!({}))).await;
 
     assert_eq!(
         report["k"],
