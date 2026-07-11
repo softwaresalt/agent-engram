@@ -124,9 +124,11 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
   `CodeEdge` has no provenance field (`src/models/code_edge.rs:34`). Extend the `calls_edge`
   schema with a `resolution: String` attribute (migration: pre-existing rows default to
   `"direct"`) and add `CodeEdge.resolution: Option<String>`. Direct in-file edges (082.002-T)
-  write `resolution = "direct"`; post-pass singleton edges write `resolution =
-  "resolved_singleton"`. Add a read query (e.g. `count_calls_edges_by_resolution` and an
-  enumerate-`resolved_singleton`-edges query) so 082.004-T can list the tagged edges it validates.
+  write `resolution = "direct"`; post-pass singleton edges write the **exact** value
+  `resolution = "calls_resolved_singleton"` (one canonical string, matching the tag used by
+  082.004-T's checks — never a shortened `resolved_singleton`). Add a read query (e.g.
+  `count_calls_edges_by_resolution` and an enumerate-`calls_resolved_singleton`-edges query) so
+  082.004-T can list the tagged edges it validates.
   Cover with schema-migration, `CodeEdge` model round-trip, and query tests.
 - **Behavior:** unique cross-file name (e.g. `get_health_report_for_daemon`) → one tagged edge;
   ambiguous name (≥2 defs) → skipped (bounds false edges); non-existent def → no edge;
@@ -164,7 +166,7 @@ under 082-F for a follow-on shipment:
 - **082.005-T — Python:** apply the `field_expression`/method-capture + record-unresolved +
   post-pass pattern to `src/services/parsing/python.rs`.
 - **082.006-T — TypeScript:** same pattern for `src/services/parsing/typescript.rs`.
-- **082.007-T — Go:** same pattern for `src/services/parsing/go.rs`.
+- **082.007-T — Go:** same pattern for `src/services/parsing/go_lang.rs`.
 - **Depends on:** 082.003-T (all three).
 
 **Dependency chain (first shipment 078-S):** 082.001-T → 082.002-T → 082.003-T → 082.004-T;
@@ -183,7 +185,15 @@ complete.
 | IV. CLI Workspace Containment | No new CLI surface; behavior rides existing index/sync commands. |
 | V. Destructive Command Approval | None — additive edges + provenance tag; no deletions of existing edge semantics. |
 | VI. Safety Modes | Elevated blast radius (core-indexing change affecting every workspace's edge counts) → `careful` + `freeze-scope` (see §7). |
-| Task Granularity | Each task ≤3 source files / ≤5 fns / ≤4 scenarios, single width; language fan-out deferred and per-language split. |
+| Task Granularity | ⚠ **Two units exceed limits and MUST be split by a Stage re-harvest before 078-S executes:** 082.002-T defines 6 scenarios (>4) and 082.003-T touches 4 source files (>3, after the provenance-storage addition). All other units comply (≤3 files / ≤4 scenarios, single width). Language fan-out is deferred and per-language split (082.005/006/007-T). |
+
+> **Harvest follow-up (Copilot review #239):** before 078-S is routed to Ship, a Stage re-harvest
+> MUST (a) split 082.002-T into staging *capture* vs *lifecycle* (clear-before-reindex + deletion +
+> stale-resolved-edge retraction) and 082.003-T into provenance *storage* vs *post-pass resolution*
+> so every executable task is single-width and ≤4 scenarios, (b) propagate the full `staged_call`
+> lifecycle + `resolution` migration + read-query contract into the executable queue task items
+> (not just this plan), and (c) carry the call-edge retraction design from §7. Tracked as a stash
+> follow-up.
 
 ## 7. Plan-Harden (risk-triggered)
 
@@ -192,16 +202,26 @@ indexed workspace; false-edge risk cannot be validated on a single workspace by 
 
 **Safety mode:** `careful` + `freeze-scope` to `src/services/parsing/rust.rs`,
 `src/services/code_graph.rs` (Calls resolution + post-pass invocation), `src/db/cozo_queries.rs`
-(staging + `reresolve_calls_edges`), and `tests/`. Peer-language extractors are **out of scope**
-for the first shipment (082.005-T deferred).
+(staging + `reresolve_calls_edges`), `src/db/cozo_backend/schema.rs` (`staged_call` relation +
+`calls_edge.resolution` migration), `src/models/code_edge.rs` (`resolution` field), and `tests/`.
+Peer-language extractors (082.005-T Python, 082.006-T TypeScript, 082.007-T Go) are **out of scope**
+for the first shipment.
+
+**Stale-edge retraction (Copilot review #239):** clearing `staged_call` rows alone does not retract
+a `calls_edge` that a prior singleton post-pass created. Reindex/deletion paths
+(`src/services/code_graph.rs:293-300`, `:1196-1204`) delete function metadata but do NOT clear call
+edges, so a changed/deleted caller or callee would leave the old resolved edge dangling. The staging
+*lifecycle* task (see §6 split follow-up) MUST retract a file's prior `calls_resolved_singleton`
+edges while the old symbol IDs still exist, before re-staging, and test changed/deleted callers and
+callees after a post-pass.
 
 | Risk | Blast radius | Mitigation |
 |---|---|---|
-| False edges from ambiguous names | High (pollutes graph for all workspaces) | Unambiguous-name-only guard (exactly-one-match); 082.003 scenario asserts ambiguous → skipped, no-def → no edge; false-edge rate empirically bounded by 081.005 metric. |
+| False edges from ambiguous names | High (pollutes graph for all workspaces) | Unambiguous-name-only guard (exactly-one-match); 082.003 scenario asserts ambiguous → skipped, no-def → no edge. **Primary detection is the 082.004 fixture ground-truth target-correctness assertion** (every `calls_resolved_singleton` edge must match the expected-edges manifest); the aggregate 081.005 `false_edge_rate` is only a conservative lower-bound signal (dangling targets, not wrong-but-existing targets — follow-up `D07F0919`). |
 | Method-call over-capture (common names) | Medium | Keep `CALL_BLOCKLIST`; under-recall of `count/get/new` accepted (better than false edges) per deliberation. |
 | Post-pass latency on large (10k+ symbol) workspaces | Medium | Gate global post-pass behind full/`--force` index only; incremental sync skips it (082.003). |
 | Index/sync path divergence | Medium | 082.002 asserts sync-path parity for recording; post-pass intentionally index-only (documented + tested). |
-| Unmeasured recall/precision tradeoff | High (product decision) | Acceptance defined by 081-F metrics (082.004): recall must rise, false-edge rate ≤ threshold. |
+| Unmeasured recall/precision tradeoff | High (product decision) | Acceptance defined by 082.004: resolution recall must rise AND every `calls_resolved_singleton` edge must match the fixture expected-edges manifest (target-correctness). The aggregate 081.005 `false_edge_rate ≤ threshold` is a supporting lower-bound signal only, not the sole gate. |
 | Provenance tag consumers unaware of new edge kind | Low | `calls_resolved_singleton` distinct tag; consumers/eval can weight; existing direct `calls` edges unchanged. |
 
 **Rollback:** additive. Reverting removes the `field_expression` arm, the unresolved-call
