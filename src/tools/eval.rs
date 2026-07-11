@@ -61,12 +61,17 @@ async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramErro
 /// Reads each indexed file that passes the language gate and parses it to count
 /// `ExtractedEdge::Calls` occurrences (the graph-metric denominator). File-read
 /// and parse failures are skipped so a single bad file never aborts the run.
+///
+/// # Errors
+/// Propagates a database error if the indexed-file listing fails, or a system
+/// error if the off-runtime parse task panics — a failed read must not be
+/// silently reported as an empty inventory.
 async fn count_workspace_call_sites(
     workspace_path: &Path,
     queries: &CodeGraphQueries,
     config: &RetrievalEvalConfig,
-) -> usize {
-    let files = queries.list_code_files().await.unwrap_or_default();
+) -> Result<usize, EngramError> {
+    let files = queries.list_code_files().await?;
     let mut sources: Vec<(String, String)> = Vec::new();
     for file in files {
         let gated = config.languages.is_empty()
@@ -95,7 +100,11 @@ async fn count_workspace_call_sites(
             .sum()
     })
     .await
-    .unwrap_or(0)
+    .map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("retrieval eval call-site parse task failed: {e}"),
+        })
+    })
 }
 
 /// Serialize a report to a JSON value, mapping failures to a database error.
@@ -127,26 +136,30 @@ pub async fn run_retrieval_eval(
         return to_value(&RetrievalEvalReport::empty(false, parts.branch));
     }
 
-    // Read the indexed function corpus. A brand-new or un-indexed workspace has
-    // no function relations yet; treat that as an empty corpus (zero report)
-    // rather than surfacing a database error.
+    // Read the indexed function corpus. An initialized but un-indexed workspace
+    // returns an empty vector normally, so an actual query error must propagate
+    // (a database failure must not masquerade as a zero-metric success report).
     let db = connect_db(&parts.data_dir, &parts.branch).await?;
     let queries = CodeGraphQueries::new(db);
-    let functions = queries.all_functions().await.unwrap_or_default();
+    let functions = queries.all_functions().await?;
 
     let semantic = retrieval_eval::evaluate_semantic(&functions, &parts.config)?;
 
     // Graph resolution metrics (081.005-T): denominator = parser call-site
     // inventory over indexed source; numerator = resolved `calls` edges;
     // false edges = resolved edges whose callee matches no known definition.
+    // Database read errors propagate rather than degrading to fabricated zeros.
     let call_sites =
-        count_workspace_call_sites(&parts.workspace_path, &queries, &parts.config).await;
-    let resolved = queries.count_calls_edges().await.unwrap_or(0);
-    let false_edges = queries.count_dangling_calls_edges().await.unwrap_or(0);
+        count_workspace_call_sites(&parts.workspace_path, &queries, &parts.config).await?;
+    let resolved = queries.count_calls_edges().await?;
+    let false_edges = queries.count_dangling_calls_edges().await?;
     let graph = retrieval_eval::compute_graph_metrics(call_sites, resolved, false_edges);
 
     let mut report = RetrievalEvalReport::empty(true, parts.branch);
-    report.k = parts.config.k;
+    // Record the *effective* cutoff actually used by the semantic compute
+    // (`evaluate_semantic` normalizes `k = 0` to `1`), so the reported `k`
+    // matches the metrics that were computed against it.
+    report.k = parts.config.k.max(1);
     report.sample_size = parts.config.sample_size;
     report.languages.clone_from(&parts.config.languages);
     report.semantic = semantic;

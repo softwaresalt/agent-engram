@@ -1,9 +1,13 @@
 //! Retrieval-evaluation compute (081-F).
 //!
-//! Semantic self-retrieval: each indexed symbol's docstring / qualified name
-//! becomes a known-item query whose single expected hit is that same symbol.
+//! Semantic self-retrieval: each indexed function's docstring / qualified name
+//! becomes a known-item query whose single expected hit is that same function.
 //! Running those queries through [`hybrid_search`] and recording the rank of the
-//! source symbol yields precision@k, recall@k, MRR and nDCG@k.
+//! source function yields precision@k, recall@k, MRR and nDCG@k.
+//!
+//! The semantic corpus is scoped to **functions** in this baseline. Extending
+//! the candidate/query abstraction to other indexed symbol kinds (classes,
+//! interfaces) is tracked follow-up work.
 //!
 //! Ground truth is auto-derived (no manual labels): the query and its expected
 //! answer both come from the same indexed symbol, so the corpus is entirely
@@ -16,6 +20,8 @@
 //! things (`retrieval_eval` vs `evaluation`) and must not be conflated.
 
 use std::path::{Path, PathBuf};
+
+use tokio::io::AsyncWriteExt;
 
 use crate::errors::{EngramError, SystemError};
 use crate::models::Function;
@@ -315,9 +321,25 @@ pub async fn persist_report(
             reason: format!("failed to serialize retrieval eval report: {e}"),
         })
     })?;
-    tokio::fs::write(&path, json)
+
+    // Atomic write: stream to a temp file in the same directory, fsync, then
+    // rename into place. A crash or a concurrent [`latest_report`] read never
+    // observes a torn / partially written `.json` run file (the reader also
+    // skips non-`.json` entries, so the temp file is invisible to it).
+    let tmp = path.with_extension("tmp");
+    let mut file = tokio::fs::File::create(&tmp)
         .await
-        .map_err(|e| io_err("write run file", &e))?;
+        .map_err(|e| io_err("create temp run file", &e))?;
+    file.write_all(json.as_bytes())
+        .await
+        .map_err(|e| io_err("write temp run file", &e))?;
+    file.sync_all()
+        .await
+        .map_err(|e| io_err("sync temp run file", &e))?;
+    drop(file);
+    tokio::fs::rename(&tmp, &path)
+        .await
+        .map_err(|e| io_err("finalize run file", &e))?;
     Ok(path)
 }
 

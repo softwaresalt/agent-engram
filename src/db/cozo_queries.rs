@@ -2407,11 +2407,14 @@ impl CodeGraphQueries {
     }
 
     /// Return the number of `calls` edges whose callee (`to`) matches no indexed
-    /// function definition — a dangling / false edge (081-F provenance read).
+    /// function definition — a dangling / stale edge (081-F provenance read).
     ///
     /// `calls` edges are created only when the callee resolves to a function ID,
-    /// so a `to` with no `function_meta` row indicates a stale or ambiguous
-    /// resolution. This count is the numerator of the false-edge rate.
+    /// so a `to` with no `function_meta` row indicates a stale reference (e.g.
+    /// left over after a partial re-index). This count is a **conservative lower
+    /// bound** on the false-edge rate: it catches dangling targets but not edges
+    /// resolved to an existing-but-incorrect (ambiguous) definition. Detecting
+    /// the latter needs retained callee provenance and is tracked follow-up work.
     pub async fn count_dangling_calls_edges(&self) -> Result<u64, EngramError> {
         let script = r#"
 has_def[id] := *function_meta { id }
