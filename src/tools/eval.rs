@@ -39,20 +39,19 @@ struct SnapshotParts {
 /// # Errors
 /// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
 async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramError> {
-    let snapshot = state
-        .snapshot_workspace()
+    // Clone the workspace binding and config under a single lock window so a
+    // concurrent `set_workspace` / `set_workspace_config` cannot pair a snapshot
+    // with a config from a different update (which could run or persist an
+    // evaluation with mismatched settings).
+    let ctx = state
+        .snapshot_dispatch_context()
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    let config = state
-        .workspace_config()
-        .await
-        .unwrap_or_default()
-        .retrieval_eval;
     Ok(SnapshotParts {
-        workspace_path: PathBuf::from(snapshot.path),
-        data_dir: snapshot.data_dir,
-        branch: snapshot.branch,
-        config,
+        workspace_path: PathBuf::from(ctx.workspace.path),
+        data_dir: ctx.workspace.data_dir,
+        branch: ctx.workspace.branch,
+        config: ctx.config.retrieval_eval,
     })
 }
 
@@ -160,7 +159,10 @@ pub async fn run_retrieval_eval(
     // (`evaluate_semantic` normalizes `k = 0` to `1`), so the reported `k`
     // matches the metrics that were computed against it.
     report.k = parts.config.k.max(1);
-    report.sample_size = parts.config.sample_size;
+    // Report the actual number of known-item queries evaluated (functions with
+    // a non-empty derived query), not the configured cap, so `sample_size`
+    // matches its documented meaning and `semantic.queries`.
+    report.sample_size = semantic.queries;
     report.languages.clone_from(&parts.config.languages);
     report.semantic = semantic;
     report.graph = graph;

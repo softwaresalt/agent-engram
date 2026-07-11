@@ -6,7 +6,7 @@
 
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
-use crate::cli::runner::run_tool;
+use crate::cli::runner::{INDEXING_TIMEOUT_SECS, run_tool_timed};
 
 /// `engram eval` → `run_retrieval_eval`
 ///
@@ -14,6 +14,17 @@ use crate::cli::runner::run_tool;
 /// [`OutputFormatter`] and returns the tool exit code (`0` success, `1` tool
 /// error, `2` connection/invocation failure). `--quiet` suppresses stdout;
 /// callers rely on the exit code in that mode.
+///
+/// Uses the long-running command timeout ([`INDEXING_TIMEOUT_SECS`]) because a
+/// run can parse every indexed source file and score up to `sample_size`
+/// known-item queries; the global `--timeout` flag still overrides it.
 pub async fn run_eval_retrieval(flags: &GlobalFlags, formatter: &OutputFormatter) -> i32 {
-    run_tool("run_retrieval_eval", None, flags, formatter).await
+    run_tool_timed(
+        "run_retrieval_eval",
+        None,
+        flags,
+        formatter,
+        INDEXING_TIMEOUT_SECS,
+    )
+    .await
 }
