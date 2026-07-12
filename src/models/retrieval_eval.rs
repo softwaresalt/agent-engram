@@ -136,8 +136,11 @@ pub enum RetrievalMode {
     Unknown,
     /// Hybrid retrieval (keyword + embedding KNN) was exercised.
     Hybrid,
-    /// Only keyword retrieval ran — no candidate carried an embedding, so the
-    /// embedding path was not exercised (a fallback, not true hybrid).
+    /// Only keyword retrieval ran — the embedding KNN path was not exercised,
+    /// either because no candidate carried an embedding or because the query
+    /// itself failed to embed. Reported whenever the corpus is non-empty but the
+    /// hybrid precondition (`corpus_has_vectors && query_embeds`) does not hold
+    /// (a fallback, not true hybrid).
     KeywordOnly,
 }
 

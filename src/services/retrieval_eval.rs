@@ -27,7 +27,7 @@ use tokio::io::AsyncWriteExt;
 
 use sha2::{Digest, Sha256};
 
-use crate::errors::{EngramError, SystemError};
+use crate::errors::{ConfigError, EngramError, SystemError};
 use crate::models::CodeFile;
 use crate::models::Function;
 use crate::models::retrieval_eval::{
@@ -787,6 +787,51 @@ fn check_ceiling(name: &str, actual: f64, ceiling: f64, breaches: &mut Vec<Strin
     }
 }
 
+/// Validate that every configured threshold is a finite number before it gates
+/// a run.
+///
+/// TOML and JSON both accept non-finite floats (`nan`, `inf`). Every `<`/`>`
+/// comparison in [`check_thresholds`] is false for `NaN`, so a malformed floor
+/// or ceiling would silently report `thresholds_breached = false` and disable
+/// the runtime gate (084.006-T). Reject non-finite thresholds with a
+/// configuration error so a bad config value fails the run loudly rather than
+/// defeating the gate quietly.
+///
+/// # Errors
+/// Returns [`ConfigError::InvalidValue`] (as [`EngramError`]) when any
+/// threshold is not finite.
+pub fn validate_thresholds(thresholds: &RetrievalEvalThresholds) -> Result<(), EngramError> {
+    for (key, value) in [
+        (
+            "retrieval_eval.thresholds.min_precision_at_k",
+            thresholds.min_precision_at_k,
+        ),
+        (
+            "retrieval_eval.thresholds.min_recall_at_k",
+            thresholds.min_recall_at_k,
+        ),
+        ("retrieval_eval.thresholds.min_mrr", thresholds.min_mrr),
+        ("retrieval_eval.thresholds.min_ndcg", thresholds.min_ndcg),
+        (
+            "retrieval_eval.thresholds.min_resolution_recall",
+            thresholds.min_resolution_recall,
+        ),
+        (
+            "retrieval_eval.thresholds.max_false_edge_rate",
+            thresholds.max_false_edge_rate,
+        ),
+    ] {
+        if !value.is_finite() {
+            return Err(ConfigError::InvalidValue {
+                key: key.to_owned(),
+                reason: format!("threshold must be a finite number, got {value}"),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Compare a report's metrics against baseline thresholds.
 ///
 /// Semantic metrics and graph `resolution_recall` have `min_*` floors (higher
@@ -1015,5 +1060,37 @@ mod tests {
         // via a parse it never performs; an empty recorded hash disables the check).
         let unknown = vec![("unknownlang".to_owned(), src.to_owned(), String::new())];
         assert_eq!(accumulate_call_sites(&unknown), (0, false));
+    }
+
+    // ── 084.006-T (14B33F9F): threshold input validation ─────────────────────
+
+    #[test]
+    fn validate_thresholds_rejects_non_finite_values() {
+        // A finite (default) threshold set validates.
+        assert!(validate_thresholds(&RetrievalEvalThresholds::default()).is_ok());
+
+        // NaN/±inf floors and ceilings must be rejected: every `<`/`>` comparison
+        // against NaN is false, so an un-rejected non-finite bound would silently
+        // disable the gate (`thresholds_breached = false`) — the exact hazard
+        // 084.006-T guards against. Reject with a configuration error instead.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let floor = RetrievalEvalThresholds {
+                min_recall_at_k: bad,
+                ..RetrievalEvalThresholds::default()
+            };
+            assert!(
+                validate_thresholds(&floor).is_err(),
+                "non-finite floor {bad} must be rejected"
+            );
+
+            let ceiling = RetrievalEvalThresholds {
+                max_false_edge_rate: bad,
+                ..RetrievalEvalThresholds::default()
+            };
+            assert!(
+                validate_thresholds(&ceiling).is_err(),
+                "non-finite ceiling {bad} must be rejected"
+            );
+        }
     }
 }

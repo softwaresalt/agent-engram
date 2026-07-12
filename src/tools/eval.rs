@@ -155,6 +155,12 @@ pub async fn run_retrieval_eval(
     // workspace passes unchanged (back-compat). The `engram eval` CLI maps
     // `thresholds_breached` onto its exit code (084.007-T).
     if report.sample_size > 0 || report.graph.call_sites > 0 {
+        // Reject non-finite thresholds before enforcing them: TOML/JSON accept
+        // `nan`/`inf`, and every `<`/`>` comparison against NaN is false, so a
+        // malformed floor or ceiling would silently report `thresholds_breached
+        // = false` and disable the gate (084.006-T). A bad config value must fail
+        // the run loudly, not defeat the gate quietly.
+        retrieval_eval::validate_thresholds(&parts.config.thresholds)?;
         let check = retrieval_eval::check_thresholds(&report, &parts.config.thresholds);
         report.thresholds_breached = !check.passed;
         report.threshold_breaches = check.breaches;
