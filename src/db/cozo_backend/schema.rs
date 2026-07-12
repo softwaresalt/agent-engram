@@ -71,6 +71,10 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         CREATE_REFERENCES_EDGE,
         // 082-F: cross-file call resolution staging
         CREATE_STAGED_CALL,
+        // 082.003-T (remediation): durable schema metadata / rollback markers.
+        // Created BEFORE the migrate call below so the marker relation exists
+        // when `migrate_calls_edge_resolution` consults it.
+        CREATE_SCHEMA_META,
         // Phase 3: auxiliary tables
         CREATE_CONTENT_RECORD,
         CREATE_FILE_HASH,
@@ -157,6 +161,73 @@ fn run_script_retrying(cozo_db: &cozo::DbInstance, script: &str) -> Result<(), E
     unreachable!("loop exits via return")
 }
 
+/// Durable `schema_meta` key recording that the 082.003-T `calls_edge.resolution`
+/// column was intentionally rolled back by an operator.
+///
+/// While this marker is set, `migrate_calls_edge_resolution` refuses to re-add
+/// the column on subsequent bootstraps, so `migrate-down` survives daemon
+/// reopen. Forward re-enable (clearing the marker) is out of scope for the
+/// remediation.
+pub(crate) const CALLS_RESOLUTION_ROLLED_BACK_KEY: &str = "calls_resolution_rolled_back";
+
+/// Return `true` when the durable `schema_meta` flag `key` is present and set to
+/// `"true"`.
+///
+/// A missing `schema_meta` relation is reported as `false` (a legacy database
+/// predating the marker relation has, by definition, never been rolled back).
+/// This mirrors the graceful missing-relation handling in
+/// [`calls_edge_has_resolution`].
+///
+/// # Errors
+/// Returns [`EngramError`] when the query fails for a reason other than the
+/// relation not existing.
+fn schema_meta_flag_set(cozo_db: &cozo::DbInstance, key: &str) -> Result<bool, EngramError> {
+    let mut params = BTreeMap::new();
+    params.insert("key".to_string(), cozo::DataValue::from(key));
+    match cozo_db.run_script(
+        "?[value] := *schema_meta{key, value}, key = $key",
+        params,
+        cozo::ScriptMutability::Immutable,
+    ) {
+        Ok(rows) => Ok(rows.rows.iter().any(
+            |row| matches!(row.first(), Some(cozo::DataValue::Str(v)) if v.as_str() == "true"),
+        )),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("cannot find")
+            {
+                Ok(false)
+            } else {
+                Err(map_db_err(format!("schema_meta flag introspection: {e}")))
+            }
+        }
+    }
+}
+
+/// Set the durable `schema_meta` flag `key` to `"true"`.
+///
+/// Idempotent: the `schema_meta` relation is created if absent (safe when the
+/// caller bypassed full bootstrap), then the key/value pair is upserted.
+///
+/// # Errors
+/// Returns [`EngramError`] when the relation create or upsert fails.
+fn set_schema_meta_flag(cozo_db: &cozo::DbInstance, key: &str) -> Result<(), EngramError> {
+    run_script_retrying(cozo_db, CREATE_SCHEMA_META)?;
+    let mut params = BTreeMap::new();
+    params.insert("key".to_string(), cozo::DataValue::from(key));
+    let put = r#"
+?[key, value] <- [[$key, "true"]]
+
+:put schema_meta { key => value }
+"#;
+    cozo_db
+        .run_script(put, params, cozo::ScriptMutability::Mutable)
+        .map_err(|e| map_db_err(format!("schema_meta flag upsert: {e}")))?;
+    Ok(())
+}
+
 /// Return `true` when the `calls_edge` relation carries the `resolution`
 /// column (082.003-T provenance attribute).
 ///
@@ -207,6 +278,14 @@ pub(crate) fn migrate_calls_edge_resolution(cozo_db: &cozo::DbInstance) -> Resul
     if calls_edge_has_resolution(cozo_db)? {
         return Ok(());
     }
+    // 082.003-T (remediation): a durable rollback must survive daemon reopen.
+    // `run_scripts` invokes this shape-detected migration on every `connect_db`,
+    // so once an operator has intentionally rolled the column back (via
+    // `migrate-down` / `rollback_calls_edge_resolution`) we must NOT silently
+    // re-add it here. The durable `schema_meta` marker records that intent.
+    if schema_meta_flag_set(cozo_db, CALLS_RESOLUTION_ROLLED_BACK_KEY)? {
+        return Ok(());
+    }
     let migrate = r#"
 ?[from, to, created_at, resolution] :=
     *calls_edge{from, to, created_at},
@@ -234,6 +313,15 @@ pub(crate) fn migrate_calls_edge_resolution(cozo_db: &cozo::DbInstance) -> Resul
 pub(crate) fn rollback_calls_edge_resolution(
     cozo_db: &cozo::DbInstance,
 ) -> Result<(), EngramError> {
+    // 082.003-T (remediation): record the durable rollback intent up-front, so a
+    // crash between the drop and marker write cannot leave the schema in a state
+    // where the next bootstrap re-adds the column. Setting the marker first is
+    // safe: `migrate_calls_edge_resolution` only consults it when the column is
+    // already absent, and forward re-enable (clearing the marker) is out of
+    // scope. The `schema_meta` relation is provisioned by `run_scripts`, but we
+    // create it defensively here too so a direct rollback on a legacy in-memory
+    // database (bypassing bootstrap) still records the marker.
+    set_schema_meta_flag(cozo_db, CALLS_RESOLUTION_ROLLED_BACK_KEY)?;
     if !calls_edge_has_resolution(cozo_db)? {
         return Ok(());
     }
@@ -518,6 +606,21 @@ pub const CREATE_STAGED_CALL: &str = r#"
 }
 "#;
 
+/// CozoScript `:create` for `schema_meta` — durable key/value schema metadata
+/// (082.003-T remediation).
+///
+/// Key: `key`. Value: `value`. Records durable migration state such as the
+/// `calls_resolution_rolled_back` marker, so an intentional `migrate-down`
+/// survives daemon reopen (the shape-detected up-migration consults this
+/// relation before re-adding a rolled-back column).
+pub const CREATE_SCHEMA_META: &str = r#"
+:create schema_meta {
+    key: String
+    =>
+    value: String,
+}
+"#;
+
 // ── Phase 3: Auxiliary tables ──────────────────────────────────────────────
 
 /// CozoScript `:create` for `content_record` — ingested workspace content.
@@ -699,6 +802,7 @@ mod tests {
 
     use super::{
         calls_edge_has_resolution, migrate_calls_edge_resolution, rollback_calls_edge_resolution,
+        run_scripts,
     };
 
     /// Build an in-memory CozoDB with a *legacy* `calls_edge` relation
@@ -822,6 +926,41 @@ mod tests {
         assert!(
             !calls_edge_has_resolution(&db).expect("column probe must run"),
             "legacy relation must remain columnless after a no-op rollback"
+        );
+    }
+
+    // 082.003-T durability (remediation): a rollback must SURVIVE a subsequent
+    // schema bootstrap (daemon reopen). `run_scripts` calls the shape-detected
+    // `migrate_calls_edge_resolution` on EVERY `connect_db`; without a durable
+    // rollback marker that up-migration re-adds the `resolution` column on the
+    // very next reopen, silently undoing `migrate-down`. This pins the fix: once
+    // rolled back, the column must stay absent across a full bootstrap.
+    #[test]
+    fn rollback_survives_reopen_bootstrap() {
+        let db = cozo::DbInstance::new("mem", "", Default::default())
+            .expect("in-memory cozo instance must open");
+
+        // Initial bootstrap provisions calls_edge WITH the resolution column
+        // (CREATE_CALLS_EDGE) and runs the up-migration (a no-op here).
+        run_scripts(&db).expect("initial bootstrap must succeed");
+        assert!(
+            calls_edge_has_resolution(&db).expect("column probe must run"),
+            "initial bootstrap must provision the resolution column"
+        );
+
+        // Operator rollback: drop the column and record the durable marker.
+        rollback_calls_edge_resolution(&db).expect("rollback must succeed");
+        assert!(
+            !calls_edge_has_resolution(&db).expect("column probe must run"),
+            "rollback must drop the resolution column"
+        );
+
+        // Reopen: a second full bootstrap must NOT re-add the column now that the
+        // durable rollback marker is set.
+        run_scripts(&db).expect("reopen bootstrap must succeed");
+        assert!(
+            !calls_edge_has_resolution(&db).expect("column probe must run"),
+            "rollback must survive a reopen bootstrap: the resolution column must stay absent"
         );
     }
 }
