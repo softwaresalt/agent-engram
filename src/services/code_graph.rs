@@ -464,13 +464,23 @@ async fn index_workspace_impl(
             for edge in &parse_result.edges {
                 match edge {
                     ExtractedEdge::Calls { caller, callee } => {
-                        // Resolve names to IDs within this file's symbols.
-                        if let (Some(from_id), Some(to_id)) = (
+                        // Resolve names to IDs within this file's symbols. A
+                        // callee resolved locally becomes a direct edge; a
+                        // caller-resolved but callee-unresolved (cross-file)
+                        // call is staged for the deferred post-pass (082.002-T)
+                        // instead of being silently dropped.
+                        match (
                             find_function_id(&function_ids, caller),
                             find_function_id(&function_ids, callee),
                         ) {
-                            queries.create_calls_edge(&from_id, &to_id).await?;
-                            result.edges_created += 1;
+                            (Some(from_id), Some(to_id)) => {
+                                queries.create_calls_edge(&from_id, &to_id).await?;
+                                result.edges_created += 1;
+                            }
+                            (Some(from_id), None) => {
+                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                            }
+                            _ => {}
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -1068,11 +1078,20 @@ pub async fn sync_workspace_with_progress(
             for edge in &parse_result.edges {
                 match edge {
                     ExtractedEdge::Calls { caller, callee } => {
-                        if let (Some(from_id), Some(to_id)) = (
+                        // Mirror the index-path behavior: resolve locally for a
+                        // direct edge, else stage the cross-file call for the
+                        // deferred post-pass (082.002-T).
+                        match (
                             find_function_id(&new_function_ids, caller),
                             find_function_id(&new_function_ids, callee),
                         ) {
-                            queries.create_calls_edge(&from_id, &to_id).await?;
+                            (Some(from_id), Some(to_id)) => {
+                                queries.create_calls_edge(&from_id, &to_id).await?;
+                            }
+                            (Some(from_id), None) => {
+                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                            }
+                            _ => {}
                         }
                     }
                     ExtractedEdge::InheritsFrom {

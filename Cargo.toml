@@ -615,13 +615,18 @@ path = "tests/unit/backlog_graph_models_test.rs"
 [[test]]
 name = "contract_backlog_schema"
 path = "tests/contract/backlog_schema_test.rs"
+required-features = ["cozo-backend"]
 
 # ── 082-F: rec1-calledges cross-file & method-call resolution (078-S) ─────────
 
 [[test]]
 name = "unit_rust_method_call_extraction"
 path = "tests/unit/rust_method_call_extraction_test.rs"
-required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_unresolved_calls_capture"
+path = "tests/integration/unresolved_calls_capture_test.rs"
+required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
 name = "unit_backlog_indexer"

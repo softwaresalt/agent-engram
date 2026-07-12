@@ -69,6 +69,8 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         CREATE_INHERITS_FROM_EDGE,
         CREATE_CONCERNS_EDGE,
         CREATE_REFERENCES_EDGE,
+        // 082-F: cross-file call resolution staging
+        CREATE_STAGED_CALL,
         // Phase 3: auxiliary tables
         CREATE_CONTENT_RECORD,
         CREATE_FILE_HASH,
@@ -392,6 +394,23 @@ pub const CREATE_REFERENCES_EDGE: &str = r#"
     from: String,
     to: String,
     qualified_name: String
+    =>
+    created_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `staged_call` — a call site whose callee could not
+/// be resolved within the caller's own file (082.002-T).
+///
+/// Key: `(caller_id, callee_name, source_file)` — every staged row carries its
+/// source file so the staging lifecycle (082.009-T) can clear a file's rows
+/// before re-indexing. The deferred post-pass (082.008-T) reads these rows and
+/// resolves each callee against the workspace-global symbol index.
+pub const CREATE_STAGED_CALL: &str = r#"
+:create staged_call {
+    caller_id: String,
+    callee_name: String,
+    source_file: String
     =>
     created_at: String,
 }

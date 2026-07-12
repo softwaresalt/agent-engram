@@ -161,6 +161,18 @@ pub struct ReresolveResult {
     pub lookups: usize,
 }
 
+/// A call site whose callee could not be resolved within the caller's own
+/// file, staged for the deferred cross-file post-pass (082.002-T).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCall {
+    /// Fully-qualified ID of the calling function (e.g. `function:...`).
+    pub caller_id: String,
+    /// Bare name of the called function as it appears at the call site.
+    pub callee_name: String,
+    /// Workspace-relative path of the file the call site lives in.
+    pub source_file: String,
+}
+
 /// Information about a `concerns` edge targeting a symbol.
 #[derive(Debug, Clone)]
 pub struct ConcernsEdgeInfo {
@@ -1221,6 +1233,54 @@ impl CodeGraphQueries {
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
         Ok(())
+    }
+
+    /// Record a call site whose callee could not be resolved within the
+    /// caller's own file, for the deferred cross-file post-pass (082.002-T).
+    ///
+    /// Keyed by `(caller_id, callee_name, source_file)`, so re-staging the same
+    /// unresolved call is idempotent.
+    pub async fn put_staged_call(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+        source_file: &str,
+    ) -> Result<(), EngramError> {
+        let ts = now_utc_str();
+        let script = r#"
+?[caller_id, callee_name, source_file, created_at] <-
+    [[$caller_id, $callee_name, $source_file, $created_at]]
+:put staged_call { caller_id, callee_name, source_file => created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("caller_id".to_owned(), DataValue::from(caller_id));
+        p.insert("callee_name".to_owned(), DataValue::from(callee_name));
+        p.insert("source_file".to_owned(), DataValue::from(source_file));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List every staged (unresolved) call site currently recorded.
+    pub async fn list_staged_calls(&self) -> Result<Vec<StagedCall>, EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file] :=
+    *staged_call { caller_id, callee_name, source_file }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| StagedCall {
+                caller_id: extract_str(row, 0),
+                callee_name: extract_str(row, 1),
+                source_file: extract_str(row, 2),
+            })
+            .collect())
     }
 
     /// Upsert a file-to-file import edge.
