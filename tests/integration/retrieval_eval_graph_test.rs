@@ -388,3 +388,48 @@ async fn scan_language_gate_excludes_nonconfigured_files() {
         "non-configured-language files are gated out before any read"
     );
 }
+
+// ── 084.011-T (CA401F5F): bounded-batch parsing preserves the denominator ─────
+
+#[tokio::test]
+async fn scan_counts_are_invariant_across_batch_boundaries() {
+    // The denominator scan parses files in bounded batches so peak memory stays
+    // bounded by one batch rather than the whole corpus. This exercises a corpus
+    // far larger than the internal batch size (many full batches plus a partial
+    // final batch) and asserts the total is exactly the per-file sum — a dropped
+    // final partial batch or a double-counted batch boundary would fail here.
+    const FILE_COUNT: usize = 210;
+    const PER_FILE_RELATIONS: usize = 2; // (caller,helper_a) and (caller,helper_b)
+    let src =
+        "fn caller() {\n    helper_a();\n    helper_b();\n}\nfn helper_a() {}\nfn helper_b() {}\n";
+    let hash = source_content_hash(src);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(ws.join("src")).expect("mkdir");
+
+    let mut files = Vec::with_capacity(FILE_COUNT);
+    for i in 0..FILE_COUNT {
+        let path = format!("src/f{i}.rs");
+        std::fs::write(ws.join(&path), src).expect("write source");
+        files.push(code_file(&path, "rust", &hash));
+    }
+
+    let inv = scan_call_site_inventory(ws, &files, &["rust".to_owned()])
+        .await
+        .expect("scan");
+
+    assert_eq!(
+        inv.call_sites,
+        FILE_COUNT * PER_FILE_RELATIONS,
+        "batched parsing must sum every file's call sites, including the final partial batch"
+    );
+    assert_eq!(
+        inv.unreadable_files, 0,
+        "every fixture file is readable across all batches"
+    );
+    assert!(
+        !inv.index_stale,
+        "every recorded hash matches its on-disk content across all batches"
+    );
+}

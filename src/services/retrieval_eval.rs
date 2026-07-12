@@ -378,6 +378,39 @@ pub struct CallSiteInventory {
     pub unreadable_files: usize,
 }
 
+/// Number of indexed source files read + parsed per batch during the denominator
+/// scan (084.011-T / CA401F5F).
+///
+/// The scan holds at most this many file sources in memory at once, then parses
+/// the batch off-runtime and drops it before reading the next — so peak memory is
+/// bounded by one batch rather than by the entire indexed corpus. The batch size
+/// does not affect the counts (parsing is per-file and the totals sum).
+const CALL_SITE_SCAN_BATCH_FILES: usize = 64;
+
+/// Sum the distinct call-site relations across one batch of `(language, source,
+/// recorded_hash)` tuples and report whether any source has drifted from its
+/// recorded hash (084.011-T).
+///
+/// Pure and synchronous so it can run off the async runtime one batch at a time.
+/// An unparseable language contributes nothing; the stale flag OR-accumulates so
+/// a single drifted file in any batch surfaces the working-tree drift signal.
+fn accumulate_call_sites(batch: &[(String, String, String)]) -> (usize, bool) {
+    let mut total: usize = 0;
+    let mut stale = false;
+    for (lang, source, recorded_hash) in batch {
+        // Working-tree drift: the freshly-read content no longer matches the hash
+        // recorded at index time, so this denominator and the indexed numerator
+        // describe different revisions.
+        if is_index_stale(source, recorded_hash) {
+            stale = true;
+        }
+        if let Ok(language) = Language::try_from(lang.as_str()) {
+            total += count_call_sites(source, language);
+        }
+    }
+    (total, stale)
+}
+
 /// Scan the indexed source inventory for the graph-metric denominator and its
 /// index-consistency signals (084.003-T).
 ///
@@ -395,9 +428,15 @@ pub struct CallSiteInventory {
 /// guard) and is **not** counted as unreadable. A read/resolve failure of an
 /// indexed file **is** accounted.
 ///
+/// Files are read and parsed in bounded batches of
+/// [`CALL_SITE_SCAN_BATCH_FILES`] so peak memory stays bounded by one batch
+/// rather than the entire indexed corpus (084.011-T). Batching does not change
+/// the counts: parsing is per-file and both the call-site total and the
+/// `index_stale` OR aggregate across batches.
+///
 /// # Errors
 /// Returns a system error if the workspace root cannot be canonicalized, or if
-/// the off-runtime parse task panics — a failed read must not be silently
+/// an off-runtime parse task panics — a failed read must not be silently
 /// reported as an empty inventory.
 pub async fn scan_call_site_inventory(
     workspace_path: &Path,
@@ -412,12 +451,19 @@ pub async fn scan_call_site_inventory(
             reason: format!("cannot resolve workspace root for eval containment check: {e}"),
         })
     })?;
-    // (language, source, recorded_hash) for each readable, in-scope indexed file.
-    let mut sources: Vec<(String, String, String)> = Vec::new();
+
+    // Running totals accumulated one bounded batch at a time so the whole corpus
+    // of source text is never resident simultaneously (084.011-T).
+    let mut call_sites: usize = 0;
+    let mut index_stale = false;
     // Indexed files that could not be read this run. Accounted (084.003-T) so a
     // denominator computed over fewer files than were indexed — and therefore an
     // unreliable recall — is visible rather than silently masked.
     let mut unreadable_files: usize = 0;
+    // Current batch: (language, source, recorded_hash) for readable, in-scope
+    // indexed files. Bounded to CALL_SITE_SCAN_BATCH_FILES entries.
+    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(CALL_SITE_SCAN_BATCH_FILES);
+
     for file in files {
         let gated = languages.is_empty()
             || languages
@@ -442,41 +488,48 @@ pub async fn scan_call_site_inventory(
             continue;
         }
         match tokio::fs::read_to_string(&canon).await {
-            Ok(source) => sources.push((file.language.clone(), source, file.content_hash.clone())),
+            Ok(source) => batch.push((file.language.clone(), source, file.content_hash.clone())),
             Err(_) => unreadable_files += 1,
+        }
+
+        if batch.len() >= CALL_SITE_SCAN_BATCH_FILES {
+            let (count, stale) = parse_call_site_batch(std::mem::take(&mut batch)).await?;
+            call_sites += count;
+            index_stale |= stale;
+            batch.reserve(CALL_SITE_SCAN_BATCH_FILES);
         }
     }
 
-    // Parsing + hash verification are CPU-bound; run the whole batch off the
-    // async runtime.
-    let (call_sites, index_stale) = tokio::task::spawn_blocking(move || {
-        let mut total: usize = 0;
-        let mut stale = false;
-        for (lang, source, recorded_hash) in &sources {
-            // Working-tree drift: the freshly-read content no longer matches the
-            // hash recorded at index time, so this denominator and the indexed
-            // numerator describe different revisions.
-            if is_index_stale(source, recorded_hash) {
-                stale = true;
-            }
-            if let Ok(language) = Language::try_from(lang.as_str()) {
-                total += count_call_sites(source, language);
-            }
-        }
-        (total, stale)
-    })
-    .await
-    .map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("retrieval eval call-site parse task failed: {e}"),
-        })
-    })?;
+    // Flush the final partial batch (may be empty for an all-gated-out corpus).
+    if !batch.is_empty() {
+        let (count, stale) = parse_call_site_batch(batch).await?;
+        call_sites += count;
+        index_stale |= stale;
+    }
 
     Ok(CallSiteInventory {
         call_sites,
         index_stale,
         unreadable_files,
     })
+}
+
+/// Parse one batch of source tuples off the async runtime (parsing + hash
+/// verification are CPU-bound), returning the batch's call-site total and stale
+/// flag. Takes ownership of the batch so it is dropped once parsed (084.011-T).
+///
+/// # Errors
+/// Returns a system error if the off-runtime parse task panics.
+async fn parse_call_site_batch(
+    batch: Vec<(String, String, String)>,
+) -> Result<(usize, bool), EngramError> {
+    tokio::task::spawn_blocking(move || accumulate_call_sites(&batch))
+        .await
+        .map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("retrieval eval call-site parse task failed: {e}"),
+            })
+        })
 }
 
 /// Compute graph resolution metrics from raw counts.
@@ -876,5 +929,43 @@ mod tests {
         assert!((m.mrr - 1.0).abs() < 1e-9);
         assert!((m.ndcg - 1.0).abs() < 1e-9);
         assert_eq!(m.queries, 2);
+    }
+
+    // ── 084.011-T (CA401F5F): bounded-batch call-site accumulation ───────────
+
+    #[test]
+    fn accumulate_call_sites_sums_batch_and_ors_stale() {
+        let src = "fn caller() { helper(); }\nfn helper() {}\n";
+        let hash = source_content_hash(src);
+
+        // Two clean Rust sources → one (caller,helper) relation each, not stale.
+        let clean = vec![
+            ("rust".to_owned(), src.to_owned(), hash.clone()),
+            ("rust".to_owned(), src.to_owned(), hash.clone()),
+        ];
+        assert_eq!(
+            accumulate_call_sites(&clean),
+            (2, false),
+            "a batch's counts sum and a matching hash is not stale"
+        );
+
+        // A source whose recorded hash diverges from its content flags stale, and
+        // the stale flag OR-accumulates across the batch.
+        let drifted = vec![("rust".to_owned(), src.to_owned(), "stale-hash".to_owned())];
+        let (count, stale) = accumulate_call_sites(&drifted);
+        assert_eq!(count, 1, "the single relation still counts");
+        assert!(
+            stale,
+            "content diverging from the recorded hash flags stale"
+        );
+
+        // An empty batch is the additive identity (zero, not stale) — the path a
+        // final partial-batch flush of size zero must take without double count.
+        assert_eq!(accumulate_call_sites(&[]), (0, false));
+
+        // An unparseable language contributes no call sites (and cannot be stale
+        // via a parse it never performs; an empty recorded hash disables the check).
+        let unknown = vec![("unknownlang".to_owned(), src.to_owned(), String::new())];
+        assert_eq!(accumulate_call_sites(&unknown), (0, false));
     }
 }
