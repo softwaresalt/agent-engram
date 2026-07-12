@@ -191,7 +191,9 @@ is routed to Ship. They are marked `blocked` in the queue pending that re-harves
   `src/services/parsing/typescript.rs` (currently emits no `Calls`).
 - **082.007-T — Go:** build the call-extraction stack for
   `src/services/parsing/go_lang.rs` (currently emits no `Calls`).
-- **Depends on:** 082.003-T (all three) **plus a Stage re-harvest** re-scoping each task.
+- **Depends on:** 082.008-T (post-pass resolution — matches each task artifact frontmatter; the
+  earlier `082.003-T` reference predated the storage/post-pass split) **plus a Stage re-harvest**
+  re-scoping each task.
 
 **Dependency chain (first shipment 078-S):** 082.001-T → 082.002-T → 082.003-T → 082.004-T;
 082.004-T additionally depends on 081.001-T and 081.005-T. The peer-language tasks (082.005-T
