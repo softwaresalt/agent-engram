@@ -21,6 +21,17 @@ unambiguous-name guard) accepted. Operator answers to the four open questions:
 sync skips it); (4) scope = **Rust-first as slice 1**, fan out to peer tree-sitter extractors
 as follow-on tasks. Acceptance is gated by the retrieval-eval subsystem (081-F slices S1+S3):
 resolution recall must rise and false-edge rate stay within the operator-chosen threshold.
+
+> **TARGET-CORRECTNESS GATE (acceptance clarification).** Recall/false-edge thresholds are
+> necessary but **not sufficient**. Every `calls_resolved_singleton` edge MUST match the
+> fixture manifest's expected target, checked by exact target identity — not merely that the
+> target exists. `false_edge_rate` (via `count_dangling_calls_edges`) only detects **dangling**
+> targets (a `to` with no `function_meta` row), so it is a **lower-bound** signal: it cannot
+> catch a call resolved to a wrong-but-existing function (mis-resolution to a real symbol).
+> Acceptance therefore requires manifest target-correctness assertions in addition to the
+> aggregate rates. Mis-resolution detection (distinguishing correct from wrong-but-existing
+> targets) is captured as follow-up stash `49561F22`.
+
 Harvested into feature **082-F**; plan at
 `docs/exec-plans/2026-07-10-callgraph-cross-file-resolution-plan.md`. This is the highest-leverage of the
 three graph/search quality recommendations from the 2026-07-08 assessment, but
