@@ -49,7 +49,11 @@ Both of these are **individually insufficient** merge signals:
 Before merging, confirm **all four**, and re-run the whole check after any push:
 
 1. **A Copilot review exists whose `commit_id` == current HEAD sha.**
-   `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[]|select(.user.login=="copilot-pull-request-reviewer")|{state,commit_id}'`
+   `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'`
+   Use a **prefix** match: the REST `/reviews` endpoint returns the login
+   `copilot-pull-request-reviewer[bot]`, while the GraphQL/`gh pr view` surface
+   normalizes it to `copilot-pull-request-reviewer`. An exact `==` match against
+   either literal silently drops the review and the gate can never be satisfied.
    Match `commit_id` against `headRefOid`. This is the load-bearing check the old
    process lacked.
 2. **Copilot is NOT in `requested_reviewers`** (it removes itself when the review

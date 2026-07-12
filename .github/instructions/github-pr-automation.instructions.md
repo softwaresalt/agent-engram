@@ -82,9 +82,14 @@ Copilot review exists whose `commit_id` equals the current HEAD sha:
 ```bash
 # HEAD sha the merge would land
 gh api repos/<owner>/<repo>/pulls/<n> --jq '.head.sha'
-# Copilot review commit_ids (must include the HEAD sha above)
+# Copilot review commit_ids (must include the HEAD sha above). Use a PREFIX
+# match: the REST `/reviews` endpoint returns the login
+# `copilot-pull-request-reviewer[bot]`, while the GraphQL/`gh pr view`
+# surface normalizes it to `copilot-pull-request-reviewer` (no `[bot]`
+# suffix). An exact `==` match against either form silently drops the review
+# and the load-bearing gate can never be satisfied.
 gh api repos/<owner>/<repo>/pulls/<n>/reviews \
-  --jq '.[]|select(.user.login=="copilot-pull-request-reviewer")|{state,commit_id}'
+  --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'
 ```
 
 This binds the merge to a review of the exact commit being merged. Re-check the
@@ -95,9 +100,14 @@ fix, because any push resets the review clock. Rationale and post-mortem:
 `docs/compound/copilot-review-merge-gate-wait-for-head-review-2026-07-11.md`
 (PRs #239/#240 were merged in this exact gap).
 
-**Timeout**: If no Copilot review appears after 15 minutes (5 poll
-attempts), proceed without it. Log a warning and note in the PR
-description that automated review was unavailable.
+**Timeout**: If no Copilot review for the current HEAD appears after 15
+minutes (5 poll attempts), do **NOT** merge. The current-HEAD invariant above
+is non-negotiable; this timeout must not become a bypass that recreates the
+exact post-push race it exists to prevent. Halt merge automation, log a
+warning, and escalate to the operator (note in the PR that automated review
+did not land for the current HEAD). A human may then decide whether to merge
+manually — the timeout suspends automation, it does not authorize an
+unreviewed-HEAD merge.
 
 ### 1.3 Categorize Review Comments
 
