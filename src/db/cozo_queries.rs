@@ -2872,6 +2872,56 @@ has_def[id] := *function_meta { id }
         Ok(extract_count(&r))
     }
 
+    /// Like [`Self::count_dangling_calls_edges`], but gated to the same
+    /// **caller languages** as [`Self::count_calls_edges_in_languages`]
+    /// (084.008-T / Thread-8 correction).
+    ///
+    /// `false_edge_rate = dangling ÷ resolved`. If `resolved` is scoped to the
+    /// configured caller languages while the dangling numerator counts the whole
+    /// graph, a single dangling edge in an *unconfigured* language (e.g. a stale
+    /// TypeScript reference in a Rust-only run) inflates — or clamps to `1.0` —
+    /// the rate for the configured language and can spuriously breach
+    /// `max_false_edge_rate`. Counting dangling edges through the identical
+    /// `calls_edge → function_meta(caller) → file_node.language` join keeps
+    /// numerator and denominator commensurable. An empty `languages` slice
+    /// disables the gate and counts every dangling edge — parity with the
+    /// resolved counter.
+    pub async fn count_dangling_calls_edges_in_languages(
+        &self,
+        languages: &[String],
+    ) -> Result<u64, EngramError> {
+        if languages.is_empty() {
+            return self.count_dangling_calls_edges().await;
+        }
+        // One row per dangling edge, carrying the caller's file language. The
+        // caller (`from`) always has a `function_meta` row; the dangling
+        // condition is on the callee (`to`), so language matching is on the
+        // caller — identical scoping to the resolved counter.
+        let script = r#"
+has_def[id] := *function_meta { id }
+?[from, to, language] :=
+    *calls_edge { from, to },
+    not has_def[to],
+    *function_meta { id: from, file_path },
+    *file_node { path: file_path, language }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let matched = r
+            .rows
+            .iter()
+            .filter(|row| {
+                let language = extract_str(row, 2);
+                languages
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(&language))
+            })
+            .count();
+        Ok(u64::try_from(matched).unwrap_or(0))
+    }
+
     // ── Bulk concerns ─────────────────────────────────────────────
 
     /// List all concerns edges for multiple tasks, grouped by task ID.

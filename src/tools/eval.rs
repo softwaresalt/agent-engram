@@ -118,7 +118,13 @@ pub async fn run_retrieval_eval(
     let resolved = queries
         .count_calls_edges_in_languages(&parts.config.languages)
         .await?;
-    let false_edges = queries.count_dangling_calls_edges().await?;
+    // Count dangling (false) edges under the SAME caller-language gate as the
+    // resolved numerator (084.008-T / Thread-8) so `false_edge_rate` is a ratio
+    // of identically-scoped units. A dangling edge in an unconfigured language
+    // must not inflate the configured language's false-edge rate.
+    let false_edges = queries
+        .count_dangling_calls_edges_in_languages(&parts.config.languages)
+        .await?;
     let mut graph =
         retrieval_eval::compute_graph_metrics(inventory.call_sites, resolved, false_edges);
     // Surface the honest index-consistency signals alongside the ratio so a

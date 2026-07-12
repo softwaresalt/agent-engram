@@ -267,6 +267,87 @@ async fn numerator_empty_languages_counts_all_edges() {
     assert_eq!(all, 2, "empty languages disables the numerator gate");
 }
 
+// ── 084.008-T (Thread-8): dangling (false-edge) numerator shares the gate ─────
+
+/// Build a graph with two DANGLING edges (callee id matches no definition): one
+/// whose caller lives in a Rust file, one whose caller lives in a TypeScript
+/// file. Each caller has a real `function_meta`; only the callee is missing.
+async fn graph_with_multilang_dangling_edges() -> (tempfile::TempDir, CodeGraphQueries) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db = connect_db(tmp.path(), "dangling-lang-gate")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    queries
+        .upsert_code_file(&make_file("src/a.rs", "file:a", "rust"))
+        .await
+        .expect("file a");
+    queries
+        .upsert_code_file(&make_file("src/b.ts", "file:b", "typescript"))
+        .await
+        .expect("file b");
+    queries
+        .upsert_function(&make_fn("fn:caller_rs", "caller_rs", "src/a.rs"))
+        .await
+        .expect("caller_rs");
+    queries
+        .upsert_function(&make_fn("fn:caller_ts", "caller_ts", "src/b.ts"))
+        .await
+        .expect("caller_ts");
+
+    // Dangling: the callee ids have NO `function_meta` row (stale / unresolved),
+    // but each caller is a real in-language function.
+    queries
+        .create_calls_edge("fn:caller_rs", "fn:ghost_rs")
+        .await
+        .expect("dangling rs");
+    queries
+        .create_calls_edge("fn:caller_ts", "fn:ghost_ts")
+        .await
+        .expect("dangling ts");
+
+    (tmp, queries)
+}
+
+#[tokio::test]
+async fn dangling_count_gated_to_configured_language_excludes_others() {
+    // Both dangling edges count ungated; gated to ["rust"], only the dangling
+    // edge whose caller resides in a Rust file counts — so `false_edge_rate`'s
+    // numerator is scoped identically to its resolved denominator and a stale
+    // TypeScript edge cannot inflate (or clamp to 1.0) a Rust-only run's
+    // false-edge rate (084.008-T / Thread-8).
+    let (_tmp, queries) = graph_with_multilang_dangling_edges().await;
+    assert_eq!(
+        queries
+            .count_dangling_calls_edges()
+            .await
+            .expect("ungated dangling"),
+        2,
+        "sanity: two dangling edges exist in total"
+    );
+    let rust_only = queries
+        .count_dangling_calls_edges_in_languages(&["rust".to_owned()])
+        .await
+        .expect("gated dangling");
+    assert_eq!(
+        rust_only, 1,
+        "only the Rust-file caller's dangling edge is in scope; the TypeScript one is excluded"
+    );
+    // Case-insensitive, matching the resolved-numerator gate.
+    let rust_ci = queries
+        .count_dangling_calls_edges_in_languages(&["Rust".to_owned()])
+        .await
+        .expect("gated dangling ci");
+    assert_eq!(rust_ci, 1, "language match is case-insensitive");
+    // Empty languages disables the gate (opt-in parity with the resolved count).
+    let all = queries
+        .count_dangling_calls_edges_in_languages(&[])
+        .await
+        .expect("empty-gate dangling");
+    assert_eq!(all, 2, "empty languages disables the dangling gate");
+}
+
 // ── 084.003-T (54848E3D): index/generation consistency gate ──────────────────
 
 const RS_SOURCE: &str = "fn helper() {}\nfn caller() {\n    helper();\n}\n";
