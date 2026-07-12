@@ -232,9 +232,19 @@ pub async fn run_tool_timed(
     formatter: &OutputFormatter,
     command_default_secs: u64,
 ) -> i32 {
-    run_tool_timed_capture(method, params, flags, formatter, command_default_secs)
-        .await
-        .0
+    // capture = false: the successful result is printed by move, never cloned,
+    // so non-capturing callers (the common path: `unified_search`, `map_code`,
+    // …) pay nothing for the capture feature (084.007-T / Thread-4).
+    run_tool_dispatch(
+        method,
+        params,
+        flags,
+        formatter,
+        command_default_secs,
+        false,
+    )
+    .await
+    .0
 }
 
 /// Like [`run_tool_timed`], but also returns the tool's successful result JSON
@@ -248,6 +258,25 @@ pub async fn run_tool_timed_capture(
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
     command_default_secs: u64,
+) -> (i32, Option<Value>) {
+    run_tool_dispatch(method, params, flags, formatter, command_default_secs, true).await
+}
+
+/// Shared dispatch core for [`run_tool_timed`] and [`run_tool_timed_capture`].
+///
+/// When `capture` is `false` the successful result JSON is handed to the
+/// formatter by move (no clone) and `None` is returned; only when `capture` is
+/// `true` — the CLI exit-code path that must post-process the report — is the
+/// value cloned so it can be both printed and returned. This keeps large
+/// `unified_search` / `map_code` responses off the clone path unless a caller
+/// actually requests capture (084.007-T / Thread-4).
+async fn run_tool_dispatch(
+    method: &str,
+    params: Option<Value>,
+    flags: &GlobalFlags,
+    formatter: &OutputFormatter,
+    command_default_secs: u64,
+    capture: bool,
 ) -> (i32, Option<Value>) {
     let timeout: Duration = flags.ipc_timeout(command_default_secs);
 
@@ -327,8 +356,17 @@ pub async fn run_tool_timed_capture(
     {
         Ok(response) => {
             if let Some(result) = response.result {
-                let code = formatter.success(Some(id), result.clone());
-                (code, Some(result))
+                if capture {
+                    // Clone once so the value can be both printed and returned
+                    // to the post-processing caller (084.007-T).
+                    let code = formatter.success(Some(id), result.clone());
+                    (code, Some(result))
+                } else {
+                    // Move the value into the formatter — no clone on the
+                    // common non-capturing path (Thread-4).
+                    let code = formatter.success(Some(id), result);
+                    (code, None)
+                }
             } else if let Some(err) = response.error {
                 let message = friendly_error_message(&err);
                 (
