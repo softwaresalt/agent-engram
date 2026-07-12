@@ -220,6 +220,34 @@ pub(crate) fn migrate_calls_edge_resolution(cozo_db: &cozo::DbInstance) -> Resul
     Ok(())
 }
 
+/// Down-migration: drop the `resolution` attribute from `calls_edge`,
+/// reverting it to the legacy `{from, to => created_at}` schema (082.010-T).
+///
+/// This is the structural half of the rollback; callers must retract
+/// `calls_resolved_singleton` edges *before* invoking it (while the column
+/// still exists). Idempotent: no-op when the `resolution` column is already
+/// absent, so a rollback can be safely rerun.
+///
+/// # Errors
+/// Returns [`EngramError`] when column introspection or the `:replace` rewrite
+/// fails.
+pub(crate) fn rollback_calls_edge_resolution(
+    cozo_db: &cozo::DbInstance,
+) -> Result<(), EngramError> {
+    if !calls_edge_has_resolution(cozo_db)? {
+        return Ok(());
+    }
+    let rollback = r#"
+?[from, to, created_at] := *calls_edge{from, to, created_at}
+
+:replace calls_edge { from, to => created_at }
+"#;
+    cozo_db
+        .run_script(rollback, BTreeMap::new(), cozo::ScriptMutability::Mutable)
+        .map_err(|e| map_db_err(format!("calls_edge resolution rollback: {e}")))?;
+    Ok(())
+}
+
 // ── File node ──────────────────────────────────────────────────────────────
 
 /// CozoScript `:create` for `file_node` — source file metadata.
@@ -669,7 +697,9 @@ pub const CREATE_POWERBI_EDGE: &str = r#"
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{calls_edge_has_resolution, migrate_calls_edge_resolution};
+    use super::{
+        calls_edge_has_resolution, migrate_calls_edge_resolution, rollback_calls_edge_resolution,
+    };
 
     /// Build an in-memory CozoDB with a *legacy* `calls_edge` relation
     /// (`{from, to => created_at}`, no `resolution` column) holding one row.
@@ -743,6 +773,55 @@ mod tests {
             resolution_of_ab(&db),
             "direct",
             "re-running the migration must not alter existing provenance"
+        );
+    }
+
+    // Scenario 2 (082.010-T): after singletons are retracted, dropping the
+    // `resolution` column reverts `calls_edge` to `{from, to => created_at}` and
+    // the legacy 2-attribute writer round-trips against the reverted schema.
+    #[test]
+    fn rollback_drops_resolution_and_legacy_writer_round_trips() {
+        let db = legacy_db_with_one_edge();
+        migrate_calls_edge_resolution(&db).expect("migration must succeed");
+        assert!(
+            calls_edge_has_resolution(&db).expect("column probe must run"),
+            "relation must carry the resolution column before rollback"
+        );
+
+        rollback_calls_edge_resolution(&db).expect("rollback must succeed");
+        assert!(
+            !calls_edge_has_resolution(&db).expect("column probe must run"),
+            "rollback must drop the resolution column"
+        );
+
+        // The reverted schema accepts the legacy `{from, to => created_at}` writer.
+        db.run_script(
+            r#"?[from, to, created_at] <- [["fn:c", "fn:d", "2026-02-02T00:00:00Z"]]
+:put calls_edge { from, to => created_at }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("legacy writer must round-trip on the reverted schema");
+        let rows = db
+            .run_script(
+                r#"?[from, to, created_at] := *calls_edge{from, to, created_at}, from = "fn:c""#,
+                BTreeMap::new(),
+                cozo::ScriptMutability::Immutable,
+            )
+            .expect("legacy read must run")
+            .rows;
+        assert_eq!(rows.len(), 1, "legacy row must be readable after rollback");
+    }
+
+    // Scenario 2 (idempotency): the structural drop is a no-op when the
+    // `resolution` column is already absent.
+    #[test]
+    fn rollback_calls_edge_resolution_is_idempotent() {
+        let db = legacy_db_with_one_edge();
+        rollback_calls_edge_resolution(&db).expect("rollback on legacy schema must be a no-op");
+        assert!(
+            !calls_edge_has_resolution(&db).expect("column probe must run"),
+            "legacy relation must remain columnless after a no-op rollback"
         );
     }
 }

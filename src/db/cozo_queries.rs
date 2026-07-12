@@ -1309,6 +1309,50 @@ impl CodeGraphQueries {
             .collect())
     }
 
+    /// Retract every `calls_resolved_singleton` edge, preserving `direct`
+    /// edges (082.010-T rollback step 1).
+    ///
+    /// Must run while the `resolution` column still exists. When the column is
+    /// already absent (rollback already applied) this is a no-op returning `0`,
+    /// keeping the rollback idempotent. Returns the number of edges retracted.
+    pub async fn retract_all_calls_resolved_singleton_edges(&self) -> Result<usize, EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(0);
+        }
+        let singletons = self
+            .list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await?;
+        if singletons.is_empty() {
+            return Ok(0);
+        }
+        let script = r#"
+?[from, to] := *calls_edge{from, to, resolution}, resolution = "calls_resolved_singleton"
+:rm calls_edge { from, to }
+"#;
+        self.db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(singletons.len())
+    }
+
+    /// Operator-invocable down-migration entry point (082.010-T).
+    ///
+    /// Orchestrates the rollback in a STRICT ORDER so every provenance query
+    /// runs while its column still exists:
+    ///   1. retract ALL `calls_resolved_singleton` edges (direct preserved)
+    ///      while the `resolution` column is present;
+    ///   2. THEN drop the `resolution` column, reverting `calls_edge` to
+    ///      `{from, to => created_at}`.
+    ///
+    /// Idempotent: a second invocation retracts nothing and finds no column to
+    /// drop, returning `0`. Returns the number of singleton edges retracted.
+    /// The operator-invocable CLI trigger is 082.013-T.
+    pub async fn rollback_calls_resolution(&self) -> Result<usize, EngramError> {
+        let retracted = self.retract_all_calls_resolved_singleton_edges().await?;
+        crate::db::cozo_backend::schema::rollback_calls_edge_resolution(&self.db)?;
+        Ok(retracted)
+    }
+
     /// Record a call site whose callee could not be resolved within the
     /// caller's own file, for the deferred cross-file post-pass (082.002-T).
     ///
