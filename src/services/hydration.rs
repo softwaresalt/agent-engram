@@ -302,6 +302,10 @@ struct ParsedEdge {
     import_path: Option<String>,
     #[serde(default)]
     linked_by: Option<String>,
+    /// Provenance of a `calls` edge (082.012-T). Absent in pre-field JSONL,
+    /// which deserializes to `None` and rehydrates as `direct`.
+    #[serde(default)]
+    resolution: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
     created_at: Option<String>,
@@ -459,7 +463,11 @@ async fn upsert_node(
 async fn upsert_edge(cg_queries: &crate::db::queries::CodeGraphQueries, edge: &ParsedEdge) -> bool {
     match edge.edge_type.as_str() {
         "calls" => cg_queries
-            .create_calls_edge(&edge.from, &edge.to)
+            .create_calls_edge_with_resolution(
+                &edge.from,
+                &edge.to,
+                edge.resolution.as_deref().unwrap_or("direct"),
+            )
             .await
             .is_ok(),
         "imports" => {

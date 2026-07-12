@@ -634,6 +634,11 @@ path = "tests/integration/calls_edge_resolution_storage_test.rs"
 required-features = ["cozo-backend"]
 
 [[test]]
+name = "integration_calls_resolution_rehydrate"
+path = "tests/integration/calls_resolution_rehydrate_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"
 
