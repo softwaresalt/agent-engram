@@ -664,6 +664,11 @@ path = "tests/integration/calls_recall_acceptance_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_calls_target_correctness"
+path = "tests/integration/calls_target_correctness_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"
 
