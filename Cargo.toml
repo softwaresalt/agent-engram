@@ -820,6 +820,10 @@ name = "unit_retrieval_eval_model"
 path = "tests/unit/retrieval_eval_model_test.rs"
 
 [[test]]
+name = "unit_retrieval_eval_language_gate"
+path = "tests/unit/retrieval_eval_language_gate_test.rs"
+
+[[test]]
 name = "contract_retrieval_eval_tools"
 path = "tests/contract/retrieval_eval_tools_test.rs"
 

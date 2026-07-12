@@ -41,7 +41,12 @@ const MAX_QUERY_BYTES: usize = 1900;
 /// Map a file path's extension to a coarse language identifier.
 ///
 /// Used to gate the semantic corpus by [`RetrievalEvalConfig::languages`].
-/// Returns `"unknown"` for unrecognized extensions.
+/// Returns the **canonical** identifier stored by the indexer in
+/// `file_node.language` (see `code_graph::language_from_path`) so the semantic
+/// gate and the graph gate share one vocabulary — in particular `.tsx` maps to
+/// `tsx` (not `typescript`), so `languages = ['tsx']` includes TSX in both the
+/// semantic and graph paths (084.005-T). Returns `"unknown"` for unrecognized
+/// extensions.
 #[must_use]
 pub fn language_of(path: &str) -> &'static str {
     let ext = std::path::Path::new(path)
@@ -52,7 +57,8 @@ pub fn language_of(path: &str) -> &'static str {
         "rs" => "rust",
         "py" => "python",
         "js" | "jsx" => "javascript",
-        "ts" | "tsx" => "typescript",
+        "ts" => "typescript",
+        "tsx" => "tsx",
         "go" => "go",
         "cs" => "csharp",
         "c" | "h" => "c",
