@@ -10,6 +10,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -1640,8 +1641,13 @@ stale[from, to] :=
     /// Intended to run in the full / `--force` index path only; the incremental
     /// sync path does not invoke it (performance gate).
     ///
-    /// Returns the number of edges created (`resolved`) and the number of
-    /// staged calls examined (`lookups`).
+    /// Returns the number of *newly created* singleton edges (`resolved`) and
+    /// the number of staged calls examined (`lookups`). `resolved` counts only
+    /// edges that did not already carry `calls_resolved_singleton` provenance,
+    /// so a no-op re-index (staged rows persist and their singletons are already
+    /// present) reports `resolved == 0` rather than recounting every prior
+    /// singleton as newly created. Callers surface `resolved` via
+    /// `IndexResult.edges_created`.
     ///
     /// Revalidating, but non-destructive: for each staged call whose callee name
     /// resolves to exactly one function the singleton edge is upserted; for a
@@ -1669,6 +1675,17 @@ stale[from, to] :=
 
         let staged = self.list_staged_calls().await?;
         let lookups = staged.len();
+        // Snapshot the singleton edges that already exist so `resolved` counts
+        // only genuinely new provenance. Because staged rows persist across a
+        // non-forced re-index, the upsert below re-writes every prior singleton;
+        // without this guard each such re-write would be recounted as a newly
+        // created edge and over-report `IndexResult.edges_created`. The set also
+        // dedupes repeated (caller, target) pairs within a single run.
+        let mut existing: HashSet<(String, String)> = self
+            .list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await?
+            .into_iter()
+            .collect();
         let mut resolved = 0usize;
         for call in &staged {
             // Resolve solely when a single function carries the callee name. A
@@ -1683,7 +1700,12 @@ stale[from, to] :=
                         "calls_resolved_singleton",
                     )
                     .await?;
-                    resolved += 1;
+                    // Count only the first time this (caller, target) pair is
+                    // seen as a singleton — pre-existing edges and within-run
+                    // duplicates are excluded.
+                    if existing.insert((call.caller_id.clone(), ids[0].clone())) {
+                        resolved += 1;
+                    }
                 }
                 _ => {
                     self.retract_singleton_edge_from_caller_by_name(

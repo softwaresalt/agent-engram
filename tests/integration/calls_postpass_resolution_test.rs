@@ -6,7 +6,7 @@
 //! canonical provenance `calls_resolved_singleton`. It runs in the full /
 //! `--force` index path only — never on incremental sync.
 //!
-//! Scenarios (6):
+//! Scenarios (7):
 //!   1. unique cross-file name -> one edge tagged `calls_resolved_singleton`
 //!   2. ambiguous name (2 defs) -> skipped (no edge)
 //!   3. name with no matching def -> no edge (no false edge)
@@ -15,6 +15,9 @@
 //!      retracted by re-resolution even when the caller file is unchanged
 //!   6. with EMPTY staging (post-rehydration / fresh upgrade) the post-pass
 //!      PRESERVES existing singleton edges instead of destroying them
+//!   7. re-running the post-pass on an UNCHANGED workspace reports zero newly
+//!      created edges (`resolved == 0`) — pre-existing singletons are not
+//!      recounted even though staged rows persist and are re-upserted
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -245,5 +248,46 @@ async fn postpass_preserves_singletons_when_staging_empty() {
         singleton_count(&q).await,
         1,
         "post-pass must preserve singletons when staging is empty"
+    );
+}
+
+// Scenario 7: re-running the post-pass on an unchanged workspace must report
+// zero NEWLY created edges. Staged rows persist across a non-forced re-index, so
+// the post-pass re-upserts every prior singleton; `resolved` must count only
+// genuinely new provenance, otherwise `IndexResult.edges_created` over-reports on
+// every no-op re-index.
+#[test]
+async fn reresolve_reports_zero_new_edges_on_unchanged_rerun() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "src/a.rs", "pub fn caller() {\n    helper();\n}\n");
+    write_sample_file(ws, "src/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let q = queries_for(&data_dir, &branch).await;
+    assert_eq!(singleton_count(&q).await, 1, "baseline singleton edge");
+
+    // Staging persists after indexing, so the direct post-pass re-upserts the
+    // same singleton — but it already exists, so nothing new is created.
+    assert!(
+        !q.list_staged_calls()
+            .await
+            .expect("list_staged_calls")
+            .is_empty(),
+        "staged rows must persist to exercise the re-upsert path"
+    );
+    let result = q.reresolve_calls_edges().await.expect("reresolve");
+    assert_eq!(
+        result.resolved, 0,
+        "re-resolving an unchanged workspace must report zero new edges, got {result:?}"
+    );
+    assert_eq!(
+        singleton_count(&q).await,
+        1,
+        "the singleton edge count is unchanged after a no-op re-resolution"
     );
 }

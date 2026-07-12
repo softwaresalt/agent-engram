@@ -475,14 +475,16 @@ async fn index_workspace_impl(
                         caller,
                         callee,
                         is_method,
+                        is_qualified,
                     } => {
-                        // Method / receiver calls (`self.bar()`, `x.foo()`) are
-                        // extracted for completeness (082.001-T) but NOT promoted
-                        // to a calls_edge: methods are indexed as `Type::method`,
-                        // so name-only resolution cannot match them and would
-                        // create a false singleton edge. Deferred pending
-                        // method-aware resolution.
-                        if *is_method {
+                        // Method/receiver (`self.bar()`) and path-qualified
+                        // (`Type::parse()`) calls are extracted for completeness
+                        // (082.001-T) but NOT promoted to a calls_edge: their
+                        // targets are indexed under qualified names, so name-only
+                        // resolution cannot match them and would create a false
+                        // singleton edge. Deferred pending qualification/method-
+                        // aware resolution.
+                        if *is_method || *is_qualified {
                             continue;
                         }
                         // Resolve names to IDs within this file's symbols. A
@@ -1128,10 +1130,12 @@ pub async fn sync_workspace_with_progress(
                         caller,
                         callee,
                         is_method,
+                        is_qualified,
                     } => {
-                        // Method / receiver calls are extracted but not promoted
-                        // (see the index-path arm) to avoid false singleton edges.
-                        if *is_method {
+                        // Method/receiver and path-qualified calls are extracted
+                        // but not promoted (see the index-path arm) to avoid
+                        // false singleton edges.
+                        if *is_method || *is_qualified {
                             continue;
                         }
                         // Mirror the index-path behavior: resolve locally for a

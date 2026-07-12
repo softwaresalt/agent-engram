@@ -195,6 +195,18 @@ pub enum ExtractedEdge {
         /// cannot match a receiver method to its definition and would risk a
         /// false singleton edge. Consumers must skip promotion when this is set.
         is_method: bool,
+        /// True when the call was path-qualified (`a::b()`), reduced here to its
+        /// final segment (`b`).
+        ///
+        /// Qualified calls cover both module paths (`crate::util::helper()`,
+        /// whose free-function target IS indexed by the bare final segment) and
+        /// type-associated calls (`Type::parse()`, whose target is indexed as
+        /// `Type::parse`). The two are indistinguishable without qualification-
+        /// aware resolution, so — like methods — qualified calls are extracted
+        /// but NOT promoted to `calls_edge` rows, to avoid resolving a
+        /// `Type::assoc()` call to an unrelated unique free function. Deferred to
+        /// qualification-aware resolution.
+        is_qualified: bool,
     },
     /// A `use` declaration importing a path.
     Imports {
