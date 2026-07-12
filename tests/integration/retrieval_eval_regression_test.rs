@@ -20,18 +20,25 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::json;
 
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
 use engram::models::Function;
-use engram::models::config::CodeGraphConfig;
+use engram::models::config::{CodeGraphConfig, WorkspaceConfig};
 use engram::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds,
 };
+use engram::server::state::AppState;
 use engram::services::code_graph;
 use engram::services::retrieval_eval::{
-    check_thresholds, compute_graph_metrics, evaluate_semantic, scan_call_site_inventory,
+    check_thresholds, compute_graph_metrics, evaluate_semantic, evaluate_target_correctness,
+    scan_call_site_inventory,
 };
+use engram::tools;
 
 /// The committed graduated baseline thresholds.
 const BASELINE_JSON: &str = include_str!("../../docs/eval/baseline.json");
@@ -211,10 +218,13 @@ async fn real_graph_metrics(ws: &Path, queries: &CodeGraphQueries) -> GraphMetri
         .count_calls_edges_in_languages(&languages)
         .await
         .expect("count_calls_edges_in_languages");
+    // Language-gated dangling count — identical scoping to the resolved
+    // numerator, matching the corrected `run_retrieval_eval` handler (084.008-T
+    // / Thread-8): `false_edge_rate` is a ratio of commensurable units.
     let false_edges = queries
-        .count_dangling_calls_edges()
+        .count_dangling_calls_edges_in_languages(&languages)
         .await
-        .expect("count_dangling_calls_edges");
+        .expect("count_dangling_calls_edges_in_languages");
     let mut graph = compute_graph_metrics(inventory.call_sites, resolved, false_edges);
     graph.index_stale = inventory.index_stale;
     graph.unreadable_files = inventory.unreadable_files;
@@ -388,4 +398,160 @@ fn baseline_json_round_trips() {
     let reparsed: RetrievalEvalThresholds =
         serde_json::from_str(&serialized).expect("re-parse thresholds");
     assert_eq!(original, reparsed, "baseline thresholds must round-trip");
+}
+
+// ── Thread-2: exercise the REAL `run_retrieval_eval` dispatch ─────────────────
+//
+// The scenarios above reproduce the graph pipeline directly; the plan
+// (084.012-T, "assert graph metrics from the real run_retrieval_eval path")
+// also requires driving the actual handler so a wiring regression — e.g. the
+// resolved/dangling language-scope mismatch corrected in 084.008-T — cannot
+// stay green. Bind the indexed fixture workspace, dispatch the tool, and assert
+// the returned `graph` report against the ground truth.
+
+/// Dispatch a tool, retrying the known transient reopen lock / in-progress
+/// index the daemon's background bind-scan can surface on rapid setup.
+async fn dispatch_retry(
+    state: Arc<AppState>,
+    tool: &str,
+    args: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut last_err = String::new();
+    for _ in 0u32..12 {
+        match tools::dispatch(state.clone(), tool, args.clone()).await {
+            Ok(value) => return value,
+            Err(err) => {
+                let lowered = err.to_string().to_ascii_lowercase();
+                if lowered.contains("database is locked")
+                    || lowered.contains("sqlite_busy")
+                    || lowered.contains("in progress")
+                    || lowered.contains("indexinprogress")
+                {
+                    last_err = err.to_string();
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                panic!("dispatch {tool} failed: {err}");
+            }
+        }
+    }
+    panic!("dispatch {tool} failed after retries on transient error: {last_err}");
+}
+
+#[tokio::test]
+async fn real_path_via_run_retrieval_eval_dispatch_matches_ground_truth() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let git_dir = workspace.path().join(".git");
+    fs::create_dir_all(&git_dir).expect("create .git");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+    write_fixture(workspace.path());
+
+    let state = Arc::new(AppState::new(10));
+    let path = workspace.path().to_string_lossy().to_string();
+    tools::dispatch(
+        state.clone(),
+        "set_workspace",
+        Some(json!({ "path": path })),
+    )
+    .await
+    .expect("set_workspace must succeed");
+    let config = WorkspaceConfig {
+        retrieval_eval: RetrievalEvalConfig {
+            enabled: true,
+            languages: vec!["rust".to_owned()],
+            k: 5,
+            sample_size: 200,
+            ..RetrievalEvalConfig::default()
+        },
+        ..WorkspaceConfig::default()
+    };
+    state.set_workspace_config(Some(config)).await;
+
+    dispatch_retry(state.clone(), "index_workspace", Some(json!({}))).await;
+    let report = dispatch_retry(state.clone(), "run_retrieval_eval", Some(json!({}))).await;
+
+    let graph = &report["graph"];
+    assert_eq!(
+        graph["call_sites"],
+        json!(FIXTURE_CALL_SITES),
+        "real handler parser inventory must be the fixture denominator; report: {report}"
+    );
+    assert_eq!(
+        graph["resolved"],
+        json!(FIXTURE_RESOLVED),
+        "real handler resolved-edge count must match the ground truth; report: {report}"
+    );
+    assert_eq!(
+        graph["false_edges"],
+        json!(FIXTURE_FALSE_EDGES),
+        "real handler must report no dangling edge in the fixture; report: {report}"
+    );
+    let recall = graph["resolution_recall"]
+        .as_f64()
+        .expect("resolution_recall must be a number");
+    assert!(
+        (recall - 0.75).abs() < 1e-9,
+        "real-handler resolution_recall must be 3/4 = 0.75, got {recall}; report: {report}"
+    );
+}
+
+// ── Thread-3: the target-correctness report fields are populated + asserted ───
+//
+// `GraphMetrics::target_correct` / `target_mismatch` are the plan's model
+// surface for manifest-backed target-correctness (084.001-T / 084.004-T). They
+// are 0 in production (no manifest); this fixture/regression path populates them
+// from `evaluate_target_correctness` and asserts the SERIALIZED report carries
+// them, so the documented contract is exercised rather than left as
+// indistinguishable zero defaults.
+#[tokio::test]
+async fn real_path_report_populates_target_correctness_fields() {
+    let (tmp, queries, _dir, _branch) = index_fixture().await;
+    let names = name_to_ids(&queries).await;
+
+    // Ground-truth expected-target manifest: (caller_id, callee_id) by identity.
+    let expected: HashSet<(String, String)> = EXPECTED_SINGLETONS
+        .iter()
+        .map(|(caller, callee)| {
+            let from = names.get(*caller).expect("caller indexed")[0].clone();
+            let to = names.get(*callee).expect("callee indexed")[0].clone();
+            (from, to)
+        })
+        .collect();
+
+    let produced: Vec<(String, String)> = queries
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+
+    let tc = evaluate_target_correctness(&produced, &expected);
+
+    // Wire the manifest result into the report's graph fields (the fixture /
+    // regression path the model doc names as the populating caller).
+    let mut graph = real_graph_metrics(tmp.path(), &queries).await;
+    graph.target_correct = tc.target_correct;
+    graph.target_mismatch = tc.target_mismatch;
+
+    let expected_count = u64::try_from(EXPECTED_SINGLETONS.len()).expect("fits u64");
+    assert_eq!(
+        graph.target_correct, expected_count,
+        "every produced singleton matches the manifest by identity"
+    );
+    assert_eq!(
+        graph.target_mismatch, 0,
+        "no wrong-but-existing target in the fixture"
+    );
+
+    // The SERIALIZED report must carry the populated counters, not zero defaults.
+    let report = semantic_fixture_report(graph);
+    let value = serde_json::to_value(&report).expect("serialize report");
+    assert_eq!(
+        value["graph"]["target_correct"],
+        json!(expected_count),
+        "serialized report must expose the populated target_correct; report: {value}"
+    );
+    assert_eq!(
+        value["graph"]["target_mismatch"],
+        json!(0u64),
+        "serialized report must expose target_mismatch=0; report: {value}"
+    );
 }
