@@ -1213,26 +1213,100 @@ impl CodeGraphQueries {
 
     // ── Edge CRUD ──────────────────────────────────────────────────
 
-    /// Upsert a function-to-function call edge.
+    /// Upsert a function-to-function call edge with `direct` provenance.
+    ///
+    /// This is the stable two-argument writer used by the ~30 in-file call
+    /// resolution sites. It records the edge as `direct` (082.003-T); the
+    /// cross-file post-pass uses [`Self::create_calls_edge_with_resolution`]
+    /// with `calls_resolved_singleton` instead.
     #[allow(clippy::similar_names)]
     pub async fn create_calls_edge(
         &self,
         caller_id: &str,
         callee_id: &str,
     ) -> Result<(), EngramError> {
+        self.create_calls_edge_with_resolution(caller_id, callee_id, "direct")
+            .await
+    }
+
+    /// Upsert a function-to-function call edge with an explicit provenance
+    /// value (082.003-T).
+    ///
+    /// `resolution` records how the edge was resolved: `direct` for an in-file
+    /// resolved call, `calls_resolved_singleton` for a cross-file call resolved
+    /// by the unambiguous-name post-pass (082.008-T). Keyed by `(from, to)`, so
+    /// re-writing the same pair updates its provenance in place.
+    #[allow(clippy::similar_names)]
+    pub async fn create_calls_edge_with_resolution(
+        &self,
+        caller_id: &str,
+        callee_id: &str,
+        resolution: &str,
+    ) -> Result<(), EngramError> {
         let ts = now_utc_str();
         let script = r#"
-?[from, to, created_at] <- [[$from, $to, $created_at]]
-:put calls_edge { from, to => created_at }
+?[from, to, created_at, resolution] <- [[$from, $to, $created_at, $resolution]]
+:put calls_edge { from, to => created_at, resolution }
 "#;
         let mut p = BTreeMap::new();
         p.insert("from".to_owned(), DataValue::from(caller_id));
         p.insert("to".to_owned(), DataValue::from(callee_id));
         p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        p.insert("resolution".to_owned(), DataValue::from(resolution));
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
         Ok(())
+    }
+
+    /// Count `calls_edge` rows grouped by their `resolution` provenance value
+    /// (082.003-T).
+    ///
+    /// Returns a map of provenance value (`direct`,
+    /// `calls_resolved_singleton`, …) to the number of edges carrying it.
+    pub async fn count_calls_edges_by_resolution(
+        &self,
+    ) -> Result<HashMap<String, u64>, EngramError> {
+        let script = r#"
+?[resolution, count(from)] := *calls_edge{from, resolution}
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut counts = HashMap::new();
+        for row in &r.rows {
+            let resolution = extract_str(row, 0);
+            let count = u64::try_from(extract_i64(row, 1).max(0)).unwrap_or(0);
+            counts.insert(resolution, count);
+        }
+        Ok(counts)
+    }
+
+    /// Enumerate every `(from, to)` pair whose provenance equals `resolution`
+    /// (082.003-T).
+    ///
+    /// Used by the lifecycle (082.009-T) and rollback (082.010-T) paths to
+    /// select edges resolved by a specific strategy — e.g.
+    /// `calls_resolved_singleton` edges that must be retracted before a
+    /// reindex.
+    pub async fn list_calls_edges_by_resolution(
+        &self,
+        resolution: &str,
+    ) -> Result<Vec<(String, String)>, EngramError> {
+        let script = r#"
+?[from, to] := *calls_edge{from, to, resolution}, resolution = $resolution
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("resolution".to_owned(), DataValue::from(resolution));
+        let r = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| (extract_str(row, 0), extract_str(row, 1)))
+            .collect())
     }
 
     /// Record a call site whose callee could not be resolved within the

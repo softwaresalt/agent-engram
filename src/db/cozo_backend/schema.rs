@@ -87,6 +87,11 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         run_script_retrying(cozo_db, script)?;
     }
 
+    // 082.003-T: upgrade pre-existing `calls_edge` relations that predate the
+    // `resolution` provenance attribute. Idempotent: no-op once the column
+    // exists, so it is safe to run on every bootstrap.
+    migrate_calls_edge_resolution(cozo_db)?;
+
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
     // storage backend does not support vector indexes. Suppress only known-benign
     // failures; warn on unexpected ones so regressions remain visible.
@@ -150,6 +155,69 @@ fn run_script_retrying(cozo_db: &cozo::DbInstance, script: &str) -> Result<(), E
         }
     }
     unreachable!("loop exits via return")
+}
+
+/// Return `true` when the `calls_edge` relation carries the `resolution`
+/// column (082.003-T provenance attribute).
+///
+/// Uses `::columns` introspection so it works regardless of whether the
+/// relation currently holds any rows. A missing `calls_edge` relation is
+/// reported as `false` (the caller bootstraps it before migrating).
+///
+/// # Errors
+/// Returns [`EngramError`] when the introspection query fails for a reason
+/// other than the relation not existing.
+pub(crate) fn calls_edge_has_resolution(cozo_db: &cozo::DbInstance) -> Result<bool, EngramError> {
+    match cozo_db.run_script(
+        "::columns calls_edge",
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    ) {
+        Ok(rows) => Ok(rows.rows.iter().any(|row| {
+            matches!(row.first(), Some(cozo::DataValue::Str(name)) if name.as_str() == "resolution")
+        })),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("cannot find")
+            {
+                Ok(false)
+            } else {
+                Err(map_db_err(format!("calls_edge column introspection: {e}")))
+            }
+        }
+    }
+}
+
+/// Upgrade a legacy `calls_edge` relation to carry the `resolution` provenance
+/// attribute (082.003-T).
+///
+/// Databases created before 082.003-T store `calls_edge` as
+/// `{from, to => created_at}`. This migration rewrites the relation to
+/// `{from, to => created_at, resolution}` and defaults every pre-existing row
+/// to `direct` (all historical edges were in-file resolved). It is idempotent:
+/// once the `resolution` column is present the function returns immediately, so
+/// it is safe to invoke on every schema bootstrap.
+///
+/// # Errors
+/// Returns [`EngramError`] when column introspection or the `:replace` rewrite
+/// fails.
+pub(crate) fn migrate_calls_edge_resolution(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
+    if calls_edge_has_resolution(cozo_db)? {
+        return Ok(());
+    }
+    let migrate = r#"
+?[from, to, created_at, resolution] :=
+    *calls_edge{from, to, created_at},
+    resolution = "direct"
+
+:replace calls_edge { from, to => created_at, resolution }
+"#;
+    cozo_db
+        .run_script(migrate, BTreeMap::new(), cozo::ScriptMutability::Mutable)
+        .map_err(|e| map_db_err(format!("calls_edge resolution migration: {e}")))?;
+    Ok(())
 }
 
 // ── File node ──────────────────────────────────────────────────────────────
@@ -321,12 +389,18 @@ pub const CREATE_COMMIT_NODE: &str = r#"
 /// CozoScript `:create` for `calls_edge` — function-to-function call.
 ///
 /// Key: `(from, to)` composite — one entry per unique caller/callee pair.
+/// The `resolution` value records provenance (082.003-T): `direct` for an
+/// in-file resolved call, `calls_resolved_singleton` for a cross-file call
+/// resolved by the unambiguous-name post-pass (082.008-T). Databases created
+/// before this attribute existed are upgraded by
+/// [`migrate_calls_edge_resolution`].
 pub const CREATE_CALLS_EDGE: &str = r#"
 :create calls_edge {
     from: String,
     to: String
     =>
     created_at: String,
+    resolution: String,
 }
 "#;
 
@@ -590,3 +664,85 @@ pub const CREATE_POWERBI_EDGE: &str = r#"
     source_path: String,
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{calls_edge_has_resolution, migrate_calls_edge_resolution};
+
+    /// Build an in-memory CozoDB with a *legacy* `calls_edge` relation
+    /// (`{from, to => created_at}`, no `resolution` column) holding one row.
+    fn legacy_db_with_one_edge() -> cozo::DbInstance {
+        let db = cozo::DbInstance::new("mem", "", Default::default())
+            .expect("in-memory cozo instance must open");
+        db.run_script(
+            ":create calls_edge { from: String, to: String => created_at: String }",
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("legacy calls_edge relation must create");
+        db.run_script(
+            r#"?[from, to, created_at] <- [["fn:a", "fn:b", "2026-01-01T00:00:00Z"]]
+:put calls_edge { from, to => created_at }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("legacy row must insert");
+        db
+    }
+
+    /// Read the single `resolution` value stored for the `(fn:a, fn:b)` edge.
+    fn resolution_of_ab(db: &cozo::DbInstance) -> String {
+        let rows = db
+            .run_script(
+                r#"?[resolution] := *calls_edge{from, to, resolution}, from = "fn:a", to = "fn:b""#,
+                BTreeMap::new(),
+                cozo::ScriptMutability::Immutable,
+            )
+            .expect("resolution query must run")
+            .rows;
+        assert_eq!(rows.len(), 1, "exactly one (fn:a, fn:b) edge expected");
+        match rows[0].first() {
+            Some(cozo::DataValue::Str(s)) => s.to_string(),
+            other => panic!("resolution must be a string, got {other:?}"),
+        }
+    }
+
+    // Scenario 1: migrating a legacy relation adds the `resolution` column and
+    // defaults every pre-existing row to `direct` (082.003-T).
+    #[test]
+    fn migration_adds_resolution_column_defaulting_to_direct() {
+        let db = legacy_db_with_one_edge();
+        assert!(
+            !calls_edge_has_resolution(&db).expect("column probe must run"),
+            "legacy relation must not yet carry the resolution column"
+        );
+
+        migrate_calls_edge_resolution(&db).expect("migration must succeed");
+
+        assert!(
+            calls_edge_has_resolution(&db).expect("column probe must run"),
+            "migration must add the resolution column"
+        );
+        assert_eq!(
+            resolution_of_ab(&db),
+            "direct",
+            "pre-existing rows must default to `direct`"
+        );
+    }
+
+    // Scenario 1 (idempotency): re-running the migration on an already-upgraded
+    // relation is a no-op and preserves existing provenance values.
+    #[test]
+    fn migration_is_idempotent() {
+        let db = legacy_db_with_one_edge();
+        migrate_calls_edge_resolution(&db).expect("first migration must succeed");
+        migrate_calls_edge_resolution(&db).expect("second migration must be a no-op");
+        assert_eq!(
+            resolution_of_ab(&db),
+            "direct",
+            "re-running the migration must not alter existing provenance"
+        );
+    }
+}
