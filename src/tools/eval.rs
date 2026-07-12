@@ -92,9 +92,12 @@ pub async fn run_retrieval_eval(
     // Read the indexed function corpus. An initialized but un-indexed workspace
     // returns an empty vector normally, so an actual query error must propagate
     // (a database failure must not masquerade as a zero-metric success report).
+    // 084.009-T: use the LEFT-JOIN corpus so a partially-written function
+    // (function_meta present, code/embedding row absent) still counts toward the
+    // semantic-eval denominator (78AA205D) instead of being silently dropped.
     let db = connect_db(&parts.data_dir, &parts.branch).await?;
     let queries = CodeGraphQueries::new(db);
-    let functions = queries.all_functions().await?;
+    let functions = queries.all_functions_for_eval().await?;
 
     let semantic = retrieval_eval::evaluate_semantic(&functions, &parts.config)?;
 
