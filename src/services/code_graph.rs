@@ -291,6 +291,14 @@ async fn index_workspace_impl(
             queries.upsert_code_file(&code_file).await?;
 
             // Clear previous edges from this file.
+            // 082.009-T: retract this file's prior calls_resolved_singleton
+            // edges (caller or callee in this file) WHILE the old symbol IDs
+            // still exist, and clear its staged calls, before deleting symbols
+            // and re-staging.
+            queries
+                .retract_resolved_calls_edges_for_file(&rel_path)
+                .await?;
+            queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
             queries.delete_interfaces_by_file(&rel_path).await?;
@@ -901,6 +909,9 @@ pub async fn sync_workspace_with_progress(
             }
 
             // Clear previous symbols and defines edges for this file.
+            // 082.009-T: clear this file's prior staged calls before it is
+            // re-staged, so a changed/removed call leaves no stale staged row.
+            queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
             queries.delete_interfaces_by_file(&rel_path).await?;
@@ -1227,6 +1238,13 @@ async fn handle_deleted_file(
     }
 
     // Delete all symbol nodes, outbound file edges, and metadata for this file.
+    // 082.009-T: retract this file's calls_resolved_singleton edges and clear
+    // its staged calls WHILE the symbol IDs still exist, before deleting the
+    // function metadata they are keyed against.
+    queries
+        .retract_resolved_calls_edges_for_file(file_path)
+        .await?;
+    queries.clear_staged_calls_for_file(file_path).await?;
     queries.delete_functions_by_file(file_path).await?;
     queries.delete_classes_by_file(file_path).await?;
     queries.delete_interfaces_by_file(file_path).await?;

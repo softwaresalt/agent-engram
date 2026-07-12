@@ -644,6 +644,11 @@ path = "tests/integration/calls_postpass_resolution_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_calls_staging_lifecycle"
+path = "tests/integration/calls_staging_lifecycle_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"
 

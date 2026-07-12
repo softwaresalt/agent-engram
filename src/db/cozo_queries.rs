@@ -1357,6 +1357,62 @@ impl CodeGraphQueries {
             .collect())
     }
 
+    /// Remove every staged (unresolved) call recorded for `source_file`
+    /// (082.009-T clear-before-reindex / deletion cleanup).
+    ///
+    /// Clearing a file's prior staged rows before it is re-staged (or after it
+    /// is deleted) prevents a stale unresolved call from being resolved into a
+    /// stale edge by a later forced post-pass.
+    pub async fn clear_staged_calls_for_file(&self, source_file: &str) -> Result<(), EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file] :=
+    *staged_call { caller_id, callee_name, source_file },
+    source_file = $source_file
+:rm staged_call { caller_id, callee_name, source_file }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("source_file".to_owned(), DataValue::from(source_file));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retract `calls_resolved_singleton` edges whose caller OR callee is a
+    /// function defined in `file_path` (082.009-T).
+    ///
+    /// Must be invoked BEFORE the file's function metadata is deleted, because
+    /// it maps file → function IDs via `function_meta.file_path`. Retracting
+    /// these stale singleton edges before a reindex or deletion prevents
+    /// dangling cross-file edges when a caller or callee changes or is removed.
+    /// `direct` edges are left untouched — they are re-created by in-file
+    /// resolution on reindex.
+    pub async fn retract_resolved_calls_edges_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_singleton",
+    *function_meta { id: from, file_path },
+    file_path = $file_path
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_singleton",
+    *function_meta { id: to, file_path },
+    file_path = $file_path
+?[from, to] := stale[from, to]
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// Upsert a file-to-file import edge.
     #[allow(clippy::similar_names)]
     pub async fn create_imports_edge(
