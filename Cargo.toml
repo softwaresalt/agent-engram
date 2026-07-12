@@ -854,6 +854,11 @@ path = "tests/integration/retrieval_eval_thresholds_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_eval_cli_thresholds"
+path = "tests/integration/eval_cli_thresholds_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "integration_retrieval_eval_regression"
 path = "tests/integration/retrieval_eval_regression_test.rs"
 
