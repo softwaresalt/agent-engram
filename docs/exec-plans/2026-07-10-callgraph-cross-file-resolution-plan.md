@@ -24,6 +24,9 @@ Acceptance is **measured by 081-F** (the retrieval-eval subsystem): graph resolu
 rise AND every `calls_resolved_singleton` edge must match the fixture expected-edges manifest
 (target-correctness). The aggregate false-edge rate staying within the operator threshold is a
 supporting lower-bound signal only (see §§ on the metric caveat and 082.004), not the sole gate.
+Mis-resolution detection beyond the fixture (calls resolved to a wrong-but-existing function, which
+`false_edge_rate` cannot catch) is captured as follow-up stash `49561F22` (formerly tracked as
+`D07F0919`).
 
 ## 2. Operator-confirmed design parameters (2026-07-10)
 
@@ -151,7 +154,8 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
   (081.001-T). **Metric caveat:** the 081-F `false_edge_rate` (`count_dangling_calls_edges`,
   `src/db/cozo_queries.rs:2409`) is a conservative lower bound — it detects *dangling* callees
   only, not calls resolved to an existing-but-wrong function, which is exactly the false edge
-  rec1's unambiguous-name guard could introduce (tracked follow-up `D07F0919`). The aggregate
+  rec1's unambiguous-name guard could introduce (tracked follow-up `D07F0919`, captured as stash
+  `49561F22`). The aggregate
   metric therefore CANNOT gate mis-resolution on its own, so this task adds a **fixture
   ground-truth target-correctness assertion**: every `calls_resolved_singleton` edge produced for
   the fixture MUST match the expected-edges manifest (correct callee id), detecting wrong-target
@@ -162,14 +166,34 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
   names contribute no edge (skipped, not mis-resolved).
 - **Depends on:** 082.003-T, **081.001-T (S1 contract/model)**, **081.005-T (S3 graph metric)**.
 
-### 082.005-T / 082.006-T / 082.007-T — Fan-out to peer tree-sitter extractors  *(domain: parser/extraction — DEFERRED follow-on, NOT in first shipment)*
-Decomposed one task per language (each ≤3 files, single width, all depend on 082.003-T), queued
-under 082-F for a follow-on shipment:
-- **082.005-T — Python:** apply the `field_expression`/method-capture + record-unresolved +
-  post-pass pattern to `src/services/parsing/python.rs`.
-- **082.006-T — TypeScript:** same pattern for `src/services/parsing/typescript.rs`.
-- **082.007-T — Go:** same pattern for `src/services/parsing/go_lang.rs`.
-- **Depends on:** 082.003-T (all three).
+### 082.005-T / 082.006-T / 082.007-T — Fan-out to peer tree-sitter extractors  *(domain: parser/extraction — DEFERRED follow-on, NOT in first shipment; RE-HARVEST REQUIRED)*
+Tracked under 082-F for a follow-on shipment, but **NOT yet executable as a single method-arm
+pattern-application** (all three are marked `blocked` pending re-harvest, see below). CORRECTION (post-078-S verification): only `src/services/parsing/rust.rs`
+currently emits `ExtractedEdge::Calls`; `python.rs`, `typescript.rs`, and `go_lang.rs` emit **NO
+`ExtractedEdge::Calls` at all** today. There is therefore no in-file call-edge baseline to extend
+with method/receiver capture — each peer language first needs the whole extraction stack built
+from scratch. Each task must be **RE-HARVESTED** (re-scoped, likely split) to cover, at minimum:
+1. **baseline call extraction** — walk the language's call/invocation nodes and emit
+   `ExtractedEdge::Calls { caller, callee }` (the equivalent of rust.rs `extract_calls_from_body`);
+2. **caller attribution** — associate each call site with its enclosing function/method id;
+3. **language-specific member/selector/call node handling** — Python `attribute`/`call`,
+   TypeScript `member_expression`/`call_expression`, Go `selector_expression`/`call_expression`
+   (each grammar names these differently from Rust's `call_expression`/`field_expression`);
+4. **method/receiver capture + record-unresolved + post-pass** wiring (the rec1 pattern) layered
+   on top of 1–3;
+5. **tests** per tier for each language.
+These are NOT "≤3 files, single width, same pattern" — that earlier framing was incorrect. A Stage
+re-harvest MUST re-scope (and probably split) 082.005-T / 082.006-T / 082.007-T before any of them
+is routed to Ship. They are marked `blocked` in the queue pending that re-harvest.
+- **082.005-T — Python:** build the call-extraction stack (1–5 above) for
+  `src/services/parsing/python.rs` (currently emits no `Calls`).
+- **082.006-T — TypeScript:** build the call-extraction stack for
+  `src/services/parsing/typescript.rs` (currently emits no `Calls`).
+- **082.007-T — Go:** build the call-extraction stack for
+  `src/services/parsing/go_lang.rs` (currently emits no `Calls`).
+- **Depends on:** 082.008-T (post-pass resolution — matches each task artifact frontmatter; the
+  earlier `082.003-T` reference predated the storage/post-pass split) **plus a Stage re-harvest**
+  re-scoping each task.
 
 **Dependency chain (first shipment 078-S):** 082.001-T → 082.002-T → 082.003-T → 082.004-T;
 082.004-T additionally depends on 081.001-T and 081.005-T. The peer-language tasks (082.005-T
@@ -266,6 +290,12 @@ API/contract), 1 cycle.
   082.004-T → 081.005-T) and enforced by shipment ordering.
 - The operator-chosen false-edge-rate threshold is read from `RetrievalEvalConfig.thresholds`
   (081.001-T); 082.004 asserts against it.
-- Peer-language extractors are already decomposed into 082.005-T (Python), 082.006-T (TypeScript),
-  and 082.007-T (Go), each queued under 082-F. The remaining work is packaging and executing that
-  follow-on shipment after 078-S ships; no further decomposition is needed.
+- Peer-language extractors are tracked as 082.005-T (Python), 082.006-T (TypeScript), and
+  082.007-T (Go) under 082-F, but each is **`blocked` pending a Stage re-harvest**. Post-078-S
+  verification found the earlier "same pattern, ≤3 files, single width" framing incorrect: only
+  `rust.rs` emits `ExtractedEdge::Calls` today, so `python.rs` / `typescript.rs` / `go_lang.rs`
+  each need the full call-extraction stack (baseline extraction + caller attribution +
+  language-specific member/selector/call node handling + tests) built before the rec1
+  method/receiver + post-pass pattern applies. These tasks therefore require **re-harvest and
+  likely a further split** — they are NOT ready to route to Ship as-is (see §5, tasks
+  082.005/006/007-T).

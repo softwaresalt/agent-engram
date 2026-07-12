@@ -7,13 +7,16 @@
 //! then the CLI entry point is invoked to drive the 082.010-T
 //! `rollback_calls_resolution` down-migration.
 //!
-//! Scenarios (3):
+//! Scenarios (4):
 //!   1. the subcommand parses and dispatches, exiting 0 and printing the
 //!      retracted-edge count;
 //!   2. on a workspace with tagged edges it retracts every
-//!      `calls_resolved_singleton` edge (direct preserved), verified via a fresh
-//!      DB open;
-//!   3. a second invocation is idempotent — exit 0, zero further retractions.
+//!      `calls_resolved_singleton` edge (direct preserved) AND the rollback is
+//!      durable across a `connect_db` reopen (082.003-T marker), verified via a
+//!      fresh DB open;
+//!   3. a second invocation is idempotent — exit 0, zero further retractions;
+//!   4. the 082.013-T active-daemon refusal: with the workspace `DaemonLock`
+//!      held, `migrate-down` exits 2 and mutates nothing.
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -25,6 +28,7 @@ use std::process::Command;
 use tempfile::TempDir;
 use tokio::test;
 
+use engram::daemon::lockfile::DaemonLock;
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
 
@@ -105,26 +109,30 @@ async fn migrate_down_retracts_singletons_then_is_idempotent() {
         "both singleton edges must be retracted; stdout: {stdout}"
     );
 
-    // Scenario 2 (end-state): a fresh open confirms the singletons are gone and
-    // the direct edge survived. (Re-opening re-runs the up-migration, so the
-    // resolution column is present again; the column-drop itself is pinned by
-    // the schema-layer unit test in src/db/cozo_backend/schema.rs.)
+    // Scenario 2 (durable end-state): a fresh open confirms the rollback SURVIVED
+    // the reopen. Under 082.003-T the down-migration is durable — the persistent
+    // `schema_meta` marker stops the bootstrap up-migration from re-adding the
+    // `resolution` column on the next `connect_db` — so:
+    //   * the resolution-agnostic edge count is exactly 1 (both singletons
+    //     retracted, the `direct` edge preserved), and
+    //   * the provenance query now fails because the column is durably absent,
+    //     proving the marker guard survived a real `connect_db` reopen (not just
+    //     the schema-layer unit test `rollback_survives_reopen_bootstrap`).
     {
         let db = connect_db(&data_dir, BRANCH).await.expect("reopen db");
         let q = CodeGraphQueries::new(db);
-        let counts = q
-            .count_calls_edges_by_resolution()
+        let total = q
+            .count_calls_edges()
             .await
-            .expect("count by resolution");
+            .expect("resolution-agnostic edge count");
         assert_eq!(
-            counts.get("calls_resolved_singleton"),
-            None,
-            "no singleton edges may survive rollback; {counts:?}"
+            total, 1,
+            "only the direct edge may survive rollback; both singletons must be retracted"
         );
-        assert_eq!(
-            counts.get("direct"),
-            Some(&1),
-            "the direct edge must survive rollback; {counts:?}"
+        assert!(
+            q.count_calls_edges_by_resolution().await.is_err(),
+            "the resolution column must be durably absent after reopen; the provenance \
+             query cannot run against a rolled-back schema"
         );
         drop(q);
     }
@@ -158,4 +166,63 @@ async fn migrate_down_rejects_unknown_target() {
         .expect("failed to run engram migrate-down");
     let code = output.status.code().unwrap_or(-1);
     assert_eq!(code, 2, "an unknown target must exit 2 (invocation error)");
+}
+
+/// 082.013-T active-daemon refusal: `migrate-down` performs a destructive direct
+/// DB rewrite, so it must REFUSE to run while a daemon holds the workspace lock.
+///
+/// This holds the workspace `DaemonLock` in the test process (writing our live
+/// PID into `engram.pid`), then invokes the subprocess. The subprocess's own
+/// `DaemonLock::acquire` sees the lock held by a live process, returns
+/// `AlreadyHeld`, and exits 2 BEFORE `connect_db` — so the DB is never opened or
+/// mutated. A reopen afterwards confirms the pre-seeded edge is untouched.
+#[test]
+async fn migrate_down_refuses_while_daemon_active() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize");
+    init_git(&ws);
+    let data_dir = ws.join(".engram-test-data");
+
+    // Pre-populate one singleton edge so a refused (non-mutating) run is
+    // observable. The handle is dropped before the subprocess runs so the CozoDB
+    // lock is released.
+    {
+        let db = connect_db(&data_dir, BRANCH).await.expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+        q.create_calls_edge_with_resolution("fn:c", "fn:d", "calls_resolved_singleton")
+            .await
+            .expect("singleton edge");
+        drop(q);
+    }
+
+    // Simulate an active daemon by holding the workspace DaemonLock in THIS
+    // process. `acquire` resolves the same `<ws>/.engram/run/engram.lock` the
+    // subprocess targets (both canonicalize the workspace), and records our live
+    // PID.
+    let lock = DaemonLock::acquire(&ws).expect("test process must acquire the daemon lock");
+
+    // The migrate-down subprocess must REFUSE with exit 2 (invocation error).
+    let (code, _stdout, stderr) = run_migrate_down(&ws, &data_dir);
+    assert_eq!(
+        code, 2,
+        "migrate-down must refuse (exit 2) while the daemon lock is held; stderr: {stderr}"
+    );
+
+    // Release the lock, then confirm the DB was NOT mutated: the singleton edge
+    // survives and the resolution column is still present (no rollback ran).
+    drop(lock);
+    {
+        let db = connect_db(&data_dir, BRANCH).await.expect("reopen db");
+        let q = CodeGraphQueries::new(db);
+        let counts = q
+            .count_calls_edges_by_resolution()
+            .await
+            .expect("count by resolution");
+        assert_eq!(
+            counts.get("calls_resolved_singleton"),
+            Some(&1),
+            "the singleton edge must survive a refused migrate-down; {counts:?}"
+        );
+        drop(q);
+    }
 }
