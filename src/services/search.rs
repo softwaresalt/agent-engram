@@ -242,6 +242,101 @@ pub fn keyword_score(query: &str, document: &str) -> f32 {
     term_coverage / (1.0 + doc_word_count.ln())
 }
 
+/// Embed `query` only when at least one candidate carries a vector.
+///
+/// Shared by [`hybrid_search`] and [`hybrid_rank_of`] so both gate the
+/// query-embedding model identically: an all-keyword corpus never loads the
+/// model, and a corpus with vectors but an unusable model silently falls back
+/// to keyword-only scoring (the failure is swallowed via `.ok()`).
+fn embed_query_for_corpus(query: &str, candidates: &[SearchCandidate]) -> Option<Vec<f32>> {
+    if candidates.iter().any(|c| c.embedding.is_some()) {
+        embedding::embed_text(query).ok()
+    } else {
+        None
+    }
+}
+
+/// Combined hybrid score for one candidate: `0.7 * vector + 0.3 * keyword`.
+///
+/// The single source of truth for hybrid scoring, shared by [`hybrid_search`]
+/// and [`hybrid_rank_of`] so production search and retrieval-eval ranking can
+/// never diverge (084.010-T).
+#[allow(deprecated)] // cosine_similarity: content records lack MTREE index, app-level scoring required
+fn hybrid_candidate_score(
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    candidate: &SearchCandidate,
+) -> f32 {
+    let vs = match (query_embedding, &candidate.embedding) {
+        (Some(qe), Some(ce)) => cosine_similarity(qe, ce).max(0.0),
+        _ => 0.0,
+    };
+    let ks = keyword_score(query, &candidate.content);
+    VECTOR_WEIGHT * vs + KEYWORD_WEIGHT * ks
+}
+
+/// Rank (1-based) of `target_id` within a bounded top-`limit` hybrid ranking,
+/// or `None` when the target falls outside the top-`limit` (or is absent).
+///
+/// This is retrieval-eval's known-item probe (084.010-T / 4CF046A5). It shares
+/// [`hybrid_search`]'s exact scoring ([`hybrid_candidate_score`]) and stable
+/// descending tie-break, but tracks **only a single counter** rather than
+/// cloning and sorting the full [`SearchResult`] set: the rank equals one plus
+/// the number of candidates that outrank the target. A candidate outranks the
+/// target when its score is strictly greater, or — on a tie — when it appears
+/// earlier in candidate order (exactly matching the stable sort in
+/// [`hybrid_search`], which preserves input order among equal scores). Per-query
+/// work is `O(n)` time and `O(1)` extra space, with no full-corpus clone.
+///
+/// # Errors
+/// Returns `QueryError::QueryTooLong` if the query exceeds the token budget
+/// (validated identically to [`hybrid_search`]).
+pub fn hybrid_rank_of(
+    query: &str,
+    candidates: &[SearchCandidate],
+    target_id: &str,
+    limit: usize,
+) -> Result<Option<usize>, EngramError> {
+    embedding::validate_query_length(query)?;
+    if limit == 0 {
+        // `hybrid_search` truncates to `limit`, so a zero limit yields no hits.
+        return Ok(None);
+    }
+
+    let Some(target_idx) = candidates.iter().position(|c| c.id == target_id) else {
+        return Ok(None);
+    };
+
+    let query_embedding = embed_query_for_corpus(query, candidates);
+    let qe = query_embedding.as_deref();
+    let target_score = hybrid_candidate_score(query, qe, &candidates[target_idx]);
+
+    // Count candidates that outrank the target under the stable descending sort:
+    // strictly-higher score, or an equal score at an earlier candidate index.
+    let mut better = 0_usize;
+    for (i, candidate) in candidates.iter().enumerate() {
+        if i == target_idx {
+            continue;
+        }
+        let score = hybrid_candidate_score(query, qe, candidate);
+        let outranks = match score.partial_cmp(&target_score) {
+            Some(std::cmp::Ordering::Greater) => true,
+            Some(std::cmp::Ordering::Less) => false,
+            // Tie (equal, or a NaN the sort treats as equal): earlier index wins.
+            _ => i < target_idx,
+        };
+        if outranks {
+            better += 1;
+        }
+    }
+
+    Ok(if better < limit {
+        Some(better + 1)
+    } else {
+        None
+    })
+}
+
 /// Run hybrid search over the given candidates.
 ///
 /// 1. Embed the query (skip if embeddings feature is off).
@@ -250,7 +345,6 @@ pub fn keyword_score(query: &str, document: &str) -> f32 {
 ///
 /// # Errors
 /// Returns `QueryError::QueryTooLong` if the query exceeds the token budget.
-#[allow(deprecated)] // cosine_similarity: content records lack MTREE index, app-level scoring required
 pub fn hybrid_search(
     query: &str,
     candidates: &[SearchCandidate],
@@ -259,21 +353,13 @@ pub fn hybrid_search(
     embedding::validate_query_length(query)?;
 
     // Only load the embedding model when at least one candidate has a vector.
-    let query_embedding: Option<Vec<f32>> = if candidates.iter().any(|c| c.embedding.is_some()) {
-        embedding::embed_text(query).ok()
-    } else {
-        None
-    };
+    let query_embedding = embed_query_for_corpus(query, candidates);
+    let qe = query_embedding.as_deref();
 
     let mut scored: Vec<SearchResult> = candidates
         .iter()
         .map(|c| {
-            let vs = match (&query_embedding, &c.embedding) {
-                (Some(qe), Some(ce)) => cosine_similarity(qe, ce).max(0.0),
-                _ => 0.0,
-            };
-            let ks = keyword_score(query, &c.content);
-            let combined = VECTOR_WEIGHT * vs + KEYWORD_WEIGHT * ks;
+            let combined = hybrid_candidate_score(query, qe, c);
 
             SearchResult {
                 id: c.id.clone(),
@@ -588,5 +674,98 @@ mod tests {
     fn should_include_content_gates_on_region() {
         assert!(should_include_content("all"));
         assert!(!should_include_content("code"));
+    }
+
+    // ── hybrid_rank_of: bounded top-k parity (084.010-T / 4CF046A5) ──────────
+
+    /// Build a keyword-only fixture corpus with deterministic, distinct scores
+    /// (no embeddings → vector component is 0, so ranks are pure keyword order).
+    fn rank_fixture() -> Vec<SearchCandidate> {
+        let contents = [
+            ("c:a", "user login authentication flow session"),
+            ("c:b", "user login authentication flow"),
+            ("c:c", "user login authentication"),
+            ("c:d", "user login"),
+            ("c:e", "the quick brown fox jumps"),
+            // Deliberate keyword tie with c:d (identical term coverage & length)
+            // to exercise the stable tie-break against original order.
+            ("c:f", "user login"),
+        ];
+        contents
+            .iter()
+            .map(|(id, content)| SearchCandidate {
+                id: (*id).to_owned(),
+                source_type: "code".to_owned(),
+                content: (*content).to_owned(),
+                embedding: None,
+                title: None,
+                file_path: None,
+                line_range: None,
+                record_kind: None,
+                heading_path: Vec::new(),
+                fallback_reason: None,
+                lint_summary: None,
+                suggestions: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Reference rank via the original clone+sort path: 1-based position of
+    /// `target_id` in the top-`limit` `hybrid_search` result, or `None`.
+    fn oracle_rank(
+        query: &str,
+        cands: &[SearchCandidate],
+        target_id: &str,
+        limit: usize,
+    ) -> Option<usize> {
+        let results = hybrid_search(query, cands, limit).unwrap();
+        results
+            .iter()
+            .position(|hit| hit.id == target_id)
+            .map(|idx| idx + 1)
+    }
+
+    #[test]
+    fn hybrid_rank_of_matches_hybrid_search_for_every_id() {
+        let cands = rank_fixture();
+        // Cover k below, at, and above the corpus size, plus every candidate id
+        // and a non-existent id — ranks must match the clone+sort oracle exactly,
+        // including the stable tie-break between c:d and c:f.
+        for query in ["user login authentication", "login", "user"] {
+            for limit in [1_usize, 2, 3, 6, 20] {
+                for c in &cands {
+                    let expected = oracle_rank(query, &cands, &c.id, limit);
+                    let got = hybrid_rank_of(query, &cands, &c.id, limit).unwrap();
+                    assert_eq!(
+                        got, expected,
+                        "rank mismatch for id={} query={query:?} limit={limit}",
+                        c.id
+                    );
+                }
+                assert_eq!(
+                    hybrid_rank_of(query, &cands, "c:missing", limit).unwrap(),
+                    None,
+                    "absent target must rank None (query={query:?} limit={limit})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hybrid_rank_of_rejects_long_query() {
+        let long_query = "a ".repeat(embedding::MAX_QUERY_CHARS + 1);
+        let cands = rank_fixture();
+        let err = hybrid_rank_of(&long_query, &cands, "c:a", 10).unwrap_err();
+        assert_eq!(
+            err.to_response().error.code,
+            crate::errors::codes::QUERY_TOO_LONG,
+            "over-budget query must surface QUERY_TOO_LONG, matching hybrid_search"
+        );
+    }
+
+    #[test]
+    fn hybrid_rank_of_empty_corpus_is_none() {
+        let cands: Vec<SearchCandidate> = Vec::new();
+        assert_eq!(hybrid_rank_of("login", &cands, "c:a", 5).unwrap(), None);
     }
 }

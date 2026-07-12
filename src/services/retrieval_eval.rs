@@ -2,8 +2,9 @@
 //!
 //! Semantic self-retrieval: each indexed function's docstring (falling back to
 //! its name) becomes a known-item query whose single expected hit is that same
-//! function. Running those queries through [`hybrid_search`] and recording the
-//! rank of the source function yields precision@k, recall@k, MRR and nDCG@k.
+//! function. Running those queries through the hybrid ranker
+//! ([`crate::services::search::hybrid_rank_of`]) and recording the rank of the
+//! source function yields precision@k, recall@k, MRR and nDCG@k.
 //!
 //! The semantic corpus is scoped to **functions** in this baseline. Extending
 //! the candidate/query abstraction to other indexed symbol kinds (classes,
@@ -35,7 +36,7 @@ use crate::models::retrieval_eval::{
 };
 use crate::services::embedding;
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
-use crate::services::search::{SearchCandidate, hybrid_search};
+use crate::services::search::{SearchCandidate, hybrid_rank_of};
 
 /// Maximum bytes retained from a derived known-item query.
 ///
@@ -272,11 +273,11 @@ pub fn evaluate_semantic(
         if query.is_empty() {
             continue;
         }
-        let results = hybrid_search(&query, &candidates, k)?;
-        let rank = results
-            .iter()
-            .position(|hit| hit.id == function.id)
-            .map(|idx| idx + 1);
+        // Bounded known-item probe: the rank of the source symbol within the
+        // top-k, computed without cloning or sorting the full candidate set
+        // (084.010-T). Identical to `hybrid_search(&query, &candidates, k)` then
+        // locating `function.id`, but O(1) extra space per query.
+        let rank = hybrid_rank_of(&query, &candidates, &function.id, k)?;
         ranks.push(rank);
     }
 
