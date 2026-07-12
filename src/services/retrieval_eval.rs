@@ -287,11 +287,21 @@ pub fn evaluate_semantic(
     // model is probed only when the corpus carries vectors, so an un-embedded
     // corpus never loads the model — matching `hybrid_search`, which skips
     // embedding entirely in that case.
-    let corpus_has_vectors = candidates.iter().any(|c| c.embedding.is_some());
-    let query_embeds = corpus_has_vectors && embedding::embed_text(RETRIEVAL_MODE_PROBE).is_ok();
     let mut metrics = compute_semantic_metrics(&ranks, k);
-    metrics.retrieval_mode =
-        resolve_retrieval_mode(candidates.is_empty(), corpus_has_vectors, query_embeds);
+    // Mode is only meaningful when at least one known-item query was actually
+    // ranked. When no query ran — an empty corpus, or `sample_size == 0` so the
+    // ranking loop never executed — report `Unknown` rather than a post-hoc
+    // probe that never influenced any result. This also avoids loading the
+    // query-embedding model on a run that ranked nothing (084.008-T honesty:
+    // the reported mode reflects executed queries, not a speculative probe).
+    metrics.retrieval_mode = if metrics.queries == 0 {
+        RetrievalMode::Unknown
+    } else {
+        let corpus_has_vectors = candidates.iter().any(|c| c.embedding.is_some());
+        let query_embeds =
+            corpus_has_vectors && embedding::embed_text(RETRIEVAL_MODE_PROBE).is_ok();
+        resolve_retrieval_mode(candidates.is_empty(), corpus_has_vectors, query_embeds)
+    };
     Ok(metrics)
 }
 
@@ -878,6 +888,44 @@ mod tests {
         assert_eq!(
             resolve_retrieval_mode(false, true, true),
             RetrievalMode::Hybrid
+        );
+    }
+
+    #[test]
+    fn evaluate_semantic_reports_unknown_mode_when_no_query_runs() {
+        // A vector-bearing corpus with `sample_size == 0`: the ranking loop
+        // never executes, so `queries == 0`. The reported mode must be `Unknown`
+        // — a post-hoc probe (which would otherwise report Hybrid/KeywordOnly)
+        // never ran a query and must not masquerade as an exercised retrieval
+        // mode (084.008-T honesty / Thread-1 correction).
+        let corpus = vec![Function {
+            id: "function:probe".to_owned(),
+            name: "probe".to_owned(),
+            file_path: "src/probe.rs".to_owned(),
+            line_start: 1,
+            line_end: 2,
+            signature: "fn probe()".to_owned(),
+            docstring: Some("probe docstring".to_owned()),
+            body: String::new(),
+            body_hash: String::new(),
+            token_count: 0,
+            embed_type: "explicit_code".to_owned(),
+            embedding: vec![0.1_f32; 8],
+            summary: String::new(),
+        }];
+        let config = RetrievalEvalConfig {
+            enabled: true,
+            languages: Vec::new(),
+            k: 5,
+            sample_size: 0,
+            ..RetrievalEvalConfig::default()
+        };
+        let metrics = evaluate_semantic(&corpus, &config).expect("semantic eval");
+        assert_eq!(metrics.queries, 0, "no query should have run");
+        assert_eq!(
+            metrics.retrieval_mode,
+            RetrievalMode::Unknown,
+            "a run that ranked nothing must report Unknown, not a probed mode"
         );
     }
 
