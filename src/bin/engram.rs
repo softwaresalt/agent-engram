@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use engram::cli::commands::{eval, indexing, lifecycle, manifest, report, search, verify};
+use engram::cli::commands::{eval, indexing, lifecycle, manifest, migrate, report, search, verify};
 use engram::cli::flags::GlobalFlags;
 use engram::cli::output::OutputFormatter;
 
@@ -124,6 +124,20 @@ enum Command {
     Verify {
         /// Path to the file to verify.
         path: String,
+    },
+
+    /// Run a destructive down-migration against the workspace DB (local, no daemon).
+    ///
+    /// Deliberate operator-invoked maintenance: never auto-runs and is not a
+    /// daemon MCP tool. The only target is `calls-resolution`, which retracts
+    /// every `calls_resolved_singleton` edge and then drops the `resolution`
+    /// attribute (082.010-T `rollback_calls_resolution`), idempotently, so rec1
+    /// can be reverted operationally before deploying reverted code. Exit codes:
+    /// `0` success, `1` migration error, `2` unknown target or bad/locked workspace.
+    #[command(name = "migrate-down")]
+    MigrateDown {
+        /// Migration target to roll back (currently only `calls-resolution`).
+        target: String,
     },
 
     /// Search across tasks, context records, and code symbols (`unified_search`).
@@ -378,6 +392,11 @@ async fn main() -> Result<()> {
         Command::Verify { path } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = verify::run_verify(path, &flags, &fmt).await;
+            std::process::exit(code);
+        }
+        Command::MigrateDown { target } => {
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
+            let code = migrate::run_migrate_down(target, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Search {
