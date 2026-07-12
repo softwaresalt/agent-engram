@@ -19,6 +19,7 @@
 //! [`crate::services::evaluation`] surface. The two subsystems measure different
 //! things (`retrieval_eval` vs `evaluation`) and must not be conflated.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tokio::io::AsyncWriteExt;
@@ -471,6 +472,56 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
         unreadable_files: 0,
         target_correct: 0,
         target_mismatch: 0,
+    }
+}
+
+/// Outcome of comparing produced `calls_resolved_singleton` edges against a
+/// ground-truth expected-target manifest by EXACT identity (084.004-T).
+///
+/// Unlike `false_edge_rate` — a DANGLING-only lower bound that is blind to
+/// mis-resolution to an existing-but-wrong function
+/// (`2026-07-08-callgraph-cross-file-resolution-deliberation.md:25-33`) — these
+/// counts are measured against a supplied manifest and therefore also catch
+/// wrong-but-existing targets. Produced only on the fixture / regression path
+/// (production runs have no manifest); maps onto [`GraphMetrics::target_correct`]
+/// and [`GraphMetrics::target_mismatch`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TargetCorrectness {
+    /// Produced singleton edges present in the manifest (correct callee identity).
+    pub target_correct: u64,
+    /// Produced singleton edges absent from the manifest (wrong-but-existing or
+    /// dangling) — the gap the dangling-only `false_edge_rate` cannot see.
+    pub target_mismatch: u64,
+}
+
+/// Compare produced `calls_resolved_singleton` edges against an expected-target
+/// manifest by EXACT `(caller_id, callee_id)` identity (084.004-T).
+///
+/// `target_correct` counts produced edges present in the manifest;
+/// `target_mismatch` counts produced edges ABSENT from it — i.e. resolved to a
+/// wrong-but-existing function, or dangling. This closes the correctness gap
+/// left by `false_edge_rate`, which counts dangling callees only and therefore
+/// cannot observe mis-resolution to an existing-but-incorrect definition
+/// (`2026-07-08-callgraph-cross-file-resolution-deliberation.md:25-33`). It does
+/// NOT measure recall (expected edges the resolver failed to produce); that
+/// remains `resolution_recall`'s and the dangling aggregate's concern.
+#[must_use]
+pub fn evaluate_target_correctness(
+    produced_singletons: &[(String, String)],
+    expected_manifest: &HashSet<(String, String)>,
+) -> TargetCorrectness {
+    let mut target_correct = 0u64;
+    let mut target_mismatch = 0u64;
+    for edge in produced_singletons {
+        if expected_manifest.contains(edge) {
+            target_correct += 1;
+        } else {
+            target_mismatch += 1;
+        }
+    }
+    TargetCorrectness {
+        target_correct,
+        target_mismatch,
     }
 }
 
