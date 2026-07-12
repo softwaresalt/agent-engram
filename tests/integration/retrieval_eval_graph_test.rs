@@ -13,7 +13,10 @@ use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
 use engram::models::{CodeFile, Function};
 use engram::services::parsing::Language;
-use engram::services::retrieval_eval::{compute_graph_metrics, count_call_sites};
+use engram::services::retrieval_eval::{
+    CallSiteInventory, compute_graph_metrics, count_call_sites, scan_call_site_inventory,
+    source_content_hash,
+};
 
 #[test]
 fn all_local_resolved_gives_full_recall() {
@@ -262,4 +265,126 @@ async fn numerator_empty_languages_counts_all_edges() {
         .await
         .expect("ungated-via-empty count");
     assert_eq!(all, 2, "empty languages disables the numerator gate");
+}
+
+// ── 084.003-T (54848E3D): index/generation consistency gate ──────────────────
+
+const RS_SOURCE: &str = "fn helper() {}\nfn caller() {\n    helper();\n}\n";
+
+fn code_file(path: &str, language: &str, content_hash: &str) -> CodeFile {
+    CodeFile {
+        id: format!("code_file:{path}"),
+        path: path.to_owned(),
+        language: language.to_owned(),
+        size_bytes: 0,
+        content_hash: content_hash.to_owned(),
+        last_indexed_at: "2026-07-11T00:00:00Z".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn scan_clean_index_is_not_stale_and_counts_denominator() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(ws.join("src")).expect("mkdir");
+    std::fs::write(ws.join("src/thing.rs"), RS_SOURCE).expect("write");
+    // Recorded hash matches the on-disk content, as it would at index time.
+    let files = vec![code_file(
+        "src/thing.rs",
+        "rust",
+        &source_content_hash(RS_SOURCE),
+    )];
+
+    let inv = scan_call_site_inventory(ws, &files, &["rust".to_owned()])
+        .await
+        .expect("scan");
+    assert!(
+        !inv.index_stale,
+        "an unmodified tree must not be flagged stale"
+    );
+    assert_eq!(inv.unreadable_files, 0, "every indexed file is readable");
+    assert_eq!(
+        inv.call_sites, 1,
+        "the single (caller,helper) relation is the denominator"
+    );
+}
+
+#[tokio::test]
+async fn scan_flags_stale_when_file_edited_after_index() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(ws.join("src")).expect("mkdir");
+    std::fs::write(ws.join("src/thing.rs"), RS_SOURCE).expect("write");
+    // Record the ORIGINAL content's hash, then edit the file on disk without
+    // re-indexing: the on-disk content now diverges from the recorded hash.
+    let files = vec![code_file(
+        "src/thing.rs",
+        "rust",
+        &source_content_hash(RS_SOURCE),
+    )];
+    std::fs::write(
+        ws.join("src/thing.rs"),
+        "fn helper() {}\nfn caller() {\n    helper();\n    helper();\n}\n",
+    )
+    .expect("rewrite");
+
+    let inv = scan_call_site_inventory(ws, &files, &["rust".to_owned()])
+        .await
+        .expect("scan");
+    assert!(
+        inv.index_stale,
+        "a file edited after indexing must flag index_stale, not be silently clamped"
+    );
+}
+
+#[tokio::test]
+async fn scan_accounts_unreadable_indexed_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // An indexed file that no longer exists on disk (deleted since index time).
+    let files = vec![code_file("src/gone.rs", "rust", "somehash")];
+
+    let inv = scan_call_site_inventory(tmp.path(), &files, &["rust".to_owned()])
+        .await
+        .expect("scan");
+    assert_eq!(
+        inv.unreadable_files, 1,
+        "a deleted-but-indexed file must be accounted, not silently dropped"
+    );
+    assert_eq!(
+        inv.call_sites, 0,
+        "an unreadable file contributes no call sites"
+    );
+    assert!(
+        !inv.index_stale,
+        "a missing file is accounted as unreadable, not conflated with content drift"
+    );
+}
+
+#[tokio::test]
+async fn scan_empty_inventory_is_zeroed_and_not_stale() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let inv = scan_call_site_inventory(tmp.path(), &[], &["rust".to_owned()])
+        .await
+        .expect("scan");
+    assert_eq!(inv, CallSiteInventory::default());
+}
+
+#[tokio::test]
+async fn scan_language_gate_excludes_nonconfigured_files() {
+    // A file outside the configured languages is skipped by the denominator scan
+    // (no read, no staleness/unreadable accounting), matching the numerator gate.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // No file on disk: were it scanned, it would be counted unreadable. It must
+    // instead be gated out entirely because its language is not configured.
+    let files = vec![code_file("src/app.ts", "typescript", "h")];
+
+    let inv = scan_call_site_inventory(ws, &files, &["rust".to_owned()])
+        .await
+        .expect("scan");
+    assert_eq!(
+        inv,
+        CallSiteInventory::default(),
+        "non-configured-language files are gated out before any read"
+    );
 }

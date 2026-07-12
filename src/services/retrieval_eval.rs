@@ -23,7 +23,10 @@ use std::path::{Path, PathBuf};
 
 use tokio::io::AsyncWriteExt;
 
+use sha2::{Digest, Sha256};
+
 use crate::errors::{EngramError, SystemError};
+use crate::models::CodeFile;
 use crate::models::Function;
 use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
@@ -282,6 +285,153 @@ pub fn count_call_sites(source: &str, language: Language) -> usize {
             }
         }
         relations.len()
+    })
+}
+
+/// SHA-256 hex digest of a source string.
+///
+/// Computed identically to the code-graph indexer's `sha256_hex` (same bytes,
+/// same lowercase-hex encoding) so an eval-time re-read can be compared
+/// byte-for-byte against the `content_hash` recorded in `file_node` at index
+/// time (084.003-T). Must stay in lockstep with the indexer's hashing.
+#[must_use]
+pub fn source_content_hash(source: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// True when an indexed file's freshly-read `source` no longer matches the
+/// `recorded_hash` captured at index time — the working tree has drifted from
+/// the indexed revision (084.003-T).
+///
+/// The graph recall numerator is read from the indexed edges while the
+/// denominator is re-parsed from disk each run; a drift means the two describe
+/// different revisions, so recall is surfaced with an honest `index_stale`
+/// signal instead of silently relying on the `[0, 1]` clamp to hide the
+/// inconsistency. An empty `recorded_hash` (legacy `file_node` row with no
+/// stored hash) disables the check for that file rather than reporting a false
+/// positive.
+#[must_use]
+pub(crate) fn is_index_stale(source: &str, recorded_hash: &str) -> bool {
+    !recorded_hash.is_empty() && source_content_hash(source) != recorded_hash
+}
+
+/// Outcome of scanning the indexed source inventory for the graph denominator.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallSiteInventory {
+    /// Distinct-relation call-site count (the resolution-recall denominator).
+    pub call_sites: usize,
+    /// True when any indexed file's on-disk content no longer matches the hash
+    /// recorded at index time — the working tree has drifted from the indexed
+    /// revision, so the numerator (indexed edges) and this freshly-read
+    /// denominator describe different revisions. Surfaced instead of being
+    /// hidden by the recall `[0, 1]` clamp (084.003-T).
+    pub index_stale: bool,
+    /// Count of indexed files that could not be read this run (missing /
+    /// unreadable) and were therefore excluded from the denominator scan —
+    /// accounted, not silently dropped, so a shrunken denominator is visible.
+    pub unreadable_files: usize,
+}
+
+/// Scan the indexed source inventory for the graph-metric denominator and its
+/// index-consistency signals (084.003-T).
+///
+/// For each indexed `file` whose language passes the `languages` gate
+/// (case-insensitive; empty ⇒ all), the file is re-read from disk under
+/// `workspace_path` and parsed to count distinct `(caller, callee)` call
+/// relations (the denominator). While scanning it surfaces two honest signals:
+/// * `index_stale` — a re-read file's content no longer matches the
+///   `content_hash` recorded at index time (working-tree drift);
+/// * `unreadable_files` — indexed files that could not be resolved/read this run
+///   (missing / unreadable), counted rather than silently dropped so a shrunken
+///   denominator — and therefore an unreliable recall — stays visible.
+///
+/// A path that resolves outside `workspace_path` is a security skip (traversal
+/// guard) and is **not** counted as unreadable. A read/resolve failure of an
+/// indexed file **is** accounted.
+///
+/// # Errors
+/// Returns a system error if the workspace root cannot be canonicalized, or if
+/// the off-runtime parse task panics — a failed read must not be silently
+/// reported as an empty inventory.
+pub async fn scan_call_site_inventory(
+    workspace_path: &Path,
+    files: &[CodeFile],
+    languages: &[String],
+) -> Result<CallSiteInventory, EngramError> {
+    // Canonical workspace root for the containment check below. The bound
+    // workspace is canonicalized at `set_workspace` time, so this is expected
+    // to succeed; a failure is surfaced rather than silently skewing metrics.
+    let ws_root = tokio::fs::canonicalize(workspace_path).await.map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("cannot resolve workspace root for eval containment check: {e}"),
+        })
+    })?;
+    // (language, source, recorded_hash) for each readable, in-scope indexed file.
+    let mut sources: Vec<(String, String, String)> = Vec::new();
+    // Indexed files that could not be read this run. Accounted (084.003-T) so a
+    // denominator computed over fewer files than were indexed — and therefore an
+    // unreliable recall — is visible rather than silently masked.
+    let mut unreadable_files: usize = 0;
+    for file in files {
+        let gated = languages.is_empty()
+            || languages
+                .iter()
+                .any(|lang| lang.eq_ignore_ascii_case(&file.language));
+        if !gated {
+            continue;
+        }
+        let full = workspace_path.join(&file.path);
+        // Workspace-isolation invariant (no traversal): resolve the target
+        // (following symlinks and `..`) and require it to stay under the
+        // canonical workspace root before reading.
+        let Ok(canon) = tokio::fs::canonicalize(&full).await else {
+            // An indexed file that no longer resolves (deleted / renamed since
+            // index time) is an unreadable indexed file, not a silent skip.
+            unreadable_files += 1;
+            continue;
+        };
+        if !canon.starts_with(&ws_root) {
+            // A path escaping the workspace is a security skip (traversal guard),
+            // not an indexed-inventory read failure — do not account it.
+            continue;
+        }
+        match tokio::fs::read_to_string(&canon).await {
+            Ok(source) => sources.push((file.language.clone(), source, file.content_hash.clone())),
+            Err(_) => unreadable_files += 1,
+        }
+    }
+
+    // Parsing + hash verification are CPU-bound; run the whole batch off the
+    // async runtime.
+    let (call_sites, index_stale) = tokio::task::spawn_blocking(move || {
+        let mut total: usize = 0;
+        let mut stale = false;
+        for (lang, source, recorded_hash) in &sources {
+            // Working-tree drift: the freshly-read content no longer matches the
+            // hash recorded at index time, so this denominator and the indexed
+            // numerator describe different revisions.
+            if is_index_stale(source, recorded_hash) {
+                stale = true;
+            }
+            if let Ok(language) = Language::try_from(lang.as_str()) {
+                total += count_call_sites(source, language);
+            }
+        }
+        (total, stale)
+    })
+    .await
+    .map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("retrieval eval call-site parse task failed: {e}"),
+        })
+    })?;
+
+    Ok(CallSiteInventory {
+        call_sites,
+        index_stale,
+        unreadable_files,
     })
 }
 

@@ -14,7 +14,7 @@
 //! the subsystem was disabled — and only falls back to an empty report when no
 //! run has ever been persisted for the branch.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::Value;
 
@@ -23,7 +23,6 @@ use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::retrieval_eval::{RetrievalEvalConfig, RetrievalEvalReport};
 use crate::server::state::SharedState;
-use crate::services::parsing::Language;
 use crate::services::retrieval_eval;
 
 /// Workspace facts needed to run a retrieval-evaluation.
@@ -57,77 +56,6 @@ async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramErro
         data_dir: ctx.workspace.data_dir,
         branch: ctx.workspace.branch,
         config: ctx.config.retrieval_eval,
-    })
-}
-
-/// Count the parser call-site inventory across indexed source files.
-///
-/// Reads each indexed file that passes the language gate and parses it to count
-/// `ExtractedEdge::Calls` occurrences (the graph-metric denominator). File-read
-/// and parse failures are skipped so a single bad file never aborts the run.
-///
-/// # Errors
-/// Propagates a database error if the indexed-file listing fails, or a system
-/// error if the off-runtime parse task panics — a failed read must not be
-/// silently reported as an empty inventory.
-async fn count_workspace_call_sites(
-    workspace_path: &Path,
-    queries: &CodeGraphQueries,
-    config: &RetrievalEvalConfig,
-) -> Result<usize, EngramError> {
-    let files = queries.list_code_files().await?;
-    // Canonical workspace root for the containment check below. The bound
-    // workspace is canonicalized at `set_workspace` time, so this is expected
-    // to succeed; a failure is surfaced rather than silently skewing metrics.
-    let ws_root = tokio::fs::canonicalize(workspace_path).await.map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("cannot resolve workspace root for eval containment check: {e}"),
-        })
-    })?;
-    let mut sources: Vec<(String, String)> = Vec::new();
-    for file in files {
-        let gated = config.languages.is_empty()
-            || config
-                .languages
-                .iter()
-                .any(|lang| lang.eq_ignore_ascii_case(&file.language));
-        if !gated {
-            continue;
-        }
-        let full = workspace_path.join(&file.path);
-        // Workspace-isolation invariant (no traversal): resolve the target
-        // (following symlinks and `..`) and require it to stay under the
-        // canonical workspace root before reading. An absolute path, `..`
-        // component, or in-workspace symlink that escapes the workspace is
-        // skipped rather than read. Unresolvable paths are skipped too, which
-        // matches this function's existing skip-on-read-failure contract.
-        let Ok(canon) = tokio::fs::canonicalize(&full).await else {
-            continue;
-        };
-        if !canon.starts_with(&ws_root) {
-            continue;
-        }
-        if let Ok(source) = tokio::fs::read_to_string(&canon).await {
-            sources.push((file.language, source));
-        }
-    }
-
-    // Parsing is CPU-bound; run the whole batch off the async runtime.
-    tokio::task::spawn_blocking(move || {
-        sources
-            .iter()
-            .filter_map(|(lang, source)| {
-                Language::try_from(lang.as_str())
-                    .ok()
-                    .map(|language| retrieval_eval::count_call_sites(source, language))
-            })
-            .sum()
-    })
-    .await
-    .map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("retrieval eval call-site parse task failed: {e}"),
-        })
     })
 }
 
@@ -174,8 +102,13 @@ pub async fn run_retrieval_eval(
     // inventory over indexed source; numerator = resolved `calls` edges;
     // false edges = resolved edges whose callee matches no known definition.
     // Database read errors propagate rather than degrading to fabricated zeros.
-    let call_sites =
-        count_workspace_call_sites(&parts.workspace_path, &queries, &parts.config).await?;
+    let files = queries.list_code_files().await?;
+    let inventory = retrieval_eval::scan_call_site_inventory(
+        &parts.workspace_path,
+        &files,
+        &parts.config.languages,
+    )
+    .await?;
     // Numerator is gated to the *same* configured caller languages as the
     // call-site denominator (084.002-T / D6F70DCC) so recall is a ratio of
     // identically-scoped units; an empty language list counts every edge.
@@ -183,7 +116,14 @@ pub async fn run_retrieval_eval(
         .count_calls_edges_in_languages(&parts.config.languages)
         .await?;
     let false_edges = queries.count_dangling_calls_edges().await?;
-    let graph = retrieval_eval::compute_graph_metrics(call_sites, resolved, false_edges);
+    let mut graph =
+        retrieval_eval::compute_graph_metrics(inventory.call_sites, resolved, false_edges);
+    // Surface the honest index-consistency signals alongside the ratio so a
+    // consumer can distinguish a genuine recall from one computed against a tree
+    // that drifted from the indexed revision, or over fewer files than were
+    // indexed (084.003-T). The `[0, 1]` clamp stays as a defensive floor.
+    graph.index_stale = inventory.index_stale;
+    graph.unreadable_files = inventory.unreadable_files;
 
     let mut report = RetrievalEvalReport::empty(true, parts.branch);
     // Record the *effective* cutoff actually used by the semantic compute
