@@ -6,11 +6,13 @@
 //! canonical provenance `calls_resolved_singleton`. It runs in the full /
 //! `--force` index path only — never on incremental sync.
 //!
-//! Scenarios (4):
+//! Scenarios (5):
 //!   1. unique cross-file name -> one edge tagged `calls_resolved_singleton`
 //!   2. ambiguous name (2 defs) -> skipped (no edge)
 //!   3. name with no matching def -> no edge (no false edge)
 //!   4. incremental sync path -> post-pass NOT invoked (no singleton edges)
+//!   5. a singleton that became ambiguous (2nd same-named def added) is
+//!      retracted by re-resolution even when the caller file is unchanged
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -165,5 +167,41 @@ async fn sync_path_does_not_invoke_postpass() {
     assert!(
         staged.iter().any(|s| s.callee_name == "helper"),
         "sync path must still stage the unresolved cross-file call, got {staged:?}"
+    );
+}
+
+// Scenario 5: a singleton resolved on a prior index must be RETRACTED by
+// re-resolution once its callee name becomes ambiguous (a second same-named
+// definition is added). The caller file is unchanged, so a non-forced full
+// index skips it; the post-pass alone must revalidate and drop the now-invalid
+// singleton rather than leaving it stale.
+#[test]
+async fn reresolution_retracts_now_ambiguous_singleton() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "src/a.rs", "pub fn caller() {\n    helper();\n}\n");
+    write_sample_file(ws, "src/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index 1");
+    let q = queries_for(&data_dir, &branch).await;
+    assert_eq!(singleton_count(&q).await, 1, "baseline singleton edge");
+
+    // Add a SECOND `helper` definition -> the name is now ambiguous. The caller
+    // file is unchanged, so a non-forced index skips it and the post-pass must
+    // retract the stale singleton on its own.
+    write_sample_file(ws, "src/c.rs", "pub fn helper() {}\n");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index 2");
+
+    let q = queries_for(&data_dir, &branch).await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "a singleton that became ambiguous must be retracted by re-resolution"
     );
 }

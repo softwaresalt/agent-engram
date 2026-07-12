@@ -4,12 +4,14 @@
 //! `calls_resolved_singleton` edges so that a changed or removed caller/callee
 //! never leaves a dangling cross-file edge or a stale staged row.
 //!
-//! Scenarios (4):
+//! Scenarios (5):
 //!   1. re-indexing a file whose call CHANGED retracts its stale singleton edge
 //!      and clears the old staged row
 //!   2. DELETING a file retracts its resolved edges and clears its staged rows
 //!   3. a deleted CALLEE retracts the inbound singleton edge (caller elsewhere)
 //!   4. clear-before-reindex leaves no stale staged row for a forced post-pass
+//!   5. INCREMENTAL SYNC of a changed caller retracts its stale singleton edge
+//!      (mirrors the full-index and file-deletion cleanup paths)
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -208,5 +210,40 @@ async fn clear_before_reindex_prevents_stale_postpass_edge() {
         singleton_count(&q).await,
         0,
         "forced post-pass must not create an edge from a cleared staged row"
+    );
+}
+
+// Scenario 5: editing a caller and running an INCREMENTAL SYNC (not a forced
+// index) must retract the stale singleton edge left by the removed call, exactly
+// like the full-index and file-deletion paths. Regression guard for the sync
+// path that previously cleared staged rows but left the resolved edge dangling.
+#[test]
+async fn incremental_sync_changed_caller_retracts_stale_singleton() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "src/a.rs", "pub fn caller() {\n    helper();\n}\n");
+    write_sample_file(ws, "src/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    // Full index establishes the singleton edge.
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let q = queries_for(&data_dir, &branch).await;
+    assert_eq!(singleton_count(&q).await, 1, "baseline singleton edge");
+
+    // Drop the call and run an INCREMENTAL SYNC (not forced) — the changed
+    // caller file must have its stale singleton retracted.
+    write_sample_file(ws, "src/a.rs", "pub fn caller() {}\n");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync");
+
+    let q = queries_for(&data_dir, &branch).await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "incremental sync must retract the stale singleton left by the removed call"
     );
 }

@@ -2,11 +2,12 @@
 //! (082.001-T). Exercises `resolve_call_name`'s new `field_expression` arm via
 //! the public `parse_rust_source` API.
 //!
-//! Scenarios (4):
+//! Scenarios (5):
 //!   1. `x.foo()`         -> callee `foo`
 //!   2. `self.bar()`      -> callee `bar`
 //!   3. `x.clone()`       -> None (blocklisted, not captured)
 //!   4. `a.b().c()`       -> both `b` and `c` captured (non-blocklisted)
+//!   5. method calls are marked `is_method` (not promoted); free calls are not
 
 #![allow(clippy::needless_raw_string_hashes)]
 
@@ -20,6 +21,21 @@ fn callees(source: &str) -> Vec<String> {
         .into_iter()
         .filter_map(|e| match e {
             ExtractedEdge::Calls { callee, .. } => Some(callee),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Collect `(callee, is_method)` pairs from the `Calls` edges of a parsed source.
+fn calls(source: &str) -> Vec<(String, bool)> {
+    let result = parse_rust_source(source).expect("rust source must parse");
+    result
+        .edges
+        .into_iter()
+        .filter_map(|e| match e {
+            ExtractedEdge::Calls {
+                callee, is_method, ..
+            } => Some((callee, is_method)),
             _ => None,
         })
         .collect()
@@ -82,5 +98,28 @@ fn caller() {
     assert!(
         found.iter().any(|c| c == "c"),
         "a.b().c() should capture `c`, got {found:?}"
+    );
+}
+
+// Method / receiver calls must be MARKED `is_method` so the code-graph staging
+// step never promotes them to a `calls_edge` (they cannot resolve correctly
+// under name-only matching and would risk a false singleton edge). Free-function
+// calls must remain `is_method == false` so they still resolve/stage as before.
+#[test]
+fn method_calls_marked_is_method_free_calls_not() {
+    let source = r#"
+fn caller() {
+    self.bar();
+    free_fn();
+}
+"#;
+    let pairs = calls(source);
+    assert!(
+        pairs.iter().any(|(c, m)| c == "bar" && *m),
+        "self.bar() must be marked is_method=true, got {pairs:?}"
+    );
+    assert!(
+        pairs.iter().any(|(c, m)| c == "free_fn" && !*m),
+        "free_fn() must be marked is_method=false, got {pairs:?}"
     );
 }

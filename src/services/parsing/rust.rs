@@ -230,10 +230,11 @@ fn extract_calls_from_body(
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         if current.kind() == "call_expression" {
-            if let Some(callee) = resolve_call_name(current, source) {
+            if let Some((callee, is_method)) = resolve_call_name(current, source) {
                 edges.push(ExtractedEdge::Calls {
                     caller: caller_name.to_owned(),
                     callee,
+                    is_method,
                 });
             }
         }
@@ -248,28 +249,36 @@ const CALL_BLOCKLIST: &[&str] = &[
     "new", "default", "into", "clone", "from", "unwrap", "expect", "ok", "err",
 ];
 
-fn resolve_call_name(node: Node<'_>, source: &str) -> Option<String> {
+fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool)> {
     let function_node = node.child_by_field_name("function")?;
-    let name = match function_node.kind() {
-        "identifier" => Some(super::node_text(function_node, source)),
+    let (name, is_method) = match function_node.kind() {
+        "identifier" => (Some(super::node_text(function_node, source)), false),
         "scoped_identifier" => {
             let mut cursor = function_node.walk();
-            function_node
+            let n = function_node
                 .children(&mut cursor)
                 .filter(|c| c.kind() == "identifier")
                 .last()
-                .map(|n| super::node_text(n, source))
+                .map(|n| super::node_text(n, source));
+            (n, false)
         }
         // Method / receiver calls: `x.foo()`, `self.bar()`. The `function`
         // child is a `field_expression` whose `field` names the called method.
-        // Extraction-only; the blocklist below still applies so idiomatic
-        // no-ops (`x.clone()`, `x.unwrap()`) stay dropped.
-        "field_expression" => function_node
-            .child_by_field_name("field")
-            .map(|n| super::node_text(n, source)),
-        _ => None,
+        // Extracted (and marked `is_method`) for completeness and future
+        // method-aware resolution, but the consumer must not promote them to a
+        // `calls_edge`: impl methods are indexed as `Type::method`, so name-only
+        // resolution cannot match them and would risk a false singleton edge.
+        // The blocklist below still drops idiomatic no-ops (`x.clone()`).
+        "field_expression" => (
+            function_node
+                .child_by_field_name("field")
+                .map(|n| super::node_text(n, source)),
+            true,
+        ),
+        _ => (None, false),
     };
     name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
+        .map(|n| (n, is_method))
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> String {

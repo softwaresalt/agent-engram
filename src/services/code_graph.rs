@@ -471,7 +471,20 @@ async fn index_workspace_impl(
             // ── Create edges from extracted relationships ───────────────
             for edge in &parse_result.edges {
                 match edge {
-                    ExtractedEdge::Calls { caller, callee } => {
+                    ExtractedEdge::Calls {
+                        caller,
+                        callee,
+                        is_method,
+                    } => {
+                        // Method / receiver calls (`self.bar()`, `x.foo()`) are
+                        // extracted for completeness (082.001-T) but NOT promoted
+                        // to a calls_edge: methods are indexed as `Type::method`,
+                        // so name-only resolution cannot match them and would
+                        // create a false singleton edge. Deferred pending
+                        // method-aware resolution.
+                        if *is_method {
+                            continue;
+                        }
                         // Resolve names to IDs within this file's symbols. A
                         // callee resolved locally becomes a direct edge; a
                         // caller-resolved but callee-unresolved (cross-file)
@@ -909,8 +922,14 @@ pub async fn sync_workspace_with_progress(
             }
 
             // Clear previous symbols and defines edges for this file.
-            // 082.009-T: clear this file's prior staged calls before it is
-            // re-staged, so a changed/removed call leaves no stale staged row.
+            // 082.009-T: retract this file's prior calls_resolved_singleton
+            // edges and clear its staged calls WHILE the old symbol IDs still
+            // exist, before deleting the function metadata — mirroring the
+            // full-index and file-deletion paths so an incremental sync never
+            // leaves a stale/dangling cross-file edge.
+            queries
+                .retract_resolved_calls_edges_for_file(&rel_path)
+                .await?;
             queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
@@ -1102,7 +1121,16 @@ pub async fn sync_workspace_with_progress(
             // ── Recreate edges from parse result ────────────────────────
             for edge in &parse_result.edges {
                 match edge {
-                    ExtractedEdge::Calls { caller, callee } => {
+                    ExtractedEdge::Calls {
+                        caller,
+                        callee,
+                        is_method,
+                    } => {
+                        // Method / receiver calls are extracted but not promoted
+                        // (see the index-path arm) to avoid false singleton edges.
+                        if *is_method {
+                            continue;
+                        }
                         // Mirror the index-path behavior: resolve locally for a
                         // direct edge, else stage the cross-file call for the
                         // deferred post-pass (082.002-T).

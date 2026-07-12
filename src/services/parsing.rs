@@ -186,6 +186,15 @@ pub enum ExtractedEdge {
         caller: String,
         /// Name of the called function.
         callee: String,
+        /// True when the call was resolved from a method/receiver expression
+        /// (`x.foo()`, `self.bar()`) rather than a free-function identifier.
+        ///
+        /// Method-derived calls are extracted for completeness and future
+        /// method-aware resolution, but are NOT promoted to `calls_edge` rows:
+        /// impl methods are indexed as `Type::method`, so name-only resolution
+        /// cannot match a receiver method to its definition and would risk a
+        /// false singleton edge. Consumers must skip promotion when this is set.
+        is_method: bool,
     },
     /// A `use` declaration importing a path.
     Imports {
@@ -406,7 +415,7 @@ fn callee() {}
         let result = parse_rust_source(source).unwrap();
         assert!(result.edges.iter().any(|e| matches!(
             e,
-            ExtractedEdge::Calls { caller, callee } if caller == "caller" && callee == "callee"
+            ExtractedEdge::Calls { caller, callee, .. } if caller == "caller" && callee == "callee"
         )));
     }
 

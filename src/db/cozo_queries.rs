@@ -1609,7 +1609,19 @@ stale[from, to] :=
     ///
     /// Returns the number of edges created (`resolved`) and the number of
     /// staged calls examined (`lookups`).
+    ///
+    /// This is a full rebuild: it first retracts every existing
+    /// `calls_resolved_singleton` edge, then re-derives singletons from the
+    /// current staged calls and name index. That revalidation is what retracts a
+    /// singleton whose callee name has since become ambiguous (a second
+    /// same-named definition was added) or whose caller file was skipped as
+    /// unchanged on a non-forced full index — cases the additive loop alone
+    /// would leave stale. `direct` (in-file) edges are untouched.
     pub async fn reresolve_calls_edges(&self) -> Result<ReresolveResult, EngramError> {
+        // Revalidate from scratch: drop all prior singletons so stale/ambiguous
+        // ones cannot survive, then re-derive from the current staged calls.
+        self.retract_all_calls_resolved_singleton_edges().await?;
+
         // Workspace-global name -> [id] index (one round-trip).
         let script = r#"?[name, id] := *function_meta { id, name }"#;
         let r = self
