@@ -191,11 +191,14 @@ pub struct GraphMetrics {
     pub resolved: u64,
     /// Resolved edges whose callee matches no known definition (dangling).
     pub false_edges: u64,
-    /// Whether the working tree drifted from the indexed revision, or indexed
-    /// files were unreadable, so `resolution_recall`'s disk-parsed denominator
-    /// may not match the indexed numerator. An honest staleness signal emitted
-    /// in place of a silent `[0,1]` clamp (Cluster A3, 084.003-T). Additive;
-    /// legacy reports default to `false`.
+    /// Whether any re-read file's content drifted from the hash recorded at
+    /// index time (working-tree edits since indexing), so `resolution_recall`'s
+    /// disk-parsed denominator may not line up with the indexed numerator. This
+    /// flag tracks **content drift only**; files that could not be read (missing,
+    /// unreadable, or blocked by the workspace-containment guard) are counted in
+    /// `unreadable_files` instead. An honest staleness signal emitted in place of
+    /// a silent `[0,1]` clamp (Cluster A3, 084.003-T). Additive; legacy reports
+    /// default to `false`.
     #[serde(default)]
     pub index_stale: bool,
     /// Count of indexed files that could not be read at eval time. Accounted

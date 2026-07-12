@@ -46,34 +46,16 @@ const MAX_QUERY_BYTES: usize = 1900;
 /// Map a file path's extension to a coarse language identifier.
 ///
 /// Used to gate the semantic corpus by [`RetrievalEvalConfig::languages`].
-/// Returns the **canonical** identifier stored by the indexer in
-/// `file_node.language` (see `code_graph::language_from_path`) so the semantic
-/// gate and the graph gate share one vocabulary — in particular `.tsx` maps to
-/// `tsx` (not `typescript`), so `languages = ['tsx']` includes TSX in both the
-/// semantic and graph paths (084.005-T). Returns `"unknown"` for unrecognized
-/// extensions.
+/// Delegates to [`crate::services::code_graph::language_from_path`] — the single
+/// canonical mapping the indexer uses to populate `file_node.language` — so the
+/// semantic gate and the graph gate share exactly one vocabulary with no drift
+/// (e.g. `.tsx`→`tsx`, `.h++`→`cpp`, `.sql`→`sql`, `.md`→`markdown`). This is the
+/// generalization of the TSX fix (084.005-T): any extension the indexer
+/// recognizes gates identically in both paths. Unrecognized extensions fall
+/// through to the raw extension, and a path with no extension is `"unknown"`.
 #[must_use]
-pub fn language_of(path: &str) -> &'static str {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    match ext {
-        "rs" => "rust",
-        "py" => "python",
-        "js" | "jsx" => "javascript",
-        "ts" => "typescript",
-        "tsx" => "tsx",
-        "go" => "go",
-        "cs" => "csharp",
-        "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
-        "swift" => "swift",
-        "kt" | "kts" => "kotlin",
-        "rb" => "ruby",
-        "java" => "java",
-        _ => "unknown",
-    }
+pub fn language_of(path: &str) -> String {
+    crate::services::code_graph::language_from_path(std::path::Path::new(path))
 }
 
 /// Trim and byte-bound a raw query string on a UTF-8 char boundary.
@@ -239,11 +221,14 @@ pub fn evaluate_semantic(
         let mut v: Vec<&Function> = functions
             .iter()
             .filter(|f| {
-                config.languages.is_empty()
-                    || config
-                        .languages
-                        .iter()
-                        .any(|lang| lang.eq_ignore_ascii_case(language_of(&f.file_path)))
+                if config.languages.is_empty() {
+                    return true;
+                }
+                let lang_id = language_of(&f.file_path);
+                config
+                    .languages
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(&lang_id))
             })
             .collect();
         // Deterministic order (stable source identity) so the same unchanged
@@ -436,9 +421,12 @@ fn accumulate_call_sites(batch: &[(String, String, String)]) -> (usize, bool) {
 ///   (missing / unreadable), counted rather than silently dropped so a shrunken
 ///   denominator — and therefore an unreliable recall — stays visible.
 ///
-/// A path that resolves outside `workspace_path` is a security skip (traversal
-/// guard) and is **not** counted as unreadable. A read/resolve failure of an
-/// indexed file **is** accounted.
+/// A path that resolves outside `workspace_path` (e.g. an in-workspace symlink
+/// repointed outside the root after indexing) stays blocked by the traversal
+/// guard and **is** accounted as unreadable — exactly like an indexed file that
+/// no longer resolves — so a shrunken denominator stays visible instead of
+/// silently inflating recall. A read/resolve failure of an indexed file is
+/// likewise accounted.
 ///
 /// Files are read and parsed in bounded batches of
 /// [`CALL_SITE_SCAN_BATCH_FILES`] so peak memory stays bounded by one batch
@@ -919,6 +907,55 @@ mod tests {
         assert_eq!(language_of("pkg/main.go"), "go");
         assert_eq!(language_of("app/index.ts"), "typescript");
         assert_eq!(language_of("noext"), "unknown");
+    }
+
+    #[test]
+    fn language_of_matches_indexer_canonical_mapping() {
+        // The semantic gate must resolve every extension to the SAME identifier
+        // the indexer stores (`code_graph::language_from_path`), so a configured
+        // language includes a file in BOTH the semantic and graph gates. This
+        // generalizes the TSX fix (084.005-T) to every supported extension:
+        // `.h++`→cpp, `.sql`→sql, `.md`→markdown, `.rb`→`rb`, and an unknown
+        // extension falls through to the raw ext rather than a lossy `unknown`.
+        for path in [
+            "a.rs",
+            "a.py",
+            "a.js",
+            "a.jsx",
+            "a.ts",
+            "a.tsx",
+            "a.go",
+            "a.cs",
+            "a.c",
+            "a.h",
+            "a.cpp",
+            "a.cc",
+            "a.cxx",
+            "a.hpp",
+            "a.hh",
+            "a.hxx",
+            "a.h++",
+            "a.swift",
+            "a.sql",
+            "a.kt",
+            "a.kts",
+            "a.md",
+            "a.rb",
+            "a.java",
+            "a.unknownext",
+            "noext",
+        ] {
+            assert_eq!(
+                language_of(path),
+                crate::services::code_graph::language_from_path(std::path::Path::new(path)),
+                "language_of must match the indexer canonical mapping for {path}"
+            );
+        }
+        // Explicit spot-checks for the extensions the reviewer named, so the
+        // concrete expected identifiers are documented, not only the equivalence.
+        assert_eq!(language_of("src/vec.h++"), "cpp");
+        assert_eq!(language_of("db/schema.sql"), "sql");
+        assert_eq!(language_of("docs/readme.md"), "markdown");
     }
 
     // ── 084.008-T: retrieval-mode resolution ─────────────────────────────────
