@@ -1,20 +1,36 @@
-//! Regression tier for the retrieval-eval subsystem (081.007-T).
+//! Regression tier for the retrieval-eval subsystem (081.007-T / 084.012-T).
 //!
 //! The tier IS the deliverable: it runs the eval over a fixture corpus and
 //! asserts the metrics clear the committed `docs/eval/baseline.json` thresholds.
+//! The graph metrics are computed from the **real** indexed path — index a
+//! fixture workspace, then reproduce `run_retrieval_eval`'s exact graph pipeline
+//! (parser call-site denominator + real `calls` edges + real dangling count) —
+//! not from injected constants (F137D72E). `false_edge_rate` remains a
+//! dangling-only lower bound, so target-correctness is asserted directly against
+//! a ground-truth expected-edges manifest (the 084.004 correctness nuance).
 //!
 //! Scenarios:
-//! 1. fixture evaluation meets the semantic baseline;
-//! 2. fixture evaluation meets the graph baseline;
-//! 3. a stricter threshold breach fails the tier;
-//! 4. the baseline JSON round-trips through serde.
+//! 1. fixture semantic evaluation meets the semantic baseline;
+//! 2. real-path graph metrics match the fixture's expected recall and clear the
+//!    graph baseline;
+//! 3. real-path target-correctness: singleton edges match the manifest exactly;
+//! 4. a seeded regression in the count path fails the tier (the tier has teeth);
+//! 5. the baseline JSON round-trips through serde.
 
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
+
+use engram::db::connect_db;
+use engram::db::queries::CodeGraphQueries;
 use engram::models::Function;
+use engram::models::config::CodeGraphConfig;
 use engram::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds,
 };
+use engram::services::code_graph;
 use engram::services::retrieval_eval::{
-    check_thresholds, compute_graph_metrics, evaluate_semantic,
+    check_thresholds, compute_graph_metrics, evaluate_semantic, scan_call_site_inventory,
 };
 
 /// The committed graduated baseline thresholds.
@@ -66,8 +82,11 @@ fn fixture_corpus() -> Vec<Function> {
     ]
 }
 
-/// Assemble a fixture report: real semantic eval + representative graph counts.
-fn fixture_report() -> RetrievalEvalReport {
+/// Assemble the semantic portion of a fixture report from the **real**
+/// `evaluate_semantic` over a deterministic synthetic corpus (distinct
+/// docstrings ⇒ near-perfect self-retrieval). The graph portion is filled from
+/// the real indexed path by the graph scenarios below.
+fn semantic_fixture_report(graph: GraphMetrics) -> RetrievalEvalReport {
     let config = RetrievalEvalConfig {
         enabled: true,
         languages: vec!["rust".to_owned()],
@@ -76,8 +95,6 @@ fn fixture_report() -> RetrievalEvalReport {
         ..RetrievalEvalConfig::default()
     };
     let semantic = evaluate_semantic(&fixture_corpus(), &config).expect("semantic eval");
-    // Nine of ten visible call sites resolved, no dangling edges.
-    let graph: GraphMetrics = compute_graph_metrics(10, 9, 0);
 
     RetrievalEvalReport {
         enabled: true,
@@ -97,9 +114,131 @@ fn baseline() -> RetrievalEvalThresholds {
     serde_json::from_str(BASELINE_JSON).expect("baseline.json parses")
 }
 
+// ── Real graph fixture (F137D72E) ────────────────────────────────────────────
+//
+// A hand-authored multi-file Rust fixture with a known ground truth, indexed via
+// the real `code_graph::index_workspace` so the graph metrics come from the same
+// pipeline `run_retrieval_eval` uses — never injected constants.
+//
+// Parser call-site inventory (recall denominator) = 4:
+//   a.rs: beta(), local_a();  b.rs: gamma();  d.rs: dup().
+// Resolved `calls` edges (numerator) = 3:
+//   in-file direct: alpha -> local_a;
+//   cross-file singletons: alpha -> beta, beta -> gamma.
+// The ambiguous `dup` (defined in e.rs AND f.rs) is skipped, never mis-resolved,
+// so it contributes no edge. No resolved edge is dangling ⇒ false_edge_rate = 0.
+//   expected resolution_recall = 3/4 = 0.75  (clears baseline floor 0.5)
+//   expected false_edge_rate   = 0.0         (within baseline ceiling 0.2)
+
+const FILE_A: &str =
+    "pub fn alpha() {\n    beta();\n    local_a();\n}\n\npub fn local_a() {\n    let _ = 1;\n}\n";
+const FILE_B: &str = "pub fn beta() {\n    gamma();\n}\n";
+const FILE_C: &str = "pub fn gamma() {\n    let _ = 2;\n}\n";
+const FILE_D: &str = "pub fn caller_dup() {\n    dup();\n}\n";
+const FILE_E: &str = "pub fn dup() {\n    let _ = 3;\n}\n";
+const FILE_F: &str = "pub fn dup() {\n    let _ = 4;\n}\n";
+
+const FIXTURE: &[(&str, &str)] = &[
+    ("src/a.rs", FILE_A),
+    ("src/b.rs", FILE_B),
+    ("src/c.rs", FILE_C),
+    ("src/d.rs", FILE_D),
+    ("src/e.rs", FILE_E),
+    ("src/f.rs", FILE_F),
+];
+
+/// Ground-truth manifest of expected `calls_resolved_singleton` edges as
+/// (caller, callee) name pairs — the primary target-correctness gate.
+const EXPECTED_SINGLETONS: &[(&str, &str)] = &[("alpha", "beta"), ("beta", "gamma")];
+
+const FIXTURE_CALL_SITES: usize = 4;
+const FIXTURE_RESOLVED: u64 = 3;
+const FIXTURE_FALSE_EDGES: u64 = 0;
+
+fn write_fixture(ws: &Path) {
+    for (rel, content) in FIXTURE {
+        let full = ws.join(rel);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).expect("create dirs");
+        }
+        fs::write(full, content).expect("write file");
+    }
+}
+
+fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
+    use sha2::{Digest, Sha256};
+    let canon = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase();
+    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
+    (std::env::temp_dir().join("engram-test"), branch)
+}
+
+/// Index the fixture with the cross-file post-pass (full-index path) and return
+/// a queries handle plus the indexed data-dir/branch for a subsequent eval read.
+async fn index_fixture() -> (
+    tempfile::TempDir,
+    CodeGraphQueries,
+    std::path::PathBuf,
+    String,
+) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_fixture(ws);
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+    (tmp, queries, data_dir, branch)
+}
+
+/// Reproduce `run_retrieval_eval`'s exact graph pipeline over the indexed fixture:
+/// the parser call-site inventory (denominator), the real gated `calls` edge
+/// count (numerator), and the real dangling count (false edges). This is the
+/// REAL path under test — no injected metrics.
+async fn real_graph_metrics(ws: &Path, queries: &CodeGraphQueries) -> GraphMetrics {
+    let languages = vec!["rust".to_owned()];
+    let files = queries.list_code_files().await.expect("list_code_files");
+    let inventory = scan_call_site_inventory(ws, &files, &languages)
+        .await
+        .expect("scan_call_site_inventory");
+    let resolved = queries
+        .count_calls_edges_in_languages(&languages)
+        .await
+        .expect("count_calls_edges_in_languages");
+    let false_edges = queries
+        .count_dangling_calls_edges()
+        .await
+        .expect("count_dangling_calls_edges");
+    let mut graph = compute_graph_metrics(inventory.call_sites, resolved, false_edges);
+    graph.index_stale = inventory.index_stale;
+    graph.unreadable_files = inventory.unreadable_files;
+    graph
+}
+
+/// Build a `name -> [function_id]` map from the indexed function corpus.
+async fn name_to_ids(q: &CodeGraphQueries) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for f in q.all_functions().await.expect("all_functions") {
+        map.entry(f.name).or_default().push(f.id);
+    }
+    map
+}
+
 #[test]
 fn fixture_meets_semantic_baseline() {
-    let report = fixture_report();
+    // Semantic side uses the real evaluate_semantic; graph side is irrelevant to
+    // this assertion, so a passing placeholder graph keeps the report well-formed.
+    let report = semantic_fixture_report(compute_graph_metrics(
+        FIXTURE_CALL_SITES,
+        FIXTURE_RESOLVED,
+        FIXTURE_FALSE_EDGES,
+    ));
     let thresholds = baseline();
     let check = check_thresholds(&report, &thresholds);
 
@@ -113,42 +252,131 @@ fn fixture_meets_semantic_baseline() {
     assert!(report.semantic.mrr >= thresholds.min_mrr);
 }
 
-#[test]
-fn fixture_meets_graph_baseline() {
-    let report = fixture_report();
-    let thresholds = baseline();
+// Scenario 2: the REAL indexed-path graph metrics match the fixture's expected
+// recall exactly and clear the committed graph baseline.
+#[tokio::test]
+async fn real_path_graph_metrics_match_expected_and_clear_baseline() {
+    let (tmp, queries, _dir, _branch) = index_fixture().await;
+    let graph = real_graph_metrics(tmp.path(), &queries).await;
 
-    assert!(
-        report.graph.resolution_recall >= thresholds.min_resolution_recall,
-        "resolution_recall {} below floor {}",
-        report.graph.resolution_recall,
-        thresholds.min_resolution_recall
+    assert_eq!(
+        graph.call_sites, FIXTURE_CALL_SITES,
+        "real parser inventory must be the fixture denominator"
+    );
+    assert_eq!(
+        graph.resolved, FIXTURE_RESOLVED,
+        "real resolved-edge count must match the fixture ground truth"
+    );
+    assert_eq!(
+        graph.false_edges, FIXTURE_FALSE_EDGES,
+        "no resolved edge is dangling in the fixture"
     );
     assert!(
-        report.graph.false_edge_rate <= thresholds.max_false_edge_rate,
-        "false_edge_rate {} above ceiling {}",
-        report.graph.false_edge_rate,
-        thresholds.max_false_edge_rate
+        (graph.resolution_recall - 0.75).abs() < 1e-9,
+        "real-path resolution_recall must be 3/4 = 0.75, got {}",
+        graph.resolution_recall
+    );
+    assert!(
+        !graph.index_stale,
+        "an unmodified freshly-indexed tree must not be flagged stale"
+    );
+
+    let report = semantic_fixture_report(graph);
+    let thresholds = baseline();
+    let check = check_thresholds(&report, &thresholds);
+    assert!(
+        check.passed,
+        "the real-path fixture must clear the full baseline; breaches: {:?}",
+        check.breaches
     );
 }
 
-#[test]
-fn threshold_breach_fails_tier() {
-    let report = fixture_report();
-    // Demand a resolution recall the fixture (0.9) cannot meet.
-    let strict = RetrievalEvalThresholds {
-        min_resolution_recall: 0.99,
-        ..baseline()
-    };
-    let check = check_thresholds(&report, &strict);
+// Scenario 3 (PRIMARY GATE): real-path target-correctness. Every produced
+// `calls_resolved_singleton` edge matches the ground-truth manifest (correct
+// callee id) and the produced count equals the manifest size. This is asserted
+// directly because `false_edge_rate` is only a dangling-only lower bound and
+// cannot, on its own, prove a resolved edge points at the RIGHT callee.
+#[tokio::test]
+async fn real_path_singleton_edges_match_manifest() {
+    let (_tmp, queries, _dir, _branch) = index_fixture().await;
+    let names = name_to_ids(&queries).await;
 
-    assert!(!check.passed, "an unmet threshold must fail the tier");
+    let expected: HashSet<(String, String)> = EXPECTED_SINGLETONS
+        .iter()
+        .map(|(caller, callee)| {
+            let from_ids = names
+                .get(*caller)
+                .unwrap_or_else(|| panic!("caller {caller} must be indexed"));
+            let to_ids = names
+                .get(*callee)
+                .unwrap_or_else(|| panic!("callee {callee} must be indexed"));
+            assert_eq!(from_ids.len(), 1, "caller {caller} must be unambiguous");
+            assert_eq!(to_ids.len(), 1, "callee {callee} must be unambiguous");
+            (from_ids[0].clone(), to_ids[0].clone())
+        })
+        .collect();
+
+    let actual: HashSet<(String, String)> = queries
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons")
+        .into_iter()
+        .collect();
+
+    assert_eq!(
+        actual.len(),
+        EXPECTED_SINGLETONS.len(),
+        "produced singleton count must equal the manifest size; actual: {actual:?}"
+    );
+    assert_eq!(
+        actual, expected,
+        "every singleton edge must match the ground-truth manifest (correct callee id)"
+    );
+
+    // The ambiguous `dup` name must never be a resolved singleton target.
+    let dup_ids: HashSet<&String> = names.get("dup").expect("dup indexed").iter().collect();
+    assert_eq!(dup_ids.len(), 2, "dup must have two ambiguous definitions");
+    assert!(
+        actual.iter().all(|(_, to)| !dup_ids.contains(to)),
+        "no singleton edge may resolve to an ambiguous `dup` definition"
+    );
+}
+
+// Scenario 4: a seeded regression in the count path fails the tier. The correct
+// real-path report clears the baseline; a report built from a regressed count
+// (the cross-file post-pass silently dropping resolved edges) must FAIL the SAME
+// baseline — proving the tier catches a genuine count-path regression rather than
+// passing vacuously.
+#[tokio::test]
+async fn seeded_count_regression_fails_the_tier() {
+    let (tmp, queries, _dir, _branch) = index_fixture().await;
+    let real = real_graph_metrics(tmp.path(), &queries).await;
+    let thresholds = baseline();
+
+    // The real path passes and is non-vacuous (it actually measured something).
+    assert!(
+        real.call_sites > 0 && real.resolved > 0,
+        "real path must measure edges"
+    );
+    assert!(
+        check_thresholds(&semantic_fixture_report(real.clone()), &thresholds).passed,
+        "sanity: the correct real path clears the baseline"
+    );
+
+    // Seed a regression: only the in-file direct edge survives (the cross-file
+    // post-pass regressed), dropping recall to 1/4 = 0.25, below the 0.5 floor.
+    let regressed = compute_graph_metrics(real.call_sites, 1, real.false_edges);
+    let check = check_thresholds(&semantic_fixture_report(regressed), &thresholds);
+    assert!(
+        !check.passed,
+        "a regressed resolved-edge count must fail the graph baseline"
+    );
     assert!(
         check
             .breaches
             .iter()
             .any(|b| b.contains("resolution_recall")),
-        "breach list must name the offending metric; got {:?}",
+        "the breach list must name resolution_recall; got {:?}",
         check.breaches
     );
 }
