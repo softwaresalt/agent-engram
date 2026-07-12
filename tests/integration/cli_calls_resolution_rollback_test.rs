@@ -7,17 +7,16 @@
 //! then the CLI entry point is invoked to drive the 082.010-T
 //! `rollback_calls_resolution` down-migration.
 //!
-//! Scenarios (3):
+//! Scenarios (4):
 //!   1. the subcommand parses and dispatches, exiting 0 and printing the
 //!      retracted-edge count;
 //!   2. on a workspace with tagged edges it retracts every
 //!      `calls_resolved_singleton` edge (direct preserved) AND the rollback is
 //!      durable across a `connect_db` reopen (082.003-T marker), verified via a
 //!      fresh DB open;
-//!   3. a second invocation is idempotent — exit 0, zero further retractions.
-//!
-//! A fourth scenario pins the 082.013-T active-daemon refusal: with the
-//! workspace `DaemonLock` held, `migrate-down` exits 2 and mutates nothing.
+//!   3. a second invocation is idempotent — exit 0, zero further retractions;
+//!   4. the 082.013-T active-daemon refusal: with the workspace `DaemonLock`
+//!      held, `migrate-down` exits 2 and mutates nothing.
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]

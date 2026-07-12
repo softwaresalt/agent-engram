@@ -288,7 +288,7 @@ API/contract), 1 cycle.
   082.004-T → 081.005-T) and enforced by shipment ordering.
 - The operator-chosen false-edge-rate threshold is read from `RetrievalEvalConfig.thresholds`
   (081.001-T); 082.004 asserts against it.
-- Peer-language extractors are queued as 082.005-T (Python), 082.006-T (TypeScript), and
+- Peer-language extractors are tracked as 082.005-T (Python), 082.006-T (TypeScript), and
   082.007-T (Go) under 082-F, but each is **`blocked` pending a Stage re-harvest**. Post-078-S
   verification found the earlier "same pattern, ≤3 files, single width" framing incorrect: only
   `rust.rs` emits `ExtractedEdge::Calls` today, so `python.rs` / `typescript.rs` / `go_lang.rs`
