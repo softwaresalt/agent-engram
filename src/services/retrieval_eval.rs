@@ -241,17 +241,28 @@ pub fn evaluate_semantic(
 /// Count identifier / path call sites in a source string.
 ///
 /// This is the graph metric *denominator*: the parser call-site inventory
-/// (`ExtractedEdge::Calls`) discovered by [`parse_source`]. Method calls and
-/// blocklisted helpers (`clone`, `unwrap`, …) are excluded by the parser, so
-/// the count reflects the same visible call sites the indexer attempts to
-/// resolve. A parse failure yields `0` (the file contributes nothing).
+/// (`ExtractedEdge::Calls`) discovered by [`parse_source`], restricted to the
+/// calls the indexer actually attempts to resolve. Method / receiver calls
+/// (`x.foo()`, marked `is_method`) are extracted but never promoted to edges —
+/// impl methods are indexed as `Type::method`, so name-only resolution cannot
+/// match them — so they are excluded here to keep the denominator aligned with
+/// resolvable call sites. Blocklisted helpers (`clone`, `unwrap`, …) are
+/// excluded by the parser. A parse failure yields `0`.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
         result
             .edges
             .iter()
-            .filter(|edge| matches!(edge, ExtractedEdge::Calls { .. }))
+            .filter(|edge| {
+                matches!(
+                    edge,
+                    ExtractedEdge::Calls {
+                        is_method: false,
+                        ..
+                    }
+                )
+            })
             .count()
     })
 }

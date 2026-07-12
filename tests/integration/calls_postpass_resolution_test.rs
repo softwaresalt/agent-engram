@@ -6,13 +6,15 @@
 //! canonical provenance `calls_resolved_singleton`. It runs in the full /
 //! `--force` index path only — never on incremental sync.
 //!
-//! Scenarios (5):
+//! Scenarios (6):
 //!   1. unique cross-file name -> one edge tagged `calls_resolved_singleton`
 //!   2. ambiguous name (2 defs) -> skipped (no edge)
 //!   3. name with no matching def -> no edge (no false edge)
 //!   4. incremental sync path -> post-pass NOT invoked (no singleton edges)
 //!   5. a singleton that became ambiguous (2nd same-named def added) is
 //!      retracted by re-resolution even when the caller file is unchanged
+//!   6. with EMPTY staging (post-rehydration / fresh upgrade) the post-pass
+//!      PRESERVES existing singleton edges instead of destroying them
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -203,5 +205,45 @@ async fn reresolution_retracts_now_ambiguous_singleton() {
         singleton_count(&q).await,
         0,
         "a singleton that became ambiguous must be retracted by re-resolution"
+    );
+}
+
+// Scenario 6: the post-pass must PRESERVE existing singleton edges when the
+// staging relation is empty. This models JSONL rehydration and a fresh upgrade,
+// where singleton edges are restored but `staged_call` rows are not — a
+// destructive global retract-then-rebuild would wrongly delete every singleton.
+#[test]
+async fn postpass_preserves_singletons_when_staging_empty() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "src/a.rs", "pub fn caller() {\n    helper();\n}\n");
+    write_sample_file(ws, "src/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let q = queries_for(&data_dir, &branch).await;
+    assert_eq!(singleton_count(&q).await, 1, "baseline singleton edge");
+
+    // Model rehydration: the singleton edge exists but staging is empty.
+    q.clear_staged_calls_for_file("src/a.rs")
+        .await
+        .expect("clear staging");
+    assert!(
+        q.list_staged_calls()
+            .await
+            .expect("list_staged_calls")
+            .is_empty(),
+        "staging must be empty to model the rehydration case"
+    );
+
+    // Re-running the post-pass must NOT destroy the existing singleton.
+    q.reresolve_calls_edges().await.expect("reresolve");
+    assert_eq!(
+        singleton_count(&q).await,
+        1,
+        "post-pass must preserve singletons when staging is empty"
     );
 }

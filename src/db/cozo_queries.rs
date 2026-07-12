@@ -1457,6 +1457,39 @@ stale[from, to] :=
         Ok(())
     }
 
+    /// Retract any `calls_resolved_singleton` edge from `caller_id` whose callee
+    /// is a function named `callee_name` (082.008-T targeted revalidation).
+    ///
+    /// Used by the cross-file post-pass to drop a singleton whose callee name is
+    /// no longer unambiguously resolvable (zero or two-or-more definitions),
+    /// without disturbing singletons for other callers or names. `direct` edges
+    /// are untouched. A no-op when the `resolution` column is absent.
+    pub async fn retract_singleton_edge_from_caller_by_name(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+    ) -> Result<(), EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(());
+        }
+        let script = r#"
+?[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_singleton",
+    from = $from,
+    *function_meta { id: to, name },
+    name = $name
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(caller_id));
+        p.insert("name".to_owned(), DataValue::from(callee_name));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// Upsert a file-to-file import edge.
     #[allow(clippy::similar_names)]
     pub async fn create_imports_edge(
@@ -1610,18 +1643,17 @@ stale[from, to] :=
     /// Returns the number of edges created (`resolved`) and the number of
     /// staged calls examined (`lookups`).
     ///
-    /// This is a full rebuild: it first retracts every existing
-    /// `calls_resolved_singleton` edge, then re-derives singletons from the
-    /// current staged calls and name index. That revalidation is what retracts a
-    /// singleton whose callee name has since become ambiguous (a second
-    /// same-named definition was added) or whose caller file was skipped as
-    /// unchanged on a non-forced full index — cases the additive loop alone
-    /// would leave stale. `direct` (in-file) edges are untouched.
+    /// Revalidating, but non-destructive: for each staged call whose callee name
+    /// resolves to exactly one function the singleton edge is upserted; for a
+    /// staged call whose name resolves to zero or to two-or-more functions, any
+    /// singleton previously resolved from that caller for that name is retracted
+    /// (targeted revalidation), so a call that became ambiguous — or lost its
+    /// unique target — does not leave a stale edge. Retraction is scoped to
+    /// currently-staged callers only, so singleton edges whose staging was not
+    /// repopulated (e.g. after JSONL rehydration or a fresh upgrade, where edges
+    /// are restored but `staged_call` rows are not) are preserved rather than
+    /// destroyed. `direct` (in-file) edges are never touched.
     pub async fn reresolve_calls_edges(&self) -> Result<ReresolveResult, EngramError> {
-        // Revalidate from scratch: drop all prior singletons so stale/ambiguous
-        // ones cannot survive, then re-derive from the current staged calls.
-        self.retract_all_calls_resolved_singleton_edges().await?;
-
         // Workspace-global name -> [id] index (one round-trip).
         let script = r#"?[name, id] := *function_meta { id, name }"#;
         let r = self
@@ -1639,10 +1671,12 @@ stale[from, to] :=
         let lookups = staged.len();
         let mut resolved = 0usize;
         for call in &staged {
-            // Unambiguous-name-only guard: resolve solely when a single function
-            // carries the callee name.
-            if let Some(ids) = name_index.get(&call.callee_name) {
-                if ids.len() == 1 {
+            // Resolve solely when a single function carries the callee name. A
+            // zero or ambiguous (2+) match retracts any stale singleton this
+            // caller previously had for the name, so revalidation stays targeted
+            // and never touches singletons whose staging was not repopulated.
+            match name_index.get(&call.callee_name) {
+                Some(ids) if ids.len() == 1 => {
                     self.create_calls_edge_with_resolution(
                         &call.caller_id,
                         &ids[0],
@@ -1650,6 +1684,13 @@ stale[from, to] :=
                     )
                     .await?;
                     resolved += 1;
+                }
+                _ => {
+                    self.retract_singleton_edge_from_caller_by_name(
+                        &call.caller_id,
+                        &call.callee_name,
+                    )
+                    .await?;
                 }
             }
         }

@@ -69,7 +69,8 @@ fn empty_graph_yields_zero_report() {
 #[test]
 fn count_call_sites_matches_identifier_calls() {
     // `foo` calls `bar` and `baz`; those two definitions make no calls.
-    // Method calls / blocklisted helpers would be excluded by the parser.
+    // Blocklisted helpers are excluded by the parser; method calls are excluded
+    // from the denominator (see count_call_sites_excludes_method_calls).
     let source = r"
 fn foo() {
     bar();
@@ -79,4 +80,21 @@ fn bar() {}
 fn baz() {}
 ";
     assert_eq!(count_call_sites(source, Language::Rust), 2);
+}
+
+#[test]
+fn count_call_sites_excludes_method_calls() {
+    // Method / receiver calls are extracted but never promoted to edges, so they
+    // must NOT inflate the resolution-recall denominator. Only the free-function
+    // call `free_fn()` counts here; `self.method_one()` and `x.method_two()` do
+    // not.
+    let source = r"
+fn foo() {
+    self.method_one();
+    x.method_two();
+    free_fn();
+}
+fn free_fn() {}
+";
+    assert_eq!(count_call_sites(source, Language::Rust), 1);
 }

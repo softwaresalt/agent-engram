@@ -585,6 +585,9 @@ async fn index_workspace_impl(
     // (exactly one workspace-global definition) become calls_resolved_singleton
     // edges; ambiguous / unmatched names are skipped to bound false edges.
     let resolved_calls = queries.reresolve_calls_edges().await?;
+    // Post-pass singletons are real edge records: include them in the reported
+    // edges_created so full-index CLI/API responses do not underreport (082.008-T).
+    result.edges_created += resolved_calls.resolved;
     if resolved_calls.resolved > 0 {
         debug!(
             count = resolved_calls.resolved,
