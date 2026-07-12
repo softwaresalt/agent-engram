@@ -46,6 +46,13 @@ pub struct CodeEdge {
     /// Identity of the client that created a `concerns` edge.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_by: Option<String>,
+    /// Provenance of a `calls` edge (082.003-T): `direct` for an in-file
+    /// resolved call, `calls_resolved_singleton` for a cross-file call
+    /// resolved by the unambiguous-name post-pass. `None` for edge types that
+    /// carry no provenance. `#[serde(default)]` keeps pre-field JSONL edges
+    /// deserializable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
     /// When the edge was created.
     pub created_at: String,
 }

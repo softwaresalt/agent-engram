@@ -291,6 +291,14 @@ async fn index_workspace_impl(
             queries.upsert_code_file(&code_file).await?;
 
             // Clear previous edges from this file.
+            // 082.009-T: retract this file's prior calls_resolved_singleton
+            // edges (caller or callee in this file) WHILE the old symbol IDs
+            // still exist, and clear its staged calls, before deleting symbols
+            // and re-staging.
+            queries
+                .retract_resolved_calls_edges_for_file(&rel_path)
+                .await?;
+            queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
             queries.delete_interfaces_by_file(&rel_path).await?;
@@ -463,14 +471,39 @@ async fn index_workspace_impl(
             // ── Create edges from extracted relationships ───────────────
             for edge in &parse_result.edges {
                 match edge {
-                    ExtractedEdge::Calls { caller, callee } => {
-                        // Resolve names to IDs within this file's symbols.
-                        if let (Some(from_id), Some(to_id)) = (
+                    ExtractedEdge::Calls {
+                        caller,
+                        callee,
+                        is_method,
+                        is_qualified,
+                    } => {
+                        // Method/receiver (`self.bar()`) and path-qualified
+                        // (`Type::parse()`) calls are extracted for completeness
+                        // (082.001-T) but NOT promoted to a calls_edge: their
+                        // targets are indexed under qualified names, so name-only
+                        // resolution cannot match them and would create a false
+                        // singleton edge. Deferred pending qualification/method-
+                        // aware resolution.
+                        if *is_method || *is_qualified {
+                            continue;
+                        }
+                        // Resolve names to IDs within this file's symbols. A
+                        // callee resolved locally becomes a direct edge; a
+                        // caller-resolved but callee-unresolved (cross-file)
+                        // call is staged for the deferred post-pass (082.002-T)
+                        // instead of being silently dropped.
+                        match (
                             find_function_id(&function_ids, caller),
                             find_function_id(&function_ids, callee),
                         ) {
-                            queries.create_calls_edge(&from_id, &to_id).await?;
-                            result.edges_created += 1;
+                            (Some(from_id), Some(to_id)) => {
+                                queries.create_calls_edge(&from_id, &to_id).await?;
+                                result.edges_created += 1;
+                            }
+                            (Some(from_id), None) => {
+                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                            }
+                            _ => {}
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -545,6 +578,23 @@ async fn index_workspace_impl(
         debug!(
             count = reresolved.resolved,
             "code graph: re-resolved deferred references edges"
+        );
+    }
+
+    // ── Post-pass: resolve staged cross-file calls (082.008-T) ──────
+    // Full / --force index only — NOT the incremental sync path (performance
+    // gate). Staged calls (082.002-T) whose callee name is unambiguous
+    // (exactly one workspace-global definition) become calls_resolved_singleton
+    // edges; ambiguous / unmatched names are skipped to bound false edges.
+    let resolved_calls = queries.reresolve_calls_edges().await?;
+    // Post-pass singletons are real edge records: include them in the reported
+    // edges_created so full-index CLI/API responses do not underreport (082.008-T).
+    result.edges_created += resolved_calls.resolved;
+    if resolved_calls.resolved > 0 {
+        debug!(
+            count = resolved_calls.resolved,
+            lookups = resolved_calls.lookups,
+            "code graph: resolved cross-file singleton calls edges"
         );
     }
 
@@ -877,6 +927,15 @@ pub async fn sync_workspace_with_progress(
             }
 
             // Clear previous symbols and defines edges for this file.
+            // 082.009-T: retract this file's prior calls_resolved_singleton
+            // edges and clear its staged calls WHILE the old symbol IDs still
+            // exist, before deleting the function metadata — mirroring the
+            // full-index and file-deletion paths so an incremental sync never
+            // leaves a stale/dangling cross-file edge.
+            queries
+                .retract_resolved_calls_edges_for_file(&rel_path)
+                .await?;
+            queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
             queries.delete_interfaces_by_file(&rel_path).await?;
@@ -1067,12 +1126,32 @@ pub async fn sync_workspace_with_progress(
             // ── Recreate edges from parse result ────────────────────────
             for edge in &parse_result.edges {
                 match edge {
-                    ExtractedEdge::Calls { caller, callee } => {
-                        if let (Some(from_id), Some(to_id)) = (
+                    ExtractedEdge::Calls {
+                        caller,
+                        callee,
+                        is_method,
+                        is_qualified,
+                    } => {
+                        // Method/receiver and path-qualified calls are extracted
+                        // but not promoted (see the index-path arm) to avoid
+                        // false singleton edges.
+                        if *is_method || *is_qualified {
+                            continue;
+                        }
+                        // Mirror the index-path behavior: resolve locally for a
+                        // direct edge, else stage the cross-file call for the
+                        // deferred post-pass (082.002-T).
+                        match (
                             find_function_id(&new_function_ids, caller),
                             find_function_id(&new_function_ids, callee),
                         ) {
-                            queries.create_calls_edge(&from_id, &to_id).await?;
+                            (Some(from_id), Some(to_id)) => {
+                                queries.create_calls_edge(&from_id, &to_id).await?;
+                            }
+                            (Some(from_id), None) => {
+                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                            }
+                            _ => {}
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -1194,6 +1273,13 @@ async fn handle_deleted_file(
     }
 
     // Delete all symbol nodes, outbound file edges, and metadata for this file.
+    // 082.009-T: retract this file's calls_resolved_singleton edges and clear
+    // its staged calls WHILE the symbol IDs still exist, before deleting the
+    // function metadata they are keyed against.
+    queries
+        .retract_resolved_calls_edges_for_file(file_path)
+        .await?;
+    queries.clear_staged_calls_for_file(file_path).await?;
     queries.delete_functions_by_file(file_path).await?;
     queries.delete_classes_by_file(file_path).await?;
     queries.delete_interfaces_by_file(file_path).await?;

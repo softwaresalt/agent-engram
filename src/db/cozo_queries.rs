@@ -10,6 +10,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -159,6 +160,18 @@ pub struct ReresolveResult {
     /// Batch implementations emit ≤ 1 round-trip regardless of edge count.
     /// This value excludes any later per-edge fallback resolution queries.
     pub lookups: usize,
+}
+
+/// A call site whose callee could not be resolved within the caller's own
+/// file, staged for the deferred cross-file post-pass (082.002-T).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCall {
+    /// Fully-qualified ID of the calling function (e.g. `function:...`).
+    pub caller_id: String,
+    /// Bare name of the called function as it appears at the call site.
+    pub callee_name: String,
+    /// Workspace-relative path of the file the call site lives in.
+    pub source_file: String,
 }
 
 /// Information about a `concerns` edge targeting a symbol.
@@ -1201,22 +1214,277 @@ impl CodeGraphQueries {
 
     // ── Edge CRUD ──────────────────────────────────────────────────
 
-    /// Upsert a function-to-function call edge.
+    /// Upsert a function-to-function call edge with `direct` provenance.
+    ///
+    /// This is the stable two-argument writer used by the ~30 in-file call
+    /// resolution sites. It records the edge as `direct` (082.003-T); the
+    /// cross-file post-pass uses [`Self::create_calls_edge_with_resolution`]
+    /// with `calls_resolved_singleton` instead.
     #[allow(clippy::similar_names)]
     pub async fn create_calls_edge(
         &self,
         caller_id: &str,
         callee_id: &str,
     ) -> Result<(), EngramError> {
+        self.create_calls_edge_with_resolution(caller_id, callee_id, "direct")
+            .await
+    }
+
+    /// Upsert a function-to-function call edge with an explicit provenance
+    /// value (082.003-T).
+    ///
+    /// `resolution` records how the edge was resolved: `direct` for an in-file
+    /// resolved call, `calls_resolved_singleton` for a cross-file call resolved
+    /// by the unambiguous-name post-pass (082.008-T). Keyed by `(from, to)`, so
+    /// re-writing the same pair updates its provenance in place.
+    #[allow(clippy::similar_names)]
+    pub async fn create_calls_edge_with_resolution(
+        &self,
+        caller_id: &str,
+        callee_id: &str,
+        resolution: &str,
+    ) -> Result<(), EngramError> {
         let ts = now_utc_str();
         let script = r#"
-?[from, to, created_at] <- [[$from, $to, $created_at]]
-:put calls_edge { from, to => created_at }
+?[from, to, created_at, resolution] <- [[$from, $to, $created_at, $resolution]]
+:put calls_edge { from, to => created_at, resolution }
 "#;
         let mut p = BTreeMap::new();
         p.insert("from".to_owned(), DataValue::from(caller_id));
         p.insert("to".to_owned(), DataValue::from(callee_id));
         p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        p.insert("resolution".to_owned(), DataValue::from(resolution));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Count `calls_edge` rows grouped by their `resolution` provenance value
+    /// (082.003-T).
+    ///
+    /// Returns a map of provenance value (`direct`,
+    /// `calls_resolved_singleton`, …) to the number of edges carrying it.
+    pub async fn count_calls_edges_by_resolution(
+        &self,
+    ) -> Result<HashMap<String, u64>, EngramError> {
+        let script = r#"
+?[resolution, count(from)] := *calls_edge{from, resolution}
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut counts = HashMap::new();
+        for row in &r.rows {
+            let resolution = extract_str(row, 0);
+            let count = u64::try_from(extract_i64(row, 1).max(0)).unwrap_or(0);
+            counts.insert(resolution, count);
+        }
+        Ok(counts)
+    }
+
+    /// Enumerate every `(from, to)` pair whose provenance equals `resolution`
+    /// (082.003-T).
+    ///
+    /// Used by the lifecycle (082.009-T) and rollback (082.010-T) paths to
+    /// select edges resolved by a specific strategy — e.g.
+    /// `calls_resolved_singleton` edges that must be retracted before a
+    /// reindex.
+    pub async fn list_calls_edges_by_resolution(
+        &self,
+        resolution: &str,
+    ) -> Result<Vec<(String, String)>, EngramError> {
+        let script = r#"
+?[from, to] := *calls_edge{from, to, resolution}, resolution = $resolution
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("resolution".to_owned(), DataValue::from(resolution));
+        let r = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| (extract_str(row, 0), extract_str(row, 1)))
+            .collect())
+    }
+
+    /// Retract every `calls_resolved_singleton` edge, preserving `direct`
+    /// edges (082.010-T rollback step 1).
+    ///
+    /// Must run while the `resolution` column still exists. When the column is
+    /// already absent (rollback already applied) this is a no-op returning `0`,
+    /// keeping the rollback idempotent. Returns the number of edges retracted.
+    pub async fn retract_all_calls_resolved_singleton_edges(&self) -> Result<usize, EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(0);
+        }
+        let singletons = self
+            .list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await?;
+        if singletons.is_empty() {
+            return Ok(0);
+        }
+        let script = r#"
+?[from, to] := *calls_edge{from, to, resolution}, resolution = "calls_resolved_singleton"
+:rm calls_edge { from, to }
+"#;
+        self.db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(singletons.len())
+    }
+
+    /// Operator-invocable down-migration entry point (082.010-T).
+    ///
+    /// Orchestrates the rollback in a STRICT ORDER so every provenance query
+    /// runs while its column still exists:
+    ///   1. retract ALL `calls_resolved_singleton` edges (direct preserved)
+    ///      while the `resolution` column is present;
+    ///   2. THEN drop the `resolution` column, reverting `calls_edge` to
+    ///      `{from, to => created_at}`.
+    ///
+    /// Idempotent: a second invocation retracts nothing and finds no column to
+    /// drop, returning `0`. Returns the number of singleton edges retracted.
+    /// The operator-invocable CLI trigger is 082.013-T.
+    pub async fn rollback_calls_resolution(&self) -> Result<usize, EngramError> {
+        let retracted = self.retract_all_calls_resolved_singleton_edges().await?;
+        crate::db::cozo_backend::schema::rollback_calls_edge_resolution(&self.db)?;
+        Ok(retracted)
+    }
+
+    /// Record a call site whose callee could not be resolved within the
+    /// caller's own file, for the deferred cross-file post-pass (082.002-T).
+    ///
+    /// Keyed by `(caller_id, callee_name, source_file)`, so re-staging the same
+    /// unresolved call is idempotent.
+    pub async fn put_staged_call(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+        source_file: &str,
+    ) -> Result<(), EngramError> {
+        let ts = now_utc_str();
+        let script = r#"
+?[caller_id, callee_name, source_file, created_at] <-
+    [[$caller_id, $callee_name, $source_file, $created_at]]
+:put staged_call { caller_id, callee_name, source_file => created_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("caller_id".to_owned(), DataValue::from(caller_id));
+        p.insert("callee_name".to_owned(), DataValue::from(callee_name));
+        p.insert("source_file".to_owned(), DataValue::from(source_file));
+        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List every staged (unresolved) call site currently recorded.
+    pub async fn list_staged_calls(&self) -> Result<Vec<StagedCall>, EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file] :=
+    *staged_call { caller_id, callee_name, source_file }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| StagedCall {
+                caller_id: extract_str(row, 0),
+                callee_name: extract_str(row, 1),
+                source_file: extract_str(row, 2),
+            })
+            .collect())
+    }
+
+    /// Remove every staged (unresolved) call recorded for `source_file`
+    /// (082.009-T clear-before-reindex / deletion cleanup).
+    ///
+    /// Clearing a file's prior staged rows before it is re-staged (or after it
+    /// is deleted) prevents a stale unresolved call from being resolved into a
+    /// stale edge by a later forced post-pass.
+    pub async fn clear_staged_calls_for_file(&self, source_file: &str) -> Result<(), EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file] :=
+    *staged_call { caller_id, callee_name, source_file },
+    source_file = $source_file
+:rm staged_call { caller_id, callee_name, source_file }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("source_file".to_owned(), DataValue::from(source_file));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retract `calls_resolved_singleton` edges whose caller OR callee is a
+    /// function defined in `file_path` (082.009-T).
+    ///
+    /// Must be invoked BEFORE the file's function metadata is deleted, because
+    /// it maps file → function IDs via `function_meta.file_path`. Retracting
+    /// these stale singleton edges before a reindex or deletion prevents
+    /// dangling cross-file edges when a caller or callee changes or is removed.
+    /// `direct` edges are left untouched — they are re-created by in-file
+    /// resolution on reindex.
+    pub async fn retract_resolved_calls_edges_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_singleton",
+    *function_meta { id: from, file_path },
+    file_path = $file_path
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_singleton",
+    *function_meta { id: to, file_path },
+    file_path = $file_path
+?[from, to] := stale[from, to]
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retract any `calls_resolved_singleton` edge from `caller_id` whose callee
+    /// is a function named `callee_name` (082.008-T targeted revalidation).
+    ///
+    /// Used by the cross-file post-pass to drop a singleton whose callee name is
+    /// no longer unambiguously resolvable (zero or two-or-more definitions),
+    /// without disturbing singletons for other callers or names. `direct` edges
+    /// are untouched. A no-op when the `resolution` column is absent.
+    pub async fn retract_singleton_edge_from_caller_by_name(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+    ) -> Result<(), EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(());
+        }
+        let script = r#"
+?[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_singleton",
+    from = $from,
+    *function_meta { id: to, name },
+    name = $name
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(caller_id));
+        p.insert("name".to_owned(), DataValue::from(callee_name));
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
@@ -1359,6 +1627,96 @@ impl CodeGraphQueries {
             resolved: 0,
             lookups: 0,
         })
+    }
+
+    /// Post-pass: resolve staged cross-file calls (082.008-T).
+    ///
+    /// Builds a workspace-global `name -> [function_id]` index from
+    /// `function_meta`, then for each staged call (082.002-T) whose callee name
+    /// matches **exactly one** function, creates a `calls_edge` tagged with the
+    /// canonical provenance `calls_resolved_singleton`. Names with zero matches
+    /// (no such function) or two-or-more matches (ambiguous) are skipped, which
+    /// bounds false edges to the unambiguous-name case.
+    ///
+    /// Intended to run in the full / `--force` index path only; the incremental
+    /// sync path does not invoke it (performance gate).
+    ///
+    /// Returns the number of *newly created* singleton edges (`resolved`) and
+    /// the number of staged calls examined (`lookups`). `resolved` counts only
+    /// edges that did not already carry `calls_resolved_singleton` provenance,
+    /// so a no-op re-index (staged rows persist and their singletons are already
+    /// present) reports `resolved == 0` rather than recounting every prior
+    /// singleton as newly created. Callers surface `resolved` via
+    /// `IndexResult.edges_created`.
+    ///
+    /// Revalidating, but non-destructive: for each staged call whose callee name
+    /// resolves to exactly one function the singleton edge is upserted; for a
+    /// staged call whose name resolves to zero or to two-or-more functions, any
+    /// singleton previously resolved from that caller for that name is retracted
+    /// (targeted revalidation), so a call that became ambiguous — or lost its
+    /// unique target — does not leave a stale edge. Retraction is scoped to
+    /// currently-staged callers only, so singleton edges whose staging was not
+    /// repopulated (e.g. after JSONL rehydration or a fresh upgrade, where edges
+    /// are restored but `staged_call` rows are not) are preserved rather than
+    /// destroyed. `direct` (in-file) edges are never touched.
+    pub async fn reresolve_calls_edges(&self) -> Result<ReresolveResult, EngramError> {
+        // Workspace-global name -> [id] index (one round-trip).
+        let script = r#"?[name, id] := *function_meta { id, name }"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut name_index: HashMap<String, Vec<String>> = HashMap::new();
+        for row in &r.rows {
+            let name = extract_str(row, 0);
+            let id = extract_str(row, 1);
+            name_index.entry(name).or_default().push(id);
+        }
+
+        let staged = self.list_staged_calls().await?;
+        let lookups = staged.len();
+        // Snapshot the singleton edges that already exist so `resolved` counts
+        // only genuinely new provenance. Because staged rows persist across a
+        // non-forced re-index, the upsert below re-writes every prior singleton;
+        // without this guard each such re-write would be recounted as a newly
+        // created edge and over-report `IndexResult.edges_created`. The set also
+        // dedupes repeated (caller, target) pairs within a single run.
+        let mut existing: HashSet<(String, String)> = self
+            .list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await?
+            .into_iter()
+            .collect();
+        let mut resolved = 0usize;
+        for call in &staged {
+            // Resolve solely when a single function carries the callee name. A
+            // zero or ambiguous (2+) match retracts any stale singleton this
+            // caller previously had for the name, so revalidation stays targeted
+            // and never touches singletons whose staging was not repopulated.
+            match name_index.get(&call.callee_name) {
+                Some(ids) if ids.len() == 1 => {
+                    self.create_calls_edge_with_resolution(
+                        &call.caller_id,
+                        &ids[0],
+                        "calls_resolved_singleton",
+                    )
+                    .await?;
+                    // Count only the first time this (caller, target) pair is
+                    // seen as a singleton — pre-existing edges and within-run
+                    // duplicates are excluded.
+                    if existing.insert((call.caller_id.clone(), ids[0].clone())) {
+                        resolved += 1;
+                    }
+                }
+                _ => {
+                    self.retract_singleton_edge_from_caller_by_name(
+                        &call.caller_id,
+                        &call.callee_name,
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(ReresolveResult { resolved, lookups })
     }
 
     /// Look up a class ID by case-insensitive name match.
@@ -3016,6 +3374,11 @@ has_def[id] := *function_meta { id }
             format!(
                 "?[from, to, import_path, created_at] := *{table} {{ from, to, import_path, created_at }}"
             )
+        } else if table == "calls_edge" {
+            // calls_edge carries `resolution` provenance (082.011-T): project it
+            // so exported edges retain `direct` / `calls_resolved_singleton`
+            // end-to-end through dehydration.
+            "?[from, to, created_at, resolution] := *calls_edge { from, to, created_at, resolution }".to_owned()
         } else {
             format!("?[from, to, created_at] := *{table} {{ from, to, created_at }}")
         };
@@ -3042,6 +3405,7 @@ has_def[id] := *function_meta { id }
                         if s.is_empty() { None } else { Some(s) }
                     },
                     linked_by: None,
+                    resolution: None,
                     created_at: extract_str(row, 3),
                 })
                 .collect())
@@ -3058,7 +3422,25 @@ has_def[id] := *function_meta { id }
                         let s = extract_str(row, 2);
                         if s.is_empty() { None } else { Some(s) }
                     },
+                    resolution: None,
                     created_at: extract_str(row, 3),
+                })
+                .collect())
+        } else if table == "calls_edge" {
+            // [from, to, created_at, resolution] — carry provenance on export.
+            Ok(r.rows
+                .iter()
+                .map(|row| crate::models::CodeEdge {
+                    edge_type: edge_type.clone(),
+                    from: extract_str(row, 0),
+                    to: extract_str(row, 1),
+                    import_path: None,
+                    linked_by: None,
+                    resolution: {
+                        let s = extract_str(row, 3);
+                        if s.is_empty() { None } else { Some(s) }
+                    },
+                    created_at: extract_str(row, 2),
                 })
                 .collect())
         } else {
@@ -3070,6 +3452,7 @@ has_def[id] := *function_meta { id }
                     to: extract_str(row, 1),
                     import_path: None,
                     linked_by: None,
+                    resolution: None,
                     created_at: extract_str(row, 2),
                 })
                 .collect())

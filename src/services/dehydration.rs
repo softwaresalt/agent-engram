@@ -236,6 +236,8 @@ struct EdgeLine {
     import_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     linked_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolution: Option<String>,
     created_at: String,
 }
 
@@ -389,6 +391,7 @@ pub fn serialize_edges_jsonl(edges: &[CodeEdge]) -> String {
             to: edge.to.clone(),
             import_path: edge.import_path.clone(),
             linked_by: edge.linked_by.clone(),
+            resolution: edge.resolution.clone(),
             created_at: edge.created_at.clone(),
         };
         if let Ok(json) = serde_json::to_string(&el) {
@@ -598,6 +601,7 @@ mod tests {
                 to: "code_file:a".to_string(),
                 import_path: Some("crate::a".to_string()),
                 linked_by: None,
+                resolution: None,
                 created_at: String::new(),
             },
             CodeEdge {
@@ -606,6 +610,7 @@ mod tests {
                 to: "function:y".to_string(),
                 import_path: None,
                 linked_by: None,
+                resolution: Some("direct".to_string()),
                 created_at: String::new(),
             },
         ];
@@ -616,6 +621,70 @@ mod tests {
         assert!(lines[0].contains("\"type\":\"calls\""));
         assert!(lines[1].contains("\"type\":\"imports\""));
         assert!(lines[1].contains("\"import_path\":\"crate::a\""));
+    }
+
+    // 082.011-T scenario 2: serialize_edges_jsonl emits `resolution` only when
+    // `Some`, and omits it (via skip_serializing_if) when `None`.
+    #[test]
+    fn serialize_edges_jsonl_carries_resolution_provenance() {
+        use crate::models::code_edge::{CodeEdge, CodeEdgeType};
+        let edges = vec![
+            CodeEdge {
+                edge_type: CodeEdgeType::Calls,
+                from: "function:a".to_string(),
+                to: "function:b".to_string(),
+                import_path: None,
+                linked_by: None,
+                resolution: Some("calls_resolved_singleton".to_string()),
+                created_at: String::new(),
+            },
+            CodeEdge {
+                edge_type: CodeEdgeType::Calls,
+                from: "function:c".to_string(),
+                to: "function:d".to_string(),
+                import_path: None,
+                linked_by: None,
+                resolution: None,
+                created_at: String::new(),
+            },
+        ];
+        let out = serialize_edges_jsonl(&edges);
+        let lines: Vec<&str> = out.trim().lines().collect();
+        assert_eq!(lines.len(), 2);
+        // a->b carries the exact provenance string, unshortened.
+        assert!(
+            lines[0].contains("\"resolution\":\"calls_resolved_singleton\""),
+            "Some(resolution) must be serialized: {}",
+            lines[0]
+        );
+        // c->d has no resolution, so the key is omitted entirely.
+        assert!(
+            !lines[1].contains("resolution"),
+            "None resolution must be skipped: {}",
+            lines[1]
+        );
+    }
+
+    // 082.011-T scenario 1: CodeEdge round-trips `resolution` through serde for
+    // both Some(..) and None.
+    #[test]
+    fn code_edge_resolution_serde_roundtrip() {
+        use crate::models::code_edge::{CodeEdge, CodeEdgeType};
+        for resolution in [Some("direct".to_string()), None] {
+            let edge = CodeEdge {
+                edge_type: CodeEdgeType::Calls,
+                from: "function:a".to_string(),
+                to: "function:b".to_string(),
+                import_path: None,
+                linked_by: None,
+                resolution: resolution.clone(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            let json = serde_json::to_string(&edge).expect("serialize");
+            let decoded: CodeEdge = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded.resolution, resolution);
+            assert_eq!(decoded, edge);
+        }
     }
 
     #[test]

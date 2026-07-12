@@ -186,6 +186,27 @@ pub enum ExtractedEdge {
         caller: String,
         /// Name of the called function.
         callee: String,
+        /// True when the call was resolved from a method/receiver expression
+        /// (`x.foo()`, `self.bar()`) rather than a free-function identifier.
+        ///
+        /// Method-derived calls are extracted for completeness and future
+        /// method-aware resolution, but are NOT promoted to `calls_edge` rows:
+        /// impl methods are indexed as `Type::method`, so name-only resolution
+        /// cannot match a receiver method to its definition and would risk a
+        /// false singleton edge. Consumers must skip promotion when this is set.
+        is_method: bool,
+        /// True when the call was path-qualified (`a::b()`), reduced here to its
+        /// final segment (`b`).
+        ///
+        /// Qualified calls cover both module paths (`crate::util::helper()`,
+        /// whose free-function target IS indexed by the bare final segment) and
+        /// type-associated calls (`Type::parse()`, whose target is indexed as
+        /// `Type::parse`). The two are indistinguishable without qualification-
+        /// aware resolution, so — like methods — qualified calls are extracted
+        /// but NOT promoted to `calls_edge` rows, to avoid resolving a
+        /// `Type::assoc()` call to an unrelated unique free function. Deferred to
+        /// qualification-aware resolution.
+        is_qualified: bool,
     },
     /// A `use` declaration importing a path.
     Imports {
@@ -406,7 +427,7 @@ fn callee() {}
         let result = parse_rust_source(source).unwrap();
         assert!(result.edges.iter().any(|e| matches!(
             e,
-            ExtractedEdge::Calls { caller, callee } if caller == "caller" && callee == "callee"
+            ExtractedEdge::Calls { caller, callee, .. } if caller == "caller" && callee == "callee"
         )));
     }
 

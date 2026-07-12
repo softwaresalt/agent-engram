@@ -262,7 +262,7 @@ fn step_two() {}
         .edges
         .iter()
         .filter_map(|e| match e {
-            ExtractedEdge::Calls { caller, callee } => Some((caller.as_str(), callee.as_str())),
+            ExtractedEdge::Calls { caller, callee, .. } => Some((caller.as_str(), callee.as_str())),
             _ => None,
         })
         .collect();
@@ -280,7 +280,7 @@ fn caller() {
     let result = parse_rust_source(source).unwrap();
     assert!(result.edges.iter().any(|e| matches!(
         e,
-        ExtractedEdge::Calls { caller, callee } if caller == "caller" && callee == "process_payment"
+        ExtractedEdge::Calls { caller, callee, .. } if caller == "caller" && callee == "process_payment"
     )));
 }
 
@@ -425,7 +425,7 @@ fn default_name() -> String {
     );
     assert!(result.edges.iter().any(|e| matches!(
         e,
-        ExtractedEdge::Calls { caller, callee } if caller == "Config::configure" && callee == "default_name"
+        ExtractedEdge::Calls { caller, callee, .. } if caller == "Config::configure" && callee == "default_name"
     )));
 }
 

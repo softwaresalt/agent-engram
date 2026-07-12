@@ -319,15 +319,22 @@ fn arb_code_edge() -> impl Strategy<Value = CodeEdge> {
         "function:[a-z0-9]{8}",
         prop::option::of("[a-z:]{5,30}"),
         prop::option::of("[a-z_]{3,15}"),
+        prop::option::of(prop::sample::select(vec![
+            "direct".to_string(),
+            "calls_resolved_singleton".to_string(),
+        ])),
     )
-        .prop_map(|(edge_type, from, to, import_path, linked_by)| CodeEdge {
-            edge_type,
-            from,
-            to,
-            import_path,
-            linked_by,
-            created_at: Utc::now().to_rfc3339(),
-        })
+        .prop_map(
+            |(edge_type, from, to, import_path, linked_by, resolution)| CodeEdge {
+                edge_type,
+                from,
+                to,
+                import_path,
+                linked_by,
+                resolution,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
 }
 
 proptest! {

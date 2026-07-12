@@ -617,6 +617,52 @@ name = "contract_backlog_schema"
 path = "tests/contract/backlog_schema_test.rs"
 required-features = ["cozo-backend"]
 
+# ── 082-F: rec1-calledges cross-file & method-call resolution (078-S) ─────────
+
+[[test]]
+name = "unit_rust_method_call_extraction"
+path = "tests/unit/rust_method_call_extraction_test.rs"
+
+[[test]]
+name = "integration_unresolved_calls_capture"
+path = "tests/integration/unresolved_calls_capture_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
+name = "integration_calls_edge_resolution_storage"
+path = "tests/integration/calls_edge_resolution_storage_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_calls_resolution_rehydrate"
+path = "tests/integration/calls_resolution_rehydrate_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_calls_postpass_resolution"
+path = "tests/integration/calls_postpass_resolution_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
+name = "integration_calls_staging_lifecycle"
+path = "tests/integration/calls_staging_lifecycle_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
+name = "integration_calls_resolution_downmigration"
+path = "tests/integration/calls_resolution_downmigration_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_cli_calls_resolution_rollback"
+path = "tests/integration/cli_calls_resolution_rollback_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_calls_recall_acceptance"
+path = "tests/integration/calls_recall_acceptance_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
 [[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"

@@ -230,10 +230,12 @@ fn extract_calls_from_body(
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         if current.kind() == "call_expression" {
-            if let Some(callee) = resolve_call_name(current, source) {
+            if let Some((callee, is_method, is_qualified)) = resolve_call_name(current, source) {
                 edges.push(ExtractedEdge::Calls {
                     caller: caller_name.to_owned(),
                     callee,
+                    is_method,
+                    is_qualified,
                 });
             }
         }
@@ -248,21 +250,44 @@ const CALL_BLOCKLIST: &[&str] = &[
     "new", "default", "into", "clone", "from", "unwrap", "expect", "ok", "err",
 ];
 
-fn resolve_call_name(node: Node<'_>, source: &str) -> Option<String> {
+fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool)> {
     let function_node = node.child_by_field_name("function")?;
-    let name = match function_node.kind() {
-        "identifier" => Some(super::node_text(function_node, source)),
+    // (name, is_method, is_qualified) — the flags are mutually exclusive.
+    let (name, is_method, is_qualified) = match function_node.kind() {
+        "identifier" => (Some(super::node_text(function_node, source)), false, false),
+        // Path-qualified calls: `a::b()`. Reduced to the final segment `b`.
+        // Marked `is_qualified` so the consumer does not promote them: a module
+        // path (`crate::util::helper`) resolves by bare final segment, but a
+        // type-associated call (`Type::parse`) is indexed under its qualified
+        // name, and the two are indistinguishable here. Promoting the bare name
+        // would risk a false singleton edge to an unrelated free function.
         "scoped_identifier" => {
             let mut cursor = function_node.walk();
-            function_node
+            let n = function_node
                 .children(&mut cursor)
                 .filter(|c| c.kind() == "identifier")
                 .last()
-                .map(|n| super::node_text(n, source))
+                .map(|n| super::node_text(n, source));
+            (n, false, true)
         }
-        _ => None,
+        // Method / receiver calls: `x.foo()`, `self.bar()`. The `function`
+        // child is a `field_expression` whose `field` names the called method.
+        // Extracted (and marked `is_method`) for completeness and future
+        // method-aware resolution, but the consumer must not promote them to a
+        // `calls_edge`: impl methods are indexed as `Type::method`, so name-only
+        // resolution cannot match them and would risk a false singleton edge.
+        // The blocklist below still drops idiomatic no-ops (`x.clone()`).
+        "field_expression" => (
+            function_node
+                .child_by_field_name("field")
+                .map(|n| super::node_text(n, source)),
+            true,
+            false,
+        ),
+        _ => (None, false, false),
     };
     name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
+        .map(|n| (n, is_method, is_qualified))
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> String {
