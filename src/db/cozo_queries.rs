@@ -3150,6 +3150,11 @@ has_def[id] := *function_meta { id }
             format!(
                 "?[from, to, import_path, created_at] := *{table} {{ from, to, import_path, created_at }}"
             )
+        } else if table == "calls_edge" {
+            // calls_edge carries `resolution` provenance (082.011-T): project it
+            // so exported edges retain `direct` / `calls_resolved_singleton`
+            // end-to-end through dehydration.
+            "?[from, to, created_at, resolution] := *calls_edge { from, to, created_at, resolution }".to_owned()
         } else {
             format!("?[from, to, created_at] := *{table} {{ from, to, created_at }}")
         };
@@ -3176,6 +3181,7 @@ has_def[id] := *function_meta { id }
                         if s.is_empty() { None } else { Some(s) }
                     },
                     linked_by: None,
+                    resolution: None,
                     created_at: extract_str(row, 3),
                 })
                 .collect())
@@ -3192,7 +3198,25 @@ has_def[id] := *function_meta { id }
                         let s = extract_str(row, 2);
                         if s.is_empty() { None } else { Some(s) }
                     },
+                    resolution: None,
                     created_at: extract_str(row, 3),
+                })
+                .collect())
+        } else if table == "calls_edge" {
+            // [from, to, created_at, resolution] — carry provenance on export.
+            Ok(r.rows
+                .iter()
+                .map(|row| crate::models::CodeEdge {
+                    edge_type: edge_type.clone(),
+                    from: extract_str(row, 0),
+                    to: extract_str(row, 1),
+                    import_path: None,
+                    linked_by: None,
+                    resolution: {
+                        let s = extract_str(row, 3);
+                        if s.is_empty() { None } else { Some(s) }
+                    },
+                    created_at: extract_str(row, 2),
                 })
                 .collect())
         } else {
@@ -3204,6 +3228,7 @@ has_def[id] := *function_meta { id }
                     to: extract_str(row, 1),
                     import_path: None,
                     linked_by: None,
+                    resolution: None,
                     created_at: extract_str(row, 2),
                 })
                 .collect())
