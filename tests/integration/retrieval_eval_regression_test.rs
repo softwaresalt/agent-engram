@@ -88,6 +88,8 @@ fn fixture_report() -> RetrievalEvalReport {
         languages: config.languages,
         semantic,
         graph,
+        thresholds_breached: false,
+        threshold_breaches: Vec::new(),
     }
 }
 

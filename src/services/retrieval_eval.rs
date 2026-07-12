@@ -26,7 +26,7 @@ use tokio::io::AsyncWriteExt;
 use crate::errors::{EngramError, SystemError};
 use crate::models::Function;
 use crate::models::retrieval_eval::{
-    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds,
+    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
@@ -174,6 +174,10 @@ pub fn compute_semantic_metrics(ranks: &[Option<usize>], k: usize) -> SemanticMe
         mrr: mrr / n,
         ndcg: ndcg / n,
         queries,
+        // Mode is a property of *how* the corpus was searched (embeddings
+        // present or not), which this rank-only aggregate cannot observe.
+        // `evaluate_semantic` records the effective mode (084.008-T).
+        retrieval_mode: RetrievalMode::Unknown,
     }
 }
 
@@ -296,6 +300,14 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
         call_sites,
         resolved,
         false_edges,
+        // Staleness / accounting (084.003-T) and target-correctness (084.004-T)
+        // are populated by the callers that have the required inputs (indexed
+        // generation, unreadable-file count, expected-target manifest). This
+        // raw-count constructor leaves them at their honest defaults.
+        index_stale: false,
+        unreadable_files: 0,
+        target_correct: 0,
+        target_mismatch: 0,
     }
 }
 
