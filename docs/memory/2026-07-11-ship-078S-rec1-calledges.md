@@ -101,14 +101,49 @@ Plus `7809abd` (chore: shipment/feature active-state backlog markdown).
 `opentelemetry_sdk 0.26` (`SdkTracerProvider` / `SpanExporter::builder` gone). Pre-existing, unrelated to rec1.
 CI and the correct local gate use `--no-default-features --features cozo-backend,embeddings`.
 
-## Follow-ups / stash candidates
+## Copilot review lifecycle (4 review passes; circuit breaker = 3 fix cycles)
 
-- **D07F0919** (pre-existing): `false_edge_rate` cannot detect mis-resolution to an existing-but-wrong function;
-  consider a stronger correctness metric.
-- Consider adding the calls post-pass to the incremental sync path (currently full-index only) if cross-file
-  resolution latency on large edits becomes a concern.
+PR **#241** (branch `feat/078-rec1-calledges` → `main`). Copilot posted findings across four
+review passes; each pass drove one fix commit until the 3-cycle circuit breaker was reached.
 
-## Post-merge closure (pending)
+| Cycle | Fix commit | Findings addressed |
+|---|---|---|
+| 1 | `252d625` | (1) method/receiver calls could resolve to an unrelated unique free function → added `is_method` marker, methods extracted but not promoted; (2) incremental-sync file-clear path did not retract the file's existing singletons → added `retract_resolved_calls_edges_for_file` there; (3) post-pass was additive-only → added targeted re-resolution retraction |
+| 2 | `1487086` | (4) cycle-1 global retract-all was destructive after rehydration → replaced with TARGETED retraction scoped to currently-staged callers (preserves rehydrated singletons); (5) `count_call_sites` denominator still counted method calls → filter `is_method: false`; (6) post-pass singletons not added to `IndexResult.edges_created` |
+| 3 | `abb23bf` | (7) path-qualified calls (`Type::parse`) reduced to bare segment could resolve to an unrelated free function → added `is_qualified` marker (scoped_identifier arm), qualified calls extracted but not promoted, denominator excludes them; (8) `reresolve_calls_edges` incremented `resolved` on every upsert → snapshot existing singletons up front and count only genuinely new caller-target pairs |
+| 4 (post-breaker) | — accepted as backlog | (9) `migrate-down` lacks write exclusivity under shared `ENGRAM_DATA_DIR` multi-daemon; (10) resolution-column schema `:replace` bypasses `run_script_retrying` (SQLITE_BUSY under concurrent open). Both are shared-data-dir concurrency-hardening edge cases, not core-path regressions → recorded as stash items, threads replied + resolved, proceeded to merge per the 3-cycle circuit-breaker protocol. |
 
-PR + Copilot review + CI-green + merge (merge commit, `--merge --delete-branch`, no `--admin`) then:
-`git checkout main; git pull --ff-only`; runtime-verification + operational-closure; ship 078-S to done/archived.
+All review threads replied to and resolved (0 unresolved at merge). CI `build` green on final HEAD `abb23bf`
+(3m39s). One earlier CI run hit the known flaky CozoDB `database is locked (code 5)` integration
+contention (unrelated to rec1) and passed on re-run.
+
+## Follow-ups / stash candidates (created via `backlogit stash add`)
+
+- `2323C72A` (feature, high) — qualification-aware & method-aware call resolution: recover module-path,
+  method-receiver, and `Type::assoc` recall deferred by findings 1 & 7, matching qualified index names
+  without reintroducing false edges.
+- `49561F22` (task, medium) — **D07F0919**: `false_edge_rate` is a lower bound (dangling callees only,
+  not mis-resolution to an existing-but-wrong function); add sample-verification against ground truth.
+- `E1A9ED33` (feature, medium) — persist/rehydrate `staged_call` rows through JSONL so the post-pass can
+  fully revalidate after a restart (Copilot finding 4 fuller suggestion).
+- `5C1EDA41` (task, medium) — Copilot finding 9: add write exclusivity to `migrate-down` for shared
+  `ENGRAM_DATA_DIR` multi-daemon setups (or reject shared external data dirs).
+- `8506BC68` (task, medium) — Copilot finding 10: route the resolution-column schema migration through
+  `run_script_retrying` so a concurrent open retries on SQLITE_BUSY instead of failing startup.
+- `2C949608` (feature, low) — optionally run the cross-file post-pass on the incremental-sync path
+  (currently full/`--force` only).
+
+## Post-merge closure (DONE)
+
+- **Merged:** PR #241 as a **merge commit** (`gh pr merge 241 --merge --delete-branch`, no `--admin`).
+  **Merge SHA `bf8d8a6`** (2 parents: base `eaa9086` + feature tip `abb23bf`); state `MERGED` @
+  2026-07-12T02:54:11Z; verified an ancestor of `origin/main`.
+- **Local main** fast-forwarded to `bf8d8a6` (`git pull --ff-only` → up to date).
+- **Runtime verification:** `cargo build --release` (bin `engram`) succeeded (2m21s, no errors). Smoke of
+  the 082.013 CLI entry point `engram migrate-down calls-resolution` against a throwaway git workspace +
+  temp `ENGRAM_DATA_DIR`: exit 0, `resolution_column_dropped: true`, `retracted_singleton_edges: 0`, and
+  idempotent (second run identical, exit 0). Non-git workspace correctly rejected with exit 2.
+- **Backlog:** all 10 tasks `done`; feature **082-F** and shipment **078-S** moved `active → done`
+  (archived to `.backlogit/archive/`). Six follow-up stash items created (above). `backlogit sync` OK.
+- **Protected files** `.github/agents/auto-mergeinstall.agent.md` and `auto-tune.agent.md` remained
+  uncommitted local deletions throughout — never staged, committed, restored, or pushed.
