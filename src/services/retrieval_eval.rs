@@ -33,6 +33,7 @@ use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
+use crate::services::embedding;
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_search};
 
@@ -191,6 +192,36 @@ pub fn compute_semantic_metrics(ranks: &[Option<usize>], k: usize) -> SemanticMe
     }
 }
 
+/// A short, content-agnostic query used only to probe whether the query-side
+/// embedding model is usable in this run. Model availability — not query
+/// content — determines the outcome, so any valid non-empty query suffices.
+const RETRIEVAL_MODE_PROBE: &str = "retrieval mode probe";
+
+/// Resolve the retrieval mode a semantic run actually exercised (084.008-T).
+///
+/// Mirrors [`hybrid_search`]'s embedding-path condition exactly: the embedding
+/// (KNN) component contributes only when the corpus carries at least one vector
+/// **and** the query-embedding model can embed a query. When the corpus carries
+/// vectors but the query cannot be embedded, `hybrid_search` swallows the
+/// failure (`embed_text(query).ok()` → `None`) and silently scores keyword-only;
+/// this records that as [`RetrievalMode::KeywordOnly`] rather than masking a
+/// broken embedding path as a passing hybrid run (00C7F3CC). An empty corpus
+/// retrieves nothing, so its mode stays [`RetrievalMode::Unknown`].
+#[must_use]
+fn resolve_retrieval_mode(
+    corpus_empty: bool,
+    corpus_has_vectors: bool,
+    query_embeds: bool,
+) -> RetrievalMode {
+    if corpus_empty {
+        RetrievalMode::Unknown
+    } else if corpus_has_vectors && query_embeds {
+        RetrievalMode::Hybrid
+    } else {
+        RetrievalMode::KeywordOnly
+    }
+}
+
 /// Evaluate semantic self-retrieval over a function corpus.
 ///
 /// The corpus is first gated by [`RetrievalEvalConfig::languages`] (an empty
@@ -249,7 +280,18 @@ pub fn evaluate_semantic(
         ranks.push(rank);
     }
 
-    Ok(compute_semantic_metrics(&ranks, k))
+    // Record the retrieval mode actually exercised so a keyword-only fallback
+    // (un-embedded corpus, or vectors present but an unusable query-embedding
+    // model) is never masked as hybrid (00C7F3CC / 084.008-T). The query-side
+    // model is probed only when the corpus carries vectors, so an un-embedded
+    // corpus never loads the model — matching `hybrid_search`, which skips
+    // embedding entirely in that case.
+    let corpus_has_vectors = candidates.iter().any(|c| c.embedding.is_some());
+    let query_embeds = corpus_has_vectors && embedding::embed_text(RETRIEVAL_MODE_PROBE).is_ok();
+    let mut metrics = compute_semantic_metrics(&ranks, k);
+    metrics.retrieval_mode =
+        resolve_retrieval_mode(candidates.is_empty(), corpus_has_vectors, query_embeds);
+    Ok(metrics)
 }
 
 /// Count identifier / path call sites in a source string.
@@ -740,6 +782,49 @@ mod tests {
         assert_eq!(language_of("pkg/main.go"), "go");
         assert_eq!(language_of("app/index.ts"), "typescript");
         assert_eq!(language_of("noext"), "unknown");
+    }
+
+    // ── 084.008-T: retrieval-mode resolution ─────────────────────────────────
+
+    #[test]
+    fn resolve_mode_empty_corpus_is_unknown() {
+        // An empty corpus retrieves nothing; the vector/model flags are moot.
+        assert_eq!(
+            resolve_retrieval_mode(true, false, false),
+            RetrievalMode::Unknown
+        );
+        assert_eq!(
+            resolve_retrieval_mode(true, true, true),
+            RetrievalMode::Unknown
+        );
+    }
+
+    #[test]
+    fn resolve_mode_un_embedded_corpus_is_keyword_only() {
+        // No candidate carries a vector — the embedding path is never exercised.
+        assert_eq!(
+            resolve_retrieval_mode(false, false, false),
+            RetrievalMode::KeywordOnly
+        );
+    }
+
+    #[test]
+    fn resolve_mode_vectors_but_unusable_model_is_keyword_only() {
+        // The 00C7F3CC masquerade: the corpus carries vectors but the query
+        // cannot be embedded, so hybrid_search degrades to keyword-only scoring.
+        // This must be recorded honestly, not masked as hybrid.
+        assert_eq!(
+            resolve_retrieval_mode(false, true, false),
+            RetrievalMode::KeywordOnly
+        );
+    }
+
+    #[test]
+    fn resolve_mode_vectors_and_usable_model_is_hybrid() {
+        assert_eq!(
+            resolve_retrieval_mode(false, true, true),
+            RetrievalMode::Hybrid
+        );
     }
 
     #[test]
