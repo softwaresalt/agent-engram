@@ -275,8 +275,39 @@ fn hybrid_candidate_score(
     VECTOR_WEIGHT * vs + KEYWORD_WEIGHT * ks
 }
 
+/// Outcome of a single known-item ranking: the target's rank and whether the
+/// embedding path was actually exercised for this query.
+///
+/// `embedded` is `true` only when the corpus carried vectors *and* the query
+/// embedding was produced for this ranking (so the hybrid vector term
+/// contributed to scores). It is the per-query ground truth the retrieval-eval
+/// aggregates into the reported [`crate::models::retrieval_eval::RetrievalMode`]
+/// (084.008-T fidelity): the mode reflects the embedding path the ranking calls
+/// truly took, not a separate speculative probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RankOutcome {
+    /// Rank (1-based) of the target within the top-`limit`, or `None` when the
+    /// target is absent or falls outside the top-`limit`.
+    pub rank: Option<usize>,
+    /// Whether the query-embedding (hybrid vector) path was exercised for this
+    /// ranking. `false` for a keyword-only fallback or a non-ranking outcome.
+    pub embedded: bool,
+}
+
+impl RankOutcome {
+    /// A non-ranking outcome (empty corpus, absent target, or `limit == 0`): no
+    /// rank and no embedding path exercised.
+    const fn none() -> Self {
+        Self {
+            rank: None,
+            embedded: false,
+        }
+    }
+}
+
 /// Rank (1-based) of `target_id` within a bounded top-`limit` hybrid ranking,
-/// or `None` when the target falls outside the top-`limit` (or is absent).
+/// or `None` when the target falls outside the top-`limit` (or is absent), plus
+/// whether the embedding path was exercised (see [`RankOutcome`]).
 ///
 /// This is retrieval-eval's known-item probe (084.010-T / 4CF046A5). It shares
 /// [`hybrid_search`]'s exact scoring ([`hybrid_candidate_score`]) and stable
@@ -296,18 +327,23 @@ pub fn hybrid_rank_of(
     candidates: &[SearchCandidate],
     target_id: &str,
     limit: usize,
-) -> Result<Option<usize>, EngramError> {
+) -> Result<RankOutcome, EngramError> {
     embedding::validate_query_length(query)?;
     if limit == 0 {
         // `hybrid_search` truncates to `limit`, so a zero limit yields no hits.
-        return Ok(None);
+        return Ok(RankOutcome::none());
     }
 
     let Some(target_idx) = candidates.iter().position(|c| c.id == target_id) else {
-        return Ok(None);
+        return Ok(RankOutcome::none());
     };
 
     let query_embedding = embed_query_for_corpus(query, candidates);
+    // Ground-truth for the reported retrieval mode: the embedding path was
+    // exercised iff a query embedding was actually produced for THIS ranking
+    // (084.008-T). Derived from the same value the scoring uses below, so the
+    // reported mode can never contradict the scores that produced the rank.
+    let embedded = query_embedding.is_some();
     let qe = query_embedding.as_deref();
     let target_score = hybrid_candidate_score(query, qe, &candidates[target_idx]);
 
@@ -330,10 +366,13 @@ pub fn hybrid_rank_of(
         }
     }
 
-    Ok(if better < limit {
-        Some(better + 1)
-    } else {
-        None
+    Ok(RankOutcome {
+        rank: if better < limit {
+            Some(better + 1)
+        } else {
+            None
+        },
+        embedded,
     })
 }
 
@@ -737,13 +776,15 @@ mod tests {
                     let expected = oracle_rank(query, &cands, &c.id, limit);
                     let got = hybrid_rank_of(query, &cands, &c.id, limit).unwrap();
                     assert_eq!(
-                        got, expected,
+                        got.rank, expected,
                         "rank mismatch for id={} query={query:?} limit={limit}",
                         c.id
                     );
                 }
                 assert_eq!(
-                    hybrid_rank_of(query, &cands, "c:missing", limit).unwrap(),
+                    hybrid_rank_of(query, &cands, "c:missing", limit)
+                        .unwrap()
+                        .rank,
                     None,
                     "absent target must rank None (query={query:?} limit={limit})"
                 );
@@ -766,6 +807,9 @@ mod tests {
     #[test]
     fn hybrid_rank_of_empty_corpus_is_none() {
         let cands: Vec<SearchCandidate> = Vec::new();
-        assert_eq!(hybrid_rank_of("login", &cands, "c:a", 5).unwrap(), None);
+        assert_eq!(
+            hybrid_rank_of("login", &cands, "c:a", 5).unwrap().rank,
+            None
+        );
     }
 }

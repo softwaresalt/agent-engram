@@ -34,7 +34,6 @@ use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
-use crate::services::embedding;
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_rank_of};
 
@@ -193,11 +192,6 @@ pub fn compute_semantic_metrics(ranks: &[Option<usize>], k: usize) -> SemanticMe
     }
 }
 
-/// A short, content-agnostic query used only to probe whether the query-side
-/// embedding model is usable in this run. Model availability — not query
-/// content — determines the outcome, so any valid non-empty query suffices.
-const RETRIEVAL_MODE_PROBE: &str = "retrieval mode probe";
-
 /// Resolve the retrieval mode a semantic run actually exercised (084.008-T).
 ///
 /// Mirrors [`hybrid_search`]'s embedding-path condition exactly: the embedding
@@ -268,6 +262,13 @@ pub fn evaluate_semantic(
     let candidates: Vec<SearchCandidate> = selected.iter().map(|f| func_to_candidate(f)).collect();
 
     let mut ranks: Vec<Option<usize>> = Vec::new();
+    // Track whether EVERY ranked query actually exercised the embedding path.
+    // The reported retrieval mode is derived from this aggregate over the real
+    // ranking calls (084.008-T fidelity), not a separate constant probe: a mode
+    // computed from the executed rankings can never contradict the scores that
+    // produced the metrics. Starts `true` (vacuous) and is cleared by the first
+    // keyword-only fallback; only meaningful once at least one query ranked.
+    let mut all_queries_embedded = true;
     for function in selected.iter().take(config.sample_size) {
         let query = derive_query(function);
         if query.is_empty() {
@@ -277,30 +278,31 @@ pub fn evaluate_semantic(
         // top-k, computed without cloning or sorting the full candidate set
         // (084.010-T). Identical to `hybrid_search(&query, &candidates, k)` then
         // locating `function.id`, but O(1) extra space per query.
-        let rank = hybrid_rank_of(&query, &candidates, &function.id, k)?;
-        ranks.push(rank);
+        let outcome = hybrid_rank_of(&query, &candidates, &function.id, k)?;
+        ranks.push(outcome.rank);
+        all_queries_embedded &= outcome.embedded;
     }
 
-    // Record the retrieval mode actually exercised so a keyword-only fallback
-    // (un-embedded corpus, or vectors present but an unusable query-embedding
-    // model) is never masked as hybrid (00C7F3CC / 084.008-T). The query-side
-    // model is probed only when the corpus carries vectors, so an un-embedded
-    // corpus never loads the model — matching `hybrid_search`, which skips
-    // embedding entirely in that case.
     let mut metrics = compute_semantic_metrics(&ranks, k);
-    // Mode is only meaningful when at least one known-item query was actually
-    // ranked. When no query ran — an empty corpus, or `sample_size == 0` so the
-    // ranking loop never executed — report `Unknown` rather than a post-hoc
-    // probe that never influenced any result. This also avoids loading the
-    // query-embedding model on a run that ranked nothing (084.008-T honesty:
-    // the reported mode reflects executed queries, not a speculative probe).
+    // Record the retrieval mode actually exercised so a keyword-only fallback
+    // (un-embedded corpus, or vectors present but the query embedding failing on
+    // one or more actual queries) is never masked as hybrid (00C7F3CC /
+    // 084.008-T). Mode is only meaningful when at least one known-item query was
+    // ranked; when none ran (empty corpus, or `sample_size == 0` so the loop
+    // never executed) report `Unknown` rather than a mode no query influenced.
+    // The mode reflects the embedding path the executed rankings truly took —
+    // `all_queries_embedded` aggregates each `hybrid_rank_of`'s own result — so
+    // a per-query embedding failure downgrades the report to the honest
+    // KeywordOnly fallback instead of a speculative probe that never ran.
     metrics.retrieval_mode = if metrics.queries == 0 {
         RetrievalMode::Unknown
     } else {
         let corpus_has_vectors = candidates.iter().any(|c| c.embedding.is_some());
-        let query_embeds =
-            corpus_has_vectors && embedding::embed_text(RETRIEVAL_MODE_PROBE).is_ok();
-        resolve_retrieval_mode(candidates.is_empty(), corpus_has_vectors, query_embeds)
+        resolve_retrieval_mode(
+            candidates.is_empty(),
+            corpus_has_vectors,
+            all_queries_embedded,
+        )
     };
     Ok(metrics)
 }
@@ -493,8 +495,14 @@ pub async fn scan_call_site_inventory(
             continue;
         };
         if !canon.starts_with(&ws_root) {
-            // A path escaping the workspace is a security skip (traversal guard),
-            // not an indexed-inventory read failure — do not account it.
+            // A path escaping the workspace (e.g. an in-workspace symlink
+            // repointed outside the root after indexing) stays blocked — but it
+            // is still an indexed file now excluded from the denominator, so
+            // account it as unreadable (084.003-T), exactly like a file that no
+            // longer resolves. Silently skipping it would shrink the denominator
+            // while the persisted `calls` edges remain in the numerator,
+            // inflating resolution_recall with no consistency signal.
+            unreadable_files += 1;
             continue;
         }
         match tokio::fs::read_to_string(&canon).await {
@@ -839,6 +847,15 @@ pub fn validate_thresholds(thresholds: &RetrievalEvalThresholds) -> Result<(), E
 /// returned [`ThresholdCheck`] lists every breach; `passed` is `true` only when
 /// no threshold is violated. Used by the regression tier to guard against
 /// metric regressions on a fixture corpus.
+///
+/// Each metric family is gated **independently** on whether it actually
+/// measured anything (084.006-T): semantic floors apply only when at least one
+/// known-item query ran (`semantic.queries > 0`), and graph thresholds apply
+/// only when at least one call site was visible (`graph.call_sites > 0`). An
+/// unmeasured family reports its metrics as `0.0`, so comparing that default
+/// against a configured floor would otherwise flag a false breach for a family
+/// the run never exercised (e.g. a semantic-only workspace with no call sites
+/// must not breach `min_resolution_recall`, and vice versa).
 #[must_use]
 pub fn check_thresholds(
     report: &RetrievalEvalReport,
@@ -848,32 +865,43 @@ pub fn check_thresholds(
     let semantic = &report.semantic;
     let graph = &report.graph;
 
-    check_floor(
-        "precision_at_k",
-        semantic.precision_at_k,
-        thresholds.min_precision_at_k,
-        &mut breaches,
-    );
-    check_floor(
-        "recall_at_k",
-        semantic.recall_at_k,
-        thresholds.min_recall_at_k,
-        &mut breaches,
-    );
-    check_floor("mrr", semantic.mrr, thresholds.min_mrr, &mut breaches);
-    check_floor("ndcg", semantic.ndcg, thresholds.min_ndcg, &mut breaches);
-    check_floor(
-        "resolution_recall",
-        graph.resolution_recall,
-        thresholds.min_resolution_recall,
-        &mut breaches,
-    );
-    check_ceiling(
-        "false_edge_rate",
-        graph.false_edge_rate,
-        thresholds.max_false_edge_rate,
-        &mut breaches,
-    );
+    // Semantic floors gate only on a run that ranked at least one known-item
+    // query; an unmeasured family (queries == 0) defaults to 0.0 metrics and
+    // must not breach a floor it never had a chance to satisfy.
+    if semantic.queries > 0 {
+        check_floor(
+            "precision_at_k",
+            semantic.precision_at_k,
+            thresholds.min_precision_at_k,
+            &mut breaches,
+        );
+        check_floor(
+            "recall_at_k",
+            semantic.recall_at_k,
+            thresholds.min_recall_at_k,
+            &mut breaches,
+        );
+        check_floor("mrr", semantic.mrr, thresholds.min_mrr, &mut breaches);
+        check_floor("ndcg", semantic.ndcg, thresholds.min_ndcg, &mut breaches);
+    }
+
+    // Graph thresholds gate independently on a visible call-site inventory; an
+    // unmeasured graph (call_sites == 0) defaults to 0.0 metrics and must not
+    // breach `min_resolution_recall` (nor spuriously pass/fail `false_edge_rate`).
+    if graph.call_sites > 0 {
+        check_floor(
+            "resolution_recall",
+            graph.resolution_recall,
+            thresholds.min_resolution_recall,
+            &mut breaches,
+        );
+        check_ceiling(
+            "false_edge_rate",
+            graph.false_edge_rate,
+            thresholds.max_false_edge_rate,
+            &mut breaches,
+        );
+    }
 
     ThresholdCheck {
         passed: breaches.is_empty(),
@@ -1092,5 +1120,105 @@ mod tests {
                 "non-finite ceiling {bad} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn check_thresholds_gates_each_family_on_measurement() {
+        // A family that measured nothing reports 0.0 metrics; comparing those
+        // defaults against a configured floor must NOT flag a false breach for a
+        // family the run never exercised (084.006-T / Thread-X). Semantic floors
+        // gate on `queries > 0`, graph thresholds on `call_sites > 0`.
+        let thresholds = RetrievalEvalThresholds {
+            min_precision_at_k: 0.5,
+            min_recall_at_k: 0.5,
+            min_mrr: 0.5,
+            min_ndcg: 0.5,
+            min_resolution_recall: 0.5,
+            max_false_edge_rate: 0.1,
+        };
+
+        // Graph measured, semantic unmeasured (queries == 0): only graph gates.
+        let mut graph_only = RetrievalEvalReport::empty(true, "b".to_owned());
+        graph_only.graph = GraphMetrics {
+            call_sites: 4,
+            resolution_recall: 0.75,
+            false_edge_rate: 0.0,
+            ..GraphMetrics::default()
+        };
+        let graph_check = check_thresholds(&graph_only, &thresholds);
+        assert!(
+            graph_check.passed,
+            "unmeasured semantic family must not breach; breaches={:?}",
+            graph_check.breaches
+        );
+
+        // Semantic measured, graph unmeasured (call_sites == 0): only semantic gates.
+        let mut semantic_only = RetrievalEvalReport::empty(true, "b".to_owned());
+        semantic_only.semantic = SemanticMetrics {
+            precision_at_k: 0.9,
+            recall_at_k: 0.9,
+            mrr: 0.9,
+            ndcg: 0.9,
+            queries: 3,
+            retrieval_mode: RetrievalMode::Hybrid,
+        };
+        let semantic_check = check_thresholds(&semantic_only, &thresholds);
+        assert!(
+            semantic_check.passed,
+            "unmeasured graph family must not breach; breaches={:?}",
+            semantic_check.breaches
+        );
+
+        // A measured family genuinely below its floor still breaches.
+        let mut bad_graph = RetrievalEvalReport::empty(true, "b".to_owned());
+        bad_graph.graph = GraphMetrics {
+            call_sites: 4,
+            resolution_recall: 0.10,
+            false_edge_rate: 0.0,
+            ..GraphMetrics::default()
+        };
+        let bad_check = check_thresholds(&bad_graph, &thresholds);
+        assert!(
+            !bad_check.passed,
+            "a measured family below its floor must still breach"
+        );
+    }
+
+    #[test]
+    fn evaluate_semantic_reports_keyword_only_for_unembedded_corpus() {
+        // A corpus whose candidates carry no vectors can only run keyword
+        // ranking; the reported mode must be the KeywordOnly fallback derived
+        // from the actual `hybrid_rank_of` calls (084.008-T / Thread-Y), never
+        // masked as Hybrid by a separate probe.
+        let mk = |name: &str| Function {
+            id: format!("function:{name}"),
+            name: name.to_owned(),
+            file_path: format!("src/{name}.rs"),
+            line_start: 1,
+            line_end: 2,
+            signature: format!("fn {name}()"),
+            docstring: Some(format!("{name} docstring text")),
+            body: String::new(),
+            body_hash: String::new(),
+            token_count: 0,
+            embed_type: "explicit_code".to_owned(),
+            embedding: Vec::new(),
+            summary: String::new(),
+        };
+        let corpus = vec![mk("alpha"), mk("beta")];
+        let config = RetrievalEvalConfig {
+            enabled: true,
+            languages: Vec::new(),
+            k: 5,
+            sample_size: 2,
+            ..RetrievalEvalConfig::default()
+        };
+        let metrics = evaluate_semantic(&corpus, &config).expect("semantic eval");
+        assert!(metrics.queries > 0, "queries must have run");
+        assert_eq!(
+            metrics.retrieval_mode,
+            RetrievalMode::KeywordOnly,
+            "an un-embedded corpus must report the keyword-only fallback"
+        );
     }
 }
