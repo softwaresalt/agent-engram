@@ -258,23 +258,30 @@ pub fn evaluate_semantic(
 /// name-only resolution cannot match them — so they are excluded here to keep
 /// the denominator aligned with resolvable call sites. Blocklisted helpers
 /// (`clone`, `unwrap`, …) are excluded by the parser. A parse failure yields `0`.
+///
+/// Counts **distinct `(caller, callee)` name pairs**, not raw call occurrences
+/// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
+/// by `(from, to)`, so a caller that invokes the same callee twice contributes a
+/// single edge; counting the denominator in the same distinct-relation unit
+/// keeps `resolution_recall` a ratio of commensurable units and stops a repeated
+/// call from spuriously deflating recall.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
-        result
-            .edges
-            .iter()
-            .filter(|edge| {
-                matches!(
-                    edge,
-                    ExtractedEdge::Calls {
-                        is_method: false,
-                        is_qualified: false,
-                        ..
-                    }
-                )
-            })
-            .count()
+        let mut relations: std::collections::HashSet<(&str, &str)> =
+            std::collections::HashSet::new();
+        for edge in &result.edges {
+            if let ExtractedEdge::Calls {
+                caller,
+                callee,
+                is_method: false,
+                is_qualified: false,
+            } = edge
+            {
+                relations.insert((caller.as_str(), callee.as_str()));
+            }
+        }
+        relations.len()
     })
 }
 

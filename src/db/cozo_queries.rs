@@ -2764,6 +2764,54 @@ stale[from, to] :=
         Ok(extract_count(&r))
     }
 
+    /// Count resolved `calls` edges whose caller resides in a file of one of the
+    /// given `languages` (084.002-T / D6F70DCC) — the language-gated 081-F
+    /// numerator.
+    ///
+    /// Each edge is joined to its caller's (`from`) file language and retained
+    /// only when that language matches one of `languages` (case-insensitive,
+    /// mirroring the call-site denominator gate in
+    /// [`crate::services::retrieval_eval::count_call_sites`]'s caller so
+    /// `resolution_recall` numerator and denominator cover the same set of files).
+    /// An empty `languages` slice disables the gate and counts every edge — parity
+    /// with the denominator's opt-in behavior — so recall stays a ratio of
+    /// commensurable, identically-scoped units. Counts distinct `(from, to)`
+    /// relations (the `calls_edge` key); language matching is done in Rust rather
+    /// than in-query to avoid depending on Cozo string builtins.
+    pub async fn count_calls_edges_in_languages(
+        &self,
+        languages: &[String],
+    ) -> Result<u64, EngramError> {
+        if languages.is_empty() {
+            return self.count_calls_edges().await;
+        }
+        // One row per edge, carrying the caller's file language. Both joins are
+        // keyed lookups (`function_meta.id`, `file_node.path`), so the `(from,to)`
+        // edge key stays unique across rows and counting matched rows counts
+        // distinct call relations.
+        let script = r#"
+?[from, to, language] :=
+    *calls_edge { from, to },
+    *function_meta { id: from, file_path },
+    *file_node { path: file_path, language }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let matched = r
+            .rows
+            .iter()
+            .filter(|row| {
+                let language = extract_str(row, 2);
+                languages
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(&language))
+            })
+            .count();
+        Ok(u64::try_from(matched).unwrap_or(0))
+    }
+
     /// Return the number of `calls` edges whose callee (`to`) matches no indexed
     /// function definition — a dangling / stale edge (081-F provenance read).
     ///

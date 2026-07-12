@@ -176,7 +176,12 @@ pub async fn run_retrieval_eval(
     // Database read errors propagate rather than degrading to fabricated zeros.
     let call_sites =
         count_workspace_call_sites(&parts.workspace_path, &queries, &parts.config).await?;
-    let resolved = queries.count_calls_edges().await?;
+    // Numerator is gated to the *same* configured caller languages as the
+    // call-site denominator (084.002-T / D6F70DCC) so recall is a ratio of
+    // identically-scoped units; an empty language list counts every edge.
+    let resolved = queries
+        .count_calls_edges_in_languages(&parts.config.languages)
+        .await?;
     let false_edges = queries.count_dangling_calls_edges().await?;
     let graph = retrieval_eval::compute_graph_metrics(call_sites, resolved, false_edges);
 
