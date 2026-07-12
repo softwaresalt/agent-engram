@@ -12,7 +12,6 @@ feature: "n/a (process)"
 pr: 243
 related_pr: [239, 240, 241, 242]
 ---
-# Merge only after the Copilot review for the current HEAD has landed
 
 ## Problem
 
