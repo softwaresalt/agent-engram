@@ -232,26 +232,82 @@ pub async fn run_tool_timed(
     formatter: &OutputFormatter,
     command_default_secs: u64,
 ) -> i32 {
+    // capture = false: the successful result is printed by move, never cloned,
+    // so non-capturing callers (the common path: `unified_search`, `map_code`,
+    // …) pay nothing for the capture feature (084.007-T / Thread-4).
+    run_tool_dispatch(
+        method,
+        params,
+        flags,
+        formatter,
+        command_default_secs,
+        false,
+    )
+    .await
+    .0
+}
+
+/// Like [`run_tool_timed`], but also returns the tool's successful result JSON
+/// (when present) so a caller can post-process it — e.g. map a report field to a
+/// domain exit code (084.007-T). Printed output and the base exit code are
+/// identical to [`run_tool_timed`]; the returned `Option<Value>` is `Some` only
+/// on a successful tool result and `None` on tool/connection errors.
+pub async fn run_tool_timed_capture(
+    method: &str,
+    params: Option<Value>,
+    flags: &GlobalFlags,
+    formatter: &OutputFormatter,
+    command_default_secs: u64,
+) -> (i32, Option<Value>) {
+    run_tool_dispatch(method, params, flags, formatter, command_default_secs, true).await
+}
+
+/// Shared dispatch core for [`run_tool_timed`] and [`run_tool_timed_capture`].
+///
+/// When `capture` is `false` the successful result JSON is handed to the
+/// formatter by move (no clone) and `None` is returned; only when `capture` is
+/// `true` — the CLI exit-code path that must post-process the report — is the
+/// value cloned so it can be both printed and returned. This keeps large
+/// `unified_search` / `map_code` responses off the clone path unless a caller
+/// actually requests capture (084.007-T / Thread-4).
+async fn run_tool_dispatch(
+    method: &str,
+    params: Option<Value>,
+    flags: &GlobalFlags,
+    formatter: &OutputFormatter,
+    command_default_secs: u64,
+    capture: bool,
+) -> (i32, Option<Value>) {
     let timeout: Duration = flags.ipc_timeout(command_default_secs);
 
     // Resolve workspace.
     let workspace_path = match flags.resolve_workspace() {
         Ok(p) => p,
-        Err(e) => return formatter.cli_error(&e),
+        Err(e) => return (formatter.cli_error(&e), None),
     };
 
     // Canonicalize only when the path exists; propagate permission errors.
     let workspace_path = match std::fs::canonicalize(&workspace_path) {
         Ok(p) => p,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => workspace_path,
-        Err(e) => return formatter.cli_error(&format!("workspace path error: {e}")),
+        Err(e) => {
+            return (
+                formatter.cli_error(&format!("workspace path error: {e}")),
+                None,
+            );
+        }
     };
 
     // Compute IPC endpoint before spawning so we can probe daemon liveness
     // and emit a progress hint when the daemon is not yet running.
     let endpoint = match ipc_endpoint(&workspace_path) {
         Ok(ep) => ep,
-        Err(e) => return formatter.cli_error(&format!("cannot compute IPC endpoint: {e}")),
+        Err(e) => {
+            return (
+                formatter.cli_error(&format!("cannot compute IPC endpoint: {e}")),
+                None,
+            );
+        }
     };
 
     // Emit a progress hint when the daemon is not yet reachable so the
@@ -262,7 +318,10 @@ pub async fn run_tool_timed(
 
     // Ensure daemon is running (auto-spawn if needed).
     if let Err(e) = ensure_daemon_running(&workspace_path).await {
-        return formatter.cli_error(&format!("daemon unavailable: {e}"));
+        return (
+            formatter.cli_error(&format!("daemon unavailable: {e}")),
+            None,
+        );
     }
 
     // Default to `1` when the caller does not supply an explicit request ID.
@@ -276,7 +335,12 @@ pub async fn run_tool_timed(
     // schema change — this is envelope-level metadata.
     let correlation_id = match flags.resolve_correlation_id() {
         Ok(value) => value,
-        Err(e) => return formatter.cli_error(&format!("invalid --correlation-id: {e}")),
+        Err(e) => {
+            return (
+                formatter.cli_error(&format!("invalid --correlation-id: {e}")),
+                None,
+            );
+        }
     };
     let params = inject_correlation_id(params, correlation_id.as_deref());
 
@@ -292,15 +356,28 @@ pub async fn run_tool_timed(
     {
         Ok(response) => {
             if let Some(result) = response.result {
-                formatter.success(Some(id), result)
+                if capture {
+                    // Clone once so the value can be both printed and returned
+                    // to the post-processing caller (084.007-T).
+                    let code = formatter.success(Some(id), result.clone());
+                    (code, Some(result))
+                } else {
+                    // Move the value into the formatter — no clone on the
+                    // common non-capturing path (Thread-4).
+                    let code = formatter.success(Some(id), result);
+                    (code, None)
+                }
             } else if let Some(err) = response.error {
                 let message = friendly_error_message(&err);
-                formatter.tool_error(Some(id), i64::from(err.code), &message, err.data)
+                (
+                    formatter.tool_error(Some(id), i64::from(err.code), &message, err.data),
+                    None,
+                )
             } else {
-                formatter.cli_error("daemon returned empty response")
+                (formatter.cli_error("daemon returned empty response"), None)
             }
         }
-        Err(e) => formatter.cli_error(&format!("IPC failure: {e}")),
+        Err(e) => (formatter.cli_error(&format!("IPC failure: {e}")), None),
     }
 }
 

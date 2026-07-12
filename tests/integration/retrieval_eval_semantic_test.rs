@@ -7,7 +7,7 @@
 //! 4. empty / disabled corpus → zeroed report (no panic).
 
 use engram::models::Function;
-use engram::models::retrieval_eval::RetrievalEvalConfig;
+use engram::models::retrieval_eval::{RetrievalEvalConfig, RetrievalMode};
 use engram::services::retrieval_eval::{compute_semantic_metrics, evaluate_semantic};
 
 /// Build a synthetic function record with an empty embedding so search stays
@@ -143,4 +143,85 @@ fn empty_corpus_yields_zero_report() {
     assert_eq!(from_compute.queries, 0);
     assert!((from_compute.precision_at_k - 0.0).abs() < 1e-9);
     assert!((from_compute.ndcg - 0.0).abs() < 1e-9);
+}
+
+// ── 084.008-T: retrieval-mode fidelity / silent keyword-only fallback ────────
+//
+// `hybrid_search` swallows `embed_text(query).ok()`, so a keyword-only run —
+// either an un-embedded corpus or a corpus with vectors but an unusable
+// embedding model — was previously reported as if it were true hybrid
+// retrieval (00C7F3CC). `evaluate_semantic` now records the mode it actually
+// exercised so reports are comparable and a broken embedding path cannot
+// masquerade as a passing hybrid run.
+
+/// An enabled config over the default (`["rust"]`) language scope.
+fn enabled_config() -> RetrievalEvalConfig {
+    RetrievalEvalConfig {
+        enabled: true,
+        ..RetrievalEvalConfig::default()
+    }
+}
+
+/// The [`distinct_corpus`] but with every function carrying a non-empty
+/// embedding vector, so `hybrid_search` exercises the embedding (KNN) path.
+fn embedded_corpus() -> Vec<Function> {
+    distinct_corpus()
+        .into_iter()
+        .map(|mut f| {
+            f.embedding = vec![0.125_f32; 384];
+            f
+        })
+        .collect()
+}
+
+#[test]
+fn un_embedded_corpus_records_keyword_only() {
+    // `make_fn` builds functions with empty embeddings: no candidate carries a
+    // vector, so the embedding path is never exercised.
+    let metrics = evaluate_semantic(&distinct_corpus(), &enabled_config()).expect("semantic eval");
+    assert_eq!(
+        metrics.retrieval_mode,
+        RetrievalMode::KeywordOnly,
+        "an un-embedded corpus must record a keyword-only fallback, not hybrid"
+    );
+}
+
+#[test]
+fn embedded_corpus_records_hybrid() {
+    // Vectors present + a usable query-embedding model → the hybrid path runs.
+    let metrics = evaluate_semantic(&embedded_corpus(), &enabled_config()).expect("semantic eval");
+    assert_eq!(
+        metrics.retrieval_mode,
+        RetrievalMode::Hybrid,
+        "a corpus carrying vectors with a usable embedding model must record hybrid"
+    );
+}
+
+#[test]
+fn modes_are_distinguishable_across_runs() {
+    let config = enabled_config();
+    let keyword = evaluate_semantic(&distinct_corpus(), &config)
+        .expect("keyword eval")
+        .retrieval_mode;
+    let hybrid = evaluate_semantic(&embedded_corpus(), &config)
+        .expect("hybrid eval")
+        .retrieval_mode;
+    assert_ne!(
+        keyword, hybrid,
+        "keyword-only and hybrid runs must be distinguishable in the report"
+    );
+    assert_eq!(keyword, RetrievalMode::KeywordOnly);
+    assert_eq!(hybrid, RetrievalMode::Hybrid);
+}
+
+#[test]
+fn empty_corpus_records_unknown_mode() {
+    // Nothing is retrieved against an empty corpus, so the mode stays unknown
+    // rather than claiming a keyword-only or hybrid run.
+    let metrics = evaluate_semantic(&[], &enabled_config()).expect("empty eval");
+    assert_eq!(
+        metrics.retrieval_mode,
+        RetrievalMode::Unknown,
+        "an empty corpus retrieves nothing, so the mode stays unknown"
+    );
 }

@@ -155,6 +155,15 @@ Each task is test-first (Ship authors the harness before impl), ≤3 source file
 - **Adds:** derive known-item queries from each symbol's docstring / fully-qualified name; run
   `hybrid_search`/unified search; compute **precision@k, recall@k, MRR, nDCG**. Language-agnostic
   (drives off indexed symbols, gated by `RetrievalEvalConfig.languages`).
+  - **Delivered contract (084-F correction):** the semantic corpus is **functions-only** in this
+    baseline — it drives off the indexed `Function` inventory, not every indexed symbol kind.
+    Each query is derived from a function's docstring first line, falling back to its **bare
+    function name** (not a fully-qualified name). Known-item ranking uses the bounded top-k probe
+    `hybrid_rank_of` (084.010-T), which is provably rank-identical to `hybrid_search` but avoids a
+    full clone+sort per query. The corpus is completeness-preserving: a partially-written function
+    (a `function_meta` row lacking a code/embedding row) still counts toward the denominator via a
+    LEFT JOIN (084.009-T). The effective retrieval mode (hybrid vs keyword-only fallback) is
+    recorded honestly rather than assumed hybrid (084.008-T).
 - **Integration scenarios (4):** known-item hit@1 → MRR=1.0; injected miss → recall@k drops;
   nDCG rewards correct ordering; empty/disabled corpus → zero report (no panic).
 - **Depends on:** 081.001-T.
@@ -169,6 +178,17 @@ Each task is test-first (Ship authors the harness before impl), ≤3 source file
   resolved `calls` edges. **resolution_recall** = resolved ÷ visible call sites;
   **false_edge_rate** = edges to names with no matching def (or ambiguous) ÷ resolved. This is
   the empirical surface that gates 082-F.
+  - **Delivered contract (084-F correction):** the denominator counts **distinct `(caller,callee)`
+    relations** (not raw call occurrences), excludes method/receiver and path-qualified calls
+    (which are never promoted to edges), and is gated to the same configured caller languages as
+    the numerator (084.002-T) so recall is a ratio of commensurable units. `false_edge_rate` is a
+    **dangling-only lower bound**: `count_dangling_calls_edges` counts only resolved edges whose
+    callee matches **no** known definition — it does **not** detect mis-resolution to an
+    existing-but-wrong function. True **target-correctness** is therefore asserted separately,
+    against a hand-authored expected-target manifest over an indexed fixture (084.004-T /
+    084.012-T), never inferred from `false_edge_rate` alone. Recall is additionally surfaced with
+    honest `index_stale` / `unreadable_files` signals when the re-read tree drifts from the
+    indexed revision (084.003-T).
 - **Integration scenarios (4):** all-local resolved → recall≈1.0; cross-file drop → recall<1.0;
   edge to non-existent def → false_edge_rate>0; empty graph → zero report.
 - **Depends on:** 081.001-T.

@@ -622,6 +622,45 @@ impl CodeGraphQueries {
         Ok(result.rows.iter().map(|r| row_to_function(r)).collect())
     }
 
+    /// List every indexed function for the retrieval-eval corpus, left-joining
+    /// the body and embedding (084.009-T / 78AA205D).
+    ///
+    /// Unlike [`Self::all_functions`] — an INNER join that silently drops a
+    /// function whose `function_code` or `function_embedding` row is absent
+    /// (a partial write, e.g. a `SQLITE_BUSY` mid-upsert; see
+    /// [`Self::all_function_metas`]) — this returns every `function_meta` row so
+    /// the semantic-eval denominator reflects *every* indexed function. A
+    /// function lacking a code/embedding row is included with an empty
+    /// `body` / `embedding`; the retrieval eval derives a bare-name query for it
+    /// (`derive_query`) and scores it keyword-only. Functions that *do* carry a
+    /// body/embedding are returned unchanged, so metrics over a fully-indexed
+    /// corpus are identical to the INNER-join path.
+    pub async fn all_functions_for_eval(
+        &self,
+    ) -> Result<Vec<crate::models::Function>, EngramError> {
+        let script = r#"
+fn_has_code[id] := *function_code { id }
+fn_body[id, body] := *function_code { id, body }
+fn_body[id, body] := *function_meta { id }, not fn_has_code[id], body = ''
+
+fn_has_emb[id] := *function_embedding { id }
+fn_emb[id, embedding] := *function_embedding { id, embedding }
+fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = []
+
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash,
+  token_count, embed_type, summary, body, embedding] :=
+    *function_meta { id, name, file_path, line_start, line_end, signature,
+                     docstring, body_hash, token_count, embed_type, summary },
+    fn_body[id, body],
+    fn_emb[id, embedding]
+"#;
+        let result = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(result.rows.iter().map(|r| row_to_function(r)).collect())
+    }
+
     /// List all class records.
     pub async fn all_classes(&self) -> Result<Vec<crate::models::Class>, EngramError> {
         let script = r#"
@@ -2764,6 +2803,54 @@ stale[from, to] :=
         Ok(extract_count(&r))
     }
 
+    /// Count resolved `calls` edges whose caller resides in a file of one of the
+    /// given `languages` (084.002-T / D6F70DCC) — the language-gated 081-F
+    /// numerator.
+    ///
+    /// Each edge is joined to its caller's (`from`) file language and retained
+    /// only when that language matches one of `languages` (case-insensitive,
+    /// mirroring the call-site denominator gate in
+    /// [`crate::services::retrieval_eval::count_call_sites`]'s caller so
+    /// `resolution_recall` numerator and denominator cover the same set of files).
+    /// An empty `languages` slice disables the gate and counts every edge — parity
+    /// with the denominator's opt-in behavior — so recall stays a ratio of
+    /// commensurable, identically-scoped units. Counts distinct `(from, to)`
+    /// relations (the `calls_edge` key); language matching is done in Rust rather
+    /// than in-query to avoid depending on Cozo string builtins.
+    pub async fn count_calls_edges_in_languages(
+        &self,
+        languages: &[String],
+    ) -> Result<u64, EngramError> {
+        if languages.is_empty() {
+            return self.count_calls_edges().await;
+        }
+        // One row per edge, carrying the caller's file language. Both joins are
+        // keyed lookups (`function_meta.id`, `file_node.path`), so the `(from,to)`
+        // edge key stays unique across rows and counting matched rows counts
+        // distinct call relations.
+        let script = r#"
+?[from, to, language] :=
+    *calls_edge { from, to },
+    *function_meta { id: from, file_path },
+    *file_node { path: file_path, language }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let matched = r
+            .rows
+            .iter()
+            .filter(|row| {
+                let language = extract_str(row, 2);
+                languages
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(&language))
+            })
+            .count();
+        Ok(u64::try_from(matched).unwrap_or(0))
+    }
+
     /// Return the number of `calls` edges whose callee (`to`) matches no indexed
     /// function definition — a dangling / stale edge (081-F provenance read).
     ///
@@ -2783,6 +2870,56 @@ has_def[id] := *function_meta { id }
             .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
             .map_err(|e| map_db_err(e.to_string()))?;
         Ok(extract_count(&r))
+    }
+
+    /// Like [`Self::count_dangling_calls_edges`], but gated to the same
+    /// **caller languages** as [`Self::count_calls_edges_in_languages`]
+    /// (084.008-T / Thread-8 correction).
+    ///
+    /// `false_edge_rate = dangling ÷ resolved`. If `resolved` is scoped to the
+    /// configured caller languages while the dangling numerator counts the whole
+    /// graph, a single dangling edge in an *unconfigured* language (e.g. a stale
+    /// TypeScript reference in a Rust-only run) inflates — or clamps to `1.0` —
+    /// the rate for the configured language and can spuriously breach
+    /// `max_false_edge_rate`. Counting dangling edges through the identical
+    /// `calls_edge → function_meta(caller) → file_node.language` join keeps
+    /// numerator and denominator commensurable. An empty `languages` slice
+    /// disables the gate and counts every dangling edge — parity with the
+    /// resolved counter.
+    pub async fn count_dangling_calls_edges_in_languages(
+        &self,
+        languages: &[String],
+    ) -> Result<u64, EngramError> {
+        if languages.is_empty() {
+            return self.count_dangling_calls_edges().await;
+        }
+        // One row per dangling edge, carrying the caller's file language. The
+        // caller (`from`) always has a `function_meta` row; the dangling
+        // condition is on the callee (`to`), so language matching is on the
+        // caller — identical scoping to the resolved counter.
+        let script = r#"
+has_def[id] := *function_meta { id }
+?[from, to, language] :=
+    *calls_edge { from, to },
+    not has_def[to],
+    *function_meta { id: from, file_path },
+    *file_node { path: file_path, language }
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let matched = r
+            .rows
+            .iter()
+            .filter(|row| {
+                let language = extract_str(row, 2);
+                languages
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(&language))
+            })
+            .count();
+        Ok(u64::try_from(matched).unwrap_or(0))
     }
 
     // ── Bulk concerns ─────────────────────────────────────────────
@@ -5374,5 +5511,104 @@ mod tests {
             parse_powerbi_node_kind("").is_err(),
             "empty string should return Err"
         );
+    }
+
+    // ── 084.009-T: semantic corpus completeness (LEFT JOIN) ──────────────────
+
+    /// `all_functions_for_eval` must keep a `function_meta` row whose
+    /// `function_code` / `function_embedding` rows are absent (a partial write),
+    /// where the INNER-join `all_functions` drops it — so the semantic-eval
+    /// denominator reflects every indexed function (78AA205D). A fully
+    /// materialized function is returned unchanged by both.
+    #[tokio::test]
+    async fn all_functions_for_eval_includes_meta_only_rows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), "eval-completeness")
+            .await
+            .expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+
+        // A fully-materialized function (meta + code + embedding).
+        let full = crate::models::Function {
+            id: "function:full".to_owned(),
+            name: "full".to_owned(),
+            file_path: "src/full.rs".to_owned(),
+            line_start: 1,
+            line_end: 3,
+            signature: "fn full()".to_owned(),
+            docstring: Some("documented".to_owned()),
+            body: "fn full() {}".to_owned(),
+            body_hash: "hash-full".to_owned(),
+            token_count: 3,
+            embed_type: "explicit_code".to_owned(),
+            embedding: vec![0.1_f32; crate::services::embedding::EMBEDDING_DIM],
+            summary: String::new(),
+        };
+        q.upsert_function(&full).await.expect("upsert full");
+
+        // A partial write: `function_meta` only, with no `function_code` /
+        // `function_embedding` row (the SQLITE_BUSY-mid-upsert scenario).
+        let meta_only = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary] <-
+    [[$id, $name, $file_path, $line_start, $line_end, $signature, $docstring, $body_hash, $token_count, $embed_type, $summary]]
+:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from("function:partial"));
+        p.insert("name".to_owned(), DataValue::from("partial"));
+        p.insert("file_path".to_owned(), DataValue::from("src/partial.rs"));
+        p.insert("line_start".to_owned(), DataValue::Num(Num::Int(1)));
+        p.insert("line_end".to_owned(), DataValue::Num(Num::Int(2)));
+        p.insert("signature".to_owned(), DataValue::from("fn partial()"));
+        // Deliberately docstring-less to exercise the bare-name query fallback.
+        p.insert("docstring".to_owned(), DataValue::from(""));
+        p.insert("body_hash".to_owned(), DataValue::from("hash-partial"));
+        p.insert("token_count".to_owned(), DataValue::Num(Num::Int(0)));
+        p.insert("embed_type".to_owned(), DataValue::from("explicit_code"));
+        p.insert("summary".to_owned(), DataValue::from(""));
+        q.run_script_busy_retry_mutable(meta_only, p)
+            .await
+            .expect("insert meta-only row");
+
+        let inner = q.all_functions().await.expect("all_functions");
+        let eval = q
+            .all_functions_for_eval()
+            .await
+            .expect("all_functions_for_eval");
+
+        assert_eq!(
+            inner.len(),
+            1,
+            "INNER join drops the meta-only function (denominator gap)"
+        );
+        assert_eq!(
+            eval.len(),
+            2,
+            "LEFT join keeps every function_meta row in the eval denominator"
+        );
+
+        let partial = eval
+            .iter()
+            .find(|f| f.id == "function:partial")
+            .expect("meta-only function must be present in the eval corpus");
+        assert!(
+            partial.embedding.is_empty(),
+            "a meta-only function carries no embedding (scored keyword-only)"
+        );
+        assert!(
+            partial.body.is_empty(),
+            "a meta-only function carries an empty body"
+        );
+
+        let full_out = eval
+            .iter()
+            .find(|f| f.id == "function:full")
+            .expect("materialized function must still be present");
+        assert_eq!(
+            full_out.embedding.len(),
+            crate::services::embedding::EMBEDDING_DIM,
+            "a materialized function keeps its embedding (counts unchanged)"
+        );
+        assert_eq!(full_out.body, "fn full() {}", "materialized body preserved");
     }
 }

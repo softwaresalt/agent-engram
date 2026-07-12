@@ -121,6 +121,29 @@ fn default_max_false_edge_rate() -> f64 {
     1.0
 }
 
+/// Retrieval mode actually exercised by the semantic self-retrieval eval
+/// (Cluster E, 084.008-T).
+///
+/// Records whether the run used true hybrid retrieval (keyword + embedding KNN)
+/// or fell back to keyword-only ranking (embeddings unavailable / absent). This
+/// makes reports comparable across environments and prevents a silently broken
+/// embedding path from masquerading as a passing hybrid run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalMode {
+    /// Retrieval mode was not recorded (legacy report or empty-state report).
+    #[default]
+    Unknown,
+    /// Hybrid retrieval (keyword + embedding KNN) was exercised.
+    Hybrid,
+    /// Only keyword retrieval ran — the embedding KNN path was not exercised,
+    /// either because no candidate carried an embedding or because the query
+    /// itself failed to embed. Reported whenever the corpus is non-empty but the
+    /// hybrid precondition (`corpus_has_vectors && query_embeds`) does not hold
+    /// (a fallback, not true hybrid).
+    KeywordOnly,
+}
+
 /// Semantic self-retrieval metrics over known-item queries.
 ///
 /// Each query has exactly one relevant document (its source symbol), so the
@@ -141,25 +164,62 @@ pub struct SemanticMetrics {
     pub ndcg: f64,
     /// Number of known-item queries evaluated.
     pub queries: usize,
+    /// Retrieval mode actually exercised (hybrid vs keyword-only fallback).
+    /// Additive (084.008-T); legacy reports default to [`RetrievalMode::Unknown`].
+    #[serde(default)]
+    pub retrieval_mode: RetrievalMode,
 }
 
 /// Graph resolution-recall metrics derived from the call-site inventory.
 ///
 /// * `resolution_recall` — resolved `calls` edges ÷ visible call sites.
 /// * `false_edge_rate` — resolved edges whose callee resolves to no known
-///   definition ÷ resolved edges.
+///   definition ÷ resolved edges. This is a **dangling-only lower bound**; it
+///   cannot flag a call resolved to a wrong-but-existing target. True
+///   target-correctness requires the fixture-manifest assertion recorded in
+///   `target_correct` / `target_mismatch` (084.004-T).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GraphMetrics {
     /// Resolved edges ÷ visible call sites (`0.0` when no call sites).
     pub resolution_recall: f64,
-    /// False edges ÷ resolved edges (`0.0` when no resolved edges).
+    /// False edges ÷ resolved edges (`0.0` when no resolved edges). Dangling
+    /// callees only — a lower bound on the true false-edge rate.
     pub false_edge_rate: f64,
     /// Total syntactic call sites inventoried by the parser (denominator).
     pub call_sites: usize,
     /// Total resolved `calls` edges in the graph (numerator).
     pub resolved: u64,
-    /// Resolved edges whose callee matches no known definition.
+    /// Resolved edges whose callee matches no known definition (dangling).
     pub false_edges: u64,
+    /// Whether any re-read file's content drifted from the hash recorded at
+    /// index time (working-tree edits since indexing), so `resolution_recall`'s
+    /// disk-parsed denominator may not line up with the indexed numerator. This
+    /// flag tracks **content drift only**; files that could not be read (missing,
+    /// unreadable, or blocked by the workspace-containment guard) are counted in
+    /// `unreadable_files` instead. An honest staleness signal emitted in place of
+    /// a silent `[0,1]` clamp (Cluster A3, 084.003-T). Additive; legacy reports
+    /// default to `false`.
+    #[serde(default)]
+    pub index_stale: bool,
+    /// Count of indexed files that could not be read at eval time. Accounted
+    /// explicitly (rather than silently dropped from the denominator) so the
+    /// recall number stays honest (084.003-T). Additive; defaults to `0`.
+    #[serde(default)]
+    pub unreadable_files: usize,
+    /// Resolved singleton edges whose target matched the expected-target
+    /// manifest by exact identity (target-correctness numerator, 084.004-T).
+    /// Populated only when a ground-truth manifest is supplied (fixture /
+    /// regression path); `0` in production runs, which have no manifest.
+    /// Additive; defaults to `0`.
+    #[serde(default)]
+    pub target_correct: u64,
+    /// Resolved singleton edges whose target did NOT match the expected target
+    /// (wrong-but-existing or dangling). Unlike `false_edge_rate` (a
+    /// dangling-only lower bound), this catches mis-resolution to an existing
+    /// function — but only against a supplied manifest (084.004-T). Additive;
+    /// defaults to `0`.
+    #[serde(default)]
+    pub target_mismatch: u64,
 }
 
 /// A single retrieval-evaluation run report.
@@ -187,6 +247,16 @@ pub struct RetrievalEvalReport {
     pub semantic: SemanticMetrics,
     /// Graph resolution-recall metrics.
     pub graph: GraphMetrics,
+    /// Whether any configured threshold was breached this run (Cluster D,
+    /// 084.006-T). `false` for legacy reports, unconfigured thresholds, and
+    /// empty/disabled runs. The `engram eval` CLI maps this to its exit code
+    /// (084.007-T). Additive; defaults to `false`.
+    #[serde(default)]
+    pub thresholds_breached: bool,
+    /// Human-readable descriptions of each breached threshold (empty on pass
+    /// or when no thresholds are configured). Additive; defaults to empty.
+    #[serde(default)]
+    pub threshold_breaches: Vec<String>,
 }
 
 impl RetrievalEvalReport {
@@ -206,6 +276,8 @@ impl RetrievalEvalReport {
             languages: Vec::new(),
             semantic: SemanticMetrics::default(),
             graph: GraphMetrics::default(),
+            thresholds_breached: false,
+            threshold_breaches: Vec::new(),
         }
     }
 }

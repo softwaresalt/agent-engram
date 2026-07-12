@@ -2,8 +2,9 @@
 //!
 //! Semantic self-retrieval: each indexed function's docstring (falling back to
 //! its name) becomes a known-item query whose single expected hit is that same
-//! function. Running those queries through [`hybrid_search`] and recording the
-//! rank of the source function yields precision@k, recall@k, MRR and nDCG@k.
+//! function. Running those queries through the hybrid ranker
+//! ([`crate::services::search::hybrid_rank_of`]) and recording the rank of the
+//! source function yields precision@k, recall@k, MRR and nDCG@k.
 //!
 //! The semantic corpus is scoped to **functions** in this baseline. Extending
 //! the candidate/query abstraction to other indexed symbol kinds (classes,
@@ -19,18 +20,22 @@
 //! [`crate::services::evaluation`] surface. The two subsystems measure different
 //! things (`retrieval_eval` vs `evaluation`) and must not be conflated.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tokio::io::AsyncWriteExt;
 
-use crate::errors::{EngramError, SystemError};
+use sha2::{Digest, Sha256};
+
+use crate::errors::{ConfigError, EngramError, SystemError};
+use crate::models::CodeFile;
 use crate::models::Function;
 use crate::models::retrieval_eval::{
-    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds,
+    GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
 use crate::services::parsing::{ExtractedEdge, Language, parse_source};
-use crate::services::search::{SearchCandidate, hybrid_search};
+use crate::services::search::{SearchCandidate, hybrid_rank_of};
 
 /// Maximum bytes retained from a derived known-item query.
 ///
@@ -41,28 +46,16 @@ const MAX_QUERY_BYTES: usize = 1900;
 /// Map a file path's extension to a coarse language identifier.
 ///
 /// Used to gate the semantic corpus by [`RetrievalEvalConfig::languages`].
-/// Returns `"unknown"` for unrecognized extensions.
+/// Delegates to [`crate::services::code_graph::language_from_path`] — the single
+/// canonical mapping the indexer uses to populate `file_node.language` — so the
+/// semantic gate and the graph gate share exactly one vocabulary with no drift
+/// (e.g. `.tsx`→`tsx`, `.h++`→`cpp`, `.sql`→`sql`, `.md`→`markdown`). This is the
+/// generalization of the TSX fix (084.005-T): any extension the indexer
+/// recognizes gates identically in both paths. Unrecognized extensions fall
+/// through to the raw extension, and a path with no extension is `"unknown"`.
 #[must_use]
-pub fn language_of(path: &str) -> &'static str {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    match ext {
-        "rs" => "rust",
-        "py" => "python",
-        "js" | "jsx" => "javascript",
-        "ts" | "tsx" => "typescript",
-        "go" => "go",
-        "cs" => "csharp",
-        "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
-        "swift" => "swift",
-        "kt" | "kts" => "kotlin",
-        "rb" => "ruby",
-        "java" => "java",
-        _ => "unknown",
-    }
+pub fn language_of(path: &str) -> String {
+    crate::services::code_graph::language_from_path(std::path::Path::new(path))
 }
 
 /// Trim and byte-bound a raw query string on a UTF-8 char boundary.
@@ -174,6 +167,35 @@ pub fn compute_semantic_metrics(ranks: &[Option<usize>], k: usize) -> SemanticMe
         mrr: mrr / n,
         ndcg: ndcg / n,
         queries,
+        // Mode is a property of *how* the corpus was searched (embeddings
+        // present or not), which this rank-only aggregate cannot observe.
+        // `evaluate_semantic` records the effective mode (084.008-T).
+        retrieval_mode: RetrievalMode::Unknown,
+    }
+}
+
+/// Resolve the retrieval mode a semantic run actually exercised (084.008-T).
+///
+/// Mirrors [`hybrid_search`]'s embedding-path condition exactly: the embedding
+/// (KNN) component contributes only when the corpus carries at least one vector
+/// **and** the query-embedding model can embed a query. When the corpus carries
+/// vectors but the query cannot be embedded, `hybrid_search` swallows the
+/// failure (`embed_text(query).ok()` → `None`) and silently scores keyword-only;
+/// this records that as [`RetrievalMode::KeywordOnly`] rather than masking a
+/// broken embedding path as a passing hybrid run (00C7F3CC). An empty corpus
+/// retrieves nothing, so its mode stays [`RetrievalMode::Unknown`].
+#[must_use]
+fn resolve_retrieval_mode(
+    corpus_empty: bool,
+    corpus_has_vectors: bool,
+    query_embeds: bool,
+) -> RetrievalMode {
+    if corpus_empty {
+        RetrievalMode::Unknown
+    } else if corpus_has_vectors && query_embeds {
+        RetrievalMode::Hybrid
+    } else {
+        RetrievalMode::KeywordOnly
     }
 }
 
@@ -199,11 +221,14 @@ pub fn evaluate_semantic(
         let mut v: Vec<&Function> = functions
             .iter()
             .filter(|f| {
-                config.languages.is_empty()
-                    || config
-                        .languages
-                        .iter()
-                        .any(|lang| lang.eq_ignore_ascii_case(language_of(&f.file_path)))
+                if config.languages.is_empty() {
+                    return true;
+                }
+                let lang_id = language_of(&f.file_path);
+                config
+                    .languages
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(&lang_id))
             })
             .collect();
         // Deterministic order (stable source identity) so the same unchanged
@@ -222,20 +247,49 @@ pub fn evaluate_semantic(
     let candidates: Vec<SearchCandidate> = selected.iter().map(|f| func_to_candidate(f)).collect();
 
     let mut ranks: Vec<Option<usize>> = Vec::new();
+    // Track whether EVERY ranked query actually exercised the embedding path.
+    // The reported retrieval mode is derived from this aggregate over the real
+    // ranking calls (084.008-T fidelity), not a separate constant probe: a mode
+    // computed from the executed rankings can never contradict the scores that
+    // produced the metrics. Starts `true` (vacuous) and is cleared by the first
+    // keyword-only fallback; only meaningful once at least one query ranked.
+    let mut all_queries_embedded = true;
     for function in selected.iter().take(config.sample_size) {
         let query = derive_query(function);
         if query.is_empty() {
             continue;
         }
-        let results = hybrid_search(&query, &candidates, k)?;
-        let rank = results
-            .iter()
-            .position(|hit| hit.id == function.id)
-            .map(|idx| idx + 1);
-        ranks.push(rank);
+        // Bounded known-item probe: the rank of the source symbol within the
+        // top-k, computed without cloning or sorting the full candidate set
+        // (084.010-T). Identical to `hybrid_search(&query, &candidates, k)` then
+        // locating `function.id`, but O(1) extra space per query.
+        let outcome = hybrid_rank_of(&query, &candidates, &function.id, k)?;
+        ranks.push(outcome.rank);
+        all_queries_embedded &= outcome.embedded;
     }
 
-    Ok(compute_semantic_metrics(&ranks, k))
+    let mut metrics = compute_semantic_metrics(&ranks, k);
+    // Record the retrieval mode actually exercised so a keyword-only fallback
+    // (un-embedded corpus, or vectors present but the query embedding failing on
+    // one or more actual queries) is never masked as hybrid (00C7F3CC /
+    // 084.008-T). Mode is only meaningful when at least one known-item query was
+    // ranked; when none ran (empty corpus, or `sample_size == 0` so the loop
+    // never executed) report `Unknown` rather than a mode no query influenced.
+    // The mode reflects the embedding path the executed rankings truly took —
+    // `all_queries_embedded` aggregates each `hybrid_rank_of`'s own result — so
+    // a per-query embedding failure downgrades the report to the honest
+    // KeywordOnly fallback instead of a speculative probe that never ran.
+    metrics.retrieval_mode = if metrics.queries == 0 {
+        RetrievalMode::Unknown
+    } else {
+        let corpus_has_vectors = candidates.iter().any(|c| c.embedding.is_some());
+        resolve_retrieval_mode(
+            candidates.is_empty(),
+            corpus_has_vectors,
+            all_queries_embedded,
+        )
+    };
+    Ok(metrics)
 }
 
 /// Count identifier / path call sites in a source string.
@@ -248,24 +302,240 @@ pub fn evaluate_semantic(
 /// name-only resolution cannot match them — so they are excluded here to keep
 /// the denominator aligned with resolvable call sites. Blocklisted helpers
 /// (`clone`, `unwrap`, …) are excluded by the parser. A parse failure yields `0`.
+///
+/// Counts **distinct `(caller, callee)` name pairs**, not raw call occurrences
+/// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
+/// by `(from, to)`, so a caller that invokes the same callee twice contributes a
+/// single edge; counting the denominator in the same distinct-relation unit
+/// keeps `resolution_recall` a ratio of commensurable units and stops a repeated
+/// call from spuriously deflating recall.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
-        result
-            .edges
-            .iter()
-            .filter(|edge| {
-                matches!(
-                    edge,
-                    ExtractedEdge::Calls {
-                        is_method: false,
-                        is_qualified: false,
-                        ..
-                    }
-                )
-            })
-            .count()
+        let mut relations: std::collections::HashSet<(&str, &str)> =
+            std::collections::HashSet::new();
+        for edge in &result.edges {
+            if let ExtractedEdge::Calls {
+                caller,
+                callee,
+                is_method: false,
+                is_qualified: false,
+            } = edge
+            {
+                relations.insert((caller.as_str(), callee.as_str()));
+            }
+        }
+        relations.len()
     })
+}
+
+/// SHA-256 hex digest of a source string.
+///
+/// Computed identically to the code-graph indexer's `sha256_hex` (same bytes,
+/// same lowercase-hex encoding) so an eval-time re-read can be compared
+/// byte-for-byte against the `content_hash` recorded in `file_node` at index
+/// time (084.003-T). Must stay in lockstep with the indexer's hashing.
+#[must_use]
+pub fn source_content_hash(source: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// True when an indexed file's freshly-read `source` no longer matches the
+/// `recorded_hash` captured at index time — the working tree has drifted from
+/// the indexed revision (084.003-T).
+///
+/// The graph recall numerator is read from the indexed edges while the
+/// denominator is re-parsed from disk each run; a drift means the two describe
+/// different revisions, so recall is surfaced with an honest `index_stale`
+/// signal instead of silently relying on the `[0, 1]` clamp to hide the
+/// inconsistency. An empty `recorded_hash` (legacy `file_node` row with no
+/// stored hash) disables the check for that file rather than reporting a false
+/// positive.
+#[must_use]
+pub(crate) fn is_index_stale(source: &str, recorded_hash: &str) -> bool {
+    !recorded_hash.is_empty() && source_content_hash(source) != recorded_hash
+}
+
+/// Outcome of scanning the indexed source inventory for the graph denominator.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallSiteInventory {
+    /// Distinct-relation call-site count (the resolution-recall denominator).
+    pub call_sites: usize,
+    /// True when any indexed file's on-disk content no longer matches the hash
+    /// recorded at index time — the working tree has drifted from the indexed
+    /// revision, so the numerator (indexed edges) and this freshly-read
+    /// denominator describe different revisions. Surfaced instead of being
+    /// hidden by the recall `[0, 1]` clamp (084.003-T).
+    pub index_stale: bool,
+    /// Count of indexed files that could not be read this run (missing /
+    /// unreadable) and were therefore excluded from the denominator scan —
+    /// accounted, not silently dropped, so a shrunken denominator is visible.
+    pub unreadable_files: usize,
+}
+
+/// Number of indexed source files read + parsed per batch during the denominator
+/// scan (084.011-T / CA401F5F).
+///
+/// The scan holds at most this many file sources in memory at once, then parses
+/// the batch off-runtime and drops it before reading the next — so peak memory is
+/// bounded by one batch rather than by the entire indexed corpus. The batch size
+/// does not affect the counts (parsing is per-file and the totals sum).
+const CALL_SITE_SCAN_BATCH_FILES: usize = 64;
+
+/// Sum the distinct call-site relations across one batch of `(language, source,
+/// recorded_hash)` tuples and report whether any source has drifted from its
+/// recorded hash (084.011-T).
+///
+/// Pure and synchronous so it can run off the async runtime one batch at a time.
+/// An unparseable language contributes nothing; the stale flag OR-accumulates so
+/// a single drifted file in any batch surfaces the working-tree drift signal.
+fn accumulate_call_sites(batch: &[(String, String, String)]) -> (usize, bool) {
+    let mut total: usize = 0;
+    let mut stale = false;
+    for (lang, source, recorded_hash) in batch {
+        // Working-tree drift: the freshly-read content no longer matches the hash
+        // recorded at index time, so this denominator and the indexed numerator
+        // describe different revisions.
+        if is_index_stale(source, recorded_hash) {
+            stale = true;
+        }
+        if let Ok(language) = Language::try_from(lang.as_str()) {
+            total += count_call_sites(source, language);
+        }
+    }
+    (total, stale)
+}
+
+/// Scan the indexed source inventory for the graph-metric denominator and its
+/// index-consistency signals (084.003-T).
+///
+/// For each indexed `file` whose language passes the `languages` gate
+/// (case-insensitive; empty ⇒ all), the file is re-read from disk under
+/// `workspace_path` and parsed to count distinct `(caller, callee)` call
+/// relations (the denominator). While scanning it surfaces two honest signals:
+/// * `index_stale` — a re-read file's content no longer matches the
+///   `content_hash` recorded at index time (working-tree drift);
+/// * `unreadable_files` — indexed files that could not be resolved/read this run
+///   (missing / unreadable), counted rather than silently dropped so a shrunken
+///   denominator — and therefore an unreliable recall — stays visible.
+///
+/// A path that resolves outside `workspace_path` (e.g. an in-workspace symlink
+/// repointed outside the root after indexing) stays blocked by the traversal
+/// guard and **is** accounted as unreadable — exactly like an indexed file that
+/// no longer resolves — so a shrunken denominator stays visible instead of
+/// silently inflating recall. A read/resolve failure of an indexed file is
+/// likewise accounted.
+///
+/// Files are read and parsed in bounded batches of
+/// [`CALL_SITE_SCAN_BATCH_FILES`] so peak memory stays bounded by one batch
+/// rather than the entire indexed corpus (084.011-T). Batching does not change
+/// the counts: parsing is per-file and both the call-site total and the
+/// `index_stale` OR aggregate across batches.
+///
+/// # Errors
+/// Returns a system error if the workspace root cannot be canonicalized, or if
+/// an off-runtime parse task panics — a failed read must not be silently
+/// reported as an empty inventory.
+pub async fn scan_call_site_inventory(
+    workspace_path: &Path,
+    files: &[CodeFile],
+    languages: &[String],
+) -> Result<CallSiteInventory, EngramError> {
+    // Canonical workspace root for the containment check below. The bound
+    // workspace is canonicalized at `set_workspace` time, so this is expected
+    // to succeed; a failure is surfaced rather than silently skewing metrics.
+    let ws_root = tokio::fs::canonicalize(workspace_path).await.map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("cannot resolve workspace root for eval containment check: {e}"),
+        })
+    })?;
+
+    // Running totals accumulated one bounded batch at a time so the whole corpus
+    // of source text is never resident simultaneously (084.011-T).
+    let mut call_sites: usize = 0;
+    let mut index_stale = false;
+    // Indexed files that could not be read this run. Accounted (084.003-T) so a
+    // denominator computed over fewer files than were indexed — and therefore an
+    // unreliable recall — is visible rather than silently masked.
+    let mut unreadable_files: usize = 0;
+    // Current batch: (language, source, recorded_hash) for readable, in-scope
+    // indexed files. Bounded to CALL_SITE_SCAN_BATCH_FILES entries.
+    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(CALL_SITE_SCAN_BATCH_FILES);
+
+    for file in files {
+        let gated = languages.is_empty()
+            || languages
+                .iter()
+                .any(|lang| lang.eq_ignore_ascii_case(&file.language));
+        if !gated {
+            continue;
+        }
+        let full = workspace_path.join(&file.path);
+        // Workspace-isolation invariant (no traversal): resolve the target
+        // (following symlinks and `..`) and require it to stay under the
+        // canonical workspace root before reading.
+        let Ok(canon) = tokio::fs::canonicalize(&full).await else {
+            // An indexed file that no longer resolves (deleted / renamed since
+            // index time) is an unreadable indexed file, not a silent skip.
+            unreadable_files += 1;
+            continue;
+        };
+        if !canon.starts_with(&ws_root) {
+            // A path escaping the workspace (e.g. an in-workspace symlink
+            // repointed outside the root after indexing) stays blocked — but it
+            // is still an indexed file now excluded from the denominator, so
+            // account it as unreadable (084.003-T), exactly like a file that no
+            // longer resolves. Silently skipping it would shrink the denominator
+            // while the persisted `calls` edges remain in the numerator,
+            // inflating resolution_recall with no consistency signal.
+            unreadable_files += 1;
+            continue;
+        }
+        match tokio::fs::read_to_string(&canon).await {
+            Ok(source) => batch.push((file.language.clone(), source, file.content_hash.clone())),
+            Err(_) => unreadable_files += 1,
+        }
+
+        if batch.len() >= CALL_SITE_SCAN_BATCH_FILES {
+            let (count, stale) = parse_call_site_batch(std::mem::take(&mut batch)).await?;
+            call_sites += count;
+            index_stale |= stale;
+            batch.reserve(CALL_SITE_SCAN_BATCH_FILES);
+        }
+    }
+
+    // Flush the final partial batch (may be empty for an all-gated-out corpus).
+    if !batch.is_empty() {
+        let (count, stale) = parse_call_site_batch(batch).await?;
+        call_sites += count;
+        index_stale |= stale;
+    }
+
+    Ok(CallSiteInventory {
+        call_sites,
+        index_stale,
+        unreadable_files,
+    })
+}
+
+/// Parse one batch of source tuples off the async runtime (parsing + hash
+/// verification are CPU-bound), returning the batch's call-site total and stale
+/// flag. Takes ownership of the batch so it is dropped once parsed (084.011-T).
+///
+/// # Errors
+/// Returns a system error if the off-runtime parse task panics.
+async fn parse_call_site_batch(
+    batch: Vec<(String, String, String)>,
+) -> Result<(usize, bool), EngramError> {
+    tokio::task::spawn_blocking(move || accumulate_call_sites(&batch))
+        .await
+        .map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("retrieval eval call-site parse task failed: {e}"),
+            })
+        })
 }
 
 /// Compute graph resolution metrics from raw counts.
@@ -296,6 +566,64 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
         call_sites,
         resolved,
         false_edges,
+        // Staleness / accounting (084.003-T) and target-correctness (084.004-T)
+        // are populated by the callers that have the required inputs (indexed
+        // generation, unreadable-file count, expected-target manifest). This
+        // raw-count constructor leaves them at their honest defaults.
+        index_stale: false,
+        unreadable_files: 0,
+        target_correct: 0,
+        target_mismatch: 0,
+    }
+}
+
+/// Outcome of comparing produced `calls_resolved_singleton` edges against a
+/// ground-truth expected-target manifest by EXACT identity (084.004-T).
+///
+/// Unlike `false_edge_rate` — a DANGLING-only lower bound that is blind to
+/// mis-resolution to an existing-but-wrong function
+/// (`2026-07-08-callgraph-cross-file-resolution-deliberation.md:25-33`) — these
+/// counts are measured against a supplied manifest and therefore also catch
+/// wrong-but-existing targets. Produced only on the fixture / regression path
+/// (production runs have no manifest); maps onto [`GraphMetrics::target_correct`]
+/// and [`GraphMetrics::target_mismatch`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TargetCorrectness {
+    /// Produced singleton edges present in the manifest (correct callee identity).
+    pub target_correct: u64,
+    /// Produced singleton edges absent from the manifest (wrong-but-existing or
+    /// dangling) — the gap the dangling-only `false_edge_rate` cannot see.
+    pub target_mismatch: u64,
+}
+
+/// Compare produced `calls_resolved_singleton` edges against an expected-target
+/// manifest by EXACT `(caller_id, callee_id)` identity (084.004-T).
+///
+/// `target_correct` counts produced edges present in the manifest;
+/// `target_mismatch` counts produced edges ABSENT from it — i.e. resolved to a
+/// wrong-but-existing function, or dangling. This closes the correctness gap
+/// left by `false_edge_rate`, which counts dangling callees only and therefore
+/// cannot observe mis-resolution to an existing-but-incorrect definition
+/// (`2026-07-08-callgraph-cross-file-resolution-deliberation.md:25-33`). It does
+/// NOT measure recall (expected edges the resolver failed to produce); that
+/// remains `resolution_recall`'s and the dangling aggregate's concern.
+#[must_use]
+pub fn evaluate_target_correctness(
+    produced_singletons: &[(String, String)],
+    expected_manifest: &HashSet<(String, String)>,
+) -> TargetCorrectness {
+    let mut target_correct = 0u64;
+    let mut target_mismatch = 0u64;
+    for edge in produced_singletons {
+        if expected_manifest.contains(edge) {
+            target_correct += 1;
+        } else {
+            target_mismatch += 1;
+        }
+    }
+    TargetCorrectness {
+        target_correct,
+        target_mismatch,
     }
 }
 
@@ -455,6 +783,51 @@ fn check_ceiling(name: &str, actual: f64, ceiling: f64, breaches: &mut Vec<Strin
     }
 }
 
+/// Validate that every configured threshold is a finite number before it gates
+/// a run.
+///
+/// TOML and JSON both accept non-finite floats (`nan`, `inf`). Every `<`/`>`
+/// comparison in [`check_thresholds`] is false for `NaN`, so a malformed floor
+/// or ceiling would silently report `thresholds_breached = false` and disable
+/// the runtime gate (084.006-T). Reject non-finite thresholds with a
+/// configuration error so a bad config value fails the run loudly rather than
+/// defeating the gate quietly.
+///
+/// # Errors
+/// Returns [`ConfigError::InvalidValue`] (as [`EngramError`]) when any
+/// threshold is not finite.
+pub fn validate_thresholds(thresholds: &RetrievalEvalThresholds) -> Result<(), EngramError> {
+    for (key, value) in [
+        (
+            "retrieval_eval.thresholds.min_precision_at_k",
+            thresholds.min_precision_at_k,
+        ),
+        (
+            "retrieval_eval.thresholds.min_recall_at_k",
+            thresholds.min_recall_at_k,
+        ),
+        ("retrieval_eval.thresholds.min_mrr", thresholds.min_mrr),
+        ("retrieval_eval.thresholds.min_ndcg", thresholds.min_ndcg),
+        (
+            "retrieval_eval.thresholds.min_resolution_recall",
+            thresholds.min_resolution_recall,
+        ),
+        (
+            "retrieval_eval.thresholds.max_false_edge_rate",
+            thresholds.max_false_edge_rate,
+        ),
+    ] {
+        if !value.is_finite() {
+            return Err(ConfigError::InvalidValue {
+                key: key.to_owned(),
+                reason: format!("threshold must be a finite number, got {value}"),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Compare a report's metrics against baseline thresholds.
 ///
 /// Semantic metrics and graph `resolution_recall` have `min_*` floors (higher
@@ -462,6 +835,15 @@ fn check_ceiling(name: &str, actual: f64, ceiling: f64, breaches: &mut Vec<Strin
 /// returned [`ThresholdCheck`] lists every breach; `passed` is `true` only when
 /// no threshold is violated. Used by the regression tier to guard against
 /// metric regressions on a fixture corpus.
+///
+/// Each metric family is gated **independently** on whether it actually
+/// measured anything (084.006-T): semantic floors apply only when at least one
+/// known-item query ran (`semantic.queries > 0`), and graph thresholds apply
+/// only when at least one call site was visible (`graph.call_sites > 0`). An
+/// unmeasured family reports its metrics as `0.0`, so comparing that default
+/// against a configured floor would otherwise flag a false breach for a family
+/// the run never exercised (e.g. a semantic-only workspace with no call sites
+/// must not breach `min_resolution_recall`, and vice versa).
 #[must_use]
 pub fn check_thresholds(
     report: &RetrievalEvalReport,
@@ -471,32 +853,43 @@ pub fn check_thresholds(
     let semantic = &report.semantic;
     let graph = &report.graph;
 
-    check_floor(
-        "precision_at_k",
-        semantic.precision_at_k,
-        thresholds.min_precision_at_k,
-        &mut breaches,
-    );
-    check_floor(
-        "recall_at_k",
-        semantic.recall_at_k,
-        thresholds.min_recall_at_k,
-        &mut breaches,
-    );
-    check_floor("mrr", semantic.mrr, thresholds.min_mrr, &mut breaches);
-    check_floor("ndcg", semantic.ndcg, thresholds.min_ndcg, &mut breaches);
-    check_floor(
-        "resolution_recall",
-        graph.resolution_recall,
-        thresholds.min_resolution_recall,
-        &mut breaches,
-    );
-    check_ceiling(
-        "false_edge_rate",
-        graph.false_edge_rate,
-        thresholds.max_false_edge_rate,
-        &mut breaches,
-    );
+    // Semantic floors gate only on a run that ranked at least one known-item
+    // query; an unmeasured family (queries == 0) defaults to 0.0 metrics and
+    // must not breach a floor it never had a chance to satisfy.
+    if semantic.queries > 0 {
+        check_floor(
+            "precision_at_k",
+            semantic.precision_at_k,
+            thresholds.min_precision_at_k,
+            &mut breaches,
+        );
+        check_floor(
+            "recall_at_k",
+            semantic.recall_at_k,
+            thresholds.min_recall_at_k,
+            &mut breaches,
+        );
+        check_floor("mrr", semantic.mrr, thresholds.min_mrr, &mut breaches);
+        check_floor("ndcg", semantic.ndcg, thresholds.min_ndcg, &mut breaches);
+    }
+
+    // Graph thresholds gate independently on a visible call-site inventory; an
+    // unmeasured graph (call_sites == 0) defaults to 0.0 metrics and must not
+    // breach `min_resolution_recall` (nor spuriously pass/fail `false_edge_rate`).
+    if graph.call_sites > 0 {
+        check_floor(
+            "resolution_recall",
+            graph.resolution_recall,
+            thresholds.min_resolution_recall,
+            &mut breaches,
+        );
+        check_ceiling(
+            "false_edge_rate",
+            graph.false_edge_rate,
+            thresholds.max_false_edge_rate,
+            &mut breaches,
+        );
+    }
 
     ThresholdCheck {
         passed: breaches.is_empty(),
@@ -514,6 +907,136 @@ mod tests {
         assert_eq!(language_of("pkg/main.go"), "go");
         assert_eq!(language_of("app/index.ts"), "typescript");
         assert_eq!(language_of("noext"), "unknown");
+    }
+
+    #[test]
+    fn language_of_matches_indexer_canonical_mapping() {
+        // The semantic gate must resolve every extension to the SAME identifier
+        // the indexer stores (`code_graph::language_from_path`), so a configured
+        // language includes a file in BOTH the semantic and graph gates. This
+        // generalizes the TSX fix (084.005-T) to every supported extension:
+        // `.h++`→cpp, `.sql`→sql, `.md`→markdown, `.rb`→`rb`, and an unknown
+        // extension falls through to the raw ext rather than a lossy `unknown`.
+        for path in [
+            "a.rs",
+            "a.py",
+            "a.js",
+            "a.jsx",
+            "a.ts",
+            "a.tsx",
+            "a.go",
+            "a.cs",
+            "a.c",
+            "a.h",
+            "a.cpp",
+            "a.cc",
+            "a.cxx",
+            "a.hpp",
+            "a.hh",
+            "a.hxx",
+            "a.h++",
+            "a.swift",
+            "a.sql",
+            "a.kt",
+            "a.kts",
+            "a.md",
+            "a.rb",
+            "a.java",
+            "a.unknownext",
+            "noext",
+        ] {
+            assert_eq!(
+                language_of(path),
+                crate::services::code_graph::language_from_path(std::path::Path::new(path)),
+                "language_of must match the indexer canonical mapping for {path}"
+            );
+        }
+        // Explicit spot-checks for the extensions the reviewer named, so the
+        // concrete expected identifiers are documented, not only the equivalence.
+        assert_eq!(language_of("src/vec.h++"), "cpp");
+        assert_eq!(language_of("db/schema.sql"), "sql");
+        assert_eq!(language_of("docs/readme.md"), "markdown");
+    }
+
+    // ── 084.008-T: retrieval-mode resolution ─────────────────────────────────
+
+    #[test]
+    fn resolve_mode_empty_corpus_is_unknown() {
+        // An empty corpus retrieves nothing; the vector/model flags are moot.
+        assert_eq!(
+            resolve_retrieval_mode(true, false, false),
+            RetrievalMode::Unknown
+        );
+        assert_eq!(
+            resolve_retrieval_mode(true, true, true),
+            RetrievalMode::Unknown
+        );
+    }
+
+    #[test]
+    fn resolve_mode_un_embedded_corpus_is_keyword_only() {
+        // No candidate carries a vector — the embedding path is never exercised.
+        assert_eq!(
+            resolve_retrieval_mode(false, false, false),
+            RetrievalMode::KeywordOnly
+        );
+    }
+
+    #[test]
+    fn resolve_mode_vectors_but_unusable_model_is_keyword_only() {
+        // The 00C7F3CC masquerade: the corpus carries vectors but the query
+        // cannot be embedded, so hybrid_search degrades to keyword-only scoring.
+        // This must be recorded honestly, not masked as hybrid.
+        assert_eq!(
+            resolve_retrieval_mode(false, true, false),
+            RetrievalMode::KeywordOnly
+        );
+    }
+
+    #[test]
+    fn resolve_mode_vectors_and_usable_model_is_hybrid() {
+        assert_eq!(
+            resolve_retrieval_mode(false, true, true),
+            RetrievalMode::Hybrid
+        );
+    }
+
+    #[test]
+    fn evaluate_semantic_reports_unknown_mode_when_no_query_runs() {
+        // A vector-bearing corpus with `sample_size == 0`: the ranking loop
+        // never executes, so `queries == 0`. The reported mode must be `Unknown`
+        // — a post-hoc probe (which would otherwise report Hybrid/KeywordOnly)
+        // never ran a query and must not masquerade as an exercised retrieval
+        // mode (084.008-T honesty / Thread-1 correction).
+        let corpus = vec![Function {
+            id: "function:probe".to_owned(),
+            name: "probe".to_owned(),
+            file_path: "src/probe.rs".to_owned(),
+            line_start: 1,
+            line_end: 2,
+            signature: "fn probe()".to_owned(),
+            docstring: Some("probe docstring".to_owned()),
+            body: String::new(),
+            body_hash: String::new(),
+            token_count: 0,
+            embed_type: "explicit_code".to_owned(),
+            embedding: vec![0.1_f32; 8],
+            summary: String::new(),
+        }];
+        let config = RetrievalEvalConfig {
+            enabled: true,
+            languages: Vec::new(),
+            k: 5,
+            sample_size: 0,
+            ..RetrievalEvalConfig::default()
+        };
+        let metrics = evaluate_semantic(&corpus, &config).expect("semantic eval");
+        assert_eq!(metrics.queries, 0, "no query should have run");
+        assert_eq!(
+            metrics.retrieval_mode,
+            RetrievalMode::Unknown,
+            "a run that ranked nothing must report Unknown, not a probed mode"
+        );
     }
 
     #[test]
@@ -564,5 +1087,175 @@ mod tests {
         assert!((m.mrr - 1.0).abs() < 1e-9);
         assert!((m.ndcg - 1.0).abs() < 1e-9);
         assert_eq!(m.queries, 2);
+    }
+
+    // ── 084.011-T (CA401F5F): bounded-batch call-site accumulation ───────────
+
+    #[test]
+    fn accumulate_call_sites_sums_batch_and_ors_stale() {
+        let src = "fn caller() { helper(); }\nfn helper() {}\n";
+        let hash = source_content_hash(src);
+
+        // Two clean Rust sources → one (caller,helper) relation each, not stale.
+        let clean = vec![
+            ("rust".to_owned(), src.to_owned(), hash.clone()),
+            ("rust".to_owned(), src.to_owned(), hash.clone()),
+        ];
+        assert_eq!(
+            accumulate_call_sites(&clean),
+            (2, false),
+            "a batch's counts sum and a matching hash is not stale"
+        );
+
+        // A source whose recorded hash diverges from its content flags stale, and
+        // the stale flag OR-accumulates across the batch.
+        let drifted = vec![("rust".to_owned(), src.to_owned(), "stale-hash".to_owned())];
+        let (count, stale) = accumulate_call_sites(&drifted);
+        assert_eq!(count, 1, "the single relation still counts");
+        assert!(
+            stale,
+            "content diverging from the recorded hash flags stale"
+        );
+
+        // An empty batch is the additive identity (zero, not stale) — the path a
+        // final partial-batch flush of size zero must take without double count.
+        assert_eq!(accumulate_call_sites(&[]), (0, false));
+
+        // An unparseable language contributes no call sites (and cannot be stale
+        // via a parse it never performs; an empty recorded hash disables the check).
+        let unknown = vec![("unknownlang".to_owned(), src.to_owned(), String::new())];
+        assert_eq!(accumulate_call_sites(&unknown), (0, false));
+    }
+
+    // ── 084.006-T (14B33F9F): threshold input validation ─────────────────────
+
+    #[test]
+    fn validate_thresholds_rejects_non_finite_values() {
+        // A finite (default) threshold set validates.
+        assert!(validate_thresholds(&RetrievalEvalThresholds::default()).is_ok());
+
+        // NaN/±inf floors and ceilings must be rejected: every `<`/`>` comparison
+        // against NaN is false, so an un-rejected non-finite bound would silently
+        // disable the gate (`thresholds_breached = false`) — the exact hazard
+        // 084.006-T guards against. Reject with a configuration error instead.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let floor = RetrievalEvalThresholds {
+                min_recall_at_k: bad,
+                ..RetrievalEvalThresholds::default()
+            };
+            assert!(
+                validate_thresholds(&floor).is_err(),
+                "non-finite floor {bad} must be rejected"
+            );
+
+            let ceiling = RetrievalEvalThresholds {
+                max_false_edge_rate: bad,
+                ..RetrievalEvalThresholds::default()
+            };
+            assert!(
+                validate_thresholds(&ceiling).is_err(),
+                "non-finite ceiling {bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn check_thresholds_gates_each_family_on_measurement() {
+        // A family that measured nothing reports 0.0 metrics; comparing those
+        // defaults against a configured floor must NOT flag a false breach for a
+        // family the run never exercised (084.006-T / Thread-X). Semantic floors
+        // gate on `queries > 0`, graph thresholds on `call_sites > 0`.
+        let thresholds = RetrievalEvalThresholds {
+            min_precision_at_k: 0.5,
+            min_recall_at_k: 0.5,
+            min_mrr: 0.5,
+            min_ndcg: 0.5,
+            min_resolution_recall: 0.5,
+            max_false_edge_rate: 0.1,
+        };
+
+        // Graph measured, semantic unmeasured (queries == 0): only graph gates.
+        let mut graph_only = RetrievalEvalReport::empty(true, "b".to_owned());
+        graph_only.graph = GraphMetrics {
+            call_sites: 4,
+            resolution_recall: 0.75,
+            false_edge_rate: 0.0,
+            ..GraphMetrics::default()
+        };
+        let graph_check = check_thresholds(&graph_only, &thresholds);
+        assert!(
+            graph_check.passed,
+            "unmeasured semantic family must not breach; breaches={:?}",
+            graph_check.breaches
+        );
+
+        // Semantic measured, graph unmeasured (call_sites == 0): only semantic gates.
+        let mut semantic_only = RetrievalEvalReport::empty(true, "b".to_owned());
+        semantic_only.semantic = SemanticMetrics {
+            precision_at_k: 0.9,
+            recall_at_k: 0.9,
+            mrr: 0.9,
+            ndcg: 0.9,
+            queries: 3,
+            retrieval_mode: RetrievalMode::Hybrid,
+        };
+        let semantic_check = check_thresholds(&semantic_only, &thresholds);
+        assert!(
+            semantic_check.passed,
+            "unmeasured graph family must not breach; breaches={:?}",
+            semantic_check.breaches
+        );
+
+        // A measured family genuinely below its floor still breaches.
+        let mut bad_graph = RetrievalEvalReport::empty(true, "b".to_owned());
+        bad_graph.graph = GraphMetrics {
+            call_sites: 4,
+            resolution_recall: 0.10,
+            false_edge_rate: 0.0,
+            ..GraphMetrics::default()
+        };
+        let bad_check = check_thresholds(&bad_graph, &thresholds);
+        assert!(
+            !bad_check.passed,
+            "a measured family below its floor must still breach"
+        );
+    }
+
+    #[test]
+    fn evaluate_semantic_reports_keyword_only_for_unembedded_corpus() {
+        // A corpus whose candidates carry no vectors can only run keyword
+        // ranking; the reported mode must be the KeywordOnly fallback derived
+        // from the actual `hybrid_rank_of` calls (084.008-T / Thread-Y), never
+        // masked as Hybrid by a separate probe.
+        let mk = |name: &str| Function {
+            id: format!("function:{name}"),
+            name: name.to_owned(),
+            file_path: format!("src/{name}.rs"),
+            line_start: 1,
+            line_end: 2,
+            signature: format!("fn {name}()"),
+            docstring: Some(format!("{name} docstring text")),
+            body: String::new(),
+            body_hash: String::new(),
+            token_count: 0,
+            embed_type: "explicit_code".to_owned(),
+            embedding: Vec::new(),
+            summary: String::new(),
+        };
+        let corpus = vec![mk("alpha"), mk("beta")];
+        let config = RetrievalEvalConfig {
+            enabled: true,
+            languages: Vec::new(),
+            k: 5,
+            sample_size: 2,
+            ..RetrievalEvalConfig::default()
+        };
+        let metrics = evaluate_semantic(&corpus, &config).expect("semantic eval");
+        assert!(metrics.queries > 0, "queries must have run");
+        assert_eq!(
+            metrics.retrieval_mode,
+            RetrievalMode::KeywordOnly,
+            "an un-embedded corpus must report the keyword-only fallback"
+        );
     }
 }

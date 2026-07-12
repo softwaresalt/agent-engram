@@ -1435,7 +1435,14 @@ fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::Pa
 }
 
 /// Map a file extension to a language identifier.
-fn language_from_path(path: &Path) -> String {
+///
+/// This is the **canonical** language vocabulary: the indexer stores the result
+/// in `file_node.language`, and the retrieval-eval semantic gate
+/// ([`crate::services::retrieval_eval::language_of`]) delegates here so the
+/// semantic and graph gates never diverge (084.005-T and its generalization).
+/// Unrecognized extensions fall through to the raw extension; a path with no
+/// extension is `"unknown"`.
+pub(crate) fn language_from_path(path: &Path) -> String {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|ext| match ext {

@@ -69,9 +69,45 @@ or similar bot author association.
 as complete, including `COMMENTED`, `CHANGES_REQUESTED`, and `APPROVED`.
 Review comments attached to a non-`PENDING` review also count as completion.
 
-**Timeout**: If no Copilot review appears after 15 minutes (5 poll
-attempts), proceed without it. Log a warning and note in the PR
-description that automated review was unavailable.
+**Merge-gate invariant — `commit_id == current HEAD` (load-bearing)**: A review
+merely *existing* is sufficient to consider a *review cycle* complete, but it is
+**NOT** sufficient to **merge**. Copilot review is asynchronous and is
+re-triggered by every push; each push re-adds Copilot to `requested_reviewers`
+and the fresh review takes ~4–5 minutes to post. In the window after the final
+push but before that review lands, the PR transiently shows **0 unresolved
+threads** and **`mergeable_state == clean`** even though the review for the
+current HEAD has not posted yet. Before merging you MUST therefore confirm a
+Copilot review exists whose `commit_id` equals the current HEAD sha:
+
+```bash
+# HEAD sha the merge would land
+gh api repos/<owner>/<repo>/pulls/<n> --jq '.head.sha'
+# Copilot review commit_ids (must include the HEAD sha above). Use a PREFIX
+# match: the REST `/reviews` endpoint returns the login
+# `copilot-pull-request-reviewer[bot]`, while the GraphQL/`gh pr view`
+# surface normalizes it to `copilot-pull-request-reviewer` (no `[bot]`
+# suffix). An exact `==` match against either form silently drops the review
+# and the load-bearing gate can never be satisfied.
+gh api repos/<owner>/<repo>/pulls/<n>/reviews \
+  --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'
+```
+
+This binds the merge to a review of the exact commit being merged. Re-check the
+full 4-point merge gate — (1) a Copilot review with `commit_id == HEAD`, (2)
+Copilot removed from `requested_reviewers`, (3) 0 unresolved review threads, (4)
+`mergeable_state == clean` — after **every** push, including a one-line review-nit
+fix, because any push resets the review clock. Rationale and post-mortem:
+`docs/compound/copilot-review-merge-gate-wait-for-head-review-2026-07-11.md`
+(PRs #239/#240 were merged in this exact gap).
+
+**Timeout**: If no Copilot review for the current HEAD appears after 15
+minutes (5 poll attempts), do **NOT** merge. The current-HEAD invariant above
+is non-negotiable; this timeout must not become a bypass that recreates the
+exact post-push race it exists to prevent. Halt merge automation, log a
+warning, and escalate to the operator (note in the PR that automated review
+did not land for the current HEAD). A human may then decide whether to merge
+manually — the timeout suspends automation, it does not authorize an
+unreviewed-HEAD merge.
 
 ### 1.3 Categorize Review Comments
 
@@ -335,6 +371,14 @@ Part 1 of this document for the complete Copilot Review workflow on
 GitHub-hosted repositories. The pr-lifecycle skill's Step 4 (handle CI
 failures) SHOULD reference Part 2 for GitHub-specific polling and
 failure extraction.
+
+The pr-lifecycle skill's **merge step** MUST enforce the `commit_id == current
+HEAD` merge-gate invariant defined in Section 1.2: do not merge until a Copilot
+review whose `commit_id` equals the HEAD sha has landed, Copilot has been removed
+from `requested_reviewers`, there are 0 unresolved threads, and
+`mergeable_state == clean` — re-checked after the final push. A transient
+`mergeable_state == clean` immediately after a push is NOT a merge signal. See
+`docs/compound/copilot-review-merge-gate-wait-for-head-review-2026-07-11.md`.
 
 ---
 
