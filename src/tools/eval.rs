@@ -138,6 +138,19 @@ pub async fn run_retrieval_eval(
     report.semantic = semantic;
     report.graph = graph;
 
+    // Gate the run against the configured thresholds (084.006-T / 14B33F9F).
+    // A run that evaluated nothing (empty / un-indexed corpus: no sampled
+    // queries and no call sites) is NOT gated, so an unmeasured floor cannot
+    // fire a false breach; disabled runs already returned early above. Default
+    // thresholds are permissive (floors 0.0, ceiling 1.0), so an unconfigured
+    // workspace passes unchanged (back-compat). The `engram eval` CLI maps
+    // `thresholds_breached` onto its exit code (084.007-T).
+    if report.sample_size > 0 || report.graph.call_sites > 0 {
+        let check = retrieval_eval::check_thresholds(&report, &parts.config.thresholds);
+        report.thresholds_breached = !check.passed;
+        report.threshold_breaches = check.breaches;
+    }
+
     // Persist the run under `.engram/eval/{branch}/` for autoharness feedback
     // and so `get_retrieval_eval_report` can return the latest run.
     let engram_dir = parts.workspace_path.join(".engram");
