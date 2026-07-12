@@ -1495,6 +1495,55 @@ impl CodeGraphQueries {
         })
     }
 
+    /// Post-pass: resolve staged cross-file calls (082.008-T).
+    ///
+    /// Builds a workspace-global `name -> [function_id]` index from
+    /// `function_meta`, then for each staged call (082.002-T) whose callee name
+    /// matches **exactly one** function, creates a `calls_edge` tagged with the
+    /// canonical provenance `calls_resolved_singleton`. Names with zero matches
+    /// (no such function) or two-or-more matches (ambiguous) are skipped, which
+    /// bounds false edges to the unambiguous-name case.
+    ///
+    /// Intended to run in the full / `--force` index path only; the incremental
+    /// sync path does not invoke it (performance gate).
+    ///
+    /// Returns the number of edges created (`resolved`) and the number of
+    /// staged calls examined (`lookups`).
+    pub async fn reresolve_calls_edges(&self) -> Result<ReresolveResult, EngramError> {
+        // Workspace-global name -> [id] index (one round-trip).
+        let script = r#"?[name, id] := *function_meta { id, name }"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut name_index: HashMap<String, Vec<String>> = HashMap::new();
+        for row in &r.rows {
+            let name = extract_str(row, 0);
+            let id = extract_str(row, 1);
+            name_index.entry(name).or_default().push(id);
+        }
+
+        let staged = self.list_staged_calls().await?;
+        let lookups = staged.len();
+        let mut resolved = 0usize;
+        for call in &staged {
+            // Unambiguous-name-only guard: resolve solely when a single function
+            // carries the callee name.
+            if let Some(ids) = name_index.get(&call.callee_name) {
+                if ids.len() == 1 {
+                    self.create_calls_edge_with_resolution(
+                        &call.caller_id,
+                        &ids[0],
+                        "calls_resolved_singleton",
+                    )
+                    .await?;
+                    resolved += 1;
+                }
+            }
+        }
+        Ok(ReresolveResult { resolved, lookups })
+    }
+
     /// Look up a class ID by case-insensitive name match.
     pub async fn get_class_by_name_ci(&self, name: &str) -> Result<Option<String>, EngramError> {
         let name_lower = name.to_lowercase();

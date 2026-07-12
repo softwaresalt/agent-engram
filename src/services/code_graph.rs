@@ -558,6 +558,20 @@ async fn index_workspace_impl(
         );
     }
 
+    // ── Post-pass: resolve staged cross-file calls (082.008-T) ──────
+    // Full / --force index only — NOT the incremental sync path (performance
+    // gate). Staged calls (082.002-T) whose callee name is unambiguous
+    // (exactly one workspace-global definition) become calls_resolved_singleton
+    // edges; ambiguous / unmatched names are skipped to bound false edges.
+    let resolved_calls = queries.reresolve_calls_edges().await?;
+    if resolved_calls.resolved > 0 {
+        debug!(
+            count = resolved_calls.resolved,
+            lookups = resolved_calls.lookups,
+            "code graph: resolved cross-file singleton calls edges"
+        );
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
     result.duration_ms = elapsed;
