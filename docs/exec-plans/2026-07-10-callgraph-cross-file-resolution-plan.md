@@ -167,8 +167,8 @@ Each task is test-first, ≤3 source files, ≤5 functions, ≤4 test scenarios,
 - **Depends on:** 082.003-T, **081.001-T (S1 contract/model)**, **081.005-T (S3 graph metric)**.
 
 ### 082.005-T / 082.006-T / 082.007-T — Fan-out to peer tree-sitter extractors  *(domain: parser/extraction — DEFERRED follow-on, NOT in first shipment; RE-HARVEST REQUIRED)*
-Queued under 082-F for a follow-on shipment, but **NOT yet executable as a single method-arm
-pattern-application**. CORRECTION (post-078-S verification): only `src/services/parsing/rust.rs`
+Tracked under 082-F for a follow-on shipment, but **NOT yet executable as a single method-arm
+pattern-application** (all three are marked `blocked` pending re-harvest, see below). CORRECTION (post-078-S verification): only `src/services/parsing/rust.rs`
 currently emits `ExtractedEdge::Calls`; `python.rs`, `typescript.rs`, and `go_lang.rs` emit **NO
 `ExtractedEdge::Calls` at all** today. There is therefore no in-file call-edge baseline to extend
 with method/receiver capture — each peer language first needs the whole extraction stack built
