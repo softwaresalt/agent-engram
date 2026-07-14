@@ -127,7 +127,11 @@ pub enum PowerBiEdgeType {
     /// Covers: report→page, page→visual, semantic_model→table,
     /// table→column, table→measure.
     Contains,
-    /// A visual or measure uses a specific field (column or measure).
+    /// A field-level reference edge (stored as `pbi_uses_field`).
+    ///
+    /// Covers a visual referencing a field, and a measure or calculated column
+    /// whose DAX expression references a column or measure
+    /// (measure→column, measure→measure, calculated-column→column).
     UsesField,
     /// A report depends on a semantic model for its data.
     DependsOnModel,

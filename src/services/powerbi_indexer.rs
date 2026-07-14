@@ -19,7 +19,7 @@
 //! * `*.bim` — tabular model definitions (`model.bim`)
 //! * `*.tmdl` — folder-based semantic model assets
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use chrono::Utc;
@@ -35,6 +35,7 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
+use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
 
@@ -536,6 +537,7 @@ fn build_powerbi_graph_data(
             file_path,
             source_path,
             content_hash,
+            None,
         );
     }
 
@@ -615,6 +617,7 @@ pub(crate) fn build_powerbi_graph_data_from_model(
     file_path: &str,
     source_path: &str,
     content_hash: &str,
+    reference_schema: Option<&ModelScopeSchema>,
 ) -> (Vec<PowerBiNode>, Vec<PowerBiEdge>) {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -834,7 +837,264 @@ pub(crate) fn build_powerbi_graph_data_from_model(
         });
     }
 
+    // Emit `pbi_uses_field` reference edges from measure / calculated-column DAX
+    // (P3). Resolution uses the model-scope-aggregated schema when supplied
+    // (TMDL, whose files are parsed independently); otherwise the single model
+    // is its own scope (`model.bim`, or a pre-merged PBIP model).
+    let schema_fallback;
+    let schema = if let Some(schema) = reference_schema {
+        schema
+    } else {
+        schema_fallback = ModelScopeSchema::from_model(model);
+        &schema_fallback
+    };
+    append_dax_reference_edges(model, schema, identity_scope, source_path, &mut edges);
+
     (nodes, edges)
+}
+
+/// Aggregated table / column / measure schema for one Power BI model scope.
+///
+/// TMDL ingestion parses each `.tmdl` file independently, so DAX reference
+/// resolution must union all sibling files of one model (keyed by
+/// `canonical_tmdl_model_path`) before resolving — otherwise a cross-table
+/// reference such as a `Sales.tmdl` measure using `'Date'[Date]` would be
+/// silently dropped. For a single-file model (`model.bim`) or a pre-merged PBIP
+/// model, the model is its own scope.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ModelScopeSchema {
+    /// Table name → set of column names declared on that table.
+    columns: HashMap<String, HashSet<String>>,
+    /// Measure name → owning table name (measures are unique by name within a
+    /// model).
+    measures_by_name: HashMap<String, String>,
+    /// Declared `(table, measure)` pairs for qualified-measure resolution.
+    table_measures: HashSet<(String, String)>,
+}
+
+impl ModelScopeSchema {
+    /// Fold one parsed model's tables / columns / measures into the scope schema.
+    pub(crate) fn add_model(&mut self, model: &crate::models::powerbi::PowerBiSemanticModel) {
+        for table in &model.tables {
+            let columns = self.columns.entry(table.name.clone()).or_default();
+            for column in &table.columns {
+                columns.insert(column.name.clone());
+            }
+            for measure in &table.measures {
+                self.measures_by_name
+                    .entry(measure.name.clone())
+                    .or_insert_with(|| table.name.clone());
+                self.table_measures
+                    .insert((table.name.clone(), measure.name.clone()));
+            }
+        }
+    }
+
+    /// Build a scope schema from a single model (single-file / pre-merged case).
+    fn from_model(model: &crate::models::powerbi::PowerBiSemanticModel) -> Self {
+        let mut schema = Self::default();
+        schema.add_model(model);
+        schema
+    }
+
+    /// Whether `table` declares a column named `column`.
+    fn has_column(&self, table: &str, column: &str) -> bool {
+        self.columns
+            .get(table)
+            .is_some_and(|columns| columns.contains(column))
+    }
+
+    /// Return the owning table of the measure named `measure`, if any.
+    fn measure_owner(&self, measure: &str) -> Option<&str> {
+        self.measures_by_name.get(measure).map(String::as_str)
+    }
+
+    /// Whether `table` declares a measure named `measure`.
+    fn has_table_measure(&self, table: &str, measure: &str) -> bool {
+        self.table_measures
+            .contains(&(table.to_owned(), measure.to_owned()))
+    }
+}
+
+/// Emit `pbi_uses_field` reference edges for every measure and calculated column
+/// in `model`, resolving each extracted DAX reference against `schema`.
+fn append_dax_reference_edges(
+    model: &crate::models::powerbi::PowerBiSemanticModel,
+    schema: &ModelScopeSchema,
+    identity_scope: &str,
+    source_path: &str,
+    edges: &mut Vec<PowerBiEdge>,
+) {
+    for table in &model.tables {
+        for measure in &table.measures {
+            if let Some(expression) = measure.expression.as_deref() {
+                let source_id = make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Measure,
+                    &format!("{}.{}", table.name, measure.name),
+                );
+                append_resolved_reference_edges(
+                    expression,
+                    &table.name,
+                    &source_id,
+                    schema,
+                    identity_scope,
+                    source_path,
+                    edges,
+                );
+            }
+        }
+        for column in &table.columns {
+            if let Some(expression) = column.expression.as_deref() {
+                let source_id = make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Column,
+                    &format!("{}.{}", table.name, column.name),
+                );
+                append_resolved_reference_edges(
+                    expression,
+                    &table.name,
+                    &source_id,
+                    schema,
+                    identity_scope,
+                    source_path,
+                    edges,
+                );
+            }
+        }
+    }
+}
+
+/// Resolve each reference in `expression` against `schema` and append a
+/// `pbi_uses_field` edge from `source_id` to each resolved node (deduplicated,
+/// self-edges excluded). Unresolved references are dropped, never fabricated.
+#[allow(clippy::too_many_arguments)]
+fn append_resolved_reference_edges(
+    expression: &str,
+    current_table: &str,
+    source_id: &str,
+    schema: &ModelScopeSchema,
+    identity_scope: &str,
+    source_path: &str,
+    edges: &mut Vec<PowerBiEdge>,
+) {
+    let references = extract_dax_references(expression);
+    let mut seen: HashSet<String> = HashSet::new();
+    for reference in &references.columns {
+        let Some(target_id) = resolve_reference(
+            reference,
+            current_table,
+            schema,
+            identity_scope,
+            source_path,
+        ) else {
+            continue;
+        };
+        if target_id == source_id {
+            continue;
+        }
+        if seen.insert(target_id.clone()) {
+            edges.push(PowerBiEdge {
+                from_id: source_id.to_owned(),
+                to_id: target_id,
+                edge_type: PowerBiEdgeType::UsesField,
+                source_path: source_path.to_owned(),
+            });
+        }
+    }
+}
+
+/// Resolve a single DAX column / bracket reference to an existing `pbi_` node id,
+/// or `None` when it does not match the model schema (recorded as unresolved).
+///
+/// A qualified `Table[Name]` resolves to a column, else a measure on that table.
+/// A bare `[Name]` resolves to a measure first (measures are model-unique), else
+/// a column on the referencing (`current_table`) — never guessed across tables.
+fn resolve_reference(
+    reference: &DaxColumnRef,
+    current_table: &str,
+    schema: &ModelScopeSchema,
+    identity_scope: &str,
+    source_path: &str,
+) -> Option<String> {
+    match reference.table.as_deref() {
+        Some(table) => {
+            if schema.has_column(table, &reference.column) {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Column,
+                    &format!("{table}.{}", reference.column),
+                ))
+            } else if schema.has_table_measure(table, &reference.column) {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Measure,
+                    &format!("{table}.{}", reference.column),
+                ))
+            } else {
+                None
+            }
+        }
+        None => {
+            if let Some(owner) = schema.measure_owner(&reference.column) {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Measure,
+                    &format!("{owner}.{}", reference.column),
+                ))
+            } else if schema.has_column(current_table, &reference.column) {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Column,
+                    &format!("{current_table}.{}", reference.column),
+                ))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Build one [`ModelScopeSchema`] per Power BI model scope by unioning the
+/// tables / columns / measures of every `.tmdl` file, keyed by
+/// `canonical_tmdl_model_path`. Non-TMDL and unreadable files are skipped.
+fn build_model_scope_schemas(
+    files: &[PathBuf],
+    workspace_root: &Path,
+) -> HashMap<String, ModelScopeSchema> {
+    let mut schemas: HashMap<String, ModelScopeSchema> = HashMap::new();
+    for file_path in files {
+        let is_tmdl = file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"));
+        if !is_tmdl {
+            continue;
+        }
+        let Ok(content_bytes) = std::fs::read(file_path) else {
+            continue;
+        };
+        let Ok(content_str) = std::str::from_utf8(&content_bytes) else {
+            continue;
+        };
+        let rel_path = file_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
+            continue;
+        };
+        let scope = canonical_tmdl_model_path(&rel_path);
+        schemas.entry(scope).or_default().add_model(&model);
+    }
+    schemas
 }
 
 // ── Async indexer ─────────────────────────────────────────────────────────
@@ -868,6 +1128,12 @@ pub async fn index_powerbi_source(
 
     let files = collect_powerbi_files(&source_dir);
     result.total_files = files.len();
+
+    // Pre-pass: union every `.tmdl` file into a per-model-scope schema so DAX
+    // references that cross sibling files (e.g. a measure in `Sales.tmdl` using
+    // `'Date'[Date]`) resolve against the whole model rather than the single
+    // file currently being indexed (P3).
+    let model_scope_schemas = build_model_scope_schemas(&files, workspace_root);
 
     // Build a map of existing content hashes for change detection.
     let existing_hashes: HashMap<String, String> = queries
@@ -981,6 +1247,7 @@ pub async fn index_powerbi_source(
                 &rel_path,
                 &source.path,
                 &hash,
+                model_scope_schemas.get(&identity_scope),
             );
             if !graph_nodes.is_empty() {
                 queries.upsert_powerbi_nodes(&graph_nodes).await?;
@@ -1336,6 +1603,7 @@ table Sales
             "Sales.SemanticModel/definition/tables/Sales.tmdl",
             "models",
             "hash1",
+            None,
         );
 
         let partition_nodes: Vec<_> = nodes
