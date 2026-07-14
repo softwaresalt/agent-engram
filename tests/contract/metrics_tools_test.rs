@@ -267,10 +267,11 @@ fn t010_05_tool_count_matches_catalog() {
     let tools = engram::shim::tools_catalog::all_tools();
 
     // THEN the tool count matches the declared constant
-    // (081-F added run_retrieval_eval + get_retrieval_eval_report → TOOL_COUNT is 20)
+    // (081-F added run_retrieval_eval + get_retrieval_eval_report → 20;
+    //  085-F/P6 added lint_dax → TOOL_COUNT is 21)
     assert_eq!(
         tools.len(),
-        20,
-        "Expected 20 tools after adding the retrieval-eval tools"
+        21,
+        "Expected 21 tools after adding the lint_dax tool"
     );
 }
