@@ -74,6 +74,7 @@ DAX lexer must be safe, dependency-free hand-written Rust.
 | C2 Tier 1 (syntactic) + `VerifyFinding.severity` + `engram verify <model.tmdl>` gate | per-expression rules, CLI gate | **P5** |
 | C2 Tier 2 (semantic) + `lint_dax` MCP tool | schema-aware rules + tool registration | **P6** |
 | CLI parity for `lint_dax` (operator 2026-07-13, D4 reversed) | `engram lint-dax` subcommand + bounded CLI↔MCP parity guard | **P7** |
+| Model-scope INVALIDATION on incremental sync (PR #245 Copilot cycle-4, deferred; routed by operator 2026-07-13) | when any file in a `canonical_tmdl_model_path` scope changes/deletes, reprocess/re-emit reference edges for ALL sibling `.tmdl` files (not just the changed file) + incremental-sync integration test | **P3b** (`085.008-T`, persisted-edge path); lint-reparse counterpart in **P6** |
 | Open Q1 (lint_dax standalone vs unified) | resolved: standalone tool + verify gate | Decisions §D1 |
 | Open Q2 (reuse `pbi_uses_field` vs new edge) | resolved: reuse `pbi_uses_field` | Decisions §D2 |
 | Open Q3 (code↔PBI bridge) | resolved: out of scope | Decisions §D3 / Out of scope |
@@ -169,6 +170,17 @@ constitution's Test-First principle).
 - **Exit state:** DAX references become queryable `pbi_uses_field` edges via the
   existing `query_graph_neighborhood` / `transitive_closure` `pbi_*` filters. No
   CozoDB schema change.
+- **Incremental-sync invalidation (split to P3b `085.008-T`):** P3 covers
+  model-scope **aggregation** + edge emission on a full index pass. The
+  **invalidation** counterpart — reprocessing/re-emitting reference edges for ALL
+  sibling `.tmdl` files when any file in a `canonical_tmdl_model_path` scope
+  changes or is deleted (the indexer skips unchanged files by hash at
+  `src/services/powerbi_indexer.rs:911-927`, so an unchanged sibling's edges go
+  stale after a peer's column add/rename/delete) plus an incremental-sync
+  integration test — is a distinct concern / test surface and would push this
+  already-largest unit past the 2-hour bound, so it is a sibling task **P3b
+  (`085.008-T`, depends on P3)**. Origin: PR #245 Copilot cycle-4 (deferred),
+  routed by operator 2026-07-13.
 
 ### P4 — impact_analysis Power BI span (width: db query + tool)
 
@@ -271,6 +283,15 @@ constitution's Test-First principle).
 - **Tests (contract + unit):** `lint_dax` response schema/error-code contract;
   `tool_count_matches_dispatch`/catalog invariants; unit fixtures per Tier-2 rule.
 - **Execution posture:** test-first.
+- **Model-scope invalidation counterpart (PR #245 Copilot cycle-4, deferred;
+  routed by operator 2026-07-13):** because Tier-2 broken-ref detection **reparses**
+  at lint time against the model-scope-aggregated schema built from the CURRENT
+  indexed state of ALL sibling `.tmdl` files, re-linting after a sibling column
+  add/rename/delete catches now-broken/stale refs in an UNCHANGED sibling (e.g. a
+  `Sales.tmdl` measure referencing a column that `Date.tmdl` renamed/removed) rather
+  than reporting them still-valid. Add fixture coverage for the sibling-change →
+  stale-ref-caught (and add → cleared) case. P6 is robust-by-reparse, so it does NOT
+  depend on P3b; the persisted-edge staleness path is handled by P3b (`085.008-T`).
 - **Exit state:** semantic DAX lint is available as an agent-native MCP tool;
   catalog/manifest/contract stay in lockstep.
 
@@ -315,7 +336,7 @@ constitution's Test-First principle).
 
 ```text
 P1 ─┬─────────────► P3 ──┬──► P4
-    │        P2 ──►       │
+    │        P2 ──►       ├──► P3b
     └───────────► P5 ─────┴──► P6 ──► P7
 ```
 
@@ -325,6 +346,11 @@ P1 ─┬─────────────► P3 ──┬──► P4
   P3 on both.)
 - **P3** depends on **P1** (extract refs) **and P2** (calculated-column DAX
   available to extract).
+- **P3b** (`085.008-T`, model-scope invalidation on incremental sync) depends on
+  **P3** — it re-triggers P3's aggregation + resolution + edge emission on the
+  incremental-sync path (reprocess all sibling `.tmdl` edges when any file in a
+  `canonical_tmdl_model_path` scope changes/deletes). Origin: PR #245 Copilot
+  cycle-4 (deferred), routed by operator 2026-07-13.
 - **P4** depends on **P3** (needs emitted edges to traverse).
 - **P5** depends on **P1** (extractor for malformed-ref rules); not on P3.
 - **P6** depends on **P3** (resolved edges/schema for broken-ref + cycle rules)
@@ -333,7 +359,8 @@ P1 ─┬─────────────► P3 ──┬──► P4
   CLI mirror + parity guard).
 
 No cycles. Parallelizable fronts: {P1, P2} first; then P3 and P5 can proceed in
-parallel once P1 (and P2 for P3) land; then {P4, P6}; then P7 last (after P6).
+parallel once P1 (and P2 for P3) land; then {P4, P6, P3b}; then P7 last (after P6).
+(P3b follows P3 and can run in parallel with P4/P6.)
 
 ## Decisions and Rationale
 
@@ -409,6 +436,7 @@ parity). See the `## Plan Hardening` section below.
 | P1 | no (library) | `cargo test -p powerbi-tmdl-parser` | unit-test corpus committed |
 | P2 | no (library) | adapter round-trip unit test | — |
 | P3 | indexing pipeline | index a committed `.tmdl` fixture; assert edges via graph query | contract fixture + expected edges |
+| P3b | indexing pipeline (incremental) | index a two-file model, then re-index after a column add/rename/delete in one file; assert the UNCHANGED sibling's `pbi_uses_field` edges are re-resolved (add → new edge; rename/delete → stale edge gone) | incremental-sync integration test (`tests/integration/`) |
 | P4 | MCP tool (`impact_analysis`) | call `impact_analysis` on a fixture column; confirm additive `powerbi_neighborhood` + `root_kind`; confirm code-root path unchanged | contract + integration test; back-compat note |
 | P5 | CLI (`engram verify`) | run `engram verify <model.tmdl>` on with/without-finding fixtures; assert exit 0/1/2 unchanged | CLI exit-code test; gate-usage note |
 | P6 | MCP tool (`lint_dax`) | call `lint_dax` on a bound fixture workspace; assert `{conformant, findings[]}`; assert `TOOL_COUNT`==catalog | contract test; catalog/manifest lockstep |
@@ -450,7 +478,10 @@ source verification was used):
   lexer is safe/dep-free); `Result<T, EngramError>` + `?`; no `unwrap`/`expect`;
   clippy `-D warnings -D clippy::pedantic` clean.
 - **Task granularity:** each unit ≤ ~2h, single width domain, atomic verifiable
-  milestone; P3 and P6 (the largest) carry explicit subtask split points.
+  milestone; P3 and P6 (the largest) carry explicit subtask split points. The
+  model-scope invalidation added post-merge (PR #245 Copilot cycle-4) was split
+  out as **P3b (`085.008-T`)** rather than folded into P3, keeping P3 within the
+  bound.
 - **Fixtures:** committed inline `r"…"` or `tests/fixtures/`; never the
   uncommitted `tmp/ILSOS-…` model.
 
