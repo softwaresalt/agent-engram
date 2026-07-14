@@ -219,3 +219,46 @@ async fn file_delete_in_scope_drops_stale_reference() {
         "stale edge to the deleted Date[Year] must be dropped; got {after:?}"
     );
 }
+
+/// S-DAXINC-04: a case-mismatched DAX reference (`sales[amount]` / `'date'[year]`)
+/// still emits a `pbi_uses_field` edge, and the edge targets the CANONICAL,
+/// declared-case node (`Amount`, `Year`) — proving the case-insensitive resolver
+/// recovers the declared casing so edge node ids match the indexed nodes.
+#[tokio::test]
+async fn case_mismatched_reference_resolves_to_canonical_node() {
+    let root = TempDir::new().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let tables = model_tables(&workspace);
+    fs::create_dir_all(&tables).expect("create dirs");
+
+    // References use lowercase table/column casing that differs from the declared
+    // `Sales`/`Amount` and `Date`/`Year`. DAX folds case, so both must resolve.
+    let sales = "table Sales\n\
+         \x20\x20column Amount\n\
+         \x20\x20\x20\x20dataType: double\n\
+         \x20\x20measure Total = SUM(sales[amount])\n\
+         \x20\x20measure ByYear = CALCULATE([total], 'date'[year])\n";
+    write_model(&tables, sales, Some(DATE_YEAR_ONLY));
+
+    let db = connect_db(&root.path().join("data"), "dax-inc-case")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+    reindex(&workspace, &queries).await;
+
+    let total_targets = measure_uses_field_targets(&queries, "Total").await;
+    assert!(
+        total_targets.contains(&"Amount".to_string()),
+        "lowercase sales[amount] must resolve to the canonical Sales[Amount] node; got {total_targets:?}"
+    );
+
+    let by_year_targets = measure_uses_field_targets(&queries, "ByYear").await;
+    assert!(
+        by_year_targets.contains(&"Year".to_string()),
+        "lowercase 'date'[year] must resolve to the canonical Date[Year] node; got {by_year_targets:?}"
+    );
+    assert!(
+        by_year_targets.contains(&"Total".to_string()),
+        "lowercase [total] must resolve to the canonical Total measure node; got {by_year_targets:?}"
+    );
+}

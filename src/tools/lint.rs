@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::models::registry::ContentSourceStatus;
 use crate::server::state::SharedState;
 use crate::services::dax_lint::{ModelPathNotIndexed, lint_indexed_models};
 
@@ -56,28 +57,43 @@ pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value
         .map(|path| path.trim().to_owned())
         .filter(|path| !path.is_empty());
 
-    let outcome = tokio::task::spawn_blocking(move || {
+    let outcome = tokio::task::spawn_blocking(move || -> Result<_, EngramError> {
         let registry_path = workspace_root.join(".engram").join("registry.yaml");
         let source_paths = match crate::services::registry::load_registry(&registry_path) {
             Ok(Some(mut config)) => {
-                let _ = crate::services::registry::validate_sources(&mut config, &workspace_root);
+                // Populate per-source status (path-traversal / missing / duplicate
+                // detection). A hard validation failure (e.g. the workspace root
+                // cannot be canonicalised) is surfaced as a tool error rather than
+                // silently degrading to "no Power BI sources".
+                crate::services::registry::validate_sources(&mut config, &workspace_root)?;
                 config
                     .sources
                     .into_iter()
-                    .filter(|source| source.content_type == "powerbi")
+                    .filter(|source| {
+                        source.content_type == "powerbi"
+                            && source.status == ContentSourceStatus::Active
+                    })
                     .map(|source| source.path)
                     .collect::<Vec<_>>()
             }
-            Ok(None) | Err(_) => Vec::new(),
+            // No registry file is a benign empty scope — nothing to lint.
+            Ok(None) => Vec::new(),
+            // A registry that exists but cannot be read/parsed is an error, not a
+            // silent pass to `{ conformant: true }`.
+            Err(e) => return Err(e),
         };
-        lint_indexed_models(&workspace_root, &source_paths, model_path.as_deref())
+        Ok(lint_indexed_models(
+            &workspace_root,
+            &source_paths,
+            model_path.as_deref(),
+        ))
     })
     .await
     .map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
             reason: format!("lint_dax worker failed: {e}"),
         })
-    })?;
+    })??;
 
     let report = outcome.map_err(|ModelPathNotIndexed(path)| {
         EngramError::Workspace(WorkspaceError::NotFound { path })

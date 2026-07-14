@@ -863,29 +863,70 @@ pub(crate) fn build_powerbi_graph_data_from_model(
 /// model, the model is its own scope.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModelScopeSchema {
-    /// Table name → set of column names declared on that table.
-    columns: HashMap<String, HashSet<String>>,
-    /// Measure name → owning table name (measures are unique by name within a
-    /// model).
-    measures_by_name: HashMap<String, String>,
-    /// Declared `(table, measure)` pairs for qualified-measure resolution.
-    table_measures: HashSet<(String, String)>,
+    /// Case-folded table name → the table's declared casing and columns. DAX
+    /// identifiers are case-insensitive, so lookups fold to lowercase while edge
+    /// construction recovers the declared casing to match the graph's
+    /// `powerbi_node` ids (which are built from declared names).
+    tables: HashMap<String, ScopeTable>,
+    /// Case-folded measure name → its declared casing and owning table (measures
+    /// are unique by name within a model).
+    measures_by_name: HashMap<String, ScopeMeasureEntry>,
+    /// Case-folded `(table, measure)` → declared-case `(table, measure)` for
+    /// qualified-measure resolution.
+    table_measures: HashMap<(String, String), (String, String)>,
+}
+
+/// One table's declared-case name and its case-folded column lookup.
+#[derive(Debug, Default, Clone)]
+struct ScopeTable {
+    /// Declared-case table name (as first seen in the model scope).
+    canonical: String,
+    /// Case-folded column name → declared-case column name.
+    columns: HashMap<String, String>,
+}
+
+/// A measure's declared-case name and its declared-case owning table.
+#[derive(Debug, Clone)]
+struct ScopeMeasureEntry {
+    /// Declared-case measure name (as first seen in the model scope).
+    canonical: String,
+    /// Declared-case owning table name.
+    owner_table: String,
 }
 
 impl ModelScopeSchema {
     /// Fold one parsed model's tables / columns / measures into the scope schema.
+    ///
+    /// Lookup keys are lowercased because DAX table/column/measure identifiers are
+    /// case-insensitive; the first-seen declared casing is retained so resolved
+    /// edges reference the same node ids the indexer emits.
     pub(crate) fn add_model(&mut self, model: &crate::models::powerbi::PowerBiSemanticModel) {
         for table in &model.tables {
-            let columns = self.columns.entry(table.name.clone()).or_default();
+            let table_key = table.name.to_lowercase();
+            let entry = self
+                .tables
+                .entry(table_key.clone())
+                .or_insert_with(|| ScopeTable {
+                    canonical: table.name.clone(),
+                    columns: HashMap::new(),
+                });
             for column in &table.columns {
-                columns.insert(column.name.clone());
+                entry
+                    .columns
+                    .entry(column.name.to_lowercase())
+                    .or_insert_with(|| column.name.clone());
             }
             for measure in &table.measures {
+                let measure_key = measure.name.to_lowercase();
                 self.measures_by_name
-                    .entry(measure.name.clone())
-                    .or_insert_with(|| table.name.clone());
+                    .entry(measure_key.clone())
+                    .or_insert_with(|| ScopeMeasureEntry {
+                        canonical: measure.name.clone(),
+                        owner_table: table.name.clone(),
+                    });
                 self.table_measures
-                    .insert((table.name.clone(), measure.name.clone()));
+                    .entry((table_key.clone(), measure_key))
+                    .or_insert_with(|| (table.name.clone(), measure.name.clone()));
             }
         }
     }
@@ -897,33 +938,58 @@ impl ModelScopeSchema {
         schema
     }
 
-    /// Whether `table` declares a column named `column`.
+    /// Whether `table` declares a column named `column` (case-insensitive).
     pub(crate) fn has_column(&self, table: &str, column: &str) -> bool {
-        self.columns
-            .get(table)
-            .is_some_and(|columns| columns.contains(column))
+        self.resolve_column(table, column).is_some()
     }
 
-    /// Return the owning table of the measure named `measure`, if any.
+    /// Resolve `Table[Column]` to its declared-case `(table, column)` pair,
+    /// folding DAX's case-insensitive identifier matching. `None` when unknown.
+    pub(crate) fn resolve_column(&self, table: &str, column: &str) -> Option<(&str, &str)> {
+        let table_entry = self.tables.get(&table.to_lowercase())?;
+        let column_name = table_entry.columns.get(&column.to_lowercase())?;
+        Some((table_entry.canonical.as_str(), column_name.as_str()))
+    }
+
+    /// Return the declared-case owning table of `measure`, if any (case-insensitive).
     pub(crate) fn measure_owner(&self, measure: &str) -> Option<&str> {
-        self.measures_by_name.get(measure).map(String::as_str)
+        self.measures_by_name
+            .get(&measure.to_lowercase())
+            .map(|entry| entry.owner_table.as_str())
     }
 
-    /// Whether `table` declares a measure named `measure`.
+    /// Resolve a bare `[Measure]` to its declared-case `(owner_table, measure)`
+    /// pair (case-insensitive). `None` when the model scope has no such measure.
+    pub(crate) fn resolve_measure(&self, measure: &str) -> Option<(&str, &str)> {
+        self.measures_by_name
+            .get(&measure.to_lowercase())
+            .map(|entry| (entry.owner_table.as_str(), entry.canonical.as_str()))
+    }
+
+    /// Whether `table` declares a measure named `measure` (case-insensitive).
     pub(crate) fn has_table_measure(&self, table: &str, measure: &str) -> bool {
-        self.table_measures
-            .contains(&(table.to_owned(), measure.to_owned()))
+        self.resolve_table_measure(table, measure).is_some()
     }
 
-    /// Whether any table in the model scope declares a column named `column`.
+    /// Resolve `Table[Measure]` to its declared-case `(table, measure)` pair
+    /// (case-insensitive). `None` when the table declares no such measure.
+    pub(crate) fn resolve_table_measure(&self, table: &str, measure: &str) -> Option<(&str, &str)> {
+        self.table_measures
+            .get(&(table.to_lowercase(), measure.to_lowercase()))
+            .map(|(table_name, measure_name)| (table_name.as_str(), measure_name.as_str()))
+    }
+
+    /// Whether any table in the model scope declares a column named `column`
+    /// (case-insensitive).
     ///
     /// Used by the Tier-2 DAX linter to distinguish an unqualified reference
     /// that resolves to a real column on *another* table (a broken reference
     /// that must be qualified) from one that resolves to nothing at all.
     pub(crate) fn column_exists_anywhere(&self, column: &str) -> bool {
-        self.columns
+        let needle = column.to_lowercase();
+        self.tables
             .values()
-            .any(|columns| columns.contains(column))
+            .any(|table| table.columns.contains_key(&needle))
     }
 }
 
@@ -1032,38 +1098,46 @@ fn resolve_reference(
 ) -> Option<String> {
     match reference.table.as_deref() {
         Some(table) => {
-            if schema.has_column(table, &reference.column) {
+            if let Some((canonical_table, canonical_column)) =
+                schema.resolve_column(table, &reference.column)
+            {
                 Some(make_node_id(
                     source_path,
                     identity_scope,
                     PowerBiNodeKind::Column,
-                    &format!("{table}.{}", reference.column),
+                    &format!("{canonical_table}.{canonical_column}"),
                 ))
-            } else if schema.has_table_measure(table, &reference.column) {
+            } else if let Some((canonical_table, canonical_measure)) =
+                schema.resolve_table_measure(table, &reference.column)
+            {
                 Some(make_node_id(
                     source_path,
                     identity_scope,
                     PowerBiNodeKind::Measure,
-                    &format!("{table}.{}", reference.column),
+                    &format!("{canonical_table}.{canonical_measure}"),
                 ))
             } else {
                 None
             }
         }
         None => {
-            if let Some(owner) = schema.measure_owner(&reference.column) {
+            if let Some((owner_table, canonical_measure)) =
+                schema.resolve_measure(&reference.column)
+            {
                 Some(make_node_id(
                     source_path,
                     identity_scope,
                     PowerBiNodeKind::Measure,
-                    &format!("{owner}.{}", reference.column),
+                    &format!("{owner_table}.{canonical_measure}"),
                 ))
-            } else if schema.has_column(current_table, &reference.column) {
+            } else if let Some((canonical_table, canonical_column)) =
+                schema.resolve_column(current_table, &reference.column)
+            {
                 Some(make_node_id(
                     source_path,
                     identity_scope,
                     PowerBiNodeKind::Column,
-                    &format!("{current_table}.{}", reference.column),
+                    &format!("{canonical_table}.{canonical_column}"),
                 ))
             } else {
                 None

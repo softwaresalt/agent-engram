@@ -420,12 +420,15 @@ pub(crate) fn detect_measure_cycles(
     measures: &[ScopeMeasure],
     schema: &ModelScopeSchema,
 ) -> Vec<VerifyFinding> {
-    // Adjacency: measure name → the measure names it references.
-    let mut deps: HashMap<&str, Vec<String>> = HashMap::new();
+    // Adjacency: case-folded measure name → the case-folded measure names it
+    // references. DAX identifiers are case-insensitive, so both keys and targets
+    // are lowercased to keep `[TotalSales]` and a declared `Total Sales`/`totalsales`
+    // on the same cycle-detection node.
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
     for measure in measures {
         let references = extract_dax_references(&measure.expression);
         let mut targets: Vec<String> = Vec::new();
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for reference in &references.columns {
             // A reference resolves to a measure when it is unqualified and names
             // a known measure, or qualified and names a table-declared measure.
@@ -433,18 +436,21 @@ pub(crate) fn detect_measure_cycles(
                 Some(table) => schema.has_table_measure(table, &reference.column),
                 None => schema.measure_owner(&reference.column).is_some(),
             };
-            if is_measure && seen.insert(reference.column.as_str()) {
-                targets.push(reference.column.clone());
+            if is_measure {
+                let target = reference.column.to_lowercase();
+                if seen.insert(target.clone()) {
+                    targets.push(target);
+                }
             }
         }
-        deps.entry(measure.name.as_str())
+        deps.entry(measure.name.to_lowercase())
             .or_default()
             .extend(targets);
     }
 
     let mut findings: Vec<VerifyFinding> = Vec::new();
     for measure in measures {
-        if measure_on_cycle(measure.name.as_str(), &deps) {
+        if measure_on_cycle(&measure.name.to_lowercase(), &deps) {
             let location = format!("{}[{}] (measure)", measure.table, measure.name);
             findings.push(finding(
                 &measure.rel_path,
@@ -465,7 +471,7 @@ pub(crate) fn detect_measure_cycles(
 ///
 /// Uses a visited set so the walk terminates on self- and mutually-referential
 /// measures instead of recursing forever.
-fn measure_on_cycle(start: &str, deps: &HashMap<&str, Vec<String>>) -> bool {
+fn measure_on_cycle(start: &str, deps: &HashMap<String, Vec<String>>) -> bool {
     let mut stack: Vec<&str> = deps
         .get(start)
         .into_iter()

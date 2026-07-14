@@ -441,3 +441,60 @@ fn unindexed_model_path_is_an_error() {
         .expect_err("an unindexed model_path must be an error");
     assert_eq!(err, ModelPathNotIndexed(bogus.to_string()));
 }
+
+/// S-DAXT2-11: DAX identifiers are case-insensitive, so references whose casing
+/// differs from the declared table / column / measure names must resolve — a
+/// lowercase `sales[amount]` against a declared `Sales`/`Amount`, an uppercase
+/// `[TOTAL]` against a declared `Total` measure, and a mixed-case measure-cycle —
+/// none of which may be mis-flagged broken or missed.
+#[test]
+fn dax_references_resolve_case_insensitively() {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let workspace = root.path();
+    let tables = model_tables(workspace, "Sales.SemanticModel");
+    fs::create_dir_all(&tables).expect("create dirs");
+
+    // Declared casing: table `Sales`, column `Amount`, measures `Total`, `Net`.
+    // `CaseCol` references the column with different casing (`sales[amount]`);
+    // `CaseMeasure` references the measure with different casing (`[TOTAL]`).
+    // Both must resolve cleanly (no broken-ref finding). `CycleA`/`CycleB` form a
+    // mutual cycle referenced with mismatched casing to prove cycle detection
+    // folds case too.
+    fs::write(
+        tables.join("Sales.tmdl"),
+        "table Sales\n\
+         \x20\x20column Amount\n\
+         \x20\x20\x20\x20dataType: double\n\
+         \x20\x20measure Total = SUM(Sales[Amount])\n\
+         \x20\x20measure Net = [total] - 1\n\
+         \x20\x20measure CaseCol = SUM(sales[amount])\n\
+         \x20\x20measure CaseMeasure = [TOTAL] + 1\n\
+         \x20\x20measure CycleA = [cycleb] + 1\n\
+         \x20\x20measure CycleB = [CYCLEA] + 1\n",
+    )
+    .expect("write Sales.tmdl");
+
+    let report = lint(workspace);
+
+    // No broken-column / broken-measure findings: every mismatched-case reference
+    // resolves against the case-folded model scope.
+    assert!(
+        findings_for(&report, "dax.broken_column_ref").is_empty(),
+        "case-insensitive column refs must not be flagged broken; got {:?}",
+        rules(&report)
+    );
+    assert!(
+        findings_for(&report, "dax.broken_measure_ref").is_empty(),
+        "case-insensitive measure refs must not be flagged broken; got {:?}",
+        rules(&report)
+    );
+
+    // The mixed-case mutual cycle (CycleA↔CycleB) must still be detected.
+    let cycles = findings_for(&report, "dax.measure_cycle");
+    assert!(
+        cycles.iter().any(|f| f.message.contains("CycleA"))
+            && cycles.iter().any(|f| f.message.contains("CycleB")),
+        "case-mismatched measure cycle must be detected; got {:?}",
+        rules(&report)
+    );
+}

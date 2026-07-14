@@ -926,17 +926,25 @@ async fn powerbi_impact_response(
     let mut neighborhood: Vec<Value> = Vec::new();
     let mut visual_ids: Vec<String> = Vec::new();
 
+    // A single node budget is shared across both traversal phases so the total
+    // returned neighbourhood never exceeds the advertised `effective_max_nodes`,
+    // regardless of how many dependent visuals Phase 2 expands.
+    let mut remaining = effective_max_nodes;
+
     // Phase 1: dependents via incoming `pbi_uses_field`.
     let dependents = cg_queries
         .query_graph_neighborhood(
             &root.id,
             TraversalDirection::Incoming,
             effective_depth,
-            effective_max_nodes,
+            remaining,
             &["pbi_uses_field"],
         )
         .await?;
     for node in &dependents.nodes {
+        if remaining == 0 {
+            break;
+        }
         if !selected.insert(node.id.clone()) {
             continue;
         }
@@ -944,24 +952,33 @@ async fn powerbi_impact_response(
             visual_ids.push(node.id.clone());
         }
         neighborhood.push(powerbi_graph_node_to_json(node));
+        remaining -= 1;
     }
 
-    // Phase 2: onward containment (visual→page→report) from dependent visuals.
+    // Phase 2: onward containment (visual→page→report) from dependent visuals,
+    // drawing from the same shared budget so the combined result stays bounded.
     for visual_id in &visual_ids {
+        if remaining == 0 {
+            break;
+        }
         let containers = cg_queries
             .query_graph_neighborhood(
                 visual_id,
                 TraversalDirection::Incoming,
                 effective_depth,
-                effective_max_nodes,
+                remaining,
                 &["pbi_contains"],
             )
             .await?;
         for node in &containers.nodes {
+            if remaining == 0 {
+                break;
+            }
             if !selected.insert(node.id.clone()) {
                 continue;
             }
             neighborhood.push(powerbi_graph_node_to_json(node));
+            remaining -= 1;
         }
     }
 

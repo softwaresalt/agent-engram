@@ -228,6 +228,10 @@ pub fn all_tools() -> Vec<Tool> {
                         "type": "string",
                         "description": "Name of the changed symbol to analyse"
                     },
+                    "powerbi_node_id": {
+                        "type": "string",
+                        "description": "Stable Power BI node id that pins the impact root to exactly one node, bypassing name resolution (disambiguates an ambiguous name or a code/Power BI name collision). Provide this or symbol_name."
+                    },
                     "depth": {
                         "type": "integer",
                         "description": "How many hops in the call graph to explore (default 1)",
@@ -243,7 +247,10 @@ pub fn all_tools() -> Vec<Tool> {
                         "description": "Optional semantic concept to narrow the analysis"
                     }
                 },
-                "required": ["symbol_name"]
+                "anyOf": [
+                    { "required": ["symbol_name"] },
+                    { "required": ["powerbi_node_id"] }
+                ]
             })),
         ),
         Tool::new(
