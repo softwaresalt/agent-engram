@@ -763,6 +763,14 @@ path = "tests/integration/powerbi_dax_incremental_sync_test.rs"
 name = "integration_powerbi_impact_analysis"
 path = "tests/integration/powerbi_impact_analysis_test.rs"
 
+[[test]]
+name = "integration_dax_lint_tier2"
+path = "tests/integration/dax_lint_tier2_test.rs"
+
+[[test]]
+name = "contract_lint_dax"
+path = "tests/contract/lint_dax_contract_test.rs"
+
 # ── 063-F: Jupyter notebook source support ───────────────────────────────────
 
 [[test]]

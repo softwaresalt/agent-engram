@@ -16,6 +16,7 @@ use crate::services::{metrics, policy};
 
 pub mod doctor;
 pub mod lifecycle;
+pub mod lint;
 pub mod read;
 pub mod write;
 
@@ -44,6 +45,7 @@ fn should_record_metrics(method: &str) -> bool {
             | "list_symbols"
             | "unified_search"
             | "impact_analysis"
+            | "lint_dax"
             | "get_health_report"
             | "query_graph"
             | "get_branch_metrics"
@@ -119,6 +121,11 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
         "impact_analysis" => {
             let total = value_array_len(value.get("code_neighborhood"));
             insert_shape_count(&mut shape_counts, "code_neighborhood", total);
+            (total, total, total, shape_counts)
+        }
+        "lint_dax" => {
+            let total = value_array_len(value.get("findings"));
+            insert_shape_count(&mut shape_counts, "findings", total);
             (total, total, total, shape_counts)
         }
         "query_graph" => {
@@ -322,6 +329,7 @@ pub async fn dispatch(
         "list_symbols" => read::list_symbols(state.clone(), params).await,
         "unified_search" => read::unified_search(state.clone(), params).await,
         "impact_analysis" => read::impact_analysis(state.clone(), params).await,
+        "lint_dax" => lint::lint_dax(state.clone(), params).await,
         "get_health_report" => read::get_health_report(state.clone(), params).await,
         "get_branch_metrics" => read::get_branch_metrics(state.clone(), params).await,
         "get_token_savings_report" => read::get_token_savings_report(state.clone(), params).await,

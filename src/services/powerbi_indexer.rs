@@ -898,21 +898,32 @@ impl ModelScopeSchema {
     }
 
     /// Whether `table` declares a column named `column`.
-    fn has_column(&self, table: &str, column: &str) -> bool {
+    pub(crate) fn has_column(&self, table: &str, column: &str) -> bool {
         self.columns
             .get(table)
             .is_some_and(|columns| columns.contains(column))
     }
 
     /// Return the owning table of the measure named `measure`, if any.
-    fn measure_owner(&self, measure: &str) -> Option<&str> {
+    pub(crate) fn measure_owner(&self, measure: &str) -> Option<&str> {
         self.measures_by_name.get(measure).map(String::as_str)
     }
 
     /// Whether `table` declares a measure named `measure`.
-    fn has_table_measure(&self, table: &str, measure: &str) -> bool {
+    pub(crate) fn has_table_measure(&self, table: &str, measure: &str) -> bool {
         self.table_measures
             .contains(&(table.to_owned(), measure.to_owned()))
+    }
+
+    /// Whether any table in the model scope declares a column named `column`.
+    ///
+    /// Used by the Tier-2 DAX linter to distinguish an unqualified reference
+    /// that resolves to a real column on *another* table (a broken reference
+    /// that must be qualified) from one that resolves to nothing at all.
+    pub(crate) fn column_exists_anywhere(&self, column: &str) -> bool {
+        self.columns
+            .values()
+            .any(|columns| columns.contains(column))
     }
 }
 
