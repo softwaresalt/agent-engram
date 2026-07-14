@@ -312,11 +312,16 @@ fn extract_column(column: &Value, table_id: &str) -> Option<PowerBiColumn> {
         .or_else(|| column.get("type"))
         .and_then(Value::as_str)
         .map(String::from);
+    let expression = column
+        .get("expression")
+        .and_then(Value::as_str)
+        .map(String::from);
 
     Some(PowerBiColumn {
         id,
         name,
         data_type,
+        expression,
         annotations: Vec::new(),
         lineage_tag: None,
     })

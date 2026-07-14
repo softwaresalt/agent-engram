@@ -181,6 +181,13 @@ pub struct PowerBiColumn {
     #[serde(default)]
     pub data_type: Option<String>,
 
+    /// Calculated-column DAX expression captured from `column <name> = <DAX>`.
+    /// `None` for a plain (non-calculated) column. Additive and
+    /// back-compatible: `#[serde(default)]` deserializes legacy payloads as
+    /// `None` and `skip_serializing_if` omits the field when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+
     /// Annotations attached at column scope.
     #[serde(default)]
     pub annotations: Vec<PowerBiAnnotation>,

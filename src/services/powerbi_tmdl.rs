@@ -106,6 +106,7 @@ fn build_table(table: TmdlTable, model_id: &str) -> PowerBiTable {
             id: synthetic_id(&format!("column:{table_id}:{}", column.name)),
             name: column.name,
             data_type: column.data_type,
+            expression: column.expression,
             annotations: column
                 .annotations
                 .into_iter()

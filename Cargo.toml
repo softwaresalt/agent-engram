@@ -744,6 +744,10 @@ name = "unit_powerbi_extract_tmdl"
 path = "tests/unit/powerbi_extract_tmdl_test.rs"
 
 [[test]]
+name = "unit_powerbi_column_expression"
+path = "tests/unit/powerbi_column_expression_test.rs"
+
+[[test]]
 name = "unit_tmdl_differential_eval"
 path = "tests/unit/tmdl_differential_eval_test.rs"
 
