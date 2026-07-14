@@ -92,8 +92,13 @@ constitution's Test-First principle).
 - **What:** new module `crates/powerbi-tmdl-parser/src/dax.rs` exposing
   `pub fn extract_dax_references(expr: &str) -> DaxReferences` plus
   `DaxReferences { columns: Vec<DaxColumnRef>, bracket_refs: Vec<String>,
-  functions: Vec<String> }` and `DaxColumnRef { table: Option<String>, column:
-  String }`. Single left-to-right, string/comment-aware state machine
+  functions: Vec<String>, diagnostics: Vec<DaxDiagnostic> }`, `DaxColumnRef {
+  table: Option<String>, column: String }`, and a `DaxDiagnostic` for
+  unterminated constructs (unterminated string, block comment, or `[ ]` bracket)
+  surfaced by the lexer. The `diagnostics` field is the **syntax-validation
+  seam** P5 consumes for `dax.malformed_ref` (malformed refs are not re-lexed
+  downstream); well-formed input yields an empty `diagnostics`. Single
+  left-to-right, string/comment-aware state machine
   (`Normal | InString | InLineComment | InBlockComment`). No downstream wiring.
 - **Files:** `crates/powerbi-tmdl-parser/src/dax.rs` (new); `…/src/lib.rs`
   (`mod dax;` + re-export). (2 files.)
@@ -129,7 +134,14 @@ constitution's Test-First principle).
   column, using P2's carried expression) call `extract_dax_references`, resolve
   each ref against the in-model schema (known tables/columns/measures) to an
   existing `pbi_` node id via `make_node_id` (`:489`), and emit
-  `PowerBiEdgeType::UsesField` measure→column and measure→measure edges.
+  `PowerBiEdgeType::UsesField` edges. Sources are BOTH measures **and calculated
+  columns**: emit `measure→column`, `measure→measure`, `calculated_column→column`,
+  and `calculated_column→measure` edges (the calculated column's `pbi_column`
+  node is the edge source), so G1 covers what each calculated column references.
+  This makes a `pbi_column` a valid `UsesField` **source** (not only a target),
+  so update the `PowerBiEdgeType::UsesField` doc-comment
+  (`src/models/powerbi_graph.rs:124-131`) to state it covers a measure **or a
+  calculated column** referencing a column/measure.
   Unresolved refs are recorded/dropped, never guessed (R1/R2).
 - **Files:** `src/services/powerbi_indexer.rs` (+ a small resolution helper in
   the same module). (1 primary file.)
@@ -151,11 +163,17 @@ constitution's Test-First principle).
 
 - **What:** add `find_powerbi_nodes_by_name` to `src/db/cozo_queries.rs`
   (mirroring the existing `select_powerbi_nodes` shape, optionally `kind`/`source_path`
-  filtered, ambiguity handled like the code path); extend `impact_analysis`
+  filtered, ambiguity handled like the code path); add an additive, optional
+  `powerbi_node_id` stable root selector to `ImpactAnalysisParams`
+  (`src/tools/read.rs:712`) so a caller can pin exactly one candidate when
+  `find_powerbi_nodes_by_name` returns duplicates (same-model duplicate column
+  names, or code-vs-Power BI name collisions) — when supplied it bypasses name
+  resolution; extend `impact_analysis`
   (`src/tools/read.rs:741`) to detect a Power BI root, run BFS over `powerbi_edge`
   (incoming = "who depends on me": column → dependent measures → visuals/reports),
   and return an **additive** `powerbi_neighborhood` block plus a `root_kind`
-  discriminator (`code_symbol | powerbi_entity`). Existing fields unchanged.
+  discriminator (`code_symbol | powerbi_entity`). Existing fields and name-based
+  calls unchanged (the selector is optional).
 - **Files:** `src/db/cozo_queries.rs`, `src/tools/read.rs`. (2 files.)
 - **Subtasks:**
   - **P4.a** `find_powerbi_nodes_by_name` read query + node resolution/ambiguity.
@@ -163,7 +181,9 @@ constitution's Test-First principle).
     shaping (back-compat preserved).
 - **Tests (contract + integration):** contract asserts the additive response
   shape and `root_kind`; integration indexes the P3 fixture → `impact_analysis`
-  on a column surfaces the dependent measures (blast radius).
+  on a column surfaces the dependent measures (blast radius). Disambiguation
+  coverage: a same-model duplicate column name and a code-vs-Power BI name
+  collision each resolve to exactly one root via the `powerbi_node_id` selector.
 - **Execution posture:** test-first.
 - **Exit state:** blast-radius questions span Power BI entities; the code path is
   untouched and back-compatible.
@@ -174,7 +194,9 @@ constitution's Test-First principle).
   to `VerifyFinding` (`src/services/verify.rs:20`) with
   `#[serde(default)]` = `Error` (additive back-compat); add a DAX Tier-1 rule set
   (`dax.empty_expression`, `dax.divide_operator`, `dax.deprecated_function`,
-  plus malformed-ref checks using P1's extractor) producing `VerifyFinding`s;
+  plus `dax.malformed_ref` driven by P1's extractor **`diagnostics` seam**
+  (unterminated string/bracket/comment) rather than re-lexing) producing
+  `VerifyFinding`s;
   extend `engram verify <path>` (`src/cli/commands/verify.rs`) so a `.tmdl`
   target runs Tier-1 DAX lint. Exit-code contract unchanged (0 conformant /
   1 findings / 2 error).
@@ -192,7 +214,10 @@ constitution's Test-First principle).
 - **What:** add Tier-2 schema-aware rules (`dax.broken_column_ref`,
   `dax.broken_measure_ref`, `dax.unqualified_column`, `dax.qualified_measure`,
   `dax.measure_cycle`) over the **indexed** model; add a new `lint_dax` MCP tool
-  returning `{ conformant, findings[] }` for the bound workspace. Register in
+  returning `{ conformant, findings[] }` for the bound workspace, accepting an
+  **optional `source_path`** model selector (omitted = every indexed model in the
+  bound workspace; supplied = filter to that one indexed model; a path that is not
+  an indexed model in the bound workspace is an error result). Register in
   dispatch + `should_record_metrics` (`src/tools/mod.rs`), bump
   `TOOL_COUNT 20 → 21` and add the catalog entry (`src/shim/tools_catalog.rs`)
   and manifest, and add an agent-native parity contract test.
@@ -214,10 +239,13 @@ constitution's Test-First principle).
 
 *Added 2026-07-13 by operator decision reversing D4 (see Decisions §D4).*
 
-- **What:** add an `engram lint-dax <model.tmdl>` subcommand mirroring the P6
+- **What:** add an `engram lint-dax [<model.tmdl>]` subcommand mirroring the P6
   `lint_dax` MCP tool. It is **daemon-backed** (Tier-2 semantic lint needs the
   resolved schema — like `engram impact` mirrors `impact_analysis`, not like the
-  local `engram verify`). Add a `LintDax` variant to the `Command` enum in
+  local `engram verify`). The optional `<model.tmdl>` argument maps to the
+  `lint_dax` `source_path` selector (omitted = lint every indexed model in the
+  bound workspace; a path that is not an indexed model exits `2` with an error,
+  consistent with `verify`). Add a `LintDax` variant to the `Command` enum in
   `src/bin/engram.rs` with `#[command(name = "lint-dax")]` and a doc comment
   annotating the mirrored tool (`… (lint_dax).`) per the existing CLI convention;
   implement it under `src/cli/commands/` (new `lint_dax.rs` or extend `verify.rs`)
@@ -339,6 +367,7 @@ parity). See the `## Plan Hardening` section below.
 | P4 | MCP tool (`impact_analysis`) | call `impact_analysis` on a fixture column; confirm additive `powerbi_neighborhood` + `root_kind`; confirm code-root path unchanged | contract + integration test; back-compat note |
 | P5 | CLI (`engram verify`) | run `engram verify <model.tmdl>` on with/without-finding fixtures; assert exit 0/1/2 unchanged | CLI exit-code test; gate-usage note |
 | P6 | MCP tool (`lint_dax`) | call `lint_dax` on a bound fixture workspace; assert `{conformant, findings[]}`; assert `TOOL_COUNT`==catalog | contract test; catalog/manifest lockstep |
+| P7 | CLI (`engram lint-dax`) | run `engram lint-dax <model.tmdl>` against a bound fixture workspace; assert findings render, exit codes 0/1/2, and an unindexed path exits 2; assert the parity guard pins `lint_dax` (`lint-dax=lint_dax`) | integration test + CLI↔MCP parity-guard contract test |
 
 Rollback for every unit is a plain revert — no persisted migration or backfill to
 unwind. Owner: Ship (execution). Validation window: the feature's CI green +
@@ -446,13 +475,15 @@ mid-execution.
   catalog/dispatch count invariant, so a future tool addition cannot silently
   desync.
 
-### Residual operator decision
+### Operator decision (resolved)
 
-- **D4 (CLI parity for `lint_dax`)** is deferred to `30F372C8` rather than
-  absorbed. If the operator wants `engram lint-dax` shipped *with* this feature,
-  P6 grows beyond the 2-hour/single-width bound and should gain a 7th task
-  (`P7 — engram lint-dax CLI subcommand + parity mapping`). Flagged, not decided
-  unilaterally.
+- **D4 (CLI parity for `lint_dax`)** was **REVERSED by the operator on
+  2026-07-13**: `engram lint-dax` is now **in scope** for this feature as the
+  7th task, **P7 (`085.007-T`, depends on P6)** — a daemon-backed subcommand plus
+  a **bounded** CLI↔MCP parity guard. The full-surface MCP↔CLI audit and the
+  canonical mapping doc remain with `30F372C8` (not absorbed). See
+  `docs/decisions/2026-07-13-dax-open-questions-resolution.md` (§D4) and the Plan
+  Review Addendum below.
 
 Hardening does not expand scope; it tightens contract-stability and back-compat
 verification. The plan remains a single artifact and proceeds directly to review.
