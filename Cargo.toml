@@ -815,6 +815,10 @@ name = "unit_verify_core"
 path = "tests/unit/verify_core_test.rs"
 
 [[test]]
+name = "unit_dax_lint"
+path = "tests/unit/dax_lint_test.rs"
+
+[[test]]
 name = "contract_verify"
 path = "tests/contract/verify_test.rs"
 

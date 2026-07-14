@@ -20,6 +20,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
 use crate::db::workspace::normalize_canonical;
+use crate::services::dax_lint;
 use crate::services::verify::{self, VerifyFinding};
 
 /// Conformant document (or non-markdown target).
@@ -72,8 +73,12 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
         }
     }
 
-    // Non-markdown targets carry no graph markdown to validate in Phase 1a.
-    if !is_markdown_path(&target.display) {
+    // Targets that are neither markdown nor TMDL carry nothing to validate in
+    // Phase 1a: markdown runs the structural linter, `.tmdl` runs the Tier-1 DAX
+    // linter, and anything else short-circuits to conformant.
+    let is_markdown = is_markdown_path(&target.display);
+    let is_tmdl = is_tmdl_path(&target.display);
+    if !is_markdown && !is_tmdl {
         emit_summary(&target.display, true, &[], flags, fmt);
         return EXIT_CONFORMANT;
     }
@@ -86,15 +91,20 @@ pub async fn run_verify(path: String, flags: &GlobalFlags, fmt: &OutputFormatter
         }
     };
 
-    let report = match verify::verify_markdown(&target.display, &content) {
-        Ok(report) => report,
-        Err(err) => {
-            fmt.cli_error(&format!(
-                "verification error for '{}': {err}",
-                target.display
-            ));
-            return EXIT_ERROR;
+    let report = if is_markdown {
+        match verify::verify_markdown(&target.display, &content) {
+            Ok(report) => report,
+            Err(err) => {
+                fmt.cli_error(&format!(
+                    "verification error for '{}': {err}",
+                    target.display
+                ));
+                return EXIT_ERROR;
+            }
         }
+    } else {
+        // TMDL target: Tier-1 DAX lint is pure and infallible.
+        dax_lint::verify_tmdl_dax(&target.display, &content)
     };
 
     if !report.conformant {
@@ -211,6 +221,14 @@ fn is_markdown_path(path: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
 }
 
+/// Whether `path` names a TMDL document (`.tmdl`), routed to the DAX linter.
+fn is_tmdl_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"))
+}
+
 /// Write a single finding to stderr so autoharness can inject it into context.
 fn emit_finding_to_stderr(finding: &VerifyFinding) {
     if let Some(line) = finding.line {
@@ -235,6 +253,7 @@ fn emit_summary(
                 "rule": finding.rule,
                 "message": finding.message,
                 "line": finding.line,
+                "severity": finding.severity,
             })
         })
         .collect();

@@ -1,0 +1,4 @@
+table Sales
+  column Amount
+    dataType: double
+  measure Total = SUM(Sales[Amount])

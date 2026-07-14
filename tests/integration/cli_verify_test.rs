@@ -173,3 +173,24 @@ fn nonmarkdown_missing_file_exits_error() {
         "a missing non-markdown target must exit 2 (I/O error), not short-circuit to exit 0"
     );
 }
+
+/// I-VF-07: a clean `.tmdl` model runs the Tier-1 DAX lint and exits `0` (P5).
+#[test]
+fn clean_tmdl_exits_zero() {
+    let (code, _stdout, stderr) = verify_in(&crate_root(), "tests/fixtures/verify/clean.tmdl");
+    assert_eq!(code, 0, "clean .tmdl must exit 0; stderr: {stderr}");
+}
+
+/// I-VF-08: a `.tmdl` model with a Tier-1 DAX finding exits `1` (non-conformant).
+#[test]
+fn tmdl_with_findings_exits_one() {
+    let (code, _stdout, stderr) = verify_in(&crate_root(), "tests/fixtures/verify/findings.tmdl");
+    assert_eq!(
+        code, 1,
+        "a .tmdl with a Tier-1 DAX finding must exit 1; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dax.divide_operator"),
+        "stderr should surface the dax.divide_operator finding; stderr: {stderr}"
+    );
+}

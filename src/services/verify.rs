@@ -14,9 +14,28 @@
 
 use crate::errors::EngramError;
 use crate::services::parsing::frontmatter;
+use serde::{Deserialize, Serialize};
+
+/// Severity classification for a [`VerifyFinding`].
+///
+/// Additive metadata: the field defaults to [`Severity::Error`] so a legacy
+/// payload serialized before `severity` existed deserializes as `Error`,
+/// preserving the pre-severity blocking behaviour. `conformant` is still driven
+/// purely by whether any findings exist, independent of their severity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// A blocking structural or syntactic defect (default).
+    #[default]
+    Error,
+    /// A likely defect that does not necessarily block ingestion.
+    Warning,
+    /// An advisory or stylistic observation.
+    Info,
+}
 
 /// A single structural conformance finding produced by [`verify_markdown`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyFinding {
     /// Stable machine-readable rule identifier (e.g. `frontmatter.malformed`).
     pub rule: String,
@@ -24,10 +43,14 @@ pub struct VerifyFinding {
     pub message: String,
     /// One-based source line the finding refers to, when known.
     pub line: Option<usize>,
+    /// Severity classification; defaults to [`Severity::Error`] for legacy
+    /// payloads serialized before this field existed.
+    #[serde(default)]
+    pub severity: Severity,
 }
 
 /// The outcome of verifying a markdown document for graph-ingestion conformance.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyReport {
     /// `true` when the document is conformant (no blocking findings).
     pub conformant: bool,
@@ -38,7 +61,7 @@ pub struct VerifyReport {
 impl VerifyReport {
     /// Build a report from a set of findings, deriving `conformant` from whether
     /// any findings were produced.
-    fn from_findings(findings: Vec<VerifyFinding>) -> Self {
+    pub(crate) fn from_findings(findings: Vec<VerifyFinding>) -> Self {
         Self {
             conformant: findings.is_empty(),
             findings,
@@ -79,6 +102,7 @@ pub fn verify_markdown(rel_path: &str, content: &str) -> Result<VerifyReport, En
                     "{rel_path}: frontmatter delimiters present but YAML failed to parse"
                 ),
                 line: Some(1),
+                severity: Severity::Error,
             });
         }
     }
@@ -90,6 +114,7 @@ pub fn verify_markdown(rel_path: &str, content: &str) -> Result<VerifyReport, En
             rule: "body.empty".to_string(),
             message: format!("{rel_path}: document body is empty after frontmatter"),
             line: None,
+            severity: Severity::Error,
         });
     }
 
@@ -132,6 +157,7 @@ fn unresolved_template_findings(rel_path: &str, content: &str) -> Vec<VerifyFind
                 index + 1
             ),
             line: Some(index + 1),
+            severity: Severity::Error,
         })
         .collect()
 }
