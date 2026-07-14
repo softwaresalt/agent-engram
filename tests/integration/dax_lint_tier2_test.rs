@@ -18,6 +18,9 @@ use engram::services::verify::{Severity, VerifyFinding, VerifyReport};
 
 const SOURCES: &[&str] = &["models"];
 
+/// Registry default per-file byte limit (1 MB), mirrored for the lint calls.
+const MAX_FILE_SIZE: u64 = 1_048_576;
+
 /// Return the `tables` directory of a named semantic model under `models/`.
 fn model_tables(workspace: &Path, model: &str) -> std::path::PathBuf {
     workspace
@@ -32,7 +35,7 @@ fn sources() -> Vec<String> {
 }
 
 fn lint(workspace: &Path) -> VerifyReport {
-    lint_indexed_models(workspace, &sources(), None).expect("lint should succeed")
+    lint_indexed_models(workspace, &sources(), MAX_FILE_SIZE, None).expect("lint should succeed")
 }
 
 fn rules(report: &VerifyReport) -> Vec<&str> {
@@ -406,7 +409,7 @@ fn model_path_selector_filters_to_one_scope() {
     .expect("write Inventory.tmdl");
 
     let sales_scope = "models/Sales.SemanticModel/definition/tables/Sales.tmdl";
-    let report = lint_indexed_models(workspace, &sources(), Some(sales_scope))
+    let report = lint_indexed_models(workspace, &sources(), MAX_FILE_SIZE, Some(sales_scope))
         .expect("filtered lint should succeed");
     assert_eq!(
         report.findings.len(),
@@ -437,7 +440,7 @@ fn unindexed_model_path_is_an_error() {
     .expect("write Sales.tmdl");
 
     let bogus = "models/DoesNotExist.SemanticModel/definition/tables/Ghost.tmdl";
-    let err = lint_indexed_models(workspace, &sources(), Some(bogus))
+    let err = lint_indexed_models(workspace, &sources(), MAX_FILE_SIZE, Some(bogus))
         .expect_err("an unindexed model_path must be an error");
     assert_eq!(err, LintError::ModelPathNotIndexed(bogus.to_string()));
 }
@@ -456,7 +459,7 @@ fn undecodable_model_file_is_an_error() {
     fs::write(tables.join("Broken.tmdl"), [0xFF, 0xFE, 0x00, 0x9F])
         .expect("write invalid utf-8 tmdl");
 
-    let err = lint_indexed_models(workspace, &sources(), None)
+    let err = lint_indexed_models(workspace, &sources(), MAX_FILE_SIZE, None)
         .expect_err("an undecodable model file must be an error");
     match err {
         LintError::FileUnreadable { path, .. } => {
@@ -469,6 +472,52 @@ fn undecodable_model_file_is_an_error() {
             panic!("expected FileUnreadable, got ModelPathNotIndexed({path:?})")
         }
     }
+}
+
+/// S-DAXT2-13: a `.tmdl` file larger than `max_file_size` is skipped with the
+/// same eligibility check the indexer applies, so an oversized sibling never
+/// influences the lint (and the blocking worker never reads it). The same file
+/// under the normal limit still produces its finding.
+#[test]
+fn oversized_model_file_is_skipped() {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let workspace = root.path();
+    let tables = model_tables(workspace, "Sales.SemanticModel");
+    fs::create_dir_all(&tables).expect("create dirs");
+    // A measure using the bare `/` operator would fire `dax.divide_operator`.
+    fs::write(
+        tables.join("Sales.tmdl"),
+        "table Sales\n\
+         \x20\x20column Amount\n\
+         \x20\x20\x20\x20dataType: double\n\
+         \x20\x20column Count\n\
+         \x20\x20\x20\x20dataType: int64\n\
+         \x20\x20measure Ratio = Sales[Amount] / Sales[Count]\n",
+    )
+    .expect("write Sales.tmdl");
+
+    // Under the normal limit the divide-operator finding is reported.
+    let report = lint_indexed_models(workspace, &sources(), MAX_FILE_SIZE, None)
+        .expect("lint under normal limit should succeed");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.rule == "dax.divide_operator"),
+        "normal-limit lint should report dax.divide_operator; got {:?}",
+        report.findings
+    );
+
+    // With a tiny limit the file exceeds `max_file_size` and is skipped, so no
+    // finding (and no error) results.
+    let skipped = lint_indexed_models(workspace, &sources(), 8, None)
+        .expect("oversized skip is not an error");
+    assert!(
+        skipped.findings.is_empty(),
+        "an oversized file must be skipped, not linted; got {:?}",
+        skipped.findings
+    );
+    assert!(skipped.conformant, "skipped-only lint should be conformant");
 }
 
 /// S-DAXT2-11: DAX identifiers are case-insensitive, so references whose casing

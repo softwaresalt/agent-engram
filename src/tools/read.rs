@@ -968,12 +968,18 @@ async fn powerbi_impact_response(
                 if remaining == 0 {
                     break 'depth;
                 }
+                // Cap the one-hop query at the whole `effective_max_nodes`
+                // budget rather than the running `remaining`: in a fan-in graph
+                // a node's already-visited shared dependents could otherwise fill
+                // a small local cap and hide unseen dependents beyond it. The
+                // shared `remaining` budget is applied only after global
+                // deduplication (the insert loop below).
                 let hop = cg_queries
                     .query_graph_neighborhood(
                         &node.id,
                         TraversalDirection::Incoming,
                         1,
-                        remaining,
+                        effective_max_nodes,
                         &[edge_kind],
                     )
                     .await?;

@@ -199,21 +199,49 @@ fn contains_bare_division(expression: &str) -> bool {
         match chars[i] {
             '"' => {
                 i += 1;
-                while i < chars.len() && chars[i] != '"' {
+                // `""` is an escaped quote inside a DAX string literal, so a
+                // doubled quote does not end the string.
+                while i < chars.len() {
+                    if chars[i] == '"' {
+                        if i + 1 < chars.len() && chars[i + 1] == '"' {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
                     i += 1;
                 }
                 i += 1;
             }
             '\'' => {
                 i += 1;
-                while i < chars.len() && chars[i] != '\'' {
+                // `''` is an escaped quote inside a quoted identifier.
+                while i < chars.len() {
+                    if chars[i] == '\'' {
+                        if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
                     i += 1;
                 }
                 i += 1;
             }
             '[' => {
                 i += 1;
-                while i < chars.len() && chars[i] != ']' {
+                // `]]` is an escaped closing bracket inside a bracketed name
+                // (mirrors the lexer), so a doubled bracket does not end the
+                // reference — otherwise a `/` in the remainder of the name
+                // (e.g. `[Path ]] / USD]`) would falsely trip the scanner.
+                while i < chars.len() {
+                    if chars[i] == ']' {
+                        if i + 1 < chars.len() && chars[i + 1] == ']' {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
                     i += 1;
                 }
                 i += 1;
@@ -521,7 +549,12 @@ struct ScopeState {
 /// on-disk state of every sibling `.tmdl` file.
 ///
 /// `workspace_root` is the bound workspace directory; `source_paths` are the
-/// registry `powerbi` content-source paths (relative to the workspace root).
+/// registry `powerbi` content-source paths (relative to the workspace root);
+/// `max_file_size` is the registry's per-file byte limit. A discovered `.tmdl`
+/// that resolves (via `canonicalize`) outside the canonical workspace root — for
+/// example through a symlink inside an active source — is skipped before it is
+/// read, and a file larger than `max_file_size` is skipped with the same
+/// eligibility check the indexer applies.
 /// When `model_path_filter` is `Some`, it is canonicalised via
 /// `canonical_tmdl_model_path` to a single model scope and only that scope is
 /// linted; a filter that matches no indexed scope yields
@@ -537,8 +570,14 @@ struct ScopeState {
 pub fn lint_indexed_models(
     workspace_root: &Path,
     source_paths: &[String],
+    max_file_size: u64,
     model_path_filter: Option<&str>,
 ) -> Result<VerifyReport, LintError> {
+    // Canonical workspace root for the symlink-containment guard below. When the
+    // root cannot be canonicalised the guard is skipped (there is nothing safe to
+    // compare against), which matches the pre-existing lenient behaviour.
+    let canonical_root = workspace_root.canonicalize().ok();
+
     // Group every indexed `.tmdl` file by its canonical model scope, unioning
     // each parsed model into that scope's aggregated schema (BTreeMap keeps the
     // findings order deterministic across scopes).
@@ -555,6 +594,24 @@ pub fn lint_indexed_models(
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"));
             if !is_tmdl {
                 continue;
+            }
+            // Workspace-containment guard: a symlink inside an active source
+            // could point a discovered `.tmdl` outside the workspace. Skip
+            // anything that does not canonicalise within the workspace root
+            // before reading it, honouring the workspace-containment contract.
+            if let Some(root) = canonical_root.as_ref() {
+                match file_path.canonicalize() {
+                    Ok(canon) if canon.starts_with(root) => {}
+                    _ => continue,
+                }
+            }
+            // Oversized files are skipped with the same eligibility check as
+            // indexing, so an unindexed oversized sibling never influences the
+            // lint and this blocking worker never reads a huge file.
+            if let Ok(meta) = file_path.metadata() {
+                if meta.len() > max_file_size {
+                    continue;
+                }
             }
             let rel_path = file_path
                 .strip_prefix(workspace_root)
@@ -621,4 +678,40 @@ pub fn lint_indexed_models(
     }
 
     Ok(VerifyReport::from_findings(findings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_bare_division;
+
+    #[test]
+    fn bare_division_detects_real_operator() {
+        assert!(contains_bare_division("[Amount] / [Count]"));
+        assert!(contains_bare_division("DIVIDE([A], [B]) + [x] / 2"));
+    }
+
+    #[test]
+    fn bare_division_ignores_slash_in_string_and_comment() {
+        assert!(!contains_bare_division(r#""a / b""#));
+        assert!(!contains_bare_division("[Amount] // ratio a / b"));
+        assert!(!contains_bare_division("/* a / b */ [Amount]"));
+        assert!(!contains_bare_division("'Table / Name'[Col]"));
+    }
+
+    #[test]
+    fn bare_division_ignores_escaped_bracket_with_slash() {
+        // A column name containing an escaped `]]` and a `/` must not expose the
+        // slash to the scanner (regression for the cycle-3 review finding).
+        assert!(!contains_bare_division("Sales[Path ]] / USD]"));
+        assert!(!contains_bare_division("[Rate ]] / bps]"));
+        // A real division that follows an escaped-bracket reference is still seen.
+        assert!(contains_bare_division("Sales[Path ]] USD] / [Count]"));
+    }
+
+    #[test]
+    fn bare_division_ignores_escaped_quote_with_slash() {
+        // `""` is an escaped quote inside a string literal; the `/` between the
+        // escaped quote and the string end must stay hidden.
+        assert!(!contains_bare_division(r#""a "" / b""#));
+    }
 }

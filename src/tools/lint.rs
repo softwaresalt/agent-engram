@@ -62,32 +62,40 @@ pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value
 
     let outcome = tokio::task::spawn_blocking(move || -> Result<_, EngramError> {
         let registry_path = workspace_root.join(".engram").join("registry.yaml");
-        let source_paths = match crate::services::registry::load_registry(&registry_path) {
-            Ok(Some(mut config)) => {
-                // Populate per-source status (path-traversal / missing / duplicate
-                // detection). A hard validation failure (e.g. the workspace root
-                // cannot be canonicalised) is surfaced as a tool error rather than
-                // silently degrading to "no Power BI sources".
-                crate::services::registry::validate_sources(&mut config, &workspace_root)?;
-                config
-                    .sources
-                    .into_iter()
-                    .filter(|source| {
-                        source.content_type == "powerbi"
-                            && source.status == ContentSourceStatus::Active
-                    })
-                    .map(|source| source.path)
-                    .collect::<Vec<_>>()
-            }
-            // No registry file is a benign empty scope — nothing to lint.
-            Ok(None) => Vec::new(),
-            // A registry that exists but cannot be read/parsed is an error, not a
-            // silent pass to `{ conformant: true }`.
-            Err(e) => return Err(e),
-        };
+        let (source_paths, max_file_size) =
+            match crate::services::registry::load_registry(&registry_path) {
+                Ok(Some(mut config)) => {
+                    // Populate per-source status (path-traversal / missing / duplicate
+                    // detection). A hard validation failure (e.g. the workspace root
+                    // cannot be canonicalised) is surfaced as a tool error rather than
+                    // silently degrading to "no Power BI sources".
+                    crate::services::registry::validate_sources(&mut config, &workspace_root)?;
+                    let limit = config.max_file_size_bytes;
+                    let paths = config
+                        .sources
+                        .into_iter()
+                        .filter(|source| {
+                            source.content_type == "powerbi"
+                                && source.status == ContentSourceStatus::Active
+                        })
+                        .map(|source| source.path)
+                        .collect::<Vec<_>>();
+                    (paths, limit)
+                }
+                // No registry file is a benign empty scope — nothing to lint. The
+                // limit is moot with no sources; use the registry default.
+                Ok(None) => (
+                    Vec::new(),
+                    crate::models::registry::RegistryConfig::default().max_file_size_bytes,
+                ),
+                // A registry that exists but cannot be read/parsed is an error, not a
+                // silent pass to `{ conformant: true }`.
+                Err(e) => return Err(e),
+            };
         Ok(lint_indexed_models(
             &workspace_root,
             &source_paths,
+            max_file_size,
             model_path.as_deref(),
         ))
     })
