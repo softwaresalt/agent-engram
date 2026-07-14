@@ -492,10 +492,22 @@ fn measure_on_cycle(start: &str, deps: &HashMap<String, Vec<String>>) -> bool {
     false
 }
 
-/// Error raised when a caller-supplied `model_path` does not resolve to any
-/// indexed Power BI model scope in the bound workspace.
+/// Error raised while linting the indexed Power BI models in a workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelPathNotIndexed(pub String);
+pub enum LintError {
+    /// A caller-supplied `model_path` did not resolve to any indexed Power BI
+    /// model scope in the bound workspace.
+    ModelPathNotIndexed(String),
+    /// An indexed `.tmdl` file in an active model could not be read or decoded
+    /// as UTF-8. Surfaced (with the file path) rather than silently skipped, so
+    /// a partially-examined model scope never reports a false `conformant: true`.
+    FileUnreadable {
+        /// Workspace-relative (best-effort) path of the offending file.
+        path: String,
+        /// Human-readable failure reason.
+        reason: String,
+    },
+}
 
 /// Aggregated per-scope state collected while walking the indexed `.tmdl` files.
 #[derive(Default)]
@@ -513,7 +525,9 @@ struct ScopeState {
 /// When `model_path_filter` is `Some`, it is canonicalised via
 /// `canonical_tmdl_model_path` to a single model scope and only that scope is
 /// linted; a filter that matches no indexed scope yields
-/// [`ModelPathNotIndexed`].
+/// [`LintError::ModelPathNotIndexed`]. An indexed `.tmdl` file that cannot be
+/// read or decoded yields [`LintError::FileUnreadable`] rather than a silent
+/// skip.
 ///
 /// Because the schema is rebuilt by reparsing the files at lint time, a sibling
 /// column add/rename/delete is reflected immediately — a stale reference in an
@@ -524,7 +538,7 @@ pub fn lint_indexed_models(
     workspace_root: &Path,
     source_paths: &[String],
     model_path_filter: Option<&str>,
-) -> Result<VerifyReport, ModelPathNotIndexed> {
+) -> Result<VerifyReport, LintError> {
     // Group every indexed `.tmdl` file by its canonical model scope, unioning
     // each parsed model into that scope's aggregated schema (BTreeMap keeps the
     // findings order deterministic across scopes).
@@ -542,17 +556,25 @@ pub fn lint_indexed_models(
             if !is_tmdl {
                 continue;
             }
-            let Ok(content_bytes) = std::fs::read(&file_path) else {
-                continue;
-            };
-            let Ok(content) = std::str::from_utf8(&content_bytes) else {
-                continue;
-            };
             let rel_path = file_path
                 .strip_prefix(workspace_root)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
                 .replace('\\', "/");
+            // A read or UTF-8 failure on an active model file is surfaced (with
+            // the path) rather than skipped: silently dropping it could leave a
+            // whole-workspace lint reporting `conformant: true` while an active
+            // model went unexamined.
+            let content_bytes =
+                std::fs::read(&file_path).map_err(|e| LintError::FileUnreadable {
+                    path: rel_path.clone(),
+                    reason: e.to_string(),
+                })?;
+            let content =
+                std::str::from_utf8(&content_bytes).map_err(|e| LintError::FileUnreadable {
+                    path: rel_path.clone(),
+                    reason: e.to_string(),
+                })?;
             let Some(model) = extract_tmdl_semantic_model(content, &rel_path) else {
                 continue;
             };
@@ -566,7 +588,7 @@ pub fn lint_indexed_models(
     let selected_scope = model_path_filter.map(canonical_tmdl_model_path);
     if let Some(want) = selected_scope.as_deref() {
         if !scopes.contains_key(want) {
-            return Err(ModelPathNotIndexed(
+            return Err(LintError::ModelPathNotIndexed(
                 model_path_filter.unwrap_or_default().to_owned(),
             ));
         }

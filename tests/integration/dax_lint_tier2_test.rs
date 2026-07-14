@@ -13,7 +13,7 @@
 use std::fs;
 use std::path::Path;
 
-use engram::services::dax_lint::{ModelPathNotIndexed, lint_indexed_models};
+use engram::services::dax_lint::{LintError, lint_indexed_models};
 use engram::services::verify::{Severity, VerifyFinding, VerifyReport};
 
 const SOURCES: &[&str] = &["models"];
@@ -439,7 +439,36 @@ fn unindexed_model_path_is_an_error() {
     let bogus = "models/DoesNotExist.SemanticModel/definition/tables/Ghost.tmdl";
     let err = lint_indexed_models(workspace, &sources(), Some(bogus))
         .expect_err("an unindexed model_path must be an error");
-    assert_eq!(err, ModelPathNotIndexed(bogus.to_string()));
+    assert_eq!(err, LintError::ModelPathNotIndexed(bogus.to_string()));
+}
+
+/// S-DAXT2-12: an indexed `.tmdl` file in an active model that cannot be decoded
+/// as UTF-8 is surfaced as [`LintError::FileUnreadable`] (carrying the offending
+/// path) rather than silently skipped, so a whole-workspace lint never reports a
+/// false `conformant: true` while an active model went unexamined.
+#[test]
+fn undecodable_model_file_is_an_error() {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let workspace = root.path();
+    let tables = model_tables(workspace, "Sales.SemanticModel");
+    fs::create_dir_all(&tables).expect("create dirs");
+    // Invalid UTF-8 bytes with a `.tmdl` extension inside an active source.
+    fs::write(tables.join("Broken.tmdl"), [0xFF, 0xFE, 0x00, 0x9F])
+        .expect("write invalid utf-8 tmdl");
+
+    let err = lint_indexed_models(workspace, &sources(), None)
+        .expect_err("an undecodable model file must be an error");
+    match err {
+        LintError::FileUnreadable { path, .. } => {
+            assert!(
+                path.ends_with("Broken.tmdl"),
+                "error path should name the offending file, got {path:?}"
+            );
+        }
+        LintError::ModelPathNotIndexed(path) => {
+            panic!("expected FileUnreadable, got ModelPathNotIndexed({path:?})")
+        }
+    }
 }
 
 /// S-DAXT2-11: DAX identifiers are case-insensitive, so references whose casing

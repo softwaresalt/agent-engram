@@ -197,7 +197,21 @@ fn handle_identifier(chars: &[char], start: usize, refs: &mut DaxReferences) -> 
     while i < n && is_ident_part(chars[i]) {
         i += 1;
     }
+    // Absorb dotted continuations so standard dotted function names such as
+    // `STDEV.P` / `NORM.S.DIST` are captured whole rather than truncated to the
+    // suffix. A dot is only consumed when another identifier character follows,
+    // so a trailing dot or a `.[` member access is left for the main scanner.
+    while i + 1 < n && chars[i] == '.' && is_ident_part(chars[i + 1]) {
+        i += 1;
+        while i < n && is_ident_part(chars[i]) {
+            i += 1;
+        }
+    }
     let ident: String = chars[start..i].iter().collect();
+    // Qualified column/measure reference: the bracket must immediately follow
+    // the identifier. DAX does not allow whitespace before `[`, and skipping it
+    // would wrongly bind a bracket to a preceding keyword (e.g. turn
+    // `RETURN [Measure]` into a bogus `RETURN[Measure]` qualified reference).
     if i < n && chars[i] == '[' {
         let (column, bclosed, bnext) = read_bracket(chars, i);
         if bclosed {
@@ -210,7 +224,14 @@ fn handle_identifier(chars: &[char], start: usize, refs: &mut DaxReferences) -> 
         }
         return bnext;
     }
-    if i < n && chars[i] == '(' {
+    // Function call: DAX tolerates inter-token whitespace before the argument
+    // parenthesis (e.g. `SUM ( … )`, `EARLIER (`), so skip spaces before the
+    // `(` check. Only a `(` (never a `[`) may follow across whitespace.
+    let mut j = i;
+    while j < n && chars[j].is_whitespace() {
+        j += 1;
+    }
+    if j < n && chars[j] == '(' {
         refs.functions.push(ident);
     }
     i
@@ -323,6 +344,58 @@ mod tests {
         assert_eq!(refs.columns, vec![col(Some("Sales"), "Amount")]);
         assert!(refs.bracket_refs.is_empty());
         assert!(!refs.functions.contains(&"VAR".to_string()));
+        assert!(!refs.functions.contains(&"RETURN".to_string()));
+    }
+
+    #[test]
+    fn dotted_function_names_are_captured_whole() {
+        // Standard dotted DAX functions must be reported whole, not truncated to
+        // the suffix (`P` / `DIST`).
+        let refs = extract_dax_references(r"STDEV.P(Sales[Amount]) + NORM.S.DIST(Sales[Z], 0, 1)");
+        assert!(
+            refs.functions.contains(&"STDEV.P".to_string()),
+            "expected STDEV.P; got {:?}",
+            refs.functions
+        );
+        assert!(
+            refs.functions.contains(&"NORM.S.DIST".to_string()),
+            "expected NORM.S.DIST; got {:?}",
+            refs.functions
+        );
+        assert!(refs.columns.contains(&col(Some("Sales"), "Amount")));
+        assert!(refs.columns.contains(&col(Some("Sales"), "Z")));
+        assert!(refs.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn whitespace_before_argument_paren_still_captures_function() {
+        // Valid TMDL uses `SUM ( … )` / `EARLIER (`; the space before `(` must
+        // not hide the function name.
+        let refs = extract_dax_references(r"SUM ( Sales[Amount] ) - EARLIER ( Sales[Amount] )");
+        assert!(
+            refs.functions.contains(&"SUM".to_string()),
+            "expected SUM; got {:?}",
+            refs.functions
+        );
+        assert!(
+            refs.functions.contains(&"EARLIER".to_string()),
+            "expected EARLIER; got {:?}",
+            refs.functions
+        );
+        assert!(refs.columns.contains(&col(Some("Sales"), "Amount")));
+        assert!(refs.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn whitespace_before_bracket_does_not_bind_to_keyword() {
+        // A bracket must bind immediately, so `RETURN [Total]` stays an
+        // unqualified `[Total]` rather than a bogus `RETURN[Total]`.
+        let refs = extract_dax_references(r"VAR x = 1 RETURN [Total]");
+        assert!(
+            refs.columns.contains(&col(None, "Total")),
+            "unqualified [Total] must not bind to RETURN; got {:?}",
+            refs.columns
+        );
         assert!(!refs.functions.contains(&"RETURN".to_string()));
     }
 

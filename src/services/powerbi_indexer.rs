@@ -1148,10 +1148,13 @@ fn resolve_reference(
 
 /// Build one [`ModelScopeSchema`] per Power BI model scope by unioning the
 /// tables / columns / measures of every `.tmdl` file, keyed by
-/// `canonical_tmdl_model_path`. Non-TMDL and unreadable files are skipped.
+/// `canonical_tmdl_model_path`. Non-TMDL, unreadable, and oversized
+/// (`> max_file_size`) files are skipped so the schema only reflects files the
+/// main indexing loop actually materialises.
 fn build_model_scope_schemas(
     files: &[PathBuf],
     workspace_root: &Path,
+    max_file_size: u64,
 ) -> HashMap<String, ModelScopeSchema> {
     let mut schemas: HashMap<String, ModelScopeSchema> = HashMap::new();
     for file_path in files {
@@ -1161,6 +1164,15 @@ fn build_model_scope_schemas(
             .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"));
         if !is_tmdl {
             continue;
+        }
+        // Skip oversized files so an over-limit sibling never contributes columns
+        // to resolution: the main indexing loop skips it too, so resolving a
+        // reference against it would emit a `pbi_uses_field` edge to a node that
+        // is never upserted (a dangling edge) while bypassing `max_file_size`.
+        match file_path.metadata() {
+            Ok(metadata) if metadata.len() > max_file_size => continue,
+            Ok(_) => {}
+            Err(_) => continue,
         }
         let Ok(content_bytes) = std::fs::read(file_path) else {
             continue;
@@ -1293,7 +1305,7 @@ pub async fn index_powerbi_source(
     // references that cross sibling files (e.g. a measure in `Sales.tmdl` using
     // `'Date'[Date]`) resolve against the whole model rather than the single
     // file currently being indexed (P3).
-    let model_scope_schemas = build_model_scope_schemas(&files, workspace_root);
+    let model_scope_schemas = build_model_scope_schemas(&files, workspace_root, max_file_size);
 
     // Build a map of existing content hashes for change detection.
     let existing_hashes: HashMap<String, String> = queries

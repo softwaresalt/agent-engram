@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::registry::ContentSourceStatus;
 use crate::server::state::SharedState;
-use crate::services::dax_lint::{ModelPathNotIndexed, lint_indexed_models};
+use crate::services::dax_lint::{LintError, lint_indexed_models};
 
 /// Parameters for the `lint_dax` tool.
 #[derive(Debug, Default, Deserialize)]
@@ -36,6 +36,9 @@ struct LintDaxParams {
 /// # Errors
 /// - `WorkspaceError::NotSet` (1003) when no workspace is bound.
 /// - `WorkspaceError::NotFound` when `model_path` names no indexed model.
+/// - `SystemError::DatabaseError` when an indexed model file cannot be read or
+///   decoded as UTF-8 (the registry could not be validated, or a serialization
+///   failure occurred).
 pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let snapshot = state
         .snapshot_workspace()
@@ -95,8 +98,17 @@ pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value
         })
     })??;
 
-    let report = outcome.map_err(|ModelPathNotIndexed(path)| {
-        EngramError::Workspace(WorkspaceError::NotFound { path })
+    let report = outcome.map_err(|err| match err {
+        LintError::ModelPathNotIndexed(path) => {
+            EngramError::Workspace(WorkspaceError::NotFound { path })
+        }
+        // An unreadable/undecodable active model file is a hard tool error, not a
+        // silent partial pass; surface the offending path in the reason.
+        LintError::FileUnreadable { path, reason } => {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("failed to read indexed Power BI model file '{path}': {reason}"),
+            })
+        }
     })?;
 
     serde_json::to_value(&report).map_err(|e| {

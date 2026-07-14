@@ -826,6 +826,7 @@ pub async fn impact_analysis(
                             "name": node.name,
                             "kind": node.kind.as_str(),
                             "source_path": node.source_path,
+                            "file_path": node.file_path,
                         })
                     })
                     .collect::<Vec<_>>()
@@ -899,18 +900,24 @@ pub async fn impact_analysis(
 
 /// Compute the additive Power BI impact response for a Power BI root node (C3).
 ///
-/// Uses an edge- and node-kind-aware traversal built by composing directed
-/// [`CodeGraphQueries::query_graph_neighborhood`] calls (no new traversal
-/// engine):
+/// Runs a kind-aware, level-synchronous BFS over the Power BI graph, composing
+/// one-hop directed [`CodeGraphQueries::query_graph_neighborhood`] calls (no new
+/// traversal engine). Each frontier node carries an onward policy describing
+/// which incoming edge kinds to expand next:
 ///
-/// 1. Incoming `pbi_uses_field` closure from the root yields its dependents —
-///    dependent measures (`measure→column`/`measure→measure`) and any visuals
-///    that reference the field. Traversing `pbi_contains` here is deliberately
-///    avoided because incoming `pbi_contains` on a column/measure would pull in
-///    the root's owner table/model.
-/// 2. From each *dependent visual*, an incoming `pbi_contains` expansion adds
-///    the containing page and report (`visual→page→report`) — applied only from
-///    visuals so owner ancestors of the root never enter.
+/// * The root (a column/measure) follows only incoming `pbi_uses_field`
+///   dependents; it never follows `pbi_contains`, since incoming `pbi_contains`
+///   on a column/measure would pull in the root's owner table/model.
+/// * A node reached via `pbi_uses_field` keeps following `pbi_uses_field`, and
+///   additionally follows `pbi_contains` only when it is a visual
+///   (`visual → page → report`).
+/// * A node reached via `pbi_contains` follows `pbi_contains` only (climbing the
+///   containment chain), never `pbi_uses_field`.
+///
+/// Expanding exactly one hop per depth iteration keeps the global depth bound
+/// exact — a page reached at hop 2 via a dependent visual is never re-raised to
+/// hop 1 — while a single shared node budget keeps the combined neighbourhood
+/// within the advertised `effective_max_nodes`.
 ///
 /// Returns the JSON response for the Power BI impact root.
 async fn powerbi_impact_response(
@@ -921,65 +928,80 @@ async fn powerbi_impact_response(
 ) -> Result<Value, EngramError> {
     use std::collections::HashSet;
 
-    let mut selected: HashSet<String> = HashSet::new();
-    selected.insert(root.id.clone());
-    let mut neighborhood: Vec<Value> = Vec::new();
-    let mut visual_ids: Vec<String> = Vec::new();
-
-    // A single node budget is shared across both traversal phases so the total
-    // returned neighbourhood never exceeds the advertised `effective_max_nodes`,
-    // regardless of how many dependent visuals Phase 2 expands.
-    let mut remaining = effective_max_nodes;
-
-    // Phase 1: dependents via incoming `pbi_uses_field`.
-    let dependents = cg_queries
-        .query_graph_neighborhood(
-            &root.id,
-            TraversalDirection::Incoming,
-            effective_depth,
-            remaining,
-            &["pbi_uses_field"],
-        )
-        .await?;
-    for node in &dependents.nodes {
-        if remaining == 0 {
-            break;
-        }
-        if !selected.insert(node.id.clone()) {
-            continue;
-        }
-        if node.kind == "powerbi_visual" {
-            visual_ids.push(node.id.clone());
-        }
-        neighborhood.push(powerbi_graph_node_to_json(node));
-        remaining -= 1;
+    /// A pending frontier node plus the incoming edge kinds to expand from it.
+    struct Frontier {
+        id: String,
+        follow_uses: bool,
+        follow_contains: bool,
     }
 
-    // Phase 2: onward containment (visual→page→report) from dependent visuals,
-    // drawing from the same shared budget so the combined result stays bounded.
-    for visual_id in &visual_ids {
-        if remaining == 0 {
+    let mut visited: HashSet<String> = HashSet::new();
+    visited.insert(root.id.clone());
+    let mut neighborhood: Vec<Value> = Vec::new();
+
+    // A single node budget shared across the whole traversal so the returned
+    // neighbourhood never exceeds the advertised `effective_max_nodes`.
+    let mut remaining = effective_max_nodes;
+
+    let mut frontier: Vec<Frontier> = vec![Frontier {
+        id: root.id.clone(),
+        follow_uses: true,
+        follow_contains: false,
+    }];
+
+    'depth: for _ in 0..effective_depth {
+        if remaining == 0 || frontier.is_empty() {
             break;
         }
-        let containers = cg_queries
-            .query_graph_neighborhood(
-                visual_id,
-                TraversalDirection::Incoming,
-                effective_depth,
-                remaining,
-                &["pbi_contains"],
-            )
-            .await?;
-        for node in &containers.nodes {
-            if remaining == 0 {
-                break;
+        let mut next_frontier: Vec<Frontier> = Vec::new();
+        for node in &frontier {
+            // Expand each applicable incoming edge kind SEPARATELY so the edge
+            // that reached each neighbour is known and its onward policy set.
+            let mut edge_kinds: Vec<&str> = Vec::new();
+            if node.follow_uses {
+                edge_kinds.push("pbi_uses_field");
             }
-            if !selected.insert(node.id.clone()) {
-                continue;
+            if node.follow_contains {
+                edge_kinds.push("pbi_contains");
             }
-            neighborhood.push(powerbi_graph_node_to_json(node));
-            remaining -= 1;
+            for edge_kind in edge_kinds {
+                if remaining == 0 {
+                    break 'depth;
+                }
+                let hop = cg_queries
+                    .query_graph_neighborhood(
+                        &node.id,
+                        TraversalDirection::Incoming,
+                        1,
+                        remaining,
+                        &[edge_kind],
+                    )
+                    .await?;
+                for neighbor in &hop.nodes {
+                    if remaining == 0 {
+                        break;
+                    }
+                    if !visited.insert(neighbor.id.clone()) {
+                        continue;
+                    }
+                    // Onward policy is set by the edge that reached this
+                    // neighbour (see the function doc).
+                    let (follow_uses, follow_contains) = if edge_kind == "pbi_uses_field" {
+                        (true, neighbor.kind == "powerbi_visual")
+                    } else {
+                        (false, true)
+                    };
+                    next_frontier.push(Frontier {
+                        id: neighbor.id.clone(),
+                        follow_uses,
+                        follow_contains,
+                    });
+                    neighborhood.push(powerbi_graph_node_to_json(neighbor));
+                    remaining -= 1;
+                }
+            }
         }
+        frontier = next_frontier;
     }
 
     let response = json!({
