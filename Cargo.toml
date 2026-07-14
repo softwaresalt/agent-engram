@@ -771,6 +771,14 @@ path = "tests/integration/dax_lint_tier2_test.rs"
 name = "contract_lint_dax"
 path = "tests/contract/lint_dax_contract_test.rs"
 
+[[test]]
+name = "contract_lint_dax_cli_parity"
+path = "tests/contract/lint_dax_cli_parity_test.rs"
+
+[[test]]
+name = "integration_lint_dax_cli_e2e"
+path = "tests/integration/lint_dax_cli_e2e_test.rs"
+
 # ── 063-F: Jupyter notebook source support ───────────────────────────────────
 
 [[test]]

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use engram::cli::commands::{eval, indexing, lifecycle, manifest, migrate, report, search, verify};
+use engram::cli::commands::{
+    eval, indexing, lifecycle, lint_dax, manifest, migrate, report, search, verify,
+};
 use engram::cli::flags::GlobalFlags;
 use engram::cli::output::OutputFormatter;
 
@@ -216,6 +218,19 @@ enum Command {
         /// Conceptual scope hint to narrow the analysis.
         #[arg(long)]
         concept: Option<String>,
+    },
+
+    /// Lint DAX in the bound workspace's indexed Power BI model(s) (`lint_dax`).
+    ///
+    /// Daemon-backed semantic (Tier-1 + Tier-2) DAX lint mirroring the `lint_dax`
+    /// MCP tool. The optional `<model.tmdl>` argument targets one model scope
+    /// (canonicalized); omitting it lints every indexed Power BI model. Exit
+    /// codes match `engram verify`: `0` conformant, `1` findings, `2` error
+    /// (unindexed model, unbound workspace, or daemon failure).
+    #[command(name = "lint-dax")]
+    LintDax {
+        /// Optional TMDL model path to lint (canonicalized to one model scope).
+        model: Option<String>,
     },
 
     /// Execute a structured graph query against the workspace code and backlog graph (`query_graph`).
@@ -450,6 +465,11 @@ async fn main() -> Result<()> {
         } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = search::run_impact(symbol, depth, max_nodes, concept, &flags, &fmt).await;
+            std::process::exit(code);
+        }
+        Command::LintDax { model } => {
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
+            let code = lint_dax::run_lint_dax(model, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::QueryGraph {
