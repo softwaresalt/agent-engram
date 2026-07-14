@@ -1097,6 +1097,81 @@ fn build_model_scope_schemas(
     schemas
 }
 
+/// Return `true` when `rel_path` names a `.tmdl` file (case-insensitive).
+fn is_tmdl_rel_path(rel_path: &str) -> bool {
+    std::path::Path::new(rel_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"))
+}
+
+/// Determine which `canonical_tmdl_model_path` scopes changed on this
+/// incremental pass.
+///
+/// A model scope is dirty when any of its `.tmdl` files is new, has a content
+/// hash that differs from `existing_hashes` (changed), or was previously
+/// indexed but is no longer on disk (deleted).
+///
+/// Model-scope invalidation (P3b, `085.008-T`): the incremental indexer skips
+/// files whose bytes are unchanged, but a sibling's cross-file `pbi_uses_field`
+/// reference edges can go stale when a peer file in the same model changes. When
+/// a scope is dirty, every sibling `.tmdl` file in that scope must be
+/// reprocessed so its references re-resolve against the current model-scope
+/// schema — even if the sibling's own bytes did not change.
+fn compute_dirty_model_scopes(
+    files: &[PathBuf],
+    workspace_root: &Path,
+    existing_hashes: &HashMap<String, String>,
+    max_file_size: u64,
+) -> HashSet<String> {
+    let mut dirty: HashSet<String> = HashSet::new();
+    let mut seen_tmdl_rel_paths: HashSet<String> = HashSet::new();
+
+    for file_path in files {
+        if !file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"))
+        {
+            continue;
+        }
+        let Ok(metadata) = file_path.metadata() else {
+            continue;
+        };
+        if metadata.len() > max_file_size {
+            continue;
+        }
+        let Ok(content_bytes) = std::fs::read(file_path) else {
+            continue;
+        };
+        if std::str::from_utf8(&content_bytes).is_err() {
+            continue;
+        }
+        let rel_path = file_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        seen_tmdl_rel_paths.insert(rel_path.clone());
+
+        let hash = compute_file_hash(&content_bytes);
+        let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
+        if !unchanged {
+            dirty.insert(canonical_tmdl_model_path(&rel_path));
+        }
+    }
+
+    // A previously-indexed `.tmdl` file that has vanished from disk dirties its
+    // scope so stale sibling reference edges get pruned.
+    for prior_rel in existing_hashes.keys() {
+        if is_tmdl_rel_path(prior_rel) && !seen_tmdl_rel_paths.contains(prior_rel) {
+            dirty.insert(canonical_tmdl_model_path(prior_rel));
+        }
+    }
+
+    dirty
+}
+
 // ── Async indexer ─────────────────────────────────────────────────────────
 
 /// Index all Power BI files from a single content source.
@@ -1144,6 +1219,30 @@ pub async fn index_powerbi_source(
         .map(|record| (record.file_path, record.content_hash))
         .collect();
 
+    // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
+    // changed on this pass so unchanged siblings are reprocessed and their
+    // cross-file reference edges re-resolve against the current schema.
+    let dirty_scopes =
+        compute_dirty_model_scopes(&files, workspace_root, &existing_hashes, max_file_size);
+
+    // Pre-delete every previously-indexed `.tmdl` artifact belonging to a dirty
+    // scope BEFORE rebuilding any sibling (all-deletes-before-all-builds). Node
+    // ids are stable across reindex, and `delete_powerbi_nodes_by_file_path`
+    // cascades to every edge touching a deleted node. Deleting a sibling inside
+    // the build loop could therefore collaterally remove a cross-file reference
+    // edge that an earlier sibling just built; deleting all dirty-scope files up
+    // front avoids that hazard and also prunes files that were deleted on disk.
+    for prior_rel in existing_hashes.keys() {
+        if is_tmdl_rel_path(prior_rel)
+            && dirty_scopes.contains(&canonical_tmdl_model_path(prior_rel))
+        {
+            queries
+                .delete_content_records_by_scope(prior_rel, "powerbi", &source.path)
+                .await?;
+            queries.delete_powerbi_nodes_by_file_path(prior_rel).await?;
+        }
+    }
+
     for file_path in &files {
         let Ok(metadata) = file_path.metadata() else {
             continue;
@@ -1174,17 +1273,19 @@ pub async fn index_powerbi_source(
             .to_string_lossy()
             .replace('\\', "/");
 
-        // Skip unchanged files.
-        if existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str()) {
-            result.unchanged += 1;
-            continue;
-        }
-
+        // Skip unchanged files — unless the file is a `.tmdl` in a dirty model
+        // scope, in which case it must be reprocessed so its cross-file
+        // reference edges re-resolve against the updated schema (P3b).
         let is_tmdl = file_path
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.eq_ignore_ascii_case("tmdl"))
             .unwrap_or(false);
+        let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
+        if unchanged && !(is_tmdl && dirty_scopes.contains(&canonical_tmdl_model_path(&rel_path))) {
+            result.unchanged += 1;
+            continue;
+        }
 
         if is_tmdl {
             let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
@@ -1192,13 +1293,9 @@ pub async fn index_powerbi_source(
                 continue;
             };
 
-            if existing_hashes.contains_key(&rel_path) {
-                queries
-                    .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
-                    .await?;
-                queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
-            }
-
+            // Stale artifacts for dirty-scope `.tmdl` files were already removed
+            // by the pre-delete pass above (all-deletes-before-all-builds), so
+            // no per-file delete is needed here.
             let summaries = extract_model_summaries_from_model(&model);
             let file_size = metadata.len();
             let now = Utc::now();
