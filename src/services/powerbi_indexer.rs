@@ -19,7 +19,7 @@
 //! * `*.bim` — tabular model definitions (`model.bim`)
 //! * `*.tmdl` — folder-based semantic model assets
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use chrono::Utc;
@@ -35,6 +35,7 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
+use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
 
@@ -536,6 +537,7 @@ fn build_powerbi_graph_data(
             file_path,
             source_path,
             content_hash,
+            None,
         );
     }
 
@@ -615,6 +617,7 @@ pub(crate) fn build_powerbi_graph_data_from_model(
     file_path: &str,
     source_path: &str,
     content_hash: &str,
+    reference_schema: Option<&ModelScopeSchema>,
 ) -> (Vec<PowerBiNode>, Vec<PowerBiEdge>) {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -834,7 +837,436 @@ pub(crate) fn build_powerbi_graph_data_from_model(
         });
     }
 
+    // Emit `pbi_uses_field` reference edges from measure / calculated-column DAX
+    // (P3). Resolution uses the model-scope-aggregated schema when supplied
+    // (TMDL, whose files are parsed independently); otherwise the single model
+    // is its own scope (`model.bim`, or a pre-merged PBIP model).
+    let schema_fallback;
+    let schema = if let Some(schema) = reference_schema {
+        schema
+    } else {
+        schema_fallback = ModelScopeSchema::from_model(model);
+        &schema_fallback
+    };
+    append_dax_reference_edges(model, schema, identity_scope, source_path, &mut edges);
+
     (nodes, edges)
+}
+
+/// Aggregated table / column / measure schema for one Power BI model scope.
+///
+/// TMDL ingestion parses each `.tmdl` file independently, so DAX reference
+/// resolution must union all sibling files of one model (keyed by
+/// `canonical_tmdl_model_path`) before resolving — otherwise a cross-table
+/// reference such as a `Sales.tmdl` measure using `'Date'[Date]` would be
+/// silently dropped. For a single-file model (`model.bim`) or a pre-merged PBIP
+/// model, the model is its own scope.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ModelScopeSchema {
+    /// Case-folded table name → the table's declared casing and columns. DAX
+    /// identifiers are case-insensitive, so lookups fold to lowercase while edge
+    /// construction recovers the declared casing to match the graph's
+    /// `powerbi_node` ids (which are built from declared names).
+    tables: HashMap<String, ScopeTable>,
+    /// Case-folded measure name → its declared casing and owning table (measures
+    /// are unique by name within a model).
+    measures_by_name: HashMap<String, ScopeMeasureEntry>,
+    /// Case-folded `(table, measure)` → declared-case `(table, measure)` for
+    /// qualified-measure resolution.
+    table_measures: HashMap<(String, String), (String, String)>,
+}
+
+/// One table's declared-case name and its case-folded column lookup.
+#[derive(Debug, Default, Clone)]
+struct ScopeTable {
+    /// Declared-case table name (as first seen in the model scope).
+    canonical: String,
+    /// Case-folded column name → declared-case column name.
+    columns: HashMap<String, String>,
+}
+
+/// A measure's declared-case name and its declared-case owning table.
+#[derive(Debug, Clone)]
+struct ScopeMeasureEntry {
+    /// Declared-case measure name (as first seen in the model scope).
+    canonical: String,
+    /// Declared-case owning table name.
+    owner_table: String,
+}
+
+impl ModelScopeSchema {
+    /// Fold one parsed model's tables / columns / measures into the scope schema.
+    ///
+    /// Lookup keys are lowercased because DAX table/column/measure identifiers are
+    /// case-insensitive; the first-seen declared casing is retained so resolved
+    /// edges reference the same node ids the indexer emits.
+    pub(crate) fn add_model(&mut self, model: &crate::models::powerbi::PowerBiSemanticModel) {
+        for table in &model.tables {
+            let table_key = table.name.to_lowercase();
+            let entry = self
+                .tables
+                .entry(table_key.clone())
+                .or_insert_with(|| ScopeTable {
+                    canonical: table.name.clone(),
+                    columns: HashMap::new(),
+                });
+            for column in &table.columns {
+                entry
+                    .columns
+                    .entry(column.name.to_lowercase())
+                    .or_insert_with(|| column.name.clone());
+            }
+            for measure in &table.measures {
+                let measure_key = measure.name.to_lowercase();
+                self.measures_by_name
+                    .entry(measure_key.clone())
+                    .or_insert_with(|| ScopeMeasureEntry {
+                        canonical: measure.name.clone(),
+                        owner_table: table.name.clone(),
+                    });
+                self.table_measures
+                    .entry((table_key.clone(), measure_key))
+                    .or_insert_with(|| (table.name.clone(), measure.name.clone()));
+            }
+        }
+    }
+
+    /// Build a scope schema from a single model (single-file / pre-merged case).
+    fn from_model(model: &crate::models::powerbi::PowerBiSemanticModel) -> Self {
+        let mut schema = Self::default();
+        schema.add_model(model);
+        schema
+    }
+
+    /// Whether `table` declares a column named `column` (case-insensitive).
+    pub(crate) fn has_column(&self, table: &str, column: &str) -> bool {
+        self.resolve_column(table, column).is_some()
+    }
+
+    /// Resolve `Table[Column]` to its declared-case `(table, column)` pair,
+    /// folding DAX's case-insensitive identifier matching. `None` when unknown.
+    pub(crate) fn resolve_column(&self, table: &str, column: &str) -> Option<(&str, &str)> {
+        let table_entry = self.tables.get(&table.to_lowercase())?;
+        let column_name = table_entry.columns.get(&column.to_lowercase())?;
+        Some((table_entry.canonical.as_str(), column_name.as_str()))
+    }
+
+    /// Return the declared-case owning table of `measure`, if any (case-insensitive).
+    pub(crate) fn measure_owner(&self, measure: &str) -> Option<&str> {
+        self.measures_by_name
+            .get(&measure.to_lowercase())
+            .map(|entry| entry.owner_table.as_str())
+    }
+
+    /// Resolve a bare `[Measure]` to its declared-case `(owner_table, measure)`
+    /// pair (case-insensitive). `None` when the model scope has no such measure.
+    pub(crate) fn resolve_measure(&self, measure: &str) -> Option<(&str, &str)> {
+        self.measures_by_name
+            .get(&measure.to_lowercase())
+            .map(|entry| (entry.owner_table.as_str(), entry.canonical.as_str()))
+    }
+
+    /// Whether `table` declares a measure named `measure` (case-insensitive).
+    pub(crate) fn has_table_measure(&self, table: &str, measure: &str) -> bool {
+        self.resolve_table_measure(table, measure).is_some()
+    }
+
+    /// Resolve `Table[Measure]` to its declared-case `(table, measure)` pair
+    /// (case-insensitive). `None` when the table declares no such measure.
+    pub(crate) fn resolve_table_measure(&self, table: &str, measure: &str) -> Option<(&str, &str)> {
+        self.table_measures
+            .get(&(table.to_lowercase(), measure.to_lowercase()))
+            .map(|(table_name, measure_name)| (table_name.as_str(), measure_name.as_str()))
+    }
+
+    /// Whether any table in the model scope declares a column named `column`
+    /// (case-insensitive).
+    ///
+    /// Used by the Tier-2 DAX linter to distinguish an unqualified reference
+    /// that resolves to a real column on *another* table (a broken reference
+    /// that must be qualified) from one that resolves to nothing at all.
+    pub(crate) fn column_exists_anywhere(&self, column: &str) -> bool {
+        let needle = column.to_lowercase();
+        self.tables
+            .values()
+            .any(|table| table.columns.contains_key(&needle))
+    }
+}
+
+/// Emit `pbi_uses_field` reference edges for every measure and calculated column
+/// in `model`, resolving each extracted DAX reference against `schema`.
+fn append_dax_reference_edges(
+    model: &crate::models::powerbi::PowerBiSemanticModel,
+    schema: &ModelScopeSchema,
+    identity_scope: &str,
+    source_path: &str,
+    edges: &mut Vec<PowerBiEdge>,
+) {
+    for table in &model.tables {
+        for measure in &table.measures {
+            if let Some(expression) = measure.expression.as_deref() {
+                let source_id = make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Measure,
+                    &format!("{}.{}", table.name, measure.name),
+                );
+                append_resolved_reference_edges(
+                    expression,
+                    &table.name,
+                    &source_id,
+                    schema,
+                    identity_scope,
+                    source_path,
+                    edges,
+                );
+            }
+        }
+        for column in &table.columns {
+            if let Some(expression) = column.expression.as_deref() {
+                let source_id = make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Column,
+                    &format!("{}.{}", table.name, column.name),
+                );
+                append_resolved_reference_edges(
+                    expression,
+                    &table.name,
+                    &source_id,
+                    schema,
+                    identity_scope,
+                    source_path,
+                    edges,
+                );
+            }
+        }
+    }
+}
+
+/// Resolve each reference in `expression` against `schema` and append a
+/// `pbi_uses_field` edge from `source_id` to each resolved node (deduplicated,
+/// self-edges excluded). Unresolved references are dropped, never fabricated.
+#[allow(clippy::too_many_arguments)]
+fn append_resolved_reference_edges(
+    expression: &str,
+    current_table: &str,
+    source_id: &str,
+    schema: &ModelScopeSchema,
+    identity_scope: &str,
+    source_path: &str,
+    edges: &mut Vec<PowerBiEdge>,
+) {
+    let references = extract_dax_references(expression);
+    let mut seen: HashSet<String> = HashSet::new();
+    for reference in &references.columns {
+        let Some(target_id) = resolve_reference(
+            reference,
+            current_table,
+            schema,
+            identity_scope,
+            source_path,
+        ) else {
+            continue;
+        };
+        if target_id == source_id {
+            continue;
+        }
+        if seen.insert(target_id.clone()) {
+            edges.push(PowerBiEdge {
+                from_id: source_id.to_owned(),
+                to_id: target_id,
+                edge_type: PowerBiEdgeType::UsesField,
+                source_path: source_path.to_owned(),
+            });
+        }
+    }
+}
+
+/// Resolve a single DAX column / bracket reference to an existing `pbi_` node id,
+/// or `None` when it does not match the model schema (recorded as unresolved).
+///
+/// A qualified `Table[Name]` resolves to a column, else a measure on that table.
+/// A bare `[Name]` resolves to a measure first (measures are model-unique), else
+/// a column on the referencing (`current_table`) — never guessed across tables.
+fn resolve_reference(
+    reference: &DaxColumnRef,
+    current_table: &str,
+    schema: &ModelScopeSchema,
+    identity_scope: &str,
+    source_path: &str,
+) -> Option<String> {
+    match reference.table.as_deref() {
+        Some(table) => {
+            if let Some((canonical_table, canonical_column)) =
+                schema.resolve_column(table, &reference.column)
+            {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Column,
+                    &format!("{canonical_table}.{canonical_column}"),
+                ))
+            } else if let Some((canonical_table, canonical_measure)) =
+                schema.resolve_table_measure(table, &reference.column)
+            {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Measure,
+                    &format!("{canonical_table}.{canonical_measure}"),
+                ))
+            } else {
+                None
+            }
+        }
+        None => {
+            if let Some((owner_table, canonical_measure)) =
+                schema.resolve_measure(&reference.column)
+            {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Measure,
+                    &format!("{owner_table}.{canonical_measure}"),
+                ))
+            } else if let Some((canonical_table, canonical_column)) =
+                schema.resolve_column(current_table, &reference.column)
+            {
+                Some(make_node_id(
+                    source_path,
+                    identity_scope,
+                    PowerBiNodeKind::Column,
+                    &format!("{canonical_table}.{canonical_column}"),
+                ))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Build one [`ModelScopeSchema`] per Power BI model scope by unioning the
+/// tables / columns / measures of every `.tmdl` file, keyed by
+/// `canonical_tmdl_model_path`. Non-TMDL, unreadable, and oversized
+/// (`> max_file_size`) files are skipped so the schema only reflects files the
+/// main indexing loop actually materialises.
+fn build_model_scope_schemas(
+    files: &[PathBuf],
+    workspace_root: &Path,
+    max_file_size: u64,
+) -> HashMap<String, ModelScopeSchema> {
+    let mut schemas: HashMap<String, ModelScopeSchema> = HashMap::new();
+    for file_path in files {
+        let is_tmdl = file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"));
+        if !is_tmdl {
+            continue;
+        }
+        // Skip oversized files so an over-limit sibling never contributes columns
+        // to resolution: the main indexing loop skips it too, so resolving a
+        // reference against it would emit a `pbi_uses_field` edge to a node that
+        // is never upserted (a dangling edge) while bypassing `max_file_size`.
+        match file_path.metadata() {
+            Ok(metadata) if metadata.len() > max_file_size => continue,
+            Ok(_) => {}
+            Err(_) => continue,
+        }
+        let Ok(content_bytes) = std::fs::read(file_path) else {
+            continue;
+        };
+        let Ok(content_str) = std::str::from_utf8(&content_bytes) else {
+            continue;
+        };
+        let rel_path = file_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
+            continue;
+        };
+        let scope = canonical_tmdl_model_path(&rel_path);
+        schemas.entry(scope).or_default().add_model(&model);
+    }
+    schemas
+}
+
+/// Return `true` when `rel_path` names a `.tmdl` file (case-insensitive).
+fn is_tmdl_rel_path(rel_path: &str) -> bool {
+    std::path::Path::new(rel_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"))
+}
+
+/// Determine which `canonical_tmdl_model_path` scopes changed on this
+/// incremental pass.
+///
+/// A model scope is dirty when any of its `.tmdl` files is new, has a content
+/// hash that differs from `existing_hashes` (changed), or was previously
+/// indexed but is no longer on disk (deleted).
+///
+/// Model-scope invalidation (P3b, `085.008-T`): the incremental indexer skips
+/// files whose bytes are unchanged, but a sibling's cross-file `pbi_uses_field`
+/// reference edges can go stale when a peer file in the same model changes. When
+/// a scope is dirty, every sibling `.tmdl` file in that scope must be
+/// reprocessed so its references re-resolve against the current model-scope
+/// schema — even if the sibling's own bytes did not change.
+fn compute_dirty_model_scopes(
+    files: &[PathBuf],
+    workspace_root: &Path,
+    existing_hashes: &HashMap<String, String>,
+    max_file_size: u64,
+) -> HashSet<String> {
+    let mut dirty: HashSet<String> = HashSet::new();
+    let mut seen_tmdl_rel_paths: HashSet<String> = HashSet::new();
+
+    for file_path in files {
+        if !file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"))
+        {
+            continue;
+        }
+        let Ok(metadata) = file_path.metadata() else {
+            continue;
+        };
+        if metadata.len() > max_file_size {
+            continue;
+        }
+        let Ok(content_bytes) = std::fs::read(file_path) else {
+            continue;
+        };
+        if std::str::from_utf8(&content_bytes).is_err() {
+            continue;
+        }
+        let rel_path = file_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        seen_tmdl_rel_paths.insert(rel_path.clone());
+
+        let hash = compute_file_hash(&content_bytes);
+        let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
+        if !unchanged {
+            dirty.insert(canonical_tmdl_model_path(&rel_path));
+        }
+    }
+
+    // A previously-indexed `.tmdl` file that has vanished from disk dirties its
+    // scope so stale sibling reference edges get pruned.
+    for prior_rel in existing_hashes.keys() {
+        if is_tmdl_rel_path(prior_rel) && !seen_tmdl_rel_paths.contains(prior_rel) {
+            dirty.insert(canonical_tmdl_model_path(prior_rel));
+        }
+    }
+
+    dirty
 }
 
 // ── Async indexer ─────────────────────────────────────────────────────────
@@ -869,6 +1301,12 @@ pub async fn index_powerbi_source(
     let files = collect_powerbi_files(&source_dir);
     result.total_files = files.len();
 
+    // Pre-pass: union every `.tmdl` file into a per-model-scope schema so DAX
+    // references that cross sibling files (e.g. a measure in `Sales.tmdl` using
+    // `'Date'[Date]`) resolve against the whole model rather than the single
+    // file currently being indexed (P3).
+    let model_scope_schemas = build_model_scope_schemas(&files, workspace_root, max_file_size);
+
     // Build a map of existing content hashes for change detection.
     let existing_hashes: HashMap<String, String> = queries
         .select_content_records(Some("powerbi"))
@@ -877,6 +1315,30 @@ pub async fn index_powerbi_source(
         .filter(|record| record.source_path == source.path)
         .map(|record| (record.file_path, record.content_hash))
         .collect();
+
+    // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
+    // changed on this pass so unchanged siblings are reprocessed and their
+    // cross-file reference edges re-resolve against the current schema.
+    let dirty_scopes =
+        compute_dirty_model_scopes(&files, workspace_root, &existing_hashes, max_file_size);
+
+    // Pre-delete every previously-indexed `.tmdl` artifact belonging to a dirty
+    // scope BEFORE rebuilding any sibling (all-deletes-before-all-builds). Node
+    // ids are stable across reindex, and `delete_powerbi_nodes_by_file_path`
+    // cascades to every edge touching a deleted node. Deleting a sibling inside
+    // the build loop could therefore collaterally remove a cross-file reference
+    // edge that an earlier sibling just built; deleting all dirty-scope files up
+    // front avoids that hazard and also prunes files that were deleted on disk.
+    for prior_rel in existing_hashes.keys() {
+        if is_tmdl_rel_path(prior_rel)
+            && dirty_scopes.contains(&canonical_tmdl_model_path(prior_rel))
+        {
+            queries
+                .delete_content_records_by_scope(prior_rel, "powerbi", &source.path)
+                .await?;
+            queries.delete_powerbi_nodes_by_file_path(prior_rel).await?;
+        }
+    }
 
     for file_path in &files {
         let Ok(metadata) = file_path.metadata() else {
@@ -908,17 +1370,19 @@ pub async fn index_powerbi_source(
             .to_string_lossy()
             .replace('\\', "/");
 
-        // Skip unchanged files.
-        if existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str()) {
-            result.unchanged += 1;
-            continue;
-        }
-
+        // Skip unchanged files — unless the file is a `.tmdl` in a dirty model
+        // scope, in which case it must be reprocessed so its cross-file
+        // reference edges re-resolve against the updated schema (P3b).
         let is_tmdl = file_path
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.eq_ignore_ascii_case("tmdl"))
             .unwrap_or(false);
+        let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
+        if unchanged && !(is_tmdl && dirty_scopes.contains(&canonical_tmdl_model_path(&rel_path))) {
+            result.unchanged += 1;
+            continue;
+        }
 
         if is_tmdl {
             let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
@@ -926,13 +1390,9 @@ pub async fn index_powerbi_source(
                 continue;
             };
 
-            if existing_hashes.contains_key(&rel_path) {
-                queries
-                    .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
-                    .await?;
-                queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
-            }
-
+            // Stale artifacts for dirty-scope `.tmdl` files were already removed
+            // by the pre-delete pass above (all-deletes-before-all-builds), so
+            // no per-file delete is needed here.
             let summaries = extract_model_summaries_from_model(&model);
             let file_size = metadata.len();
             let now = Utc::now();
@@ -981,6 +1441,7 @@ pub async fn index_powerbi_source(
                 &rel_path,
                 &source.path,
                 &hash,
+                model_scope_schemas.get(&identity_scope),
             );
             if !graph_nodes.is_empty() {
                 queries.upsert_powerbi_nodes(&graph_nodes).await?;
@@ -1336,6 +1797,7 @@ table Sales
             "Sales.SemanticModel/definition/tables/Sales.tmdl",
             "models",
             "hash1",
+            None,
         );
 
         let partition_nodes: Vec<_> = nodes

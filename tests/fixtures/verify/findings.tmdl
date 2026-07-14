@@ -1,0 +1,6 @@
+table Sales
+  column Amount
+    dataType: double
+  column Qty
+    dataType: int64
+  measure Ratio = Sales[Amount] / Sales[Qty]

@@ -5051,6 +5051,76 @@ has_def[id] := *function_meta { id }
             .collect()
     }
 
+    /// Resolve Power BI nodes by exact `name`, optionally narrowed by `kind`
+    /// (a [`PowerBiNodeKind::as_str`] value such as `column` or `measure`) and
+    /// by `source_path`.
+    ///
+    /// Mirrors the ambiguity contract of [`Self::find_symbols_by_name`]: every
+    /// matching candidate is returned so an ambiguous name can be disambiguated
+    /// by the caller (e.g. via an explicit stable node-id selector). Results are
+    /// sorted by `id` for deterministic candidate ordering.
+    ///
+    /// [`PowerBiNodeKind::as_str`]: crate::models::PowerBiNodeKind::as_str
+    pub async fn find_powerbi_nodes_by_name(
+        &self,
+        name: &str,
+        kind: Option<&str>,
+        source_path: Option<&str>,
+    ) -> Result<Vec<crate::models::PowerBiNode>, EngramError> {
+        let mut clauses = String::from(", name = $name");
+        if kind.is_some() {
+            clauses.push_str(", kind = $kind");
+        }
+        if source_path.is_some() {
+            clauses.push_str(", source_path = $source_path");
+        }
+        let script = format!(
+            r#"?[id, name, kind, file_path, source_path, content_hash, ingested_at] :=
+    *powerbi_node {{ id, name, kind, file_path, source_path, content_hash, ingested_at }}{clauses}"#
+        );
+        let mut p = BTreeMap::new();
+        p.insert("name".to_owned(), DataValue::from(name));
+        if let Some(k) = kind {
+            p.insert("kind".to_owned(), DataValue::from(k));
+        }
+        if let Some(sp) = source_path {
+            p.insert("source_path".to_owned(), DataValue::from(sp));
+        }
+        let result = self
+            .db
+            .run_script(&script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut nodes = result
+            .rows
+            .iter()
+            .map(|row| powerbi_node_from_row(row))
+            .collect::<Result<Vec<crate::models::PowerBiNode>, EngramError>>()?;
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(nodes)
+    }
+
+    /// Resolve a single Power BI node by its stable `id`, returning `None` when
+    /// no node with that id exists. Used by the impact-analysis stable root
+    /// selector to pin exactly one candidate.
+    pub async fn find_powerbi_node_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::PowerBiNode>, EngramError> {
+        let script = r#"?[id, name, kind, file_path, source_path, content_hash, ingested_at] :=
+    *powerbi_node { id, name, kind, file_path, source_path, content_hash, ingested_at }, id = $id"#;
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(id));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        result
+            .rows
+            .first()
+            .map(|row| powerbi_node_from_row(row))
+            .transpose()
+    }
+
     /// Delete all Power BI nodes and edges belonging to a registry source.
     ///
     /// Used when an entire Power BI content source is removed from the registry.
@@ -5401,6 +5471,26 @@ fn row_to_commit_node(row: &[DataValue]) -> crate::models::CommitNode {
 ///
 /// Returns `Err` for any string that is not a recognized variant, preventing
 /// silently-wrong data from masquerading as `DataSource`.
+/// Build a [`PowerBiNode`](crate::models::PowerBiNode) from a `powerbi_node`
+/// query row with column order `[id, name, kind, file_path, source_path,
+/// content_hash, ingested_at]`.
+fn powerbi_node_from_row(row: &[DataValue]) -> Result<crate::models::PowerBiNode, EngramError> {
+    let ingested_str = extract_str(row, 6);
+    let ingested_at = chrono::DateTime::parse_from_rfc3339(&ingested_str)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    let kind = parse_powerbi_node_kind(&extract_str(row, 2))?;
+    Ok(crate::models::PowerBiNode {
+        id: extract_str(row, 0),
+        name: extract_str(row, 1),
+        kind,
+        file_path: extract_str(row, 3),
+        source_path: extract_str(row, 4),
+        content_hash: extract_str(row, 5),
+        ingested_at,
+    })
+}
+
 fn parse_powerbi_node_kind(
     kind_str: &str,
 ) -> Result<crate::models::powerbi_graph::PowerBiNodeKind, EngramError> {

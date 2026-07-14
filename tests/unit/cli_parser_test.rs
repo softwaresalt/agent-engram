@@ -22,6 +22,7 @@ const CLI_PARITY_SUBCOMMANDS: &[&str] = &[
     "symbols",
     "map-code",
     "impact",
+    "lint-dax",
     "query-graph",
     "stats",
     "health",
@@ -93,8 +94,8 @@ fn report_subcommand_count_is_three() {
 fn cli_parity_count_covers_all_tools() {
     // CLI parity subcommands: one per group (lifecycle, indexing, manifest, search, report).
     // report is a single entry here but contains 3 sub-subcommands (token-savings, eval, retry-metrics).
-    // Total top-level parity subcommands: 17.
-    assert_eq!(CLI_PARITY_SUBCOMMANDS.len(), 17);
+    // Total top-level parity subcommands: 18 (added `lint-dax` mirroring `lint_dax`, P7/085.007-T).
+    assert_eq!(CLI_PARITY_SUBCOMMANDS.len(), 18);
     assert_eq!(REPORT_SUBCOMMANDS.len(), 3);
 }
 

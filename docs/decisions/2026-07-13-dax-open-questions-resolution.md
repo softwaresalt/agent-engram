@@ -111,3 +111,38 @@ This reversal also resolves the prior plan-review P2 finding "`lint_dax` is
 MCP-only — CLI parity gap" in-feature rather than deferring it; the plan-review
 gate is unchanged (**PASS**) per the 2026-07-13 review addendum in the exec-plan.
 
+## Post-merge capture — model-scope invalidation (PR #245 Copilot cycle-4) — CAPTURED 2026-07-13
+
+**Status: CAPTURED in `085-F` (was deferred-open at merge). Not re-opened; folded
+into the existing feature per operator Option A on 2026-07-13.**
+
+During PR #245's Copilot review, a cycle-4 comment surfaced a real build-time
+requirement that was **deferred** because it exceeded the 3-cycle review limit
+(not because it was rejected): model-scope reference-edge **aggregation** also
+needs model-scope **invalidation**. The indexer skips unchanged files by content
+hash (`src/services/powerbi_indexer.rs:911-927`), so if e.g. `Date.tmdl`
+adds/renames/deletes a column, an unchanged sibling `Sales.tmdl` measure is never
+re-resolved and its reference edges go stale. Requirement: when ANY file in a
+`canonical_tmdl_model_path` scope changes OR is deleted, reprocess / re-emit
+reference edges for ALL sibling `.tmdl` files in that model scope — not just the
+changed file — with an incremental-sync test covering column add / rename / delete
+in a sibling `.tmdl`.
+
+**Resolution (operator 2026-07-13, Option A — fold into `085-F`):**
+
+- **Persisted-edge path → new task `085.008-T` (P3b), depends on `085.003-T` (P3).**
+  P3 was already at the ~2-hour / single-width ceiling (one of the two largest
+  units), and incremental-sync invalidation is a distinct concern with its own
+  integration-test surface (`tests/integration/`), so it was split out rather than
+  overloading P3. Added to shipment `080-S`.
+- **Lint-reparse path → extended acceptance criteria on `085.006-T` (P6).** P6's
+  Tier-2 broken-ref detection reparses at lint time against the model-scope
+  schema, so it is robust-by-reparse; the AC now makes the invalidation
+  expectation explicit (a sibling column rename/delete makes a peer measure fire
+  `dax.broken_column_ref`; an add clears a previously-broken ref) with fixture
+  coverage. P6 does not depend on P3b.
+
+No `085-*` or `080-S` status changed (all remain `queued`); the exec-plan
+requirements trace, P3/P6 units, and dependency graph were updated in lockstep.
+
+

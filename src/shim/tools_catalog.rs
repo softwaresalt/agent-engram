@@ -18,7 +18,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
 /// Total number of tools registered in the dispatch table and this catalog.
-pub const TOOL_COUNT: usize = 20;
+pub const TOOL_COUNT: usize = 21;
 
 /// Build a `serde_json::Map` from a JSON object literal.
 ///
@@ -228,6 +228,10 @@ pub fn all_tools() -> Vec<Tool> {
                         "type": "string",
                         "description": "Name of the changed symbol to analyse"
                     },
+                    "powerbi_node_id": {
+                        "type": "string",
+                        "description": "Stable Power BI node id that pins the impact root to exactly one node, bypassing name resolution (disambiguates an ambiguous name or a code/Power BI name collision). Provide this or symbol_name."
+                    },
                     "depth": {
                         "type": "integer",
                         "description": "How many hops in the call graph to explore (default 1)",
@@ -243,7 +247,23 @@ pub fn all_tools() -> Vec<Tool> {
                         "description": "Optional semantic concept to narrow the analysis"
                     }
                 },
-                "required": ["symbol_name"]
+                "anyOf": [
+                    { "required": ["symbol_name"] },
+                    { "required": ["powerbi_node_id"] }
+                ]
+            })),
+        ),
+        Tool::new(
+            "lint_dax",
+            "Lint the DAX in the bound workspace's indexed Power BI model(s), returning { conformant, findings[] }. Applies Tier-1 syntactic rules and Tier-2 schema-aware rules (broken column/measure refs, unqualified-column and qualified-measure style findings, and measure-to-measure cycles) by reparsing measure and calculated-column expressions against the model-scope-aggregated schema.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "model_path": {
+                        "type": "string",
+                        "description": "Optional TMDL model path, canonicalised to one model scope. Omitted lints every indexed model; a path matching no indexed model is an error."
+                    }
+                }
             })),
         ),
         // ── Observability ──────────────────────────────────────────────────

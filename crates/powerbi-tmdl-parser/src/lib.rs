@@ -8,6 +8,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod dax;
+
+pub use dax::{DaxColumnRef, DaxDiagnostic, DaxReferences, extract_dax_references};
+
 /// A parsed TMDL semantic-model document.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TmdlModel {

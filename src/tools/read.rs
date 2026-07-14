@@ -710,6 +710,7 @@ fn content_record_unified_result(
 
 #[derive(Deserialize)]
 struct ImpactAnalysisParams {
+    #[serde(default)]
     symbol_name: String,
     #[serde(default = "default_impact_depth")]
     depth: usize,
@@ -718,6 +719,13 @@ struct ImpactAnalysisParams {
     /// Optional semantic concept for combined structural+semantic results.
     #[serde(default)]
     concept: Option<String>,
+    /// Optional stable Power BI node-id selector. When supplied it pins the
+    /// impact root to exactly this node and bypasses name resolution, so an
+    /// ambiguous name (or a code-symbol/Power BI name collision) can be
+    /// disambiguated to a single candidate. Additive and back-compatible:
+    /// name-based calls that omit it are unchanged.
+    #[serde(default)]
+    powerbi_node_id: Option<String>,
 }
 
 const fn default_impact_depth() -> usize {
@@ -765,11 +773,66 @@ pub async fn impact_analysis(
     let (data_dir, branch) = workspace_db(&state).await?;
     let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
+
+    // Power BI root selection (C3): an explicit `powerbi_node_id` pins the root
+    // to exactly one node and bypasses name resolution entirely.
+    if let Some(node_id) = parsed
+        .powerbi_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let Some(root) = cg_queries.find_powerbi_node_by_id(node_id).await? else {
+            return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+                name: node_id.to_owned(),
+            }));
+        };
+        return powerbi_impact_response(&cg_queries, &root, effective_depth, effective_max_nodes)
+            .await;
+    }
+
+    if parsed.symbol_name.trim().is_empty() {
+        return Err(EngramError::System(SystemError::InvalidParams {
+            reason: "impact_analysis requires `symbol_name` or `powerbi_node_id`".to_owned(),
+        }));
+    }
+
+    // Name resolution: code symbols take precedence for back-compat. A Power BI
+    // entity that shares a name with a code symbol is reachable only via the
+    // explicit `powerbi_node_id` selector above.
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
     if matches.is_empty() {
-        return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
-            name: parsed.symbol_name,
-        }));
+        // Fall back to Power BI name resolution before failing.
+        let pbi_matches = cg_queries
+            .find_powerbi_nodes_by_name(&parsed.symbol_name, None, None)
+            .await?;
+        let Some(root) = pbi_matches.first() else {
+            return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
+                name: parsed.symbol_name,
+            }));
+        };
+        let mut response =
+            powerbi_impact_response(&cg_queries, root, effective_depth, effective_max_nodes)
+                .await?;
+        if pbi_matches.len() > 1 {
+            // Ambiguous name — surface every candidate so the caller can re-pin
+            // via `powerbi_node_id`.
+            response["powerbi_candidates"] = json!(
+                pbi_matches
+                    .iter()
+                    .map(|node| {
+                        json!({
+                            "id": node.id,
+                            "name": node.name,
+                            "kind": node.kind.as_str(),
+                            "source_path": node.source_path,
+                            "file_path": node.file_path,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+        return Ok(response);
     }
 
     let root = &matches[0];
@@ -822,6 +885,7 @@ pub async fn impact_analysis(
             "type": root.table,
             "file_path": root.file_path,
         },
+        "root_kind": "code_symbol",
         "code_neighborhood": code_neighborhood,
         "effective_depth": effective_depth,
         "effective_max_nodes": effective_max_nodes,
@@ -832,6 +896,143 @@ pub async fn impact_analysis(
     }
 
     Ok(response)
+}
+
+/// Compute the additive Power BI impact response for a Power BI root node (C3).
+///
+/// Runs a kind-aware, level-synchronous BFS over the Power BI graph, composing
+/// one-hop directed [`CodeGraphQueries::query_graph_neighborhood`] calls (no new
+/// traversal engine). Each frontier node carries an onward policy describing
+/// which incoming edge kinds to expand next:
+///
+/// * The root (a column/measure) follows only incoming `pbi_uses_field`
+///   dependents; it never follows `pbi_contains`, since incoming `pbi_contains`
+///   on a column/measure would pull in the root's owner table/model.
+/// * A node reached via `pbi_uses_field` keeps following `pbi_uses_field`, and
+///   additionally follows `pbi_contains` only when it is a visual
+///   (`visual → page → report`).
+/// * A node reached via `pbi_contains` follows `pbi_contains` only (climbing the
+///   containment chain), never `pbi_uses_field`.
+///
+/// Expanding exactly one hop per depth iteration keeps the global depth bound
+/// exact — a page reached at hop 2 via a dependent visual is never re-raised to
+/// hop 1 — while a single shared node budget keeps the combined neighbourhood
+/// within the advertised `effective_max_nodes`.
+///
+/// Returns the JSON response for the Power BI impact root.
+async fn powerbi_impact_response(
+    cg_queries: &CodeGraphQueries,
+    root: &crate::models::PowerBiNode,
+    effective_depth: usize,
+    effective_max_nodes: usize,
+) -> Result<Value, EngramError> {
+    use std::collections::HashSet;
+
+    /// A pending frontier node plus the incoming edge kinds to expand from it.
+    struct Frontier {
+        id: String,
+        follow_uses: bool,
+        follow_contains: bool,
+    }
+
+    let mut visited: HashSet<String> = HashSet::new();
+    visited.insert(root.id.clone());
+    let mut neighborhood: Vec<Value> = Vec::new();
+
+    // A single node budget shared across the whole traversal so the returned
+    // neighbourhood never exceeds the advertised `effective_max_nodes`.
+    let mut remaining = effective_max_nodes;
+
+    let mut frontier: Vec<Frontier> = vec![Frontier {
+        id: root.id.clone(),
+        follow_uses: true,
+        follow_contains: false,
+    }];
+
+    'depth: for _ in 0..effective_depth {
+        if remaining == 0 || frontier.is_empty() {
+            break;
+        }
+        let mut next_frontier: Vec<Frontier> = Vec::new();
+        for node in &frontier {
+            // Expand each applicable incoming edge kind SEPARATELY so the edge
+            // that reached each neighbour is known and its onward policy set.
+            let mut edge_kinds: Vec<&str> = Vec::new();
+            if node.follow_uses {
+                edge_kinds.push("pbi_uses_field");
+            }
+            if node.follow_contains {
+                edge_kinds.push("pbi_contains");
+            }
+            for edge_kind in edge_kinds {
+                if remaining == 0 {
+                    break 'depth;
+                }
+                // Cap the one-hop query at the whole `effective_max_nodes`
+                // budget rather than the running `remaining`: in a fan-in graph
+                // a node's already-visited shared dependents could otherwise fill
+                // a small local cap and hide unseen dependents beyond it. The
+                // shared `remaining` budget is applied only after global
+                // deduplication (the insert loop below).
+                let hop = cg_queries
+                    .query_graph_neighborhood(
+                        &node.id,
+                        TraversalDirection::Incoming,
+                        1,
+                        effective_max_nodes,
+                        &[edge_kind],
+                    )
+                    .await?;
+                for neighbor in &hop.nodes {
+                    if remaining == 0 {
+                        break;
+                    }
+                    if !visited.insert(neighbor.id.clone()) {
+                        continue;
+                    }
+                    // Onward policy is set by the edge that reached this
+                    // neighbour (see the function doc).
+                    let (follow_uses, follow_contains) = if edge_kind == "pbi_uses_field" {
+                        (true, neighbor.kind == "powerbi_visual")
+                    } else {
+                        (false, true)
+                    };
+                    next_frontier.push(Frontier {
+                        id: neighbor.id.clone(),
+                        follow_uses,
+                        follow_contains,
+                    });
+                    neighborhood.push(powerbi_graph_node_to_json(neighbor));
+                    remaining -= 1;
+                }
+            }
+        }
+        frontier = next_frontier;
+    }
+
+    let response = json!({
+        "symbol": {
+            "name": root.name,
+            "type": root.kind.as_str(),
+            "id": root.id,
+            "file_path": root.file_path,
+        },
+        "root_kind": "powerbi_entity",
+        "powerbi_neighborhood": neighborhood,
+        "effective_depth": effective_depth,
+        "effective_max_nodes": effective_max_nodes,
+    });
+    Ok(response)
+}
+
+/// Serialise a graph BFS node into the Power BI neighbourhood JSON shape.
+fn powerbi_graph_node_to_json(node: &crate::db::queries::QueryGraphNode) -> Value {
+    json!({
+        "id": node.id,
+        "name": node.name,
+        "kind": node.kind,
+        "file_path": node.file_path,
+    })
 }
 
 // ── T034: get_health_report ───────────────────────────────────────────────────

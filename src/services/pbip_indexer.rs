@@ -629,6 +629,7 @@ impl<'a> EmissionBuilder<'a> {
             &anchor,
             self.source_path,
             &anchor_hash,
+            None,
         );
         for node in nodes {
             self.push_node(node);

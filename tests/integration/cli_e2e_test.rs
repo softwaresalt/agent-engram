@@ -158,6 +158,16 @@ fn report_help_exits_zero() {
     assert_eq!(code, 0, "engram report --help must exit 0");
 }
 
+#[test]
+fn lint_dax_help_exits_zero_and_annotates_mirrored_tool() {
+    let (code, stdout, _stderr) = run(&["lint-dax", "--help"]);
+    assert_eq!(code, 0, "engram lint-dax --help must exit 0");
+    assert!(
+        stdout.contains("(`lint_dax`)"),
+        "lint-dax --help must annotate its mirrored MCP tool as (`lint_dax`); got: {stdout}"
+    );
+}
+
 // ── subcommand listing ────────────────────────────────────────────────────────
 
 #[test]
@@ -176,6 +186,7 @@ fn help_lists_all_parity_subcommands() {
         "symbols",
         "map-code",
         "impact",
+        "lint-dax",
         "query-graph",
         "stats",
         "health",

@@ -744,12 +744,40 @@ name = "unit_powerbi_extract_tmdl"
 path = "tests/unit/powerbi_extract_tmdl_test.rs"
 
 [[test]]
+name = "unit_powerbi_column_expression"
+path = "tests/unit/powerbi_column_expression_test.rs"
+
+[[test]]
 name = "unit_tmdl_differential_eval"
 path = "tests/unit/tmdl_differential_eval_test.rs"
 
 [[test]]
 name = "integration_powerbi_search_ingestion"
 path = "tests/integration/powerbi_search_ingestion_test.rs"
+
+[[test]]
+name = "integration_powerbi_dax_incremental_sync"
+path = "tests/integration/powerbi_dax_incremental_sync_test.rs"
+
+[[test]]
+name = "integration_powerbi_impact_analysis"
+path = "tests/integration/powerbi_impact_analysis_test.rs"
+
+[[test]]
+name = "integration_dax_lint_tier2"
+path = "tests/integration/dax_lint_tier2_test.rs"
+
+[[test]]
+name = "contract_lint_dax"
+path = "tests/contract/lint_dax_contract_test.rs"
+
+[[test]]
+name = "contract_lint_dax_cli_parity"
+path = "tests/contract/lint_dax_cli_parity_test.rs"
+
+[[test]]
+name = "integration_lint_dax_cli_e2e"
+path = "tests/integration/lint_dax_cli_e2e_test.rs"
 
 # ── 063-F: Jupyter notebook source support ───────────────────────────────────
 
@@ -802,8 +830,17 @@ path = "tests/contract/powerbi_graph_query_test.rs"
 required-features = ["cozo-backend"]
 
 [[test]]
+name = "contract_powerbi_dax_reference_edges"
+path = "tests/contract/powerbi_dax_reference_edges_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
 name = "unit_verify_core"
 path = "tests/unit/verify_core_test.rs"
+
+[[test]]
+name = "unit_dax_lint"
+path = "tests/unit/dax_lint_test.rs"
 
 [[test]]
 name = "contract_verify"

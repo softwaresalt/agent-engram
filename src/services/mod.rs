@@ -10,6 +10,7 @@ pub mod code_graph;
 pub mod config;
 pub mod connection;
 pub mod cozo_validation;
+pub mod dax_lint;
 pub mod dehydration;
 pub mod embedding;
 pub mod evaluation;
