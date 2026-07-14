@@ -759,6 +759,10 @@ path = "tests/integration/powerbi_search_ingestion_test.rs"
 name = "integration_powerbi_dax_incremental_sync"
 path = "tests/integration/powerbi_dax_incremental_sync_test.rs"
 
+[[test]]
+name = "integration_powerbi_impact_analysis"
+path = "tests/integration/powerbi_impact_analysis_test.rs"
+
 # ── 063-F: Jupyter notebook source support ───────────────────────────────────
 
 [[test]]
