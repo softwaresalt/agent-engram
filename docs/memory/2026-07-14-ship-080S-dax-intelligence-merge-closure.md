@@ -44,7 +44,17 @@ tip), `mergedAt: 2026-07-14T21:15:20Z`.
 1. `backlogit shipment ship 080-S --sha f10caff... --message "Merge pull request #246 ..." --author "Derek
    Williams <...>"` → `shipment_status: shipped`; archived `080-S`, `085-F`, and all 8 tasks
    (`085.001-T`…`085.008-T`) in one atomic operation. Merge SHA recorded on the archived shipment record.
-2. `backlogit sync` → `Indexed 656 artifacts` (`CLOSURE_INDEX_SYNC_OK`).
+2. `backlogit sync` → `Indexed 656 artifacts` (`CLOSURE_INDEX_SYNC_OK`). **Caveat (added
+   2026-07-14 post-PR-#247 Copilot review):** this ran immediately after the atomic
+   `shipment ship` mutation with no intervening cache divergence (no stale `backlogit mcp`
+   holding an older cache state, no out-of-band Markdown edits since the mutation), so there
+   was nothing stale for `sync` to union back — the safe case per
+   `docs/compound/backlogit-sync-cache-union-landmine-2026-07-02.md`. That doc's "avoid
+   unnecessary sync" guidance targets reflexive syncs where cache divergence is possible or
+   unverified; it is NOT a blanket rule against this specific mandatory Ship closure-index-resync
+   step. Future closure runs should not read this `CLOSURE_INDEX_SYNC_OK` line as license to skip
+   the divergence check — verify no stale cache/process is in play (or rebuild the cache clean
+   first per the landmine doc) before syncing, every time.
 3. **Branch reconciliation:** the closure mutation was run while local HEAD was still on
    `feat/085-dax-intelligence` (one commit behind the merge commit). Rather than commit on top of a
    stale/diverged base, the closure diff was `git stash push -u`'d, `main` was fast-forwarded to
