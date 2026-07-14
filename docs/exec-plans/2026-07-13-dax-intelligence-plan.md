@@ -94,10 +94,11 @@ constitution's Test-First principle).
   `DaxReferences { columns: Vec<DaxColumnRef>, bracket_refs: Vec<String>,
   functions: Vec<String>, diagnostics: Vec<DaxDiagnostic> }`, `DaxColumnRef {
   table: Option<String>, column: String }`, and a `DaxDiagnostic` for
-  unterminated constructs (unterminated string, block comment, or `[ ]` bracket)
-  surfaced by the lexer. The `diagnostics` field is the **syntax-validation
-  seam** P5 consumes for `dax.malformed_ref` (malformed refs are not re-lexed
-  downstream); well-formed input yields an empty `diagnostics`. Single
+  unterminated constructs (unterminated string, quoted table identifier, block
+  comment, or `[ ]` bracket) surfaced by the lexer. The `diagnostics` field is
+  the **syntax-validation seam** P5 consumes for `dax.malformed_ref` (malformed
+  refs are not re-lexed downstream); well-formed input yields an empty
+  `diagnostics`. Single
   left-to-right, string/comment-aware state machine
   (`Normal | InString | InLineComment | InBlockComment`). No downstream wiring.
 - **Files:** `crates/powerbi-tmdl-parser/src/dax.rs` (new); `…/src/lib.rs`
@@ -195,7 +196,7 @@ constitution's Test-First principle).
   `#[serde(default)]` = `Error` (additive back-compat); add a DAX Tier-1 rule set
   (`dax.empty_expression`, `dax.divide_operator`, `dax.deprecated_function`,
   plus `dax.malformed_ref` driven by P1's extractor **`diagnostics` seam**
-  (unterminated string/bracket/comment) rather than re-lexing) producing
+  (unterminated string/quoted-identifier/bracket/comment) rather than re-lexing) producing
   `VerifyFinding`s;
   extend `engram verify <path>` (`src/cli/commands/verify.rs`) so a `.tmdl`
   target runs Tier-1 DAX lint. Exit-code contract unchanged (0 conformant /
@@ -213,7 +214,13 @@ constitution's Test-First principle).
 
 - **What:** add Tier-2 schema-aware rules (`dax.broken_column_ref`,
   `dax.broken_measure_ref`, `dax.unqualified_column`, `dax.qualified_measure`,
-  `dax.measure_cycle`) over the **indexed** model; add a new `lint_dax` MCP tool
+  `dax.measure_cycle`) over the **indexed** model. Broken-ref rules get their
+  input by **reparsing** the indexed model expressions (measure + calculated-
+  column DAX via P2) against the resolved schema at lint time — the persisted
+  graph (`powerbi_node`/`powerbi_edge`) retains only resolved endpoints and node
+  identity/path/hash (`src/db/cozo_backend/schema.rs:770-796`), no DAX text or
+  unresolved refs, so Tier-2 re-derives broken refs rather than reading P3's
+  dropped edges (no CozoDB schema change). Add a new `lint_dax` MCP tool
   returning `{ conformant, findings[] }` for the bound workspace, accepting an
   **optional `source_path`** model selector (omitted = every indexed model in the
   bound workspace; supplied = filter to that one indexed model; a path that is not
