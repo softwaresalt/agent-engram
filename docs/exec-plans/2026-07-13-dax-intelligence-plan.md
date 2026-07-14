@@ -130,11 +130,18 @@ constitution's Test-First principle).
 
 ### P3 — Reference edges in the indexer (width: indexer)
 
-- **What:** in `build_powerbi_graph_data_from_model()`
-  (`src/services/powerbi_indexer.rs:533`), for each measure (and calculated
-  column, using P2's carried expression) call `extract_dax_references`, resolve
-  each ref against the in-model schema (known tables/columns/measures) to an
-  existing `pbi_` node id via `make_node_id` (`:489`), and emit
+- **What:** the indexer parses each `.tmdl` file independently and calls
+  `build_powerbi_graph_data_from_model()` once per file with a **file-local**
+  `PowerBiSemanticModel` (`src/services/powerbi_indexer.rs:924-984`), so a
+  file-scoped resolver cannot see sibling tables and would silently drop normal
+  cross-table refs (e.g. a `Sales.tmdl` measure using `'Date'[Date]`). P3 must
+  therefore add a **model-scope schema aggregation** step keyed by
+  `canonical_tmdl_model_path` (`src/services/powerbi_tmdl.rs:85`) that unions the
+  tables/columns/measures of all sibling `.tmdl` files of one model before
+  resolution. Then, for each measure (and calculated column, using P2's carried
+  expression) call `extract_dax_references`, resolve each ref against that
+  **aggregated model-scope schema** to an existing `pbi_` node id via
+  `make_node_id` (`:489`), and emit
   `PowerBiEdgeType::UsesField` edges. Sources are BOTH measures **and calculated
   columns**: emit `measure→column`, `measure→measure`, `calculated_column→column`,
   and `calculated_column→measure` edges (the calculated column's `pbi_column`
@@ -151,9 +158,12 @@ constitution's Test-First principle).
     column-vs-measure disambiguation; unresolved bucket).
   - **P3.b** emit `pbi_uses_field` measure→column / measure→measure edges from
     resolved refs.
-- **Tests (contract):** index a committed inline `.tmdl` fixture; assert
-  `pbi_uses_field` edges exist for a measure that references a column and for a
-  measure that references another measure (`tests/contract/`).
+- **Tests (contract):** index a committed inline fixture whose model is **split
+  across at least two `.tmdl` table files** (e.g. `Sales.tmdl` + `Date.tmdl`);
+  assert `pbi_uses_field` edges exist for a measure that references a same-file
+  column, a measure that references another measure, and a measure that
+  references a **sibling-file** column (`'Date'[Date]`) — proving model-scope
+  aggregation rather than file-local resolution (`tests/contract/`).
 - **Execution posture:** test-first (contract test asserts edges before emission
   logic lands).
 - **Exit state:** DAX references become queryable `pbi_uses_field` edges via the
@@ -170,9 +180,17 @@ constitution's Test-First principle).
   `find_powerbi_nodes_by_name` returns duplicates (same-model duplicate column
   names, or code-vs-Power BI name collisions) — when supplied it bypasses name
   resolution; extend `impact_analysis`
-  (`src/tools/read.rs:741`) to detect a Power BI root, run BFS over `powerbi_edge`
-  (incoming = "who depends on me": column → dependent measures → visuals/reports),
-  and return an **additive** `powerbi_neighborhood` block plus a `root_kind`
+  (`src/tools/read.rs:741`) to detect a Power BI root and run an **edge- and
+  node-kind-aware** traversal over `powerbi_edge` (a plain single-direction
+  incoming BFS is insufficient: an incoming edge from the root column also
+  traverses `pbi_contains` in reverse, pulling the owning table then model into
+  the blast radius, while excluding `pbi_contains` outright leaves page/report
+  unreachable from a visual). The traversal must follow **dependency** edges in
+  the depended-on-by direction (`pbi_uses_field`, visual→measure) and containment
+  (`pbi_contains`) **only onward toward dependents** (visual→page→report), never
+  toward owner ancestors — i.e. "who depends on me": column → dependent measures →
+  visuals → pages → reports, with the owning table/model **excluded** — and return
+  an **additive** `powerbi_neighborhood` block plus a `root_kind`
   discriminator (`code_symbol | powerbi_entity`). Existing fields and name-based
   calls unchanged (the selector is optional).
 - **Files:** `src/db/cozo_queries.rs`, `src/tools/read.rs`. (2 files.)
@@ -191,9 +209,14 @@ constitution's Test-First principle).
 
 ### P5 — DAX lint Tier 1 + `VerifyFinding.severity` (width: verify service + CLI)
 
-- **What:** add `severity: Severity` (`enum Severity { Error, Warning, Info }`)
-  to `VerifyFinding` (`src/services/verify.rs:20`) with
-  `#[serde(default)]` = `Error` (additive back-compat); add a DAX Tier-1 rule set
+- **What:** add `severity: Severity` (`enum Severity { Error, Warning, Info }`,
+  with `impl Default for Severity` returning `Error`) to `VerifyFinding`
+  (`src/services/verify.rs:20`, which today derives only
+  `Debug, Clone, PartialEq, Eq`): this unit **adds `Serialize, Deserialize`
+  derives to `VerifyFinding`/`VerifyReport`** and marks the new field
+  `#[serde(default)]`, so a legacy payload serialized without `severity`
+  deserializes as `Error` (additive back-compat; `#[serde(default)]` requires the
+  `Severity: Default` impl). Add a DAX Tier-1 rule set
   (`dax.empty_expression`, `dax.divide_operator`, `dax.deprecated_function`,
   plus `dax.malformed_ref` driven by P1's extractor **`diagnostics` seam**
   (unterminated string/quoted-identifier/bracket/comment) rather than re-lexing) producing
@@ -216,15 +239,24 @@ constitution's Test-First principle).
   `dax.broken_measure_ref`, `dax.unqualified_column`, `dax.qualified_measure`,
   `dax.measure_cycle`) over the **indexed** model. Broken-ref rules get their
   input by **reparsing** the indexed model expressions (measure + calculated-
-  column DAX via P2) against the resolved schema at lint time — the persisted
+  column DAX via P2) against the **model-scope resolved schema** — aggregated
+  across all sibling `.tmdl` files of one model and keyed by
+  `canonical_tmdl_model_path` (reusing P3's aggregation, since TMDL ingestion
+  parses each file independently and a file-local schema would report valid
+  cross-table refs as broken) — at lint time; the persisted
   graph (`powerbi_node`/`powerbi_edge`) retains only resolved endpoints and node
   identity/path/hash (`src/db/cozo_backend/schema.rs:770-796`), no DAX text or
   unresolved refs, so Tier-2 re-derives broken refs rather than reading P3's
   dropped edges (no CozoDB schema change). Add a new `lint_dax` MCP tool
   returning `{ conformant, findings[] }` for the bound workspace, accepting an
-  **optional `source_path`** model selector (omitted = every indexed model in the
-  bound workspace; supplied = filter to that one indexed model; a path that is not
-  an indexed model in the bound workspace is an error result). Register in
+  **optional `model_path`** selector — a TMDL model path canonicalized via
+  `canonical_tmdl_model_path` (`src/services/powerbi_tmdl.rs:85`) to its model
+  scope, **not** the shared `source_path`/`ContentSource.path` registry directory
+  (`src/models/registry.rs:63`, shared by every Power BI file under a content
+  source) — (omitted = every indexed model in the bound workspace; supplied =
+  filter to exactly that one model; a path that is not an indexed model in the
+  bound workspace is an error result; fixture coverage: two models under one
+  registered source resolve to distinct scopes). Register in
   dispatch + `should_record_metrics` (`src/tools/mod.rs`), bump
   `TOOL_COUNT 20 → 21` and add the catalog entry (`src/shim/tools_catalog.rs`)
   and manifest, and add an agent-native parity contract test.
@@ -250,8 +282,10 @@ constitution's Test-First principle).
   `lint_dax` MCP tool. It is **daemon-backed** (Tier-2 semantic lint needs the
   resolved schema — like `engram impact` mirrors `impact_analysis`, not like the
   local `engram verify`). The optional `<model.tmdl>` argument maps to the
-  `lint_dax` `source_path` selector (omitted = lint every indexed model in the
-  bound workspace; a path that is not an indexed model exits `2` with an error,
+  `lint_dax` `model_path` selector — canonicalized via `canonical_tmdl_model_path`
+  to one model scope, not the shared `source_path` content-source directory —
+  (omitted = lint every indexed model in the bound workspace; a path that is not
+  an indexed model exits `2` with an error,
   consistent with `verify`). Add a `LintDax` variant to the `Command` enum in
   `src/bin/engram.rs` with `#[command(name = "lint-dax")]` and a doc comment
   annotating the mirrored tool (`… (lint_dax).`) per the existing CLI convention;
@@ -349,7 +383,11 @@ Full rationale is recorded in
   contract test the first-authored (failing) harness. (P6.)
 - **R5 — additive-field back-compat**: `VerifyFinding.severity` and
   `PowerBiColumn.expression` must be `#[serde(default)]`/skip-when-none so
-  existing serialized payloads and downstream consumers are unaffected. (P2/P5.)
+  existing serialized payloads and downstream consumers are unaffected. `severity`
+  additionally requires **adding `Serialize, Deserialize` derives** to
+  `VerifyFinding`/`VerifyReport` (today `Debug, Clone, PartialEq, Eq` only) and an
+  `impl Default for Severity` returning `Error`, verified by a legacy-payload
+  round-trip test. (P2/P5.)
 
 ## Plan Hardening Signals (REQUIRED)
 
