@@ -199,27 +199,28 @@ pub enum ExtractedEdge {
         /// the final segment (`b`); the full path prefix (`a`) is captured
         /// separately in the `qualifier` field below.
         ///
-        /// Qualification-aware resolution (088-F) resolves ONLY a crate-internal
-        /// path (a `crate`/`self`/`super` root, or a `Self::` rewritten to
-        /// `crate::Type`) by an EXACT match of the path after the root against the
-        /// index, promoting only unambiguous (singleton) matches. A non-crate-
-        /// rooted qualifier, or an absent / ambiguous target, yields no edge (the
+        /// Qualification-aware resolution (088-F) resolves ONLY a `Self::` call
+        /// (rewritten to the `Self::<EnclosingType>` marker), by an EXACT match of
+        /// `EnclosingType::callee` against the index, promoting only unambiguous
+        /// (singleton) matches. Every other qualified form is deferred (the
         /// no-false-edge invariant of findings 1 & 7).
         is_qualified: bool,
         /// For a path-qualified call (`is_qualified`), the full path prefix that
         /// precedes the final `callee` — `Type` for `Type::parse()`,
         /// `crate::util` for `crate::util::helper()`, `mem` for `mem::swap()`.
-        /// A `Self::` call is rewritten to a crate-rooted path carrying the
-        /// enclosing impl type, so `Self::foo()` in `impl Widget` carries
-        /// `Some("crate::Widget")`. `None` for bare identifier calls and for
-        /// method / receiver calls. Qualification-aware resolution (088-F)
-        /// resolves ONLY crate-internal paths (a `crate`/`self`/`super` root) by
-        /// an EXACT match of the path after the root against the index —
-        /// `crate::a::Item::foo` -> `a::Item::foo`, `crate::foo` -> bare `foo`.
-        /// There is no capitalization heuristic and no bare fallback, so a
-        /// non-crate-rooted qualifier (`Type::method()`, `module::helper()`,
-        /// `external::Type::method()`) or a name not indexed under that exact
-        /// qualified form is deferred (no edge).
+        /// A `Self::` call is rewritten to the `Self::<EnclosingType>` marker
+        /// carrying the concrete enclosing impl type, so `Self::foo()` in
+        /// `impl Widget` carries `Some("Self::Widget")`. `None` for bare
+        /// identifier calls and for method / receiver calls.
+        ///
+        /// Qualification-aware resolution (088-F) resolves ONLY the `Self::`
+        /// marker, by an EXACT match of `EnclosingType::callee` against the index
+        /// (`Self::Widget` + `foo` -> `Widget::foo`). `Self` is always the
+        /// concrete enclosing impl type, so it is immune to re-exports, imports,
+        /// and module/type ambiguity. There is no capitalization heuristic and no
+        /// bare fallback, so every other qualifier (`Type::method()`,
+        /// `crate::helper()`, `module::helper()`, `external::Type::method()`) is
+        /// deferred (no edge).
         qualifier: Option<String>,
     },
     /// A `use` declaration importing a path.

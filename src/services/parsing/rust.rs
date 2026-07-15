@@ -234,20 +234,19 @@ fn extract_calls_from_body(
             if let Some((callee, is_method, is_qualified, qualifier)) =
                 resolve_call_name(current, source)
             {
-                // Rewrite a `Self::` qualifier to a crate-rooted path carrying the
-                // concrete enclosing impl type, so `Self::build()` inside
-                // `impl Widget` routes as `crate::Widget` -> `Widget::build`
-                // (088.004-T). The rewrite anchors resolution to the enclosing
-                // type — known here from the impl — and the crate-rooted marker
-                // lets the resolver promote it against workspace-indexed
-                // `Type::method` names (singleton-only), while a bare
-                // `Widget::build()` with no enclosing anchor stays deferred. A
-                // trait impl on an external type would anchor to that external
-                // type; the singleton guard still bounds resolution to at most one
-                // workspace match. Outside an impl there is no concrete `Self`, so
-                // the qualifier is left as-is and matches no index name (no edge).
+                // Rewrite a `Self::` qualifier to the `Self::<EnclosingType>`
+                // marker carrying the concrete enclosing impl type, so
+                // `Self::build()` inside `impl Widget` becomes `Self::Widget` and
+                // the resolver matches the exact `Widget::build` index name
+                // (088.004-T). `Self::` is the ONLY qualified form that is provably
+                // workspace-owned: it is anchored to a concrete impl type indexed
+                // with this exact text, so it is immune to re-exports, imports, and
+                // module/type ambiguity. Every other qualified call is deferred by
+                // the resolver (it cannot be shown workspace-owned without
+                // scope/import analysis). Outside an impl there is no concrete
+                // `Self`, so the qualifier is left as-is and resolves to nothing.
                 let qualifier = match (qualifier, enclosing_type) {
-                    (Some(q), Some(ty)) if q == "Self" => Some(format!("crate::{ty}")),
+                    (Some(q), Some(ty)) if q == "Self" => Some(format!("Self::{ty}")),
                     (other, _) => other,
                 };
                 edges.push(ExtractedEdge::Calls {
@@ -291,10 +290,11 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
         ),
         // Path-qualified calls: `a::b()`. `callee` stays the final segment `b`,
         // and the full path prefix (`a`, `crate::util`, `mem`, …) is captured so
-        // the resolver can gate on a crate-internal root and resolve the exact
-        // qualified index name after it. Without the prefix a crate-rooted call
-        // could not be told from an external one, and promoting the bare name
-        // would risk a false singleton edge (findings 1 & 7).
+        // the resolver can recognise a `Self::` marker (the only provably
+        // workspace-owned qualified form) and defer every other prefix. Without
+        // the prefix a `Self::` call could not be told from an external one, and
+        // promoting the bare name would risk a false singleton edge (findings
+        // 1 & 7).
         "scoped_identifier" => {
             let mut cursor = function_node.walk();
             let n = function_node
@@ -331,10 +331,11 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
 /// `crate::util` for `crate::util::helper()`, `mem` for `mem::swap()`, and the
 /// root token (`crate`, `super`, `self`, `Self`) when the call is rooted there.
 ///
-/// The downstream resolver resolves only a crate-internal prefix
-/// (`crate`/`self`/`super` root, or a `Self::` rewritten to `crate::Type`) by an
-/// exact match of the path after the root against the index; any other qualifier
-/// is deferred to avoid a false edge (findings 1 & 7).
+/// Upstream, a `Self` root is rewritten to the `Self::<EnclosingType>` marker.
+/// The downstream resolver resolves ONLY that `Self::` marker (by an exact match
+/// of `EnclosingType::callee` against the index); every other qualifier — a bare
+/// or crate-rooted `Type::method`, a module path, or an external call — is
+/// deferred to avoid a false edge (findings 1 & 7).
 fn scoped_call_qualifier(scoped: Node<'_>, source: &str) -> Option<String> {
     scoped
         .child_by_field_name("path")

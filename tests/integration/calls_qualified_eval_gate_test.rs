@@ -11,28 +11,30 @@
 //!
 //! * BASELINE — bare cross-file calls only (models pre-088 behavior, where
 //!   path-qualified calls were extracted but dropped): recall = 1/2 = 0.5.
-//! * ENHANCED — the same bare calls plus a crate-root free-function call
-//!   (`crate::compute()`, the sound module route), a crate-rooted `Type::method`
-//!   call (`crate::Circle::draw()`), a `receiver.method()` call, and an EXTERNAL
-//!   `mem::swap()` call. The two in-workspace qualified calls resolve to their
-//!   correct targets; the method call and the external-module call stay deferred
-//!   (excluded from both numerator and denominator), lifting recall to
-//!   3/4 = 0.75 with ZERO false edges — and `mem::swap()` does NOT mis-resolve to
-//!   the unrelated free `swap` (asserted by identity, since the dangling-only
-//!   false_edge_rate cannot see mis-resolution to a real-but-wrong target).
+//! * ENHANCED — the same bare calls made from an impl method that also issues a
+//!   `Self::assist()` call (the only provably workspace-owned qualified form),
+//!   plus a `receiver.method()` call and a crate-root free-fn call
+//!   (`crate::do_work()`). The `Self::` call resolves to its exact
+//!   `App::assist` index name; the method call and the crate-root free-fn call
+//!   stay deferred (excluded from both numerator and denominator), lifting recall
+//!   to 2/3 with ZERO false edges — and `crate::do_work()` does NOT mis-resolve
+//!   to the unrelated free `do_work` (asserted by identity, since the
+//!   dangling-only false_edge_rate cannot see mis-resolution to a real-but-wrong
+//!   target).
 //!
-//! Module-path resolution is exact-match: a crate-root free fn (`crate::compute`)
-//! resolves by bare name, and a crate-rooted type path (`crate::Circle::draw`)
-//! resolves by its exact `Type::method` index name. A SUBMODULE free-fn call
-//! (`crate::pkg::helper()`) is not resolvable without scope/index analysis
-//! (Option C, deferred), so it defers — that boundary is guarded by
-//! `submodule_module_qualified_free_fn_defers` in `calls_qualified_resolution`.
+//! Only `Self::method()` is provably sound: `Self` is always the concrete
+//! enclosing impl type, so it rewrites to the exact `Type::method` index name and
+//! cannot collide with a re-export, an import alias, or an external same-named
+//! symbol. Every other qualified/method form (`crate::free`, bare `Type::method`,
+//! `module::free`, `receiver.method()`) can be ambiguous without scope/import
+//! analysis (Option C, deferred by 013-D), so it defers — those boundaries are
+//! guarded across `calls_qualified_resolution`.
 //!
-//! ACCEPTANCE EVIDENCE (recorded 2026-07-14):
-//!   resolution_recall  0.50 -> 0.75   (UP: +0.25, the two in-workspace qualified calls)
+//! ACCEPTANCE EVIDENCE (recorded 2026-07-15):
+//!   resolution_recall  0.50 -> 0.667  (UP: +0.167, the sound `Self::` call)
 //!   false_edge_rate    0.00 -> 0.00   (NOT down: precision preserved)
 //!   dangling edges     0    -> 0      (every resolved edge targets a real def)
-//!   identity precision: mem::swap() creates NO edge to the free `swap` (0 false edges)
+//!   identity precision: crate::do_work() creates NO edge to the free `do_work` (0 false edges)
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -117,25 +119,21 @@ const BASELINE: &[(&str, &str)] = &[
     ("src/b.rs", "pub fn helper() {}\n"),
 ];
 
-// The same bare calls plus a crate-root free-function call (`crate::compute()`),
-// a crate-rooted type-associated call (`crate::Circle::draw()`), a
-// method/receiver call (`renderer.render()`), and an EXTERNAL module call
-// (`mem::swap()`) that must NOT resolve to the unrelated free `swap`. The two
-// crate-rooted qualified calls resolve; the method and external-module calls stay
-// deferred (excluded from both numerator and denominator).
+// The same bare calls, now made from an impl method that also makes a
+// `Self::assist()` call — the only provably-workspace-owned qualified form — plus
+// a `receiver.method()` call and a crate-root free-fn call `crate::do_work()`
+// that must BOTH stay deferred. `Self::assist` resolves; the deferred calls add
+// no edge, and `crate::do_work()` does NOT mis-resolve to the unrelated free
+// `do_work`.
 const ENHANCED: &[(&str, &str)] = &[
     (
         "src/a.rs",
-        "pub fn caller() {\n    helper();\n    missing_target();\n    crate::compute();\n    \
-         crate::Circle::draw();\n    renderer.render();\n    mem::swap();\n}\n",
+        "pub struct App;\nimpl App {\n    pub fn run() {\n        helper();\n        \
+         missing_target();\n        Self::assist();\n        renderer.render();\n        \
+         crate::do_work();\n    }\n    pub fn assist() {}\n}\n",
     ),
     ("src/b.rs", "pub fn helper() {}\n"),
-    ("src/c.rs", "pub fn compute() {}\n"),
-    (
-        "src/d.rs",
-        "pub struct Circle;\nimpl Circle {\n    pub fn draw() {}\n}\n",
-    ),
-    ("src/e.rs", "pub fn swap() {}\n"),
+    ("src/c.rs", "pub fn do_work() {}\n"),
 ];
 
 // The release gate: qualified/method-aware resolution lifts call-graph recall
@@ -157,31 +155,32 @@ async fn qualified_resolution_lifts_recall_without_precision_regression() {
         baseline.resolution_recall
     );
 
-    // ENHANCED: the two qualified calls now resolve; the method call is excluded.
+    // ENHANCED: the `Self::assist()` call resolves; the method call and the
+    // crate-root free-fn call are deferred (excluded from both counts).
     assert_eq!(
-        enhanced.call_sites, 4,
-        "denominator counts the two bare + two qualified calls; the method call is excluded"
+        enhanced.call_sites, 3,
+        "denominator counts the two bare + the Self:: call; the method and crate-root free-fn defer"
     );
     assert_eq!(
-        enhanced.resolved, 3,
-        "helper + module::compute + Circle::draw resolve; missing_target and the method do not"
+        enhanced.resolved, 2,
+        "helper + Self::assist resolve; missing_target, the method, and crate::do_work do not"
     );
     assert!(
-        (enhanced.resolution_recall - 0.75).abs() < 1e-9,
-        "enhanced recall must be 3/4 = 0.75, got {}",
+        (enhanced.resolution_recall - 2.0_f64 / 3.0).abs() < 1e-9,
+        "enhanced recall must be 2/3, got {}",
         enhanced.resolution_recall
     );
 
     // RECALL UP.
     assert!(
         enhanced.resolution_recall > baseline.resolution_recall,
-        "qualified resolution must lift recall ({} !> {})",
+        "Self:: resolution must lift recall ({} !> {})",
         enhanced.resolution_recall,
         baseline.resolution_recall
     );
 
-    // PRECISION NOT DOWN: the false-edge rate must not regress, and every
-    // resolved edge must target a real definition (zero dangling).
+    // PRECISION NOT DOWN: the false-edge rate must not regress, and every resolved
+    // edge must target a real definition (zero dangling).
     assert!(
         (baseline.false_edge_rate - 0.0).abs() < 1e-9,
         "baseline false-edge rate must be 0"
@@ -193,49 +192,55 @@ async fn qualified_resolution_lifts_recall_without_precision_regression() {
     );
     assert_eq!(
         enhanced.false_edges, 0,
-        "no resolved qualified edge may dangle (all target real defs)"
+        "no resolved edge may dangle (all target real defs)"
     );
 
-    // The recovered recall is the two qualified singletons pointing at their
-    // correct targets — recall recovered by exact identity, not by name luck.
+    // The recovered recall: the `Self::assist` singleton (App::run -> App::assist)
+    // plus the bare `helper` singleton, by exact identity.
     let singletons = eq
         .list_calls_edges_by_resolution("calls_resolved_singleton")
         .await
         .expect("list singletons");
-    let caller = eq
-        .resolve_reference_target("caller")
+    let run = eq
+        .resolve_reference_target("App::run")
         .await
-        .expect("resolve caller")
-        .expect("caller indexed");
-    for target in ["helper", "compute", "Circle::draw"] {
-        let target_id = eq
-            .resolve_reference_target(target)
-            .await
-            .expect("resolve target")
-            .unwrap_or_else(|| panic!("target `{target}` indexed"));
-        assert!(
-            singletons.contains(&(caller.clone(), target_id)),
-            "recall must include the `caller -> {target}` singleton, got {singletons:?}"
-        );
-    }
-
-    // PRECISION BY IDENTITY (not just dangling): `count_dangling_calls_edges`
-    // used for `false_edge_rate` is blind to mis-resolution to a REAL but WRONG
-    // target, so it cannot by itself prove the invariant. Assert it directly: the
-    // external `mem::swap()` call must create NO edge to the unrelated free
-    // `swap`, and exactly the three expected singletons exist (no false edge).
-    let swap_id = eq
-        .resolve_reference_target("swap")
+        .expect("resolve App::run")
+        .expect("App::run indexed");
+    let assist = eq
+        .resolve_reference_target("App::assist")
         .await
-        .expect("resolve swap")
-        .expect("free `swap` indexed");
+        .expect("resolve App::assist")
+        .expect("App::assist indexed");
+    let helper = eq
+        .resolve_reference_target("helper")
+        .await
+        .expect("resolve helper")
+        .expect("helper indexed");
     assert!(
-        !singletons.iter().any(|(_, to)| to == &swap_id),
-        "no singleton may target the unrelated free `swap` (mem::swap must not mis-resolve), got {singletons:?}"
+        singletons.contains(&(run.clone(), assist)),
+        "recall must include App::run -> App::assist (Self::), got {singletons:?}"
+    );
+    assert!(
+        singletons.contains(&(run, helper)),
+        "recall must include App::run -> helper (bare), got {singletons:?}"
+    );
+
+    // PRECISION BY IDENTITY: `count_dangling_calls_edges` (the `false_edge_rate`
+    // source) is blind to mis-resolution to a REAL but WRONG target, so assert it
+    // directly — the deferred crate-root `crate::do_work()` must create NO edge to
+    // the unrelated free `do_work`, and exactly the two expected singletons exist.
+    let do_work = eq
+        .resolve_reference_target("do_work")
+        .await
+        .expect("resolve do_work")
+        .expect("free `do_work` indexed");
+    assert!(
+        !singletons.iter().any(|(_, to)| to == &do_work),
+        "no singleton may target the unrelated free `do_work` (crate::do_work must defer), got {singletons:?}"
     );
     assert_eq!(
         singletons.len(),
-        3,
-        "exactly the three expected singletons resolve — no false edge, got {singletons:?}"
+        2,
+        "exactly the two expected singletons resolve — no false edge, got {singletons:?}"
     );
 }

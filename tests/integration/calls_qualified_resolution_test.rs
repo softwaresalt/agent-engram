@@ -7,19 +7,31 @@
 //! dropped, conservatively losing recall to avoid false edges (findings 1 & 7).
 //!
 //! 088.003-T (path/module-qualified) and 088.004-T (method/Type-associated)
-//! recover that recall WITHOUT reintroducing false edges, using Option A from
-//! deliberation 013-D (qualified-name exact, singleton-only). These scenarios
-//! pin the required behavior and FAIL until those resolvers land.
+//! set out to recover that recall. Copilot review proved that only a `Self::`
+//! call is resolvable WITHOUT import/scope analysis: `Self` is always the
+//! concrete enclosing impl type, so `Self::method()` rewrites to the exact
+//! `Type::method` index name and is immune to re-exports, imports, and
+//! module/type ambiguity. Every other qualified form (`crate::free`, bare
+//! `Type::method`, `module::free`, `super::free`) and every method/receiver call
+//! can be ambiguous without that analysis (Option C, deferred by 013-D), so it
+//! DEFERS to preserve the no-false-edge invariant (findings 1 & 7). These
+//! scenarios pin both the resolving `Self::` path and every deferral boundary.
 //!
-//! Scenarios:
-//!   1. unambiguous `module::helper` cross-file  -> ONE singleton (088.003)
-//!   2. unambiguous `Type::method` cross-file    -> ONE singleton (088.004)
-//!   3. ambiguous module target (2 free defs)    -> NO edge  (precision)
-//!   4. ambiguous `Type::method` (2 impl defs)   -> NO edge  (precision)
-//!   5. `Type::parse` with only a free `parse`   -> NO edge  (the finding-1/7
-//!      guard: a type-qualified call must NOT fall back to an unrelated free
-//!      function of the same bare name)
-//!   6. method/receiver `obj.render()`           -> NO edge  (deferred / Option B)
+//! Scenarios (by function name):
+//!   crate_root_free_fn_call_defers               crate::free()  -> NO edge
+//!   crate_rooted_explicit_type_path_defers       crate::T::m()  -> NO edge
+//!   self_ambiguous_type_method_creates_no_edge   Self:: (2 defs) -> NO edge
+//!   type_qualified_does_not_fall_back_to_free_function  no free fallback
+//!   method_receiver_call_stays_deferred          obj.render()   -> NO edge
+//!   external_module_call_does_not_resolve_to_free_function  mem::swap()
+//!   super_rooted_free_fn_call_defers             super::free()  -> NO edge
+//!   nested_impl_self_call_does_not_mis_resolve_to_outer_type
+//!   bare_type_qualified_call_defers_even_with_workspace_type
+//!   qualified_call_with_local_same_name_creates_no_wrong_direct_edge
+//!   self_qualified_call_resolves_cross_file      Self::m() -> ONE singleton
+//!   self_call_on_path_qualified_impl_type_uses_full_type  full impl type text
+//!   qualified_call_does_not_overwrite_direct_edge
+//!   submodule_module_qualified_free_fn_defers    crate::pkg::free() -> NO edge
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -110,74 +122,44 @@ async fn assert_single_edge_to(q: &CodeGraphQueries, caller: &str, target: &str)
     );
 }
 
-// Scenario 1 (088.003): an unambiguous crate-root free-function call resolves to
-// exactly one singleton edge. The `crate`/`self`/`super` root proves the target
-// is in this workspace; a crate-root free function is indexed by its bare name,
-// so `crate::do_work()` resolves to the unique `do_work`. The same-named
-// ambiguity guard is Scenario 3.
+// Scenario 1 (precision): a crate-root free-function call DEFERS. `crate::` does
+// NOT prove workspace ownership — `pub use dep::do_work;` makes `crate::do_work()`
+// an external re-export, and bare `do_work` could hit an unrelated local. Sound
+// module/free-fn resolution needs import/scope analysis (Option C, deferred), so
+// the call is deferred rather than risk a false edge.
 #[test]
-async fn module_qualified_unambiguous_resolves_to_singleton() {
+async fn crate_root_free_fn_call_defers() {
     let (_tmp, q) = index_files(&[
         ("src/a.rs", "pub fn caller() {\n    crate::do_work();\n}\n"),
         ("src/b.rs", "pub fn do_work() {}\n"),
-    ])
-    .await;
-    assert_eq!(
-        singleton_count(&q).await,
-        1,
-        "crate::free_fn() with a unique target must create one singleton"
-    );
-    assert_single_edge_to(&q, "caller", "do_work").await;
-}
-
-// Scenario 2 (088.004): an unambiguous crate-rooted type-associated cross-file
-// call resolves to exactly one singleton edge whose target is the `Type::method`
-// impl method. The call's type path must match the impl's index name exactly
-// (`crate::Widget::build()` -> `Widget::build`), which the exact-match router
-// guarantees without a capitalization heuristic.
-#[test]
-async fn type_qualified_unambiguous_resolves_to_singleton() {
-    let (_tmp, q) = index_files(&[
-        (
-            "src/a.rs",
-            "pub fn caller() {\n    crate::Widget::build();\n}\n",
-        ),
-        (
-            "src/b.rs",
-            "pub struct Widget;\nimpl Widget {\n    pub fn build() {}\n}\n",
-        ),
-    ])
-    .await;
-    assert_eq!(
-        singleton_count(&q).await,
-        1,
-        "crate-rooted Type::method() with a unique impl target must create one singleton"
-    );
-    assert_single_edge_to(&q, "caller", "Widget::build").await;
-}
-
-// Scenario 3 (precision): a crate-root free-function call whose target is defined
-// twice is ambiguous and must create NO edge.
-#[test]
-async fn module_qualified_ambiguous_creates_no_edge() {
-    let (_tmp, q) = index_files(&[
-        ("src/a.rs", "pub fn caller() {\n    crate::do_work();\n}\n"),
-        ("src/b.rs", "pub fn do_work() {}\n"),
-        ("src/c.rs", "pub fn do_work() {}\n"),
     ])
     .await;
     assert_eq!(
         singleton_count(&q).await,
         0,
-        "an ambiguous free-fn target (2 defs) must not create a singleton edge"
+        "a crate-root free-fn call defers (cannot prove ownership vs a re-export)"
+    );
+    let do_work = q
+        .resolve_reference_target("do_work")
+        .await
+        .expect("resolve do_work")
+        .expect("do_work indexed");
+    let edges = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+    assert!(
+        !edges.iter().any(|(_, to)| to == &do_work),
+        "must not target the unrelated free do_work, got {edges:?}"
     );
 }
 
-// Scenario 4 (precision): a crate-rooted type-associated call whose
-// `Type::method` is defined in two impl blocks is ambiguous and must create NO
-// edge.
+// Scenario 2 (precision): a crate-rooted EXPLICIT type path DEFERS. Without scope
+// analysis the middle segment's module-vs-type identity is unknown, and the type
+// may be an import/re-export, so `crate::Widget::build()` is deferred (only a
+// `Self::` call, anchored to the concrete impl type, resolves a `Type::method`).
 #[test]
-async fn type_qualified_ambiguous_creates_no_edge() {
+async fn crate_rooted_explicit_type_path_defers() {
     let (_tmp, q) = index_files(&[
         (
             "src/a.rs",
@@ -187,13 +169,33 @@ async fn type_qualified_ambiguous_creates_no_edge() {
             "src/b.rs",
             "pub struct Widget;\nimpl Widget {\n    pub fn build() {}\n}\n",
         ),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "an explicit crate-rooted type path defers; only Self:: resolves a Type::method"
+    );
+}
+
+// Scenario 3 (precision): a `Self::` call whose `Type::method` is defined in two
+// impl blocks is ambiguous and must create NO edge — the singleton guard on the
+// only resolving path.
+#[test]
+async fn self_ambiguous_type_method_creates_no_edge() {
+    let (_tmp, q) = index_files(&[
+        (
+            "src/a.rs",
+            "pub struct Widget;\nimpl Widget {\n    pub fn run() {\n        Self::build();\n    }\n}\n",
+        ),
+        ("src/b.rs", "impl Widget {\n    pub fn build() {}\n}\n"),
         ("src/c.rs", "impl Widget {\n    pub fn build() {}\n}\n"),
     ])
     .await;
     assert_eq!(
         singleton_count(&q).await,
         0,
-        "an ambiguous Type::method (2 impl defs) must not create a singleton edge"
+        "an ambiguous Self:: target (2 impl defs of Widget::build) must not create a singleton"
     );
 }
 
@@ -253,8 +255,8 @@ async fn method_receiver_call_stays_deferred() {
 
 // Scenario 7 (THE finding-1/finding-7 guard for MODULE routing): an EXTERNAL
 // module call `mem::swap()` must NOT resolve to an unrelated workspace free
-// `swap`. Only crate-rooted (`crate`/`self`/`super`) module calls are proven
-// in-workspace; an opaque external qualifier is deferred.
+// `swap`. Module/free-fn resolution needs import/scope analysis (Option C,
+// deferred), so every module-qualified call — external OR crate-rooted — defers.
 #[test]
 async fn external_module_call_does_not_resolve_to_free_function() {
     let (_tmp, q) = index_files(&[
@@ -282,10 +284,11 @@ async fn external_module_call_does_not_resolve_to_free_function() {
     );
 }
 
-// Scenario 8 (088.003): a `super::`-rooted module call is crate-internal, so the
-// bare target is guaranteed in-workspace and a unique match resolves safely.
+// Scenario 8 (precision): a `super::`-rooted free-function call DEFERS. A crate
+// root no longer proves workspace ownership (re-exports), so `super::helper()` is
+// deferred like every non-`Self::` qualified call.
 #[test]
-async fn crate_internal_super_rooted_call_resolves() {
+async fn super_rooted_free_fn_call_defers() {
     let (_tmp, q) = index_files(&[
         ("src/a.rs", "pub fn caller() {\n    super::helper();\n}\n"),
         ("src/b.rs", "pub fn helper() {}\n"),
@@ -293,10 +296,9 @@ async fn crate_internal_super_rooted_call_resolves() {
     .await;
     assert_eq!(
         singleton_count(&q).await,
-        1,
-        "a super::-rooted call to a unique free fn must resolve"
+        0,
+        "a super::-rooted free-fn call defers (crate roots do not prove ownership)"
     );
-    assert_single_edge_to(&q, "caller", "helper").await;
 }
 
 // Scenario 9 (F2 — nested-impl Self): a `Self::` call inside an impl nested in
@@ -355,11 +357,10 @@ async fn bare_type_qualified_call_defers_even_with_workspace_type() {
 }
 
 // Scenario 11 (C2/C3 — no wrong same-file direct edge): the caller's own file
-// defines an unrelated local `do_work`, while the crate-root call targets a
-// different definition. A qualified call must NOT take the same-file bare-name
-// fast path (which would wrongly bind to the local `do_work`); it is staged for
-// global singleton resolution, and since `do_work` is now ambiguous, it yields
-// no edge.
+// defines an unrelated local `do_work`, and it also makes a `crate::do_work()`
+// call. That crate-root qualified call DEFERS (it is not `Self::`), so it must
+// neither take the same-file bare-name fast path (a wrong `direct` edge to the
+// local `do_work`) nor stage a singleton — it yields no edge at all.
 #[test]
 async fn qualified_call_with_local_same_name_creates_no_wrong_direct_edge() {
     let (_tmp, q) = index_files(&[
@@ -381,7 +382,7 @@ async fn qualified_call_with_local_same_name_creates_no_wrong_direct_edge() {
     assert_eq!(
         singleton_count(&q).await,
         0,
-        "the now-ambiguous qualified target resolves to no edge"
+        "the deferred crate-root qualified call resolves to no edge"
     );
 }
 
@@ -446,11 +447,13 @@ async fn self_call_on_path_qualified_impl_type_uses_full_type() {
     );
 }
 
-// Scenario 14 (C2 — qualified call must not overwrite a direct edge): a caller
-// that calls both `helper()` (in-file, direct) and `crate::helper()` (qualified,
-// staged) for the SAME in-file target must KEEP the edge's `direct` provenance —
-// the post-pass must not relabel it `calls_resolved_singleton` (which a later
-// rollback would then wrongly retract).
+// Scenario 14 (C2 — deferred qualified call leaves a direct edge intact): a
+// caller makes both a `helper()` in-file bare call (a `direct` edge) and a
+// `crate::helper()` call for the same target. The `crate::` call DEFERS (not
+// `Self::`), so it stages nothing and cannot relabel or retract the `direct`
+// edge — the in-file provenance is preserved. (The post-pass also keeps a
+// direct-edge guard so a future resolving qualified form can never overwrite a
+// `direct` edge either.)
 #[test]
 async fn qualified_call_does_not_overwrite_direct_edge() {
     let (_tmp, q) = index_files(&[(

@@ -480,10 +480,9 @@ async fn index_workspace_impl(
                     } => {
                         // Resolve the workspace index name this call site should
                         // match, or skip it. Bare identifier calls resolve by the
-                        // bare `callee`; a crate-internal path-qualified call
-                        // (`crate`/`self`/`super`/`Self::`) resolves by its
-                        // qualifier-derived name (088.003-T / 088.004-T); every
-                        // other qualified call and every method/receiver call stays
+                        // bare `callee`; a `Self::` call resolves by its
+                        // `EnclosingType::callee` name (088.004-T); every other
+                        // qualified call and every method/receiver call stays
                         // deferred (`None` is skipped, never mis-resolved).
                         let Some(target_name) = resolve_call_target_name(
                             callee,
@@ -494,12 +493,14 @@ async fn index_workspace_impl(
                             continue;
                         };
                         if *is_qualified {
-                            // A path-qualified call may target another file, so it
-                            // must NOT take the same-file bare-name fast path — that
-                            // would create a wrong `direct` edge to an unrelated
-                            // local of the same name. Stage it for workspace-global
-                            // singleton resolution in the deferred post-pass, which
-                            // enforces the exactly-one-definition guard.
+                            // A `Self::` call may target a method defined in another
+                            // file (impls of the same type can be split across
+                            // files), so it must NOT take the same-file bare-name
+                            // fast path — that would create a wrong `direct` edge to
+                            // an unrelated local of the same name. Stage it for
+                            // workspace-global singleton resolution in the deferred
+                            // post-pass, which enforces the exactly-one-definition
+                            // guard.
                             if let Some(from_id) = find_function_id(&function_ids, caller) {
                                 queries
                                     .put_staged_call(&from_id, &target_name, &rel_path)
@@ -1556,49 +1557,24 @@ fn sha256_short(input: &str) -> String {
 /// The workspace-global index name a path-qualified call resolves against, or
 /// `None` when it must stay deferred to preserve precision.
 ///
-/// `prefix` is the call's path prefix — every segment before the bare `callee`:
-/// `crate::util` for `crate::util::helper()`, `crate::external::Widget` for a
-/// rewritten `Self::build()` inside `impl … for external::Widget`, `Widget` for a
-/// bare `Widget::build()`, `mem` for `mem::swap()`.
+/// Only a `Self::` call resolves. Its `prefix` is the `Self::<EnclosingType>`
+/// marker set upstream, so `Self::build()` in `impl Widget` (prefix
+/// `Self::Widget`) resolves to the EXACT `Widget::build` index name. `Self::` is
+/// the only qualified form that is provably workspace-owned: it is anchored to a
+/// concrete impl type that is indexed with this exact text, so it is immune to
+/// re-exports, imports, and module/type ambiguity, and a singleton match is
+/// necessarily that method.
 ///
-/// A qualified call resolves ONLY when the path is **crate-internal** — its root
-/// segment is `crate` / `self` / `super` (a `Self::` call is rewritten to
-/// `crate::<EnclosingType>` upstream). Only then is the target provably a
-/// workspace symbol. The target is then the EXACT index name formed from the
-/// path *after* the crate root:
-///
-/// * `crate::a::b::Item::callee` -> `a::b::Item::callee` — matched exactly against
-///   the index, so it resolves an impl method (`Type::method`, indexed under the
-///   impl's literal type text — which for a `Self::` call is byte-identical) or a
-///   symbol indexed under its qualified path, and NOTHING else. A module-path
-///   free function (indexed by bare name) or a mismatched type path simply stays
-///   unresolved rather than mis-resolving.
-/// * `crate::callee` (crate-root free function) -> the bare `callee`.
-///
-/// There is NO capitalization-based type/module heuristic and NO bare-name
-/// fallback, so a same-named-but-unrelated workspace symbol can never be matched
-/// (the invariant behind findings 1 & 7; Copilot review). Every non-crate-rooted
-/// qualifier — a bare `Type::method()`, an `external::Type::method()`, or a bare
-/// `module::helper()` — is deferred (`None`). Resolution stays singleton-only in
-/// the post-pass, so an ambiguous or absent target still yields no edge.
+/// Every other qualified call — a bare or crate-rooted `Type::method()`, a
+/// module path `crate::a::helper()` (whose middle segment's module-vs-type
+/// identity is unknown), a crate-root free fn `crate::helper()` (which may be an
+/// external re-export), or an `external::Type::method()` — cannot be shown
+/// workspace-owned without import / scope analysis (Option C, deferred), so it
+/// returns `None`. Resolution stays singleton-only in the post-pass.
 fn qualified_target_name(callee: &str, prefix: &str) -> Option<String> {
-    let mut segments = prefix.split("::").map(str::trim).filter(|s| !s.is_empty());
-    let root = segments.next()?;
-    // Workspace-identity gate: only a crate-internal root proves the target lives
-    // in this workspace. Everything else defers rather than risk a false edge.
-    if !matches!(root, "crate" | "self" | "super") {
-        return None;
-    }
-    let rest: Vec<&str> = segments.collect();
-    if rest.is_empty() {
-        // Crate-root free-function call (`crate::helper()`) -> the bare name.
-        Some(callee.to_owned())
-    } else {
-        // Exact qualified index name from the path after the crate root. No
-        // capitalization heuristic and no bare fallback: a name that is not
-        // indexed under this exact qualified form simply stays unresolved.
-        Some(format!("{}::{}", rest.join("::"), callee))
-    }
+    prefix
+        .strip_prefix("Self::")
+        .map(|enclosing_type| format!("{enclosing_type}::{callee}"))
 }
 
 /// Resolve the workspace-global index name a call site should be matched
@@ -1608,7 +1584,8 @@ fn qualified_target_name(callee: &str, prefix: &str) -> Option<String> {
 ///
 /// * bare identifier call  -> the bare `callee`;
 /// * path-qualified call   -> [`qualified_target_name`] of the path `qualifier`
-///   (`None` for an external / opaque module qualifier, deferred);
+///   (`Some` only for the `Self::` marker; `None` for every other qualifier,
+///   deferred);
 /// * method/receiver call  -> `None` (needs receiver-type inference, 013-D
 ///   Option B, deferred).
 pub(crate) fn resolve_call_target_name(

@@ -151,43 +151,51 @@ fn baz() {}
 // ── 088-F: qualified-call denominator identity + deferral exclusion ────────────
 
 #[test]
-fn count_call_sites_distinguishes_qualified_paths_with_same_final_name() {
-    // Two crate-rooted qualified calls with the same final segment but different
-    // paths resolve to DISTINCT exact target names (`a::helper` vs `b::helper`),
-    // so they are distinct denominator relations — they are not collapsed into one
-    // entry (which, since neither is indexed under that exact name, would shrink
-    // the denominator and inflate resolution_recall).
+fn count_call_sites_counts_self_qualified_calls() {
+    // A `Self::assist()` call inside an impl is the one provably workspace-owned
+    // qualified form (it rewrites to the exact `App::assist` index name), so it
+    // counts in the denominator alongside a bare free call.
     let source = r"
-fn foo() {
-    crate::a::helper();
-    crate::b::helper();
+struct App;
+impl App {
+    fn run() {
+        Self::assist();
+        bare();
+    }
+    fn assist() {}
 }
 ";
     assert_eq!(
         count_call_sites(source, Language::Rust),
         2,
-        "crate::a::helper and crate::b::helper are two distinct qualified call sites"
+        "Self::assist and the bare call are both attempted denominator sites"
     );
 }
 
 #[test]
 fn count_call_sites_excludes_deferred_qualified_calls() {
-    // Only calls the indexer attempts to resolve count. A bare (non-crate-rooted)
-    // `Widget::build()` and an external `mem::swap()` are deferred (they cannot be
-    // shown to reference a workspace symbol), so they must NOT inflate the
-    // denominator; the crate-rooted call and the bare free call do.
+    // Only calls the indexer attempts to resolve count. Every non-`Self::`
+    // qualified form defers (a crate-root free fn, a bare `Type::method`, an
+    // external module call) and the method call defers, so none inflate the
+    // denominator; only the `Self::` call and the bare free call do.
     let source = r"
-fn foo() {
-    Widget::build();
-    mem::swap();
-    crate::helper();
-    bare();
+struct App;
+impl App {
+    fn run() {
+        Widget::build();
+        mem::swap();
+        crate::helper();
+        obj.render();
+        Self::assist();
+        bare();
+    }
+    fn assist() {}
 }
 ";
     assert_eq!(
         count_call_sites(source, Language::Rust),
         2,
-        "only crate::helper and bare are attempted; Widget::build and mem::swap defer"
+        "only Self::assist and bare are attempted; Widget::build, mem::swap, crate::helper, and the method call defer"
     );
 }
 
