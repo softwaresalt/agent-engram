@@ -11,16 +11,20 @@
 //!
 //! * BASELINE — bare cross-file calls only (models pre-088 behavior, where
 //!   path-qualified calls were extracted but dropped): recall = 1/2 = 0.5.
-//! * ENHANCED — the same bare calls plus a `module::helper` call, a
-//!   `Type::method` call, and a `receiver.method()` call: the two qualified
-//!   calls now resolve to their correct targets, the method call stays deferred
+//! * ENHANCED — the same bare calls plus a crate-rooted `crate::shapes::compute`
+//!   call, a `Type::method` call, a `receiver.method()` call, and an EXTERNAL
+//!   `mem::swap()` call. The two in-workspace qualified calls resolve to their
+//!   correct targets; the method call and the external-module call stay deferred
 //!   (excluded from both numerator and denominator), lifting recall to
-//!   3/4 = 0.75 with ZERO false edges.
+//!   3/4 = 0.75 with ZERO false edges — and `mem::swap()` does NOT mis-resolve to
+//!   the unrelated free `swap` (asserted by identity, since the dangling-only
+//!   false_edge_rate cannot see mis-resolution to a real-but-wrong target).
 //!
 //! ACCEPTANCE EVIDENCE (recorded 2026-07-14):
-//!   resolution_recall  0.50 -> 0.75   (UP: +0.25, the two qualified calls)
+//!   resolution_recall  0.50 -> 0.75   (UP: +0.25, the two in-workspace qualified calls)
 //!   false_edge_rate    0.00 -> 0.00   (NOT down: precision preserved)
 //!   dangling edges     0    -> 0      (every resolved edge targets a real def)
+//!   identity precision: mem::swap() creates NO edge to the free `swap` (0 false edges)
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -105,15 +109,17 @@ const BASELINE: &[(&str, &str)] = &[
     ("src/b.rs", "pub fn helper() {}\n"),
 ];
 
-// The same bare calls plus a module-qualified call (`shapes::compute`), a
-// type-associated call (`Circle::draw`), and a method/receiver call
-// (`renderer.render()`). The two qualified calls resolve; the method call stays
-// deferred and is excluded from both the numerator and the denominator.
+// The same bare calls plus a crate-rooted module call (`crate::shapes::compute`),
+// a type-associated call (`Circle::draw`), a method/receiver call
+// (`renderer.render()`), and an EXTERNAL module call (`mem::swap()`) that must
+// NOT resolve to the unrelated free `swap`. The two in-workspace qualified calls
+// resolve; the method and external-module calls stay deferred (excluded from
+// both numerator and denominator).
 const ENHANCED: &[(&str, &str)] = &[
     (
         "src/a.rs",
-        "pub fn caller() {\n    helper();\n    missing_target();\n    shapes::compute();\n    \
-         Circle::draw();\n    renderer.render();\n}\n",
+        "pub fn caller() {\n    helper();\n    missing_target();\n    crate::shapes::compute();\n    \
+         Circle::draw();\n    renderer.render();\n    mem::swap();\n}\n",
     ),
     ("src/b.rs", "pub fn helper() {}\n"),
     ("src/c.rs", "pub fn compute() {}\n"),
@@ -121,6 +127,7 @@ const ENHANCED: &[(&str, &str)] = &[
         "src/d.rs",
         "pub struct Circle;\nimpl Circle {\n    pub fn draw() {}\n}\n",
     ),
+    ("src/e.rs", "pub fn swap() {}\n"),
 ];
 
 // The release gate: qualified/method-aware resolution lifts call-graph recall
@@ -203,4 +210,24 @@ async fn qualified_resolution_lifts_recall_without_precision_regression() {
             "recall must include the `caller -> {target}` singleton, got {singletons:?}"
         );
     }
+
+    // PRECISION BY IDENTITY (not just dangling): `count_dangling_calls_edges`
+    // used for `false_edge_rate` is blind to mis-resolution to a REAL but WRONG
+    // target, so it cannot by itself prove the invariant. Assert it directly: the
+    // external `mem::swap()` call must create NO edge to the unrelated free
+    // `swap`, and exactly the three expected singletons exist (no false edge).
+    let swap_id = eq
+        .resolve_reference_target("swap")
+        .await
+        .expect("resolve swap")
+        .expect("free `swap` indexed");
+    assert!(
+        !singletons.iter().any(|(_, to)| to == &swap_id),
+        "no singleton may target the unrelated free `swap` (mem::swap must not mis-resolve), got {singletons:?}"
+    );
+    assert_eq!(
+        singletons.len(),
+        3,
+        "exactly the three expected singletons resolve — no false edge, got {singletons:?}"
+    );
 }

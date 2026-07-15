@@ -168,7 +168,10 @@ pub struct ReresolveResult {
 pub struct StagedCall {
     /// Fully-qualified ID of the calling function (e.g. `function:...`).
     pub caller_id: String,
-    /// Bare name of the called function as it appears at the call site.
+    /// Resolver-normalized index name of the call target: the bare callee for a
+    /// plain or crate-rooted-module call, or the `Type::method` impl-method name
+    /// for a type-associated call (088-F). The deferred post-pass resolves this
+    /// against the workspace-global symbol index, singleton-only.
     pub callee_name: String,
     /// Workspace-relative path of the file the call site lives in.
     pub source_file: String,

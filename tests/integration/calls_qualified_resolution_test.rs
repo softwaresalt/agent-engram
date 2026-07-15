@@ -110,14 +110,16 @@ async fn assert_single_edge_to(q: &CodeGraphQueries, caller: &str, target: &str)
     );
 }
 
-// Scenario 1 (088.003): an unambiguous module-qualified cross-file call resolves
-// to exactly one singleton edge whose target is the bare free function.
+// Scenario 1 (088.003): an unambiguous crate-rooted module call resolves to
+// exactly one singleton edge whose target is the bare free function. Crate-rooted
+// (`crate::`/`self`/`super`) proves the target is in this workspace, so a
+// singleton match is the target.
 #[test]
 async fn module_qualified_unambiguous_resolves_to_singleton() {
     let (_tmp, q) = index_files(&[
         (
             "src/a.rs",
-            "pub fn caller() {\n    helpers::do_work();\n}\n",
+            "pub fn caller() {\n    crate::helpers::do_work();\n}\n",
         ),
         ("src/b.rs", "pub fn do_work() {}\n"),
     ])
@@ -125,7 +127,7 @@ async fn module_qualified_unambiguous_resolves_to_singleton() {
     assert_eq!(
         singleton_count(&q).await,
         1,
-        "module::helper() with a unique free target must create one singleton"
+        "crate::module::helper() with a unique free target must create one singleton"
     );
     assert_single_edge_to(&q, "caller", "do_work").await;
 }
@@ -150,14 +152,14 @@ async fn type_qualified_unambiguous_resolves_to_singleton() {
     assert_single_edge_to(&q, "caller", "Widget::build").await;
 }
 
-// Scenario 3 (precision): a module-qualified call whose bare target is defined
+// Scenario 3 (precision): a crate-rooted module call whose bare target is defined
 // twice is ambiguous and must create NO edge.
 #[test]
 async fn module_qualified_ambiguous_creates_no_edge() {
     let (_tmp, q) = index_files(&[
         (
             "src/a.rs",
-            "pub fn caller() {\n    helpers::do_work();\n}\n",
+            "pub fn caller() {\n    crate::helpers::do_work();\n}\n",
         ),
         ("src/b.rs", "pub fn do_work() {}\n"),
         ("src/c.rs", "pub fn do_work() {}\n"),
@@ -239,4 +241,85 @@ async fn method_receiver_call_stays_deferred() {
         0,
         "a value-receiver method call must stay deferred (no false edge)"
     );
+}
+
+// Scenario 7 (THE finding-1/finding-7 guard for MODULE routing): an EXTERNAL
+// module call `mem::swap()` must NOT resolve to an unrelated workspace free
+// `swap`. Only crate-rooted (`crate`/`self`/`super`) module calls are proven
+// in-workspace; an opaque external qualifier is deferred.
+#[test]
+async fn external_module_call_does_not_resolve_to_free_function() {
+    let (_tmp, q) = index_files(&[
+        ("src/a.rs", "pub fn caller() {\n    mem::swap();\n}\n"),
+        ("src/b.rs", "pub fn swap() {}\n"),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "an external module call must not resolve to an unrelated free fn of the same bare name"
+    );
+    let swap_id = q
+        .resolve_reference_target("swap")
+        .await
+        .expect("resolve swap")
+        .expect("free `swap` is indexed");
+    let edges = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+    assert!(
+        !edges.iter().any(|(_, to)| to == &swap_id),
+        "no singleton edge may target the unrelated free `swap`, got {edges:?}"
+    );
+}
+
+// Scenario 8 (088.003): a `super::`-rooted module call is crate-internal, so the
+// bare target is guaranteed in-workspace and a unique match resolves safely.
+#[test]
+async fn crate_internal_super_rooted_call_resolves() {
+    let (_tmp, q) = index_files(&[
+        ("src/a.rs", "pub fn caller() {\n    super::helper();\n}\n"),
+        ("src/b.rs", "pub fn helper() {}\n"),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        1,
+        "a super::-rooted call to a unique free fn must resolve"
+    );
+    assert_single_edge_to(&q, "caller", "helper").await;
+}
+
+// Scenario 9 (F2 — nested-impl Self): a `Self::` call inside an impl nested in
+// another impl's method must NOT be rewritten to the OUTER enclosing type. The
+// nested impl is skipped by the call walk, so no edge (direct or singleton) is
+// created from the outer method to the outer type's same-named method.
+#[test]
+async fn nested_impl_self_call_does_not_mis_resolve_to_outer_type() {
+    let (_tmp, q) = index_files(&[(
+        "src/a.rs",
+        "pub struct Outer;\nimpl Outer {\n    pub fn run() {\n        struct Inner;\n        impl Inner {\n            fn go() {\n                Self::helper();\n            }\n            fn helper() {}\n        }\n    }\n    pub fn helper() {}\n}\n",
+    )])
+    .await;
+    let run_id = q
+        .resolve_reference_target("Outer::run")
+        .await
+        .expect("resolve Outer::run")
+        .expect("Outer::run indexed");
+    let outer_helper_id = q
+        .resolve_reference_target("Outer::helper")
+        .await
+        .expect("resolve Outer::helper")
+        .expect("Outer::helper indexed");
+    for resolution in ["direct", "calls_resolved_singleton"] {
+        let edges = q
+            .list_calls_edges_by_resolution(resolution)
+            .await
+            .expect("list edges");
+        assert!(
+            !edges.contains(&(run_id.clone(), outer_helper_id.clone())),
+            "nested impl Self::helper() must not create an Outer::run -> Outer::helper {resolution} edge, got {edges:?}"
+        );
+    }
 }

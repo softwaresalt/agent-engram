@@ -209,15 +209,16 @@ pub enum ExtractedEdge {
         /// (singleton) matches, so an ambiguous or absent target still yields no
         /// edge (the no-false-edge invariant of findings 1 & 7).
         is_qualified: bool,
-        /// For a path-qualified call (`is_qualified`), the immediate qualifier
-        /// segment that precedes the final `callee` — `Type` for `Type::parse()`,
-        /// `util` for `crate::util::helper()`. `Self` is rewritten to the
-        /// enclosing impl type during extraction, so `Self::foo()` in `impl Foo`
-        /// carries `Some("Foo")`. `None` for bare identifier calls and for
-        /// method / receiver calls. Qualification-aware resolution (088-F) uses
-        /// this to distinguish a type-associated target (matched against the
-        /// `Type::method` impl-method index name) from a module-path target
-        /// (matched against the bare free-function index name).
+        /// For a path-qualified call (`is_qualified`), the full path prefix that
+        /// precedes the final `callee` — `Type` for `Type::parse()`,
+        /// `crate::util` for `crate::util::helper()`, `mem` for `mem::swap()`.
+        /// `Self` is rewritten to the enclosing impl type during extraction, so
+        /// `Self::foo()` in `impl Foo` carries `Some("Foo")`. `None` for bare
+        /// identifier calls and for method / receiver calls. Qualification-aware
+        /// resolution (088-F) splits this prefix to route a type-associated
+        /// target (UpperCamelCase immediate segment -> `Type::method` index name)
+        /// apart from an in-workspace crate-rooted module target (bare
+        /// free-function name), deferring any other (external) module qualifier.
         qualifier: Option<String>,
     },
     /// A `use` declaration importing a path.

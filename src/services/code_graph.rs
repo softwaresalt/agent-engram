@@ -1531,39 +1531,48 @@ fn sha256_short(input: &str) -> String {
     sha256_hex(input)[..16].to_owned()
 }
 
-/// Find a function ID by name.
-/// True when a path qualifier names a Rust *type* (UpperCamelCase, or the
-/// `Self` alias) rather than a *module* path segment (snake_case, `crate`,
-/// `super`, `self`). A qualified call `A::b()` is syntactically ambiguous
-/// between a type-associated call and a module-path call, so the Rust naming
-/// convention routes resolution without a type-checker: a type-associated
-/// target is matched against the `Type::method` impl-method index name
-/// (088.004-T); a module-path target is matched against the bare free-function
-/// index name (088.003-T). Primitive-typed associated calls (`u32::from_str`)
-/// are lower-case and route as modules — their bare name has no free-function
-/// definition, so they simply stay unresolved rather than mis-resolving.
-fn qualifier_is_type(qualifier: &str) -> bool {
-    qualifier.chars().next().is_some_and(char::is_uppercase)
+/// True when a path segment names a Rust *type* — UpperCamelCase, or the `Self`
+/// alias before it is rewritten to the enclosing type. Used to route a
+/// type-associated call (`Type::method`) apart from a module-path call without a
+/// type-checker.
+fn segment_is_type(segment: &str) -> bool {
+    segment.chars().next().is_some_and(char::is_uppercase)
 }
 
-/// The workspace-global index name a path-qualified call should be matched
-/// against.
+/// The workspace-global index name a path-qualified call resolves against, or
+/// `None` when it must stay deferred to preserve precision.
 ///
-/// * module-path qualifier (`module::helper`) -> the bare free-function name
-///   `helper` (module paths are not part of a function's index name), 088.003-T;
-/// * type qualifier (`Type::method`) -> the `Type::method` impl-method index
-///   name, 088.004-T.
+/// `prefix` is the call's path prefix — every segment before the bare `callee`:
+/// `Type` for `Type::parse()`, `crate::util` for `crate::util::helper()`, `mem`
+/// for `mem::swap()`.
+///
+/// * type-associated call — the immediate (last) prefix segment is
+///   UpperCamelCase: resolve the `Type::method` impl-method index name
+///   (088.004-T). Precision-safe: that name exists only for a workspace impl
+///   method, so an external type finds no match rather than a false one.
+/// * in-workspace module call — the prefix root is `crate` / `self` / `super`:
+///   resolve the bare free-function name (088.003-T). Precision-safe: the root
+///   proves the target lives in THIS workspace, so a singleton (exactly-one)
+///   match is that target.
+/// * external / opaque module call — any other qualifier (`mem::swap`,
+///   `tokio::spawn`, `helpers::do_work`): DEFERRED (`None`). Its bare name could
+///   collide with an unrelated workspace free function of the same name — a
+///   false edge, which the invariant behind findings 1 & 7 forbids.
 ///
 /// Resolution stays singleton-only in the post-pass, so an ambiguous or absent
-/// target yields no edge either way — the no-false-edge invariant of findings
-/// 1 & 7 is preserved.
-fn qualified_target_name(callee: &str, qualifier: &str) -> String {
-    if qualifier_is_type(qualifier) {
-        // A type qualifier -> the `Type::method` impl-method index name.
-        format!("{qualifier}::{callee}")
+/// target still yields no edge.
+fn qualified_target_name(callee: &str, prefix: &str) -> Option<String> {
+    let root = prefix.split("::").map(str::trim).find(|s| !s.is_empty())?;
+    let immediate = prefix.rsplit("::").map(str::trim).find(|s| !s.is_empty())?;
+    if segment_is_type(immediate) {
+        // Type-associated -> the `Type::method` impl-method index name.
+        Some(format!("{immediate}::{callee}"))
+    } else if matches!(root, "crate" | "self" | "super") {
+        // Crate-internal module -> the bare free-function index name.
+        Some(callee.to_owned())
     } else {
-        // A module-path qualifier -> the bare free-function index name.
-        callee.to_owned()
+        // External / opaque module qualifier -> defer (no false edge).
+        None
     }
 }
 
@@ -1573,8 +1582,8 @@ fn qualified_target_name(callee: &str, qualifier: &str) -> String {
 /// call-site denominator so the two stay commensurable.
 ///
 /// * bare identifier call  -> the bare `callee`;
-/// * path-qualified call   -> [`qualified_target_name`] of the immediate
-///   `qualifier`;
+/// * path-qualified call   -> [`qualified_target_name`] of the path `qualifier`
+///   (`None` for an external / opaque module qualifier, deferred);
 /// * method/receiver call  -> `None` (needs receiver-type inference, 013-D
 ///   Option B, deferred).
 pub(crate) fn resolve_call_target_name(
@@ -1586,12 +1595,13 @@ pub(crate) fn resolve_call_target_name(
     if is_method {
         None
     } else if is_qualified {
-        qualifier.map(|q| qualified_target_name(callee, q))
+        qualifier.and_then(|prefix| qualified_target_name(callee, prefix))
     } else {
         Some(callee.to_owned())
     }
 }
 
+/// Find a function ID by name.
 fn find_function_id(ids: &[(String, String)], name: &str) -> Option<String> {
     ids.iter()
         .find(|(n, _)| n == name)

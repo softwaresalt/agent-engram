@@ -254,7 +254,13 @@ fn extract_calls_from_body(
         }
         let mut cursor = current.walk();
         for child in current.children(&mut cursor) {
-            stack.push(child);
+            // Do not descend into a nested `impl`/`trait`: it introduces a
+            // different `Self` and its methods are their own scopes. Descending
+            // would misattribute their calls — and rewrite their `Self::`
+            // qualifier to this caller's enclosing type — a false-edge vector.
+            if !matches!(child.kind(), "impl_item" | "trait_item") {
+                stack.push(child);
+            }
         }
     }
 }
@@ -277,12 +283,14 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
             None,
         ),
         // Path-qualified calls: `a::b()`. `callee` stays the final segment `b`,
-        // but the immediate qualifier `a` is captured so the resolver can route
-        // a module path (`crate::util::helper`, matched by the bare free-function
-        // index name) apart from a type-associated call (`Type::parse`, matched
-        // by the `Type::parse` impl-method index name). Without the qualifier the
-        // two are indistinguishable and promoting the bare name would risk a
-        // false singleton edge (findings 1 & 7).
+        // and the full path prefix (`a`, `crate::util`, `mem`, …) is captured so
+        // the resolver can route a type-associated call (`Type::method`, matched
+        // by the `Type::method` impl-method index name) apart from an
+        // in-workspace crate-rooted module call (matched by the bare
+        // free-function name) apart from an external/opaque module call
+        // (deferred). Without the prefix these are indistinguishable and
+        // promoting the bare name would risk a false singleton edge (findings 1 &
+        // 7).
         "scoped_identifier" => {
             let mut cursor = function_node.walk();
             let n = function_node
@@ -314,22 +322,20 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
         .map(|n| (n, is_method, is_qualified, qualifier))
 }
 
-/// Extract the immediate qualifier segment of a `scoped_identifier` call target
-/// — the segment directly preceding the final callee. Yields `Type` for
-/// `Type::parse()`, `util` for `crate::util::helper()`, and the root token
-/// (`crate`, `super`, `self`, `Self`) when the call is rooted there.
+/// Extract the full path prefix of a `scoped_identifier` call target — every
+/// segment preceding the final callee. Yields `Type` for `Type::parse()`,
+/// `crate::util` for `crate::util::helper()`, `mem` for `mem::swap()`, and the
+/// root token (`crate`, `super`, `self`, `Self`) when the call is rooted there.
 ///
-/// The Rust naming convention (UpperCamelCase type vs snake_case module) lets
-/// the downstream resolver route a type-associated target apart from a
-/// module-path target without a type-checker.
+/// The downstream resolver splits this prefix to route safely without a
+/// type-checker: an UpperCamelCase immediate segment is a type (resolve
+/// `Type::method`), a `crate`/`self`/`super` root is an in-workspace module
+/// (resolve the bare free-function name), and any other (external / opaque)
+/// module qualifier is deferred to avoid a false edge (findings 1 & 7).
 fn scoped_call_qualifier(scoped: Node<'_>, source: &str) -> Option<String> {
-    let path = scoped.child_by_field_name("path")?;
-    let segment = if path.kind() == "scoped_identifier" {
-        path.child_by_field_name("name").unwrap_or(path)
-    } else {
-        path
-    };
-    Some(super::node_text(segment, source))
+    scoped
+        .child_by_field_name("path")
+        .map(|path| super::node_text(path, source))
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> String {

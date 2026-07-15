@@ -76,10 +76,12 @@ fn caller() {
     );
 }
 
-// For a multi-segment path `crate::util::helper()` the *immediate* qualifier is
-// the segment directly before the callee (`util`), not the crate root.
+// For a multi-segment path `crate::util::helper()` the qualifier is the FULL
+// path prefix (`crate::util`), not just the immediate segment — the resolver
+// needs the root (`crate`) to gate the in-workspace module route and the
+// immediate segment (`util`) to detect a type qualifier.
 #[test]
-fn multi_segment_path_uses_immediate_qualifier() {
+fn multi_segment_path_captures_full_prefix() {
     let source = r#"
 fn caller() {
     crate::util::helper();
@@ -89,8 +91,8 @@ fn caller() {
     assert!(
         found
             .iter()
-            .any(|(c, _, q, qual)| c == "helper" && *q && qual.as_deref() == Some("util")),
-        "crate::util::helper() must carry the immediate qualifier Some(\"util\"), got {found:?}"
+            .any(|(c, _, q, qual)| c == "helper" && *q && qual.as_deref() == Some("crate::util")),
+        "crate::util::helper() must carry the full prefix Some(\"crate::util\"), got {found:?}"
     );
 }
 
