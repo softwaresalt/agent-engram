@@ -168,12 +168,21 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             std::thread::sleep(Duration::from_millis(50));
         };
         // Bounded reopen-retry (086.002-T): the serialisation lock above prevents
-        // the concurrent-open panic, but a rapid sequential reopen can still see a
+        // the CONCURRENT-open panic, but a rapid SEQUENTIAL reopen can still hit a
         // transient `database is locked` (SQLITE_BUSY) when the OS releases a
-        // just-closed handle's lock lazily (Windows lag). Retry that transient with
-        // capped exponential back-off + jitter, giving up with a clear error.
+        // just-closed handle's lock lazily (Windows lag). cozo 0.7.x `unwrap()`s
+        // internally, so that transient surfaces as a PANIC, not an Err (U015-FLK1;
+        // docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md).
+        // `catch_busy_panic` converts that busy panic into a retryable error so the
+        // bounded back-off (+jitter) can absorb it; non-busy panics are re-raised.
+        // Interim SQLITE_BUSY mitigation — durable fix tracked as 041.002-T
+        // (removable once cozo >= 0.8 handles SQLITE_BUSY gracefully).
         let db = open_db_with_retry(
-            || cozo::DbInstance::new("sqlite", &db_path_str, Default::default()),
+            || {
+                catch_busy_panic(|| {
+                    cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
+                })
+            },
             |attempt| std::thread::sleep(reopen_backoff(attempt)),
         )?;
         let cozo_db = CozoDb {
@@ -283,7 +292,51 @@ where
             }
         }
     }
-    unreachable!("loop returns on the final attempt")
+    // The final attempt always returns via the match above, so this is provably
+    // unreachable; surface an error rather than panic to keep the fn total (F3).
+    Err(map_db_err(
+        "cannot open CozoDB SQLite store: reopen retry budget exhausted",
+    ))
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        String::new()
+    }
+}
+
+/// Run a CozoDB open, converting a transient `SQLITE_BUSY` PANIC into a
+/// retryable `Err` so the bounded reopen-retry can absorb it.
+///
+/// cozo 0.7.x calls `unwrap()` internally on the SQLite open (U015-FLK1), so a
+/// transient "database is locked" at a rapid sequential reopen surfaces as a
+/// PANIC, not an `Err` (see
+/// `docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md`).
+/// This catches that panic and, when its message is a transient busy/lock,
+/// returns `Err(message)`. Any OTHER panic is re-raised unchanged so a genuine
+/// bug still propagates (ultimately contained by the caller's `spawn_blocking`).
+fn catch_busy_panic<T, E, F>(open: F) -> Result<T, String>
+where
+    E: std::fmt::Display,
+    F: FnOnce() -> Result<T, E>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(open)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(payload) => {
+            let message = panic_payload_message(payload.as_ref());
+            if is_retryable_open_error(&message) {
+                Err(message)
+            } else {
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -299,8 +352,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_REOPEN_ATTEMPTS, is_retryable_open_error, open_db_with_retry, open_retry_jitter,
-        reopen_backoff,
+        MAX_REOPEN_ATTEMPTS, catch_busy_panic, is_retryable_open_error, open_db_with_retry,
+        open_retry_jitter, reopen_backoff,
     };
     use super::{connect_db, connect_db_open_lock};
     use crate::errors::EngramError;
@@ -498,6 +551,44 @@ mod tests {
         );
         assert!(result.is_err(), "a fatal open error must surface");
         assert_eq!(attempts, 1, "a non-retryable error must not retry");
+    }
+
+    // cozo 0.7.x unwraps internally on a transient reopen busy: the "database is
+    // locked" surfaces as a PANIC. catch_busy_panic must convert it to a
+    // retryable Err so the reopen-retry can absorb it (086.002-T F2).
+    #[test]
+    fn catch_busy_panic_converts_busy_panic_to_retryable_err() {
+        let result: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!(
+                "{}",
+                "called `Result::unwrap()` on an `Err` value: \
+                 SqliteFailure(DatabaseBusy, Some(\"database is locked\"))"
+            );
+        });
+        let message = result.expect_err("a busy panic must become an Err");
+        assert!(
+            is_retryable_open_error(&message),
+            "the converted error must classify as a retryable busy: {message}"
+        );
+    }
+
+    // Ok and non-panic Err values pass through catch_busy_panic unchanged.
+    #[test]
+    fn catch_busy_panic_passes_through_results() {
+        let ok: Result<u32, String> = catch_busy_panic(|| Ok::<u32, String>(9));
+        assert_eq!(ok.expect("Ok must pass through"), 9);
+        let err: Result<u32, String> =
+            catch_busy_panic(|| Err::<u32, String>("disk full".to_owned()));
+        assert!(err.is_err(), "a non-panic Err must pass through");
+    }
+
+    // A NON-busy panic must be re-raised unchanged, never swallowed.
+    #[test]
+    #[should_panic(expected = "unrelated invariant")]
+    fn catch_busy_panic_reraises_non_busy_panic() {
+        let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!("{}", "unrelated invariant violated");
+        });
     }
 
     /// Verify the in-process mutex serializes same-path open attempts.

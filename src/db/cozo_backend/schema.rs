@@ -88,7 +88,7 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     ];
 
     for script in &scripts {
-        run_script_retrying(cozo_db, script, "schema bootstrap")?;
+        run_script_retrying(cozo_db, script, "schema bootstrap", true)?;
     }
 
     // 082.003-T: upgrade pre-existing `calls_edge` relations that predate the
@@ -131,17 +131,19 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
 /// ("database is locked").
 ///
 /// Delegates to [`retry_cozo_script`]. `context` labels any surfaced error
-/// (e.g. `"schema bootstrap"`, `"calls_edge resolution migration"`). Schema
-/// scripts routed here are idempotent (`:create` is a no-op when the relation
-/// already exists; the `:replace` migrate/rollback rewrites are guarded by a
-/// shape/marker pre-check), so retrying is always safe.
+/// (e.g. `"schema bootstrap"`, `"calls_edge resolution migration"`).
+/// `allow_already_exists` MUST be `true` only for idempotent `:create` scripts;
+/// `:replace` migrate/rollback rewrites pass `false` so a genuine failure is
+/// never masked as success (086.001-T F1).
 fn run_script_retrying(
     cozo_db: &cozo::DbInstance,
     script: &str,
     context: &str,
+    allow_already_exists: bool,
 ) -> Result<(), EngramError> {
     retry_cozo_script(
         context,
+        allow_already_exists,
         || {
             cozo_db
                 .run_script(script, BTreeMap::new(), cozo::ScriptMutability::Mutable)
@@ -195,19 +197,26 @@ fn classify_script_error(message: &str) -> ScriptOutcome {
 
 /// Capped exponential back-off for busy retry `attempt` (25 ms → 500 ms cap).
 ///
-/// 25 ms doubling through attempt 5 (25+50+100+200+400) then a 500 ms cap gives
-/// ≈ 7.8 s of total retry headroom over [`MAX_SCRIPT_ATTEMPTS`], more than enough
-/// for a concurrent writer to release its write transaction.
+/// 25 ms doubling through attempt 4 (25+50+100+200+400), then a 500 ms cap from
+/// attempt 5, gives ≈ 7.8 s of total retry headroom over [`MAX_SCRIPT_ATTEMPTS`],
+/// more than enough for a concurrent writer to release its write transaction.
 fn busy_backoff(attempt: u32) -> Duration {
     Duration::from_millis(std::cmp::min(25u64 << attempt.min(5), 500))
 }
 
 /// Bounded-retry driver: run `run`, retrying a transient busy (invoking `sleep`
-/// with the attempt index between tries) and treating "already exists" as
-/// success. Any other error is surfaced immediately as an [`EngramError`]
-/// labelled with `context`. On the final attempt a persistent busy surfaces as
-/// that same error rather than looping unbounded — never a panic.
-fn retry_cozo_script<E, F, S>(context: &str, mut run: F, mut sleep: S) -> Result<(), EngramError>
+/// with the attempt index between tries). `allow_already_exists` controls whether
+/// an "already exists" outcome is treated as benign success — TRUE for idempotent
+/// `:create` bootstrap, FALSE for `:replace` migrate/rollback rewrites where such
+/// a message would indicate a genuine failure that must NOT be masked (086.001-T
+/// F1). Any non-retryable error is surfaced immediately as an [`EngramError`]
+/// labelled with `context`; an exhausted budget surfaces an error, never a panic.
+fn retry_cozo_script<E, F, S>(
+    context: &str,
+    allow_already_exists: bool,
+    mut run: F,
+    mut sleep: S,
+) -> Result<(), EngramError>
 where
     E: std::fmt::Display,
     F: FnMut() -> Result<(), E>,
@@ -217,15 +226,17 @@ where
         match run() {
             Ok(()) => return Ok(()),
             Err(e) => match classify_script_error(&e.to_string()) {
-                ScriptOutcome::AlreadyExists => return Ok(()),
-                ScriptOutcome::Busy if attempt + 1 < MAX_SCRIPT_ATTEMPTS => {
-                    sleep(attempt);
-                }
+                ScriptOutcome::AlreadyExists if allow_already_exists => return Ok(()),
+                ScriptOutcome::Busy if attempt + 1 < MAX_SCRIPT_ATTEMPTS => sleep(attempt),
                 _ => return Err(map_db_err(format!("{context}: {e}"))),
             },
         }
     }
-    unreachable!("loop returns on the final attempt")
+    // The final attempt always returns via the match above, so this is provably
+    // unreachable; surface an error rather than panic to keep the fn total (F3).
+    Err(map_db_err(format!(
+        "{context}: retry budget exhausted after {MAX_SCRIPT_ATTEMPTS} attempts"
+    )))
 }
 
 /// Durable `schema_meta` key recording that the 082.003-T `calls_edge.resolution`
@@ -281,7 +292,7 @@ fn schema_meta_flag_set(cozo_db: &cozo::DbInstance, key: &str) -> Result<bool, E
 /// # Errors
 /// Returns [`EngramError`] when the relation create or upsert fails.
 fn set_schema_meta_flag(cozo_db: &cozo::DbInstance, key: &str) -> Result<(), EngramError> {
-    run_script_retrying(cozo_db, CREATE_SCHEMA_META, "schema_meta bootstrap")?;
+    run_script_retrying(cozo_db, CREATE_SCHEMA_META, "schema_meta bootstrap", true)?;
     let mut params = BTreeMap::new();
     params.insert("key".to_string(), cozo::DataValue::from(key));
     let put = r#"
@@ -289,9 +300,20 @@ fn set_schema_meta_flag(cozo_db: &cozo::DbInstance, key: &str) -> Result<(), Eng
 
 :put schema_meta { key => value }
 "#;
-    cozo_db
-        .run_script(put, params, cozo::ScriptMutability::Mutable)
-        .map_err(|e| map_db_err(format!("schema_meta flag upsert: {e}")))?;
+    // Route the idempotent marker upsert through the busy-tolerant retry path too
+    // (Rust-review nit): a transient SQLITE_BUSY must not fail the durable
+    // rollback marker write. `:put` never legitimately reports "already exists",
+    // so already-exists is treated as fatal (allow_already_exists = false).
+    retry_cozo_script(
+        "schema_meta flag upsert",
+        false,
+        || {
+            cozo_db
+                .run_script(put, params.clone(), cozo::ScriptMutability::Mutable)
+                .map(|_| ())
+        },
+        |attempt| std::thread::sleep(busy_backoff(attempt)),
+    )?;
     Ok(())
 }
 
@@ -360,7 +382,7 @@ pub(crate) fn migrate_calls_edge_resolution(cozo_db: &cozo::DbInstance) -> Resul
 
 :replace calls_edge { from, to => created_at, resolution }
 "#;
-    run_script_retrying(cozo_db, migrate, "calls_edge resolution migration")?;
+    run_script_retrying(cozo_db, migrate, "calls_edge resolution migration", false)?;
     Ok(())
 }
 
@@ -395,7 +417,7 @@ pub(crate) fn rollback_calls_edge_resolution(
 
 :replace calls_edge { from, to => created_at }
 "#;
-    run_script_retrying(cozo_db, rollback, "calls_edge resolution rollback")?;
+    run_script_retrying(cozo_db, rollback, "calls_edge resolution rollback", false)?;
     Ok(())
 }
 
@@ -1049,6 +1071,7 @@ mod tests {
         let mut sleeps = 0u32;
         let result = retry_cozo_script(
             "test",
+            true,
             || {
                 attempts += 1;
                 if attempts < 3 {
@@ -1076,6 +1099,7 @@ mod tests {
         let mut attempts = 0u32;
         let result = retry_cozo_script::<&str, _, _>(
             "bootstrap",
+            true,
             || {
                 attempts += 1;
                 Err("database is locked")
@@ -1093,11 +1117,14 @@ mod tests {
     }
 
     // An "already exists" outcome is treated as success without retrying.
+    // With allow_already_exists = true (`:create` bootstrap), an "already exists"
+    // outcome is treated as success without retrying.
     #[test]
-    fn retry_cozo_script_swallows_already_exists() {
+    fn retry_cozo_script_swallows_already_exists_when_allowed() {
         let mut attempts = 0u32;
         let result = retry_cozo_script(
             "test",
+            true,
             || {
                 attempts += 1;
                 Err("relation already exists")
@@ -1108,12 +1135,35 @@ mod tests {
         assert_eq!(attempts, 1, "benign outcome must not retry");
     }
 
+    // With allow_already_exists = false (`:replace` migrate/rollback), an
+    // "already exists" outcome must NOT be masked as success — it surfaces as an
+    // error so a genuine `:replace` failure cannot report a false success (F1).
+    #[test]
+    fn retry_cozo_script_surfaces_already_exists_as_fatal_when_disallowed() {
+        let mut attempts = 0u32;
+        let result = retry_cozo_script::<&str, _, _>(
+            "calls_edge resolution rollback",
+            false,
+            || {
+                attempts += 1;
+                Err("relation already exists")
+            },
+            |_attempt| {},
+        );
+        assert!(
+            result.is_err(),
+            "a :replace rewrite must not swallow already-exists"
+        );
+        assert_eq!(attempts, 1, "a fatal outcome must not retry");
+    }
+
     // A fatal error is surfaced immediately without retrying.
     #[test]
     fn retry_cozo_script_surfaces_fatal_immediately() {
         let mut attempts = 0u32;
         let result = retry_cozo_script::<&str, _, _>(
             "test",
+            true,
             || {
                 attempts += 1;
                 Err("syntax error near ':'")
