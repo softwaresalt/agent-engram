@@ -466,73 +466,74 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
 }
 
 pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
-    if let Some(snapshot) = state.snapshot_workspace().await {
-        let engram_dir = Path::new(&snapshot.path).join(".engram");
-        let stale_now =
-            snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &engram_dir);
+    // 086.004-T: capture the workspace binding AND its config in a SINGLE atomic
+    // snapshot at handler entry (the pattern `tools/eval.rs` uses). Reading the
+    // retrieval-eval flag from a separate `workspace_config()` AFTER the
+    // `connect_db` round-trip let a concurrent `set_workspace` (which updates the
+    // binding and its config in two separate awaits) pair this workspace's
+    // path/branch with a DIFFERENT config's `retrieval_eval_enabled`.
+    let Some(ctx) = state.snapshot_dispatch_context().await else {
+        return Err(EngramError::Workspace(WorkspaceError::NotSet));
+    };
+    let snapshot = ctx.workspace;
+    let retrieval_eval_enabled = ctx.config.retrieval_eval.enabled;
 
-        if stale_now != snapshot.stale_files {
-            let _ = state
-                .update_workspace(|ws| ws.stale_files = stale_now)
-                .await;
-        }
+    let engram_dir = Path::new(&snapshot.path).join(".engram");
+    let stale_now = snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &engram_dir);
 
-        // Gather code-graph stats from the database. The code-graph indexer is
-        // always active in every build; the `git-graph` feature only gates git
-        // commit-history tooling, so these counts must not be gated behind it.
-        // Mirrors `get_workspace_statistics`, which reads the same counts
-        // unconditionally.
-        let code_graph = match connect_db(&snapshot.data_dir, &snapshot.branch).await {
-            Ok(db) => {
-                let cg_queries = CodeGraphQueries::new(db);
-                CodeGraphStats {
-                    code_files: cg_queries.count_code_files().await.unwrap_or(0),
-                    functions: cg_queries.count_functions().await.unwrap_or(0),
-                    classes: cg_queries.count_classes().await.unwrap_or(0),
-                    interfaces: cg_queries.count_interfaces().await.unwrap_or(0),
-                    edges: cg_queries.count_code_edges().await.unwrap_or(0),
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "get_workspace_status: code-graph DB connect failed; reporting zero counts"
-                );
-                CodeGraphStats::default()
-            }
-        };
-
-        let branch_safe = snapshot.branch.replace(['/', '\\', ':'], "_");
-        let db_path = snapshot
-            .data_dir
-            .join("cozo")
-            .join(&branch_safe)
-            .join("engram.db")
-            .display()
-            .to_string();
-
-        // Expose the retrieval-eval opt-in flag for autoharness discovery.
-        let retrieval_eval_enabled = state
-            .workspace_config()
-            .await
-            .unwrap_or_default()
-            .retrieval_eval
-            .enabled;
-
-        return Ok(WorkspaceStatus {
-            path: snapshot.path,
-            branch: snapshot.branch,
-            db_path,
-            last_flush: snapshot.last_flush,
-            stale_files: stale_now,
-            connection_count: state.active_connections(),
-            code_graph,
-            scan_status: state.scan_progress_snapshot().await,
-            retrieval_eval_enabled,
-        });
+    if stale_now != snapshot.stale_files {
+        let _ = state
+            .update_workspace(|ws| ws.stale_files = stale_now)
+            .await;
     }
 
-    Err(EngramError::Workspace(WorkspaceError::NotSet))
+    // Gather code-graph stats from the database. The code-graph indexer is
+    // always active in every build; the `git-graph` feature only gates git
+    // commit-history tooling, so these counts must not be gated behind it.
+    // Mirrors `get_workspace_statistics`, which reads the same counts
+    // unconditionally.
+    let code_graph = match connect_db(&snapshot.data_dir, &snapshot.branch).await {
+        Ok(db) => {
+            let cg_queries = CodeGraphQueries::new(db);
+            CodeGraphStats {
+                code_files: cg_queries.count_code_files().await.unwrap_or(0),
+                functions: cg_queries.count_functions().await.unwrap_or(0),
+                classes: cg_queries.count_classes().await.unwrap_or(0),
+                interfaces: cg_queries.count_interfaces().await.unwrap_or(0),
+                edges: cg_queries.count_code_edges().await.unwrap_or(0),
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "get_workspace_status: code-graph DB connect failed; reporting zero counts"
+            );
+            CodeGraphStats::default()
+        }
+    };
+
+    let branch_safe = snapshot.branch.replace(['/', '\\', ':'], "_");
+    let db_path = snapshot
+        .data_dir
+        .join("cozo")
+        .join(&branch_safe)
+        .join("engram.db")
+        .display()
+        .to_string();
+
+    Ok(WorkspaceStatus {
+        path: snapshot.path,
+        branch: snapshot.branch,
+        db_path,
+        last_flush: snapshot.last_flush,
+        stale_files: stale_now,
+        connection_count: state.active_connections(),
+        code_graph,
+        scan_status: state.scan_progress_snapshot().await,
+        // Exposed atomically with the workspace binding above for capability
+        // discovery (086.004-T).
+        retrieval_eval_enabled,
+    })
 }
 
 #[cfg(test)]

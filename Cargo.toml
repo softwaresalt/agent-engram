@@ -659,6 +659,11 @@ path = "tests/integration/cli_calls_resolution_rollback_test.rs"
 required-features = ["cozo-backend"]
 
 [[test]]
+name = "integration_get_workspace_status_atomicity"
+path = "tests/integration/get_workspace_status_atomicity_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
 name = "integration_calls_recall_acceptance"
 path = "tests/integration/calls_recall_acceptance_test.rs"
 required-features = ["cozo-backend", "embeddings"]
