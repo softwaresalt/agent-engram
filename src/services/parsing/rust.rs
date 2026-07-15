@@ -51,7 +51,7 @@ fn extract_top_level(
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: func.name.clone(),
                     });
-                    extract_calls_from_body(child, source, &func.name, edges);
+                    extract_calls_from_body(child, source, &func.name, None, edges);
                     symbols.push(ExtractedSymbol::Function(func));
                 }
             }
@@ -199,7 +199,7 @@ fn extract_impl(
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: func.name.clone(),
                     });
-                    extract_calls_from_body(child, source, &func.name, edges);
+                    extract_calls_from_body(child, source, &func.name, type_name.as_deref(), edges);
                     symbols.push(ExtractedSymbol::Function(func));
                 }
             }
@@ -225,6 +225,7 @@ fn extract_calls_from_body(
     node: Node<'_>,
     source: &str,
     caller_name: &str,
+    enclosing_type: Option<&str>,
     edges: &mut Vec<ExtractedEdge>,
 ) {
     let mut stack = vec![node];
@@ -233,6 +234,15 @@ fn extract_calls_from_body(
             if let Some((callee, is_method, is_qualified, qualifier)) =
                 resolve_call_name(current, source)
             {
+                // Rewrite a `Self::` qualifier to the concrete enclosing impl
+                // type so `Self::build()` inside `impl Widget` routes as
+                // `Widget::build` (088.004-T). Outside an impl there is no
+                // concrete `Self`, so the qualifier is left as-is and will match
+                // no index name (no edge) rather than mis-resolving.
+                let qualifier = match (qualifier, enclosing_type) {
+                    (Some(q), Some(ty)) if q == "Self" => Some(ty.to_owned()),
+                    (other, _) => other,
+                };
                 edges.push(ExtractedEdge::Calls {
                     caller: caller_name.to_owned(),
                     callee,

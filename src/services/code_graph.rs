@@ -1547,7 +1547,7 @@ fn qualifier_is_type(qualifier: &str) -> bool {
 }
 
 /// The workspace-global index name a path-qualified call should be matched
-/// against, or `None` when the call is not attempted.
+/// against.
 ///
 /// * module-path qualifier (`module::helper`) -> the bare free-function name
 ///   `helper` (module paths are not part of a function's index name), 088.003-T;
@@ -1557,12 +1557,13 @@ fn qualifier_is_type(qualifier: &str) -> bool {
 /// Resolution stays singleton-only in the post-pass, so an ambiguous or absent
 /// target yields no edge either way — the no-false-edge invariant of findings
 /// 1 & 7 is preserved.
-fn qualified_target_name(callee: &str, qualifier: &str) -> Option<String> {
+fn qualified_target_name(callee: &str, qualifier: &str) -> String {
     if qualifier_is_type(qualifier) {
-        // Type-associated targets are handled by 088.004-T.
-        None
+        // A type qualifier -> the `Type::method` impl-method index name.
+        format!("{qualifier}::{callee}")
     } else {
-        Some(callee.to_owned())
+        // A module-path qualifier -> the bare free-function index name.
+        callee.to_owned()
     }
 }
 
@@ -1585,7 +1586,7 @@ pub(crate) fn resolve_call_target_name(
     if is_method {
         None
     } else if is_qualified {
-        qualifier.and_then(|q| qualified_target_name(callee, q))
+        qualifier.map(|q| qualified_target_name(callee, q))
     } else {
         Some(callee.to_owned())
     }
