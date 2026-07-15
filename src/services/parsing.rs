@@ -195,17 +195,19 @@ pub enum ExtractedEdge {
         /// cannot match a receiver method to its definition and would risk a
         /// false singleton edge. Consumers must skip promotion when this is set.
         is_method: bool,
-        /// True when the call was path-qualified (`a::b()`), reduced here to its
-        /// final segment (`b`).
+        /// True when the call was path-qualified (`a::b()`). The `callee` stays
+        /// the final segment (`b`); the immediate qualifier (`a`) is captured
+        /// separately in the `qualifier` field below.
         ///
         /// Qualified calls cover both module paths (`crate::util::helper()`,
-        /// whose free-function target IS indexed by the bare final segment) and
+        /// whose free-function target is indexed by the bare final segment) and
         /// type-associated calls (`Type::parse()`, whose target is indexed as
-        /// `Type::parse`). The two are indistinguishable without qualification-
-        /// aware resolution, so — like methods — qualified calls are extracted
-        /// but NOT promoted to `calls_edge` rows, to avoid resolving a
-        /// `Type::assoc()` call to an unrelated unique free function. Deferred to
-        /// qualification-aware resolution.
+        /// `Type::parse`). Qualification-aware resolution (088-F) uses the
+        /// captured qualifier to tell them apart — routing a type qualifier to the
+        /// `Type::method` impl-method index name and a module qualifier to the
+        /// bare free-function index name — and promotes only unambiguous
+        /// (singleton) matches, so an ambiguous or absent target still yields no
+        /// edge (the no-false-edge invariant of findings 1 & 7).
         is_qualified: bool,
         /// For a path-qualified call (`is_qualified`), the immediate qualifier
         /// segment that precedes the final `callee` — `Type` for `Type::parse()`,

@@ -230,13 +230,15 @@ fn extract_calls_from_body(
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         if current.kind() == "call_expression" {
-            if let Some((callee, is_method, is_qualified)) = resolve_call_name(current, source) {
+            if let Some((callee, is_method, is_qualified, qualifier)) =
+                resolve_call_name(current, source)
+            {
                 edges.push(ExtractedEdge::Calls {
                     caller: caller_name.to_owned(),
                     callee,
                     is_method,
                     is_qualified,
-                    qualifier: None,
+                    qualifier,
                 });
             }
         }
@@ -251,17 +253,26 @@ const CALL_BLOCKLIST: &[&str] = &[
     "new", "default", "into", "clone", "from", "unwrap", "expect", "ok", "err",
 ];
 
-fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool)> {
+fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool, Option<String>)> {
     let function_node = node.child_by_field_name("function")?;
-    // (name, is_method, is_qualified) — the flags are mutually exclusive.
-    let (name, is_method, is_qualified) = match function_node.kind() {
-        "identifier" => (Some(super::node_text(function_node, source)), false, false),
-        // Path-qualified calls: `a::b()`. Reduced to the final segment `b`.
-        // Marked `is_qualified` so the consumer does not promote them: a module
-        // path (`crate::util::helper`) resolves by bare final segment, but a
-        // type-associated call (`Type::parse`) is indexed under its qualified
-        // name, and the two are indistinguishable here. Promoting the bare name
-        // would risk a false singleton edge to an unrelated free function.
+    // (name, is_method, is_qualified, qualifier). `is_method` and `is_qualified`
+    // are mutually exclusive; `qualifier` is `Some` only for a path-qualified
+    // call and carries the immediate qualifier segment for the downstream
+    // qualification-aware resolver (088.003-T / 088.004-T).
+    let (name, is_method, is_qualified, qualifier) = match function_node.kind() {
+        "identifier" => (
+            Some(super::node_text(function_node, source)),
+            false,
+            false,
+            None,
+        ),
+        // Path-qualified calls: `a::b()`. `callee` stays the final segment `b`,
+        // but the immediate qualifier `a` is captured so the resolver can route
+        // a module path (`crate::util::helper`, matched by the bare free-function
+        // index name) apart from a type-associated call (`Type::parse`, matched
+        // by the `Type::parse` impl-method index name). Without the qualifier the
+        // two are indistinguishable and promoting the bare name would risk a
+        // false singleton edge (findings 1 & 7).
         "scoped_identifier" => {
             let mut cursor = function_node.walk();
             let n = function_node
@@ -269,26 +280,46 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
                 .filter(|c| c.kind() == "identifier")
                 .last()
                 .map(|n| super::node_text(n, source));
-            (n, false, true)
+            let qualifier = scoped_call_qualifier(function_node, source);
+            (n, false, true, qualifier)
         }
         // Method / receiver calls: `x.foo()`, `self.bar()`. The `function`
         // child is a `field_expression` whose `field` names the called method.
-        // Extracted (and marked `is_method`) for completeness and future
-        // method-aware resolution, but the consumer must not promote them to a
-        // `calls_edge`: impl methods are indexed as `Type::method`, so name-only
-        // resolution cannot match them and would risk a false singleton edge.
-        // The blocklist below still drops idiomatic no-ops (`x.clone()`).
+        // Extracted (and marked `is_method`) for completeness, but the consumer
+        // must not promote them to a `calls_edge`: the receiver's type is unknown
+        // without inference (013-D Option B, deferred), so name-only resolution
+        // cannot match `Type::method` and would risk a false singleton edge. The
+        // blocklist below still drops idiomatic no-ops (`x.clone()`).
         "field_expression" => (
             function_node
                 .child_by_field_name("field")
                 .map(|n| super::node_text(n, source)),
             true,
             false,
+            None,
         ),
-        _ => (None, false, false),
+        _ => (None, false, false, None),
     };
     name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
-        .map(|n| (n, is_method, is_qualified))
+        .map(|n| (n, is_method, is_qualified, qualifier))
+}
+
+/// Extract the immediate qualifier segment of a `scoped_identifier` call target
+/// — the segment directly preceding the final callee. Yields `Type` for
+/// `Type::parse()`, `util` for `crate::util::helper()`, and the root token
+/// (`crate`, `super`, `self`, `Self`) when the call is rooted there.
+///
+/// The Rust naming convention (UpperCamelCase type vs snake_case module) lets
+/// the downstream resolver route a type-associated target apart from a
+/// module-path target without a type-checker.
+fn scoped_call_qualifier(scoped: Node<'_>, source: &str) -> Option<String> {
+    let path = scoped.child_by_field_name("path")?;
+    let segment = if path.kind() == "scoped_identifier" {
+        path.child_by_field_name("name").unwrap_or(path)
+    } else {
+        path
+    };
+    Some(super::node_text(segment, source))
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> String {

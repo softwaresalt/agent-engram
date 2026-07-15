@@ -476,33 +476,39 @@ async fn index_workspace_impl(
                         callee,
                         is_method,
                         is_qualified,
-                        qualifier: _,
+                        qualifier,
                     } => {
-                        // Method/receiver (`self.bar()`) and path-qualified
-                        // (`Type::parse()`) calls are extracted for completeness
-                        // (082.001-T) but NOT promoted to a calls_edge: their
-                        // targets are indexed under qualified names, so name-only
-                        // resolution cannot match them and would create a false
-                        // singleton edge. Deferred pending qualification/method-
-                        // aware resolution.
-                        if *is_method || *is_qualified {
+                        // Resolve the workspace index name this call site should
+                        // match. Bare identifier calls resolve by the bare
+                        // `callee`; path-qualified calls (`module::helper()`,
+                        // `Type::method()`) resolve by the qualifier-derived name
+                        // (088.003-T / 088.004-T); method/receiver calls
+                        // (`x.foo()`) stay deferred (013-D Option B). `None` means
+                        // "not attempted" and is skipped, never mis-resolved.
+                        let Some(target_name) = resolve_call_target_name(
+                            callee,
+                            *is_method,
+                            *is_qualified,
+                            qualifier.as_deref(),
+                        ) else {
                             continue;
-                        }
-                        // Resolve names to IDs within this file's symbols. A
-                        // callee resolved locally becomes a direct edge; a
-                        // caller-resolved but callee-unresolved (cross-file)
-                        // call is staged for the deferred post-pass (082.002-T)
-                        // instead of being silently dropped.
+                        };
+                        // A callee resolved locally becomes a direct edge; a
+                        // caller-resolved but callee-unresolved (cross-file) call
+                        // is staged for the deferred post-pass (082.002-T) instead
+                        // of being silently dropped.
                         match (
                             find_function_id(&function_ids, caller),
-                            find_function_id(&function_ids, callee),
+                            find_function_id(&function_ids, &target_name),
                         ) {
                             (Some(from_id), Some(to_id)) => {
                                 queries.create_calls_edge(&from_id, &to_id).await?;
                                 result.edges_created += 1;
                             }
                             (Some(from_id), None) => {
-                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                queries
+                                    .put_staged_call(&from_id, &target_name, &rel_path)
+                                    .await?;
                             }
                             _ => {}
                         }
@@ -1132,26 +1138,33 @@ pub async fn sync_workspace_with_progress(
                         callee,
                         is_method,
                         is_qualified,
-                        qualifier: _,
+                        qualifier,
                     } => {
-                        // Method/receiver and path-qualified calls are extracted
-                        // but not promoted (see the index-path arm) to avoid
-                        // false singleton edges.
-                        if *is_method || *is_qualified {
+                        // Mirror the index-path arm: resolve the target index name
+                        // (bare, module-path, or Type::method); method/receiver
+                        // calls stay deferred (013-D Option B). `None` is skipped,
+                        // never mis-resolved. The deferred post-pass runs on full
+                        // index only, so a qualified cross-file call staged here is
+                        // resolved on the next full index — parity with bare calls.
+                        let Some(target_name) = resolve_call_target_name(
+                            callee,
+                            *is_method,
+                            *is_qualified,
+                            qualifier.as_deref(),
+                        ) else {
                             continue;
-                        }
-                        // Mirror the index-path behavior: resolve locally for a
-                        // direct edge, else stage the cross-file call for the
-                        // deferred post-pass (082.002-T).
+                        };
                         match (
                             find_function_id(&new_function_ids, caller),
-                            find_function_id(&new_function_ids, callee),
+                            find_function_id(&new_function_ids, &target_name),
                         ) {
                             (Some(from_id), Some(to_id)) => {
                                 queries.create_calls_edge(&from_id, &to_id).await?;
                             }
                             (Some(from_id), None) => {
-                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                queries
+                                    .put_staged_call(&from_id, &target_name, &rel_path)
+                                    .await?;
                             }
                             _ => {}
                         }
@@ -1519,6 +1532,65 @@ fn sha256_short(input: &str) -> String {
 }
 
 /// Find a function ID by name.
+/// True when a path qualifier names a Rust *type* (UpperCamelCase, or the
+/// `Self` alias) rather than a *module* path segment (snake_case, `crate`,
+/// `super`, `self`). A qualified call `A::b()` is syntactically ambiguous
+/// between a type-associated call and a module-path call, so the Rust naming
+/// convention routes resolution without a type-checker: a type-associated
+/// target is matched against the `Type::method` impl-method index name
+/// (088.004-T); a module-path target is matched against the bare free-function
+/// index name (088.003-T). Primitive-typed associated calls (`u32::from_str`)
+/// are lower-case and route as modules — their bare name has no free-function
+/// definition, so they simply stay unresolved rather than mis-resolving.
+fn qualifier_is_type(qualifier: &str) -> bool {
+    qualifier.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// The workspace-global index name a path-qualified call should be matched
+/// against, or `None` when the call is not attempted.
+///
+/// * module-path qualifier (`module::helper`) -> the bare free-function name
+///   `helper` (module paths are not part of a function's index name), 088.003-T;
+/// * type qualifier (`Type::method`) -> the `Type::method` impl-method index
+///   name, 088.004-T.
+///
+/// Resolution stays singleton-only in the post-pass, so an ambiguous or absent
+/// target yields no edge either way — the no-false-edge invariant of findings
+/// 1 & 7 is preserved.
+fn qualified_target_name(callee: &str, qualifier: &str) -> Option<String> {
+    if qualifier_is_type(qualifier) {
+        // Type-associated targets are handled by 088.004-T.
+        None
+    } else {
+        Some(callee.to_owned())
+    }
+}
+
+/// Resolve the workspace-global index name a call site should be matched
+/// against, or `None` when the call is not attempted (skipped, never
+/// mis-resolved). Shared by the indexer (numerator) and the retrieval-eval
+/// call-site denominator so the two stay commensurable.
+///
+/// * bare identifier call  -> the bare `callee`;
+/// * path-qualified call   -> [`qualified_target_name`] of the immediate
+///   `qualifier`;
+/// * method/receiver call  -> `None` (needs receiver-type inference, 013-D
+///   Option B, deferred).
+pub(crate) fn resolve_call_target_name(
+    callee: &str,
+    is_method: bool,
+    is_qualified: bool,
+    qualifier: Option<&str>,
+) -> Option<String> {
+    if is_method {
+        None
+    } else if is_qualified {
+        qualifier.and_then(|q| qualified_target_name(callee, q))
+    } else {
+        Some(callee.to_owned())
+    }
+}
+
 fn find_function_id(ids: &[(String, String)], name: &str) -> Option<String> {
     ids.iter()
         .find(|(n, _)| n == name)

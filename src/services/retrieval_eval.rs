@@ -292,38 +292,49 @@ pub fn evaluate_semantic(
     Ok(metrics)
 }
 
-/// Count identifier / path call sites in a source string.
+/// Count resolvable call sites in a source string.
 ///
 /// This is the graph metric *denominator*: the parser call-site inventory
 /// (`ExtractedEdge::Calls`) discovered by [`parse_source`], restricted to the
-/// calls the indexer actually attempts to resolve. Method / receiver calls
-/// (`x.foo()`) and path-qualified calls (`a::b()`) are extracted but never
-/// promoted to edges — their targets are indexed under qualified names, so
-/// name-only resolution cannot match them — so they are excluded here to keep
-/// the denominator aligned with resolvable call sites. Blocklisted helpers
-/// (`clone`, `unwrap`, …) are excluded by the parser. A parse failure yields `0`.
+/// calls the indexer actually attempts to resolve. That routing is shared with
+/// the numerator via [`crate::services::code_graph::resolve_call_target_name`],
+/// so the denominator and numerator stay commensurable: bare identifier calls
+/// and path-qualified calls (`module::helper()` → bare free-function name;
+/// `Type::method()` → the `Type::method` impl-method name, 088-F) are counted,
+/// while method / receiver calls (`x.foo()`, which need receiver-type inference
+/// and stay deferred) are excluded. Blocklisted helpers (`clone`, `unwrap`, …)
+/// are excluded by the parser. A parse failure yields `0`.
 ///
-/// Counts **distinct `(caller, callee)` name pairs**, not raw call occurrences
+/// Counts **distinct `(caller, target-name)` pairs**, not raw call occurrences
 /// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
-/// by `(from, to)`, so a caller that invokes the same callee twice contributes a
+/// by `(from, to)`, so a caller that invokes the same target twice contributes a
 /// single edge; counting the denominator in the same distinct-relation unit
 /// keeps `resolution_recall` a ratio of commensurable units and stops a repeated
-/// call from spuriously deflating recall.
+/// call from spuriously deflating recall. A path-qualified call uses its resolved
+/// index name (`Type::method` or the bare module target), so distinct qualified
+/// targets from one caller stay distinct relations.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
-        let mut relations: std::collections::HashSet<(&str, &str)> =
+        let mut relations: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
         for edge in &result.edges {
             if let ExtractedEdge::Calls {
                 caller,
                 callee,
-                is_method: false,
-                is_qualified: false,
-                qualifier: _,
+                is_method,
+                is_qualified,
+                qualifier,
             } = edge
             {
-                relations.insert((caller.as_str(), callee.as_str()));
+                if let Some(target) = crate::services::code_graph::resolve_call_target_name(
+                    callee,
+                    *is_method,
+                    *is_qualified,
+                    qualifier.as_deref(),
+                ) {
+                    relations.insert((caller.clone(), target));
+                }
             }
         }
         relations.len()
