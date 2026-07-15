@@ -24,7 +24,9 @@ use crate::cli::output::OutputFormatter;
 use crate::daemon::lockfile::DaemonLock;
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
-use crate::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
+use crate::db::workspace::{
+    canonicalize_workspace, is_data_dir_within_workspace, resolve_data_dir, resolve_git_branch,
+};
 use crate::errors::{EngramError, LockError};
 
 /// Migration completed successfully.
@@ -60,6 +62,28 @@ pub async fn run_migrate_down(target: String, flags: &GlobalFlags, fmt: &OutputF
     };
     let branch = resolve_git_branch(&ws_path).unwrap_or_else(|_| "default".to_owned());
     let data_dir = resolve_data_dir(&ws_path);
+
+    // 086.003-T fail-closed guard: refuse the destructive migrate-down when the
+    // resolved data directory is shared/external (an ENGRAM_DATA_DIR outside the
+    // workspace). The DaemonLock acquired below is workspace-rooted
+    // (`<ws>/.engram/run/engram.lock`), so it cannot exclude a daemon rooted at a
+    // DIFFERENT workspace that shares this same database — a concurrent write
+    // could race the retraction + column drop and corrupt the shared data.
+    // Refusing is the conservative, non-destructive interim (013-D deferred the
+    // full cross-workspace exclusivity mechanism); it runs before the lock and
+    // before `connect_db`, so a refused run mutates nothing.
+    if !is_data_dir_within_workspace(&ws_path, &data_dir) {
+        return fmt.cli_error(&format!(
+            "refusing destructive migrate-down: the resolved data directory '{}' is outside the \
+             workspace '{}'. A shared/external ENGRAM_DATA_DIR is not covered by the \
+             workspace-rooted daemon lock, so a daemon rooted at another workspace could write \
+             this database while the migration retracts edges and drops the resolution column, \
+             corrupting shared data. Run migrate-down from the workspace that owns the data \
+             directory, or unset ENGRAM_DATA_DIR.",
+            data_dir.display(),
+            ws_path.display(),
+        ));
+    }
 
     // Hold the daemon lock for the whole migration: this is a deliberate
     // destructive rewrite and must not race a running daemon's writers.

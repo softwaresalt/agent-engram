@@ -271,6 +271,65 @@ pub fn resolve_data_dir(workspace: &Path) -> PathBuf {
     }
 }
 
+/// True when `data_dir` resolves to a location inside `workspace` — i.e. it is
+/// covered by the workspace-rooted daemon lock.
+///
+/// Both paths are normalised for containment (canonicalising the longest
+/// existing prefix, stripping the Windows verbatim prefix, and resolving
+/// `.`/`..`), then compared component-wise. The caller passes an already
+/// canonical workspace root. Used by the destructive `migrate-down` guard
+/// (086.003-T) to fail closed on a shared/external `ENGRAM_DATA_DIR`.
+pub(crate) fn is_data_dir_within_workspace(workspace: &Path, data_dir: &Path) -> bool {
+    let ws = normalize_for_containment(workspace);
+    let dd = normalize_for_containment(data_dir);
+    dd.starts_with(&ws)
+}
+
+/// Resolve `.`/`..` in `path` lexically, without touching the filesystem.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push(comp.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Normalise `path` for containment comparison. Canonicalises the longest
+/// existing prefix (resolving symlinks/short names and stripping the Windows
+/// verbatim prefix) and re-appends the lexically-normalised remainder, so a
+/// not-yet-created directory still compares correctly against a canonical
+/// workspace root. Falls back to a purely lexical normalisation when nothing
+/// along the path exists.
+fn normalize_for_containment(path: &Path) -> PathBuf {
+    if let Ok(canon) = path.canonicalize() {
+        return normalize_canonical(canon);
+    }
+    for ancestor in path.ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            break;
+        }
+        if let Ok(canon) = ancestor.canonicalize() {
+            let mut base = normalize_canonical(canon);
+            if let Ok(rest) = path.strip_prefix(ancestor) {
+                base.push(rest);
+            }
+            return normalize_lexical(&base);
+        }
+    }
+    normalize_lexical(path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -279,6 +338,7 @@ mod tests {
     use tempfile::TempDir;
     use uuid::Uuid;
 
+    use super::is_data_dir_within_workspace;
     use super::load_or_create_workspace_id;
     use crate::errors::{EngramError, WorkspaceError};
 
@@ -286,6 +346,52 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         fs::create_dir(workspace.path().join(".git")).expect("create .git");
         workspace
+    }
+
+    // ── 086.003-T: fail-closed data-dir containment guard ────────────────────
+
+    #[test]
+    fn data_dir_within_workspace_accepts_workspace_owned_dirs() {
+        let ws = create_workspace();
+        let root = ws.path().canonicalize().expect("canonicalize workspace");
+        assert!(
+            is_data_dir_within_workspace(&root, &root.join(".engram")),
+            "the default workspace-local data dir must be accepted"
+        );
+        assert!(
+            is_data_dir_within_workspace(&root, &root.join(".engram").join("cozo")),
+            "a nested workspace-owned data dir must be accepted"
+        );
+        assert!(
+            is_data_dir_within_workspace(&root, &root),
+            "the workspace root itself must be accepted"
+        );
+    }
+
+    #[test]
+    fn data_dir_within_workspace_rejects_external_dir() {
+        let ws = create_workspace();
+        let root = ws.path().canonicalize().expect("canonicalize workspace");
+        let external = tempfile::tempdir().expect("external tempdir");
+        let external_root = external
+            .path()
+            .canonicalize()
+            .expect("canonicalize external");
+        assert!(
+            !is_data_dir_within_workspace(&root, &external_root),
+            "a shared/external data dir must be rejected (fail closed)"
+        );
+    }
+
+    #[test]
+    fn data_dir_within_workspace_rejects_parent_escape() {
+        let ws = create_workspace();
+        let root = ws.path().canonicalize().expect("canonicalize workspace");
+        let escape = root.join("..").join("engram-shared-data");
+        assert!(
+            !is_data_dir_within_workspace(&root, &escape),
+            "a `..` escape out of the workspace must be rejected"
+        );
     }
 
     #[test]
