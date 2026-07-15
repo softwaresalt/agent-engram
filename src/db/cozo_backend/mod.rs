@@ -167,8 +167,24 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        let db = cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
-            .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))?;
+        // Bounded reopen-retry (086.002-T): the serialisation lock above prevents
+        // the CONCURRENT-open panic, but a rapid SEQUENTIAL reopen can still hit a
+        // transient `database is locked` (SQLITE_BUSY) when the OS releases a
+        // just-closed handle's lock lazily (Windows lag). cozo 0.7.x `unwrap()`s
+        // internally, so that transient surfaces as a PANIC, not an Err (U015-FLK1;
+        // docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md).
+        // `catch_busy_panic` converts that busy panic into a retryable error so the
+        // bounded back-off (+jitter) can absorb it; non-busy panics are re-raised.
+        // Interim SQLITE_BUSY mitigation — durable fix tracked as 041.002-T
+        // (removable once cozo >= 0.8 handles SQLITE_BUSY gracefully).
+        let db = open_db_with_retry(
+            || {
+                catch_busy_panic(|| {
+                    cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
+                })
+            },
+            |attempt| std::thread::sleep(reopen_backoff(attempt)),
+        )?;
         let cozo_db = CozoDb {
             inner: Arc::new(db),
         };
@@ -207,6 +223,149 @@ pub fn map_db_err<E: ToString>(err: E) -> EngramError {
     })
 }
 
+// ── 086.002-T: bounded reopen-retry for transient SQLITE_BUSY ──────────────
+//
+// The intra-process `connect_db_open_lock` mutex plus the advisory file lock
+// serialise opens WITHIN and ACROSS processes, but neither retries when the OS
+// releases a just-closed handle's lock lazily (Windows lock-release lag): a
+// rapid sequential reopen of the same branch DB can still surface a transient
+// `database is locked` (SQLITE_BUSY) from `DbInstance::new`. A bounded reopen
+// retry with capped exponential back-off + jitter absorbs that transient
+// durably, giving up with a clear `EngramError` (never an unwrap panic).
+
+/// Maximum attempts for the bounded CozoDB reopen-retry.
+const MAX_REOPEN_ATTEMPTS: u32 = 10;
+
+/// Whether a CozoDB open error is a transient `SQLITE_BUSY` worth retrying.
+fn is_retryable_open_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("locked") || m.contains("busy")
+}
+
+/// Whether a CAUGHT PANIC message is a transient SQLite busy/lock panic — as
+/// opposed to an unrelated panic that merely mentions "busy"/"locked".
+///
+/// cozo 0.7.x's internal `unwrap()` panic carries the SQLite failure, e.g.
+/// `SqliteFailure(DatabaseBusy, Some("database is locked"))` (SQLITE_BUSY) or the
+/// SQLITE_LOCKED variant (`DatabaseLocked` / "database table is locked").
+/// `catch_busy_panic` must absorb ONLY those transient panics and re-raise
+/// everything else, so this matches SQLite-specific busy/lock markers rather than
+/// the bare "busy"/"locked" words used for open-ERROR classification (which are
+/// safe there because the source is already a CozoDB open error, but would
+/// over-match arbitrary panic payloads). It mirrors the reopen policy, which
+/// retries both busy AND locked outcomes.
+fn is_sqlite_busy_or_locked_panic(message: &str) -> bool {
+    let m = message.to_lowercase();
+    // SQLITE_BUSY variants
+    m.contains("database is locked")
+        || m.contains("database is busy")
+        || m.contains("sqlite_busy")
+        || m.contains("databasebusy")
+        // SQLITE_LOCKED variants
+        || m.contains("database table is locked")
+        || m.contains("sqlite_locked")
+        || m.contains("databaselocked")
+}
+
+/// Random jitter in `0..cap_ms` used to de-synchronise concurrent reopeners so
+/// competing processes do not retry in lock-step (thundering herd).
+fn open_retry_jitter(cap_ms: u64) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    if cap_ms == 0 {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    // Fold in a high-resolution timestamp so successive draws differ even within
+    // the same process seed epoch. A clock error simply yields the seed-only
+    // value; it never panics.
+    if let Ok(dur) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.write_u128(dur.as_nanos());
+    }
+    hasher.finish() % cap_ms
+}
+
+/// Capped exponential back-off (20 ms → 250 ms) plus up to 50% jitter for reopen
+/// `attempt`. Over [`MAX_REOPEN_ATTEMPTS`] this gives ≈ 1.6–2.4 s of headroom —
+/// comfortably longer than the Windows lock-release lag that motivates it while
+/// staying well inside the 30 s advisory-lock deadline already held by the caller.
+fn reopen_backoff(attempt: u32) -> Duration {
+    let base = std::cmp::min(20u64 << attempt.min(4), 250);
+    Duration::from_millis(base + open_retry_jitter(base / 2))
+}
+
+/// Bounded reopen-retry driver around a fallible CozoDB open.
+///
+/// Retries only transient `SQLITE_BUSY` ("database is locked") outcomes, up to
+/// [`MAX_REOPEN_ATTEMPTS`], invoking `sleep` with the attempt index between
+/// tries. Any non-retryable error surfaces immediately; an exhausted budget
+/// surfaces the last busy error as an [`EngramError`] — never an unwrap panic.
+fn open_db_with_retry<T, E, F, S>(mut open: F, mut sleep: S) -> Result<T, EngramError>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Result<T, E>,
+    S: FnMut(u32),
+{
+    for attempt in 0..MAX_REOPEN_ATTEMPTS {
+        match open() {
+            Ok(db) => return Ok(db),
+            Err(e) => {
+                if is_retryable_open_error(&e.to_string()) && attempt + 1 < MAX_REOPEN_ATTEMPTS {
+                    sleep(attempt);
+                } else {
+                    return Err(map_db_err(format!("cannot open CozoDB SQLite store: {e}")));
+                }
+            }
+        }
+    }
+    // The final attempt always returns via the match above, so this is provably
+    // unreachable; surface an error rather than panic to keep the fn total (F3).
+    Err(map_db_err(
+        "cannot open CozoDB SQLite store: reopen retry budget exhausted",
+    ))
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        String::new()
+    }
+}
+
+/// Run a CozoDB open, converting a transient `SQLITE_BUSY` PANIC into a
+/// retryable `Err` so the bounded reopen-retry can absorb it.
+///
+/// cozo 0.7.x calls `unwrap()` internally on the SQLite open (U015-FLK1), so a
+/// transient "database is locked" at a rapid sequential reopen surfaces as a
+/// PANIC, not an `Err` (see
+/// `docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md`).
+/// This catches that panic and, when its message matches an SQLite-specific busy
+/// or locked marker (via [`is_sqlite_busy_or_locked_panic`], NOT the broader
+/// open-error predicate), returns `Err(message)`. Any OTHER panic is re-raised
+/// unchanged so a genuine bug still propagates (ultimately contained by the
+/// caller's `spawn_blocking`).
+fn catch_busy_panic<T, E, F>(open: F) -> Result<T, String>
+where
+    E: std::fmt::Display,
+    F: FnOnce() -> Result<T, E>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(open)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(payload) => {
+            let message = panic_payload_message(payload.as_ref());
+            if is_sqlite_busy_or_locked_panic(&message) {
+                Err(message)
+            } else {
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "cozo-backend"))]
@@ -219,7 +378,12 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::{
+        MAX_REOPEN_ATTEMPTS, catch_busy_panic, is_retryable_open_error,
+        is_sqlite_busy_or_locked_panic, open_db_with_retry, open_retry_jitter, reopen_backoff,
+    };
     use super::{connect_db, connect_db_open_lock};
+    use crate::errors::EngramError;
 
     /// Verify two concurrent `connect_db` calls to the same path do not panic.
     ///
@@ -310,6 +474,209 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&first, &third),
             "different DB paths must not share the same in-process mutex"
+        );
+    }
+
+    // ── 086.002-T: bounded reopen-retry driver ──────────────────────────────
+
+    // Only transient busy/locked errors are retryable; other errors are not.
+    #[test]
+    fn is_retryable_open_error_matches_busy_and_locked() {
+        assert!(is_retryable_open_error(
+            "Cannot open store: database is locked"
+        ));
+        assert!(is_retryable_open_error(
+            "SQLITE_BUSY: the database file is busy"
+        ));
+        assert!(!is_retryable_open_error("no such table: calls_edge"));
+        assert!(!is_retryable_open_error("disk I/O error"));
+    }
+
+    // The back-off stays within the documented capped-exponential envelope.
+    #[test]
+    fn reopen_backoff_is_bounded_and_capped() {
+        for attempt in 0..MAX_REOPEN_ATTEMPTS {
+            let ms = u64::try_from(reopen_backoff(attempt).as_millis()).unwrap_or(u64::MAX);
+            assert!(
+                ms >= 20,
+                "attempt {attempt}: back-off must be at least the 20ms base floor: {ms}"
+            );
+            assert!(
+                ms <= 375,
+                "attempt {attempt}: back-off must be capped: {ms}"
+            );
+        }
+    }
+
+    // Jitter is bounded by its cap and produces variation (never a constant).
+    #[test]
+    fn open_retry_jitter_is_bounded_and_varies() {
+        assert_eq!(open_retry_jitter(0), 0, "a zero cap must yield zero jitter");
+        let mut any_nonzero = false;
+        for _ in 0..200 {
+            let j = open_retry_jitter(50);
+            assert!(j < 50, "jitter must stay below the cap: {j}");
+            if j > 0 {
+                any_nonzero = true;
+            }
+        }
+        assert!(any_nonzero, "jitter must introduce real variation");
+    }
+
+    // A transient busy is retried until the open succeeds, within budget.
+    #[test]
+    fn open_db_with_retry_succeeds_after_transient_busy() {
+        let mut attempts = 0u32;
+        let mut sleeps = 0u32;
+        let result: Result<u32, EngramError> = open_db_with_retry(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err("database is locked")
+                } else {
+                    Ok(7u32)
+                }
+            },
+            |_attempt| sleeps += 1,
+        );
+        assert_eq!(result.expect("must open within the retry budget"), 7);
+        assert_eq!(attempts, 3, "must retry twice then succeed");
+        assert_eq!(sleeps, 2, "must back off before each retry");
+    }
+
+    // A persistent busy is bounded and surfaces a clear EngramError (no panic).
+    #[test]
+    fn open_db_with_retry_gives_up_after_max_attempts() {
+        let mut attempts = 0u32;
+        let result: Result<u32, EngramError> = open_db_with_retry::<u32, &str, _, _>(
+            || {
+                attempts += 1;
+                Err("database is locked")
+            },
+            |_attempt| {},
+        );
+        assert!(
+            result.is_err(),
+            "persistent busy must give up with an error"
+        );
+        assert_eq!(
+            attempts, MAX_REOPEN_ATTEMPTS,
+            "retry budget must be bounded by MAX_REOPEN_ATTEMPTS"
+        );
+    }
+
+    // A non-busy open error is surfaced immediately without retrying.
+    #[test]
+    fn open_db_with_retry_surfaces_non_busy_error_immediately() {
+        let mut attempts = 0u32;
+        let result: Result<u32, EngramError> = open_db_with_retry::<u32, &str, _, _>(
+            || {
+                attempts += 1;
+                Err("disk I/O error")
+            },
+            |_attempt| {},
+        );
+        assert!(result.is_err(), "a fatal open error must surface");
+        assert_eq!(attempts, 1, "a non-retryable error must not retry");
+    }
+
+    // cozo 0.7.x unwraps internally on a transient reopen busy: the "database is
+    // locked" surfaces as a PANIC. catch_busy_panic must convert it to a
+    // retryable Err so the reopen-retry can absorb it (086.002-T F2).
+    #[test]
+    fn catch_busy_panic_converts_busy_panic_to_retryable_err() {
+        let result: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!(
+                "{}",
+                "called `Result::unwrap()` on an `Err` value: \
+                 SqliteFailure(DatabaseBusy, Some(\"database is locked\"))"
+            );
+        });
+        let message = result.expect_err("a busy panic must become an Err");
+        assert!(
+            is_sqlite_busy_or_locked_panic(&message),
+            "the converted error must classify as an SQLite busy/locked panic: {message}"
+        );
+    }
+
+    // A transient SQLITE_LOCKED panic (distinct from SQLITE_BUSY) must ALSO be
+    // converted to a retryable Err so it follows the bounded reopen-retry rather
+    // than surfacing as a startup panic (Copilot PR#249).
+    #[test]
+    fn catch_busy_panic_converts_locked_panic_to_retryable_err() {
+        let result: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!(
+                "{}",
+                "called `Result::unwrap()` on an `Err` value: \
+                 SqliteFailure(DatabaseLocked, Some(\"database table is locked\"))"
+            );
+        });
+        let message = result.expect_err("a locked panic must become an Err");
+        assert!(
+            is_sqlite_busy_or_locked_panic(&message),
+            "the converted error must classify as an SQLite busy/locked panic: {message}"
+        );
+        assert!(
+            is_retryable_open_error(&message),
+            "the converted locked error must follow the bounded reopen-retry path: {message}"
+        );
+    }
+
+    // Ok and non-panic Err values pass through catch_busy_panic unchanged.
+    #[test]
+    fn catch_busy_panic_passes_through_results() {
+        let ok: Result<u32, String> = catch_busy_panic(|| Ok::<u32, String>(9));
+        assert_eq!(ok.expect("Ok must pass through"), 9);
+        let err: Result<u32, String> =
+            catch_busy_panic(|| Err::<u32, String>("disk full".to_owned()));
+        assert!(err.is_err(), "a non-panic Err must pass through");
+    }
+
+    // A NON-busy panic must be re-raised unchanged, never swallowed.
+    #[test]
+    #[should_panic(expected = "unrelated invariant")]
+    fn catch_busy_panic_reraises_non_busy_panic() {
+        let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!("{}", "unrelated invariant violated");
+        });
+    }
+
+    // Copilot review (PR #249): an unrelated panic that merely MENTIONS "busy"
+    // or "locked" must still be RE-RAISED — not misclassified as a retryable
+    // SQLite busy and swallowed, which would mask a genuine bug.
+    #[test]
+    #[should_panic(expected = "worker is busy")]
+    fn catch_busy_panic_reraises_unrelated_busy_panic() {
+        let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!("{}", "worker is busy after invariant failure");
+        });
+    }
+
+    // is_sqlite_busy_or_locked_panic matches SQLite-specific busy/locked markers
+    // only, so an unrelated "busy"/"locked" panic message is not misclassified.
+    #[test]
+    fn is_sqlite_busy_or_locked_panic_matches_sqlite_markers_only() {
+        // SQLITE_BUSY variants
+        assert!(is_sqlite_busy_or_locked_panic(
+            "called `Result::unwrap()` on an `Err` value: \
+             SqliteFailure(DatabaseBusy, Some(\"database is locked\"))"
+        ));
+        assert!(is_sqlite_busy_or_locked_panic(
+            "SQLITE_BUSY: the database file is busy"
+        ));
+        // SQLITE_LOCKED variants
+        assert!(is_sqlite_busy_or_locked_panic(
+            "SqliteFailure(DatabaseLocked, Some(\"database table is locked\"))"
+        ));
+        assert!(is_sqlite_busy_or_locked_panic("error code SQLITE_LOCKED"));
+        // Unrelated panics that merely mention busy/locked must NOT match.
+        assert!(
+            !is_sqlite_busy_or_locked_panic("worker is busy after invariant failure"),
+            "an unrelated busy panic must not match"
+        );
+        assert!(
+            !is_sqlite_busy_or_locked_panic("the connection mutex is locked"),
+            "an unrelated locked panic must not match"
         );
     }
 
