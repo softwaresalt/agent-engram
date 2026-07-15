@@ -73,8 +73,10 @@ residual (→ F4 follow-up).
 - **F4** (stash 32DAA85B): writer-side `set_workspace`+`set_workspace_config` atomicity +
   rebind-safe `get_workspace_status` staleness handling (atomic `set_workspace_and_config`).
 - **6870ECDF**: 081-resumption reconcile 088.005-T acceptance vs archived-done.
-- Interim SQLITE_BUSY mitigations (086.001/086.002) removable under blocked **041.002-T** when
-  cozo ≥ 0.8.
+- Interim SQLITE_BUSY mitigations (086.001/086.002) tracked for removal by blocked **041.002-T**
+  in TWO steps: drop `catch_busy_panic` once cozo ≥ 0.8 returns Err (not panic); drop the
+  `open_db_with_retry` / `run_script_retrying` retries ONLY after verifying upstream absorbs the
+  transient (cozo returning Err is NOT sufficient — the retry still guards startup).
 
 ## State
 
