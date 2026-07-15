@@ -123,6 +123,33 @@ impl Widget {
     );
 }
 
+// A `Self::build()` call inside a TRAIT impl (`impl Trait for Widget`) must NOT
+// be rewritten to the `Self::Widget` marker. Rust coherence lets a trait impl
+// target an imported external type, so its `Self` is not provably workspace-local
+// (`use dep::Widget; impl Trait for Widget`). The qualifier stays the raw `Self`,
+// which the resolver defers — closing the trait-impl false-edge vector.
+#[test]
+fn self_call_in_trait_impl_is_not_marked() {
+    let source = r#"
+struct Widget;
+trait Draw {
+    fn run(&self);
+}
+impl Draw for Widget {
+    fn run(&self) {
+        Self::build();
+    }
+}
+"#;
+    let found = calls(source);
+    assert!(
+        found
+            .iter()
+            .any(|(c, _, q, qual)| c == "build" && *q && qual.as_deref() == Some("Self")),
+        "Self::build() in a trait impl must keep the raw `Self` qualifier (deferred), got {found:?}"
+    );
+}
+
 // Method / receiver calls and bare identifier calls carry NO qualifier: the
 // former stay deferred (they need receiver-type inference), the latter resolve
 // by bare name as before.

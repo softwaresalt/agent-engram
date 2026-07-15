@@ -298,20 +298,20 @@ pub fn evaluate_semantic(
 /// (`ExtractedEdge::Calls`) discovered by [`parse_source`], restricted to the
 /// calls the indexer actually attempts to resolve, keyed by the SAME unit as the
 /// numerator via [`crate::services::code_graph::resolve_call_target_name`]. Bare
-/// identifier calls and crate-internal path-qualified calls (088-F) are counted;
-/// method / receiver calls and non-crate-rooted / external qualified calls (which
-/// stay deferred) are excluded. Blocklisted helpers (`clone`, `unwrap`, …) are
-/// excluded by the parser. A parse failure yields `0`.
+/// identifier calls and `Self::method()` calls (the `Self::<EnclosingType>`
+/// marker, 088-F) are counted; method / receiver calls and every other qualified
+/// call (`crate::free`, bare `Type::method`, `module::free`, and `Self::` in a
+/// trait impl — all of which stay deferred) are excluded. Blocklisted helpers
+/// (`clone`, `unwrap`, …) are excluded by the parser. A parse failure yields `0`.
 ///
 /// Counts **distinct `(caller, target-name)` relations**, not raw call
 /// occurrences (084.002-T / 88B5FAFD): the numerator is `calls_edge` rows keyed
 /// by `(from, to)` produced from `staged_call` keyed by
 /// `(caller, target_name, …)`, so keying the denominator on the resolver's
-/// `target_name` keeps `resolution_recall` a ratio of commensurable units. Under
-/// the exact-match qualified routing, distinct qualified call sites map to
-/// distinct target names (`crate::a::helper()` -> `a::helper`,
-/// `crate::b::helper()` -> `b::helper`), so they stay distinct relations without
-/// a separate source-path key.
+/// `target_name` keeps `resolution_recall` a ratio of commensurable units. Only
+/// bare calls (target = bare callee) and `Self::` markers (target =
+/// `EnclosingType::callee`) yield a countable target; every other qualified form
+/// resolves to `None` here and in the numerator, so the two stay commensurable.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {

@@ -8,14 +8,17 @@
 //!
 //! 088.003-T (path/module-qualified) and 088.004-T (method/Type-associated)
 //! set out to recover that recall. Copilot review proved that only a `Self::`
-//! call is resolvable WITHOUT import/scope analysis: `Self` is always the
-//! concrete enclosing impl type, so `Self::method()` rewrites to the exact
-//! `Type::method` index name and is immune to re-exports, imports, and
-//! module/type ambiguity. Every other qualified form (`crate::free`, bare
-//! `Type::method`, `module::free`, `super::free`) and every method/receiver call
-//! can be ambiguous without that analysis (Option C, deferred by 013-D), so it
-//! DEFERS to preserve the no-false-edge invariant (findings 1 & 7). These
-//! scenarios pin both the resolving `Self::` path and every deferral boundary.
+//! call in an INHERENT impl is resolvable WITHOUT import/scope analysis: Rust
+//! coherence (E0116) forbids an inherent `impl Widget` on a type defined outside
+//! this crate, so such a `Self` is guaranteed workspace-local and `Self::method()`
+//! rewrites to the exact `Type::method` index name, immune to re-exports,
+//! imports, and module/type ambiguity. A `Self::` call in a TRAIT impl
+//! (`impl Trait for Widget`, which MAY target an imported external type), and
+//! every other qualified form (`crate::free`, bare `Type::method`, `module::free`,
+//! `super::free`) and every method/receiver call, can be ambiguous without that
+//! analysis (Option C, deferred by 013-D), so they DEFER to preserve the
+//! no-false-edge invariant (findings 1 & 7). These scenarios pin both the
+//! resolving inherent-impl `Self::` path and every deferral boundary.
 //!
 //! Scenarios (by function name):
 //!   crate_root_free_fn_call_defers               crate::free()  -> NO edge
@@ -32,6 +35,7 @@
 //!   self_call_on_path_qualified_impl_type_uses_full_type  full impl type text
 //!   qualified_call_does_not_overwrite_direct_edge
 //!   submodule_module_qualified_free_fn_defers    crate::pkg::free() -> NO edge
+//!   trait_impl_self_call_defers                  Self:: in trait impl -> NO edge
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -522,5 +526,45 @@ async fn submodule_module_qualified_free_fn_defers() {
     assert!(
         !edges.iter().any(|(_, to)| to == &helper),
         "must not target the unrelated free `helper`, got {edges:?}"
+    );
+}
+
+// Scenario 16 (Copilot round-8 finding — trait-impl Self:: defers): a `Self::`
+// call inside a TRAIT impl (`impl Trait for Widget`) must DEFER. Rust coherence
+// (E0116) forbids an INHERENT `impl Widget` on an external type, but a TRAIT impl
+// may target an imported external type (`use dep::Widget;`). Resolving its
+// `Self::build()` to a same-named but UNRELATED local `Widget::build` would be a
+// false edge, so trait-impl `Self::` is not marked and defers. Only inherent-impl
+// `Self::` (coherence-guaranteed workspace-local) resolves.
+#[test]
+async fn trait_impl_self_call_defers() {
+    let (_tmp, q) = index_files(&[
+        (
+            "src/a.rs",
+            "pub trait LocalTrait {\n    fn run(&self);\n}\nimpl LocalTrait for Widget {\n    fn run(&self) {\n        Self::build();\n    }\n}\n",
+        ),
+        (
+            "src/b.rs",
+            "pub struct Widget;\nimpl Widget {\n    pub fn build() {}\n}\n",
+        ),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "a Self:: call in a trait impl must defer (coherence lets the impl type be external)"
+    );
+    let build = q
+        .resolve_reference_target("Widget::build")
+        .await
+        .expect("resolve Widget::build")
+        .expect("Widget::build indexed");
+    let edges = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+    assert!(
+        !edges.iter().any(|(_, to)| to == &build),
+        "must not target the unrelated local Widget::build, got {edges:?}"
     );
 }

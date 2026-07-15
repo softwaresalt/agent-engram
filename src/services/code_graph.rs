@@ -1557,13 +1557,16 @@ fn sha256_short(input: &str) -> String {
 /// The workspace-global index name a path-qualified call resolves against, or
 /// `None` when it must stay deferred to preserve precision.
 ///
-/// Only a `Self::` call resolves. Its `prefix` is the `Self::<EnclosingType>`
-/// marker set upstream, so `Self::build()` in `impl Widget` (prefix
-/// `Self::Widget`) resolves to the EXACT `Widget::build` index name. `Self::` is
-/// the only qualified form that is provably workspace-owned: it is anchored to a
-/// concrete impl type that is indexed with this exact text, so it is immune to
-/// re-exports, imports, and module/type ambiguity, and a singleton match is
-/// necessarily that method.
+/// Only a `Self::` call in an INHERENT impl resolves. Its `prefix` is the
+/// `Self::<EnclosingType>` marker set upstream, so `Self::build()` in
+/// `impl Widget` (prefix `Self::Widget`) resolves to the EXACT `Widget::build`
+/// index name. This is the only qualified form that is provably workspace-owned:
+/// Rust coherence (E0116) forbids an inherent `impl Widget` on a type defined
+/// outside this crate, so `Self` is guaranteed workspace-local and is indexed
+/// with this exact text — immune to re-exports, imports, and module/type
+/// ambiguity, and a singleton match is necessarily that method. (A `Self::` call
+/// in a TRAIT impl, which may target an imported external type, is NOT marked
+/// upstream and so arrives here without the `Self::` prefix — it returns `None`.)
 ///
 /// Every other qualified call — a bare or crate-rooted `Type::method()`, a
 /// module path `crate::a::helper()` (whose middle segment's module-vs-type

@@ -189,6 +189,20 @@ fn extract_impl(
     }
 
     if let Some(body_node) = node.child_by_field_name("body") {
+        // `Self::method()` resolution is sound only in an INHERENT impl. Rust
+        // coherence (E0116) forbids an inherent `impl Widget { .. }` on a type
+        // defined outside this crate, so an inherent impl's `Self` is guaranteed
+        // workspace-local and `Self::build()` resolves to this crate's
+        // `Widget::build`. A TRAIT impl (`impl Trait for Widget`) MAY be on an
+        // imported external type (`use dep::Widget;`) whose spelling collides with
+        // an unrelated local `Widget`, so its `Self::` calls must defer to avoid a
+        // false edge. Only pass the enclosing type (which drives the `Self`
+        // rewrite) for an inherent impl.
+        let self_enclosing_type = if trait_name.is_none() {
+            type_name.as_deref()
+        } else {
+            None
+        };
         let mut cursor = body_node.walk();
         for child in body_node.children(&mut cursor) {
             if child.kind() == "function_item" {
@@ -199,7 +213,7 @@ fn extract_impl(
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: func.name.clone(),
                     });
-                    extract_calls_from_body(child, source, &func.name, type_name.as_deref(), edges);
+                    extract_calls_from_body(child, source, &func.name, self_enclosing_type, edges);
                     symbols.push(ExtractedSymbol::Function(func));
                 }
             }
@@ -238,12 +252,14 @@ fn extract_calls_from_body(
                 // marker carrying the concrete enclosing impl type, so
                 // `Self::build()` inside `impl Widget` becomes `Self::Widget` and
                 // the resolver matches the exact `Widget::build` index name
-                // (088.004-T). `Self::` is the ONLY qualified form that is provably
-                // workspace-owned: it is anchored to a concrete impl type indexed
-                // with this exact text, so it is immune to re-exports, imports, and
-                // module/type ambiguity. Every other qualified call is deferred by
-                // the resolver (it cannot be shown workspace-owned without
-                // scope/import analysis). Outside an impl there is no concrete
+                // (088.004-T). `enclosing_type` is `Some` ONLY for an inherent impl
+                // (see `extract_impl`): Rust coherence guarantees such a `Self` is
+                // workspace-local, so the marker cannot mis-resolve to a same-named
+                // external type. This is the ONLY qualified form that is provably
+                // workspace-owned; every other qualified call (and every `Self::`
+                // in a trait impl, where `enclosing_type` is `None`) is deferred by
+                // the resolver, which cannot prove workspace ownership without
+                // scope/import analysis. Outside an impl there is no concrete
                 // `Self`, so the qualifier is left as-is and resolves to nothing.
                 let qualifier = match (qualifier, enclosing_type) {
                     (Some(q), Some(ty)) if q == "Self" => Some(format!("Self::{ty}")),
