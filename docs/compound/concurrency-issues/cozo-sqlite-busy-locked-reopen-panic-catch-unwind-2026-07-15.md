@@ -55,11 +55,11 @@ observe a value that never reaches the `Err` arm.
 Wrap the open in `std::panic::catch_unwind(AssertUnwindSafe(...))`, then:
 
 ```rust
-match std::panic::catch_unwind(AssertUnwindSafe(|| DbInstance::new("sqlite", path, ..))) {
+match std::panic::catch_unwind(AssertUnwindSafe(|| DbInstance::new("sqlite", path, Default::default()))) {
     Ok(Ok(db))   => Ok(db),
     Ok(Err(e))   => Err(e.to_string()),          // non-panic Err -> retry loop classifies it
     Err(payload) => {
-        let msg = panic_payload_message(&payload);
+        let msg = panic_payload_message(payload.as_ref());
         if is_sqlite_busy_or_locked_panic(&msg) { // SQLite-specific markers ONLY
             Err(msg)                               // convert busy/lock PANIC -> retryable Err
         } else {
