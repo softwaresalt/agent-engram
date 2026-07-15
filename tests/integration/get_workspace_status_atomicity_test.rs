@@ -128,14 +128,26 @@ async fn get_workspace_status_never_tears_workspace_and_config() {
 
     // Reader: sample the status and record any torn (path, enabled) pair. The
     // neutral binding is intentionally not asserted on (it carries whichever
-    // in-flight config value).
+    // in-flight config value). Track how often each CHECKED state is observed so
+    // the test cannot pass VACUOUSLY if scheduling hides the A/B invariant
+    // (Copilot PR#249): sample at least 300 times AND keep going (bounded) until
+    // BOTH A and B have actually been observed.
     let mut torn: Vec<(String, bool)> = Vec::new();
-    for _ in 0..300u32 {
+    let mut observed_a = 0u32;
+    let mut observed_b = 0u32;
+    let mut iterations = 0u32;
+    while (iterations < 300 || observed_a == 0 || observed_b == 0) && iterations < 5_000 {
+        iterations += 1;
         let status = tools::dispatch(state.clone(), "get_workspace_status", Some(json!({})))
             .await
             .expect("get_workspace_status must succeed");
         let path = status["path"].as_str().unwrap_or_default().to_owned();
         let enabled = status["retrieval_eval_enabled"].as_bool().unwrap_or(false);
+        if path == path_a {
+            observed_a += 1;
+        } else if path == path_b {
+            observed_b += 1;
+        }
         let torn_pair = (path == path_a && !enabled) || (path == path_b && enabled);
         if torn_pair {
             torn.push((path, enabled));
@@ -146,8 +158,14 @@ async fn get_workspace_status_never_tears_workspace_and_config() {
     writer.await.expect("writer task must join");
 
     assert!(
+        observed_a > 0 && observed_b > 0,
+        "test is vacuous unless BOTH checked states are observed \
+         (A={observed_a}, B={observed_b}, iterations={iterations})"
+    );
+    assert!(
         torn.is_empty(),
-        "get_workspace_status returned {} torn (workspace, config) pair(s): {torn:?}",
+        "get_workspace_status returned {} torn (workspace, config) pair(s) across {iterations} \
+         samples (observed A={observed_a}, B={observed_b}): {torn:?}",
         torn.len()
     );
 }

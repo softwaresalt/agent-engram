@@ -3,9 +3,14 @@ title: "Adversarial multi-model review — 088-F rec1 qualified-call resolution 
 type: closure
 date: 2026-07-15
 slug: 088-rec1-call-resolution-adversarial-review
-subject_commit: 4b68c3ffaa26554d9ad3769f3dffaf17633e1715
+subject_commit: 2dab77309c8e38735f8cf626e01a3a91c4b6acd1
 subject_base: a6b09258f0fbe8736e37dc712dd10604df41d58e
 subject_branch: feat/088-rec1-call-resolution
+subject_note: >-
+  Reviewed tip = 2dab773 (the four implementation commits 574f434 / e446211 / 927aa4b /
+  2dab773); verdict BLOCK on F1 (lowercase-qualified route). Later commits bd19ba6..4b68c3f
+  attempted remediation, after which 081-S halted (blocked pending Option C); PR #248 remains
+  open at 4b68c3f with documented blockers.
 scope: src tests Cargo.toml
 reviewers: 4
 review_models:
