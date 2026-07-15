@@ -167,8 +167,15 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        let db = cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
-            .map_err(|e| map_db_err(format!("cannot open CozoDB SQLite store: {e}")))?;
+        // Bounded reopen-retry (086.002-T): the serialisation lock above prevents
+        // the concurrent-open panic, but a rapid sequential reopen can still see a
+        // transient `database is locked` (SQLITE_BUSY) when the OS releases a
+        // just-closed handle's lock lazily (Windows lag). Retry that transient with
+        // capped exponential back-off + jitter, giving up with a clear error.
+        let db = open_db_with_retry(
+            || cozo::DbInstance::new("sqlite", &db_path_str, Default::default()),
+            |attempt| std::thread::sleep(reopen_backoff(attempt)),
+        )?;
         let cozo_db = CozoDb {
             inner: Arc::new(db),
         };
@@ -207,6 +214,78 @@ pub fn map_db_err<E: ToString>(err: E) -> EngramError {
     })
 }
 
+// ── 086.002-T: bounded reopen-retry for transient SQLITE_BUSY ──────────────
+//
+// The intra-process `connect_db_open_lock` mutex plus the advisory file lock
+// serialise opens WITHIN and ACROSS processes, but neither retries when the OS
+// releases a just-closed handle's lock lazily (Windows lock-release lag): a
+// rapid sequential reopen of the same branch DB can still surface a transient
+// `database is locked` (SQLITE_BUSY) from `DbInstance::new`. A bounded reopen
+// retry with capped exponential back-off + jitter absorbs that transient
+// durably, giving up with a clear `EngramError` (never an unwrap panic).
+
+/// Maximum attempts for the bounded CozoDB reopen-retry.
+const MAX_REOPEN_ATTEMPTS: u32 = 10;
+
+/// Whether a CozoDB open error is a transient `SQLITE_BUSY` worth retrying.
+fn is_retryable_open_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("locked") || m.contains("busy")
+}
+
+/// Random jitter in `0..cap_ms` used to de-synchronise concurrent reopeners so
+/// competing processes do not retry in lock-step (thundering herd).
+fn open_retry_jitter(cap_ms: u64) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    if cap_ms == 0 {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    // Fold in a high-resolution timestamp so successive draws differ even within
+    // the same process seed epoch. A clock error simply yields the seed-only
+    // value; it never panics.
+    if let Ok(dur) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.write_u128(dur.as_nanos());
+    }
+    hasher.finish() % cap_ms
+}
+
+/// Capped exponential back-off (20 ms → 250 ms) plus up to 50% jitter for reopen
+/// `attempt`. Over [`MAX_REOPEN_ATTEMPTS`] this gives ≈ 1.6–2.4 s of headroom —
+/// comfortably longer than the Windows lock-release lag that motivates it while
+/// staying well inside the 30 s advisory-lock deadline already held by the caller.
+fn reopen_backoff(attempt: u32) -> Duration {
+    let base = std::cmp::min(20u64 << attempt.min(4), 250);
+    Duration::from_millis(base + open_retry_jitter(base / 2))
+}
+
+/// Bounded reopen-retry driver around a fallible CozoDB open.
+///
+/// Retries only transient `SQLITE_BUSY` ("database is locked") outcomes, up to
+/// [`MAX_REOPEN_ATTEMPTS`], invoking `sleep` with the attempt index between
+/// tries. Any non-retryable error surfaces immediately; an exhausted budget
+/// surfaces the last busy error as an [`EngramError`] — never an unwrap panic.
+fn open_db_with_retry<T, E, F, S>(mut open: F, mut sleep: S) -> Result<T, EngramError>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Result<T, E>,
+    S: FnMut(u32),
+{
+    for attempt in 0..MAX_REOPEN_ATTEMPTS {
+        match open() {
+            Ok(db) => return Ok(db),
+            Err(e) => {
+                if is_retryable_open_error(&e.to_string()) && attempt + 1 < MAX_REOPEN_ATTEMPTS {
+                    sleep(attempt);
+                } else {
+                    return Err(map_db_err(format!("cannot open CozoDB SQLite store: {e}")));
+                }
+            }
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "cozo-backend"))]
@@ -219,7 +298,12 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::{
+        MAX_REOPEN_ATTEMPTS, is_retryable_open_error, open_db_with_retry, open_retry_jitter,
+        reopen_backoff,
+    };
     use super::{connect_db, connect_db_open_lock};
+    use crate::errors::EngramError;
 
     /// Verify two concurrent `connect_db` calls to the same path do not panic.
     ///
@@ -311,6 +395,109 @@ mod tests {
             !Arc::ptr_eq(&first, &third),
             "different DB paths must not share the same in-process mutex"
         );
+    }
+
+    // ── 086.002-T: bounded reopen-retry driver ──────────────────────────────
+
+    // Only transient busy/locked errors are retryable; other errors are not.
+    #[test]
+    fn is_retryable_open_error_matches_busy_and_locked() {
+        assert!(is_retryable_open_error(
+            "Cannot open store: database is locked"
+        ));
+        assert!(is_retryable_open_error(
+            "SQLITE_BUSY: the database file is busy"
+        ));
+        assert!(!is_retryable_open_error("no such table: calls_edge"));
+        assert!(!is_retryable_open_error("disk I/O error"));
+    }
+
+    // The back-off stays within the documented capped-exponential envelope.
+    #[test]
+    fn reopen_backoff_is_bounded_and_capped() {
+        for attempt in 0..MAX_REOPEN_ATTEMPTS {
+            let ms = u64::try_from(reopen_backoff(attempt).as_millis()).unwrap_or(u64::MAX);
+            assert!(
+                ms >= 20,
+                "attempt {attempt}: back-off must be at least the 20ms base floor: {ms}"
+            );
+            assert!(
+                ms <= 375,
+                "attempt {attempt}: back-off must be capped: {ms}"
+            );
+        }
+    }
+
+    // Jitter is bounded by its cap and produces variation (never a constant).
+    #[test]
+    fn open_retry_jitter_is_bounded_and_varies() {
+        assert_eq!(open_retry_jitter(0), 0, "a zero cap must yield zero jitter");
+        let mut any_nonzero = false;
+        for _ in 0..200 {
+            let j = open_retry_jitter(50);
+            assert!(j < 50, "jitter must stay below the cap: {j}");
+            if j > 0 {
+                any_nonzero = true;
+            }
+        }
+        assert!(any_nonzero, "jitter must introduce real variation");
+    }
+
+    // A transient busy is retried until the open succeeds, within budget.
+    #[test]
+    fn open_db_with_retry_succeeds_after_transient_busy() {
+        let mut attempts = 0u32;
+        let mut sleeps = 0u32;
+        let result: Result<u32, EngramError> = open_db_with_retry(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err("database is locked")
+                } else {
+                    Ok(7u32)
+                }
+            },
+            |_attempt| sleeps += 1,
+        );
+        assert_eq!(result.expect("must open within the retry budget"), 7);
+        assert_eq!(attempts, 3, "must retry twice then succeed");
+        assert_eq!(sleeps, 2, "must back off before each retry");
+    }
+
+    // A persistent busy is bounded and surfaces a clear EngramError (no panic).
+    #[test]
+    fn open_db_with_retry_gives_up_after_max_attempts() {
+        let mut attempts = 0u32;
+        let result: Result<u32, EngramError> = open_db_with_retry::<u32, &str, _, _>(
+            || {
+                attempts += 1;
+                Err("database is locked")
+            },
+            |_attempt| {},
+        );
+        assert!(
+            result.is_err(),
+            "persistent busy must give up with an error"
+        );
+        assert_eq!(
+            attempts, MAX_REOPEN_ATTEMPTS,
+            "retry budget must be bounded by MAX_REOPEN_ATTEMPTS"
+        );
+    }
+
+    // A non-busy open error is surfaced immediately without retrying.
+    #[test]
+    fn open_db_with_retry_surfaces_non_busy_error_immediately() {
+        let mut attempts = 0u32;
+        let result: Result<u32, EngramError> = open_db_with_retry::<u32, &str, _, _>(
+            || {
+                attempts += 1;
+                Err("disk I/O error")
+            },
+            |_attempt| {},
+        );
+        assert!(result.is_err(), "a fatal open error must surface");
+        assert_eq!(attempts, 1, "a non-retryable error must not retry");
     }
 
     /// Verify the in-process mutex serializes same-path open attempts.
