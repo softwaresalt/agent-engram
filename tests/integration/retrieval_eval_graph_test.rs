@@ -148,7 +148,47 @@ fn baz() {}
     );
 }
 
-// ── 084.002-T (D6F70DCC): numerator gated to configured caller languages ──────
+// ── 088-F: qualified-call denominator identity + deferral exclusion ────────────
+
+#[test]
+fn count_call_sites_distinguishes_qualified_paths_with_same_final_name() {
+    // Two crate-rooted qualified calls with the same final segment but different
+    // module paths are DISTINCT call sites — the denominator must not collapse
+    // them into one entry (which, since they resolve ambiguously to no edge,
+    // would shrink the denominator and inflate resolution_recall).
+    let source = r"
+fn foo() {
+    crate::a::helper();
+    crate::b::helper();
+}
+";
+    assert_eq!(
+        count_call_sites(source, Language::Rust),
+        2,
+        "crate::a::helper and crate::b::helper are two distinct qualified call sites"
+    );
+}
+
+#[test]
+fn count_call_sites_excludes_deferred_qualified_calls() {
+    // Only calls the indexer attempts to resolve count. A bare (non-crate-rooted)
+    // `Widget::build()` and an external `mem::swap()` are deferred (they cannot be
+    // shown to reference a workspace symbol), so they must NOT inflate the
+    // denominator; the crate-rooted call and the bare free call do.
+    let source = r"
+fn foo() {
+    Widget::build();
+    mem::swap();
+    crate::helper();
+    bare();
+}
+";
+    assert_eq!(
+        count_call_sites(source, Language::Rust),
+        2,
+        "only crate::helper and bare are attempted; Widget::build and mem::swap defer"
+    );
+}
 
 fn make_file(path: &str, id: &str, language: &str) -> CodeFile {
     CodeFile {

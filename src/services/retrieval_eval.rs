@@ -296,23 +296,23 @@ pub fn evaluate_semantic(
 ///
 /// This is the graph metric *denominator*: the parser call-site inventory
 /// (`ExtractedEdge::Calls`) discovered by [`parse_source`], restricted to the
-/// calls the indexer actually attempts to resolve. That routing is shared with
-/// the numerator via [`crate::services::code_graph::resolve_call_target_name`],
-/// so the denominator and numerator stay commensurable: bare identifier calls
-/// and path-qualified calls (`module::helper()` → bare free-function name;
-/// `Type::method()` → the `Type::method` impl-method name, 088-F) are counted,
-/// while method / receiver calls (`x.foo()`, which need receiver-type inference
-/// and stay deferred) are excluded. Blocklisted helpers (`clone`, `unwrap`, …)
-/// are excluded by the parser. A parse failure yields `0`.
+/// calls the indexer actually attempts to resolve. Whether a call is *attempted*
+/// is decided by the routing shared with the numerator
+/// ([`crate::services::code_graph::resolve_call_target_name`]): bare identifier
+/// calls and crate-internal path-qualified calls (088-F) are counted, while
+/// method / receiver calls and non-crate-rooted / external qualified calls (which
+/// stay deferred) are excluded. Blocklisted helpers (`clone`, `unwrap`, …) are
+/// excluded by the parser. A parse failure yields `0`.
 ///
-/// Counts **distinct `(caller, target-name)` pairs**, not raw call occurrences
-/// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
-/// by `(from, to)`, so a caller that invokes the same target twice contributes a
-/// single edge; counting the denominator in the same distinct-relation unit
-/// keeps `resolution_recall` a ratio of commensurable units and stops a repeated
-/// call from spuriously deflating recall. A path-qualified call uses its resolved
-/// index name (`Type::method` or the bare module target), so distinct qualified
-/// targets from one caller stay distinct relations.
+/// Counts **distinct call-site relations**, not raw call occurrences (084.002-T /
+/// 88B5FAFD), so a caller that invokes the same target twice contributes one
+/// relation. A *bare* call keys on `(caller, callee)` — the same unit as the
+/// `(from, to)`-keyed numerator. A *qualified* call keys on its full source path
+/// `(caller, "prefix::callee")` so two distinct qualified call sites
+/// (`crate::a::helper()` and `crate::b::helper()`) are NOT collapsed into one
+/// denominator entry — each is a distinct attempted site (and, being ambiguous by
+/// bare name, resolves to no edge), which keeps `resolution_recall` honest rather
+/// than inflated by a shrunken denominator.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
@@ -327,14 +327,26 @@ pub fn count_call_sites(source: &str, language: Language) -> usize {
                 qualifier,
             } = edge
             {
-                if let Some(target) = crate::services::code_graph::resolve_call_target_name(
+                // Attempted iff the shared routing resolves it (parity with the
+                // numerator's edge-producing path).
+                if crate::services::code_graph::resolve_call_target_name(
                     callee,
                     *is_method,
                     *is_qualified,
                     qualifier.as_deref(),
-                ) {
-                    relations.insert((caller.clone(), target));
+                )
+                .is_none()
+                {
+                    continue;
                 }
+                // Identity: a qualified call keys on its full source path so
+                // distinct call sites stay distinct; a bare call keys on the
+                // (caller, callee) unit shared with the numerator.
+                let identity = match qualifier {
+                    Some(prefix) => format!("{prefix}::{callee}"),
+                    None => callee.clone(),
+                };
+                relations.insert((caller.clone(), identity));
             }
         }
         relations.len()
