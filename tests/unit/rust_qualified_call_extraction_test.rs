@@ -96,10 +96,11 @@ fn caller() {
     );
 }
 
-// A `Self::build()` call inside `impl Widget` must resolve `Self` to the
-// concrete enclosing type `Widget`, so the resolver can match `Widget::build`.
+// A `Self::build()` call inside `impl Widget` must rewrite `Self` to a
+// crate-rooted path carrying the concrete enclosing type (`crate::Widget`), so
+// the resolver treats it as a workspace-identified `Widget::build`.
 #[test]
-fn self_qualified_call_rewrites_to_enclosing_type() {
+fn self_qualified_call_rewrites_to_crate_rooted_enclosing_type() {
     let source = r#"
 struct Widget;
 impl Widget {
@@ -113,8 +114,8 @@ impl Widget {
     assert!(
         found
             .iter()
-            .any(|(c, _, q, qual)| c == "build" && *q && qual.as_deref() == Some("Widget")),
-        "Self::build() in impl Widget must carry qualifier Some(\"Widget\"), got {found:?}"
+            .any(|(c, _, q, qual)| c == "build" && *q && qual.as_deref() == Some("crate::Widget")),
+        "Self::build() in impl Widget must carry qualifier Some(\"crate::Widget\"), got {found:?}"
     );
 }
 

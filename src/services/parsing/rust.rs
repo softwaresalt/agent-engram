@@ -234,13 +234,17 @@ fn extract_calls_from_body(
             if let Some((callee, is_method, is_qualified, qualifier)) =
                 resolve_call_name(current, source)
             {
-                // Rewrite a `Self::` qualifier to the concrete enclosing impl
-                // type so `Self::build()` inside `impl Widget` routes as
-                // `Widget::build` (088.004-T). Outside an impl there is no
-                // concrete `Self`, so the qualifier is left as-is and will match
-                // no index name (no edge) rather than mis-resolving.
+                // Rewrite a `Self::` qualifier to a crate-rooted path carrying the
+                // concrete enclosing impl type, so `Self::build()` inside
+                // `impl Widget` routes as the workspace-identified
+                // `crate::Widget` -> `Widget::build` (088.004-T). `Self` is always
+                // a crate-internal type (a crate can only impl a type it controls),
+                // so marking it `crate::` lets the resolver promote it while a bare
+                // `Widget::build()` from an unknown crate stays deferred. Outside an
+                // impl there is no concrete `Self`, so the qualifier is left as-is
+                // and matches no index name (no edge) rather than mis-resolving.
                 let qualifier = match (qualifier, enclosing_type) {
-                    (Some(q), Some(ty)) if q == "Self" => Some(ty.to_owned()),
+                    (Some(q), Some(ty)) if q == "Self" => Some(format!("crate::{ty}")),
                     (other, _) => other,
                 };
                 edges.push(ExtractedEdge::Calls {

@@ -111,9 +111,11 @@ async fn assert_single_edge_to(q: &CodeGraphQueries, caller: &str, target: &str)
 }
 
 // Scenario 1 (088.003): an unambiguous crate-rooted module call resolves to
-// exactly one singleton edge whose target is the bare free function. Crate-rooted
-// (`crate::`/`self`/`super`) proves the target is in this workspace, so a
-// singleton match is the target.
+// exactly one singleton edge whose target is the bare free function. The crate
+// root (`crate`/`self`/`super`) proves the target is in this workspace; because
+// functions are indexed by bare name (module paths are NOT part of the index),
+// resolution matches the bare final segment singleton-only. The same-named
+// ambiguity guard is Scenario 3.
 #[test]
 async fn module_qualified_unambiguous_resolves_to_singleton() {
     let (_tmp, q) = index_files(&[
@@ -132,12 +134,16 @@ async fn module_qualified_unambiguous_resolves_to_singleton() {
     assert_single_edge_to(&q, "caller", "do_work").await;
 }
 
-// Scenario 2 (088.004): an unambiguous type-associated cross-file call resolves
-// to exactly one singleton edge whose target is the `Type::method` impl method.
+// Scenario 2 (088.004): an unambiguous crate-rooted type-associated cross-file
+// call resolves to exactly one singleton edge whose target is the `Type::method`
+// impl method. Crate-rooted proves the type is in this workspace.
 #[test]
 async fn type_qualified_unambiguous_resolves_to_singleton() {
     let (_tmp, q) = index_files(&[
-        ("src/a.rs", "pub fn caller() {\n    Widget::build();\n}\n"),
+        (
+            "src/a.rs",
+            "pub fn caller() {\n    crate::widgets::Widget::build();\n}\n",
+        ),
         (
             "src/b.rs",
             "pub struct Widget;\nimpl Widget {\n    pub fn build() {}\n}\n",
@@ -147,7 +153,7 @@ async fn type_qualified_unambiguous_resolves_to_singleton() {
     assert_eq!(
         singleton_count(&q).await,
         1,
-        "Type::method() with a unique impl target must create one singleton"
+        "crate-rooted Type::method() with a unique impl target must create one singleton"
     );
     assert_single_edge_to(&q, "caller", "Widget::build").await;
 }
@@ -172,12 +178,16 @@ async fn module_qualified_ambiguous_creates_no_edge() {
     );
 }
 
-// Scenario 4 (precision): a type-associated call whose `Type::method` is defined
-// in two impl blocks is ambiguous and must create NO edge.
+// Scenario 4 (precision): a crate-rooted type-associated call whose
+// `Type::method` is defined in two impl blocks is ambiguous and must create NO
+// edge.
 #[test]
 async fn type_qualified_ambiguous_creates_no_edge() {
     let (_tmp, q) = index_files(&[
-        ("src/a.rs", "pub fn caller() {\n    Widget::build();\n}\n"),
+        (
+            "src/a.rs",
+            "pub fn caller() {\n    crate::widgets::Widget::build();\n}\n",
+        ),
         (
             "src/b.rs",
             "pub struct Widget;\nimpl Widget {\n    pub fn build() {}\n}\n",
@@ -192,13 +202,16 @@ async fn type_qualified_ambiguous_creates_no_edge() {
     );
 }
 
-// Scenario 5 (the finding-1/finding-7 guard): a type-qualified call
-// `Thing::parse()` whose `Thing::parse` is NOT indexed must NOT fall back to an
-// unrelated unique free function `parse` — that would be a false singleton edge.
+// Scenario 5 (the finding-1/finding-7 guard): a crate-rooted type-qualified call
+// `crate::Thing::parse()` whose `Thing::parse` is NOT indexed must NOT fall back
+// to an unrelated unique free function `parse` — that would be a false edge.
 #[test]
 async fn type_qualified_does_not_fall_back_to_free_function() {
     let (_tmp, q) = index_files(&[
-        ("src/a.rs", "pub fn caller() {\n    Thing::parse();\n}\n"),
+        (
+            "src/a.rs",
+            "pub fn caller() {\n    crate::Thing::parse();\n}\n",
+        ),
         ("src/b.rs", "pub fn parse() {}\n"),
     ])
     .await;
@@ -322,4 +335,77 @@ async fn nested_impl_self_call_does_not_mis_resolve_to_outer_type() {
             "nested impl Self::helper() must not create an Outer::run -> Outer::helper {resolution} edge, got {edges:?}"
         );
     }
+}
+
+// Scenario 10 (C1 — type-route workspace-identity guard): a BARE `Widget::build()`
+// (no crate root) cannot be shown to reference the workspace `Widget` rather than
+// an identically-named external type, so it must DEFER — even though a unique
+// workspace `Widget::build` exists. This is the type-route analog of the
+// module-route precision guard.
+#[test]
+async fn bare_type_qualified_call_defers_even_with_workspace_type() {
+    let (_tmp, q) = index_files(&[
+        ("src/a.rs", "pub fn caller() {\n    Widget::build();\n}\n"),
+        (
+            "src/b.rs",
+            "pub struct Widget;\nimpl Widget {\n    pub fn build() {}\n}\n",
+        ),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "a bare (non-crate-rooted) Type::method() must defer to avoid an external-type collision"
+    );
+}
+
+// Scenario 11 (C2/C3 — no wrong same-file direct edge): the caller's own file
+// defines an unrelated local `do_work`, while the crate-rooted call targets
+// another module. A qualified call must NOT take the same-file bare-name fast
+// path (which would wrongly bind to the local `do_work`); it is staged for global
+// singleton resolution, and since `do_work` is now ambiguous, it yields no edge.
+#[test]
+async fn qualified_call_with_local_same_name_creates_no_wrong_direct_edge() {
+    let (_tmp, q) = index_files(&[
+        (
+            "src/a.rs",
+            "pub fn caller() {\n    crate::helpers::do_work();\n}\n\npub fn do_work() {}\n",
+        ),
+        ("src/b.rs", "pub fn do_work() {}\n"),
+    ])
+    .await;
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("list direct");
+    assert!(
+        direct.is_empty(),
+        "a qualified call must not create a same-file direct edge, got {direct:?}"
+    );
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "the now-ambiguous qualified target resolves to no edge"
+    );
+}
+
+// Scenario 12 (088.004 — Self:: cross-file): `Self::assist()` inside `impl Gadget`
+// (a.rs) rewrites to the crate-rooted `Gadget::assist` and resolves to the unique
+// impl method in b.rs.
+#[test]
+async fn self_qualified_call_resolves_cross_file() {
+    let (_tmp, q) = index_files(&[
+        (
+            "src/a.rs",
+            "pub struct Gadget;\nimpl Gadget {\n    pub fn run() {\n        Self::assist();\n    }\n}\n",
+        ),
+        ("src/b.rs", "impl Gadget {\n    pub fn assist() {}\n}\n"),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        1,
+        "Self::assist() must resolve to the unique Gadget::assist impl method"
+    );
+    assert_single_edge_to(&q, "Gadget::run", "Gadget::assist").await;
 }

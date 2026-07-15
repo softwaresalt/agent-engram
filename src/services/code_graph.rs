@@ -479,12 +479,12 @@ async fn index_workspace_impl(
                         qualifier,
                     } => {
                         // Resolve the workspace index name this call site should
-                        // match. Bare identifier calls resolve by the bare
-                        // `callee`; path-qualified calls (`module::helper()`,
-                        // `Type::method()`) resolve by the qualifier-derived name
-                        // (088.003-T / 088.004-T); method/receiver calls
-                        // (`x.foo()`) stay deferred (013-D Option B). `None` means
-                        // "not attempted" and is skipped, never mis-resolved.
+                        // match, or skip it. Bare identifier calls resolve by the
+                        // bare `callee`; a crate-internal path-qualified call
+                        // (`crate`/`self`/`super`/`Self::`) resolves by its
+                        // qualifier-derived name (088.003-T / 088.004-T); every
+                        // other qualified call and every method/receiver call stays
+                        // deferred (`None` is skipped, never mis-resolved).
                         let Some(target_name) = resolve_call_target_name(
                             callee,
                             *is_method,
@@ -493,24 +493,38 @@ async fn index_workspace_impl(
                         ) else {
                             continue;
                         };
-                        // A callee resolved locally becomes a direct edge; a
-                        // caller-resolved but callee-unresolved (cross-file) call
-                        // is staged for the deferred post-pass (082.002-T) instead
-                        // of being silently dropped.
-                        match (
-                            find_function_id(&function_ids, caller),
-                            find_function_id(&function_ids, &target_name),
-                        ) {
-                            (Some(from_id), Some(to_id)) => {
-                                queries.create_calls_edge(&from_id, &to_id).await?;
-                                result.edges_created += 1;
-                            }
-                            (Some(from_id), None) => {
+                        if *is_qualified {
+                            // A path-qualified call may target another file, so it
+                            // must NOT take the same-file bare-name fast path — that
+                            // would create a wrong `direct` edge to an unrelated
+                            // local of the same name. Stage it for workspace-global
+                            // singleton resolution in the deferred post-pass, which
+                            // enforces the exactly-one-definition guard.
+                            if let Some(from_id) = find_function_id(&function_ids, caller) {
                                 queries
                                     .put_staged_call(&from_id, &target_name, &rel_path)
                                     .await?;
                             }
-                            _ => {}
+                        } else {
+                            // Bare call: a callee resolved in this file becomes a
+                            // direct edge; a caller-resolved but callee-unresolved
+                            // (cross-file) call is staged for the deferred post-pass
+                            // (082.002-T) instead of being silently dropped.
+                            match (
+                                find_function_id(&function_ids, caller),
+                                find_function_id(&function_ids, &target_name),
+                            ) {
+                                (Some(from_id), Some(to_id)) => {
+                                    queries.create_calls_edge(&from_id, &to_id).await?;
+                                    result.edges_created += 1;
+                                }
+                                (Some(from_id), None) => {
+                                    queries
+                                        .put_staged_call(&from_id, &target_name, &rel_path)
+                                        .await?;
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -1140,12 +1154,12 @@ pub async fn sync_workspace_with_progress(
                         is_qualified,
                         qualifier,
                     } => {
-                        // Mirror the index-path arm: resolve the target index name
-                        // (bare, module-path, or Type::method); method/receiver
-                        // calls stay deferred (013-D Option B). `None` is skipped,
-                        // never mis-resolved. The deferred post-pass runs on full
-                        // index only, so a qualified cross-file call staged here is
-                        // resolved on the next full index — parity with bare calls.
+                        // Mirror the index-path arm. `None` (a deferred qualified /
+                        // method-receiver call) is skipped. A path-qualified call is
+                        // always staged (never same-file direct) so a wrong local
+                        // same-name match cannot create a false direct edge; the
+                        // deferred post-pass (full index only) does the
+                        // workspace-global singleton resolution.
                         let Some(target_name) = resolve_call_target_name(
                             callee,
                             *is_method,
@@ -1154,19 +1168,27 @@ pub async fn sync_workspace_with_progress(
                         ) else {
                             continue;
                         };
-                        match (
-                            find_function_id(&new_function_ids, caller),
-                            find_function_id(&new_function_ids, &target_name),
-                        ) {
-                            (Some(from_id), Some(to_id)) => {
-                                queries.create_calls_edge(&from_id, &to_id).await?;
-                            }
-                            (Some(from_id), None) => {
+                        if *is_qualified {
+                            if let Some(from_id) = find_function_id(&new_function_ids, caller) {
                                 queries
                                     .put_staged_call(&from_id, &target_name, &rel_path)
                                     .await?;
                             }
-                            _ => {}
+                        } else {
+                            match (
+                                find_function_id(&new_function_ids, caller),
+                                find_function_id(&new_function_ids, &target_name),
+                            ) {
+                                (Some(from_id), Some(to_id)) => {
+                                    queries.create_calls_edge(&from_id, &to_id).await?;
+                                }
+                                (Some(from_id), None) => {
+                                    queries
+                                        .put_staged_call(&from_id, &target_name, &rel_path)
+                                        .await?;
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -1531,10 +1553,9 @@ fn sha256_short(input: &str) -> String {
     sha256_hex(input)[..16].to_owned()
 }
 
-/// True when a path segment names a Rust *type* — UpperCamelCase, or the `Self`
-/// alias before it is rewritten to the enclosing type. Used to route a
-/// type-associated call (`Type::method`) apart from a module-path call without a
-/// type-checker.
+/// True when a path segment names a Rust *type* — an UpperCamelCase identifier.
+/// Used, for a crate-internal path, to route a type-associated call
+/// (`Type::method`) apart from a module-path call without a type-checker.
 fn segment_is_type(segment: &str) -> bool {
     segment.chars().next().is_some_and(char::is_uppercase)
 }
@@ -1543,36 +1564,39 @@ fn segment_is_type(segment: &str) -> bool {
 /// `None` when it must stay deferred to preserve precision.
 ///
 /// `prefix` is the call's path prefix — every segment before the bare `callee`:
-/// `Type` for `Type::parse()`, `crate::util` for `crate::util::helper()`, `mem`
-/// for `mem::swap()`.
+/// `crate::util` for `crate::util::helper()`, `crate::Widget` for a rewritten
+/// `Self::build()`, `Widget` for a bare `Widget::build()`, `mem` for
+/// `mem::swap()`.
 ///
-/// * type-associated call — the immediate (last) prefix segment is
-///   UpperCamelCase: resolve the `Type::method` impl-method index name
-///   (088.004-T). Precision-safe: that name exists only for a workspace impl
-///   method, so an external type finds no match rather than a false one.
-/// * in-workspace module call — the prefix root is `crate` / `self` / `super`:
-///   resolve the bare free-function name (088.003-T). Precision-safe: the root
-///   proves the target lives in THIS workspace, so a singleton (exactly-one)
-///   match is that target.
-/// * external / opaque module call — any other qualifier (`mem::swap`,
-///   `tokio::spawn`, `helpers::do_work`): DEFERRED (`None`). Its bare name could
-///   collide with an unrelated workspace free function of the same name — a
-///   false edge, which the invariant behind findings 1 & 7 forbids.
+/// A qualified call resolves ONLY when the path is **crate-internal** — the root
+/// segment is `crate` / `self` / `super` (a `Self::` call is rewritten to
+/// `crate::Type` upstream). Only then is the target provably a workspace symbol,
+/// so a singleton (exactly-one) match is that target:
 ///
+/// * crate-internal type-associated call (immediate segment UpperCamelCase) ->
+///   the `Type::method` impl-method index name (088.004-T);
+/// * crate-internal module call -> the bare free-function name (088.003-T).
+///
+/// Every other qualifier — a bare `Type::method()` or `module::helper()`, or an
+/// `external::Type::method()` — is DEFERRED (`None`): without scope analysis its
+/// name could collide with an unrelated same-named workspace symbol, which would
+/// be a false edge (the invariant behind findings 1 & 7; Copilot review).
 /// Resolution stays singleton-only in the post-pass, so an ambiguous or absent
 /// target still yields no edge.
 fn qualified_target_name(callee: &str, prefix: &str) -> Option<String> {
     let root = prefix.split("::").map(str::trim).find(|s| !s.is_empty())?;
+    // Workspace-identity gate: only crate-internal roots prove the target is in
+    // this workspace. Everything else defers rather than risk a false edge.
+    if !matches!(root, "crate" | "self" | "super") {
+        return None;
+    }
     let immediate = prefix.rsplit("::").map(str::trim).find(|s| !s.is_empty())?;
     if segment_is_type(immediate) {
-        // Type-associated -> the `Type::method` impl-method index name.
+        // Crate-internal type-associated call -> the `Type::method` index name.
         Some(format!("{immediate}::{callee}"))
-    } else if matches!(root, "crate" | "self" | "super") {
-        // Crate-internal module -> the bare free-function index name.
-        Some(callee.to_owned())
     } else {
-        // External / opaque module qualifier -> defer (no false edge).
-        None
+        // Crate-internal module call -> the bare free-function index name.
+        Some(callee.to_owned())
     }
 }
 

@@ -110,16 +110,16 @@ const BASELINE: &[(&str, &str)] = &[
 ];
 
 // The same bare calls plus a crate-rooted module call (`crate::shapes::compute`),
-// a type-associated call (`Circle::draw`), a method/receiver call
-// (`renderer.render()`), and an EXTERNAL module call (`mem::swap()`) that must
-// NOT resolve to the unrelated free `swap`. The two in-workspace qualified calls
-// resolve; the method and external-module calls stay deferred (excluded from
-// both numerator and denominator).
+// a crate-rooted type-associated call (`crate::widgets::Circle::draw`), a
+// method/receiver call (`renderer.render()`), and an EXTERNAL module call
+// (`mem::swap()`) that must NOT resolve to the unrelated free `swap`. The two
+// crate-rooted qualified calls resolve; the method and external-module calls stay
+// deferred (excluded from both numerator and denominator).
 const ENHANCED: &[(&str, &str)] = &[
     (
         "src/a.rs",
         "pub fn caller() {\n    helper();\n    missing_target();\n    crate::shapes::compute();\n    \
-         Circle::draw();\n    renderer.render();\n    mem::swap();\n}\n",
+         crate::widgets::Circle::draw();\n    renderer.render();\n    mem::swap();\n}\n",
     ),
     ("src/b.rs", "pub fn helper() {}\n"),
     ("src/c.rs", "pub fn compute() {}\n"),
