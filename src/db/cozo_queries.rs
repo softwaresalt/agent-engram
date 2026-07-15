@@ -1728,6 +1728,17 @@ stale[from, to] :=
             .await?
             .into_iter()
             .collect();
+        // Snapshot `direct` (in-file resolved) edges. A qualified call is always
+        // staged — even when its target is in the caller's own file — so its
+        // resolution must never overwrite a `direct` edge for the same
+        // `(from, to)`: relabeling a real in-file call as `calls_resolved_singleton`
+        // would let a later rollback retract it, losing the direct relation. This
+        // upholds this method's invariant that `direct` edges are never touched.
+        let direct: HashSet<(String, String)> = self
+            .list_calls_edges_by_resolution("direct")
+            .await?
+            .into_iter()
+            .collect();
         let mut resolved = 0usize;
         for call in &staged {
             // Resolve solely when a single function carries the callee name. A
@@ -1736,6 +1747,11 @@ stale[from, to] :=
             // and never touches singletons whose staging was not repopulated.
             match name_index.get(&call.callee_name) {
                 Some(ids) if ids.len() == 1 => {
+                    // Preserve a pre-existing `direct` edge for this exact pair
+                    // rather than overwriting its provenance with a singleton.
+                    if direct.contains(&(call.caller_id.clone(), ids[0].clone())) {
+                        continue;
+                    }
                     self.create_calls_edge_with_resolution(
                         &call.caller_id,
                         &ids[0],

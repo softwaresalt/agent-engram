@@ -11,14 +11,22 @@
 //!
 //! * BASELINE — bare cross-file calls only (models pre-088 behavior, where
 //!   path-qualified calls were extracted but dropped): recall = 1/2 = 0.5.
-//! * ENHANCED — the same bare calls plus a crate-rooted `crate::shapes::compute`
-//!   call, a `Type::method` call, a `receiver.method()` call, and an EXTERNAL
+//! * ENHANCED — the same bare calls plus a crate-root free-function call
+//!   (`crate::compute()`, the sound module route), a crate-rooted `Type::method`
+//!   call (`crate::Circle::draw()`), a `receiver.method()` call, and an EXTERNAL
 //!   `mem::swap()` call. The two in-workspace qualified calls resolve to their
 //!   correct targets; the method call and the external-module call stay deferred
 //!   (excluded from both numerator and denominator), lifting recall to
 //!   3/4 = 0.75 with ZERO false edges — and `mem::swap()` does NOT mis-resolve to
 //!   the unrelated free `swap` (asserted by identity, since the dangling-only
 //!   false_edge_rate cannot see mis-resolution to a real-but-wrong target).
+//!
+//! Module-path resolution is exact-match: a crate-root free fn (`crate::compute`)
+//! resolves by bare name, and a crate-rooted type path (`crate::Circle::draw`)
+//! resolves by its exact `Type::method` index name. A SUBMODULE free-fn call
+//! (`crate::pkg::helper()`) is not resolvable without scope/index analysis
+//! (Option C, deferred), so it defers — that boundary is guarded by
+//! `submodule_module_qualified_free_fn_defers` in `calls_qualified_resolution`.
 //!
 //! ACCEPTANCE EVIDENCE (recorded 2026-07-14):
 //!   resolution_recall  0.50 -> 0.75   (UP: +0.25, the two in-workspace qualified calls)

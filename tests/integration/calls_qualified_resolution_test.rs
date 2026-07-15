@@ -445,3 +445,79 @@ async fn self_call_on_path_qualified_impl_type_uses_full_type() {
         "must not target the unrelated Bar::help, got {edges:?}"
     );
 }
+
+// Scenario 14 (C2 — qualified call must not overwrite a direct edge): a caller
+// that calls both `helper()` (in-file, direct) and `crate::helper()` (qualified,
+// staged) for the SAME in-file target must KEEP the edge's `direct` provenance —
+// the post-pass must not relabel it `calls_resolved_singleton` (which a later
+// rollback would then wrongly retract).
+#[test]
+async fn qualified_call_does_not_overwrite_direct_edge() {
+    let (_tmp, q) = index_files(&[(
+        "src/a.rs",
+        "pub fn caller() {\n    helper();\n    crate::helper();\n}\n\npub fn helper() {}\n",
+    )])
+    .await;
+    let caller = q
+        .resolve_reference_target("caller")
+        .await
+        .expect("resolve caller")
+        .expect("caller indexed");
+    let helper = q
+        .resolve_reference_target("helper")
+        .await
+        .expect("resolve helper")
+        .expect("helper indexed");
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("list direct");
+    assert!(
+        direct.contains(&(caller.clone(), helper.clone())),
+        "the in-file call must keep its direct edge, got {direct:?}"
+    );
+    let singletons = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+    assert!(
+        !singletons.contains(&(caller, helper)),
+        "the direct edge must not be overwritten to a singleton, got {singletons:?}"
+    );
+}
+
+// Scenario 15 (C1/C3 boundary — submodule module free-fn defers): a
+// submodule-qualified free-function call `crate::pkg::helper()` resolves to the
+// EXACT `pkg::helper`, which is never indexed for a module free function (those
+// are indexed by bare name), so it DEFERS — no false edge to the unrelated free
+// `helper`. Sound module-path resolution of submodule free fns needs scope/index
+// analysis (Option C, deferred).
+#[test]
+async fn submodule_module_qualified_free_fn_defers() {
+    let (_tmp, q) = index_files(&[
+        (
+            "src/a.rs",
+            "pub fn caller() {\n    crate::pkg::helper();\n}\n",
+        ),
+        ("src/b.rs", "pub fn helper() {}\n"),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        0,
+        "a submodule module free-fn call defers (pkg::helper is not indexed); no false edge"
+    );
+    let helper = q
+        .resolve_reference_target("helper")
+        .await
+        .expect("resolve helper")
+        .expect("helper indexed");
+    let edges = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+    assert!(
+        !edges.iter().any(|(_, to)| to == &helper),
+        "must not target the unrelated free `helper`, got {edges:?}"
+    );
+}
