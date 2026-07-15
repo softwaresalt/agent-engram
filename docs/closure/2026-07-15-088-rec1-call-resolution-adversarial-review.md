@@ -1,3 +1,22 @@
+---
+title: "Adversarial multi-model review — 088-F rec1 qualified-call resolution (shipment 081-S)"
+type: closure
+date: 2026-07-15
+slug: 088-rec1-call-resolution-adversarial-review
+subject_commit: 4b68c3ffaa26554d9ad3769f3dffaf17633e1715
+subject_base: a6b09258f0fbe8736e37dc712dd10604df41d58e
+subject_branch: feat/088-rec1-call-resolution
+scope: src tests Cargo.toml
+reviewers: 4
+review_models:
+  - reviewer-a: claude-opus-4.8 (Tier 3 frontier)
+  - reviewer-b: gpt-5.6-sol (Tier 3 frontier)
+  - reviewer-c: gemini-3.1-pro-preview (Tier 2)
+  - reviewer-d: claude-sonnet-4.6 (Tier 2)
+verdict: BLOCK
+gate_blocking: true
+---
+
 # Adversarial Review — 088-F rec1 Qualified-Call Resolution
 
 - **Date:** 2026-07-15

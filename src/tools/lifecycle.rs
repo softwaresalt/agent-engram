@@ -487,8 +487,18 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
     let stale_now = snapshot.stale_files || detect_stale_since(&snapshot.file_mtimes, &engram_dir);
 
     if stale_now != snapshot.stale_files {
+        // Only write the recomputed staleness back if the SNAPSHOTTED workspace is
+        // still the active binding: `update_workspace` mutates whichever workspace
+        // is active when the lock is acquired, so a concurrent rebind must not
+        // receive workspace A's stale flag computed against workspace A's files
+        // (status polling must not contaminate a new binding — Copilot PR#249).
+        let snapshot_id = snapshot.workspace_id.clone();
         let _ = state
-            .update_workspace(|ws| ws.stale_files = stale_now)
+            .update_workspace(|ws| {
+                if ws.workspace_id == snapshot_id {
+                    ws.stale_files = stale_now;
+                }
+            })
             .await;
     }
 

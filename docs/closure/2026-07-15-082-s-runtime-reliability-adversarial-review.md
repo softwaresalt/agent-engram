@@ -1,3 +1,23 @@
+---
+title: "Adversarial multi-model review — 082-S runtime reliability & concurrency hardening (086-F)"
+type: closure
+date: 2026-07-15
+slug: 082-s-runtime-reliability-adversarial-review
+subject_commit: 9257917bdd30425c7bbc6718388c72779f5555de
+subject_base: a6b09258f0fbe8736e37dc712dd10604df41d58e
+subject_branch: feat/086-runtime-reliability
+scope: src tests Cargo.toml
+reviewers: 5
+review_models:
+  - reviewer-a: claude-opus-4.8 (Tier 3 frontier)
+  - reviewer-b: gpt-5.6-sol (Tier 3 frontier)
+  - reviewer-c: gemini-3.1-pro-preview (Tier 3 frontier)
+  - reviewer-d: claude-sonnet-4.6 (Tier 2)
+  - reviewer-e: mai-code-1-flash-picker (Tier 1)
+verdict: SHIP-WITH-FIXES
+gate_blocking: true
+---
+
 # Adversarial Review — Shipment 082-S (`feat/086-runtime-reliability`)
 
 **Date:** 2026-07-15 · **Base:** `a6b0925` (Stage) · **Tip:** `9257917`
