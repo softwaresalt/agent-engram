@@ -466,12 +466,17 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
 }
 
 pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
-    // 086.004-T: capture the workspace binding AND its config in a SINGLE atomic
-    // snapshot at handler entry (the pattern `tools/eval.rs` uses). Reading the
-    // retrieval-eval flag from a separate `workspace_config()` AFTER the
-    // `connect_db` round-trip let a concurrent `set_workspace` (which updates the
-    // binding and its config in two separate awaits) pair this workspace's
-    // path/branch with a DIFFERENT config's `retrieval_eval_enabled`.
+    // 086.004-T: read the workspace binding AND its config TOGETHER at handler
+    // entry via one `snapshot_dispatch_context()` (the pattern `tools/eval.rs`
+    // uses), instead of reading the retrieval-eval flag from a separate
+    // `workspace_config()` AFTER the `connect_db` round-trip. That wide gap let a
+    // concurrent `set_workspace` pair this workspace's path/branch with a
+    // DIFFERENT config's `retrieval_eval_enabled`; taking both under one
+    // dispatch-context read eliminates that WIDE tear window. NOTE: `set_workspace`
+    // still publishes the binding and its config in two separate awaits, so this
+    // is not a strict atomic publish/observe guarantee — the residual, much
+    // narrower writer-side window is a tracked follow-up (082-S review F4), not
+    // closed here.
     let Some(ctx) = state.snapshot_dispatch_context().await else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
@@ -530,8 +535,8 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         connection_count: state.active_connections(),
         code_graph,
         scan_status: state.scan_progress_snapshot().await,
-        // Exposed atomically with the workspace binding above for capability
-        // discovery (086.004-T).
+        // Read from the SAME dispatch-context snapshot as the workspace binding
+        // above (not a separate later read), for capability discovery (086.004-T).
         retrieval_eval_enabled,
     })
 }
