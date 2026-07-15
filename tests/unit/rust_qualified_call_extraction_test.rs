@@ -2,16 +2,16 @@
 //!
 //! The extractor already reduces a path-qualified call `A::b()` to its bare
 //! final segment `b` and marks it `is_qualified`. Qualification-aware resolution
-//! (088.003-T / 088.004-T) additionally needs the full path prefix
-//! (`crate::util` for `crate::util::helper()`) so it can gate on a crate-internal
-//! root and distinguish a type-associated target (`Type::method`) from a module
-//! target (`module::helper`).
+//! (088.004-T) additionally needs the full path prefix (`crate::util` for
+//! `crate::util::helper()`, `Self::<EnclosingType>` for a `Self::` call) so the
+//! router can recognise the one provably workspace-owned form — a `Self::` call —
+//! and defer every other prefix.
 //!
-//! These scenarios assert the new `qualifier` field on `ExtractedEdge::Calls`.
-//! They COMPILE against the scaffolded field but FAIL until 088.003-T populates
-//! the prefix and 088.004-T rewrites `Self` to a crate-rooted path. The bare
-//! `callee` value is unchanged, so the 082.001-T extraction contract
-//! (`rust_method_call_extraction_test`) still holds.
+//! These scenarios assert the `qualifier` field on `ExtractedEdge::Calls`. The
+//! extractor CAPTURES the qualifier for every path-qualified call regardless of
+//! whether the resolver promotes it; a `Self` root is rewritten to the
+//! `Self::<EnclosingType>` marker. The bare `callee` value is unchanged, so the
+//! 082.001-T extraction contract (`rust_method_call_extraction_test`) still holds.
 
 #![allow(clippy::needless_raw_string_hashes)]
 
@@ -38,9 +38,10 @@ fn calls(source: &str) -> Vec<(String, bool, bool, Option<String>)> {
 }
 
 // A type-associated call `Type::parse()` keeps its bare callee `parse` but must
-// now also carry the immediate qualifier `Type`, so the resolver can match it
-// against the impl-method index name `Type::parse` instead of an unrelated free
-// `parse` (the finding-1/finding-7 false-edge case).
+// also carry the immediate qualifier `Type`. Extraction captures the qualifier
+// for every path-qualified call; the resolver then DEFERS this bare `Type::method`
+// form (only `Self::` resolves), so the capture must still be present and correct
+// even though it is not promoted (the finding-1/finding-7 false-edge case).
 #[test]
 fn type_qualified_call_carries_type_qualifier() {
     let source = r#"
@@ -58,8 +59,10 @@ fn caller() {
 }
 
 // A module-path call `module::helper()` keeps its bare callee `helper` and must
-// carry the immediate qualifier `module`, so the resolver knows the qualifier is
-// a module (lower-case) and resolves the bare free-function name.
+// carry the immediate qualifier `module`. Extraction captures the qualifier for
+// every path-qualified call; the resolver then DEFERS this module form (only
+// `Self::` resolves — a module qualifier cannot be proven workspace-owned without
+// scope/import analysis), so the capture must still be present and correct.
 #[test]
 fn module_qualified_call_carries_module_qualifier() {
     let source = r#"
@@ -77,9 +80,9 @@ fn caller() {
 }
 
 // For a multi-segment path `crate::util::helper()` the qualifier is the FULL
-// path prefix (`crate::util`), not just the immediate segment — the resolver
-// needs the root (`crate`) to gate the in-workspace module route and the
-// immediate segment (`util`) to detect a type qualifier.
+// path prefix (`crate::util`), not just the immediate segment. Extraction
+// captures the whole prefix so the router has complete information; this module
+// form then defers (only `Self::` resolves), but the capture must be exact.
 #[test]
 fn multi_segment_path_captures_full_prefix() {
     let source = r#"

@@ -387,8 +387,8 @@ async fn qualified_call_with_local_same_name_creates_no_wrong_direct_edge() {
 }
 
 // Scenario 12 (088.004 — Self:: cross-file): `Self::assist()` inside `impl Gadget`
-// (a.rs) rewrites to the crate-rooted `Gadget::assist` and resolves to the unique
-// impl method in b.rs.
+// (a.rs) rewrites to the `Self::Gadget` marker, resolves to the exact
+// `Gadget::assist` index name, and binds to the unique impl method in b.rs.
 #[test]
 async fn self_qualified_call_resolves_cross_file() {
     let (_tmp, q) = index_files(&[
