@@ -242,6 +242,23 @@ fn is_retryable_open_error(message: &str) -> bool {
     m.contains("locked") || m.contains("busy")
 }
 
+/// Whether a CAUGHT PANIC message is a transient SQLite busy/lock panic — as
+/// opposed to an unrelated panic that merely mentions "busy"/"locked".
+///
+/// cozo 0.7.x's internal `unwrap()` panic carries the SQLite failure, e.g.
+/// `SqliteFailure(DatabaseBusy, Some("database is locked"))`. `catch_busy_panic`
+/// must absorb ONLY that panic and re-raise everything else, so this matches
+/// SQLite-specific markers rather than the bare "busy"/"locked" words used for
+/// open-ERROR classification (which are safe there because the source is already
+/// a CozoDB open error, but would over-match arbitrary panic payloads).
+fn is_sqlite_busy_panic(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("database is locked")
+        || m.contains("database is busy")
+        || m.contains("sqlite_busy")
+        || m.contains("databasebusy")
+}
+
 /// Random jitter in `0..cap_ms` used to de-synchronise concurrent reopeners so
 /// competing processes do not retry in lock-step (thundering herd).
 fn open_retry_jitter(cap_ms: u64) -> u64 {
@@ -317,7 +334,8 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// transient "database is locked" at a rapid sequential reopen surfaces as a
 /// PANIC, not an `Err` (see
 /// `docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md`).
-/// This catches that panic and, when its message is a transient busy/lock,
+/// This catches that panic and, when its message matches an SQLite-specific busy
+/// marker (via [`is_sqlite_busy_panic`], NOT the broader open-error predicate),
 /// returns `Err(message)`. Any OTHER panic is re-raised unchanged so a genuine
 /// bug still propagates (ultimately contained by the caller's `spawn_blocking`).
 fn catch_busy_panic<T, E, F>(open: F) -> Result<T, String>
@@ -330,7 +348,7 @@ where
         Ok(Err(e)) => Err(e.to_string()),
         Err(payload) => {
             let message = panic_payload_message(payload.as_ref());
-            if is_retryable_open_error(&message) {
+            if is_sqlite_busy_panic(&message) {
                 Err(message)
             } else {
                 std::panic::resume_unwind(payload);
@@ -352,8 +370,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_REOPEN_ATTEMPTS, catch_busy_panic, is_retryable_open_error, open_db_with_retry,
-        open_retry_jitter, reopen_backoff,
+        MAX_REOPEN_ATTEMPTS, catch_busy_panic, is_retryable_open_error, is_sqlite_busy_panic,
+        open_db_with_retry, open_retry_jitter, reopen_backoff,
     };
     use super::{connect_db, connect_db_open_lock};
     use crate::errors::EngramError;
@@ -567,8 +585,8 @@ mod tests {
         });
         let message = result.expect_err("a busy panic must become an Err");
         assert!(
-            is_retryable_open_error(&message),
-            "the converted error must classify as a retryable busy: {message}"
+            is_sqlite_busy_panic(&message),
+            "the converted error must classify as an SQLite busy panic: {message}"
         );
     }
 
@@ -589,6 +607,38 @@ mod tests {
         let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
             panic!("{}", "unrelated invariant violated");
         });
+    }
+
+    // Copilot review (PR #249): an unrelated panic that merely MENTIONS "busy"
+    // or "locked" must still be RE-RAISED — not misclassified as a retryable
+    // SQLite busy and swallowed, which would mask a genuine bug.
+    #[test]
+    #[should_panic(expected = "worker is busy")]
+    fn catch_busy_panic_reraises_unrelated_busy_panic() {
+        let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!("{}", "worker is busy after invariant failure");
+        });
+    }
+
+    // is_sqlite_busy_panic matches SQLite-specific busy markers only, so an
+    // unrelated "busy"/"locked" panic message is not misclassified.
+    #[test]
+    fn is_sqlite_busy_panic_matches_sqlite_markers_only() {
+        assert!(is_sqlite_busy_panic(
+            "called `Result::unwrap()` on an `Err` value: \
+             SqliteFailure(DatabaseBusy, Some(\"database is locked\"))"
+        ));
+        assert!(is_sqlite_busy_panic(
+            "SQLITE_BUSY: the database file is busy"
+        ));
+        assert!(
+            !is_sqlite_busy_panic("worker is busy after invariant failure"),
+            "an unrelated busy panic must not match"
+        );
+        assert!(
+            !is_sqlite_busy_panic("the connection mutex is locked"),
+            "an unrelated locked panic must not match"
+        );
     }
 
     /// Verify the in-process mutex serializes same-path open attempts.
