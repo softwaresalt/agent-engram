@@ -1,0 +1,1 @@
+{"schema_version":1,"agent":"ship","session_id":"081-S-terminal-handoff","phase":"handoff","status":"active","created_at":"2026-07-15T18:19:46.6561208Z","updated_at":"2026-07-15T18:19:46.6561208Z","context":{},"resume_hint":"Operator must choose remediation path for PR #248 unresolved Copilot threads before Ship re-claims 081-S; do not merge, close, or rewrite until then."}

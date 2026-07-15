@@ -226,3 +226,62 @@ async fn migrate_down_refuses_while_daemon_active() {
         drop(q);
     }
 }
+
+/// 086.003-T fail-closed guard: `migrate-down` must REFUSE when the resolved
+/// data directory is shared/external (an `ENGRAM_DATA_DIR` outside the
+/// workspace), because the workspace-rooted `DaemonLock` cannot exclude a daemon
+/// rooted at a different workspace that shares the same database. Refusing runs
+/// before `connect_db`, so the pre-seeded singleton edge + resolution column
+/// survive untouched (no retraction/drop).
+#[test]
+async fn migrate_down_rejects_shared_external_data_dir() {
+    let tmp = TempDir::new().expect("workspace tempdir");
+    let ws = tmp.path().canonicalize().expect("canonicalize workspace");
+    init_git(&ws);
+
+    // An external/shared data dir OUTSIDE the workspace tree.
+    let external = TempDir::new().expect("external data-dir tempdir");
+    let data_dir = external
+        .path()
+        .canonicalize()
+        .expect("canonicalize external");
+
+    // Seed the external DB so a refused (non-mutating) run is observable.
+    {
+        let db = connect_db(&data_dir, BRANCH).await.expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+        q.create_calls_edge_with_resolution("fn:c", "fn:d", "calls_resolved_singleton")
+            .await
+            .expect("singleton edge");
+        drop(q);
+    }
+
+    // migrate-down must refuse with exit 2 and name the shared/external hazard.
+    let (code, _stdout, stderr) = run_migrate_down(&ws, &data_dir);
+    assert_eq!(
+        code, 2,
+        "migrate-down must refuse a shared/external data dir (exit 2); stderr: {stderr}"
+    );
+    let lowered = stderr.to_lowercase();
+    assert!(
+        lowered.contains("shared") || lowered.contains("external") || lowered.contains("outside"),
+        "the refusal must name the shared/external data-dir hazard; stderr: {stderr}"
+    );
+
+    // The DB must be untouched: the singleton survives and the resolution column
+    // is still present (no retraction/drop ran).
+    {
+        let db = connect_db(&data_dir, BRANCH).await.expect("reopen db");
+        let q = CodeGraphQueries::new(db);
+        let counts = q
+            .count_calls_edges_by_resolution()
+            .await
+            .expect("count by resolution");
+        assert_eq!(
+            counts.get("calls_resolved_singleton"),
+            Some(&1),
+            "the singleton edge must survive a refused (external data-dir) migrate-down; {counts:?}"
+        );
+        drop(q);
+    }
+}
