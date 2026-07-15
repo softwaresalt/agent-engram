@@ -668,6 +668,17 @@ name = "integration_calls_target_correctness"
 path = "tests/integration/calls_target_correctness_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
+# ── 088-F: rec1 recall recovery — qualification/method-aware resolution (081-S) ─
+
+[[test]]
+name = "unit_rust_qualified_call_extraction"
+path = "tests/unit/rust_qualified_call_extraction_test.rs"
+
+[[test]]
+name = "integration_calls_qualified_resolution"
+path = "tests/integration/calls_qualified_resolution_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
 [[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"

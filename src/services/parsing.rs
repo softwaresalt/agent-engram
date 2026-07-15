@@ -207,6 +207,16 @@ pub enum ExtractedEdge {
         /// `Type::assoc()` call to an unrelated unique free function. Deferred to
         /// qualification-aware resolution.
         is_qualified: bool,
+        /// For a path-qualified call (`is_qualified`), the immediate qualifier
+        /// segment that precedes the final `callee` — `Type` for `Type::parse()`,
+        /// `util` for `crate::util::helper()`. `Self` is rewritten to the
+        /// enclosing impl type during extraction, so `Self::foo()` in `impl Foo`
+        /// carries `Some("Foo")`. `None` for bare identifier calls and for
+        /// method / receiver calls. Qualification-aware resolution (088-F) uses
+        /// this to distinguish a type-associated target (matched against the
+        /// `Type::method` impl-method index name) from a module-path target
+        /// (matched against the bare free-function index name).
+        qualifier: Option<String>,
     },
     /// A `use` declaration importing a path.
     Imports {

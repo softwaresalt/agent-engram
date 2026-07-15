@@ -236,6 +236,7 @@ fn extract_calls_from_body(
                     callee,
                     is_method,
                     is_qualified,
+                    qualifier: None,
                 });
             }
         }

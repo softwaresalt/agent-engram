@@ -320,6 +320,7 @@ pub fn count_call_sites(source: &str, language: Language) -> usize {
                 callee,
                 is_method: false,
                 is_qualified: false,
+                qualifier: _,
             } = edge
             {
                 relations.insert((caller.as_str(), callee.as_str()));

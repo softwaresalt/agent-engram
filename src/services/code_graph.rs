@@ -476,6 +476,7 @@ async fn index_workspace_impl(
                         callee,
                         is_method,
                         is_qualified,
+                        qualifier: _,
                     } => {
                         // Method/receiver (`self.bar()`) and path-qualified
                         // (`Type::parse()`) calls are extracted for completeness
@@ -1131,6 +1132,7 @@ pub async fn sync_workspace_with_progress(
                         callee,
                         is_method,
                         is_qualified,
+                        qualifier: _,
                     } => {
                         // Method/receiver and path-qualified calls are extracted
                         // but not promoted (see the index-path arm) to avoid
