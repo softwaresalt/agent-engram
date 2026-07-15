@@ -88,8 +88,17 @@ Then a bounded, jittered exponential back-off (`open_db_with_retry`) retries the
 
 ## Prevention / removal
 
-This is an **interim** mitigation tracked by blocked **041.002-T**: when cozo ≥ 0.8 handles
-`SQLITE_BUSY`/`SQLITE_LOCKED` gracefully (returns `Err`, no internal `unwrap`), the
-`catch_unwind` wrapper and the reopen-retry can be removed. Until then, the handled busy panic
-logs a `panicked at .../sqlite.rs:49` line via the default panic hook even though it is
-absorbed — expected, not a failure.
+This is an **interim** mitigation tracked by blocked **041.002-T**. Removal is TWO distinct
+steps — do not conflate them:
+
+1. **Remove the `catch_unwind` wrapper** once cozo ≥ 0.8 returns an `Err` (no internal
+   `unwrap`) for `SQLITE_BUSY`/`SQLITE_LOCKED`. This only changes the transient's SURFACE
+   (panic → `Err`); the transient itself still occurs.
+2. **Remove the reopen-retry** (`open_db_with_retry`) ONLY after verifying that upstream
+   (cozo/SQLite — e.g. an internal busy-timeout) actually ABSORBS the transient, so a rapid
+   sequential reopen no longer surfaces busy/lock at all. Cozo merely returning an `Err` does
+   NOT satisfy this: `open_db_with_retry` still retries that `Err` channel, so removing the
+   retry prematurely would reintroduce the startup failures this mitigation prevents.
+
+Until removed, the handled busy panic logs a `panicked at .../sqlite.rs:49` line via the
+default panic hook even though it is absorbed — expected, not a failure.
