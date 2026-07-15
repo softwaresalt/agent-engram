@@ -78,8 +78,11 @@ pub async fn run_migrate_down(target: String, flags: &GlobalFlags, fmt: &OutputF
              workspace '{}'. A shared/external ENGRAM_DATA_DIR is not covered by the \
              workspace-rooted daemon lock, so a daemon rooted at another workspace could write \
              this database while the migration retracts edges and drops the resolution column, \
-             corrupting shared data. Run migrate-down from the workspace that owns the data \
-             directory, or unset ENGRAM_DATA_DIR.",
+             corrupting shared data. Run this command from the workspace that OWNS this database \
+             (so the workspace-rooted lock covers it), or relocate the database under its owning \
+             workspace's data directory. Do NOT merely unset ENGRAM_DATA_DIR — that retargets a \
+             DIFFERENT (default '<workspace>/.engram') database and leaves the intended one \
+             untouched.",
             data_dir.display(),
             ws_path.display(),
         ));
