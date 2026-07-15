@@ -405,3 +405,43 @@ async fn self_qualified_call_resolves_cross_file() {
     );
     assert_single_edge_to(&q, "Gadget::run", "Gadget::assist").await;
 }
+
+// Scenario 13 (C1 — Self:: on a path-qualified impl type uses the FULL type text):
+// `Self::help()` inside `impl foo::Bar` must resolve to `foo::Bar::help` (matching
+// the impl's index name exactly), NOT to the immediate segment `Bar::help`, so it
+// cannot mis-bind to an unrelated `Bar::help` on a different `Bar`.
+#[test]
+async fn self_call_on_path_qualified_impl_type_uses_full_type() {
+    let (_tmp, q) = index_files(&[
+        (
+            "src/a.rs",
+            "impl foo::Bar {\n    fn run() {\n        Self::help();\n    }\n}\n",
+        ),
+        ("src/b.rs", "impl foo::Bar {\n    fn help() {}\n}\n"),
+        // An unrelated `Bar::help` on a different `Bar` — must NOT be the target.
+        (
+            "src/c.rs",
+            "pub struct Bar;\nimpl Bar {\n    fn help() {}\n}\n",
+        ),
+    ])
+    .await;
+    assert_eq!(
+        singleton_count(&q).await,
+        1,
+        "Self::help() must resolve to the unique foo::Bar::help, not the unrelated Bar::help"
+    );
+    assert_single_edge_to(&q, "foo::Bar::run", "foo::Bar::help").await;
+    let bar_help = q
+        .resolve_reference_target("Bar::help")
+        .await
+        .expect("resolve Bar::help")
+        .expect("Bar::help indexed");
+    let edges = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons");
+    assert!(
+        !edges.iter().any(|(_, to)| to == &bar_help),
+        "must not target the unrelated Bar::help, got {edges:?}"
+    );
+}
