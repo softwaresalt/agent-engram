@@ -109,8 +109,8 @@ const BASELINE: &[(&str, &str)] = &[
     ("src/b.rs", "pub fn helper() {}\n"),
 ];
 
-// The same bare calls plus a crate-rooted module call (`crate::shapes::compute`),
-// a crate-rooted type-associated call (`crate::widgets::Circle::draw`), a
+// The same bare calls plus a crate-root free-function call (`crate::compute()`),
+// a crate-rooted type-associated call (`crate::Circle::draw()`), a
 // method/receiver call (`renderer.render()`), and an EXTERNAL module call
 // (`mem::swap()`) that must NOT resolve to the unrelated free `swap`. The two
 // crate-rooted qualified calls resolve; the method and external-module calls stay
@@ -118,8 +118,8 @@ const BASELINE: &[(&str, &str)] = &[
 const ENHANCED: &[(&str, &str)] = &[
     (
         "src/a.rs",
-        "pub fn caller() {\n    helper();\n    missing_target();\n    crate::shapes::compute();\n    \
-         crate::widgets::Circle::draw();\n    renderer.render();\n    mem::swap();\n}\n",
+        "pub fn caller() {\n    helper();\n    missing_target();\n    crate::compute();\n    \
+         crate::Circle::draw();\n    renderer.render();\n    mem::swap();\n}\n",
     ),
     ("src/b.rs", "pub fn helper() {}\n"),
     ("src/c.rs", "pub fn compute() {}\n"),

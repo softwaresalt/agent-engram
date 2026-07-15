@@ -1553,50 +1553,51 @@ fn sha256_short(input: &str) -> String {
     sha256_hex(input)[..16].to_owned()
 }
 
-/// True when a path segment names a Rust *type* — an UpperCamelCase identifier.
-/// Used, for a crate-internal path, to route a type-associated call
-/// (`Type::method`) apart from a module-path call without a type-checker.
-fn segment_is_type(segment: &str) -> bool {
-    segment.chars().next().is_some_and(char::is_uppercase)
-}
-
 /// The workspace-global index name a path-qualified call resolves against, or
 /// `None` when it must stay deferred to preserve precision.
 ///
 /// `prefix` is the call's path prefix — every segment before the bare `callee`:
-/// `crate::util` for `crate::util::helper()`, `crate::Widget` for a rewritten
-/// `Self::build()`, `Widget` for a bare `Widget::build()`, `mem` for
-/// `mem::swap()`.
+/// `crate::util` for `crate::util::helper()`, `crate::external::Widget` for a
+/// rewritten `Self::build()` inside `impl … for external::Widget`, `Widget` for a
+/// bare `Widget::build()`, `mem` for `mem::swap()`.
 ///
-/// A qualified call resolves ONLY when the path is **crate-internal** — the root
+/// A qualified call resolves ONLY when the path is **crate-internal** — its root
 /// segment is `crate` / `self` / `super` (a `Self::` call is rewritten to
-/// `crate::Type` upstream). Only then is the target provably a workspace symbol,
-/// so a singleton (exactly-one) match is that target:
+/// `crate::<EnclosingType>` upstream). Only then is the target provably a
+/// workspace symbol. The target is then the EXACT index name formed from the
+/// path *after* the crate root:
 ///
-/// * crate-internal type-associated call (immediate segment UpperCamelCase) ->
-///   the `Type::method` impl-method index name (088.004-T);
-/// * crate-internal module call -> the bare free-function name (088.003-T).
+/// * `crate::a::b::Item::callee` -> `a::b::Item::callee` — matched exactly against
+///   the index, so it resolves an impl method (`Type::method`, indexed under the
+///   impl's literal type text — which for a `Self::` call is byte-identical) or a
+///   symbol indexed under its qualified path, and NOTHING else. A module-path
+///   free function (indexed by bare name) or a mismatched type path simply stays
+///   unresolved rather than mis-resolving.
+/// * `crate::callee` (crate-root free function) -> the bare `callee`.
 ///
-/// Every other qualifier — a bare `Type::method()` or `module::helper()`, or an
-/// `external::Type::method()` — is DEFERRED (`None`): without scope analysis its
-/// name could collide with an unrelated same-named workspace symbol, which would
-/// be a false edge (the invariant behind findings 1 & 7; Copilot review).
-/// Resolution stays singleton-only in the post-pass, so an ambiguous or absent
-/// target still yields no edge.
+/// There is NO capitalization-based type/module heuristic and NO bare-name
+/// fallback, so a same-named-but-unrelated workspace symbol can never be matched
+/// (the invariant behind findings 1 & 7; Copilot review). Every non-crate-rooted
+/// qualifier — a bare `Type::method()`, an `external::Type::method()`, or a bare
+/// `module::helper()` — is deferred (`None`). Resolution stays singleton-only in
+/// the post-pass, so an ambiguous or absent target still yields no edge.
 fn qualified_target_name(callee: &str, prefix: &str) -> Option<String> {
-    let root = prefix.split("::").map(str::trim).find(|s| !s.is_empty())?;
-    // Workspace-identity gate: only crate-internal roots prove the target is in
-    // this workspace. Everything else defers rather than risk a false edge.
+    let mut segments = prefix.split("::").map(str::trim).filter(|s| !s.is_empty());
+    let root = segments.next()?;
+    // Workspace-identity gate: only a crate-internal root proves the target lives
+    // in this workspace. Everything else defers rather than risk a false edge.
     if !matches!(root, "crate" | "self" | "super") {
         return None;
     }
-    let immediate = prefix.rsplit("::").map(str::trim).find(|s| !s.is_empty())?;
-    if segment_is_type(immediate) {
-        // Crate-internal type-associated call -> the `Type::method` index name.
-        Some(format!("{immediate}::{callee}"))
-    } else {
-        // Crate-internal module call -> the bare free-function index name.
+    let rest: Vec<&str> = segments.collect();
+    if rest.is_empty() {
+        // Crate-root free-function call (`crate::helper()`) -> the bare name.
         Some(callee.to_owned())
+    } else {
+        // Exact qualified index name from the path after the crate root. No
+        // capitalization heuristic and no bare fallback: a name that is not
+        // indexed under this exact qualified form simply stays unresolved.
+        Some(format!("{}::{}", rest.join("::"), callee))
     }
 }
 

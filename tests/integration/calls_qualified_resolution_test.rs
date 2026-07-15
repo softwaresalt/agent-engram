@@ -110,39 +110,37 @@ async fn assert_single_edge_to(q: &CodeGraphQueries, caller: &str, target: &str)
     );
 }
 
-// Scenario 1 (088.003): an unambiguous crate-rooted module call resolves to
-// exactly one singleton edge whose target is the bare free function. The crate
-// root (`crate`/`self`/`super`) proves the target is in this workspace; because
-// functions are indexed by bare name (module paths are NOT part of the index),
-// resolution matches the bare final segment singleton-only. The same-named
+// Scenario 1 (088.003): an unambiguous crate-root free-function call resolves to
+// exactly one singleton edge. The `crate`/`self`/`super` root proves the target
+// is in this workspace; a crate-root free function is indexed by its bare name,
+// so `crate::do_work()` resolves to the unique `do_work`. The same-named
 // ambiguity guard is Scenario 3.
 #[test]
 async fn module_qualified_unambiguous_resolves_to_singleton() {
     let (_tmp, q) = index_files(&[
-        (
-            "src/a.rs",
-            "pub fn caller() {\n    crate::helpers::do_work();\n}\n",
-        ),
+        ("src/a.rs", "pub fn caller() {\n    crate::do_work();\n}\n"),
         ("src/b.rs", "pub fn do_work() {}\n"),
     ])
     .await;
     assert_eq!(
         singleton_count(&q).await,
         1,
-        "crate::module::helper() with a unique free target must create one singleton"
+        "crate::free_fn() with a unique target must create one singleton"
     );
     assert_single_edge_to(&q, "caller", "do_work").await;
 }
 
 // Scenario 2 (088.004): an unambiguous crate-rooted type-associated cross-file
 // call resolves to exactly one singleton edge whose target is the `Type::method`
-// impl method. Crate-rooted proves the type is in this workspace.
+// impl method. The call's type path must match the impl's index name exactly
+// (`crate::Widget::build()` -> `Widget::build`), which the exact-match router
+// guarantees without a capitalization heuristic.
 #[test]
 async fn type_qualified_unambiguous_resolves_to_singleton() {
     let (_tmp, q) = index_files(&[
         (
             "src/a.rs",
-            "pub fn caller() {\n    crate::widgets::Widget::build();\n}\n",
+            "pub fn caller() {\n    crate::Widget::build();\n}\n",
         ),
         (
             "src/b.rs",
@@ -158,15 +156,12 @@ async fn type_qualified_unambiguous_resolves_to_singleton() {
     assert_single_edge_to(&q, "caller", "Widget::build").await;
 }
 
-// Scenario 3 (precision): a crate-rooted module call whose bare target is defined
+// Scenario 3 (precision): a crate-root free-function call whose target is defined
 // twice is ambiguous and must create NO edge.
 #[test]
 async fn module_qualified_ambiguous_creates_no_edge() {
     let (_tmp, q) = index_files(&[
-        (
-            "src/a.rs",
-            "pub fn caller() {\n    crate::helpers::do_work();\n}\n",
-        ),
+        ("src/a.rs", "pub fn caller() {\n    crate::do_work();\n}\n"),
         ("src/b.rs", "pub fn do_work() {}\n"),
         ("src/c.rs", "pub fn do_work() {}\n"),
     ])
@@ -174,7 +169,7 @@ async fn module_qualified_ambiguous_creates_no_edge() {
     assert_eq!(
         singleton_count(&q).await,
         0,
-        "an ambiguous module target (2 defs) must not create a singleton edge"
+        "an ambiguous free-fn target (2 defs) must not create a singleton edge"
     );
 }
 
@@ -186,7 +181,7 @@ async fn type_qualified_ambiguous_creates_no_edge() {
     let (_tmp, q) = index_files(&[
         (
             "src/a.rs",
-            "pub fn caller() {\n    crate::widgets::Widget::build();\n}\n",
+            "pub fn caller() {\n    crate::Widget::build();\n}\n",
         ),
         (
             "src/b.rs",
@@ -360,16 +355,17 @@ async fn bare_type_qualified_call_defers_even_with_workspace_type() {
 }
 
 // Scenario 11 (C2/C3 — no wrong same-file direct edge): the caller's own file
-// defines an unrelated local `do_work`, while the crate-rooted call targets
-// another module. A qualified call must NOT take the same-file bare-name fast
-// path (which would wrongly bind to the local `do_work`); it is staged for global
-// singleton resolution, and since `do_work` is now ambiguous, it yields no edge.
+// defines an unrelated local `do_work`, while the crate-root call targets a
+// different definition. A qualified call must NOT take the same-file bare-name
+// fast path (which would wrongly bind to the local `do_work`); it is staged for
+// global singleton resolution, and since `do_work` is now ambiguous, it yields
+// no edge.
 #[test]
 async fn qualified_call_with_local_same_name_creates_no_wrong_direct_edge() {
     let (_tmp, q) = index_files(&[
         (
             "src/a.rs",
-            "pub fn caller() {\n    crate::helpers::do_work();\n}\n\npub fn do_work() {}\n",
+            "pub fn caller() {\n    crate::do_work();\n}\n\npub fn do_work() {}\n",
         ),
         ("src/b.rs", "pub fn do_work() {}\n"),
     ])

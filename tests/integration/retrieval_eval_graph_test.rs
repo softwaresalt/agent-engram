@@ -153,9 +153,10 @@ fn baz() {}
 #[test]
 fn count_call_sites_distinguishes_qualified_paths_with_same_final_name() {
     // Two crate-rooted qualified calls with the same final segment but different
-    // module paths are DISTINCT call sites — the denominator must not collapse
-    // them into one entry (which, since they resolve ambiguously to no edge,
-    // would shrink the denominator and inflate resolution_recall).
+    // paths resolve to DISTINCT exact target names (`a::helper` vs `b::helper`),
+    // so they are distinct denominator relations — they are not collapsed into one
+    // entry (which, since neither is indexed under that exact name, would shrink
+    // the denominator and inflate resolution_recall).
     let source = r"
 fn foo() {
     crate::a::helper();

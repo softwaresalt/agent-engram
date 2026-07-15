@@ -280,8 +280,8 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
     let function_node = node.child_by_field_name("function")?;
     // (name, is_method, is_qualified, qualifier). `is_method` and `is_qualified`
     // are mutually exclusive; `qualifier` is `Some` only for a path-qualified
-    // call and carries the immediate qualifier segment for the downstream
-    // qualification-aware resolver (088.003-T / 088.004-T).
+    // call and carries the full path prefix for the downstream qualification-aware
+    // resolver (088.003-T / 088.004-T).
     let (name, is_method, is_qualified, qualifier) = match function_node.kind() {
         "identifier" => (
             Some(super::node_text(function_node, source)),
@@ -291,13 +291,10 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
         ),
         // Path-qualified calls: `a::b()`. `callee` stays the final segment `b`,
         // and the full path prefix (`a`, `crate::util`, `mem`, …) is captured so
-        // the resolver can route a type-associated call (`Type::method`, matched
-        // by the `Type::method` impl-method index name) apart from an
-        // in-workspace crate-rooted module call (matched by the bare
-        // free-function name) apart from an external/opaque module call
-        // (deferred). Without the prefix these are indistinguishable and
-        // promoting the bare name would risk a false singleton edge (findings 1 &
-        // 7).
+        // the resolver can gate on a crate-internal root and resolve the exact
+        // qualified index name after it. Without the prefix a crate-rooted call
+        // could not be told from an external one, and promoting the bare name
+        // would risk a false singleton edge (findings 1 & 7).
         "scoped_identifier" => {
             let mut cursor = function_node.walk();
             let n = function_node
@@ -334,11 +331,10 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
 /// `crate::util` for `crate::util::helper()`, `mem` for `mem::swap()`, and the
 /// root token (`crate`, `super`, `self`, `Self`) when the call is rooted there.
 ///
-/// The downstream resolver splits this prefix to route safely without a
-/// type-checker: an UpperCamelCase immediate segment is a type (resolve
-/// `Type::method`), a `crate`/`self`/`super` root is an in-workspace module
-/// (resolve the bare free-function name), and any other (external / opaque)
-/// module qualifier is deferred to avoid a false edge (findings 1 & 7).
+/// The downstream resolver resolves only a crate-internal prefix
+/// (`crate`/`self`/`super` root, or a `Self::` rewritten to `crate::Type`) by an
+/// exact match of the path after the root against the index; any other qualifier
+/// is deferred to avoid a false edge (findings 1 & 7).
 fn scoped_call_qualifier(scoped: Node<'_>, source: &str) -> Option<String> {
     scoped
         .child_by_field_name("path")

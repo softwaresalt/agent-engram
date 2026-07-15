@@ -196,18 +196,15 @@ pub enum ExtractedEdge {
         /// false singleton edge. Consumers must skip promotion when this is set.
         is_method: bool,
         /// True when the call was path-qualified (`a::b()`). The `callee` stays
-        /// the final segment (`b`); the immediate qualifier (`a`) is captured
+        /// the final segment (`b`); the full path prefix (`a`) is captured
         /// separately in the `qualifier` field below.
         ///
-        /// Qualified calls cover both module paths (`crate::util::helper()`,
-        /// whose free-function target is indexed by the bare final segment) and
-        /// type-associated calls (`Type::parse()`, whose target is indexed as
-        /// `Type::parse`). Qualification-aware resolution (088-F) uses the
-        /// captured qualifier to tell them apart — routing a type qualifier to the
-        /// `Type::method` impl-method index name and a module qualifier to the
-        /// bare free-function index name — and promotes only unambiguous
-        /// (singleton) matches, so an ambiguous or absent target still yields no
-        /// edge (the no-false-edge invariant of findings 1 & 7).
+        /// Qualification-aware resolution (088-F) resolves ONLY a crate-internal
+        /// path (a `crate`/`self`/`super` root, or a `Self::` rewritten to
+        /// `crate::Type`) by an EXACT match of the path after the root against the
+        /// index, promoting only unambiguous (singleton) matches. A non-crate-
+        /// rooted qualifier, or an absent / ambiguous target, yields no edge (the
+        /// no-false-edge invariant of findings 1 & 7).
         is_qualified: bool,
         /// For a path-qualified call (`is_qualified`), the full path prefix that
         /// precedes the final `callee` — `Type` for `Type::parse()`,
@@ -216,11 +213,13 @@ pub enum ExtractedEdge {
         /// enclosing impl type, so `Self::foo()` in `impl Widget` carries
         /// `Some("crate::Widget")`. `None` for bare identifier calls and for
         /// method / receiver calls. Qualification-aware resolution (088-F)
-        /// resolves ONLY crate-internal paths (a `crate`/`self`/`super` root): a
-        /// type-associated target (UpperCamelCase immediate segment ->
-        /// `Type::method` index name) or a module target (bare free-function
-        /// name). Every other qualifier — a bare `Type::method()` or an external
-        /// `module::helper()` — is deferred (no edge).
+        /// resolves ONLY crate-internal paths (a `crate`/`self`/`super` root) by
+        /// an EXACT match of the path after the root against the index —
+        /// `crate::a::Item::foo` -> `a::Item::foo`, `crate::foo` -> bare `foo`.
+        /// There is no capitalization heuristic and no bare fallback, so a
+        /// non-crate-rooted qualifier (`Type::method()`, `module::helper()`,
+        /// `external::Type::method()`) or a name not indexed under that exact
+        /// qualified form is deferred (no edge).
         qualifier: Option<String>,
     },
     /// A `use` declaration importing a path.
