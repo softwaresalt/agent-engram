@@ -212,13 +212,15 @@ pub enum ExtractedEdge {
         /// For a path-qualified call (`is_qualified`), the full path prefix that
         /// precedes the final `callee` — `Type` for `Type::parse()`,
         /// `crate::util` for `crate::util::helper()`, `mem` for `mem::swap()`.
-        /// `Self` is rewritten to the enclosing impl type during extraction, so
-        /// `Self::foo()` in `impl Foo` carries `Some("Foo")`. `None` for bare
-        /// identifier calls and for method / receiver calls. Qualification-aware
-        /// resolution (088-F) splits this prefix to route a type-associated
-        /// target (UpperCamelCase immediate segment -> `Type::method` index name)
-        /// apart from an in-workspace crate-rooted module target (bare
-        /// free-function name), deferring any other (external) module qualifier.
+        /// A `Self::` call is rewritten to a crate-rooted path carrying the
+        /// enclosing impl type, so `Self::foo()` in `impl Widget` carries
+        /// `Some("crate::Widget")`. `None` for bare identifier calls and for
+        /// method / receiver calls. Qualification-aware resolution (088-F)
+        /// resolves ONLY crate-internal paths (a `crate`/`self`/`super` root): a
+        /// type-associated target (UpperCamelCase immediate segment ->
+        /// `Type::method` index name) or a module target (bare free-function
+        /// name). Every other qualifier — a bare `Type::method()` or an external
+        /// `module::helper()` — is deferred (no edge).
         qualifier: Option<String>,
     },
     /// A `use` declaration importing a path.

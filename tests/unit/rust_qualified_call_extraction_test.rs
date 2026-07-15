@@ -2,16 +2,16 @@
 //!
 //! The extractor already reduces a path-qualified call `A::b()` to its bare
 //! final segment `b` and marks it `is_qualified`. Qualification-aware resolution
-//! (088.003-T / 088.004-T) additionally needs the *immediate qualifier* segment
-//! so it can distinguish a type-associated target (`Type::method`, matched
-//! against the `Type::method` impl-method index name) from a module-path target
-//! (`module::helper`, matched against the bare free-function index name).
+//! (088.003-T / 088.004-T) additionally needs the full path prefix
+//! (`crate::util` for `crate::util::helper()`) so it can gate on a crate-internal
+//! root and distinguish a type-associated target (`Type::method`) from a module
+//! target (`module::helper`).
 //!
 //! These scenarios assert the new `qualifier` field on `ExtractedEdge::Calls`.
 //! They COMPILE against the scaffolded field but FAIL until 088.003-T populates
-//! the immediate qualifier and 088.004-T rewrites `Self` to the enclosing impl
-//! type. The bare `callee` value is unchanged, so the 082.001-T extraction
-//! contract (`rust_method_call_extraction_test`) still holds.
+//! the prefix and 088.004-T rewrites `Self` to a crate-rooted path. The bare
+//! `callee` value is unchanged, so the 082.001-T extraction contract
+//! (`rust_method_call_extraction_test`) still holds.
 
 #![allow(clippy::needless_raw_string_hashes)]
 

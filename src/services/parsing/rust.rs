@@ -236,13 +236,16 @@ fn extract_calls_from_body(
             {
                 // Rewrite a `Self::` qualifier to a crate-rooted path carrying the
                 // concrete enclosing impl type, so `Self::build()` inside
-                // `impl Widget` routes as the workspace-identified
-                // `crate::Widget` -> `Widget::build` (088.004-T). `Self` is always
-                // a crate-internal type (a crate can only impl a type it controls),
-                // so marking it `crate::` lets the resolver promote it while a bare
-                // `Widget::build()` from an unknown crate stays deferred. Outside an
-                // impl there is no concrete `Self`, so the qualifier is left as-is
-                // and matches no index name (no edge) rather than mis-resolving.
+                // `impl Widget` routes as `crate::Widget` -> `Widget::build`
+                // (088.004-T). The rewrite anchors resolution to the enclosing
+                // type — known here from the impl — and the crate-rooted marker
+                // lets the resolver promote it against workspace-indexed
+                // `Type::method` names (singleton-only), while a bare
+                // `Widget::build()` with no enclosing anchor stays deferred. A
+                // trait impl on an external type would anchor to that external
+                // type; the singleton guard still bounds resolution to at most one
+                // workspace match. Outside an impl there is no concrete `Self`, so
+                // the qualifier is left as-is and matches no index name (no edge).
                 let qualifier = match (qualifier, enclosing_type) {
                     (Some(q), Some(ty)) if q == "Self" => Some(format!("crate::{ty}")),
                     (other, _) => other,
