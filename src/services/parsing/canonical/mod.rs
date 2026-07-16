@@ -22,6 +22,8 @@
 //! `None` rather than a guess, so a wrong identity (and therefore a mis-resolved
 //! edge) can never originate here.
 
+pub mod generics;
 pub mod module_path;
+pub mod reexport;
 pub mod resolver;
 pub mod use_graph;
