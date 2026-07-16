@@ -72,7 +72,7 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
                 .child_by_field_name("argument")
                 .or_else(|| first_use_clause(child))
             {
-                walk_use_tree(arg, source, "", is_pub, &mut graph);
+                walk_use_tree(arg, source, "", is_pub, 0, &mut graph);
             }
         }
     }
@@ -140,7 +140,23 @@ fn path_prefix(node: Node<'_>, source: &str) -> String {
         .unwrap_or_default()
 }
 
-fn walk_use_tree(node: Node<'_>, source: &str, prefix: &str, is_pub: bool, graph: &mut UseGraph) {
+/// Maximum `use`-tree nesting depth before extraction stops descending. Real
+/// `use` trees are shallow; a pathologically deep spelling (adversarial or
+/// generated) is truncated rather than risking unbounded recursion. Dropped
+/// deep bindings fail closed at the resolver (D6), never a wrong binding.
+const MAX_USE_TREE_DEPTH: u32 = 64;
+
+fn walk_use_tree(
+    node: Node<'_>,
+    source: &str,
+    prefix: &str,
+    is_pub: bool,
+    depth: u32,
+    graph: &mut UseGraph,
+) {
+    if depth > MAX_USE_TREE_DEPTH {
+        return;
+    }
     match node.kind() {
         "identifier" | "crate" | "self" | "super" => {
             let name = node_text(node, source);
@@ -179,7 +195,7 @@ fn walk_use_tree(node: Node<'_>, source: &str, prefix: &str, is_pub: bool, graph
                 .child_by_field_name("list")
                 .or_else(|| child_of_kind(node, "use_list"))
             {
-                walk_use_tree(list, source, &new_prefix, is_pub, graph);
+                walk_use_tree(list, source, &new_prefix, is_pub, depth + 1, graph);
             }
         }
         "use_list" => {
@@ -189,7 +205,7 @@ fn walk_use_tree(node: Node<'_>, source: &str, prefix: &str, is_pub: bool, graph
                 .filter(|c| is_use_clause(c.kind()))
                 .collect();
             for item in items {
-                walk_use_tree(item, source, prefix, is_pub, graph);
+                walk_use_tree(item, source, prefix, is_pub, depth + 1, graph);
             }
         }
         "use_as_clause" => {

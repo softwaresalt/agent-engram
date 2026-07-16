@@ -161,7 +161,7 @@ pub fn module_path_for_file(crates: &WorkspaceCrates, rel_path: &str) -> Option<
     if matches!(comps[0], "bin" | "examples" | "benches") {
         return None;
     }
-    let last = *comps.last().expect("non-empty after split");
+    let last = *comps.last()?;
     let segments: Vec<String> = match last {
         "lib" | "main" => {
             // A crate root file must be directly under `src/`.
@@ -192,7 +192,7 @@ pub fn module_path_for_file(crates: &WorkspaceCrates, rel_path: &str) -> Option<
 
 /// Whether `s` is a plain ASCII Rust module identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 /// Conservative: any non-ASCII or unusual segment fails closed.
-fn is_module_ident(s: &str) -> bool {
+pub(super) fn is_module_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
@@ -269,6 +269,13 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
     for member in members {
         let Some(raw) = member.as_str() else { continue };
         let raw = raw.replace('\\', "/");
+        // Workspace containment (Constitution III/IV): a member spelling must stay
+        // within the workspace root. Reject absolute paths (`/x`, `C:/x`, UNC) and
+        // any `..` traversal so indexing never reads a `Cargo.toml` outside the
+        // workspace via a crafted root manifest.
+        if !is_contained_member(&raw) {
+            continue;
+        }
         if raw == "." {
             dirs.push(String::new());
         } else if let Some(prefix) = raw.strip_suffix("/*") {
@@ -284,6 +291,21 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
         }
     }
     dirs
+}
+
+/// Whether a workspace-member spelling stays within the workspace root: rejects
+/// absolute paths (`/x`, `C:/x`, UNC `//host`) and any `..` traversal component
+/// (Constitution III/IV — indexing must not read manifests outside ws_root).
+fn is_contained_member(raw: &str) -> bool {
+    if raw.starts_with('/') {
+        return false; // POSIX-absolute or UNC (`//host/share`)
+    }
+    // Windows drive-absolute (`C:/…`).
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' {
+        return false;
+    }
+    !raw.split('/').any(|c| c == "..")
 }
 
 /// Read `[package] name` from a manifest, if present.
@@ -510,5 +532,19 @@ mod tests {
             "member crate discovered with hyphen->underscore normalisation"
         );
         assert!(!wc.is_workspace_crate("std"));
+    }
+
+    #[test]
+    fn member_containment_rejects_traversal_and_absolute() {
+        // Contained relative members are accepted.
+        assert!(is_contained_member("."));
+        assert!(is_contained_member("crates/foo"));
+        assert!(is_contained_member("a/b/c"));
+        // Traversal and absolute spellings escape ws_root → rejected (P1 #4).
+        assert!(!is_contained_member("../evil"));
+        assert!(!is_contained_member("crates/../../evil"));
+        assert!(!is_contained_member("/etc/passwd"));
+        assert!(!is_contained_member("C:/Windows"));
+        assert!(!is_contained_member("//host/share"));
     }
 }

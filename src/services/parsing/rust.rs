@@ -228,20 +228,8 @@ fn extract_calls_from_body(
     caller_name: &str,
     edges: &mut Vec<ExtractedEdge>,
 ) {
-    // Walk the caller's body but STOP at nested definitions: a call inside a
-    // nested `impl`/`fn` belongs to that inner scope, not this caller (088-F2).
-    // Seed the stack with the caller's own children so the caller node itself is
-    // not mistaken for a nested definition; closures (which share the caller's
-    // scope) are intentionally NOT boundaries.
-    let mut stack: Vec<Node<'_>> = Vec::new();
-    let mut root_cursor = node.walk();
-    for child in node.children(&mut root_cursor) {
-        stack.push(child);
-    }
+    let mut stack = vec![node];
     while let Some(current) = stack.pop() {
-        if matches!(current.kind(), "function_item" | "impl_item") {
-            continue;
-        }
         if current.kind() == "call_expression" {
             if let Some((callee, is_method, is_qualified)) = resolve_call_name(current, source) {
                 edges.push(ExtractedEdge::Calls {

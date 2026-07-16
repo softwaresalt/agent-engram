@@ -18,7 +18,7 @@
 //! `function_meta.canonical_path` in Unit B is the other half.
 
 use super::generics::normalize_generics;
-use super::module_path::{ModulePath, WorkspaceCrates};
+use super::module_path::{ModulePath, WorkspaceCrates, is_module_ident};
 use super::use_graph::UseGraph;
 
 /// A resolved workspace-global canonical identity (e.g. `engram::a::Widget::build`).
@@ -98,7 +98,10 @@ pub fn resolve_path(ctx: &ResolveContext, path_expr: &str) -> Option<CanonicalId
     }
     let segs: Vec<&str> = expr.split("::").collect();
     let resolved = resolve_core(ctx, &segs, true, 0)?;
-    if resolved.is_empty() {
+    // Fail closed on any non-identifier segment: a mangled receiver spelling
+    // (`<T as Trait>`, or a generic-leak such as `Widget C`) must never become a
+    // canonical match target (D4 / I2).
+    if resolved.is_empty() || resolved.iter().any(|s| !is_module_ident(s)) {
         return None;
     }
     Some(CanonicalId(resolved.join("::")))
@@ -245,17 +248,24 @@ fn with_tail(mut base: Vec<String>, tail: &[&str]) -> Vec<String> {
 /// D4) when the receiver type cannot be resolved.
 #[must_use]
 pub fn canonical_path_for_def(ctx: &ResolveContext, def_name: &str) -> Option<CanonicalId> {
-    let norm = normalize_generics(def_name.trim());
+    // Normalise generics first; an unbalanced spelling fails closed (I1 / D4).
+    let norm = normalize_generics(def_name.trim())?;
     if norm.is_empty() {
         return None;
     }
     let Some((type_path, method)) = norm.rsplit_once("::") else {
-        // Free function / top-level item defined in this module.
+        // Free function / top-level item defined in this module. A non-identifier
+        // name (a generic leak that survived normalisation) fails closed (I2).
+        if !is_module_ident(&norm) {
+            return None;
+        }
         let mut segs = module_segments(ctx.module);
         segs.push(norm);
         return Some(CanonicalId(segs.join("::")));
     };
-    if type_path.is_empty() || method.is_empty() {
+    // The method segment must be a plain identifier; the receiver type is
+    // validated by `resolve_path` (I2 / D4).
+    if type_path.is_empty() || method.is_empty() || !is_module_ident(method) {
         return None;
     }
     let ty = resolve_path(ctx, type_path)?;
@@ -510,6 +520,21 @@ mod tests {
     #[test]
     fn def_empty_name_fails_closed() {
         assert_eq!(def_canon(&["a"], "", ""), None);
+    }
+
+    #[test]
+    fn def_return_arrow_generic_fails_closed() {
+        // I1: `->` inside `<…>` closes the group early and the trailing text leaks
+        // (`Widget C::method`); the unbalanced closer must drop the identity, never
+        // store a garbage canonical path.
+        assert_eq!(def_canon(&["a"], "", "Widget<Fn() -> C>::method"), None);
+    }
+
+    #[test]
+    fn resolve_non_identifier_head_fails_closed() {
+        // I2: a mangled receiver spelling must not resolve to a canonical target.
+        assert_eq!(resolve(&["a"], "", "<T as Trait>::method"), None);
+        assert_eq!(resolve(&["a"], "", "Widget C::method"), None);
     }
 
     fn self_ctx<'a>(

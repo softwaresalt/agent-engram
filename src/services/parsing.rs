@@ -501,33 +501,12 @@ fn callee() {}
         }
     }
 
-    // ── A7 (091.009-T): scope-aware body walk + unforgeable Self marker ──
-
-    #[test]
-    fn nested_fn_calls_are_not_attributed_to_outer() {
-        // 088-F2: a call inside a nested `fn` must NOT be attributed to the
-        // enclosing function.
-        let source = "fn outer() {\n    fn inner() {\n        helper();\n    }\n    other();\n}\n";
-        let result = parse_rust_source(source).unwrap();
-        let outer_calls: Vec<&str> = result
-            .edges
-            .iter()
-            .filter_map(|e| match e {
-                ExtractedEdge::Calls { caller, callee, .. } if caller == "outer" => {
-                    Some(callee.as_str())
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(
-            outer_calls.contains(&"other"),
-            "outer's own call is captured"
-        );
-        assert!(
-            !outer_calls.contains(&"helper"),
-            "a nested fn's call must not be attributed to the outer fn (F2)"
-        );
-    }
+    // ── A7 (091.009-T): unforgeable Self marker (call-qualifier classification) ──
+    //
+    // Note: the scope-aware body-walk boundary (088-F2 "nested fn calls are not
+    // attributed to the outer fn") was reverted from Unit A to keep it strictly
+    // precision-neutral (zero change to the existing call-edge set); it is
+    // re-scoped to Unit B (088-S). Closures still share the enclosing scope.
 
     #[test]
     fn closure_calls_stay_with_enclosing_fn() {
