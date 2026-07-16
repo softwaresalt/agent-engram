@@ -537,11 +537,12 @@ async fn canonical_edges_are_scored_by_the_target_correctness_gate() {
         "the canonical edge must be scored as target-correct"
     );
 
-    // A manifest expecting a DIFFERENT identity flags the produced canonical edge
-    // as a mismatch — the gate is not blind to canonical edges (M4).
-    let wrong: HashSet<(String, String)> = [(caller_id, String::from("crate::util::not_helper"))]
-        .into_iter()
-        .collect();
+    // A manifest expecting a DIFFERENT but real callee identity (the caller's own
+    // node ID) flags the produced canonical edge as a mismatch — the gate is not
+    // blind to canonical edges and distinguishes real identities, not merely
+    // absent manifest entries (M4).
+    let wrong: HashSet<(String, String)> =
+        [(caller_id.clone(), caller_id)].into_iter().collect();
     let tc_wrong = evaluate_target_correctness(&produced, &wrong);
     assert!(
         tc_wrong.target_mismatch >= 1,
