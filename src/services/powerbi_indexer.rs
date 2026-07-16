@@ -50,6 +50,35 @@ pub fn compute_file_hash(content: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Version namespace for `.tmdl` DAX graph indexing semantics.
+///
+/// Bump this when unchanged TMDL bytes must be reprocessed because the extracted
+/// DAX graph shape changed. Monitoring: observe one-time Power BI re-index
+/// duration and ingested/unchanged counts after upgrade. Rollback: revert the
+/// bump and redeploy.
+pub const TMDL_DAX_INDEX_VERSION: u32 = 1;
+
+/// Compute the version-fingerprinted hash stored for `.tmdl` Power BI records.
+///
+/// Folding [`TMDL_DAX_INDEX_VERSION`] into the persisted hash gives the
+/// incremental indexer a one-time migration path: a DAX-capable upgrade can
+/// reprocess unchanged files without requiring `--force` or file edits.
+#[must_use]
+pub fn compute_tmdl_dax_index_hash(content: &[u8]) -> String {
+    compute_tmdl_dax_index_hash_for_version(content, TMDL_DAX_INDEX_VERSION)
+}
+
+/// Compute a `.tmdl` DAX index hash for an explicit format `version`.
+#[must_use]
+pub fn compute_tmdl_dax_index_hash_for_version(content: &[u8], version: u32) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tmdl-dax-index-version\0");
+    hasher.update(version.to_be_bytes());
+    hasher.update(b"\0content\0");
+    hasher.update(content);
+    hex::encode(hasher.finalize())
+}
+
 /// Return the subset of `workspace_relative_paths` whose files no longer
 /// exist under `workspace_root`.
 ///
@@ -1251,7 +1280,7 @@ fn compute_dirty_model_scopes(
             .replace('\\', "/");
         seen_tmdl_rel_paths.insert(rel_path.clone());
 
-        let hash = compute_file_hash(&content_bytes);
+        let hash = compute_tmdl_dax_index_hash(&content_bytes);
         let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
         if !unchanged {
             dirty.insert(canonical_tmdl_model_path(&rel_path));
@@ -1362,8 +1391,6 @@ pub async fn index_powerbi_source(
             continue;
         };
 
-        let hash = compute_file_hash(&content_bytes);
-
         let rel_path = file_path
             .strip_prefix(workspace_root)
             .unwrap_or(file_path)
@@ -1378,6 +1405,11 @@ pub async fn index_powerbi_source(
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.eq_ignore_ascii_case("tmdl"))
             .unwrap_or(false);
+        let hash = if is_tmdl {
+            compute_tmdl_dax_index_hash(&content_bytes)
+        } else {
+            compute_file_hash(&content_bytes)
+        };
         let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
         if unchanged && !(is_tmdl && dirty_scopes.contains(&canonical_tmdl_model_path(&rel_path))) {
             result.unchanged += 1;
