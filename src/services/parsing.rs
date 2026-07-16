@@ -6,6 +6,7 @@
 //! [`parse_source`] dispatcher.
 
 mod c;
+pub mod canonical;
 mod cpp;
 mod csharp;
 pub mod frontmatter;
