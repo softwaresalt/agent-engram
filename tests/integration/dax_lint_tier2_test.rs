@@ -119,6 +119,32 @@ fn broken_refs_fire_but_valid_cross_table_ref_is_clean() {
     );
 }
 
+/// S-DAXT2-11: references and division in a DAX `--` comment do not produce
+/// Tier-1 division findings or Tier-2 broken-reference findings.
+#[test]
+fn dash_dash_comment_references_do_not_fire_findings() {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let workspace = root.path();
+    let tables = model_tables(workspace, "Sales.SemanticModel");
+    fs::create_dir_all(&tables).expect("create dirs");
+
+    fs::write(
+        tables.join("Sales.tmdl"),
+        "table Sales\n\
+         \x20\x20column Amount\n\
+         \x20\x20\x20\x20dataType: double\n\
+         \x20\x20measure Clean = SUM(Sales[Amount]) -- Fake[Column] / [Missing]\n",
+    )
+    .expect("write Sales.tmdl");
+
+    let report = lint(workspace);
+    assert!(
+        report.conformant,
+        "`--` commented DAX references must not produce findings: {:?}",
+        report.findings
+    );
+}
+
 /// S-DAXT2-02: an unqualified column reference that resolves on the current
 /// table fires `dax.unqualified_column` (Warning), not an error.
 #[test]

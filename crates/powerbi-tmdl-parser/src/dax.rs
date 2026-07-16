@@ -10,9 +10,9 @@
 //! The lexer is a single left-to-right state machine over the expression's
 //! characters. Only in the `Normal` state are tokens recognized; brackets and
 //! quotes appearing inside string literals (`"..."`) or comments (`// ...`,
-//! `/* ... */`) are ignored. Unresolved or malformed tokens are dropped and, for
-//! unterminated constructs, surfaced through [`DaxReferences::diagnostics`]
-//! rather than being silently misattributed.
+//! `-- ...`, `/* ... */`) are ignored. Unresolved or malformed tokens are
+//! dropped and, for unterminated constructs, surfaced through
+//! [`DaxReferences::diagnostics`] rather than being silently misattributed.
 
 /// A column reference discovered in a DAX expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,10 +64,10 @@ pub struct DaxReferences {
 /// Extract the column, bracket, and function references from a DAX expression.
 ///
 /// The lexer is string- and comment-aware: brackets and quotes inside `"..."`
-/// literals or `//` / `/* */` comments are ignored. Bare identifiers that are
-/// neither immediately followed by `[` (a table qualifier) nor `(` (a function
-/// call) — for example `VAR`/`RETURN` locals — are ignored. Unterminated
-/// constructs are recorded in [`DaxReferences::diagnostics`].
+/// literals or `//`, `--`, and `/* */` comments are ignored. Bare identifiers
+/// that are neither immediately followed by `[` (a table qualifier) nor `(` (a
+/// function call) — for example `VAR`/`RETURN` locals — are ignored.
+/// Unterminated constructs are recorded in [`DaxReferences::diagnostics`].
 #[must_use]
 pub fn extract_dax_references(expr: &str) -> DaxReferences {
     let chars: Vec<char> = expr.chars().collect();
@@ -79,7 +79,7 @@ pub fn extract_dax_references(expr: &str) -> DaxReferences {
         let c = chars[i];
         i = if c.is_whitespace() {
             i + 1
-        } else if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+        } else if is_line_comment_start(&chars, i) {
             scan_line_comment(&chars, i)
         } else if c == '/' && i + 1 < n && chars[i + 1] == '*' {
             scan_block_comment(&chars, i, &mut refs)
@@ -100,8 +100,7 @@ pub fn extract_dax_references(expr: &str) -> DaxReferences {
     refs
 }
 
-/// Skip a `// ... <newline>` line comment; returns the index of the newline (or
-/// end of input).
+/// Skip a two-character line comment marker to the newline or end of input.
 fn scan_line_comment(chars: &[char], start: usize) -> usize {
     let n = chars.len();
     let mut i = start + 2;
@@ -109,6 +108,13 @@ fn scan_line_comment(chars: &[char], start: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// Whether `chars[start..]` begins a DAX single-line comment marker.
+fn is_line_comment_start(chars: &[char], start: usize) -> bool {
+    start + 1 < chars.len()
+        && ((chars[start] == '/' && chars[start + 1] == '/')
+            || (chars[start] == '-' && chars[start + 1] == '-'))
 }
 
 /// Skip a `/* ... */` block comment, recording an
@@ -413,6 +419,25 @@ mod tests {
         let refs =
             extract_dax_references("// [Ghost] comment\nSUM(Sales[Amount]) /* 'T'[C] block [X] */");
         assert_eq!(refs.columns, vec![col(Some("Sales"), "Amount")]);
+        assert!(refs.bracket_refs.is_empty());
+        assert!(refs.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn dash_dash_line_comments_are_ignored() {
+        let refs = extract_dax_references(
+            "-- [Ghost] Fake[Column] DIVIDE(Fake[Amount], Fake[Qty])\nSUM(Sales[Amount])",
+        );
+        assert_eq!(refs.columns, vec![col(Some("Sales"), "Amount")]);
+        assert_eq!(refs.functions, vec!["SUM".to_string()]);
+        assert!(refs.bracket_refs.is_empty());
+        assert!(refs.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn dash_dash_inside_string_and_bracket_is_not_comment() {
+        let refs = extract_dax_references(r#"Sales[Amount--Net] & "a--b [Hidden]""#);
+        assert_eq!(refs.columns, vec![col(Some("Sales"), "Amount--Net")]);
         assert!(refs.bracket_refs.is_empty());
         assert!(refs.diagnostics.is_empty());
     }
