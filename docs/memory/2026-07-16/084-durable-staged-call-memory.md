@@ -51,5 +51,5 @@ None material. One iteration during Copilot fixes: the restart test first compar
 ## Next steps
 
 * Queue order: **088-S** -> **083-S** -> **085-S** -> **086-S**.
-* Operator caveat carried into closure: existing 5.0.0 workspaces need `engram install`/`update` to bump `.version` to 5.1.0 before durable staging activates; binary-only upgrade hydrates but leaves staging dormant (safe, no false edges).
+* Operator caveat carried into closure: existing 5.0.0 workspaces need `engram update` or `engram reinstall` to bump `.version` to 5.1.0 before durable staging activates (`engram install` returns `AlreadyInstalled` on an existing workspace and does not restamp `.version`); binary-only upgrade hydrates but leaves staging dormant (safe, no false edges).
 * Candidate hardening chore: flaky `t030_003_markdown_heading_and_code_block_indexed_via_ipc` under CI parallel/resource load.

@@ -109,12 +109,13 @@ condition.
 ## Operator caveat
 
 > [!IMPORTANT]
-> `.engram/.version` is written only by the installer. Existing 5.0.0 workspaces activate
-> durable staging only after `engram install` or `engram update` bumps `.version` to 5.1.0.
-> On a binary-only upgrade the workspace still hydrates (5.0.0 is allowlisted), but staging
-> persistence stays dormant until re-install. The dormant state is safe: no regression and no
-> false edges — staged rows simply are not persisted across restart until the version is
-> bumped.
+> `.engram/.version` is written only by the installer. On an existing workspace `engram install`
+> returns `AlreadyInstalled` without touching `.version`; use `engram update` or `engram reinstall`
+> to bump `.version` to 5.1.0 and activate durable staging (a fresh `engram install` on a new
+> workspace already stamps 5.1.0). On a binary-only upgrade the workspace still hydrates (5.0.0 is
+> allowlisted), but staging persistence stays dormant until `.version` is bumped. The dormant
+> state is safe: no regression and no false edges — staged rows simply are not persisted across
+> restart until the version is bumped.
 
 ## CI note
 
@@ -129,7 +130,7 @@ explicit observation and rollback criteria.
 
 ### Healthy signals
 
-* After `engram install` or `engram update` stamps `.engram/.version = 5.1.0` and the daemon
+* After `engram update` or `engram reinstall` stamps `.engram/.version = 5.1.0` and the daemon
   restarts, cross-file calls staged before the restart resolve after it: the aggregate `edges`
   count reported by `get_workspace_statistics` / `get_workspace_status` matches a full re-index of
   the same workspace, with no missing resolved edges and no extra false edges.
@@ -171,8 +172,8 @@ explicit observation and rollback criteria.
 ### Owner and observation window
 
 * Owner: ship and repository maintainer.
-* Duration: a bounded 7-day active-observation window that opens at the first real `engram install`
-  or `engram update` to 5.1.0 followed by a daemon restart, plus the next 3 CI runs of the
+* Duration: a bounded 7-day active-observation window that opens at the first real `engram update`
+  or `engram reinstall` to 5.1.0 followed by a daemon restart, plus the next 3 CI runs of the
   `staged_call` and calls-resolution suites. The window closes after 7 days with no failure signal,
   or immediately on the first rollback trigger (whichever comes first).
 * Outcome: local gates and CI green; restart durability proven by 089.003 against a full re-index
@@ -184,9 +185,9 @@ explicit observation and rollback criteria.
   silently dropped on 5.1.0 workspaces.
 * Procedure: `git revert -m 1 a0962f6` removes the sidecar export and import and restores
   `SCHEMA_VERSION` to 5.0.0. Existing 5.0.0 workspaces are unaffected. Any workspace whose
-  `.version` was bumped to 5.1.0 in the interim must re-run `engram install` or `engram update`
+  `.version` was bumped to 5.1.0 in the interim must re-run `engram update` or `engram reinstall`
   so the reverted binary — which rejects 5.1.0 fail-closed — can hydrate it. Blast radius is
-  minimal because durable staging activates only after an explicit install or update.
+  minimal because durable staging activates only after an explicit install, update, or reinstall.
 
 ## Verdict
 
