@@ -145,7 +145,10 @@ pub fn module_path_for_file(crates: &WorkspaceCrates, rel_path: &str) -> Option<
     let rel = rel_path.replace('\\', "/");
     // Crate roots are sorted by descending `dir` length, so the first prefix
     // match is the most specific (member crate wins over the workspace root).
-    let owner = crates.crates.iter().find(|c| rel.starts_with(&c.src_prefix()))?;
+    let owner = crates
+        .crates
+        .iter()
+        .find(|c| rel.starts_with(&c.src_prefix()))?;
     let stem = rel[owner.src_prefix().len()..].strip_suffix(".rs")?;
     if stem.is_empty() {
         return None;
@@ -317,12 +320,18 @@ mod tests {
 
     #[test]
     fn crate_root_lib_is_bare_crate_name() {
-        assert_eq!(canon(&engram_workspace(), "src/lib.rs").as_deref(), Some("engram"));
+        assert_eq!(
+            canon(&engram_workspace(), "src/lib.rs").as_deref(),
+            Some("engram")
+        );
     }
 
     #[test]
     fn crate_root_main_is_bare_crate_name() {
-        assert_eq!(canon(&engram_workspace(), "src/main.rs").as_deref(), Some("engram"));
+        assert_eq!(
+            canon(&engram_workspace(), "src/main.rs").as_deref(),
+            Some("engram")
+        );
     }
 
     #[test]
@@ -440,7 +449,10 @@ mod tests {
         };
         let child = base.child("inner");
         assert_eq!(child.to_canonical(), "engram::a::inner");
-        assert_eq!(child.parent().map(|p| p.to_canonical()).as_deref(), Some("engram::a"));
+        assert_eq!(
+            child.parent().map(|p| p.to_canonical()).as_deref(),
+            Some("engram::a")
+        );
         let root = ModulePath {
             crate_name: "engram".to_owned(),
             segments: vec![],
@@ -465,8 +477,12 @@ mod tests {
 
     #[test]
     fn mod_mapping_ordinary_attrs_are_default() {
-        assert!(!mod_mapping_is_non_default(&["#[derive(Debug)]".to_owned()]));
-        assert!(!mod_mapping_is_non_default(&["#[allow(dead_code)]".to_owned()]));
+        assert!(!mod_mapping_is_non_default(
+            &["#[derive(Debug)]".to_owned()]
+        ));
+        assert!(!mod_mapping_is_non_default(&[
+            "#[allow(dead_code)]".to_owned()
+        ]));
         assert!(!mod_mapping_is_non_default(&[]));
     }
 

@@ -970,9 +970,8 @@ mod tests {
         MAX_SCRIPT_ATTEMPTS, ScriptOutcome, busy_backoff, classify_script_error, retry_cozo_script,
     };
     use super::{
-        calls_edge_has_resolution, function_meta_has_canonical_path,
-        migrate_calls_edge_resolution, migrate_function_meta_canonical_path,
-        rollback_calls_edge_resolution, run_scripts,
+        calls_edge_has_resolution, function_meta_has_canonical_path, migrate_calls_edge_resolution,
+        migrate_function_meta_canonical_path, rollback_calls_edge_resolution, run_scripts,
     };
 
     /// Build an in-memory CozoDB with a *legacy* `calls_edge` relation

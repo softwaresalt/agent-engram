@@ -877,10 +877,7 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             DataValue::from(func.embed_type.as_str()),
         );
         p.insert("summary".to_owned(), DataValue::from(func.summary.as_str()));
-        p.insert(
-            "canonical_path".to_owned(),
-            DataValue::from(canonical_path),
-        );
+        p.insert("canonical_path".to_owned(), DataValue::from(canonical_path));
         self.run_script_busy_retry_mutable(meta_script, p)
             .await
             .map(|_| ())?;

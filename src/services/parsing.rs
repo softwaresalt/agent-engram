@@ -519,7 +519,10 @@ fn callee() {}
                 _ => None,
             })
             .collect();
-        assert!(outer_calls.contains(&"other"), "outer's own call is captured");
+        assert!(
+            outer_calls.contains(&"other"),
+            "outer's own call is captured"
+        );
         assert!(
             !outer_calls.contains(&"helper"),
             "a nested fn's call must not be attributed to the outer fn (F2)"

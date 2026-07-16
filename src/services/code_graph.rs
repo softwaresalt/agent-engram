@@ -193,7 +193,9 @@ async fn index_workspace_impl(
     // (canonical_path) materialise on existing DBs; the marker is advanced after
     // the run (effective single-flight — the re-index is idempotent — and
     // SQLITE_BUSY-safe, non-blocking-open, run in the normal index path — D5).
-    let stored_format = queries.get_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY).await?;
+    let stored_format = queries
+        .get_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY)
+        .await?;
     let format_changed = stored_format.as_deref() != Some(CODE_INDEX_FORMAT_VERSION);
 
     // ── Step 1: Discover files ──────────────────────────────────────
@@ -790,7 +792,9 @@ pub async fn sync_workspace_with_progress(
     // Option C Unit A / A8: index-format fingerprint — a version mismatch forces
     // the incremental sync to re-parse content-unchanged files once so new format
     // fields (canonical_path) materialise; the marker is advanced after the run.
-    let stored_format = queries.get_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY).await?;
+    let stored_format = queries
+        .get_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY)
+        .await?;
     let format_changed = stored_format.as_deref() != Some(CODE_INDEX_FORMAT_VERSION);
 
     // Discover current files on disk.

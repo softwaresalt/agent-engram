@@ -530,8 +530,16 @@ mod tests {
         let m = module(&["a"]);
         let ug = extract_use_graph("");
         let ctx = self_ctx(&crates, &m, &ug);
-        let got = resolve_qualifier(&ctx, Some("engram::a::Widget"), &Qualifier::SelfType, &["make"]);
-        assert_eq!(got.map(CanonicalId::into_string).as_deref(), Some("engram::a::Widget::make"));
+        let got = resolve_qualifier(
+            &ctx,
+            Some("engram::a::Widget"),
+            &Qualifier::SelfType,
+            &["make"],
+        );
+        assert_eq!(
+            got.map(CanonicalId::into_string).as_deref(),
+            Some("engram::a::Widget::make")
+        );
     }
 
     #[test]
@@ -542,7 +550,12 @@ mod tests {
         let ctx = self_ctx(&crates, &m, &ug);
         // Self::Assoc::method — an associated-type projection is out of scope.
         assert_eq!(
-            resolve_qualifier(&ctx, Some("engram::a::Widget"), &Qualifier::SelfType, &["Assoc", "method"]),
+            resolve_qualifier(
+                &ctx,
+                Some("engram::a::Widget"),
+                &Qualifier::SelfType,
+                &["Assoc", "method"]
+            ),
             None
         );
         // Bare Self with no method also fails closed.

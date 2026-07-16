@@ -81,7 +81,9 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
 
 fn parse_tree(source: &str) -> Option<tree_sitter::Tree> {
     let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_rust::LANGUAGE.into()).ok()?;
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .ok()?;
     parser.parse(source, None)
 }
 
@@ -91,9 +93,8 @@ fn node_text(node: Node<'_>, source: &str) -> String {
 
 fn has_pub_visibility(node: Node<'_>, source: &str) -> bool {
     let mut cursor = node.walk();
-    node.children(&mut cursor).any(|ch| {
-        ch.kind() == "visibility_modifier" && node_text(ch, source).starts_with("pub")
-    })
+    node.children(&mut cursor)
+        .any(|ch| ch.kind() == "visibility_modifier" && node_text(ch, source).starts_with("pub"))
 }
 
 fn is_use_clause(kind: &str) -> bool {
@@ -113,7 +114,8 @@ fn is_use_clause(kind: &str) -> bool {
 
 fn first_use_clause(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
-    node.children(&mut cursor).find(|ch| is_use_clause(ch.kind()))
+    node.children(&mut cursor)
+        .find(|ch| is_use_clause(ch.kind()))
 }
 
 fn join_path(prefix: &str, seg: &str) -> String {
@@ -276,7 +278,10 @@ mod tests {
     #[test]
     fn crate_root() {
         let g = extract_use_graph("use crate::services::Widget;");
-        assert_eq!(binding(&g, "Widget").unwrap().path, "crate::services::Widget");
+        assert_eq!(
+            binding(&g, "Widget").unwrap().path,
+            "crate::services::Widget"
+        );
     }
 
     #[test]
