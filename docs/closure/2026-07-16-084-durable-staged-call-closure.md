@@ -130,30 +130,43 @@ explicit observation and rollback criteria.
 ### Healthy signals
 
 * After `engram install` or `engram update` stamps `.engram/.version = 5.1.0` and the daemon
-  restarts, `staged_call` rows persist across the restart: the rehydrated count equals the
-  pre-restart count.
-* Cross-file calls staged before a restart resolve after it, and the resolved-edge set equals a
-  full re-index oracle. The 089.003 restart test is the canary for this invariant.
-* Daemon hydrate logs report the staged-row count loaded from `staged_calls.jsonl` on a 5.1.0
-  workspace.
+  restarts, cross-file calls staged before the restart resolve after it: the aggregate `edges`
+  count reported by `get_workspace_statistics` / `get_workspace_status` matches a full re-index of
+  the same workspace, with no missing resolved edges and no extra false edges.
+* The 089.003 restart integration test is the authoritative canary. It indexes, dehydrates, drops
+  and recreates the database, rehydrates, runs the post-pass, and asserts the resolved cross-file
+  call matches a full re-index oracle exactly. Green CI runs of the `staged_call` and
+  calls-resolution suites are the primary observable gate.
 
 ### Failure signals
 
-* Hydration errors on daemon start (`SchemaMismatch`, `Hydration Failed`), or `get_health_report`
-  reporting degraded workspace state.
-* `staged_call` count drops to zero after a restart on a 5.1.0 workspace that had staged rows,
-  indicating silent durability loss.
-* Extra or false `calls_resolved_*` edges appear after restart compared with the full re-index
-  oracle (false-edge count above zero).
+* `background_db_hydration: code graph hydration failed` — a `tracing::warn!` emitted on daemon
+  start when `hydrate_code_graph` returns an error (`SchemaMismatch`, `Hydration Failed`); or
+  `get_health_report` reporting degraded workspace state.
+* The aggregate `edges` count after a restart is lower than a full re-index (missing resolved
+  cross-file edges) or higher (false edges).
+* Failures in the `staged_call` or calls-resolution CI suites.
 
 ### Monitoring method, baseline, threshold
 
-* Method: daemon hydrate logs, `get_workspace_status` and `get_workspace_statistics` (staged and
-  resolved-edge counts), and the `staged_call` plus calls-resolution integration suites in CI.
-* Baseline: rehydrated staged-row count equals the pre-restart count, and the resolved-edge set
-  equals the full re-index oracle.
-* Threshold to investigate: any staged-row drop to zero on a 5.1.0 workspace with prior staging,
-  or any false-edge count above zero.
+* Method: the `staged_call` and calls-resolution integration suites in CI (authoritative), the
+  aggregate `edges` count from `get_workspace_statistics` / `get_workspace_status` (a proxy — see
+  the gap note below), and daemon `tracing` warnings on hydration failure.
+* Baseline: after a restart the aggregate `edges` count equals a full re-index of the same
+  workspace, and the 089.003 oracle comparison passes.
+* Threshold to investigate: any drop in the post-restart `edges` count versus a full re-index
+  (missing edges), any increase (false edges), or any failure in the `staged_call` or
+  calls-resolution suites.
+
+> [!NOTE]
+> Observability gap — candidate follow-up chore. Per-staged and per-resolution counts are not
+> surfaced at runtime. `hydrate_code_graph` populates `CodeGraphHydrationResult.staged_calls_loaded`,
+> but both callers (`src/tools/write.rs`, `src/tools/lifecycle.rs`) discard the result, and no MCP
+> tool exposes staged or resolution-class counts (`count_calls_edges_by_resolution` is internal
+> only). Only the aggregate `edges` count is externally observable today. Wiring
+> `staged_calls_loaded` into a hydrate log line and exposing resolution-class counts through an MCP
+> tool would make staged durability directly observable; it pairs naturally with 088-S, where
+> resolution-class counts become materially useful once canonical edges flip on.
 
 ### Owner and observation window
 
