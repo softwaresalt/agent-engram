@@ -65,13 +65,18 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
 ///        (`{data_dir}/code-graph/{branch}/nodes.jsonl`).
 /// 5.0.0: `content_record` switched from file-keyed rows to retrieval-unit rows,
 ///        adding markdown chunk metadata and advisory lint fields.
-///
-/// Note (089-F): the additive `staged_calls.jsonl` snapshot does NOT bump this
-/// version. It is purely optional — older readers ignore the unknown file and
-/// newer readers tolerate its absence (legacy snapshots) — so it is backward
-/// compatible in both directions and does not constitute an incompatible
-/// format change.
-pub const SCHEMA_VERSION: &str = "5.0.0";
+/// 5.1.0: adds the OPTIONAL, generation-gated `staged_calls.jsonl` sidecar
+///        (089-F). The on-disk `nodes.jsonl` / `edges.jsonl` format is
+///        UNCHANGED from 5.0.0, so a 5.0.0 snapshot is accepted as
+///        backward-compatible legacy input. However, a 5.0.0 (or older) writer
+///        has no knowledge of the sidecar: it can re-dehydrate nodes/edges while
+///        leaving a STALE `staged_calls.jsonl` behind (a mixed-generation
+///        snapshot). To avoid rehydrating stale staged rows into FALSE edges,
+///        the reader only trusts the sidecar when the snapshot version equals
+///        the current [`SCHEMA_VERSION`] (see `hydrate_code_graph`). Because the
+///        sidecar is generation-gated rather than always-on, the bump is minor:
+///        no incompatible change to the shared nodes/edges format.
+pub const SCHEMA_VERSION: &str = "5.1.0";
 
 /// Result of a code graph dehydration operation.
 #[derive(Debug, Clone)]
@@ -175,11 +180,17 @@ pub async fn dehydrate_code_graph(
         let staged_content = serialize_staged_calls_jsonl(&staged_calls);
         atomic_write(&staged_calls_path, &staged_content).await?;
         files_written.push(format!(".engram/code-graph/{branch}/staged_calls.jsonl"));
-    } else if tokio::fs::try_exists(&staged_calls_path)
-        .await
-        .unwrap_or(false)
-    {
-        let _ = tokio::fs::remove_file(&staged_calls_path).await;
+    } else {
+        // With zero staged rows a stale sidecar MUST be removed reliably: this
+        // writer stamps `.version` = SCHEMA_VERSION, so a same-generation stale
+        // sidecar left behind here WOULD be trusted and rehydrated into false
+        // edges next restart. Propagate removal failures (other than NotFound)
+        // rather than silently ignoring them; NotFound means nothing to remove.
+        match tokio::fs::remove_file(&staged_calls_path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(flush_err(&staged_calls_path)),
+        }
     }
 
     Ok(CodeGraphDehydrationResult {

@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 use tokio::test;
 
 use engram::db::connect_db;
-use engram::db::queries::CodeGraphQueries;
+use engram::db::queries::{CodeGraphQueries, StagedCallRecord};
+use engram::services::dehydration::SCHEMA_VERSION;
 use engram::services::hydration::hydrate_code_graph;
 
 fn test_db_params(path: &Path) -> (PathBuf, String) {
@@ -37,6 +38,14 @@ fn test_db_params(path: &Path) -> (PathBuf, String) {
         .to_lowercase();
     let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
     (std::env::temp_dir().join("engram-test"), branch)
+}
+
+/// Stamp `.engram/.version` with the current schema version so the
+/// generation-gated `staged_calls.jsonl` sidecar is trusted on hydrate (089-F).
+fn stamp_current_version(ws: &Path) {
+    let engram = ws.join(".engram");
+    fs::create_dir_all(&engram).expect("create .engram dir");
+    fs::write(engram.join(".version"), SCHEMA_VERSION).expect("write .version");
 }
 
 /// Seed a `staged_calls.jsonl` into the branch-aware code-graph directory that
@@ -66,31 +75,63 @@ async fn rehydrate_loads_staged_calls_and_is_idempotent() {
         "\n",
     );
     let q = seed_staged_calls_jsonl(&data_dir, &branch, jsonl).await;
+    stamp_current_version(ws);
 
     hydrate_code_graph(ws, &data_dir, &branch, &q)
         .await
         .expect("hydrate 1");
 
-    let staged = q.list_staged_calls().await.expect("list_staged_calls");
+    // Use the FULL four-column record (incl. created_at) so a blanked or
+    // regenerated timestamp cannot slip past a 3-column comparison.
+    let mut full1 = q
+        .list_staged_calls_full()
+        .await
+        .expect("list_staged_calls_full 1");
+    full1.sort_by(|a, b| {
+        (&a.caller_id, &a.callee_name, &a.source_file).cmp(&(
+            &b.caller_id,
+            &b.callee_name,
+            &b.source_file,
+        ))
+    });
+    let expected = vec![
+        StagedCallRecord {
+            caller_id: "function:caller1".to_string(),
+            callee_name: "helper".to_string(),
+            source_file: "src/a.rs".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        },
+        StagedCallRecord {
+            caller_id: "function:caller2".to_string(),
+            callee_name: "widget".to_string(),
+            source_file: "src/b.rs".to_string(),
+            created_at: "2026-01-02T00:00:00Z".to_string(),
+        },
+    ];
     assert_eq!(
-        staged.len(),
-        2,
-        "both staged rows must load, got {staged:?}"
+        full1, expected,
+        "all four columns incl. created_at must round-trip verbatim, got {full1:?}"
     );
-    assert!(staged.iter().any(|s| s.callee_name == "helper"
-        && s.caller_id == "function:caller1"
-        && s.source_file == "src/a.rs"));
-    assert!(staged.iter().any(|s| s.callee_name == "widget"));
 
-    // Second hydrate is a no-op overwrite (keyed put), count unchanged.
+    // Second hydrate is a no-op overwrite (keyed put): the full records
+    // (incl. created_at) must be byte-for-byte identical — idempotent.
     hydrate_code_graph(ws, &data_dir, &branch, &q)
         .await
         .expect("hydrate 2");
-    let staged2 = q.list_staged_calls().await.expect("list_staged_calls 2");
+    let mut full2 = q
+        .list_staged_calls_full()
+        .await
+        .expect("list_staged_calls_full 2");
+    full2.sort_by(|a, b| {
+        (&a.caller_id, &a.callee_name, &a.source_file).cmp(&(
+            &b.caller_id,
+            &b.callee_name,
+            &b.source_file,
+        ))
+    });
     assert_eq!(
-        staged2.len(),
-        2,
-        "re-hydration must be idempotent, got {staged2:?}"
+        full1, full2,
+        "re-hydration must be idempotent incl. created_at, got {full2:?}"
     );
 }
 
@@ -103,6 +144,9 @@ async fn rehydrate_tolerates_missing_staged_calls_file() {
     // Create the code-graph dir but write NO staged_calls.jsonl (legacy layout).
     let dir = data_dir.join("code-graph").join(&branch);
     fs::create_dir_all(&dir).expect("create code-graph dir");
+    // Stamp the current version so the sidecar gate is OPEN — this exercises the
+    // genuine "file absent at current version" path (not merely a version skip).
+    stamp_current_version(ws);
     let db = connect_db(&data_dir, &branch).await.expect("connect_db");
     let q = CodeGraphQueries::new(db);
 
@@ -132,6 +176,7 @@ async fn rehydrate_tolerates_extra_and_missing_fields() {
         "\n",
     );
     let q = seed_staged_calls_jsonl(&data_dir, &branch, jsonl).await;
+    stamp_current_version(ws);
 
     hydrate_code_graph(ws, &data_dir, &branch, &q)
         .await

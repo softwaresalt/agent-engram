@@ -32,7 +32,7 @@ use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
 use engram::models::config::CodeGraphConfig;
 use engram::services::code_graph;
-use engram::services::dehydration::dehydrate_code_graph;
+use engram::services::dehydration::{SCHEMA_VERSION, dehydrate_code_graph};
 use engram::services::hydration::hydrate_code_graph;
 
 fn write_sample_file(dir: &Path, rel_path: &str, content: &str) {
@@ -131,6 +131,10 @@ async fn staged_call_resolves_after_simulated_restart_via_rehydration() {
         &data_restart.join("code-graph").join(&branch),
     );
     let q_restart = queries_for(data_restart, &branch).await;
+    // Stamp the workspace `.version` with the current schema so the
+    // generation-gated staged_calls.jsonl sidecar is trusted on hydrate (089-F).
+    fs::create_dir_all(ws.join(".engram")).expect("create .engram dir");
+    fs::write(ws.join(".engram").join(".version"), SCHEMA_VERSION).expect("write .version");
     hydrate_code_graph(ws, data_restart, &branch, &q_restart)
         .await
         .expect("hydrate");
@@ -174,19 +178,52 @@ async fn staged_call_resolves_after_simulated_restart_via_rehydration() {
         "full re-index oracle must produce one singleton edge"
     );
 
-    // No false edges: the rehydrated path must not create MORE singleton edges
-    // than the full-index oracle.
-    let restart_singletons = q_restart
-        .list_calls_edges_by_resolution("calls_resolved_singleton")
-        .await
-        .expect("list restart singletons");
-    let full_singletons = q_full
-        .list_calls_edges_by_resolution("calls_resolved_singleton")
-        .await
-        .expect("list full singletons");
+    // No missing AND no false edges: the exact set of resolved cross-file call
+    // edges from the rehydrated-then-post-passed path must equal the full
+    // re-index oracle. Comparing only counts would let "1 missing + 1 false"
+    // pass. Node IDs are per-run UUIDs, so raw id pairs never match across two
+    // independent index runs; `resolved_call_identities` translates each
+    // singleton edge's endpoints to their stable `name@file` identity so we
+    // compare the ACTUAL resolved calls.
+    let restart_ids = resolved_call_identities(&q_restart).await;
+    let full_ids = resolved_call_identities(&q_full).await;
     assert_eq!(
-        restart_singletons.len(),
-        full_singletons.len(),
-        "rehydrated resolution must match the full re-index exactly (no false edges)"
+        restart_ids, full_ids,
+        "rehydrated resolution must match the full re-index exactly \
+         (same calls, no missing, no false): restart={restart_ids:?} full={full_ids:?}"
     );
+    assert_eq!(
+        restart_ids,
+        vec![("caller@src/a.rs".to_string(), "helper@src/b.rs".to_string())],
+        "the one resolved cross-file call must be caller -> helper, got {restart_ids:?}"
+    );
+}
+
+/// Resolve the workspace's `calls_resolved_singleton` edges to a sorted list of
+/// stable `name@file` endpoint identities. Node IDs are per-run UUIDs, so this
+/// name/file projection lets two independent index runs be compared for the
+/// exact set of resolved cross-file calls (no missing, no false edges).
+async fn resolved_call_identities(q: &CodeGraphQueries) -> Vec<(String, String)> {
+    let by_id: std::collections::HashMap<String, String> = q
+        .all_functions()
+        .await
+        .expect("all_functions")
+        .into_iter()
+        .map(|f| {
+            (
+                f.id,
+                format!("{}@{}", f.name, f.file_path.replace('\\', "/")),
+            )
+        })
+        .collect();
+    let ident = |id: &str| by_id.get(id).cloned().unwrap_or_else(|| id.to_string());
+    let mut pairs: Vec<(String, String)> = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons")
+        .into_iter()
+        .map(|(from, to)| (ident(&from), ident(&to)))
+        .collect();
+    pairs.sort();
+    pairs
 }
