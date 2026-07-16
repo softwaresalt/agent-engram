@@ -54,9 +54,15 @@ impl UseGraph {
 /// Extract the module-level `use` graph from Rust `source`.
 ///
 /// Only top-level (file-module) `use` declarations are captured; `use`
-/// declarations nested inside inline `mod` blocks belong to that inner scope
-/// and are intentionally not surfaced here (their absence is fail-closed for the
-/// resolver, never a wrong binding).
+/// declarations nested inside inline `mod` blocks or function bodies belong to an
+/// inner scope and are intentionally not surfaced here. In Unit A this graph is
+/// consumed only by definition canonicalization (`canonical_path_for_def`), whose
+/// receiver-type resolution runs against module scope and is therefore unaffected
+/// by inner-scope bindings. Call-target resolution — where a missing inner-scope
+/// `use` could otherwise let the resolver fall back to an in-module item — has no
+/// production consumer in Unit A and is deferred to Unit B (088-S), which adds
+/// inner-scope `use` handling behind its mandatory adversarial panel and
+/// canonical singleton match before any edge is emitted.
 #[must_use]
 pub fn extract_use_graph(source: &str) -> UseGraph {
     let mut graph = UseGraph::default();

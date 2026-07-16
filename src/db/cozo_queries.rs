@@ -919,18 +919,25 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// Read side of the precision-neutral canonical surface: used to verify A6
     /// population and, in Unit B, to drive the canonical singleton match. The
     /// source `name` column and all name-based lookups are unaffected.
+    ///
+    /// The projection includes the unique `id` so Cozo's set semantics cannot
+    /// collapse two distinct definitions that happen to share a `canonical_path`
+    /// into a single output row. Preserving one entry per `function_meta` row is
+    /// what lets Unit B's singleton match fail closed on duplicate-definition
+    /// ambiguity (013-D) instead of silently observing a lone value.
     pub async fn canonical_paths_for_function_name(
         &self,
         name: &str,
     ) -> Result<Vec<String>, EngramError> {
-        let script = r#"?[canonical_path] := *function_meta{name, canonical_path}, name = $name"#;
+        let script =
+            r#"?[id, canonical_path] := *function_meta{id, name, canonical_path}, name = $name"#;
         let mut params = BTreeMap::new();
         params.insert("name".to_owned(), DataValue::from(name));
         let r = self
             .db
             .run_script(script, params, ScriptMutability::Immutable)
             .map_err(|e| map_db_err(e.to_string()))?;
-        Ok(r.rows.iter().map(|row| extract_str(row, 0)).collect())
+        Ok(r.rows.iter().map(|row| extract_str(row, 1)).collect())
     }
 
     /// Look up a function by name (first match).

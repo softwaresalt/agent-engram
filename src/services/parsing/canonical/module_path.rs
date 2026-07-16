@@ -238,8 +238,15 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
         return WorkspaceCrates::new(Vec::new());
     };
 
+    let root_manifest = ws_root.join("Cargo.toml");
     let mut candidate_dirs: Vec<String> = vec![String::new()];
-    candidate_dirs.extend(read_workspace_member_dirs(&ws_root.join("Cargo.toml")));
+    candidate_dirs.extend(read_workspace_member_dirs(&root_manifest));
+    // Honour `[workspace] exclude`: Cargo drops an excluded path from the
+    // workspace even when a `members` glob would otherwise match it, so an
+    // excluded package must not be classified as workspace-owned (fail closed —
+    // never treat external code as workspace).
+    let excludes = read_workspace_exclude_dirs(&root_manifest);
+    candidate_dirs.retain(|dir| dir.is_empty() || !is_excluded_dir(dir, &excludes));
     candidate_dirs.sort();
     candidate_dirs.dedup();
 
@@ -314,6 +321,40 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
         }
     }
     dirs
+}
+
+/// Read `[workspace] exclude` from a manifest, returning normalized
+/// workspace-relative directory spellings. Cargo excludes these paths from the
+/// workspace even when a `members` glob would otherwise match them; malformed or
+/// empty entries are ignored.
+fn read_workspace_exclude_dirs(manifest: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    let Some(excludes) = value
+        .get("workspace")
+        .and_then(|w| w.get("exclude"))
+        .and_then(toml::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    excludes
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .map(|raw| raw.replace('\\', "/").trim_end_matches('/').to_owned())
+        .filter(|dir| !dir.is_empty())
+        .collect()
+}
+
+/// Whether `dir` is excluded by a `[workspace] exclude` entry — an exact match or
+/// any directory nested beneath an excluded root (Cargo's exclude semantics).
+fn is_excluded_dir(dir: &str, excludes: &[String]) -> bool {
+    excludes
+        .iter()
+        .any(|excl| dir == excl || dir.starts_with(&format!("{excl}/")))
 }
 
 /// Whether a workspace-member spelling stays within the workspace root: rejects
@@ -628,6 +669,46 @@ mod tests {
         assert!(
             !wc.is_workspace_crate("evil"),
             "a symlinked member escaping ws_root must not be read"
+        );
+    }
+
+    #[test]
+    fn discover_applies_workspace_exclude() {
+        // A package matched by a `crates/*` members glob but listed in
+        // `[workspace] exclude` must not be classified as a workspace crate — its
+        // root stays external (Cargo exclude semantics; Copilot round-2 #3, fail
+        // closed on excluded packages).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"crates/experimental\"]\n\n[package]\nname = \"engram\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let keep = root.join("crates").join("keep");
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(
+            keep.join("Cargo.toml"),
+            "[package]\nname = \"keep\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let excluded = root.join("crates").join("experimental");
+        std::fs::create_dir_all(&excluded).unwrap();
+        std::fs::write(
+            excluded.join("Cargo.toml"),
+            "[package]\nname = \"experimental\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let wc = discover_workspace_crates(root);
+        assert!(wc.is_workspace_crate("engram"), "root package discovered");
+        assert!(
+            wc.is_workspace_crate("keep"),
+            "a non-excluded glob member is discovered"
+        );
+        assert!(
+            !wc.is_workspace_crate("experimental"),
+            "a member listed in [workspace] exclude must not be workspace-owned"
         );
     }
 }

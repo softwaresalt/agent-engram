@@ -544,3 +544,58 @@ async fn canonical_path_populated_and_distinct_across_modules() {
         .expect("query canonical paths");
     assert_eq!(helper, vec!["demo::a::helper".to_owned()]);
 }
+
+#[test]
+async fn duplicate_canonical_path_rows_are_not_collapsed() {
+    // Copilot round-2 #1: two distinct definitions (unique ids) that share a
+    // canonical_path must BOTH surface. Cozo head projection uses set semantics,
+    // so projecting canonical_path alone would collapse the pair into one row and
+    // hide the duplicate-definition ambiguity Unit B must fail closed on (013-D).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    );
+
+    // connect_db bootstraps the schema, so rows can be inserted without indexing.
+    let (data_dir, branch) = test_db_params(ws);
+    let db = connect_db(&data_dir, &branch).await.expect("connect");
+    let q = CodeGraphQueries::new(db);
+
+    let make = |id: &str| engram::models::Function {
+        id: id.to_owned(),
+        name: "build".to_owned(),
+        file_path: "src/a.rs".to_owned(),
+        line_start: 1,
+        line_end: 1,
+        signature: "fn build()".to_owned(),
+        docstring: None,
+        body: String::new(),
+        body_hash: String::new(),
+        token_count: 0,
+        embed_type: "explicit_code".to_owned(),
+        embedding: Vec::new(),
+        summary: String::new(),
+    };
+    q.upsert_function_with_canonical(&make("function:1"), "demo::a::Widget::build")
+        .await
+        .expect("upsert first duplicate");
+    q.upsert_function_with_canonical(&make("function:2"), "demo::a::Widget::build")
+        .await
+        .expect("upsert second duplicate");
+
+    let paths = q
+        .canonical_paths_for_function_name("build")
+        .await
+        .expect("query canonical paths");
+    assert_eq!(
+        paths,
+        vec![
+            "demo::a::Widget::build".to_owned(),
+            "demo::a::Widget::build".to_owned(),
+        ],
+        "two rows sharing a canonical_path must not collapse to one (fail-closed multiplicity)"
+    );
+}
