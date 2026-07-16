@@ -820,11 +820,26 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
 
     /// Insert or replace a function record across all three tables.
     pub async fn upsert_function(&self, func: &crate::models::Function) -> Result<(), EngramError> {
+        self.upsert_function_with_canonical(func, "").await
+    }
+
+    /// Upsert a function together with its additive `canonical_path` identity
+    /// (091.008-T / Option C A6, precision-neutral).
+    ///
+    /// `canonical_path` is `""` for non-Rust or unresolved definitions (never a
+    /// canonical match target — D4). The source `name` column and every
+    /// name-based subsystem (search, references, bare-name resolution, JSONL)
+    /// are untouched; only the new column is populated.
+    pub async fn upsert_function_with_canonical(
+        &self,
+        func: &crate::models::Function,
+        canonical_path: &str,
+    ) -> Result<(), EngramError> {
         // Table 1: function_meta
         let meta_script = r#"
-?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary] <-
-    [[$id, $name, $file_path, $line_start, $line_end, $signature, $docstring, $body_hash, $token_count, $embed_type, $summary]]
-:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary }
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, canonical_path] <-
+    [[$id, $name, $file_path, $line_start, $line_end, $signature, $docstring, $body_hash, $token_count, $embed_type, $summary, $canonical_path]]
+:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, canonical_path }
 "#;
         let mut p = BTreeMap::new();
         p.insert("id".to_owned(), DataValue::from(func.id.as_str()));
@@ -862,6 +877,7 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             DataValue::from(func.embed_type.as_str()),
         );
         p.insert("summary".to_owned(), DataValue::from(func.summary.as_str()));
+        p.insert("canonical_path".to_owned(), DataValue::from(canonical_path));
         self.run_script_busy_retry_mutable(meta_script, p)
             .await
             .map(|_| ())?;
@@ -895,6 +911,33 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             .map(|_| ())?;
 
         Ok(())
+    }
+
+    /// Return the additive `canonical_path` identities of every `function_meta`
+    /// row whose source `name` equals `name` (091.008-T / Option C A6).
+    ///
+    /// Read side of the precision-neutral canonical surface: used to verify A6
+    /// population and, in Unit B, to drive the canonical singleton match. The
+    /// source `name` column and all name-based lookups are unaffected.
+    ///
+    /// The projection includes the unique `id` so Cozo's set semantics cannot
+    /// collapse two distinct definitions that happen to share a `canonical_path`
+    /// into a single output row. Preserving one entry per `function_meta` row is
+    /// what lets Unit B's singleton match fail closed on duplicate-definition
+    /// ambiguity (013-D) instead of silently observing a lone value.
+    pub async fn canonical_paths_for_function_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<String>, EngramError> {
+        let script =
+            r#"?[id, canonical_path] := *function_meta{id, name, canonical_path}, name = $name"#;
+        let mut params = BTreeMap::new();
+        params.insert("name".to_owned(), DataValue::from(name));
+        let r = self
+            .db
+            .run_script(script, params, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows.iter().map(|row| extract_str(row, 1)).collect())
     }
 
     /// Look up a function by name (first match).
@@ -5639,9 +5682,9 @@ mod tests {
         // A partial write: `function_meta` only, with no `function_code` /
         // `function_embedding` row (the SQLITE_BUSY-mid-upsert scenario).
         let meta_only = r#"
-?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary] <-
-    [[$id, $name, $file_path, $line_start, $line_end, $signature, $docstring, $body_hash, $token_count, $embed_type, $summary]]
-:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary }
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, canonical_path] <-
+    [[$id, $name, $file_path, $line_start, $line_end, $signature, $docstring, $body_hash, $token_count, $embed_type, $summary, $canonical_path]]
+:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, canonical_path }
 "#;
         let mut p = BTreeMap::new();
         p.insert("id".to_owned(), DataValue::from("function:partial"));
@@ -5656,6 +5699,7 @@ mod tests {
         p.insert("token_count".to_owned(), DataValue::Num(Num::Int(0)));
         p.insert("embed_type".to_owned(), DataValue::from("explicit_code"));
         p.insert("summary".to_owned(), DataValue::from(""));
+        p.insert("canonical_path".to_owned(), DataValue::from(""));
         q.run_script_busy_retry_mutable(meta_only, p)
             .await
             .expect("insert meta-only row");
