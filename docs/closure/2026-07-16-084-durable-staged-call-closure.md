@@ -122,6 +122,57 @@ The test `t030_003_markdown_heading_and_code_block_indexed_via_ipc` flaked in CI
 indexing over IPC under parallel and resource load). It was verified passing locally (20.8s),
 and the job was re-run green before merge. This is a candidate for a hardening chore.
 
+## Release observability
+
+Feature 089-F changes runtime hydration and the on-disk schema version, so the rollout carries
+explicit observation and rollback criteria.
+
+### Healthy signals
+
+* After `engram install` or `engram update` stamps `.engram/.version = 5.1.0` and the daemon
+  restarts, `staged_call` rows persist across the restart: the rehydrated count equals the
+  pre-restart count.
+* Cross-file calls staged before a restart resolve after it, and the resolved-edge set equals a
+  full re-index oracle. The 089.003 restart test is the canary for this invariant.
+* Daemon hydrate logs report the staged-row count loaded from `staged_calls.jsonl` on a 5.1.0
+  workspace.
+
+### Failure signals
+
+* Hydration errors on daemon start (`SchemaMismatch`, `Hydration Failed`), or `get_health_report`
+  reporting degraded workspace state.
+* `staged_call` count drops to zero after a restart on a 5.1.0 workspace that had staged rows,
+  indicating silent durability loss.
+* Extra or false `calls_resolved_*` edges appear after restart compared with the full re-index
+  oracle (false-edge count above zero).
+
+### Monitoring method, baseline, threshold
+
+* Method: daemon hydrate logs, `get_workspace_status` and `get_workspace_statistics` (staged and
+  resolved-edge counts), and the `staged_call` plus calls-resolution integration suites in CI.
+* Baseline: rehydrated staged-row count equals the pre-restart count, and the resolved-edge set
+  equals the full re-index oracle.
+* Threshold to investigate: any staged-row drop to zero on a 5.1.0 workspace with prior staging,
+  or any false-edge count above zero.
+
+### Owner and observation window
+
+* Owner: ship and repository maintainer.
+* Window: the first daemon restarts after a 5.1.0 install, plus CI runs of the `staged_call` and
+  calls-resolution suites.
+* Outcome: local gates and CI green; restart durability proven by 089.003 against a full re-index
+  oracle with no false edges.
+
+### Rollback trigger and procedure
+
+* Trigger: false edges after restart, hydration failures on existing workspaces, or staged rows
+  silently dropped on 5.1.0 workspaces.
+* Procedure: `git revert -m 1 a0962f6` removes the sidecar export and import and restores
+  `SCHEMA_VERSION` to 5.0.0. Existing 5.0.0 workspaces are unaffected. Any workspace whose
+  `.version` was bumped to 5.1.0 in the interim must re-run `engram install` or `engram update`
+  so the reverted binary — which rejects 5.1.0 fail-closed — can hydrate it. Blast radius is
+  minimal because durable staging activates only after an explicit install or update.
+
 ## Verdict
 
 SHIPPED. Merged to main as merge commit `a0962f6` via PR #253. Feature 089-F and shipment

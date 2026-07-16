@@ -20,14 +20,19 @@ gap where staged cross-file calls were lost across daemon dehydrate/rehydrate.
 * `089.002-T` — rehydrate `staged_call` from JSONL on restart (idempotent, legacy-tolerant).
 * `089.003-T` — restart integration test: rehydrated staging resolves via the post-pass, matching a full re-index oracle with no false edges.
 
-## Files modified
+## Files touched
+
+Modified in the merged diff:
 
 * `src/services/dehydration.rs` — `SCHEMA_VERSION` 5.0.0 -> 5.1.0; `serialize_staged_calls_jsonl`; staged export with reliable stale-sidecar removal (propagates non-NotFound errors).
 * `src/services/hydration.rs` — generation-gated staged sidecar load; version allowlist accepts 5.1.0 / 5.0.0 / 3.0.0; `try_exists` errors propagated; `line_preview` char-boundary helper.
 * `src/db/cozo_queries.rs` — `list_staged_calls_full()` returning `StagedCallRecord` (incl. `created_at`).
-* `src/db/cozo_backend/schema.rs` — unchanged (staged_call relation kept at 4 columns).
 * Three new integration tests: `staged_call_dehydration_test.rs`, `staged_call_rehydration_test.rs`, `staged_call_restart_resolution_test.rs`.
 * `Cargo.toml` — new `[[test]]` targets registered.
+
+Verified unchanged (listed for context, not part of the diff):
+
+* `src/db/cozo_backend/schema.rs` — the `staged_call` relation stays at 4 columns.
 
 ## Decisions and rationale
 
