@@ -175,6 +175,13 @@ fn resolve_core(
         // Self sentinel.
         "Self" => None,
         "" => resolve_absolute(ctx, tail),
+        // A bare head naming an in-file generic type parameter
+        // (`fn f<T: Bound>() { T::m() }`) cannot be resolved without type
+        // inference and could shadow a same-named local type OR a workspace
+        // crate whose name collides with the parameter — fail closed BEFORE the
+        // workspace-crate arm so a generic param named like a crate cannot forge
+        // a canonical edge (M2, no-false-edge invariant).
+        h if ctx.use_graph.is_generic_param(h) => None,
         h if ctx.crates.is_workspace_crate(h) => {
             Some(segs.iter().map(|s| (*s).to_owned()).collect())
         }
@@ -446,6 +453,7 @@ mod tests {
             has_nested_use: false,
             has_non_default_mod_mapping: false,
             non_default_mod_roots: vec![],
+            generic_type_params: vec![],
         };
         let ctx = ResolveContext {
             module: &m,

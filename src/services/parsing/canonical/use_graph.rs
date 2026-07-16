@@ -46,6 +46,12 @@ pub struct UseGraph {
     /// Top-level module names whose declarations use non-default or conditional
     /// mapping attributes.
     pub non_default_mod_roots: Vec<String>,
+    /// Type-parameter names declared anywhere in the file (`fn f<T>`, `impl<T>`,
+    /// `struct S<T>`, …). A bare `T::method()` call whose head matches one of
+    /// these may be a generic-parameter method call shadowing a same-named local
+    /// type; resolving it would require type inference, so the resolver fails
+    /// closed on any such head (M2, no-false-edge invariant).
+    pub generic_type_params: Vec<String>,
 }
 
 impl UseGraph {
@@ -87,6 +93,16 @@ impl UseGraph {
     #[must_use]
     pub fn non_default_mod_roots(&self) -> &[String] {
         &self.non_default_mod_roots
+    }
+
+    /// Whether `name` is declared as a generic type parameter anywhere in the
+    /// file. The resolver fails closed on a bare `name::method()` head that
+    /// matches, because a generic parameter shadows any same-named local type and
+    /// the true callee requires trait/type inference the resolver refuses to do
+    /// (M2, no-false-edge invariant).
+    #[must_use]
+    pub fn is_generic_param(&self, name: &str) -> bool {
+        self.generic_type_params.iter().any(|p| p == name)
     }
 }
 
@@ -131,6 +147,17 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
                     graph.non_default_mod_roots.push(root_name);
                 }
             }
+            // Descend an inline module body so a NESTED `#[path]`/`#[cfg]` remap
+            // (`mod outer { #[path=…] mod inner; }`) is recorded with its full
+            // relative path — its default filesystem identity must not be trusted
+            // for call resolution either (M3, no-false-edge invariant).
+            if let (Some(name), Some(body)) = (
+                local_root_name(child, source),
+                child.child_by_field_name("body"),
+            ) {
+                let prefix = format!("{name}::");
+                collect_nested_non_default_mod_roots(body, source, &prefix, &mut graph);
+            }
         }
         pending_attrs.clear();
 
@@ -138,7 +165,102 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
             graph.local_roots.push(root_name);
         }
     }
+    // Collect generic type-parameter declarations across the whole file so the
+    // resolver can fail closed on a bare `T::method()` head that a generic param
+    // shadows (M2). Over-approximating scope (file-wide, not lexical) is safe:
+    // it only ever drops an edge, never invents one.
+    collect_generic_type_params(root, source, &mut graph.generic_type_params);
+    graph.generic_type_params.sort();
+    graph.generic_type_params.dedup();
     graph
+}
+
+/// Recurse into an inline module body collecting nested non-default `mod`
+/// mappings, prefixing each with its enclosing inline-module path so a nested
+/// `#[path]`/`#[cfg]` remap is recorded as `outer::inner` (M3).
+fn collect_nested_non_default_mod_roots(
+    body: Node<'_>,
+    source: &str,
+    prefix: &str,
+    graph: &mut UseGraph,
+) {
+    let mut cursor = body.walk();
+    let mut pending_attrs: Vec<String> = Vec::new();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "attribute_item" {
+            pending_attrs.push(node_text(child, source));
+            continue;
+        }
+        if child.kind() == "mod_item" {
+            if let Some(name) = local_root_name(child, source) {
+                let mut attr_texts = pending_attrs.clone();
+                attr_texts.extend(child_attributes(child, source));
+                let full = format!("{prefix}{name}");
+                if mod_mapping_is_non_default(&attr_texts) {
+                    graph.has_non_default_mod_mapping = true;
+                    graph.non_default_mod_roots.push(full.clone());
+                }
+                if let Some(inner) = child.child_by_field_name("body") {
+                    let inner_prefix = format!("{full}::");
+                    collect_nested_non_default_mod_roots(inner, source, &inner_prefix, graph);
+                }
+            }
+        }
+        pending_attrs.clear();
+    }
+}
+
+/// Collect every generic type-parameter NAME declared under `node` (any depth).
+/// Only parameter declarations (`<T>`, `<T: Bound>`, `<T = Default>`) are
+/// gathered — bound/default type ARGUMENTS are not, because a parameter list is
+/// not descended into.
+fn collect_generic_type_params(node: Node<'_>, source: &str, out: &mut Vec<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "type_parameters" {
+            let mut param_cursor = child.walk();
+            for param in child.named_children(&mut param_cursor) {
+                if let Some(name) = generic_param_name(param, source) {
+                    out.push(name);
+                }
+            }
+        }
+        // Recurse into EVERY child, including a `type_parameters` node's own
+        // subtree: a generic can be DECLARED in a nested inline item inside a
+        // bound or const-generic default (`<T = { fn f<U: B>() { U::m() } 0 }>`),
+        // and such a `U` must also fail closed. Type ARGUMENTS live under distinct
+        // `type_arguments` nodes and are never mistaken for declarations, because a
+        // name is only ever gathered from the direct children of a
+        // `type_parameters` node.
+        collect_generic_type_params(child, source, out);
+    }
+}
+
+/// The declared name of a single generic parameter node, or `None` for
+/// lifetimes, const parameters, and metavariables (which cannot be a call-head
+/// type qualifier).
+fn generic_param_name(param: Node<'_>, source: &str) -> Option<String> {
+    match param.kind() {
+        "type_identifier" => Some(node_text(param, source)),
+        // tree-sitter-rust wraps each generic in a `type_parameter` node whose
+        // `name` field is the declared identifier (bounds/defaults live in
+        // sibling fields, so read the field rather than scanning children).
+        "type_parameter" => {
+            let name = param.child_by_field_name("name")?;
+            (name.kind() == "type_identifier").then(|| node_text(name, source))
+        }
+        // Older/alternate grammars spell the same construct as a
+        // `constrained_type_parameter` / `optional_type_parameter` whose first
+        // `type_identifier` child is the declared name.
+        "constrained_type_parameter" | "optional_type_parameter" => {
+            let mut cursor = param.walk();
+            param
+                .named_children(&mut cursor)
+                .find(|n| n.kind() == "type_identifier")
+                .map(|n| node_text(n, source))
+        }
+        _ => None,
+    }
 }
 
 fn local_root_name(node: Node<'_>, source: &str) -> Option<String> {
@@ -345,6 +467,28 @@ mod tests {
         let first = it.next();
         assert!(it.next().is_none(), "expected a single binding for {alias}");
         first
+    }
+
+    #[test]
+    fn collects_fn_generic_type_param_and_excludes_lifetimes() {
+        let g = extract_use_graph(
+            "pub fn caller<'a, T: Builder, const N: usize>(x: &'a T) { let _ = N; }\n",
+        );
+        assert!(g.is_generic_param("T"), "T is a type param");
+        assert!(!g.is_generic_param("a"), "lifetime is not a type param");
+        assert!(
+            !g.is_generic_param("N"),
+            "const generic is not a type param"
+        );
+    }
+
+    #[test]
+    fn collects_impl_and_struct_generic_type_params() {
+        let g = extract_use_graph(
+            "pub struct Holder<V> { v: V }\nimpl<W> Holder<W> { fn take() {} }\n",
+        );
+        assert!(g.is_generic_param("V"), "struct type param V");
+        assert!(g.is_generic_param("W"), "impl type param W");
     }
 
     #[test]

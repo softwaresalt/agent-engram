@@ -63,12 +63,14 @@ fn unsafe_module_prefixes(
         else {
             continue;
         };
-        prefixes.extend(
-            use_graph
-                .non_default_mod_roots()
-                .iter()
-                .map(|root| module.child(root).to_canonical()),
-        );
+        prefixes.extend(use_graph.non_default_mod_roots().iter().map(|root| {
+            // `root` may be a nested relative path (`outer::inner`) captured from
+            // a `#[path]`/`#[cfg]` remap inside an inline module body, so descend
+            // it segment-by-segment: the unsafe prefix is the full nested module.
+            root.split("::")
+                .fold(module.clone(), |m, seg| m.child(seg))
+                .to_canonical()
+        }));
     }
     prefixes
 }
@@ -220,6 +222,28 @@ async fn reresolve_calls_edges_with_canonical_context(
         return Ok(result);
     }
 
+    // Snapshot pre-existing edges BEFORE any retraction. A non-forced full index
+    // does not retract every caller's edges, so this dedup set stops a merely
+    // re-asserted edge from being counted as newly `resolved`. The retraction
+    // loop below deletes exactly the CANONICAL edges of callers with staged
+    // calls; seeding this set AFTER retraction would miss those edges and
+    // re-count them as new. Singleton edges (produced by the bare-name pass above
+    // and already counted in `result.resolved`, plus any pre-existing ones) are
+    // seeded too: a canonical target that coincides with an existing
+    // `(caller, callee)` singleton pair is a provenance UPGRADE of the same edge,
+    // not a newly resolved edge, so it must not double-count. Only genuinely new
+    // `(caller, target)` pairs increment `result.resolved`.
+    let mut created: HashSet<(String, String)> = queries
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await?
+        .into_iter()
+        .collect();
+    created.extend(
+        queries
+            .list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await?,
+    );
+
     let mut callers = HashSet::new();
     for call in &staged {
         if callers.insert(call.caller_id.clone()) {
@@ -232,15 +256,6 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
-    // Seed the dedup set with canonical edges that already exist so a
-    // non-forced full index (which does not retract every caller's edges) does
-    // not re-count an edge it merely re-asserted as newly `resolved`. Only
-    // genuinely new `(caller, target)` pairs increment `result.resolved`.
-    let mut created: HashSet<(String, String)> = queries
-        .list_calls_edges_by_resolution("calls_resolved_canonical")
-        .await?
-        .into_iter()
-        .collect();
 
     for call in &staged {
         result.lookups += 1;

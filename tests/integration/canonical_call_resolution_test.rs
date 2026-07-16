@@ -18,6 +18,7 @@ use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
 use engram::models::config::CodeGraphConfig;
 use engram::services::code_graph;
+use engram::services::retrieval_eval::evaluate_target_correctness;
 
 fn write_file(ws: &Path, rel: &str, content: &str) {
     let full = ws.join(rel);
@@ -330,5 +331,176 @@ async fn empty_canonical_path_is_never_a_match_target() {
     assert!(
         edges.is_empty(),
         "workspace without a manifest has empty canonical_path rows and must not resolve: {edges:?}"
+    );
+}
+
+#[test]
+async fn generic_type_param_head_does_not_resolve_to_shadowed_local_type() {
+    // Regression (M2): a generic type parameter `T` shadows a same-named local
+    // `struct T`, so `fn caller<T: Builder>() { T::build(); }` must NOT emit a
+    // canonical edge to `crate::…::T::build` (the local inherent method). The
+    // true callee is `<T as Builder>::build`, which requires type inference the
+    // resolver refuses to do — fail closed, never a false edge.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod shadowed;\npub mod plain;\n");
+    write_file(
+        ws,
+        "src/shadowed.rs",
+        "pub trait Builder { fn build(); }\npub struct T;\nimpl T { pub fn build() {} }\npub fn caller<T: Builder>() { T::build(); }\n",
+    );
+    // Control: the SAME bare `Type::method()` shape WITHOUT a shadowing generic
+    // still resolves, proving the guard is specific to generic-parameter heads
+    // and does not broadly disable in-module local-root resolution.
+    write_file(
+        ws,
+        "src/plain.rs",
+        "pub struct Widget;\nimpl Widget { pub fn build() {} }\npub fn caller2() { Widget::build(); }\n",
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let shadow_caller = names["caller"][0].clone();
+    let local_t_build = names["T::build"][0].clone();
+    assert!(
+        !edges.contains(&(shadow_caller, local_t_build)),
+        "generic param `T` must not resolve to shadowed local `T::build`: {edges:?}"
+    );
+
+    let plain_caller = names["caller2"][0].clone();
+    let widget_build = names["Widget::build"][0].clone();
+    assert!(
+        edges.contains(&(plain_caller, widget_build)),
+        "non-shadowed in-module `Widget::build()` must still resolve: {edges:?}"
+    );
+}
+
+#[test]
+async fn generic_type_param_named_like_workspace_crate_fails_closed() {
+    // Regression (M2 precedence): a generic type parameter whose name COLLIDES
+    // with the workspace crate name (`demo`) must fail closed BEFORE the
+    // workspace-crate resolution arm. Otherwise `fn caller<demo: Builder>() {
+    // demo::build(); }` would resolve `demo::build` to the crate-root `build`
+    // via the `is_workspace_crate` fast path, forging a false canonical edge that
+    // the generic-parameter guard is supposed to stop.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws); // crate name = "demo"
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub trait Builder { fn build(); }\npub fn build() {}\n",
+    );
+    write_file(
+        ws,
+        "src/caller.rs",
+        "use crate::Builder;\npub fn caller<demo: Builder>() { demo::build(); }\n",
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let caller_id = names["caller"][0].clone();
+    assert!(
+        edges.iter().all(|(from, _)| from != &caller_id),
+        "a generic param named like the crate must not forge any canonical edge: {edges:?}"
+    );
+}
+
+#[test]
+async fn nested_non_default_module_mapping_emits_no_edge_to_stray_default_file() {
+    // Regression (M3): a `#[path]` remap NESTED inside an inline module
+    // (`mod outer { #[path=…] mod inner; }`) must mark `crate::outer::inner`
+    // unsafe just like a top-level remap. Otherwise a stray default-layout file
+    // at `src/outer/inner.rs` receives canonical path `crate::outer::inner::*`
+    // and a qualified call falsely resolves to it.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    #[path = \"nested_actual.rs\"]\n    pub mod inner;\n}\n",
+    );
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() { crate::outer::inner::target(); }\n",
+    );
+    // Stray default-layout file for the remapped nested module.
+    write_file(ws, "src/outer/inner.rs", "pub fn target() {}\n");
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let caller_id = names["caller"][0].clone();
+    if let Some(target_ids) = names.get("target") {
+        for target_id in target_ids {
+            assert!(
+                !edges.contains(&(caller_id.clone(), target_id.clone())),
+                "nested `#[path]` remap must fail closed, not resolve to stray default file: {edges:?}"
+            );
+        }
+    }
+}
+
+#[test]
+async fn canonical_edges_are_scored_by_the_target_correctness_gate() {
+    // Regression (M4): the target-correctness gate must EVALUATE canonical edges,
+    // not only singletons — otherwise a wrong-but-existing canonical edge escapes
+    // it. Feed produced canonical edges through the gate: a correct fixture scores
+    // zero mismatch, and a manifest expecting a different identity flags a
+    // mismatch (proving the gate has teeth for the canonical resolution class).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod caller;\npub mod util;\n");
+    write_file(ws, "src/util.rs", "pub fn helper() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() { crate::util::helper(); }\n",
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let produced: Vec<(String, String)> = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges")
+        .into_iter()
+        .collect();
+    assert!(
+        !produced.is_empty(),
+        "fixture must produce at least one canonical edge to score"
+    );
+
+    let caller_id = names["caller"][0].clone();
+    let helper_id = names["helper"][0].clone();
+    let correct: HashSet<(String, String)> = [(caller_id.clone(), helper_id)].into_iter().collect();
+    let tc = evaluate_target_correctness(&produced, &correct);
+    assert_eq!(
+        tc.target_mismatch, 0,
+        "a correct canonical edge must not be flagged as a mismatch"
+    );
+    assert!(
+        tc.target_correct >= 1,
+        "the canonical edge must be scored as target-correct"
+    );
+
+    // A manifest expecting a DIFFERENT identity flags the produced canonical edge
+    // as a mismatch — the gate is not blind to canonical edges (M4).
+    let wrong: HashSet<(String, String)> = [(caller_id, String::from("crate::util::not_helper"))]
+        .into_iter()
+        .collect();
+    let tc_wrong = evaluate_target_correctness(&produced, &wrong);
+    assert!(
+        tc_wrong.target_mismatch >= 1,
+        "a wrong-but-existing canonical edge must be flagged by the gate"
     );
 }

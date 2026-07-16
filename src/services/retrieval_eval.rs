@@ -581,8 +581,8 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
     }
 }
 
-/// Outcome of comparing produced `calls_resolved_singleton` edges against a
-/// ground-truth expected-target manifest by EXACT identity (084.004-T).
+/// Outcome of comparing produced resolved `calls` edges (singleton AND canonical)
+/// against a ground-truth expected-target manifest by EXACT identity (084.004-T).
 ///
 /// Unlike `false_edge_rate` — a DANGLING-only lower bound that is blind to
 /// mis-resolution to an existing-but-wrong function
@@ -593,15 +593,20 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
 /// and [`GraphMetrics::target_mismatch`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TargetCorrectness {
-    /// Produced singleton edges present in the manifest (correct callee identity).
+    /// Produced resolved edges present in the manifest (correct callee identity).
     pub target_correct: u64,
-    /// Produced singleton edges absent from the manifest (wrong-but-existing or
+    /// Produced resolved edges absent from the manifest (wrong-but-existing or
     /// dangling) — the gap the dangling-only `false_edge_rate` cannot see.
     pub target_mismatch: u64,
 }
 
-/// Compare produced `calls_resolved_singleton` edges against an expected-target
-/// manifest by EXACT `(caller_id, callee_id)` identity (084.004-T).
+/// Compare produced resolved `calls` edges against an expected-target manifest
+/// by EXACT `(caller_id, callee_id)` identity (084.004-T).
+///
+/// The check is resolution-CLASS-AGNOSTIC: it scores whatever produced edges it
+/// is given by identity alone. The eval harness MUST therefore feed it BOTH
+/// `calls_resolved_singleton` AND `calls_resolved_canonical` edges — otherwise a
+/// wrong-but-existing CANONICAL edge would silently escape the gate (M4).
 ///
 /// `target_correct` counts produced edges present in the manifest;
 /// `target_mismatch` counts produced edges ABSENT from it — i.e. resolved to a
@@ -613,12 +618,12 @@ pub struct TargetCorrectness {
 /// remains `resolution_recall`'s and the dangling aggregate's concern.
 #[must_use]
 pub fn evaluate_target_correctness(
-    produced_singletons: &[(String, String)],
+    produced_edges: &[(String, String)],
     expected_manifest: &HashSet<(String, String)>,
 ) -> TargetCorrectness {
     let mut target_correct = 0u64;
     let mut target_mismatch = 0u64;
-    for edge in produced_singletons {
+    for edge in produced_edges {
         if expected_manifest.contains(edge) {
             target_correct += 1;
         } else {
