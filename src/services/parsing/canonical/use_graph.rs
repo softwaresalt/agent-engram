@@ -52,6 +52,19 @@ pub struct UseGraph {
     /// type; resolving it would require type inference, so the resolver fails
     /// closed on any such head (M2, no-false-edge invariant).
     pub generic_type_params: Vec<String>,
+    /// Type-item NAMES declared inside a block scope (a function body or nested
+    /// `{ ... }` block) rather than at module level. A block-local `struct T`
+    /// shadows a same-named top-level type at call sites within that scope, so a
+    /// bare `T::method()` head matching one of these could resolve to the WRONG
+    /// (top-level) type; the resolver fails closed on any such head (M2 sibling,
+    /// no-false-edge invariant).
+    pub block_local_type_names: Vec<String>,
+    /// Local aliases introduced by `extern crate <crate> as <alias>;`. The alias
+    /// re-points a crate-root name to a DIFFERENT crate, shadowing the
+    /// extern-prelude name — `extern crate ext as demo; demo::build()` designates
+    /// `ext`, not the workspace crate `demo`. The resolver must not take the
+    /// workspace-crate fast path for such a head (no-false-edge invariant).
+    pub extern_crate_aliases: Vec<String>,
 }
 
 impl UseGraph {
@@ -103,6 +116,25 @@ impl UseGraph {
     #[must_use]
     pub fn is_generic_param(&self, name: &str) -> bool {
         self.generic_type_params.iter().any(|p| p == name)
+    }
+
+    /// Whether `name` is declared as a block-local type item (inside a function
+    /// body or nested block). The resolver fails closed on a bare
+    /// `name::method()` head that matches, because a block-local type shadows any
+    /// same-named top-level type at the call site and resolving to the top-level
+    /// type would forge a false canonical edge (no-false-edge invariant).
+    #[must_use]
+    pub fn is_block_local_type(&self, name: &str) -> bool {
+        self.block_local_type_names.iter().any(|n| n == name)
+    }
+
+    /// Whether `name` is re-pointed by an `extern crate ... as name;` alias to a
+    /// different crate, shadowing the extern-prelude crate name. The resolver must
+    /// not take the workspace-crate fast path for such a head (no-false-edge
+    /// invariant).
+    #[must_use]
+    pub fn is_extern_crate_alias(&self, name: &str) -> bool {
+        self.extern_crate_aliases.iter().any(|n| n == name)
     }
 }
 
@@ -172,6 +204,17 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
     collect_generic_type_params(root, source, &mut graph.generic_type_params);
     graph.generic_type_params.sort();
     graph.generic_type_params.dedup();
+    // Collect block-local type items and extern-crate aliases so the resolver can
+    // fail closed on a bare head that either shadows a same-named top-level type
+    // (block-local `struct T`) or re-points a crate name (`extern crate ext as
+    // demo`). Over-approximating scope file-wide is safe: it only drops an edge,
+    // never invents one (no-false-edge invariant).
+    collect_block_local_type_names(root, source, false, &mut graph.block_local_type_names);
+    graph.block_local_type_names.sort();
+    graph.block_local_type_names.dedup();
+    collect_extern_crate_aliases(root, source, &mut graph.extern_crate_aliases);
+    graph.extern_crate_aliases.sort();
+    graph.extern_crate_aliases.dedup();
     graph
 }
 
@@ -236,6 +279,54 @@ fn collect_generic_type_params(node: Node<'_>, source: &str, out: &mut Vec<Strin
     }
 }
 
+/// Collect type-item NAMES declared inside a block scope (a function body or
+/// nested `{ ... }` block) under `node`. Module and impl item lists are
+/// `declaration_list` nodes, NOT `block` nodes, so top-level and module-scoped
+/// items are excluded — only items lexically inside a `block` are gathered.
+///
+/// A block-local `struct T` shadows a same-named top-level type at call sites
+/// within that scope, so a bare `T::method()` head that matches one of these
+/// could resolve to the wrong (top-level) type. Fail-closed over-approximation
+/// (file-wide, not lexical) is safe: it only ever drops an edge, never invents
+/// one (no-false-edge invariant).
+fn collect_block_local_type_names(
+    node: Node<'_>,
+    source: &str,
+    inside_block: bool,
+    out: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if inside_block {
+            if let Some(name) = local_root_name(child, source) {
+                out.push(name);
+            }
+        }
+        // A `block` node's descendants are in block scope; once inside a block,
+        // stay inside so a nested module/impl item inside a function body is still
+        // treated as shadowing-scoped.
+        let child_inside = inside_block || child.kind() == "block";
+        collect_block_local_type_names(child, source, child_inside, out);
+    }
+}
+
+/// Collect every `extern crate <crate> as <alias>;` ALIAS name declared under
+/// `node` (any depth). Only the aliased form is collected: a plain `extern crate
+/// foo;` binds `foo` to crate `foo` (identity, no shadowing), whereas `extern
+/// crate ext as demo;` re-points `demo` to a DIFFERENT crate and shadows the
+/// extern-prelude name `demo` (no-false-edge invariant).
+fn collect_extern_crate_aliases(node: Node<'_>, source: &str, out: &mut Vec<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "extern_crate_declaration" {
+            if let Some(alias) = child.child_by_field_name("alias") {
+                out.push(node_text(alias, source));
+            }
+        }
+        collect_extern_crate_aliases(child, source, out);
+    }
+}
+
 /// The declared name of a single generic parameter node, or `None` for
 /// lifetimes, const parameters, and metavariables (which cannot be a call-head
 /// type qualifier).
@@ -265,9 +356,10 @@ fn generic_param_name(param: Node<'_>, source: &str) -> Option<String> {
 
 fn local_root_name(node: Node<'_>, source: &str) -> Option<String> {
     match node.kind() {
-        "struct_item" | "enum_item" | "trait_item" | "type_item" | "mod_item" => node
-            .child_by_field_name("name")
-            .map(|n| node_text(n, source)),
+        "struct_item" | "enum_item" | "union_item" | "trait_item" | "type_item" | "mod_item" => {
+            node.child_by_field_name("name")
+                .map(|n| node_text(n, source))
+        }
         _ => None,
     }
 }
@@ -489,6 +581,43 @@ mod tests {
         );
         assert!(g.is_generic_param("V"), "struct type param V");
         assert!(g.is_generic_param("W"), "impl type param W");
+    }
+
+    #[test]
+    fn collects_block_local_type_and_excludes_top_level() {
+        let g = extract_use_graph(
+            "pub struct Top;\nfn caller() { struct T; enum E { A } let _ = T; }\n",
+        );
+        assert!(
+            g.is_block_local_type("T"),
+            "block-local struct T shadows any top-level T at the call site"
+        );
+        assert!(g.is_block_local_type("E"), "block-local enum E");
+        assert!(
+            !g.is_block_local_type("Top"),
+            "a top-level type is a local_root, not a block-local shadow"
+        );
+        assert!(
+            g.has_local_root("Top"),
+            "top-level Top is still recorded as a local root"
+        );
+    }
+
+    #[test]
+    fn collects_extern_crate_alias_and_excludes_plain() {
+        let g = extract_use_graph("extern crate ext as demo;\nextern crate plain;\n");
+        assert!(
+            g.is_extern_crate_alias("demo"),
+            "`extern crate ext as demo` re-points demo to a different crate"
+        );
+        assert!(
+            !g.is_extern_crate_alias("plain"),
+            "a plain `extern crate plain` is identity, not a shadowing alias"
+        );
+        assert!(
+            !g.is_extern_crate_alias("ext"),
+            "the aliased crate name itself is not the shadowing binding"
+        );
     }
 
     #[test]

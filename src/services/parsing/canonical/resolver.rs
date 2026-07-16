@@ -182,6 +182,12 @@ fn resolve_core(
         // workspace-crate arm so a generic param named like a crate cannot forge
         // a canonical edge (M2, no-false-edge invariant).
         h if ctx.use_graph.is_generic_param(h) => None,
+        // A bare head naming a block-local type item (`fn f() { struct T; T::m() }`)
+        // may be SHADOWED at the call site by that local type, so resolving it to a
+        // same-named top-level type would forge a false canonical edge — fail closed
+        // (C8-4, no-false-edge invariant). File-wide over-approximation only ever
+        // drops an edge, never invents one.
+        h if ctx.use_graph.is_block_local_type(h) => None,
         // Workspace-crate fast path, taken ONLY when the crate name is not
         // RE-POINTED in this file. A `use` binding shadows the extern-prelude
         // crate name only when it maps the head to a DIFFERENT path (`use
@@ -189,8 +195,10 @@ fn resolve_core(
         // re-import whose binding path equals the head (`use demo;` or `use
         // demo::{self}`) still designates the crate itself, so it stays on the
         // fast path rather than recursing into the binding arm and failing
-        // closed. A local top-level `mod h` / type `h` also shadows. A shadowing
-        // declaration takes precedence over the extern-prelude crate name in Rust
+        // closed. A local top-level `mod h` / type `h` also shadows, and an
+        // `extern crate ... as h;` alias re-points `h` to a DIFFERENT crate (C8-5).
+        // A shadowing declaration takes precedence over the extern-prelude crate
+        // name in Rust
         // name resolution, so a re-pointed head must fall through to the
         // binding/local-root logic below — otherwise `use ext::Widget as demo;
         // demo::build()` (rename shadow) or a local `mod demo { fn build() {} }`
@@ -200,7 +208,8 @@ fn resolve_core(
         // Rust's `::demo` crate-root escape.
         h if ctx.crates.is_workspace_crate(h)
             && ctx.use_graph.bindings_for(h).all(|b| b.path == h)
-            && !ctx.use_graph.has_local_root(h) =>
+            && !ctx.use_graph.has_local_root(h)
+            && !ctx.use_graph.is_extern_crate_alias(h) =>
         {
             Some(segs.iter().map(|s| (*s).to_owned()).collect())
         }
@@ -555,6 +564,8 @@ mod tests {
             has_non_default_mod_mapping: false,
             non_default_mod_roots: vec![],
             generic_type_params: vec![],
+            block_local_type_names: vec![],
+            extern_crate_aliases: vec![],
         };
         let ctx = ResolveContext {
             module: &m,

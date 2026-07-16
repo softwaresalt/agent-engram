@@ -1089,6 +1089,11 @@ pub async fn sync_workspace_with_progress(
         advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
+    // C8-1: track whether any changed file altered `#[path]`/`#[cfg]` mod mapping
+    // (which can make a module prefix newly unsafe). If so, canonical edges are
+    // swept after the loop so no stale edge survives under a now-unsafe prefix.
+    let mut mod_mapping_changed = false;
+
     // ── Phase 2: Process current files (add / modify / skip) ────────
     for file_path in &current_files {
         'file: {
@@ -1299,6 +1304,12 @@ pub async fn sync_workspace_with_progress(
 
             // A6: per-file canonical context (Rust-only; None → empty canonical_path).
             let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+            // C8-1: note whether this changed file carries a non-default `#[path]`/
+            // `#[cfg]` mod mapping, which can make a module prefix newly UNSAFE and
+            // strand stale canonical edges from other unchanged callers under it.
+            mod_mapping_changed |= rust_ctx
+                .as_ref()
+                .is_some_and(|(_, ug)| ug.has_non_default_mod_mapping());
 
             for symbol in &parse_result.symbols {
                 match symbol {
@@ -1490,11 +1501,15 @@ pub async fn sync_workspace_with_progress(
                             // calls)) and is deliberately deferred to the
                             // full-index path (082 perf gate), mirroring how the
                             // base singleton resolver also only recreates
-                            // cross-file edges on full index. On sync, a file's
-                            // prior canonical edges were already retracted by
-                            // `retract_resolved_calls_edges_for_file` above, so
-                            // the outcome is fail-closed (edges reappear on the
-                            // next full index; never a stale or false edge).
+                            // cross-file edges on full index. On sync, this
+                            // file's own prior canonical edges were already
+                            // retracted by `retract_resolved_calls_edges_for_file`
+                            // above; canonical edges from OTHER unchanged callers
+                            // that a mod-mapping change could strand under a
+                            // newly-unsafe prefix are swept after the loop (C8-1).
+                            // Either way the outcome is fail-closed: edges
+                            // reappear on the next full index, never left stale
+                            // or false.
                             if !should_stage_provenance_call(
                                 *is_method,
                                 *is_qualified,
@@ -1608,6 +1623,26 @@ pub async fn sync_workspace_with_progress(
             debug!(path = %rel_path, "code graph sync: re-indexed file");
         }
         advance_progress(&mut progress, &mut completed_files, total_files);
+    }
+
+    // ── C8-1: sweep stale canonical edges after a mod-mapping change ─
+    // An incremental sync only retracts the CHANGED files' own edges, so a
+    // `#[path]`/`#[cfg]` mod-declaration edit that makes a module prefix newly
+    // UNSAFE would otherwise leave STALE canonical edges from OTHER unchanged
+    // callers under that prefix (the full-index canonical post-pass that drops
+    // edges under unsafe prefixes is deliberately deferred on sync for perf).
+    // Retract ALL canonical edges so none can survive under a now-unsafe prefix;
+    // they are re-derived (correctly prefix-filtered) on the next full index —
+    // fail-closed, matching the sync contract that canonical edges reappear on
+    // full index and are never left stale.
+    if mod_mapping_changed {
+        let retracted = queries.retract_all_calls_resolved_canonical_edges().await?;
+        if retracted > 0 {
+            debug!(
+                count = retracted,
+                "code graph sync: swept canonical edges after a mod-mapping change (fail-closed; re-derived on next full index)"
+            );
+        }
     }
 
     // ── Post-pass: re-resolve unresolved references edges ───────────

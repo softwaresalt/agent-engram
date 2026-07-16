@@ -548,3 +548,143 @@ async fn canonical_edges_are_scored_by_the_target_correctness_gate() {
         "a wrong-but-existing canonical edge must be flagged by the gate"
     );
 }
+
+/// Re-open the code graph for `ws` after an incremental sync using the same
+/// deterministic db params as [`index`], so a test can index → mutate → sync
+/// against one persistent database.
+async fn sync(ws: &Path) -> CodeGraphQueries {
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+    CodeGraphQueries::new(db)
+}
+
+#[test]
+async fn block_local_type_shadow_does_not_create_false_canonical_edge() {
+    // Regression (Cycle-8 C8-4): a block-local `struct Shadowed` inside a fn
+    // shadows the outer top-level `Shadowed`. A qualified call `Shadowed::run()`
+    // in that fn binds to the block-local type, so it MUST NOT resolve to the
+    // outer `crate::thing::Shadowed::run`. Before the fix, `has_local_root`
+    // matched the top-level type and produced a false canonical edge.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod thing;\n");
+    write_file(
+        ws,
+        "src/thing.rs",
+        r#"
+pub struct Shadowed;
+impl Shadowed {
+    pub fn run() {}
+}
+
+pub fn caller() {
+    struct Shadowed;
+    impl Shadowed {
+        fn run() {}
+    }
+    Shadowed::run();
+}
+"#,
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let caller_id = names["caller"][0].clone();
+    if let Some(run_ids) = names.get("Shadowed::run") {
+        for run_id in run_ids {
+            assert!(
+                !edges.contains(&(caller_id.clone(), run_id.clone())),
+                "block-local type shadow must fail closed, not link to outer Shadowed::run: {edges:?}"
+            );
+        }
+    }
+}
+
+#[test]
+async fn extern_crate_alias_does_not_resolve_to_shadowed_workspace_crate() {
+    // Regression (Cycle-8 C8-5): `extern crate ext as demo;` makes `demo` an
+    // alias for a foreign crate, shadowing the workspace crate (also named
+    // `demo`). A call `demo::build()` MUST NOT resolve to the workspace's own
+    // `crate::build`. Before the fix, the workspace-crate fast path matched
+    // `demo` and produced a false canonical edge to the real `build`.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws); // crate name is `demo`
+    write_file(ws, "src/lib.rs", "pub mod caller;\npub fn build() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        r#"
+extern crate ext as demo;
+
+pub fn caller() {
+    demo::build();
+}
+"#,
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let caller_id = names["caller"][0].clone();
+    if let Some(build_ids) = names.get("build") {
+        for build_id in build_ids {
+            assert!(
+                !edges.contains(&(caller_id.clone(), build_id.clone())),
+                "extern-crate alias must fail closed, not link to workspace crate::build: {edges:?}"
+            );
+        }
+    }
+}
+
+#[test]
+async fn sync_with_mod_mapping_change_sweeps_stale_canonical_edges() {
+    // Regression (Cycle-8 C8-1): an incremental sync only retracts the CHANGED
+    // files' own edges. A `#[path]`/`#[cfg]` mod-declaration edit can make a
+    // module prefix newly UNSAFE, stranding stale canonical edges from OTHER
+    // unchanged callers under that prefix (sync deliberately skips the O(all
+    // staged calls) canonical post-pass). When any changed file carries a
+    // non-default mod mapping, the sync must sweep ALL canonical edges
+    // (fail-closed); they are re-derived, correctly prefix-filtered, on the
+    // next full index.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod caller;\npub mod util;\n");
+    write_file(ws, "src/util.rs", "pub fn helper() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() { crate::util::helper(); }\n",
+    );
+
+    let q = index(ws).await;
+    let before = canonical_edges(&q).await;
+    assert!(
+        !before.is_empty(),
+        "the initial full index must produce a canonical edge to later sweep"
+    );
+
+    // Introduce a non-default `#[path]` mod mapping in a changed file (lib.rs).
+    write_file(ws, "src/extra.rs", "pub fn extra() {}\n");
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod util;\n#[path = \"extra.rs\"]\npub mod aliased;\n",
+    );
+
+    let q2 = sync(ws).await;
+    let after = canonical_edges(&q2).await;
+    assert!(
+        after.is_empty(),
+        "a mod-mapping change on sync must sweep all canonical edges; got {after:?}"
+    );
+}
