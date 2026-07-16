@@ -232,7 +232,15 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
-    let mut created = HashSet::new();
+    // Seed the dedup set with canonical edges that already exist so a
+    // non-forced full index (which does not retract every caller's edges) does
+    // not re-count an edge it merely re-asserted as newly `resolved`. Only
+    // genuinely new `(caller, target)` pairs increment `result.resolved`.
+    let mut created: HashSet<(String, String)> = queries
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await?
+        .into_iter()
+        .collect();
 
     for call in &staged {
         result.lookups += 1;
@@ -1442,6 +1450,17 @@ pub async fn sync_workspace_with_progress(
                         qualifier_kind,
                     } => {
                         if *is_method || *is_qualified {
+                            // Sync stages qualified/method provenance but does
+                            // NOT run the canonical post-pass here: canonical
+                            // resolution is workspace-global (O(all staged
+                            // calls)) and is deliberately deferred to the
+                            // full-index path (082 perf gate), mirroring how the
+                            // base singleton resolver also only recreates
+                            // cross-file edges on full index. On sync, a file's
+                            // prior canonical edges were already retracted by
+                            // `retract_resolved_calls_edges_for_file` above, so
+                            // the outcome is fail-closed (edges reappear on the
+                            // next full index; never a stale or false edge).
                             if !should_stage_provenance_call(
                                 *is_method,
                                 *is_qualified,

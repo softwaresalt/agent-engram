@@ -449,7 +449,8 @@ fn parse_staged_call_line(line: &str) -> Result<ParsedStagedCall, serde_json::Er
 /// Upsert a parsed staged call into the database. Returns `true` on success.
 ///
 /// Preserves the original `created_at` so a dehydrate → rehydrate round-trip is
-/// idempotent; the `put` is keyed by `(caller_id, callee_name, source_file)`.
+/// idempotent; the `put` is keyed by
+/// `(caller_id, callee_name, source_file, raw_qualifier)`.
 async fn upsert_staged_call(
     cg_queries: &crate::db::queries::CodeGraphQueries,
     staged: &ParsedStagedCall,

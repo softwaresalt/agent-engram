@@ -132,6 +132,48 @@ pub fn caller() {
 }
 
 #[test]
+async fn distinct_qualifiers_same_callee_name_both_resolve() {
+    // Regression (091.012-T / C2): two qualified calls to the same callee NAME
+    // but different qualifiers in one caller must BOTH resolve. `raw_qualifier`
+    // is part of the `staged_call` key, so the two rows no longer collide and
+    // overwrite one another — which previously dropped one of the two canonical
+    // edges (fail-closed recall loss).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod caller;\n",
+    );
+    write_file(ws, "src/a.rs", "pub fn build() {}\n");
+    write_file(ws, "src/b.rs", "pub fn build() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    crate::a::build();\n    crate::b::build();\n}\n",
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let caller_id = names["caller"][0].clone();
+    let build_ids = &names["build"];
+    assert_eq!(
+        build_ids.len(),
+        2,
+        "expected two distinct build definitions, got {build_ids:?}"
+    );
+    for build_id in build_ids {
+        assert!(
+            edges.contains(&(caller_id.clone(), build_id.clone())),
+            "expected canonical edge caller->{build_id}; got {edges:?}"
+        );
+    }
+}
+
+#[test]
 async fn ambiguous_duplicate_canonical_path_emits_no_edge() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
@@ -205,7 +247,7 @@ pub mod trait_impl_self;
     write_file(
         ws,
         "src/primitive_qualifier.rs",
-        "pub mod u32 { pub fn from() {} }\npub fn caller() { u32::from(1); }\n",
+        "pub mod u32 { pub fn parse() {} }\npub fn caller() { u32::parse(1); }\n",
     );
     write_file(
         ws,

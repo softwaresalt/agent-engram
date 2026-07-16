@@ -1574,7 +1574,7 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// This is the rehydration entry point (089-F): it re-inserts a staged row
     /// with the timestamp it originally carried, so a dehydrate → rehydrate
     /// round-trip is deterministic and idempotent. Keyed by
-    /// `(caller_id, callee_name, source_file)`.
+    /// `(caller_id, callee_name, source_file, raw_qualifier)`.
     pub async fn put_staged_call_with_created_at(
         &self,
         caller_id: &str,
@@ -1602,7 +1602,7 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         let script = r#"
 ?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] <-
     [[$caller_id, $callee_name, $source_file, $created_at, $raw_qualifier, $qualifier_kind, $enclosing_canonical_type]]
-:put staged_call { caller_id, callee_name, source_file => created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type }
+:put staged_call { caller_id, callee_name, source_file, raw_qualifier => created_at, qualifier_kind, enclosing_canonical_type }
 "#;
         let mut p = BTreeMap::new();
         p.insert("caller_id".to_owned(), DataValue::from(staged.caller_id));
@@ -1715,10 +1715,10 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// stale edge by a later forced post-pass.
     pub async fn clear_staged_calls_for_file(&self, source_file: &str) -> Result<(), EngramError> {
         let script = r#"
-?[caller_id, callee_name, source_file] :=
-    *staged_call { caller_id, callee_name, source_file },
+?[caller_id, callee_name, source_file, raw_qualifier] :=
+    *staged_call { caller_id, callee_name, source_file, raw_qualifier },
     source_file = $source_file
-:rm staged_call { caller_id, callee_name, source_file }
+:rm staged_call { caller_id, callee_name, source_file, raw_qualifier }
 "#;
         let mut p = BTreeMap::new();
         p.insert("source_file".to_owned(), DataValue::from(source_file));
