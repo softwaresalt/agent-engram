@@ -142,8 +142,12 @@ explicit observation and rollback criteria.
 ### Failure signals
 
 * `background_db_hydration: code graph hydration failed` — a `tracing::warn!` emitted on daemon
-  start when `hydrate_code_graph` returns an error (`SchemaMismatch`, `Hydration Failed`); or
-  `get_health_report` reporting degraded workspace state.
+  start when `hydrate_code_graph` returns an error (`SchemaMismatch` or a hydration failure). This
+  warning is log-only: readiness is signalled *before* hydration runs (`set_hydration_ready` in
+  `background_db_hydration`, `src/tools/lifecycle.rs`), so a hydration failure does **not** surface
+  through `get_health_report` — its checks cover binary / pid / workspace / pipe / registry /
+  offline-scan / session / telemetry health, not hydration (`get_health_report_for_daemon`,
+  `src/tools/doctor.rs`). The daemon log is the only direct hydration-failure signal today.
 * The aggregate `edges` count after a restart is lower than a full re-index (missing resolved
   cross-file edges) or higher (false edges).
 * Failures in the `staged_call` or calls-resolution CI suites.
@@ -172,22 +176,32 @@ explicit observation and rollback criteria.
 ### Owner and observation window
 
 * Owner: ship and repository maintainer.
-* Duration: a bounded 7-day active-observation window that opens at the first real `engram update`
-  or `engram reinstall` to 5.1.0 followed by a daemon restart, plus the next 3 CI runs of the
+* Duration: a bounded 7-day active-observation window that opens at the first real upgrade to 5.1.0
+  (via `engram update` / `engram reinstall` on an existing workspace, or a fresh `engram install`)
+  followed by a daemon restart, plus the next 3 CI runs of the
   `staged_call` and calls-resolution suites. The window closes after 7 days with no failure signal,
   or immediately on the first rollback trigger (whichever comes first).
-* Outcome: local gates and CI green; restart durability proven by 089.003 against a full re-index
-  oracle with no false edges.
+* Outcome (pre-release validation): local gates and CI green; restart durability proven by 089.003
+  against a full re-index oracle with no false edges. This is pre-release evidence, not the
+  window-close result.
+* Outcome (post-release window): **pending** — to be recorded after the 7-day window closes with no
+  failure signal, or as rolled-back if a trigger fires. The `SHIPPED` verdict below reflects the
+  merge plus pre-release validation; it does not assert the observation window has closed.
 
 ### Rollback trigger and procedure
 
 * Trigger: false edges after restart, hydration failures on existing workspaces, or staged rows
   silently dropped on 5.1.0 workspaces.
-* Procedure: `git revert -m 1 a0962f6` removes the sidecar export and import and restores
-  `SCHEMA_VERSION` to 5.0.0. Existing 5.0.0 workspaces are unaffected. Any workspace whose
-  `.version` was bumped to 5.1.0 in the interim must re-run `engram update` or `engram reinstall`
-  so the reverted binary — which rejects 5.1.0 fail-closed — can hydrate it. Blast radius is
-  minimal because durable staging activates only after an explicit install, update, or reinstall.
+* Procedure: revert the merge with `git revert -m 1 a0962f6` (removes the sidecar export and import
+  and restores the compiled-in `SCHEMA_VERSION` to 5.0.0), then **build and deploy the reverted
+  binary**. The revert only takes effect once the 5.0.0 binary is the one running: `.version` is
+  stamped from the binary's compiled-in `SCHEMA_VERSION` (`update` / `reinstall` in
+  `src/installer/mod.rs`), so restamping with the still-deployed 5.1.0 binary would re-stamp 5.1.0
+  and not recover anything. Existing 5.0.0 workspaces are unaffected. For any workspace whose
+  `.version` was bumped to 5.1.0 in the interim: **after the reverted 5.0.0 binary is deployed**,
+  re-run `engram update` or `engram reinstall` so `.version` is restamped to 5.0.0 and the reverted
+  binary — which rejects 5.1.0 fail-closed — can hydrate it. Blast radius is minimal because durable
+  staging activates only after an explicit install, update, or reinstall.
 
 ## Verdict
 
