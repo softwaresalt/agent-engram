@@ -98,8 +98,11 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
 
     // 091.008-T (Option C A6): additive `function_meta.canonical_path` column,
     // precision-neutral. Idempotent shape-detected upgrade; existing rows default
-    // to "" (never a canonical match target — D4). The A8 format-version
-    // fingerprint forces a one-time re-index that repopulates it from source.
+    // to "" (never a canonical match target — D4). New/re-parsed rows are
+    // populated opportunistically at index time; pre-existing rows stay "" until
+    // the deferred ID-preserving Unit B backfill (the A8 forced re-index was
+    // removed as unsafe — symbol IDs are random UUIDs, so re-parsing unchanged
+    // files would disturb the existing edge set).
     migrate_function_meta_canonical_path(cozo_db)?;
 
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
@@ -472,9 +475,10 @@ pub(crate) fn function_meta_has_canonical_path(
 /// row to `""` (empty is **never** a canonical match target — D4). The existing
 /// `name` column is left untouched, so search, references, and bare-name
 /// resolution are unaffected. Idempotent: once the column is present the
-/// function returns immediately, so it is safe to run on every bootstrap. The A8
-/// format-version fingerprint forces a one-time re-index that repopulates
-/// `canonical_path` from source for content-unchanged files.
+/// function returns immediately, so it is safe to run on every bootstrap.
+/// `canonical_path` is populated opportunistically at index time for
+/// new/re-parsed rows; pre-existing rows remain `""` until the deferred
+/// ID-preserving Unit B backfill (the A8 forced re-index was removed as unsafe).
 ///
 /// # Errors
 /// Returns [`EngramError`] when column introspection or the `:replace` rewrite

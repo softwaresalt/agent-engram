@@ -213,10 +213,17 @@ fn walk_use_tree(
                 node.child_by_field_name("path"),
                 node.child_by_field_name("alias"),
             ) {
-                let path = join_path(prefix, &node_text(path_node, source));
+                let path_text = node_text(path_node, source);
+                // `use a::b::{self as x}` (and `use a::b as x` whose path is
+                // `self`) aliases the PREFIX itself, not a `::self` child.
+                let path = if path_text == "self" {
+                    prefix.to_owned()
+                } else {
+                    join_path(prefix, &path_text)
+                };
                 let alias = node_text(alias_node, source);
                 // `as _` introduces no referenceable name — skip it.
-                if alias != "_" {
+                if alias != "_" && !path.is_empty() {
                     graph.bindings.push(UseBinding {
                         alias,
                         path,
@@ -335,6 +342,14 @@ mod tests {
         let g = extract_use_graph("use a::b::{self, C};");
         assert_eq!(binding(&g, "b").unwrap().path, "a::b");
         assert_eq!(binding(&g, "C").unwrap().path, "a::b::C");
+    }
+
+    #[test]
+    fn self_alias_in_group_binds_prefix() {
+        // `use a::b::{self as alias}` aliases the PREFIX `a::b`, not `a::b::self`.
+        let g = extract_use_graph("use a::b::{self as alias};");
+        assert!(binding(&g, "self").is_none());
+        assert_eq!(binding(&g, "alias").unwrap().path, "a::b");
     }
 
     #[test]

@@ -11,9 +11,14 @@
 //!
 //! Deterministic and **fail-closed**: any layout that cannot be mapped
 //! unambiguously (binaries, examples, integration tests, `build.rs`,
-//! non-identifier segments, unknown roots) yields `None`. Non-default `mod`
-//! mappings (`#[path=…]`) and conditional modules (`#[cfg(…)]`) are reported as
-//! non-derivable so callers fail closed rather than guess (D1).
+//! non-identifier segments, unknown roots) yields `None`.
+//!
+//! Limitation (deferred to Unit B): [`module_path_for_file`] derives the path
+//! purely from the crate's **filesystem layout** — it does not inspect `mod`
+//! attributes. The [`mod_mapping_is_non_default`] helper lets a caller detect
+//! `#[path=…]` / `#[cfg(…)]` mappings, but it is not yet wired into file→path
+//! derivation, so a file selected through such a mapping is still assigned its
+//! filesystem-derived path. Full non-default-`mod` rigor lands with Unit B (D1).
 
 use std::path::Path;
 
@@ -225,6 +230,14 @@ pub fn mod_mapping_is_non_default(attr_texts: &[String]) -> bool {
 /// identifier form (hyphens → underscores).
 #[must_use]
 pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
+    // Symlink-aware containment (Constitution III/IV): resolve the workspace root
+    // once; every manifest we read must canonicalize to a real path under it, so a
+    // member (or `crates/*` entry) that symlinks outside ws_root is rejected
+    // rather than followed. Fail closed if the root itself cannot be resolved.
+    let Ok(canonical_root) = ws_root.canonicalize() else {
+        return WorkspaceCrates::new(Vec::new());
+    };
+
     let mut candidate_dirs: Vec<String> = vec![String::new()];
     candidate_dirs.extend(read_workspace_member_dirs(&ws_root.join("Cargo.toml")));
     candidate_dirs.sort();
@@ -237,7 +250,10 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
         } else {
             ws_root.join(&dir).join("Cargo.toml")
         };
-        if let Some(name) = read_package_name(&manifest) {
+        if !manifest_within_root(&manifest, &canonical_root) {
+            continue;
+        }
+        if let Some(name) = read_crate_name(&manifest) {
             roots.push(CrateRoot {
                 name: name.replace('-', "_"),
                 dir,
@@ -245,6 +261,13 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
         }
     }
     WorkspaceCrates::new(roots)
+}
+
+/// Whether `manifest` canonicalizes to a real path contained within
+/// `canonical_root`. Rejects symlinked members that escape the workspace and any
+/// manifest that cannot be resolved (Constitution III/IV — fail closed).
+fn manifest_within_root(manifest: &Path, canonical_root: &Path) -> bool {
+    matches!(manifest.canonicalize(), Ok(real) if real.starts_with(canonical_root))
 }
 
 /// Read `[workspace] members` from a manifest, returning workspace-relative
@@ -308,15 +331,22 @@ fn is_contained_member(raw: &str) -> bool {
     !raw.split('/').any(|c| c == "..")
 }
 
-/// Read `[package] name` from a manifest, if present.
-fn read_package_name(manifest: &Path) -> Option<String> {
+/// Read the Rust crate-root name from a manifest: `[lib] name` when configured,
+/// otherwise `[package] name`. A package such as `[package] name = "foo-bar"`
+/// with `[lib] name = "api"` canonicalizes under `api` (the real crate root),
+/// so cross-crate paths converge on the compiler's crate identity.
+fn read_crate_name(manifest: &Path) -> Option<String> {
     let text = std::fs::read_to_string(manifest).ok()?;
     let value = text.parse::<toml::Value>().ok()?;
-    value
+    let lib_name = value
+        .get("lib")
+        .and_then(|l| l.get("name"))
+        .and_then(toml::Value::as_str);
+    let package_name = value
         .get("package")
         .and_then(|p| p.get("name"))
-        .and_then(toml::Value::as_str)
-        .map(str::to_owned)
+        .and_then(toml::Value::as_str);
+    lib_name.or(package_name).map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -546,5 +576,58 @@ mod tests {
         assert!(!is_contained_member("/etc/passwd"));
         assert!(!is_contained_member("C:/Windows"));
         assert!(!is_contained_member("//host/share"));
+    }
+
+    #[test]
+    fn discover_prefers_lib_name_over_package_name() {
+        // A crate whose `[lib] name` differs from `[package] name` canonicalizes
+        // under the Rust crate root (`api`), not the package name (Copilot #3).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"foo-package\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"api\"\n",
+        )
+        .unwrap();
+
+        let wc = discover_workspace_crates(root);
+        assert!(wc.is_workspace_crate("api"), "lib name is the crate root");
+        assert!(
+            !wc.is_workspace_crate("foo_package"),
+            "package name is not the crate root when [lib] name is set"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_rejects_symlinked_member_escaping_workspace() {
+        // A lexically-contained member that symlinks to a manifest outside the
+        // workspace must be rejected, not followed (Constitution III/IV — the
+        // symlink-aware canonicalization gate; Copilot #1).
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let evil = outside.path().join("evil");
+        std::fs::create_dir_all(&evil).unwrap();
+        std::fs::write(
+            evil.join("Cargo.toml"),
+            "[package]\nname = \"evil\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let ws = tempfile::tempdir().expect("ws tempdir");
+        let root = ws.path();
+        std::fs::create_dir_all(root.join("crates")).unwrap();
+        std::os::unix::fs::symlink(&evil, root.join("crates").join("evil")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/evil\"]\n\n[package]\nname = \"host\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let wc = discover_workspace_crates(root);
+        assert!(wc.is_workspace_crate("host"), "root package discovered");
+        assert!(
+            !wc.is_workspace_crate("evil"),
+            "a symlinked member escaping ws_root must not be read"
+        );
     }
 }
