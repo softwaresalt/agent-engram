@@ -23,3 +23,4 @@
 //! edge) can never originate here.
 
 pub mod module_path;
+pub mod use_graph;
