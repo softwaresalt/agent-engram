@@ -936,6 +936,32 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         Ok(r.rows.iter().map(|row| extract_str(row, 0)).collect())
     }
 
+    /// Read a durable `schema_meta` value by key, or `None` if unset (091.010-T
+    /// / Option C A8: the `code_index_format_version` fingerprint).
+    pub async fn get_schema_meta(&self, key: &str) -> Result<Option<String>, EngramError> {
+        let script = r#"?[value] := *schema_meta{key, value}, key = $key"#;
+        let mut params = BTreeMap::new();
+        params.insert("key".to_owned(), DataValue::from(key));
+        let r = self
+            .db
+            .run_script(script, params, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows.first().map(|row| extract_str(row, 0)))
+    }
+
+    /// Upsert a durable `schema_meta` key/value, SQLITE_BUSY-safe (091.010-T /
+    /// Option C A8).
+    pub async fn set_schema_meta(&self, key: &str, value: &str) -> Result<(), EngramError> {
+        let script = r#"?[key, value] <- [[$key, $value]]
+:put schema_meta { key => value }"#;
+        let mut params = BTreeMap::new();
+        params.insert("key".to_owned(), DataValue::from(key));
+        params.insert("value".to_owned(), DataValue::from(value));
+        self.run_script_busy_retry_mutable(script, params)
+            .await
+            .map(|_| ())
+    }
+
     /// Look up a function by name (first match).
     pub async fn get_function_by_name(
         &self,

@@ -544,3 +544,88 @@ async fn canonical_path_populated_and_distinct_across_modules() {
         .expect("query canonical paths");
     assert_eq!(helper, vec!["demo::a::helper".to_owned()]);
 }
+
+#[test]
+async fn index_format_version_fingerprint_forces_one_time_reindex() {
+    // Option C Unit A / A8: a stored index-format version mismatch forces a
+    // one-time re-parse of content-unchanged files (so canonical_path
+    // materialises on legacy DBs); the fingerprint is then advanced and a
+    // same-version re-index skips unchanged files.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    );
+    write_sample_file(
+        ws,
+        "src/lib.rs",
+        "pub struct Widget;\nimpl Widget {\n    pub fn build(&self) {}\n}\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    // Fresh index stamps the current fingerprint and populates canonical_path.
+    let r1 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index 1");
+    assert!(r1.files_parsed >= 1);
+
+    {
+        let db = connect_db(&data_dir, &branch).await.expect("connect");
+        let q = CodeGraphQueries::new(db);
+        assert_eq!(
+            q.get_schema_meta("code_index_format_version")
+                .await
+                .expect("meta")
+                .as_deref(),
+            Some("2"),
+            "a fresh index stamps the current format fingerprint"
+        );
+        // Simulate a legacy DB: roll the stored fingerprint back.
+        q.set_schema_meta("code_index_format_version", "0")
+            .await
+            .expect("set legacy version");
+    }
+
+    // Re-index WITHOUT force: content is unchanged, but the version mismatch must
+    // force a re-parse, then re-stamp the current fingerprint.
+    let r2 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index 2");
+    assert!(
+        r2.files_parsed >= 1,
+        "a version bump must force re-parse of content-unchanged files"
+    );
+
+    {
+        let db = connect_db(&data_dir, &branch).await.expect("connect 2");
+        let q = CodeGraphQueries::new(db);
+        assert_eq!(
+            q.get_schema_meta("code_index_format_version")
+                .await
+                .expect("meta")
+                .as_deref(),
+            Some("2"),
+            "the fingerprint is advanced after the forced re-index"
+        );
+        assert!(
+            !q.canonical_paths_for_function_name("Widget::build")
+                .await
+                .expect("query")
+                .is_empty(),
+            "canonical_path is (re)populated by the forced re-index"
+        );
+    }
+
+    // A third index at the SAME version skips unchanged files (no needless churn).
+    let r3 = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index 3");
+    assert_eq!(
+        r3.files_parsed, 0,
+        "a same-version re-index skips content-unchanged files"
+    );
+}

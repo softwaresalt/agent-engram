@@ -59,6 +59,16 @@ fn canonical_path_for_function(
         .unwrap_or_default()
 }
 
+/// Current code-index format version. Bumped whenever the on-DB code-index
+/// format changes such that content-unchanged files must be re-parsed
+/// (091.010-T / Option C A8: the additive `function_meta.canonical_path`). A DB
+/// whose stored fingerprint differs is force-reindexed once, then the marker is
+/// advanced.
+const CODE_INDEX_FORMAT_VERSION: &str = "2";
+
+/// Durable `schema_meta` key holding the code-index format fingerprint.
+const CODE_INDEX_FORMAT_VERSION_KEY: &str = "code_index_format_version";
+
 /// Summary returned by [`index_workspace`] after indexing completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexResult {
@@ -178,6 +188,14 @@ async fn index_workspace_impl(
     // (computed once per index run; Rust-only, precision-neutral).
     let crates = canonical::discover_workspace_crates(ws_path);
 
+    // Option C Unit A / A8: index-format fingerprint. A stored version mismatch
+    // forces a one-time re-parse of content-unchanged files so new format fields
+    // (canonical_path) materialise on existing DBs; the marker is advanced after
+    // the run (effective single-flight — the re-index is idempotent — and
+    // SQLITE_BUSY-safe, non-blocking-open, run in the normal index path — D5).
+    let stored_format = queries.get_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY).await?;
+    let format_changed = stored_format.as_deref() != Some(CODE_INDEX_FORMAT_VERSION);
+
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
     info!(
@@ -268,8 +286,9 @@ async fn index_workspace_impl(
             // Compute content hash.
             let content_hash = sha256_hex(&source);
 
-            // Skip unchanged files (unless force).
-            if !force {
+            // Skip unchanged files (unless force or an index-format version bump
+            // requires re-parsing to materialise new fields — A8).
+            if !force && !format_changed {
                 if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
@@ -652,6 +671,23 @@ async fn index_workspace_impl(
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
     result.duration_ms = elapsed;
+
+    // A8: advance the index-format fingerprint now that every file has been
+    // parsed under the current format. On a version bump this run force-re-parsed
+    // content-unchanged files; the elapsed duration is a release-observability
+    // signal (091.010-T, per 087.001-T). Rollback = revert the version marker.
+    if format_changed {
+        queries
+            .set_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY, CODE_INDEX_FORMAT_VERSION)
+            .await?;
+        info!(
+            from = stored_format.as_deref().unwrap_or("<none>"),
+            to = CODE_INDEX_FORMAT_VERSION,
+            duration_ms = elapsed,
+            "code graph: advanced index-format fingerprint after forced re-index (091.010-T / A8)"
+        );
+    }
+
     info!(
         files_parsed = result.files_parsed,
         files_skipped = result.files_skipped,
@@ -750,6 +786,12 @@ pub async fn sync_workspace_with_progress(
 
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation.
     let crates = canonical::discover_workspace_crates(ws_path);
+
+    // Option C Unit A / A8: index-format fingerprint — a version mismatch forces
+    // the incremental sync to re-parse content-unchanged files once so new format
+    // fields (canonical_path) materialise; the marker is advanced after the run.
+    let stored_format = queries.get_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY).await?;
+    let format_changed = stored_format.as_deref() != Some(CODE_INDEX_FORMAT_VERSION);
 
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
@@ -883,7 +925,7 @@ pub async fn sync_workspace_with_progress(
             let content_hash = sha256_hex(&source);
             let is_new = !indexed_map.contains_key(&rel_path);
 
-            if !is_new {
+            if !is_new && !format_changed {
                 let existing = &indexed_map[&rel_path];
                 if existing.content_hash == content_hash {
                     // File unchanged — skip entirely.
@@ -1307,6 +1349,20 @@ pub async fn sync_workspace_with_progress(
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
     result.duration_ms = elapsed;
+
+    // A8: advance the index-format fingerprint after the sync re-parsed files
+    // under the current format (duration is a release-observability signal).
+    if format_changed {
+        queries
+            .set_schema_meta(CODE_INDEX_FORMAT_VERSION_KEY, CODE_INDEX_FORMAT_VERSION)
+            .await?;
+        info!(
+            from = stored_format.as_deref().unwrap_or("<none>"),
+            to = CODE_INDEX_FORMAT_VERSION,
+            duration_ms = elapsed,
+            "code graph sync: advanced index-format fingerprint after forced re-index (091.010-T / A8)"
+        );
+    }
 
     Ok(result)
 }
