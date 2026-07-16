@@ -18,6 +18,7 @@ use crate::models::backlog_graph::{
 };
 use crate::models::registry::ContentSource;
 use crate::services::parsing::frontmatter;
+use crate::services::source_traversal::collect_files_in_workspace;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -45,26 +46,22 @@ pub fn compute_deleted_paths(known_paths: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Collect all files under `dir` recursively, sorted by path.
-fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_md_files(&path));
-            } else if path.is_file()
-                && path
-                    .extension()
-                    .map(|e| e.eq_ignore_ascii_case("md"))
-                    .unwrap_or(false)
-            {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    files
+/// Collect all backlog markdown files under `dir` recursively, sorted by path.
+#[must_use]
+pub fn collect_backlog_files(dir: &Path) -> Vec<PathBuf> {
+    collect_backlog_files_in_workspace(dir, dir)
+}
+
+/// Collect backlog markdown files under `dir`, traversing only symlinked
+/// directories whose canonical target remains under `workspace_root`.
+#[must_use]
+pub fn collect_backlog_files_in_workspace(dir: &Path, workspace_root: &Path) -> Vec<PathBuf> {
+    collect_files_in_workspace(dir, workspace_root, is_backlog_file)
+}
+
+fn is_backlog_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
 }
 
 // ── Core extraction ───────────────────────────────────────────────────────
@@ -276,7 +273,7 @@ pub async fn index_backlog_source(
         return Ok(result);
     }
 
-    let files = collect_md_files(&source_dir);
+    let files = collect_backlog_files_in_workspace(&source_dir, workspace_root);
     result.total_files = files.len();
 
     for file_path in &files {

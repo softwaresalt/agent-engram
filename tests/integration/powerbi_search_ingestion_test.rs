@@ -8,11 +8,30 @@
 //! Tests: S-PIN-01 through S-PIN-13
 
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 use engram::services::powerbi_indexer::{
     collect_powerbi_files, compute_deleted_paths, compute_file_hash, extract_entity_summaries,
 };
+
+#[cfg(unix)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
+fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+    match symlink_file(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create file symlink: {error}"),
+    }
+}
 
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
@@ -120,6 +139,30 @@ fn compute_deleted_paths_ignores_escape_attempts() {
         deleted,
         vec!["gone.json".to_string()],
         "only safe workspace-relative paths should participate in deletion sweeps"
+    );
+}
+
+/// S-PIN-14: a workspace-relative symlink that now resolves outside the
+/// workspace is treated as ineligible/deleted instead of preserved by
+/// `Path::exists` following the symlink.
+#[test]
+fn compute_deleted_paths_treats_outside_symlink_target_as_deleted() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let external = TempDir::new().expect("external tempdir");
+    let external_file = external.path().join("outside.tmdl");
+    fs::write(&external_file, "table Outside").expect("write external tmdl");
+
+    let link_path = workspace.path().join("linked.tmdl");
+    if !create_symlink_file(&external_file, &link_path) {
+        return;
+    }
+
+    let deleted = compute_deleted_paths(&["linked.tmdl".to_string()], workspace.path());
+
+    assert_eq!(
+        deleted,
+        vec!["linked.tmdl".to_string()],
+        "symlinks resolving outside the workspace must be swept as deleted"
     );
 }
 

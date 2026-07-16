@@ -35,6 +35,7 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
+use crate::services::source_traversal::collect_files_in_workspace;
 use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
@@ -90,6 +91,10 @@ pub fn compute_deleted_paths(
     workspace_relative_paths: &[String],
     workspace_root: &Path,
 ) -> Vec<String> {
+    let Ok(canonical_root) = workspace_root.canonicalize() else {
+        return workspace_relative_paths.to_vec();
+    };
+
     workspace_relative_paths
         .iter()
         .filter_map(|rel| {
@@ -101,7 +106,11 @@ pub fn compute_deleted_paths(
                 return None;
             };
 
-            (!workspace_root.join(relative_path).exists()).then(|| rel.clone())
+            let candidate = workspace_root.join(relative_path);
+            let is_deleted = candidate
+                .canonicalize()
+                .map_or(true, |canonical| !canonical.starts_with(&canonical_root));
+            is_deleted.then(|| rel.clone())
         })
         .collect()
 }
@@ -132,35 +141,28 @@ fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
 /// `.json`, `.bim`, or `.tmdl`.
 #[must_use]
 pub fn collect_powerbi_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_recursive(dir, &mut files);
-    files.sort();
-    files
+    collect_powerbi_files_in_workspace(dir, dir)
 }
 
-fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_recursive(&path, files);
-        } else if path.is_file() {
-            let is_target = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|ext| {
-                    ext.eq_ignore_ascii_case("json")
-                        || ext.eq_ignore_ascii_case("bim")
-                        || ext.eq_ignore_ascii_case("tmdl")
-                })
-                .unwrap_or(false);
-            if is_target {
-                files.push(path);
-            }
-        }
-    }
+/// Collect all indexable Power BI files under `dir`, resolving symlinked
+/// directories only when their canonical target stays under `workspace_root`.
+///
+/// A visited set of canonical directory targets prevents symlink cycles from
+/// recursing indefinitely while still allowing legitimate in-workspace symlinked
+/// source directories to participate in indexing.
+#[must_use]
+pub fn collect_powerbi_files_in_workspace(dir: &Path, workspace_root: &Path) -> Vec<PathBuf> {
+    collect_files_in_workspace(dir, workspace_root, is_powerbi_file)
+}
+
+fn is_powerbi_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("json")
+                || ext.eq_ignore_ascii_case("bim")
+                || ext.eq_ignore_ascii_case("tmdl")
+        })
 }
 
 // ── Entity summary extraction ─────────────────────────────────────────────
@@ -1327,7 +1329,7 @@ pub async fn index_powerbi_source(
         return Ok(result);
     }
 
-    let files = collect_powerbi_files(&source_dir);
+    let files = collect_powerbi_files_in_workspace(&source_dir, workspace_root);
     result.total_files = files.len();
 
     // Pre-pass: union every `.tmdl` file into a per-model-scope schema so DAX
@@ -1429,6 +1431,7 @@ pub async fn index_powerbi_source(
             let file_size = metadata.len();
             let now = Utc::now();
 
+            let mut tmdl_records = Vec::with_capacity(summaries.len());
             for (object_kind, object_name, parent_context, content_text) in &summaries {
                 let chunk_id = format!("{object_name}:{object_kind}");
                 let identity_seed = content_record_identity_seed(
@@ -1463,7 +1466,7 @@ pub async fn index_powerbi_source(
                     suggestions: Vec::new(),
                 };
 
-                queries.upsert_content_record(&record).await?;
+                tmdl_records.push(record);
             }
 
             let identity_scope = canonical_tmdl_model_path(&rel_path);
@@ -1480,6 +1483,9 @@ pub async fn index_powerbi_source(
             }
             if !graph_edges.is_empty() {
                 queries.upsert_powerbi_edges(&graph_edges).await?;
+            }
+            for record in &tmdl_records {
+                queries.upsert_content_record(record).await?;
             }
 
             result.ingested += 1;
@@ -1931,6 +1937,80 @@ dataSource SecretWarehouse
             content.contains("myserver") && content.contains("EDW"),
             "non-secret server/database context should remain: {content}"
         );
+    }
+
+    /// S-PBI-11: ordinary recursive collection still returns supported file
+    /// types and ignores unsupported extensions.
+    #[test]
+    fn collect_powerbi_files_keeps_non_symlink_behaviour() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("nested")).expect("create nested dir");
+        std::fs::write(root.path().join("report.json"), "{}").expect("write json");
+        std::fs::write(root.path().join("model.bim"), "{}").expect("write bim");
+        std::fs::write(root.path().join("nested").join("table.tmdl"), "table T")
+            .expect("write tmdl");
+        std::fs::write(root.path().join("notes.txt"), "ignore").expect("write ignored file");
+
+        let files = collect_powerbi_files_in_workspace(root.path(), root.path());
+        let mut names: Vec<_> = files
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect();
+        names.sort_unstable();
+
+        assert_eq!(names, vec!["model.bim", "report.json", "table.tmdl"]);
+    }
+
+    /// S-PBI-12: a symlinked directory that points outside the workspace root is
+    /// skipped before any files under it are collected.
+    #[cfg(unix)]
+    #[test]
+    fn collect_powerbi_files_skips_symlinked_dir_escaping_workspace() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source = workspace.path().join("models");
+        std::fs::create_dir_all(&source).expect("create source");
+        std::fs::write(source.join("local.tmdl"), "table Local").expect("write local");
+
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        std::fs::write(outside.path().join("evil.tmdl"), "table Evil").expect("write outside");
+        std::os::unix::fs::symlink(outside.path(), source.join("escape"))
+            .expect("create escaping symlink");
+
+        let files = collect_powerbi_files_in_workspace(&source, workspace.path());
+        let mut names: Vec<_> = files
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect();
+        names.sort_unstable();
+
+        assert_eq!(names, vec!["local.tmdl"]);
+    }
+
+    /// S-PBI-13: an in-workspace symlinked source directory is traversed, and a
+    /// symlink cycle terminates because real directories are visited once.
+    #[cfg(unix)]
+    #[test]
+    fn collect_powerbi_files_traverses_in_workspace_symlink_once_and_breaks_cycle() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source = workspace.path().join("models");
+        let shared = workspace.path().join("shared");
+        std::fs::create_dir_all(&source).expect("create source");
+        std::fs::create_dir_all(&shared).expect("create shared");
+        std::fs::write(shared.join("shared.tmdl"), "table Shared").expect("write shared");
+        std::fs::write(source.join("local.tmdl"), "table Local").expect("write local");
+
+        std::os::unix::fs::symlink(&shared, source.join("shared-link"))
+            .expect("create in-workspace symlink");
+        std::os::unix::fs::symlink(&source, shared.join("cycle")).expect("create symlink cycle");
+
+        let files = collect_powerbi_files_in_workspace(&source, workspace.path());
+        let mut names: Vec<_> = files
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect();
+        names.sort_unstable();
+
+        assert_eq!(names, vec!["local.tmdl", "shared.tmdl"]);
     }
 
     /// S-PBI-10: the partition summary must NOT embed the raw M source body

@@ -4,9 +4,30 @@
 //! hash-based skip, parent/child and dependency edges, delete detection.
 
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
-use engram::services::backlog_indexer::{compute_file_hash, extract_backlog_data};
+use engram::services::backlog_indexer::{
+    collect_backlog_files_in_workspace, compute_file_hash, extract_backlog_data,
+};
+
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
+fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+    match symlink_dir(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create directory symlink: {error}"),
+    }
+}
 
 fn write_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
     let path = dir.join(name);
@@ -160,4 +181,67 @@ fn deletion_sweep_detects_removed_files() {
         deleted[0].contains("gone.md"),
         "the deleted path should reference gone.md"
     );
+}
+
+/// S-BI-08: Backlog recursive collection follows in-workspace symlinked
+/// directories once, skips escaping symlink targets, and terminates cycles.
+#[test]
+fn collect_backlog_files_handles_symlink_cycles_and_workspace_bounds() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let external = TempDir::new().expect("external tempdir");
+
+    let queue = workspace.path().join(".backlogit").join("queue");
+    fs::create_dir_all(&queue).expect("create queue");
+    fs::write(queue.join("local.md"), "---\nid: local\n---\n").expect("write local");
+
+    let shared = workspace.path().join("shared");
+    fs::create_dir_all(&shared).expect("create shared");
+    fs::write(shared.join("shared.md"), "---\nid: shared\n---\n").expect("write shared");
+
+    let escape = external.path().join("escape");
+    fs::create_dir_all(&escape).expect("create escape");
+    fs::write(escape.join("outside.md"), "---\nid: outside\n---\n").expect("write outside");
+
+    let linked_escape_created = create_symlink_dir(&escape, &queue.join("linked-escape"));
+    let linked_shared_created = create_symlink_dir(&shared, &queue.join("linked-shared"));
+    if linked_shared_created {
+        let _ = create_symlink_dir(&queue, &shared.join("cycle"));
+    }
+
+    if !linked_escape_created && !linked_shared_created {
+        return;
+    }
+
+    let files = collect_backlog_files_in_workspace(&queue, workspace.path());
+    let rel_paths: Vec<String> = files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(workspace.path())
+                .expect("path under workspace")
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+
+    assert!(rel_paths.iter().any(|p| p == ".backlogit/queue/local.md"));
+    assert!(
+        !rel_paths.iter().any(|p| p.contains("outside.md")),
+        "workspace-escaping symlink targets must be skipped; got {rel_paths:?}"
+    );
+    if linked_shared_created {
+        assert!(
+            rel_paths
+                .iter()
+                .any(|p| p == ".backlogit/queue/linked-shared/shared.md"),
+            "in-workspace symlinked directories should be collected; got {rel_paths:?}"
+        );
+        assert_eq!(
+            rel_paths
+                .iter()
+                .filter(|p| p.ends_with("shared.md"))
+                .count(),
+            1,
+            "symlink cycles should not collect duplicate real files; got {rel_paths:?}"
+        );
+    }
 }

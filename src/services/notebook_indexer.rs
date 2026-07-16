@@ -1,7 +1,6 @@
 //! Notebook content indexer for `.ipynb` sources.
 
 use std::collections::HashMap;
-use std::fs::FileType;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::Utc;
@@ -14,50 +13,25 @@ use crate::models::notebook::NotebookIndexResult;
 use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::notebook_extract::extract_notebook;
+use crate::services::source_traversal::collect_files_in_workspace;
 
 /// Collect all notebook files under `dir` recursively.
 #[must_use]
 pub fn collect_notebook_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if physical_file_type(dir).is_some_and(|file_type| file_type.is_dir()) {
-        collect_recursive(dir, &mut files);
-    }
-    files.sort();
-    files
+    collect_notebook_files_in_workspace(dir, dir)
 }
 
-fn physical_file_type(path: &Path) -> Option<FileType> {
-    std::fs::symlink_metadata(path)
-        .ok()
-        .map(|metadata| metadata.file_type())
+/// Collect notebook files under `dir`, traversing only symlinked directories
+/// whose canonical target remains under `workspace_root`.
+#[must_use]
+pub fn collect_notebook_files_in_workspace(dir: &Path, workspace_root: &Path) -> Vec<PathBuf> {
+    collect_files_in_workspace(dir, workspace_root, is_notebook_file)
 }
 
-fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_type) = physical_file_type(&path) else {
-            continue;
-        };
-
-        if file_type.is_symlink() {
-            continue;
-        }
-
-        if file_type.is_dir() {
-            collect_recursive(&path, files);
-        } else if file_type.is_file()
-            && path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-        {
-            files.push(path);
-        }
-    }
+fn is_notebook_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
 }
 
 fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
@@ -77,6 +51,10 @@ fn compute_deleted_paths(
     workspace_relative_paths: &[String],
     workspace_root: &Path,
 ) -> Vec<String> {
+    let Ok(canonical_root) = workspace_root.canonicalize() else {
+        return workspace_relative_paths.to_vec();
+    };
+
     workspace_relative_paths
         .iter()
         .filter_map(|rel| {
@@ -88,7 +66,11 @@ fn compute_deleted_paths(
                 return None;
             };
 
-            (!workspace_root.join(relative_path).exists()).then(|| rel.clone())
+            let candidate = workspace_root.join(relative_path);
+            let is_deleted = candidate
+                .canonicalize()
+                .map_or(true, |canonical| !canonical.starts_with(&canonical_root));
+            is_deleted.then(|| rel.clone())
         })
         .collect()
 }
@@ -123,15 +105,15 @@ pub async fn index_notebook_source(
     let mut result = NotebookIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !physical_file_type(&source_dir).is_some_and(|file_type| file_type.is_dir()) {
+    if !source_dir.exists() {
         debug!(
             path = %source.path,
-            "Notebook source directory does not exist or resolves through a symlink — skipping"
+            "Notebook source directory does not exist — skipping"
         );
         return Ok(result);
     }
 
-    let files = collect_notebook_files(&source_dir);
+    let files = collect_notebook_files_in_workspace(&source_dir, workspace_root);
     result.total_files = files.len();
 
     let existing_hashes: HashMap<String, String> = queries
@@ -283,7 +265,7 @@ pub async fn sweep_deleted_notebook_files(
 
 #[cfg(test)]
 mod tests {
-    use super::collect_notebook_files;
+    use super::collect_notebook_files_in_workspace;
     use std::fs;
     use std::path::Path;
 
@@ -309,26 +291,24 @@ mod tests {
         std::os::windows::fs::symlink_file(src, dst)
     }
 
-    fn create_symlink_dir(src: &Path, dst: &Path) {
-        if let Err(error) = symlink_dir(src, dst) {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                return;
-            }
-            panic!("create directory symlink: {error}");
+    fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+        match symlink_dir(src, dst) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create directory symlink: {error}"),
         }
     }
 
-    fn create_symlink_file(src: &Path, dst: &Path) {
-        if let Err(error) = symlink_file(src, dst) {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                return;
-            }
-            panic!("create file symlink: {error}");
+    fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+        match symlink_file(src, dst) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create file symlink: {error}"),
         }
     }
 
     #[test]
-    fn collect_notebook_files_skips_symlinked_paths() {
+    fn collect_notebook_files_handles_symlink_cycles_and_workspace_bounds() {
         let workspace = TempDir::new().expect("tempdir");
         let external = TempDir::new().expect("tempdir");
 
@@ -338,15 +318,29 @@ mod tests {
         fs::write(notebooks_dir.join("real.ipynb"), "{}").expect("write real notebook");
         fs::write(nested_dir.join("inner.ipynb"), "{}").expect("write nested notebook");
 
+        let shared_dir = workspace.path().join("shared");
+        fs::create_dir_all(&shared_dir).expect("create shared notebook dir");
+        fs::write(shared_dir.join("shared.ipynb"), "{}").expect("write shared notebook");
+
         let escape_dir = external.path().join("escape");
         fs::create_dir_all(&escape_dir).expect("create external notebook dir");
         let external_file = escape_dir.join("outside.ipynb");
         fs::write(&external_file, "{}").expect("write external notebook");
 
-        create_symlink_dir(&escape_dir, &notebooks_dir.join("linked-dir"));
-        create_symlink_file(&external_file, &notebooks_dir.join("linked-file.ipynb"));
+        let linked_dir_created = create_symlink_dir(&escape_dir, &notebooks_dir.join("linked-dir"));
+        let linked_file_created =
+            create_symlink_file(&external_file, &notebooks_dir.join("linked-file.ipynb"));
+        let linked_shared_created =
+            create_symlink_dir(&shared_dir, &notebooks_dir.join("linked-shared"));
+        if linked_shared_created {
+            let _ = create_symlink_dir(&notebooks_dir, &shared_dir.join("cycle"));
+        }
 
-        let files = collect_notebook_files(workspace.path());
+        if !linked_dir_created && !linked_file_created && !linked_shared_created {
+            return;
+        }
+
+        let files = collect_notebook_files_in_workspace(&notebooks_dir, workspace.path());
         let rel_paths: Vec<String> = files
             .iter()
             .map(|path| {
@@ -357,12 +351,31 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(
-            rel_paths,
-            vec![
-                "notebooks/nested/inner.ipynb".to_string(),
-                "notebooks/real.ipynb".to_string(),
-            ]
+        assert!(rel_paths.iter().any(|p| p == "notebooks/real.ipynb"));
+        assert!(
+            rel_paths
+                .iter()
+                .any(|p| p == "notebooks/nested/inner.ipynb")
         );
+        assert!(
+            !rel_paths.iter().any(|p| p.contains("outside.ipynb")),
+            "workspace-escaping symlink targets must be skipped; got {rel_paths:?}"
+        );
+        if linked_shared_created {
+            assert!(
+                rel_paths
+                    .iter()
+                    .any(|p| p == "notebooks/linked-shared/shared.ipynb"),
+                "in-workspace symlinked directories should be collected; got {rel_paths:?}"
+            );
+            assert_eq!(
+                rel_paths
+                    .iter()
+                    .filter(|p| p.ends_with("shared.ipynb"))
+                    .count(),
+                1,
+                "symlink cycles should not collect duplicate real files; got {rel_paths:?}"
+            );
+        }
     }
 }

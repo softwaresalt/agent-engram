@@ -24,7 +24,7 @@ use std::path::Path;
 use powerbi_tmdl_parser::{DaxDiagnostic, extract_dax_references};
 
 use crate::models::powerbi::PowerBiSemanticModel;
-use crate::services::powerbi_indexer::{ModelScopeSchema, collect_powerbi_files};
+use crate::services::powerbi_indexer::{ModelScopeSchema, collect_powerbi_files_in_workspace};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
 use crate::services::verify::{Severity, VerifyFinding, VerifyReport};
 
@@ -646,7 +646,7 @@ pub fn lint_indexed_models(
         if !source_dir.is_dir() {
             continue;
         }
-        for file_path in collect_powerbi_files(&source_dir) {
+        for file_path in collect_powerbi_files_in_workspace(&source_dir, workspace_root) {
             let is_tmdl = file_path
                 .extension()
                 .and_then(|ext| ext.to_str())
