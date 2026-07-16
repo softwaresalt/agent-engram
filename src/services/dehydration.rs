@@ -65,7 +65,18 @@ pub async fn flush_all_workspaces(state: &SharedState) -> Result<(), EngramError
 ///        (`{data_dir}/code-graph/{branch}/nodes.jsonl`).
 /// 5.0.0: `content_record` switched from file-keyed rows to retrieval-unit rows,
 ///        adding markdown chunk metadata and advisory lint fields.
-pub const SCHEMA_VERSION: &str = "5.0.0";
+/// 5.1.0: adds the OPTIONAL, generation-gated `staged_calls.jsonl` sidecar
+///        (089-F). The on-disk `nodes.jsonl` / `edges.jsonl` format is
+///        UNCHANGED from 5.0.0, so a 5.0.0 snapshot is accepted as
+///        backward-compatible legacy input. However, a 5.0.0 (or older) writer
+///        has no knowledge of the sidecar: it can re-dehydrate nodes/edges while
+///        leaving a STALE `staged_calls.jsonl` behind (a mixed-generation
+///        snapshot). To avoid rehydrating stale staged rows into FALSE edges,
+///        the reader only trusts the sidecar when the snapshot version equals
+///        the current [`SCHEMA_VERSION`] (see `hydrate_code_graph`). Because the
+///        sidecar is generation-gated rather than always-on, the bump is minor:
+///        no incompatible change to the shared nodes/edges format.
+pub const SCHEMA_VERSION: &str = "5.1.0";
 
 /// Result of a code graph dehydration operation.
 #[derive(Debug, Clone)]
@@ -76,6 +87,8 @@ pub struct CodeGraphDehydrationResult {
     pub nodes_written: usize,
     /// Total edges written.
     pub edges_written: usize,
+    /// Total staged (unresolved) cross-file calls written (089-F).
+    pub staged_calls_written: usize,
 }
 
 /// Dehydrate code graph state to `{data_dir}/code-graph/{branch}/` JSONL files (FR-132, FR-133, FR-134).
@@ -155,10 +168,36 @@ pub async fn dehydrate_code_graph(
         let _ = tokio::fs::remove_file(&edges_path).await;
     }
 
+    // Serialize staged_calls.jsonl (089-F). Staged cross-file calls that have
+    // not yet been resolved by the deferred post-pass must survive a daemon
+    // restart, otherwise a call staged before the restart could never resolve
+    // afterwards. This snapshot is additive and optional: a legacy snapshot
+    // without it rehydrates to zero staged rows (see `hydrate_code_graph`).
+    let staged_calls = cg_queries.list_staged_calls_full().await?;
+    let total_staged_calls = staged_calls.len();
+    let staged_calls_path = code_graph_dir.join("staged_calls.jsonl");
+    if total_staged_calls > 0 {
+        let staged_content = serialize_staged_calls_jsonl(&staged_calls);
+        atomic_write(&staged_calls_path, &staged_content).await?;
+        files_written.push(format!(".engram/code-graph/{branch}/staged_calls.jsonl"));
+    } else {
+        // With zero staged rows a stale sidecar MUST be removed reliably: this
+        // writer stamps `.version` = SCHEMA_VERSION, so a same-generation stale
+        // sidecar left behind here WOULD be trusted and rehydrated into false
+        // edges next restart. Propagate removal failures (other than NotFound)
+        // rather than silently ignoring them; NotFound means nothing to remove.
+        match tokio::fs::remove_file(&staged_calls_path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(flush_err(&staged_calls_path)),
+        }
+    }
+
     Ok(CodeGraphDehydrationResult {
         files_written,
         nodes_written: total_nodes,
         edges_written: total_edges,
+        staged_calls_written: total_staged_calls,
     })
 }
 
@@ -405,6 +444,64 @@ pub fn serialize_edges_jsonl(edges: &[CodeEdge]) -> String {
     }
 
     // Sort by (type, from, to)
+    lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let sorted: Vec<String> = lines.into_iter().map(|(_, _, _, json)| json).collect();
+        let mut out = sorted.join("\n");
+        out.push('\n');
+        out
+    }
+}
+
+/// Intermediate struct for serializing a staged cross-file call to one JSONL
+/// line (089-F).
+///
+/// Only the four columns that exist on the `staged_call` relation today are
+/// emitted. The marker fields `is_method`, `is_qualified`, and `provenance`
+/// are intentionally deferred to 088-S Unit B (091.011-T); the deserializer
+/// tolerates such extra keys, so they can be added later without a
+/// `SCHEMA_VERSION` bump (forward compatible).
+#[derive(Debug, serde::Serialize)]
+struct StagedCallLine {
+    caller_id: String,
+    callee_name: String,
+    source_file: String,
+    created_at: String,
+}
+
+/// Serialize staged cross-file calls to deterministic JSONL (089-F).
+///
+/// Rows are sorted by `(caller_id, callee_name, source_file)` so the output is
+/// stable regardless of query/iteration order, making the dehydrate → rehydrate
+/// round-trip deterministic and idempotent. The output is newline-terminated
+/// and empty when there are no staged rows.
+#[must_use]
+pub fn serialize_staged_calls_jsonl(
+    staged_calls: &[crate::db::queries::StagedCallRecord],
+) -> String {
+    let mut lines: Vec<(String, String, String, String)> = Vec::new();
+
+    for sc in staged_calls {
+        let line = StagedCallLine {
+            caller_id: sc.caller_id.clone(),
+            callee_name: sc.callee_name.clone(),
+            source_file: sc.source_file.clone(),
+            created_at: sc.created_at.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&line) {
+            lines.push((
+                sc.caller_id.clone(),
+                sc.callee_name.clone(),
+                sc.source_file.clone(),
+                json,
+            ));
+        }
+    }
+
+    // Sort by (caller_id, callee_name, source_file) for a stable ordering.
     lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
 
     if lines.is_empty() {

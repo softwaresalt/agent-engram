@@ -905,6 +905,21 @@ name = "integration_retrieval_eval_regression"
 path = "tests/integration/retrieval_eval_regression_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
+[[test]]
+name = "integration_staged_call_dehydration"
+path = "tests/integration/staged_call_dehydration_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_staged_call_rehydration"
+path = "tests/integration/staged_call_rehydration_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_staged_call_restart_resolution"
+path = "tests/integration/staged_call_restart_resolution_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"

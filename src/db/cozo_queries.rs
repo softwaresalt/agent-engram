@@ -174,6 +174,31 @@ pub struct StagedCall {
     pub source_file: String,
 }
 
+/// A staged cross-file call including its `created_at` provenance timestamp.
+///
+/// Unlike [`StagedCall`], this carries the fourth `staged_call` column so the
+/// row can be persisted to JSONL and rehydrated verbatim on daemon restart
+/// (089-F), giving a deterministic and idempotent round-trip. The deferred
+/// post-pass itself only needs the first three fields, so the resolver keeps
+/// consuming [`StagedCall`].
+///
+/// Scope note (084-S): only the four columns that exist on the `staged_call`
+/// relation today are represented. The marker fields `is_method`,
+/// `is_qualified`, and `provenance` are intentionally deferred to 088-S Unit B
+/// (091.011-T); the JSONL format is forward-compatible so they can be added
+/// without a schema-version bump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCallRecord {
+    /// Fully-qualified ID of the calling function (e.g. `function:...`).
+    pub caller_id: String,
+    /// Bare name of the called function as it appears at the call site.
+    pub callee_name: String,
+    /// Workspace-relative path of the file the call site lives in.
+    pub source_file: String,
+    /// RFC 3339 timestamp recorded when the call was first staged.
+    pub created_at: String,
+}
+
 /// Information about a `concerns` edge targeting a symbol.
 #[derive(Debug, Clone)]
 pub struct ConcernsEdgeInfo {
@@ -1440,14 +1465,32 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// caller's own file, for the deferred cross-file post-pass (082.002-T).
     ///
     /// Keyed by `(caller_id, callee_name, source_file)`, so re-staging the same
-    /// unresolved call is idempotent.
+    /// unresolved call is idempotent. The `created_at` timestamp is generated
+    /// at call time; use [`Self::put_staged_call_with_created_at`] to preserve
+    /// an existing timestamp during JSONL rehydration (089-F).
     pub async fn put_staged_call(
         &self,
         caller_id: &str,
         callee_name: &str,
         source_file: &str,
     ) -> Result<(), EngramError> {
-        let ts = now_utc_str();
+        self.put_staged_call_with_created_at(caller_id, callee_name, source_file, &now_utc_str())
+            .await
+    }
+
+    /// Record a staged call with an explicit `created_at` timestamp.
+    ///
+    /// This is the rehydration entry point (089-F): it re-inserts a staged row
+    /// with the timestamp it originally carried, so a dehydrate → rehydrate
+    /// round-trip is deterministic and idempotent. Keyed by
+    /// `(caller_id, callee_name, source_file)`.
+    pub async fn put_staged_call_with_created_at(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+        source_file: &str,
+        created_at: &str,
+    ) -> Result<(), EngramError> {
         let script = r#"
 ?[caller_id, callee_name, source_file, created_at] <-
     [[$caller_id, $callee_name, $source_file, $created_at]]
@@ -1457,7 +1500,7 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         p.insert("caller_id".to_owned(), DataValue::from(caller_id));
         p.insert("callee_name".to_owned(), DataValue::from(callee_name));
         p.insert("source_file".to_owned(), DataValue::from(source_file));
-        p.insert("created_at".to_owned(), DataValue::from(ts.as_str()));
+        p.insert("created_at".to_owned(), DataValue::from(created_at));
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
@@ -1480,6 +1523,32 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
                 caller_id: extract_str(row, 0),
                 callee_name: extract_str(row, 1),
                 source_file: extract_str(row, 2),
+            })
+            .collect())
+    }
+
+    /// List every staged call including its `created_at` timestamp, sorted by
+    /// `(caller_id, callee_name, source_file)` for a deterministic JSONL export
+    /// (089-F). Unlike [`Self::list_staged_calls`], this returns the full
+    /// four-column [`StagedCallRecord`] so dehydration can persist the row
+    /// verbatim.
+    pub async fn list_staged_calls_full(&self) -> Result<Vec<StagedCallRecord>, EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file, created_at] :=
+    *staged_call { caller_id, callee_name, source_file, created_at }
+:order caller_id, callee_name, source_file
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| StagedCallRecord {
+                caller_id: extract_str(row, 0),
+                callee_name: extract_str(row, 1),
+                source_file: extract_str(row, 2),
+                created_at: extract_str(row, 3),
             })
             .collect())
     }
