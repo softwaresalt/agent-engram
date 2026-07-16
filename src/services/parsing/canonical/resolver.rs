@@ -203,13 +203,19 @@ fn resolve_core(
         // binding/local-root logic below — otherwise `use ext::Widget as demo;
         // demo::build()` (rename shadow) or a local `mod demo { fn build() {} }`
         // (module shadow) would forge a false canonical edge to the workspace
-        // crate `demo` (no-false-edge invariant). A leading-`::` absolute path
-        // deliberately bypasses this shadowing via `resolve_absolute`, matching
-        // Rust's `::demo` crate-root escape.
+        // crate `demo` (no-false-edge invariant). A Cargo `package = "…"`
+        // dependency rename (`util = { package = "external-util" }`) likewise
+        // rebinds the crate name `util` to an external package even though a
+        // workspace member is literally named `util`, so a dependency-renamed
+        // head must also fail closed (C9-1). A leading-`::` absolute path bypasses
+        // the use/mod/extern-crate shadows via `resolve_absolute` (matching Rust's
+        // `::demo` crate-root escape) but still fails closed on a dependency
+        // rename, which rebinds the crate name itself.
         h if ctx.crates.is_workspace_crate(h)
             && ctx.use_graph.bindings_for(h).all(|b| b.path == h)
             && !ctx.use_graph.has_local_root(h)
-            && !ctx.use_graph.is_extern_crate_alias(h) =>
+            && !ctx.use_graph.is_extern_crate_alias(h)
+            && !ctx.crates.is_dependency_renamed(h) =>
         {
             Some(segs.iter().map(|s| (*s).to_owned()).collect())
         }
@@ -262,7 +268,12 @@ fn resolve_super(ctx: &ResolveContext, segs: &[&str]) -> Option<Vec<String>> {
 /// workspace crate, else external → fail-closed.
 fn resolve_absolute(ctx: &ResolveContext, tail: &[&str]) -> Option<Vec<String>> {
     let head = *tail.first()?;
-    if ctx.crates.is_workspace_crate(head) {
+    // Membership alone does not prove `::head` designates that member: a Cargo
+    // `package = "…"` rename can rebind the crate name to an EXTERNAL package
+    // (C9-1), so `::util` would mean the external crate even though a workspace
+    // member is named `util`. Fail closed on a dependency-renamed head — the same
+    // ownership requirement as the workspace-crate fast path.
+    if ctx.crates.is_workspace_crate(head) && !ctx.crates.is_dependency_renamed(head) {
         Some(tail.iter().map(|s| (*s).to_owned()).collect())
     } else {
         None

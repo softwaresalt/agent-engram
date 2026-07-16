@@ -55,6 +55,12 @@ impl CrateRoot {
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceCrates {
     crates: Vec<CrateRoot>,
+    /// Dependency keys rebound to an EXTERNAL package via Cargo's `package = "…"`
+    /// rename in any workspace manifest (C9-1). Such a key shadows a same-named
+    /// workspace member from the renaming crate's perspective, so the
+    /// workspace-crate fast path must fail closed for it rather than forge an
+    /// edge to the colliding member. Sorted + deduped.
+    renamed_dep_keys: Vec<String>,
 }
 
 impl WorkspaceCrates {
@@ -62,7 +68,10 @@ impl WorkspaceCrates {
     #[must_use]
     pub fn new(mut crates: Vec<CrateRoot>) -> Self {
         crates.sort_by_key(|c| std::cmp::Reverse(c.dir.len()));
-        Self { crates }
+        Self {
+            crates,
+            renamed_dep_keys: Vec::new(),
+        }
     }
 
     /// Is `name` the identifier of a crate in this workspace? Used to classify a
@@ -71,6 +80,26 @@ impl WorkspaceCrates {
     #[must_use]
     pub fn is_workspace_crate(&self, name: &str) -> bool {
         self.crates.iter().any(|c| c.name == name)
+    }
+
+    /// Attach the set of dependency keys rebound to an external package by a
+    /// Cargo `package = "…"` rename (C9-1). Deduplicated on assignment.
+    #[must_use]
+    pub fn with_renamed_dep_keys(mut self, mut keys: Vec<String>) -> Self {
+        keys.sort();
+        keys.dedup();
+        self.renamed_dep_keys = keys;
+        self
+    }
+
+    /// Is `name` a dependency key that some workspace manifest rebinds to an
+    /// EXTERNAL package via `package = "…"`? Such a rename shadows a same-named
+    /// workspace member, so the workspace-crate fast path must fail closed for
+    /// `name` (C9-1, no-false-edge invariant). Workspace-wide over-approximation
+    /// is safe: it only ever drops an edge, never invents one.
+    #[must_use]
+    pub fn is_dependency_renamed(&self, name: &str) -> bool {
+        self.renamed_dep_keys.iter().any(|k| k == name)
     }
 
     /// Number of crates enumerated.
@@ -251,6 +280,7 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
     candidate_dirs.dedup();
 
     let mut roots = Vec::new();
+    let mut renamed_dep_keys = Vec::new();
     for dir in candidate_dirs {
         let manifest = if dir.is_empty() {
             ws_root.join("Cargo.toml")
@@ -260,6 +290,11 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
         if !manifest_within_root(&manifest, &canonical_root) {
             continue;
         }
+        // Collect dependency renames from EVERY in-workspace manifest, including
+        // the virtual-workspace root (which carries no `[package]` but may carry
+        // `[workspace.dependencies]`), so a rename shadows the colliding member
+        // regardless of whether that manifest is itself a crate root (C9-1).
+        renamed_dep_keys.extend(read_dependency_rename_keys(&manifest));
         if let Some(name) = read_crate_name(&manifest) {
             roots.push(CrateRoot {
                 name: name.replace('-', "_"),
@@ -267,7 +302,7 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
             });
         }
     }
-    WorkspaceCrates::new(roots)
+    WorkspaceCrates::new(roots).with_renamed_dep_keys(renamed_dep_keys)
 }
 
 /// Whether `manifest` canonicalizes to a real path contained within
@@ -321,6 +356,65 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
         }
     }
     dirs
+}
+
+/// Collect dependency KEYS that a manifest rebinds to a DIFFERENT external
+/// package via Cargo's `package = "…"` rename (C9-1). Scans `[dependencies]`,
+/// `[dev-dependencies]`, `[build-dependencies]`, every `[target.*.dependencies]`
+/// variant, and the root `[workspace.dependencies]` table. A key is a rename
+/// only when it carries an explicit `package` field whose (identifier-normalised)
+/// value differs from the (identifier-normalised) key — a plain string/path/version
+/// dependency or an identity `package` is NOT a rename. Returned keys are
+/// identifier-normalised (`-` → `_`). Fails closed (empty) on any read/parse error.
+fn read_dependency_rename_keys(manifest: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    collect_dep_renames(value.get("dependencies"), &mut keys);
+    collect_dep_renames(value.get("dev-dependencies"), &mut keys);
+    collect_dep_renames(value.get("build-dependencies"), &mut keys);
+    // `[target.<cfg>.{dependencies,dev-dependencies,build-dependencies}]`
+    if let Some(targets) = value.get("target").and_then(toml::Value::as_table) {
+        for cfg in targets.values() {
+            collect_dep_renames(cfg.get("dependencies"), &mut keys);
+            collect_dep_renames(cfg.get("dev-dependencies"), &mut keys);
+            collect_dep_renames(cfg.get("build-dependencies"), &mut keys);
+        }
+    }
+    // A root `[workspace.dependencies]` rename is inherited by members via
+    // `dep = { workspace = true }`, so it shadows the member from every
+    // inheriting crate — collect it too.
+    if let Some(ws) = value.get("workspace") {
+        collect_dep_renames(ws.get("dependencies"), &mut keys);
+    }
+    keys
+}
+
+/// Push every rename KEY from a Cargo dependency `table` into `out`: a key whose
+/// value is an inline table carrying a `package` field whose identifier-normalised
+/// value differs from the identifier-normalised key. Collected keys are
+/// identifier-normalised (`-` → `_`).
+fn collect_dep_renames(table: Option<&toml::Value>, out: &mut Vec<String>) {
+    let Some(table) = table.and_then(toml::Value::as_table) else {
+        return;
+    };
+    for (key, spec) in table {
+        let Some(pkg) = spec
+            .as_table()
+            .and_then(|t| t.get("package"))
+            .and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        let norm_key = key.replace('-', "_");
+        if norm_key != pkg.replace('-', "_") {
+            out.push(norm_key);
+        }
+    }
 }
 
 /// Read `[workspace] exclude` from a manifest, returning normalized
@@ -636,6 +730,84 @@ mod tests {
         assert!(
             !wc.is_workspace_crate("foo_package"),
             "package name is not the crate root when [lib] name is set"
+        );
+    }
+
+    #[test]
+    fn discover_collects_dependency_rename_keys() {
+        // A member that renames a dependency to a name colliding with another
+        // workspace member (`util = { package = "external-util" }`) must mark
+        // `util` as dependency-renamed so the resolver fails closed for it, while
+        // plain (unrenamed) dependencies stay resolvable (C9-1).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\", \"util\"]\n",
+        )
+        .unwrap();
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = { package = \"external-util\", version = \"1\" }\nserde = \"1\"\n",
+        )
+        .unwrap();
+        let util = root.join("util");
+        std::fs::create_dir_all(&util).unwrap();
+        std::fs::write(
+            util.join("Cargo.toml"),
+            "[package]\nname = \"util\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let wc = discover_workspace_crates(root);
+        assert!(wc.is_workspace_crate("util"), "util is a workspace member");
+        assert!(
+            wc.is_dependency_renamed("util"),
+            "util is rebound to an external package by app's dependency rename"
+        );
+        assert!(
+            !wc.is_dependency_renamed("serde"),
+            "a plain (unrenamed) dependency is not a rename"
+        );
+        assert!(
+            !wc.is_dependency_renamed("app"),
+            "an unrelated member name is not a dependency rename"
+        );
+    }
+
+    #[test]
+    fn read_dependency_rename_keys_scans_all_dependency_tables() {
+        // Renames in dev/build/target tables are collected; an identity `package`
+        // and a plain string dependency are not (C9-1).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            concat!(
+                "[package]\nname = \"m\"\nversion = \"0.1.0\"\n\n",
+                "[dependencies]\nplain = \"1\"\nident = { package = \"ident\", version = \"1\" }\n",
+                "renamed_dep = { package = \"upstream\" }\n\n",
+                "[dev-dependencies]\ndev_alias = { package = \"dev-real\" }\n\n",
+                "[build-dependencies]\nbuild_alias = { package = \"build-real\" }\n\n",
+                "[target.'cfg(unix)'.dependencies]\ntgt_alias = { package = \"tgt-real\" }\n",
+            ),
+        )
+        .unwrap();
+
+        let keys = read_dependency_rename_keys(&manifest);
+        assert!(keys.contains(&"renamed_dep".to_owned()));
+        assert!(keys.contains(&"dev_alias".to_owned()));
+        assert!(keys.contains(&"build_alias".to_owned()));
+        assert!(keys.contains(&"tgt_alias".to_owned()));
+        assert!(
+            !keys.contains(&"plain".to_owned()),
+            "a plain string dependency is not a rename"
+        );
+        assert!(
+            !keys.contains(&"ident".to_owned()),
+            "an identity `package` is not a rename"
         );
     }
 

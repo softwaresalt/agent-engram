@@ -688,3 +688,50 @@ async fn sync_with_mod_mapping_change_sweeps_stale_canonical_edges() {
         "a mod-mapping change on sync must sweep all canonical edges; got {after:?}"
     );
 }
+
+#[test]
+async fn dependency_rename_collision_does_not_create_false_canonical_edge() {
+    // Regression (Cycle-9 C9-1): a workspace member `app` renames a dependency to
+    // a name that collides with another workspace member
+    // (`util = { package = "external-util" }`). From `app`, `util::build()`
+    // designates the EXTERNAL crate, so it MUST NOT resolve to the workspace
+    // member `util`'s `build`. Before the fix, the workspace-crate fast path
+    // matched the member `util` (name-only ownership) and forged a false edge.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_file(
+        ws,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"app\", \"util\"]\nresolver = \"2\"\n",
+    );
+    write_file(
+        ws,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nutil = { package = \"external-util\", version = \"1\" }\n",
+    );
+    write_file(
+        ws,
+        "app/src/lib.rs",
+        "pub fn caller() {\n    util::build();\n}\n",
+    );
+    write_file(
+        ws,
+        "util/Cargo.toml",
+        "[package]\nname = \"util\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_file(ws, "util/src/lib.rs", "pub fn build() {}\n");
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let edges = canonical_edges(&q).await;
+
+    let caller_id = names["caller"][0].clone();
+    if let Some(build_ids) = names.get("build") {
+        for build_id in build_ids {
+            assert!(
+                !edges.contains(&(caller_id.clone(), build_id.clone())),
+                "a dependency-rename collision must fail closed, not link to workspace util::build: {edges:?}"
+            );
+        }
+    }
+}
