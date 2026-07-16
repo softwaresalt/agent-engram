@@ -17,6 +17,7 @@
 //! no-false-edge invariant (013-D); the singleton match against
 //! `function_meta.canonical_path` in Unit B is the other half.
 
+use super::generics::normalize_generics;
 use super::module_path::{ModulePath, WorkspaceCrates};
 use super::use_graph::UseGraph;
 
@@ -173,6 +174,35 @@ fn module_segments(module: &ModulePath) -> Vec<String> {
 fn with_tail(mut base: Vec<String>, tail: &[&str]) -> Vec<String> {
     base.extend(tail.iter().map(|s| (*s).to_owned()));
     base
+}
+
+/// Compute the canonical identity of a **definition** whose parser-assigned
+/// `def_name` is either a free-function name (`helper`) or an impl-method name
+/// (`Type::method`, as produced by `extract_impl`).
+///
+/// Free functions canonicalise to `<module>::name`. Impl methods canonicalise
+/// their receiver type via the resolver (so `impl Widget`, `impl crate::b::Widget`,
+/// and same-named cross-module types get **distinct** identities — the RMeJ0
+/// regression) and append the method name. Generic arguments are normalised
+/// first (A5). Returns `None` (→ empty `canonical_path`, never a match target,
+/// D4) when the receiver type cannot be resolved.
+#[must_use]
+pub fn canonical_path_for_def(ctx: &ResolveContext, def_name: &str) -> Option<CanonicalId> {
+    let norm = normalize_generics(def_name.trim());
+    if norm.is_empty() {
+        return None;
+    }
+    let Some((type_path, method)) = norm.rsplit_once("::") else {
+        // Free function / top-level item defined in this module.
+        let mut segs = module_segments(ctx.module);
+        segs.push(norm);
+        return Some(CanonicalId(segs.join("::")));
+    };
+    if type_path.is_empty() || method.is_empty() {
+        return None;
+    }
+    let ty = resolve_path(ctx, type_path)?;
+    Some(CanonicalId(format!("{}::{method}", ty.as_str())))
 }
 
 #[cfg(test)]
@@ -348,5 +378,80 @@ mod tests {
     fn empty_expr_fails_closed() {
         assert_eq!(resolve(&["a"], "", ""), None);
         assert_eq!(resolve(&["a"], "", "   "), None);
+    }
+
+    fn def_canon(module_segs: &[&str], uses: &str, def_name: &str) -> Option<String> {
+        let crates = crates();
+        let m = module(module_segs);
+        let ug = extract_use_graph(uses);
+        let ctx = ResolveContext {
+            module: &m,
+            crates: &crates,
+            use_graph: &ug,
+        };
+        canonical_path_for_def(&ctx, def_name).map(CanonicalId::into_string)
+    }
+
+    #[test]
+    fn def_free_function_uses_module_path() {
+        assert_eq!(
+            def_canon(&["a"], "", "helper").as_deref(),
+            Some("engram::a::helper")
+        );
+    }
+
+    #[test]
+    fn def_impl_method_in_module() {
+        assert_eq!(
+            def_canon(&["a"], "", "Widget::build").as_deref(),
+            Some("engram::a::Widget::build")
+        );
+    }
+
+    #[test]
+    fn def_impl_method_explicit_crate_path() {
+        assert_eq!(
+            def_canon(&["x"], "", "crate::b::Widget::build").as_deref(),
+            Some("engram::b::Widget::build")
+        );
+    }
+
+    #[test]
+    fn def_rmej0_distinct_cross_module_same_name() {
+        // The RMeJ0 regression: same source spelling `Widget::m` in different
+        // modules must produce distinct canonical identities.
+        let a = def_canon(&["a"], "", "Widget::m");
+        let b = def_canon(&["b"], "", "Widget::m");
+        assert_eq!(a.as_deref(), Some("engram::a::Widget::m"));
+        assert_eq!(b.as_deref(), Some("engram::b::Widget::m"));
+        assert_ne!(a, b);
+        // An impl on an *imported* Widget canonicalises to the type's real home,
+        // matching module a's Widget (not module x where the impl is written).
+        let imported = def_canon(&["x"], "use crate::a::Widget;", "Widget::m");
+        assert_eq!(imported, a);
+    }
+
+    #[test]
+    fn def_generic_impl_normalises() {
+        assert_eq!(
+            def_canon(&["a"], "", "Widget<T>::build").as_deref(),
+            Some("engram::a::Widget::build")
+        );
+        // Generic argument containing a path must not confuse the type/method split.
+        assert_eq!(
+            def_canon(&["a"], "", "Foo<a::B>::build").as_deref(),
+            Some("engram::a::Foo::build")
+        );
+    }
+
+    #[test]
+    fn def_impl_on_external_type_fails_closed() {
+        // D4: an impl on an externally-aliased type yields no canonical identity.
+        assert_eq!(def_canon(&["a"], "use ext::Widget;", "Widget::m"), None);
+    }
+
+    #[test]
+    fn def_empty_name_fails_closed() {
+        assert_eq!(def_canon(&["a"], "", ""), None);
     }
 }

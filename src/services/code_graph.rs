@@ -17,7 +17,47 @@ use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
+use crate::services::parsing::canonical;
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
+
+/// Build the per-file canonical resolution context for a Rust source file, or
+/// `None` for non-Rust files and for layouts whose module path is not
+/// deterministically derivable (fail-closed → empty `canonical_path`).
+///
+/// Part of Option C Unit A / A6 (precision-neutral): produces identity data
+/// only; no call edges are emitted.
+fn rust_canonical_ctx(
+    crates: &canonical::WorkspaceCrates,
+    lang: Language,
+    rel_path: &str,
+    source: &str,
+) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+    if lang != Language::Rust {
+        return None;
+    }
+    let module = canonical::module_path_for_file(crates, rel_path)?;
+    Some((module, canonical::extract_use_graph(source)))
+}
+
+/// Resolve a parsed function/method's additive `canonical_path`, or `""` when it
+/// cannot be resolved (never a canonical match target — D4).
+fn canonical_path_for_function(
+    crates: &canonical::WorkspaceCrates,
+    ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
+    name: &str,
+) -> String {
+    let Some((module, use_graph)) = ctx else {
+        return String::new();
+    };
+    let rctx = canonical::ResolveContext {
+        module,
+        crates,
+        use_graph,
+    };
+    canonical::canonical_path_for_def(&rctx, name)
+        .map(canonical::CanonicalId::into_string)
+        .unwrap_or_default()
+}
 
 /// Summary returned by [`index_workspace`] after indexing completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +173,10 @@ async fn index_workspace_impl(
 
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
+
+    // Option C Unit A / A6: workspace crate set for canonical-identity derivation
+    // (computed once per index run; Rust-only, precision-neutral).
+    let crates = canonical::discover_workspace_crates(ws_path);
 
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
@@ -317,6 +361,9 @@ async fn index_workspace_impl(
             let mut class_ids: Vec<(String, String)> = Vec::new();
             let mut interface_ids: Vec<(String, String)> = Vec::new();
 
+            // A6: per-file canonical context (Rust-only; None → empty canonical_path).
+            let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+
             for symbol in &parse_result.symbols {
                 match symbol {
                     ExtractedSymbol::Function(f) => {
@@ -346,7 +393,11 @@ async fn index_workspace_impl(
                             embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                             summary,
                         };
-                        queries.upsert_function(&func).await?;
+                        let canonical_path =
+                            canonical_path_for_function(&crates, rust_ctx.as_ref(), &f.name);
+                        queries
+                            .upsert_function_with_canonical(&func, &canonical_path)
+                            .await?;
                         function_ids.push((f.name.clone(), sym_id.clone()));
 
                         if embed_type == "explicit_code" {
@@ -697,6 +748,9 @@ pub async fn sync_workspace_with_progress(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    // Option C Unit A / A6: workspace crate set for canonical-identity derivation.
+    let crates = canonical::discover_workspace_crates(ws_path);
+
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
 
@@ -959,6 +1013,9 @@ pub async fn sync_workspace_with_progress(
             let mut embed_texts: Vec<String> = Vec::new();
             let mut embed_ids: Vec<String> = Vec::new();
 
+            // A6: per-file canonical context (Rust-only; None → empty canonical_path).
+            let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+
             for symbol in &parse_result.symbols {
                 match symbol {
                     ExtractedSymbol::Function(f) => {
@@ -1004,7 +1061,11 @@ pub async fn sync_workspace_with_progress(
                                 .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                             summary,
                         };
-                        queries.upsert_function(&func).await?;
+                        let canonical_path =
+                            canonical_path_for_function(&crates, rust_ctx.as_ref(), &f.name);
+                        queries
+                            .upsert_function_with_canonical(&func, &canonical_path)
+                            .await?;
                         new_function_ids.push((f.name.clone(), sym_id.clone()));
                         queries
                             .create_defines_edge(&file_id, "function", &sym_id)

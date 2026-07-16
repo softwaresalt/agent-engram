@@ -487,3 +487,60 @@ async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
         "stale file-hash metadata should be removed once the file becomes oversized"
     );
 }
+
+#[test]
+async fn canonical_path_populated_and_distinct_across_modules() {
+    // Option C Unit A / A6: indexing populates the additive canonical_path
+    // column, and same-spelled impl methods in different modules get DISTINCT
+    // identities (the RMeJ0 regression). Name-based lookups stay unchanged.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub mod a;\npub mod b;\n");
+    write_sample_file(
+        ws,
+        "src/a.rs",
+        "pub struct Widget;\nimpl Widget {\n    pub fn build(&self) {}\n}\npub fn helper() {}\n",
+    );
+    write_sample_file(
+        ws,
+        "src/b.rs",
+        "pub struct Widget;\nimpl Widget {\n    pub fn build(&self) {}\n}\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("connect");
+    let q = CodeGraphQueries::new(db);
+
+    // RMeJ0: `Widget::build` exists in both modules with DISTINCT canonical paths.
+    let mut widget = q
+        .canonical_paths_for_function_name("Widget::build")
+        .await
+        .expect("query canonical paths");
+    widget.sort();
+    assert_eq!(
+        widget,
+        vec![
+            "demo::a::Widget::build".to_owned(),
+            "demo::b::Widget::build".to_owned(),
+        ],
+        "same-spelled impl methods in different modules must get distinct canonical identities"
+    );
+
+    // A free function canonicalises to its module path.
+    let helper = q
+        .canonical_paths_for_function_name("helper")
+        .await
+        .expect("query canonical paths");
+    assert_eq!(helper, vec!["demo::a::helper".to_owned()]);
+}

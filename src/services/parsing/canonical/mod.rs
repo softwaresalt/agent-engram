@@ -27,3 +27,9 @@ pub mod module_path;
 pub mod reexport;
 pub mod resolver;
 pub mod use_graph;
+
+pub use module_path::{
+    ModulePath, WorkspaceCrates, discover_workspace_crates, module_path_for_file,
+};
+pub use resolver::{CanonicalId, ResolveContext, canonical_path_for_def, resolve_path};
+pub use use_graph::{UseGraph, extract_use_graph};

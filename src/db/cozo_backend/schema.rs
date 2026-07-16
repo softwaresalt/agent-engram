@@ -96,6 +96,12 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     // exists, so it is safe to run on every bootstrap.
     migrate_calls_edge_resolution(cozo_db)?;
 
+    // 091.008-T (Option C A6): additive `function_meta.canonical_path` column,
+    // precision-neutral. Idempotent shape-detected upgrade; existing rows default
+    // to "" (never a canonical match target — D4). The A8 format-version
+    // fingerprint forces a one-time re-index that repopulates it from source.
+    migrate_function_meta_canonical_path(cozo_db)?;
+
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
     // storage backend does not support vector indexes. Suppress only known-benign
     // failures; warn on unexpected ones so regressions remain visible.
@@ -421,6 +427,80 @@ pub(crate) fn rollback_calls_edge_resolution(
     Ok(())
 }
 
+/// Return `true` when `function_meta` carries the additive `canonical_path`
+/// column (091.008-T / Option C A6).
+///
+/// Uses `::columns` introspection so it works regardless of row count. A missing
+/// `function_meta` relation is reported as `false` (the caller bootstraps it
+/// before migrating).
+///
+/// # Errors
+/// Returns [`EngramError`] when the introspection query fails for a reason other
+/// than the relation not existing.
+pub(crate) fn function_meta_has_canonical_path(
+    cozo_db: &cozo::DbInstance,
+) -> Result<bool, EngramError> {
+    match cozo_db.run_script(
+        "::columns function_meta",
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    ) {
+        Ok(rows) => Ok(rows.rows.iter().any(|row| {
+            matches!(row.first(), Some(cozo::DataValue::Str(name)) if name.as_str() == "canonical_path")
+        })),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("cannot find")
+            {
+                Ok(false)
+            } else {
+                Err(map_db_err(format!(
+                    "function_meta column introspection: {e}"
+                )))
+            }
+        }
+    }
+}
+
+/// Upgrade a legacy `function_meta` relation to carry the additive
+/// `canonical_path` column (091.008-T / Option C A6, precision-neutral).
+///
+/// Databases created before A6 store `function_meta` without `canonical_path`.
+/// This rewrites the relation to add the column, defaulting every pre-existing
+/// row to `""` (empty is **never** a canonical match target — D4). The existing
+/// `name` column is left untouched, so search, references, and bare-name
+/// resolution are unaffected. Idempotent: once the column is present the
+/// function returns immediately, so it is safe to run on every bootstrap. The A8
+/// format-version fingerprint forces a one-time re-index that repopulates
+/// `canonical_path` from source for content-unchanged files.
+///
+/// # Errors
+/// Returns [`EngramError`] when column introspection or the `:replace` rewrite
+/// fails.
+pub(crate) fn migrate_function_meta_canonical_path(
+    cozo_db: &cozo::DbInstance,
+) -> Result<(), EngramError> {
+    if function_meta_has_canonical_path(cozo_db)? {
+        return Ok(());
+    }
+    let migrate = r#"
+?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, canonical_path] :=
+    *function_meta{id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary},
+    canonical_path = ""
+
+:replace function_meta { id => name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary, canonical_path }
+"#;
+    run_script_retrying(
+        cozo_db,
+        migrate,
+        "function_meta canonical_path migration",
+        false,
+    )?;
+    Ok(())
+}
+
 // ── File node ──────────────────────────────────────────────────────────────
 
 /// CozoScript `:create` for `file_node` — source file metadata.
@@ -457,6 +537,7 @@ pub const CREATE_FUNCTION_META: &str = r#"
     token_count: Int,
     embed_type: String,
     summary: String,
+    canonical_path: String,
 }
 "#;
 
@@ -889,8 +970,9 @@ mod tests {
         MAX_SCRIPT_ATTEMPTS, ScriptOutcome, busy_backoff, classify_script_error, retry_cozo_script,
     };
     use super::{
-        calls_edge_has_resolution, migrate_calls_edge_resolution, rollback_calls_edge_resolution,
-        run_scripts,
+        calls_edge_has_resolution, function_meta_has_canonical_path,
+        migrate_calls_edge_resolution, migrate_function_meta_canonical_path,
+        rollback_calls_edge_resolution, run_scripts,
     };
 
     /// Build an in-memory CozoDB with a *legacy* `calls_edge` relation
@@ -912,6 +994,70 @@ mod tests {
         )
         .expect("legacy row must insert");
         db
+    }
+
+    /// Build an in-memory CozoDB with a *legacy* `function_meta` relation (no
+    /// `canonical_path` column) holding one row (091.008-T / Option C A6).
+    fn legacy_function_meta_db() -> cozo::DbInstance {
+        let db = cozo::DbInstance::new("mem", "", Default::default())
+            .expect("in-memory cozo instance must open");
+        db.run_script(
+            ":create function_meta { id: String => name: String, file_path: String, line_start: Int, line_end: Int, signature: String, docstring: String, body_hash: String, token_count: Int, embed_type: String, summary: String }",
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("legacy function_meta relation must create");
+        db.run_script(
+            r#"?[id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary] <-
+    [["fn:x", "greet", "src/lib.rs", 1, 2, "fn greet()", "", "hash", 3, "explicit_code", ""]]
+:put function_meta { id, name, file_path, line_start, line_end, signature, docstring, body_hash, token_count, embed_type, summary }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("legacy function_meta row must insert");
+        db
+    }
+
+    // 091.008-T: migrating a legacy `function_meta` adds the additive
+    // `canonical_path` column and defaults every pre-existing row to "" (D4).
+    #[test]
+    fn migration_adds_canonical_path_column_defaulting_empty() {
+        let db = legacy_function_meta_db();
+        assert!(
+            !function_meta_has_canonical_path(&db).expect("column probe must run"),
+            "legacy relation must not yet carry canonical_path"
+        );
+
+        migrate_function_meta_canonical_path(&db).expect("migration must succeed");
+
+        assert!(
+            function_meta_has_canonical_path(&db).expect("column probe must run"),
+            "migration must add the canonical_path column"
+        );
+        let rows = db
+            .run_script(
+                r#"?[canonical_path] := *function_meta{id, canonical_path}, id = "fn:x""#,
+                BTreeMap::new(),
+                cozo::ScriptMutability::Immutable,
+            )
+            .expect("canonical_path query must run")
+            .rows;
+        assert_eq!(rows.len(), 1, "exactly one fn:x row expected");
+        match rows[0].first() {
+            Some(cozo::DataValue::Str(s)) => {
+                assert_eq!(s.as_str(), "", "pre-existing rows must default to empty");
+            }
+            other => panic!("canonical_path must be a string, got {other:?}"),
+        }
+    }
+
+    // 091.008-T: re-running the canonical_path migration is a no-op.
+    #[test]
+    fn canonical_path_migration_is_idempotent() {
+        let db = legacy_function_meta_db();
+        migrate_function_meta_canonical_path(&db).expect("first migration must succeed");
+        migrate_function_meta_canonical_path(&db).expect("second migration must be a no-op");
+        assert!(function_meta_has_canonical_path(&db).expect("column probe must run"));
     }
 
     /// Read the single `resolution` value stored for the `(fn:a, fn:b)` edge.
