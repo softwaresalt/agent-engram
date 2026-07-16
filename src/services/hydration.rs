@@ -207,7 +207,7 @@ pub async fn hydrate_code_graph(
                 }
             } else {
                 tracing::warn!(
-                    line_preview = &line[..line.len().min(80)],
+                    line_preview = line_preview(line, 80),
                     "skipping corrupt nodes.jsonl line (FR-135)"
                 );
                 result.lines_skipped += 1;
@@ -243,7 +243,7 @@ pub async fn hydrate_code_graph(
                 }
             } else {
                 tracing::warn!(
-                    line_preview = &line[..line.len().min(80)],
+                    line_preview = line_preview(line, 80),
                     "skipping corrupt edges.jsonl line (FR-135)"
                 );
                 result.lines_skipped += 1;
@@ -293,7 +293,7 @@ pub async fn hydrate_code_graph(
                 }
             } else {
                 tracing::warn!(
-                    line_preview = &line[..line.len().min(80)],
+                    line_preview = line_preview(line, 80),
                     "skipping corrupt staged_calls.jsonl line (FR-135)"
                 );
                 result.lines_skipped += 1;
@@ -364,6 +364,16 @@ struct ParsedEdge {
     #[allow(dead_code)]
     #[serde(default)]
     created_at: Option<String>,
+}
+
+/// Truncate a JSONL line to at most `max` bytes for a warning preview,
+/// stepping back to the nearest UTF-8 char boundary so slicing never panics.
+fn line_preview(line: &str, max: usize) -> &str {
+    let mut end = line.len().min(max);
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
 }
 
 fn parse_node_line(line: &str) -> Result<ParsedNode, serde_json::Error> {
