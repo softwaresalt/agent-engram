@@ -307,16 +307,22 @@ pub fn evaluate_semantic(
 /// raw_qualifier == "self"`. Blocklisted helpers (`clone`, `unwrap`, …) are
 /// excluded by the parser. A parse failure yields `0`.
 ///
-/// Counts **distinct `(caller, callee)` name pairs**, not raw call occurrences
-/// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
-/// by `(from, to)`, so a caller that invokes the same callee twice contributes a
-/// single edge; counting the denominator in the same distinct-relation unit
-/// keeps `resolution_recall` a ratio of commensurable units and stops a repeated
-/// call from spuriously deflating recall.
+/// Counts **distinct `(caller, callee, raw_qualifier, qualifier_kind)` call-site
+/// identities**, not raw call occurrences (084.002-T / 88B5FAFD; 091.012-T). The
+/// numerator is a count of `calls_edge` rows keyed by `(from, to)` node IDs, and
+/// canonical resolution (Option C Unit B) can produce **several distinct edges
+/// that share a bare callee name**: `crate::a::build()` and `crate::b::build()`
+/// resolve to two different targets, and `self::foo()` (module) vs `self.foo()`
+/// (method) resolve to two more. Keying the denominator on the same
+/// qualifier-aware identity the `staged_call` key uses keeps `resolution_recall`
+/// a ratio of commensurable units: a repeated call to the identical target still
+/// contributes one unit (no spurious deflation), while two same-named calls to
+/// *different* targets contribute two — so recall no longer over-reports a
+/// perfect `1.0` when only one of them actually resolved.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
-        let mut relations: std::collections::HashSet<(&str, &str)> =
+        let mut relations: std::collections::HashSet<(&str, &str, &str, &str)> =
             std::collections::HashSet::new();
         for edge in &result.edges {
             if let ExtractedEdge::Calls {
@@ -325,11 +331,17 @@ pub fn count_call_sites(source: &str, language: Language) -> usize {
                 is_method,
                 is_qualified,
                 raw_qualifier,
+                qualifier_kind,
                 ..
             } = edge
             {
                 if !*is_method || *is_qualified || raw_qualifier == "self" {
-                    relations.insert((caller.as_str(), callee.as_str()));
+                    relations.insert((
+                        caller.as_str(),
+                        callee.as_str(),
+                        raw_qualifier.as_str(),
+                        qualifier_kind.as_str(),
+                    ));
                 }
             }
         }

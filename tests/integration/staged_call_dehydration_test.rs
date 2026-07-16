@@ -270,3 +270,55 @@ async fn serialize_and_dehydrate_preserve_staged_call_provenance() {
     assert!(content.contains("\"qualifier_kind\":\"module\""));
     assert!(content.contains("\"enclosing_canonical_type\":\"demo::a::Widget\""));
 }
+
+#[test]
+async fn staged_call_key_distinguishes_qualifier_kind_for_self() {
+    // Regression (Cycle-7 / PR #255): `self::foo()` (module-path call, kind
+    // `module`) and `self.foo()` (receiver call, kind `method`) share the same
+    // caller, callee, source_file, AND raw_qualifier ("self") but resolve to
+    // different targets. `qualifier_kind` is part of the staged_call key, so the
+    // two rows must NOT collide — one overwriting the other would silently drop a
+    // valid canonical edge (fail-closed recall loss).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let (data_dir, branch) = test_db_params(ws);
+    let q = queries_for(&data_dir, &branch).await;
+
+    q.put_staged_call_with_provenance(
+        "function:caller",
+        "foo",
+        "src/caller.rs",
+        "self",
+        "module",
+        "",
+    )
+    .await
+    .expect("stage self::foo (module)");
+    q.put_staged_call_with_provenance(
+        "function:caller",
+        "foo",
+        "src/caller.rs",
+        "self",
+        "method",
+        "demo::Widget",
+    )
+    .await
+    .expect("stage self.foo (method)");
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list_staged_calls_with_provenance");
+    assert_eq!(
+        staged.len(),
+        2,
+        "both self::foo (module) and self.foo (method) must persist as distinct \
+         staged rows; a collision would silently drop one canonical edge, got {staged:?}"
+    );
+    let kinds: std::collections::HashSet<&str> =
+        staged.iter().map(|s| s.qualifier_kind.as_str()).collect();
+    assert!(
+        kinds.contains("module") && kinds.contains("method"),
+        "the two rows must retain their distinct qualifier kinds, got {kinds:?}"
+    );
+}

@@ -558,7 +558,7 @@ pub(crate) fn migrate_staged_call_provenance(
     qualifier_kind = "",
     enclosing_canonical_type = ""
 
-:replace staged_call { caller_id, callee_name, source_file, raw_qualifier => created_at, qualifier_kind, enclosing_canonical_type }
+:replace staged_call { caller_id, callee_name, source_file, raw_qualifier, qualifier_kind => created_at, enclosing_canonical_type }
 "#;
     run_script_retrying(cozo_db, migrate, "staged_call provenance migration", false)?;
     Ok(())
@@ -821,23 +821,29 @@ pub const CREATE_REFERENCES_EDGE: &str = r#"
 /// CozoScript `:create` for `staged_call` — a call site whose callee could not
 /// be resolved within the caller's own file (082.002-T).
 ///
-/// Key: `(caller_id, callee_name, source_file, raw_qualifier)` — `raw_qualifier`
-/// is part of the key (091.012-T) so two distinct qualified calls to the same
-/// callee name in one caller (e.g. `crate::a::build()` and `crate::b::build()`)
-/// stay separate rows and each resolves to its own canonical target instead of
-/// overwriting one another. Every staged row carries its source file so the
-/// staging lifecycle (082.009-T) can clear a file's rows before re-indexing. The
-/// deferred post-pass (082.008-T / 091.012-T) reads these rows and resolves each
-/// callee against the workspace-global symbol index.
+/// Key: `(caller_id, callee_name, source_file, raw_qualifier, qualifier_kind)` —
+/// both `raw_qualifier` and `qualifier_kind` are part of the key so two distinct
+/// qualified calls to the same callee name in one caller stay separate rows and
+/// each resolves to its own canonical target instead of overwriting one another.
+/// `raw_qualifier` (091.012-T) separates different qualifiers of the same callee
+/// name (e.g. `crate::a::build()` vs `crate::b::build()`). `qualifier_kind`
+/// additionally separates call sites that share a `raw_qualifier` but differ in
+/// kind and resolved target — notably `self::foo()` (kind `module`) vs
+/// `self.foo()` (kind `method`), which both carry `raw_qualifier == "self"` and
+/// would otherwise collide, silently dropping one canonical edge. Every staged
+/// row carries its source file so the staging lifecycle (082.009-T) can clear a
+/// file's rows before re-indexing. The deferred post-pass (082.008-T /
+/// 091.012-T) reads these rows and resolves each callee against the
+/// workspace-global symbol index.
 pub const CREATE_STAGED_CALL: &str = r#"
 :create staged_call {
     caller_id: String,
     callee_name: String,
     source_file: String,
-    raw_qualifier: String
+    raw_qualifier: String,
+    qualifier_kind: String
     =>
     created_at: String,
-    qualifier_kind: String,
     enclosing_canonical_type: String,
 }
 "#;

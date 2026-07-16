@@ -552,11 +552,13 @@ fn non_empty_marker(value: &str) -> Option<&str> {
 ///
 /// Rows are sorted by `(caller_id, callee_name, source_file)` with the fully
 /// serialized JSON line as a final tie-breaker, so the output is stable even
-/// when `raw_qualifier` (part of the `staged_call` key, 091.012-T) makes
-/// multiple rows share the first three fields. This keeps the dehydrate →
-/// rehydrate round-trip deterministic and idempotent regardless of
-/// query/iteration order. The output is newline-terminated and empty when there
-/// are no staged rows.
+/// when `raw_qualifier` and `qualifier_kind` (both part of the `staged_call`
+/// key, 091.012-T) make multiple rows share the first three fields. The JSON
+/// tie-breaker embeds every field, so it also separates rows that share
+/// `raw_qualifier` but differ in `qualifier_kind` (e.g. `self::foo` vs
+/// `self.foo`). This keeps the dehydrate → rehydrate round-trip deterministic
+/// and idempotent regardless of query/iteration order. The output is
+/// newline-terminated and empty when there are no staged rows.
 #[must_use]
 pub fn serialize_staged_calls_jsonl(staged_calls: &[impl StagedCallJsonFields]) -> String {
     let mut lines: Vec<(String, String, String, String)> = Vec::new();
@@ -582,10 +584,10 @@ pub fn serialize_staged_calls_jsonl(staged_calls: &[impl StagedCallJsonFields]) 
     }
 
     // Sort by (caller_id, callee_name, source_file) with the serialized JSON
-    // line as a final tie-breaker. `raw_qualifier` is part of the staged_call
-    // key, so multiple rows can share the first three fields; the JSON
-    // tie-breaker (which embeds raw_qualifier) gives a total, deterministic
-    // order independent of input/iteration order.
+    // line as a final tie-breaker. `raw_qualifier` and `qualifier_kind` are both
+    // part of the staged_call key, so multiple rows can share the first three
+    // fields; the JSON tie-breaker (which embeds every field) gives a total,
+    // deterministic order independent of input/iteration order.
     lines.sort_by(|a, b| {
         a.0.cmp(&b.0)
             .then(a.1.cmp(&b.1))
