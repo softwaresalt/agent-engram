@@ -117,15 +117,20 @@ pub struct CodeGraphHydrationResult {
     pub nodes_loaded: usize,
     /// Total edges loaded.
     pub edges_loaded: usize,
+    /// Total staged (unresolved) cross-file calls loaded (089-F).
+    pub staged_calls_loaded: usize,
     /// Lines skipped due to parse errors (FR-135).
     pub lines_skipped: usize,
 }
 
 /// Hydrate code graph from `{data_dir}/code-graph/{branch}/` JSONL files (FR-132, FR-135).
 ///
-/// Parses `nodes.jsonl` and `edges.jsonl`, upserting into the active database backend.
-/// Corrupt lines are logged and skipped (FR-135: graceful degradation).
-/// Falls back to the legacy `{path}/.engram/code-graph/` path for schema 3.0.0 workspaces.
+/// Parses `nodes.jsonl`, `edges.jsonl`, and (089-F) `staged_calls.jsonl`,
+/// upserting into the active database backend. Corrupt lines are logged and
+/// skipped (FR-135: graceful degradation). A legacy snapshot without
+/// `staged_calls.jsonl` rehydrates to zero staged rows without error (backward
+/// compatible). Falls back to the legacy `{path}/.engram/code-graph/` path for
+/// schema 3.0.0 workspaces.
 pub async fn hydrate_code_graph(
     path: &Path,
     data_dir: &Path,
@@ -246,6 +251,56 @@ pub async fn hydrate_code_graph(
         }
     }
 
+    // Parse staged_calls.jsonl (089-F). Optional: a legacy snapshot without this
+    // file rehydrates to zero staged rows and must NOT error. Rows carry their
+    // original `created_at`, so the round-trip is idempotent; unknown future
+    // fields (e.g. the marker fields deferred to 088-S / 091.011-T) are ignored.
+    //
+    // Loaded here in the full-reload path only — the same fast-path skip that
+    // guards nodes/edges above also guards staged rows. This is intentional:
+    // when the DB is already populated (e.g. a prior `--direct` sync), the live
+    // relations are authoritative, and re-applying the JSONL snapshot could
+    // resurrect staged rows that were since resolved or cleared.
+    let staged_calls_path = code_graph_dir.join("staged_calls.jsonl");
+    if tokio::fs::try_exists(&staged_calls_path)
+        .await
+        .unwrap_or(false)
+    {
+        let content = tokio::fs::read_to_string(&staged_calls_path)
+            .await
+            .map_err(|e| {
+                EngramError::Hydration(HydrationError::Failed {
+                    reason: format!("failed to read staged_calls.jsonl: {e}"),
+                })
+            })?;
+
+        // Yield to the tokio executor every 50 upsert attempts (3B541819).
+        let mut staged_batch: u32 = 0;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(staged) = parse_staged_call_line(line) {
+                if upsert_staged_call(cg_queries, &staged).await {
+                    result.staged_calls_loaded += 1;
+                } else {
+                    result.lines_skipped += 1;
+                }
+                staged_batch += 1;
+                if staged_batch % 50 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            } else {
+                tracing::warn!(
+                    line_preview = &line[..line.len().min(80)],
+                    "skipping corrupt staged_calls.jsonl line (FR-135)"
+                );
+                result.lines_skipped += 1;
+            }
+        }
+    }
+
     Ok(result)
 }
 
@@ -317,6 +372,46 @@ fn parse_node_line(line: &str) -> Result<ParsedNode, serde_json::Error> {
 
 fn parse_edge_line(line: &str) -> Result<ParsedEdge, serde_json::Error> {
     serde_json::from_str(line)
+}
+
+/// Intermediate staged-call representation parsed from a `staged_calls.jsonl`
+/// line (089-F).
+///
+/// `created_at` is `#[serde(default)]` so a line that omits it still parses
+/// (rehydrating with an empty timestamp). Unknown extra keys are ignored by
+/// default, keeping the format forward-compatible with the marker fields
+/// (`is_method` / `is_qualified` / `provenance`) deferred to 088-S Unit B
+/// (091.011-T).
+#[derive(Debug, serde::Deserialize)]
+struct ParsedStagedCall {
+    caller_id: String,
+    callee_name: String,
+    source_file: String,
+    #[serde(default)]
+    created_at: String,
+}
+
+fn parse_staged_call_line(line: &str) -> Result<ParsedStagedCall, serde_json::Error> {
+    serde_json::from_str(line)
+}
+
+/// Upsert a parsed staged call into the database. Returns `true` on success.
+///
+/// Preserves the original `created_at` so a dehydrate → rehydrate round-trip is
+/// idempotent; the `put` is keyed by `(caller_id, callee_name, source_file)`.
+async fn upsert_staged_call(
+    cg_queries: &crate::db::queries::CodeGraphQueries,
+    staged: &ParsedStagedCall,
+) -> bool {
+    cg_queries
+        .put_staged_call_with_created_at(
+            &staged.caller_id,
+            &staged.callee_name,
+            &staged.source_file,
+            &staged.created_at,
+        )
+        .await
+        .is_ok()
 }
 
 /// Read the source body for a symbol from its file on disk.
