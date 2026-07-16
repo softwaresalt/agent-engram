@@ -96,3 +96,63 @@ fn tool_count_constant_matches_catalog() {
         tools_catalog::TOOL_COUNT
     );
 }
+
+/// Verifies the `impact_analysis` summary advertises both code and Power BI graph
+/// roots so MCP clients can select it for either workflow.
+#[test]
+fn impact_analysis_summary_documents_code_and_powerbi() {
+    let tools = tools_catalog::all_tools();
+    let impact = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "impact_analysis")
+        .expect("impact_analysis must be present in catalog");
+    let summary = impact.description.as_deref().unwrap_or_default();
+
+    assert!(
+        summary.contains("code call graph"),
+        "summary must mention the code call graph: {summary}"
+    );
+    assert!(
+        summary.contains("Power BI"),
+        "summary must mention Power BI graph support: {summary}"
+    );
+    assert!(
+        summary.contains("powerbi_node_id"),
+        "summary must reference the Power BI selector: {summary}"
+    );
+}
+
+/// Verifies the `impact_analysis` depth parameter describes both traversal
+/// surfaces and the Power BI selector remains documented in the schema.
+#[test]
+fn impact_analysis_params_document_powerbi_selector_and_depth() {
+    let tools = tools_catalog::all_tools();
+    let impact = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "impact_analysis")
+        .expect("impact_analysis must be present in catalog");
+    let props = impact
+        .input_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("impact_analysis schema must have properties");
+    let depth = props
+        .get("depth")
+        .and_then(|value| value.get("description"))
+        .and_then(serde_json::Value::as_str)
+        .expect("depth must have a description");
+    let powerbi_node_id = props
+        .get("powerbi_node_id")
+        .and_then(|value| value.get("description"))
+        .and_then(serde_json::Value::as_str)
+        .expect("powerbi_node_id must have a description");
+
+    assert!(
+        depth.contains("code call graph") && depth.contains("Power BI dependency graph"),
+        "depth description must cover both graph surfaces: {depth}"
+    );
+    assert!(
+        powerbi_node_id.contains("Power BI node id"),
+        "powerbi_node_id description must document the selector: {powerbi_node_id}"
+    );
+}
