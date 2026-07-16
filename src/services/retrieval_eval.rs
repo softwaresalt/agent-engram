@@ -296,12 +296,16 @@ pub fn evaluate_semantic(
 ///
 /// This is the graph metric *denominator*: the parser call-site inventory
 /// (`ExtractedEdge::Calls`) discovered by [`parse_source`], restricted to the
-/// calls the indexer actually attempts to resolve. Method / receiver calls
-/// (`x.foo()`) and path-qualified calls (`a::b()`) are extracted but never
-/// promoted to edges — their targets are indexed under qualified names, so
-/// name-only resolution cannot match them — so they are excluded here to keep
-/// the denominator aligned with resolvable call sites. Blocklisted helpers
-/// (`clone`, `unwrap`, …) are excluded by the parser. A parse failure yields `0`.
+/// calls the indexer can actually resolve. Free-function and path calls,
+/// path-qualified calls (`a::b()`), and known-receiver `self.method()` calls
+/// are all counted: canonical resolution (Option C Unit B) stages and resolves
+/// qualified and `self`-receiver calls, so they are resolvable and belong in
+/// the denominator. Only method calls with an *arbitrary* receiver (`x.foo()`,
+/// where the receiver is not `self`) are excluded — their receiver type is
+/// unknown at parse time, so name-only resolution cannot reach them. This
+/// mirrors the inclusion rule in the body: `!is_method || is_qualified ||
+/// raw_qualifier == "self"`. Blocklisted helpers (`clone`, `unwrap`, …) are
+/// excluded by the parser. A parse failure yields `0`.
 ///
 /// Counts **distinct `(caller, callee)` name pairs**, not raw call occurrences
 /// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
