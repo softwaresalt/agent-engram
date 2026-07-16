@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use tokio::test;
 
 use engram::db::connect_db;
-use engram::db::queries::{CodeGraphQueries, StagedCallRecord};
+use engram::db::queries::{CodeGraphQueries, StagedCallProvenanceRecord, StagedCallRecord};
 use engram::services::dehydration::{dehydrate_code_graph, serialize_staged_calls_jsonl};
 
 fn test_db_params(path: &Path) -> (PathBuf, String) {
@@ -176,4 +176,50 @@ async fn dehydrate_removes_stale_staged_calls_jsonl_when_empty() {
         !staged_path.exists(),
         "empty staging must remove the stale staged_calls.jsonl"
     );
+}
+
+#[test]
+async fn serialize_and_dehydrate_preserve_staged_call_provenance() {
+    let records = vec![StagedCallProvenanceRecord {
+        caller_id: "function:caller".to_string(),
+        callee_name: "helper".to_string(),
+        source_file: "src/a.rs".to_string(),
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        raw_qualifier: "crate::a::b".to_string(),
+        qualifier_kind: "module".to_string(),
+        enclosing_canonical_type: "demo::a::Widget".to_string(),
+    }];
+
+    let jsonl = serialize_staged_calls_jsonl(&records);
+    assert!(jsonl.contains("\"raw_qualifier\":\"crate::a::b\""));
+    assert!(jsonl.contains("\"qualifier_kind\":\"module\""));
+    assert!(jsonl.contains("\"enclosing_canonical_type\":\"demo::a::Widget\""));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let (data_dir, branch) = test_db_params(ws);
+    let q = queries_for(&data_dir, &branch).await;
+    q.put_staged_call_with_provenance(
+        "function:caller",
+        "helper",
+        "src/a.rs",
+        "crate::a::b",
+        "module",
+        "demo::a::Widget",
+    )
+    .await
+    .expect("stage provenance");
+
+    dehydrate_code_graph(&q, &data_dir, &branch)
+        .await
+        .expect("dehydrate");
+
+    let staged_path = data_dir
+        .join("code-graph")
+        .join(&branch)
+        .join("staged_calls.jsonl");
+    let content = fs::read_to_string(&staged_path).expect("read staged_calls.jsonl");
+    assert!(content.contains("\"raw_qualifier\":\"crate::a::b\""));
+    assert!(content.contains("\"qualifier_kind\":\"module\""));
+    assert!(content.contains("\"enclosing_canonical_type\":\"demo::a::Widget\""));
 }

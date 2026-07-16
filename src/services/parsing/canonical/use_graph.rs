@@ -11,6 +11,8 @@
 //! edge. Glob imports are recorded as markers (never expanded), so the resolver
 //! can fail closed on any name that could originate from a glob.
 
+use super::module_path::mod_mapping_is_non_default;
+
 use tree_sitter::{Node, Parser};
 
 /// A single non-glob `use` binding: a local alias mapped to its source path.
@@ -34,6 +36,16 @@ pub struct UseGraph {
     /// Base paths of glob imports (`use a::b::*` → `a::b`). Recorded as markers
     /// only and never expanded (fail-closed).
     pub globs: Vec<String>,
+    /// Top-level items that prove a bare path root is local to this module.
+    pub local_roots: Vec<String>,
+    /// Whether the file contains a nested `use` declaration outside module scope.
+    pub has_nested_use: bool,
+    /// Whether a top-level `mod` declaration uses non-default or conditional
+    /// mapping attributes (`#[path]`, `#[cfg]`, or `#[cfg_attr]`).
+    pub has_non_default_mod_mapping: bool,
+    /// Top-level module names whose declarations use non-default or conditional
+    /// mapping attributes.
+    pub non_default_mod_roots: Vec<String>,
 }
 
 impl UseGraph {
@@ -49,20 +61,41 @@ impl UseGraph {
         let alias = alias.to_owned();
         self.bindings.iter().filter(move |b| b.alias == alias)
     }
+
+    /// Whether `root` is proven to be a top-level item in the current module.
+    #[must_use]
+    pub fn has_local_root(&self, root: &str) -> bool {
+        self.local_roots.iter().any(|r| r == root)
+    }
+
+    /// Whether the file contains nested `use` declarations whose lexical scope is
+    /// not modelled by this module-level graph.
+    #[must_use]
+    pub fn has_nested_use(&self) -> bool {
+        self.has_nested_use
+    }
+
+    /// Whether any top-level `mod` declaration has non-default mapping
+    /// attributes, making filesystem-derived module identity unsafe for call
+    /// target resolution.
+    #[must_use]
+    pub fn has_non_default_mod_mapping(&self) -> bool {
+        self.has_non_default_mod_mapping
+    }
+
+    /// Module roots introduced by non-default mapping declarations.
+    #[must_use]
+    pub fn non_default_mod_roots(&self) -> &[String] {
+        &self.non_default_mod_roots
+    }
 }
 
 /// Extract the module-level `use` graph from Rust `source`.
 ///
-/// Only top-level (file-module) `use` declarations are captured; `use`
-/// declarations nested inside inline `mod` blocks or function bodies belong to an
-/// inner scope and are intentionally not surfaced here. In Unit A this graph is
-/// consumed only by definition canonicalization (`canonical_path_for_def`), whose
-/// receiver-type resolution runs against module scope and is therefore unaffected
-/// by inner-scope bindings. Call-target resolution — where a missing inner-scope
-/// `use` could otherwise let the resolver fall back to an in-module item — has no
-/// production consumer in Unit A and is deferred to Unit B (088-S), which adds
-/// inner-scope `use` handling behind its mandatory adversarial panel and
-/// canonical singleton match before any edge is emitted.
+/// Only top-level (file-module) `use` declarations are captured. Unit B records
+/// nested `use` declarations as a fail-closed marker for call-target resolution:
+/// the graph does not model lexical scopes deeply enough to resolve calls in
+/// those files safely.
 #[must_use]
 pub fn extract_use_graph(source: &str) -> UseGraph {
     let mut graph = UseGraph::default();
@@ -71,7 +104,12 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
     };
     let root = tree.root_node();
     let mut cursor = root.walk();
+    let mut pending_attrs = Vec::new();
     for child in root.children(&mut cursor) {
+        if child.kind() == "attribute_item" {
+            pending_attrs.push(node_text(child, source));
+            continue;
+        }
         if child.kind() == "use_declaration" {
             let is_pub = has_pub_visibility(child, source);
             if let Some(arg) = child
@@ -80,9 +118,52 @@ pub fn extract_use_graph(source: &str) -> UseGraph {
             {
                 walk_use_tree(arg, source, "", is_pub, 0, &mut graph);
             }
+        } else if contains_use_declaration(child) {
+            graph.has_nested_use = true;
+        }
+
+        if child.kind() == "mod_item" {
+            let mut attr_texts = pending_attrs.clone();
+            attr_texts.extend(child_attributes(child, source));
+            if mod_mapping_is_non_default(&attr_texts) {
+                graph.has_non_default_mod_mapping = true;
+                if let Some(root_name) = local_root_name(child, source) {
+                    graph.non_default_mod_roots.push(root_name);
+                }
+            }
+        }
+        pending_attrs.clear();
+
+        if let Some(root_name) = local_root_name(child, source) {
+            graph.local_roots.push(root_name);
         }
     }
     graph
+}
+
+fn local_root_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "struct_item" | "enum_item" | "trait_item" | "type_item" | "mod_item" => node
+            .child_by_field_name("name")
+            .map(|n| node_text(n, source)),
+        _ => None,
+    }
+}
+
+fn child_attributes(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|child| child.kind() == "attribute_item")
+        .map(|child| node_text(child, source))
+        .collect()
+}
+
+fn contains_use_declaration(node: Node<'_>) -> bool {
+    if node.kind() == "use_declaration" {
+        return true;
+    }
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(contains_use_declaration)
 }
 
 fn parse_tree(source: &str) -> Option<tree_sitter::Tree> {

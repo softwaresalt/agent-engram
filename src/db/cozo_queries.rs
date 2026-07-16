@@ -182,11 +182,6 @@ pub struct StagedCall {
 /// post-pass itself only needs the first three fields, so the resolver keeps
 /// consuming [`StagedCall`].
 ///
-/// Scope note (084-S): only the four columns that exist on the `staged_call`
-/// relation today are represented. The marker fields `is_method`,
-/// `is_qualified`, and `provenance` are intentionally deferred to 088-S Unit B
-/// (091.011-T); the JSONL format is forward-compatible so they can be added
-/// without a schema-version bump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedCallRecord {
     /// Fully-qualified ID of the calling function (e.g. `function:...`).
@@ -197,6 +192,43 @@ pub struct StagedCallRecord {
     pub source_file: String,
     /// RFC 3339 timestamp recorded when the call was first staged.
     pub created_at: String,
+}
+
+/// A staged call row with Unit-B canonical-resolution provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCallProvenanceRecord {
+    /// Fully-qualified ID of the calling function (e.g. `function:...`).
+    pub caller_id: String,
+    /// Bare final segment of the called function at the call site.
+    pub callee_name: String,
+    /// Workspace-relative path of the file the call site lives in.
+    pub source_file: String,
+    /// RFC 3339 timestamp recorded when the call was first staged.
+    pub created_at: String,
+    /// Raw source qualifier preceding the callee (`crate::a`, `Self`, `self`).
+    pub raw_qualifier: String,
+    /// Qualifier class: `module`, `type`, `self`, `method`, or empty legacy.
+    pub qualifier_kind: String,
+    /// Canonical enclosing type for known-receiver calls; empty outside impls.
+    pub enclosing_canonical_type: String,
+}
+
+/// Borrowed staged-call write payload including timestamp and raw provenance.
+pub struct StagedCallProvenanceWrite<'a> {
+    /// Fully-qualified ID of the calling function.
+    pub caller_id: &'a str,
+    /// Bare final segment of the called function at the call site.
+    pub callee_name: &'a str,
+    /// Workspace-relative source file path.
+    pub source_file: &'a str,
+    /// RFC 3339 staging timestamp.
+    pub created_at: &'a str,
+    /// Raw source qualifier preceding the callee.
+    pub raw_qualifier: &'a str,
+    /// Qualifier category.
+    pub qualifier_kind: &'a str,
+    /// Canonical enclosing type for known receivers.
+    pub enclosing_canonical_type: &'a str,
 }
 
 /// Information about a `concerns` edge targeting a symbol.
@@ -965,6 +997,33 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         Ok(r.rows.iter().map(|row| extract_str(row, 1)).collect())
     }
 
+    /// Return a `canonical_path -> [function_id]` index for non-empty canonical
+    /// function identities.
+    ///
+    /// Empty canonical paths are filtered here so D4 ("empty is never a match
+    /// target") is enforced before singleton matching.
+    pub async fn function_ids_by_canonical_path(
+        &self,
+    ) -> Result<HashMap<String, Vec<String>>, EngramError> {
+        let script = r#"
+?[canonical_path, id] :=
+    *function_meta{id, canonical_path},
+    canonical_path != ""
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        for row in &r.rows {
+            index
+                .entry(extract_str(row, 0))
+                .or_default()
+                .push(extract_str(row, 1));
+        }
+        Ok(index)
+    }
+
     /// Look up a function by name (first match).
     pub async fn get_function_by_name(
         &self,
@@ -1474,8 +1533,40 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         callee_name: &str,
         source_file: &str,
     ) -> Result<(), EngramError> {
-        self.put_staged_call_with_created_at(caller_id, callee_name, source_file, &now_utc_str())
-            .await
+        let created_at = now_utc_str();
+        self.put_staged_call_with_created_at_and_provenance(StagedCallProvenanceWrite {
+            caller_id,
+            callee_name,
+            source_file,
+            created_at: &created_at,
+            raw_qualifier: "",
+            qualifier_kind: "",
+            enclosing_canonical_type: "",
+        })
+        .await
+    }
+
+    /// Record a staged call with Unit-B raw provenance.
+    pub async fn put_staged_call_with_provenance(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+        source_file: &str,
+        raw_qualifier: &str,
+        qualifier_kind: &str,
+        enclosing_canonical_type: &str,
+    ) -> Result<(), EngramError> {
+        let created_at = now_utc_str();
+        self.put_staged_call_with_created_at_and_provenance(StagedCallProvenanceWrite {
+            caller_id,
+            callee_name,
+            source_file,
+            created_at: &created_at,
+            raw_qualifier,
+            qualifier_kind,
+            enclosing_canonical_type,
+        })
+        .await
     }
 
     /// Record a staged call with an explicit `created_at` timestamp.
@@ -1491,16 +1582,51 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         source_file: &str,
         created_at: &str,
     ) -> Result<(), EngramError> {
+        self.put_staged_call_with_created_at_and_provenance(StagedCallProvenanceWrite {
+            caller_id,
+            callee_name,
+            source_file,
+            created_at,
+            raw_qualifier: "",
+            qualifier_kind: "",
+            enclosing_canonical_type: "",
+        })
+        .await
+    }
+
+    /// Record a staged call with an explicit timestamp and provenance markers.
+    pub async fn put_staged_call_with_created_at_and_provenance(
+        &self,
+        staged: StagedCallProvenanceWrite<'_>,
+    ) -> Result<(), EngramError> {
         let script = r#"
-?[caller_id, callee_name, source_file, created_at] <-
-    [[$caller_id, $callee_name, $source_file, $created_at]]
-:put staged_call { caller_id, callee_name, source_file => created_at }
+?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] <-
+    [[$caller_id, $callee_name, $source_file, $created_at, $raw_qualifier, $qualifier_kind, $enclosing_canonical_type]]
+:put staged_call { caller_id, callee_name, source_file => created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type }
 "#;
         let mut p = BTreeMap::new();
-        p.insert("caller_id".to_owned(), DataValue::from(caller_id));
-        p.insert("callee_name".to_owned(), DataValue::from(callee_name));
-        p.insert("source_file".to_owned(), DataValue::from(source_file));
-        p.insert("created_at".to_owned(), DataValue::from(created_at));
+        p.insert("caller_id".to_owned(), DataValue::from(staged.caller_id));
+        p.insert(
+            "callee_name".to_owned(),
+            DataValue::from(staged.callee_name),
+        );
+        p.insert(
+            "source_file".to_owned(),
+            DataValue::from(staged.source_file),
+        );
+        p.insert("created_at".to_owned(), DataValue::from(staged.created_at));
+        p.insert(
+            "raw_qualifier".to_owned(),
+            DataValue::from(staged.raw_qualifier),
+        );
+        p.insert(
+            "qualifier_kind".to_owned(),
+            DataValue::from(staged.qualifier_kind),
+        );
+        p.insert(
+            "enclosing_canonical_type".to_owned(),
+            DataValue::from(staged.enclosing_canonical_type),
+        );
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
@@ -1553,6 +1679,34 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             .collect())
     }
 
+    /// List every staged call including Unit-B raw provenance, sorted by
+    /// `(caller_id, callee_name, source_file)` for deterministic consumers.
+    pub async fn list_staged_calls_with_provenance(
+        &self,
+    ) -> Result<Vec<StagedCallProvenanceRecord>, EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] :=
+    *staged_call { caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type }
+:order caller_id, callee_name, source_file
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| StagedCallProvenanceRecord {
+                caller_id: extract_str(row, 0),
+                callee_name: extract_str(row, 1),
+                source_file: extract_str(row, 2),
+                created_at: extract_str(row, 3),
+                raw_qualifier: extract_str(row, 4),
+                qualifier_kind: extract_str(row, 5),
+                enclosing_canonical_type: extract_str(row, 6),
+            })
+            .collect())
+    }
+
     /// Remove every staged (unresolved) call recorded for `source_file`
     /// (082.009-T clear-before-reindex / deletion cleanup).
     ///
@@ -1574,12 +1728,12 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         Ok(())
     }
 
-    /// Retract `calls_resolved_singleton` edges whose caller OR callee is a
-    /// function defined in `file_path` (082.009-T).
+    /// Retract resolved post-pass edges whose caller OR callee is a function
+    /// defined in `file_path` (082.009-T / 091.012-T).
     ///
     /// Must be invoked BEFORE the file's function metadata is deleted, because
     /// it maps file → function IDs via `function_meta.file_path`. Retracting
-    /// these stale singleton edges before a reindex or deletion prevents
+    /// these stale resolved edges before a reindex or deletion prevents
     /// dangling cross-file edges when a caller or callee changes or is removed.
     /// `direct` edges are left untouched — they are re-created by in-file
     /// resolution on reindex.
@@ -1596,6 +1750,16 @@ stale[from, to] :=
 stale[from, to] :=
     *calls_edge { from, to, resolution },
     resolution = "calls_resolved_singleton",
+    *function_meta { id: to, file_path },
+    file_path = $file_path
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_canonical",
+    *function_meta { id: from, file_path },
+    file_path = $file_path
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_canonical",
     *function_meta { id: to, file_path },
     file_path = $file_path
 ?[from, to] := stale[from, to]
@@ -1636,6 +1800,33 @@ stale[from, to] :=
         let mut p = BTreeMap::new();
         p.insert("from".to_owned(), DataValue::from(caller_id));
         p.insert("name".to_owned(), DataValue::from(callee_name));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retract all canonical post-pass call edges emitted from `caller_id`.
+    ///
+    /// Unit-B canonical resolution is re-created from the current staged rows on
+    /// every full-index post-pass. Pre-retracting a caller's prior canonical
+    /// edges ensures an ambiguity or failed resolution cannot leave a stale edge.
+    pub async fn retract_canonical_edges_from_caller(
+        &self,
+        caller_id: &str,
+    ) -> Result<(), EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(());
+        }
+        let script = r#"
+?[from, to] :=
+    *calls_edge { from, to, resolution },
+    from = $from,
+    resolution = "calls_resolved_canonical"
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(caller_id));
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
@@ -1824,7 +2015,12 @@ stale[from, to] :=
             name_index.entry(name).or_default().push(id);
         }
 
-        let staged = self.list_staged_calls().await?;
+        let staged: Vec<_> = self
+            .list_staged_calls_with_provenance()
+            .await?
+            .into_iter()
+            .filter(|call| call.qualifier_kind.is_empty())
+            .collect();
         let lookups = staged.len();
         // Snapshot the singleton edges that already exist so `resolved` counts
         // only genuinely new provenance. Because staged rows persist across a

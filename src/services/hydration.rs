@@ -425,11 +425,8 @@ fn parse_edge_line(line: &str) -> Result<ParsedEdge, serde_json::Error> {
 /// Intermediate staged-call representation parsed from a `staged_calls.jsonl`
 /// line (089-F).
 ///
-/// `created_at` is `#[serde(default)]` so a line that omits it still parses
-/// (rehydrating with an empty timestamp). Unknown extra keys are ignored by
-/// default, keeping the format forward-compatible with the marker fields
-/// (`is_method` / `is_qualified` / `provenance`) deferred to 088-S Unit B
-/// (091.011-T).
+/// Marker fields default to empty strings so legacy 084-S/089-F rows keep the
+/// bare-name resolution path while Unit-B rows preserve raw provenance.
 #[derive(Debug, serde::Deserialize)]
 struct ParsedStagedCall {
     caller_id: String,
@@ -437,6 +434,12 @@ struct ParsedStagedCall {
     source_file: String,
     #[serde(default)]
     created_at: String,
+    #[serde(default)]
+    raw_qualifier: String,
+    #[serde(default)]
+    qualifier_kind: String,
+    #[serde(default)]
+    enclosing_canonical_type: String,
 }
 
 fn parse_staged_call_line(line: &str) -> Result<ParsedStagedCall, serde_json::Error> {
@@ -452,11 +455,16 @@ async fn upsert_staged_call(
     staged: &ParsedStagedCall,
 ) -> bool {
     cg_queries
-        .put_staged_call_with_created_at(
-            &staged.caller_id,
-            &staged.callee_name,
-            &staged.source_file,
-            &staged.created_at,
+        .put_staged_call_with_created_at_and_provenance(
+            crate::db::queries::StagedCallProvenanceWrite {
+                caller_id: &staged.caller_id,
+                callee_name: &staged.callee_name,
+                source_file: &staged.source_file,
+                created_at: &staged.created_at,
+                raw_qualifier: &staged.raw_qualifier,
+                qualifier_kind: &staged.qualifier_kind,
+                enclosing_canonical_type: &staged.enclosing_canonical_type,
+            },
         )
         .await
         .is_ok()

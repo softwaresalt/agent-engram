@@ -173,7 +173,7 @@ pub async fn dehydrate_code_graph(
     // restart, otherwise a call staged before the restart could never resolve
     // afterwards. This snapshot is additive and optional: a legacy snapshot
     // without it rehydrates to zero staged rows (see `hydrate_code_graph`).
-    let staged_calls = cg_queries.list_staged_calls_full().await?;
+    let staged_calls = cg_queries.list_staged_calls_with_provenance().await?;
     let total_staged_calls = staged_calls.len();
     let staged_calls_path = code_graph_dir.join("staged_calls.jsonl");
     if total_staged_calls > 0 {
@@ -457,19 +457,95 @@ pub fn serialize_edges_jsonl(edges: &[CodeEdge]) -> String {
 }
 
 /// Intermediate struct for serializing a staged cross-file call to one JSONL
-/// line (089-F).
-///
-/// Only the four columns that exist on the `staged_call` relation today are
-/// emitted. The marker fields `is_method`, `is_qualified`, and `provenance`
-/// are intentionally deferred to 088-S Unit B (091.011-T); the deserializer
-/// tolerates such extra keys, so they can be added later without a
-/// `SCHEMA_VERSION` bump (forward compatible).
+/// line (089-F / 091.011-T).
 #[derive(Debug, serde::Serialize)]
 struct StagedCallLine {
     caller_id: String,
     callee_name: String,
     source_file: String,
     created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_qualifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualifier_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enclosing_canonical_type: Option<String>,
+}
+
+/// Common staged-call fields needed by the deterministic JSONL serializer.
+pub trait StagedCallJsonFields {
+    /// Caller function ID.
+    fn caller_id(&self) -> &str;
+    /// Final callee segment.
+    fn callee_name(&self) -> &str;
+    /// Source file path.
+    fn source_file(&self) -> &str;
+    /// Creation timestamp.
+    fn created_at(&self) -> &str;
+    /// Raw qualifier marker, if present.
+    fn raw_qualifier(&self) -> Option<&str> {
+        None
+    }
+    /// Qualifier kind marker, if present.
+    fn qualifier_kind(&self) -> Option<&str> {
+        None
+    }
+    /// Enclosing canonical type marker, if present.
+    fn enclosing_canonical_type(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl StagedCallJsonFields for crate::db::queries::StagedCallRecord {
+    fn caller_id(&self) -> &str {
+        &self.caller_id
+    }
+
+    fn callee_name(&self) -> &str {
+        &self.callee_name
+    }
+
+    fn source_file(&self) -> &str {
+        &self.source_file
+    }
+
+    fn created_at(&self) -> &str {
+        &self.created_at
+    }
+}
+
+impl StagedCallJsonFields for crate::db::queries::StagedCallProvenanceRecord {
+    fn caller_id(&self) -> &str {
+        &self.caller_id
+    }
+
+    fn callee_name(&self) -> &str {
+        &self.callee_name
+    }
+
+    fn source_file(&self) -> &str {
+        &self.source_file
+    }
+
+    fn created_at(&self) -> &str {
+        &self.created_at
+    }
+
+    fn raw_qualifier(&self) -> Option<&str> {
+        non_empty_marker(&self.raw_qualifier)
+    }
+
+    fn qualifier_kind(&self) -> Option<&str> {
+        non_empty_marker(&self.qualifier_kind)
+    }
+
+    fn enclosing_canonical_type(&self) -> Option<&str> {
+        non_empty_marker(&self.enclosing_canonical_type)
+    }
+}
+
+fn non_empty_marker(value: &str) -> Option<&str> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Serialize staged cross-file calls to deterministic JSONL (089-F).
@@ -479,23 +555,24 @@ struct StagedCallLine {
 /// round-trip deterministic and idempotent. The output is newline-terminated
 /// and empty when there are no staged rows.
 #[must_use]
-pub fn serialize_staged_calls_jsonl(
-    staged_calls: &[crate::db::queries::StagedCallRecord],
-) -> String {
+pub fn serialize_staged_calls_jsonl(staged_calls: &[impl StagedCallJsonFields]) -> String {
     let mut lines: Vec<(String, String, String, String)> = Vec::new();
 
     for sc in staged_calls {
         let line = StagedCallLine {
-            caller_id: sc.caller_id.clone(),
-            callee_name: sc.callee_name.clone(),
-            source_file: sc.source_file.clone(),
-            created_at: sc.created_at.clone(),
+            caller_id: sc.caller_id().to_owned(),
+            callee_name: sc.callee_name().to_owned(),
+            source_file: sc.source_file().to_owned(),
+            created_at: sc.created_at().to_owned(),
+            raw_qualifier: sc.raw_qualifier().map(str::to_owned),
+            qualifier_kind: sc.qualifier_kind().map(str::to_owned),
+            enclosing_canonical_type: sc.enclosing_canonical_type().map(str::to_owned),
         };
         if let Ok(json) = serde_json::to_string(&line) {
             lines.push((
-                sc.caller_id.clone(),
-                sc.callee_name.clone(),
-                sc.source_file.clone(),
+                sc.caller_id().to_owned(),
+                sc.callee_name().to_owned(),
+                sc.source_file().to_owned(),
                 json,
             ));
         }

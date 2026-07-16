@@ -89,11 +89,10 @@ fn baz() {}
 }
 
 #[test]
-fn count_call_sites_excludes_method_calls() {
-    // Method / receiver calls are extracted but never promoted to edges, so they
-    // must NOT inflate the resolution-recall denominator. Only the free-function
-    // call `free_fn()` counts here; `self.method_one()` and `x.method_two()` do
-    // not.
+fn count_call_sites_counts_known_receiver_and_excludes_arbitrary_methods() {
+    // Unit B attempts canonical resolution for known-receiver `self.method()`,
+    // so it contributes to the denominator. Arbitrary `x.method()` remains
+    // dropped and must not inflate recall. The free-function call also counts.
     let source = r"
 fn foo() {
     self.method_one();
@@ -102,7 +101,7 @@ fn foo() {
 }
 fn free_fn() {}
 ";
-    assert_eq!(count_call_sites(source, Language::Rust), 1);
+    assert_eq!(count_call_sites(source, Language::Rust), 2);
 }
 
 // ── 084.002-T (88B5FAFD): denominator counts distinct (caller,callee) units ───

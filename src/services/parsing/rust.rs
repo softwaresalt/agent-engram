@@ -195,7 +195,11 @@ fn extract_impl(
             if child.kind() == "function_item" {
                 if let Some(mut func) = extract_function(child, source) {
                     if let Some(ref ty) = type_name {
-                        func.name = format!("{ty}::{}", func.name);
+                        if let Some(ref tr) = trait_name {
+                            func.name = format!("<{tr} for {ty}>::{}", func.name);
+                        } else {
+                            func.name = format!("{ty}::{}", func.name);
+                        }
                     }
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: func.name.clone(),
@@ -231,12 +235,14 @@ fn extract_calls_from_body(
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         if current.kind() == "call_expression" {
-            if let Some((callee, is_method, is_qualified)) = resolve_call_name(current, source) {
+            if let Some(call) = resolve_call_name(current, source) {
                 edges.push(ExtractedEdge::Calls {
                     caller: caller_name.to_owned(),
-                    callee,
-                    is_method,
-                    is_qualified,
+                    callee: call.callee,
+                    is_method: call.is_method,
+                    is_qualified: call.is_qualified,
+                    raw_qualifier: call.raw_qualifier,
+                    qualifier_kind: call.qualifier_kind,
                 });
             }
         }
@@ -251,26 +257,32 @@ const CALL_BLOCKLIST: &[&str] = &[
     "new", "default", "into", "clone", "from", "unwrap", "expect", "ok", "err",
 ];
 
-fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedCallName {
+    callee: String,
+    is_method: bool,
+    is_qualified: bool,
+    raw_qualifier: String,
+    qualifier_kind: String,
+}
+
+fn resolve_call_name(node: Node<'_>, source: &str) -> Option<ResolvedCallName> {
     let function_node = node.child_by_field_name("function")?;
-    // (name, is_method, is_qualified) — the flags are mutually exclusive.
-    let (name, is_method, is_qualified) = match function_node.kind() {
-        "identifier" => (Some(super::node_text(function_node, source)), false, false),
+    let call = match function_node.kind() {
+        "identifier" => ResolvedCallName {
+            callee: super::node_text(function_node, source),
+            is_method: false,
+            is_qualified: false,
+            raw_qualifier: String::new(),
+            qualifier_kind: String::new(),
+        },
         // Path-qualified calls: `a::b()`. Reduced to the final segment `b`.
         // Marked `is_qualified` so the consumer does not promote them: a module
         // path (`crate::util::helper`) resolves by bare final segment, but a
         // type-associated call (`Type::parse`) is indexed under its qualified
         // name, and the two are indistinguishable here. Promoting the bare name
         // would risk a false singleton edge to an unrelated free function.
-        "scoped_identifier" => {
-            let mut cursor = function_node.walk();
-            let n = function_node
-                .children(&mut cursor)
-                .filter(|c| c.kind() == "identifier")
-                .last()
-                .map(|n| super::node_text(n, source));
-            (n, false, true)
-        }
+        "scoped_identifier" => scoped_call_name(function_node, source)?,
         // Method / receiver calls: `x.foo()`, `self.bar()`. The `function`
         // child is a `field_expression` whose `field` names the called method.
         // Extracted (and marked `is_method`) for completeness and future
@@ -278,17 +290,55 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
         // `calls_edge`: impl methods are indexed as `Type::method`, so name-only
         // resolution cannot match them and would risk a false singleton edge.
         // The blocklist below still drops idiomatic no-ops (`x.clone()`).
-        "field_expression" => (
-            function_node
-                .child_by_field_name("field")
-                .map(|n| super::node_text(n, source)),
-            true,
-            false,
-        ),
-        _ => (None, false, false),
+        "field_expression" => method_call_name(function_node, source)?,
+        _ => return None,
     };
-    name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
-        .map(|n| (n, is_method, is_qualified))
+    if CALL_BLOCKLIST.contains(&call.callee.as_str()) {
+        None
+    } else {
+        Some(call)
+    }
+}
+
+fn scoped_call_name(function_node: Node<'_>, source: &str) -> Option<ResolvedCallName> {
+    let segments = scoped_path_segments(function_node, source);
+    let (callee, qualifier_segments) = segments.split_last()?;
+    if qualifier_segments.is_empty() {
+        return None;
+    }
+    let raw_qualifier = qualifier_segments.join("::");
+    let first = qualifier_segments.first()?;
+    let qualifier_kind = if first == "Self" {
+        "self"
+    } else if first.chars().next().is_some_and(char::is_uppercase) {
+        "type"
+    } else {
+        "module"
+    };
+    Some(ResolvedCallName {
+        callee: callee.clone(),
+        is_method: false,
+        is_qualified: true,
+        raw_qualifier,
+        qualifier_kind: qualifier_kind.to_owned(),
+    })
+}
+
+fn method_call_name(function_node: Node<'_>, source: &str) -> Option<ResolvedCallName> {
+    let callee = function_node
+        .child_by_field_name("field")
+        .map(|n| super::node_text(n, source))?;
+    let raw_qualifier = function_node
+        .child_by_field_name("value")
+        .map(|n| super::node_text(n, source))
+        .unwrap_or_default();
+    Some(ResolvedCallName {
+        callee,
+        is_method: true,
+        is_qualified: false,
+        raw_qualifier,
+        qualifier_kind: "method".to_owned(),
+    })
 }
 
 /// Collect the left-to-right segments of a (possibly nested) `scoped_identifier`

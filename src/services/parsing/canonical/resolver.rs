@@ -9,13 +9,14 @@
 //! - a single explicit `use` alias (substituted, then the *use-path* re-resolved
 //!   with external roots failing closed — kills the `use ext::X as A; A::m()`
 //!   false-edge class, 088-F6);
-//! - an in-module local item (`Type::method` on a type defined in this module).
+//! - a proven in-module local item (`Type::method` on a type defined in this
+//!   module).
 //!
 //! Everything uncertain is dropped: external-crate roots, glob-only bindings,
-//! macro-generated names, `use`/local shadowing, module-shadows-extern-root, and
-//! any ambiguity (≥2 bindings). This is the resolver half of the absolute
-//! no-false-edge invariant (013-D); the singleton match against
-//! `function_meta.canonical_path` in Unit B is the other half.
+//! macro-generated names, unproven bare roots, `use`/local shadowing,
+//! module-shadows-extern-root, and any ambiguity (≥2 bindings). This is the
+//! resolver half of the absolute no-false-edge invariant (013-D); the singleton
+//! match against `function_meta.canonical_path` in Unit B is the other half.
 
 use super::generics::normalize_generics;
 use super::module_path::{ModulePath, WorkspaceCrates, is_module_ident};
@@ -83,6 +84,12 @@ pub struct ResolveContext<'a> {
 /// Crate roots that always denote external code and therefore fail closed unless
 /// a workspace module legitimately re-roots them via `crate::`/`self::`/`super::`.
 const KNOWN_EXTERN_ROOTS: &[&str] = &["std", "core", "alloc", "proc_macro"];
+
+/// Primitive type roots are language built-ins, not workspace modules.
+const PRIMITIVE_TYPE_ROOTS: &[&str] = &[
+    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+    "i128", "isize", "f32", "f64",
+];
 
 /// Maximum alias-substitution depth before failing closed (defends against
 /// pathological/cyclic aliasing).
@@ -183,7 +190,7 @@ fn resolve_core(
                 let base = resolve_core(ctx, &use_segs, false, depth + 1)?;
                 return Some(with_tail(base, tail));
             }
-            if KNOWN_EXTERN_ROOTS.contains(&h) {
+            if KNOWN_EXTERN_ROOTS.contains(&h) || PRIMITIVE_TYPE_ROOTS.contains(&h) {
                 return None; // D7: std/core/alloc root, not re-rooted
             }
             if ctx.use_graph.has_glob() {
@@ -192,7 +199,10 @@ fn resolve_core(
             if !in_module_ok {
                 return None; // external crate root in a use-path
             }
-            // In-module local item (`Type::method` on a type defined here).
+            if !ctx.use_graph.has_local_root(h) {
+                return None; // unproven bare root; could be an external crate
+            }
+            // Proven in-module local item (`Type::method` on a type defined here).
             let mut out = module_segments(ctx.module);
             out.push(h.to_owned());
             Some(with_tail(out, tail))
@@ -396,7 +406,7 @@ mod tests {
     #[test]
     fn in_module_local_type_resolves() {
         assert_eq!(
-            resolve(&["a"], "", "Widget::build").as_deref(),
+            resolve(&["a"], "struct Widget;", "Widget::build").as_deref(),
             Some("engram::a::Widget::build")
         );
     }
@@ -432,6 +442,10 @@ mod tests {
                 },
             ],
             globs: vec![],
+            local_roots: vec![],
+            has_nested_use: false,
+            has_non_default_mod_mapping: false,
+            non_default_mod_roots: vec![],
         };
         let ctx = ResolveContext {
             module: &m,
@@ -470,7 +484,7 @@ mod tests {
     #[test]
     fn def_impl_method_in_module() {
         assert_eq!(
-            def_canon(&["a"], "", "Widget::build").as_deref(),
+            def_canon(&["a"], "struct Widget;", "Widget::build").as_deref(),
             Some("engram::a::Widget::build")
         );
     }
@@ -487,8 +501,8 @@ mod tests {
     fn def_rmej0_distinct_cross_module_same_name() {
         // The RMeJ0 regression: same source spelling `Widget::m` in different
         // modules must produce distinct canonical identities.
-        let a = def_canon(&["a"], "", "Widget::m");
-        let b = def_canon(&["b"], "", "Widget::m");
+        let a = def_canon(&["a"], "struct Widget;", "Widget::m");
+        let b = def_canon(&["b"], "struct Widget;", "Widget::m");
         assert_eq!(a.as_deref(), Some("engram::a::Widget::m"));
         assert_eq!(b.as_deref(), Some("engram::b::Widget::m"));
         assert_ne!(a, b);
@@ -501,12 +515,12 @@ mod tests {
     #[test]
     fn def_generic_impl_normalises() {
         assert_eq!(
-            def_canon(&["a"], "", "Widget<T>::build").as_deref(),
+            def_canon(&["a"], "struct Widget<T>;", "Widget<T>::build").as_deref(),
             Some("engram::a::Widget::build")
         );
         // Generic argument containing a path must not confuse the type/method split.
         assert_eq!(
-            def_canon(&["a"], "", "Foo<a::B>::build").as_deref(),
+            def_canon(&["a"], "struct Foo<T>;", "Foo<a::B>::build").as_deref(),
             Some("engram::a::Foo::build")
         );
     }

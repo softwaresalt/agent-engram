@@ -3,7 +3,7 @@
 //! Coordinates file discovery, parallel parsing, tiered embedding,
 //! incremental sync, and concerns edge management.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::db::connect_db;
-use crate::db::queries::CodeGraphQueries;
+use crate::db::queries::{CodeGraphQueries, ReresolveResult, StagedCallProvenanceRecord};
 use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
@@ -39,11 +39,55 @@ fn rust_canonical_ctx(
     Some((module, canonical::extract_use_graph(source)))
 }
 
+/// Collect module prefixes whose default filesystem identity is unsafe because
+/// a top-level `mod` declaration remaps or conditionally gates that module.
+fn unsafe_module_prefixes(
+    ws_path: &Path,
+    crates: &canonical::WorkspaceCrates,
+    files: &[std::path::PathBuf],
+) -> HashSet<String> {
+    let mut prefixes = HashSet::new();
+    for file_path in files {
+        if language_from_path(file_path) != "rust" {
+            continue;
+        }
+        let Ok(rel) = file_path.strip_prefix(ws_path) else {
+            continue;
+        };
+        let rel_path = rel.to_string_lossy().replace('\\', "/");
+        let Ok(source) = std::fs::read_to_string(file_path) else {
+            continue;
+        };
+        let Some((module, use_graph)) =
+            rust_canonical_ctx(crates, Language::Rust, &rel_path, &source)
+        else {
+            continue;
+        };
+        prefixes.extend(
+            use_graph
+                .non_default_mod_roots()
+                .iter()
+                .map(|root| module.child(root).to_canonical()),
+        );
+    }
+    prefixes
+}
+
+fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
+    unsafe_prefixes.iter().any(|prefix| {
+        path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with("::"))
+    })
+}
+
 /// Resolve a parsed function/method's additive `canonical_path`, or `""` when it
 /// cannot be resolved (never a canonical match target — D4).
 fn canonical_path_for_function(
     crates: &canonical::WorkspaceCrates,
     ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
+    unsafe_prefixes: &HashSet<String>,
     name: &str,
 ) -> String {
     let Some((module, use_graph)) = ctx else {
@@ -54,9 +98,177 @@ fn canonical_path_for_function(
         crates,
         use_graph,
     };
-    canonical::canonical_path_for_def(&rctx, name)
-        .map(canonical::CanonicalId::into_string)
+    let Some(path) =
+        canonical::canonical_path_for_def(&rctx, name).map(canonical::CanonicalId::into_string)
+    else {
+        return String::new();
+    };
+    if is_under_unsafe_module_prefix(&path, unsafe_prefixes) {
+        String::new()
+    } else {
+        path
+    }
+}
+
+/// Resolve the canonical enclosing type for an impl-method caller.
+fn enclosing_canonical_type_for_function(
+    crates: &canonical::WorkspaceCrates,
+    ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
+    unsafe_prefixes: &HashSet<String>,
+    name: &str,
+) -> String {
+    if !name.contains("::") {
+        return String::new();
+    }
+    canonical_path_for_function(crates, ctx, unsafe_prefixes, name)
+        .rsplit_once("::")
+        .map(|(ty, _)| ty.to_owned())
         .unwrap_or_default()
+}
+
+/// Whether a method/qualified call is allowed into Unit-B staging.
+fn should_stage_provenance_call(is_method: bool, is_qualified: bool, raw_qualifier: &str) -> bool {
+    if is_method {
+        raw_qualifier == "self"
+    } else {
+        is_qualified
+    }
+}
+
+/// Resolve a staged Unit-B call to a canonical target string, or fail closed.
+fn canonical_target_for_staged_call(
+    crates: &canonical::WorkspaceCrates,
+    module: &canonical::ModulePath,
+    use_graph: &canonical::UseGraph,
+    unsafe_prefixes: &HashSet<String>,
+    call: &StagedCallProvenanceRecord,
+) -> Option<String> {
+    if use_graph.has_nested_use() || use_graph.has_non_default_mod_mapping() {
+        return None;
+    }
+    let ctx = canonical::ResolveContext {
+        module,
+        crates,
+        use_graph,
+    };
+    let callee = call.callee_name.as_str();
+    let target = match call.qualifier_kind.as_str() {
+        "module" | "type" => canonical::resolve_qualifier(
+            &ctx,
+            None,
+            &canonical::Qualifier::Path(call.raw_qualifier.clone()),
+            &[callee],
+        ),
+        "self" if call.raw_qualifier == "Self" => {
+            let enclosing = non_empty_str(&call.enclosing_canonical_type)?;
+            canonical::resolve_qualifier(
+                &ctx,
+                Some(enclosing),
+                &canonical::Qualifier::SelfType,
+                &[callee],
+            )
+        }
+        "method" if call.raw_qualifier == "self" => {
+            let enclosing = non_empty_str(&call.enclosing_canonical_type)?;
+            canonical::resolve_qualifier(
+                &ctx,
+                Some(enclosing),
+                &canonical::Qualifier::SelfType,
+                &[callee],
+            )
+        }
+        _ => None,
+    }?;
+    let path = target.into_string();
+    if is_under_unsafe_module_prefix(&path, unsafe_prefixes) {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+fn non_empty_str(value: &str) -> Option<&str> {
+    if value.is_empty() { None } else { Some(value) }
+}
+
+async fn rust_ctx_for_staged_file(
+    ws_path: &Path,
+    crates: &canonical::WorkspaceCrates,
+    rel_path: &str,
+) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+    let full = ws_path.join(rel_path);
+    let source = tokio::fs::read_to_string(full).await.ok()?;
+    rust_canonical_ctx(crates, Language::Rust, rel_path, &source)
+}
+
+/// Full-index post-pass for both legacy bare-name staging and Unit-B canonical
+/// qualified / known-receiver staging.
+async fn reresolve_calls_edges_with_canonical_context(
+    queries: &CodeGraphQueries,
+    ws_path: &Path,
+    crates: &canonical::WorkspaceCrates,
+    unsafe_prefixes: &HashSet<String>,
+) -> Result<ReresolveResult, EngramError> {
+    let mut result = queries.reresolve_calls_edges().await?;
+    let staged: Vec<_> = queries
+        .list_staged_calls_with_provenance()
+        .await?
+        .into_iter()
+        .filter(|call| !call.qualifier_kind.is_empty())
+        .collect();
+    if staged.is_empty() {
+        return Ok(result);
+    }
+
+    let mut callers = HashSet::new();
+    for call in &staged {
+        if callers.insert(call.caller_id.clone()) {
+            queries
+                .retract_canonical_edges_from_caller(&call.caller_id)
+                .await?;
+        }
+    }
+
+    let canonical_index = queries.function_ids_by_canonical_path().await?;
+    let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
+        HashMap::new();
+    let mut created = HashSet::new();
+
+    for call in &staged {
+        result.lookups += 1;
+        if !context_cache.contains_key(&call.source_file) {
+            let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await;
+            context_cache.insert(call.source_file.clone(), ctx);
+        }
+        let target_id = {
+            let Some(Some((module, use_graph))) = context_cache.get(&call.source_file) else {
+                continue;
+            };
+            let Some(target) =
+                canonical_target_for_staged_call(crates, module, use_graph, unsafe_prefixes, call)
+            else {
+                continue;
+            };
+            match canonical_index.get(&target) {
+                Some(ids) if ids.len() == 1 => Some(ids[0].clone()),
+                _ => None,
+            }
+        };
+        if let Some(target_id) = target_id {
+            queries
+                .create_calls_edge_with_resolution(
+                    &call.caller_id,
+                    &target_id,
+                    "calls_resolved_canonical",
+                )
+                .await?;
+            if created.insert((call.caller_id.clone(), target_id)) {
+                result.resolved += 1;
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Summary returned by [`index_workspace`] after indexing completes.
@@ -180,6 +392,7 @@ async fn index_workspace_impl(
 
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
+    let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &files);
     info!(
         files_found = files.len(),
         "code graph: discovered source files"
@@ -393,8 +606,12 @@ async fn index_workspace_impl(
                             embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                             summary,
                         };
-                        let canonical_path =
-                            canonical_path_for_function(&crates, rust_ctx.as_ref(), &f.name);
+                        let canonical_path = canonical_path_for_function(
+                            &crates,
+                            rust_ctx.as_ref(),
+                            &unsafe_prefixes,
+                            &f.name,
+                        );
                         queries
                             .upsert_function_with_canonical(&func, &canonical_path)
                             .await?;
@@ -527,15 +744,36 @@ async fn index_workspace_impl(
                         callee,
                         is_method,
                         is_qualified,
+                        raw_qualifier,
+                        qualifier_kind,
                     } => {
-                        // Method/receiver (`self.bar()`) and path-qualified
-                        // (`Type::parse()`) calls are extracted for completeness
-                        // (082.001-T) but NOT promoted to a calls_edge: their
-                        // targets are indexed under qualified names, so name-only
-                        // resolution cannot match them and would create a false
-                        // singleton edge. Deferred pending qualification/method-
-                        // aware resolution.
                         if *is_method || *is_qualified {
+                            if !should_stage_provenance_call(
+                                *is_method,
+                                *is_qualified,
+                                raw_qualifier,
+                            ) {
+                                continue;
+                            }
+                            if let Some(from_id) = find_function_id(&function_ids, caller) {
+                                let enclosing_canonical_type =
+                                    enclosing_canonical_type_for_function(
+                                        &crates,
+                                        rust_ctx.as_ref(),
+                                        &unsafe_prefixes,
+                                        caller,
+                                    );
+                                queries
+                                    .put_staged_call_with_provenance(
+                                        &from_id,
+                                        callee,
+                                        &rel_path,
+                                        raw_qualifier,
+                                        qualifier_kind,
+                                        &enclosing_canonical_type,
+                                    )
+                                    .await?;
+                            }
                             continue;
                         }
                         // Resolve names to IDs within this file's symbols. A
@@ -637,7 +875,9 @@ async fn index_workspace_impl(
     // gate). Staged calls (082.002-T) whose callee name is unambiguous
     // (exactly one workspace-global definition) become calls_resolved_singleton
     // edges; ambiguous / unmatched names are skipped to bound false edges.
-    let resolved_calls = queries.reresolve_calls_edges().await?;
+    let resolved_calls =
+        reresolve_calls_edges_with_canonical_context(&queries, ws_path, &crates, &unsafe_prefixes)
+            .await?;
     // Post-pass singletons are real edge records: include them in the reported
     // edges_created so full-index CLI/API responses do not underreport (082.008-T).
     result.edges_created += resolved_calls.resolved;
@@ -754,6 +994,7 @@ pub async fn sync_workspace_with_progress(
 
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
+    let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &current_files);
 
     // Load all indexed code files from DB.
     let indexed_files = queries.list_code_files().await?;
@@ -1062,8 +1303,12 @@ pub async fn sync_workspace_with_progress(
                                 .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                             summary,
                         };
-                        let canonical_path =
-                            canonical_path_for_function(&crates, rust_ctx.as_ref(), &f.name);
+                        let canonical_path = canonical_path_for_function(
+                            &crates,
+                            rust_ctx.as_ref(),
+                            &unsafe_prefixes,
+                            &f.name,
+                        );
                         queries
                             .upsert_function_with_canonical(&func, &canonical_path)
                             .await?;
@@ -1193,11 +1438,36 @@ pub async fn sync_workspace_with_progress(
                         callee,
                         is_method,
                         is_qualified,
+                        raw_qualifier,
+                        qualifier_kind,
                     } => {
-                        // Method/receiver and path-qualified calls are extracted
-                        // but not promoted (see the index-path arm) to avoid
-                        // false singleton edges.
                         if *is_method || *is_qualified {
+                            if !should_stage_provenance_call(
+                                *is_method,
+                                *is_qualified,
+                                raw_qualifier,
+                            ) {
+                                continue;
+                            }
+                            if let Some(from_id) = find_function_id(&new_function_ids, caller) {
+                                let enclosing_canonical_type =
+                                    enclosing_canonical_type_for_function(
+                                        &crates,
+                                        rust_ctx.as_ref(),
+                                        &unsafe_prefixes,
+                                        caller,
+                                    );
+                                queries
+                                    .put_staged_call_with_provenance(
+                                        &from_id,
+                                        callee,
+                                        &rel_path,
+                                        raw_qualifier,
+                                        qualifier_kind,
+                                        &enclosing_canonical_type,
+                                    )
+                                    .await?;
+                            }
                             continue;
                         }
                         // Mirror the index-path behavior: resolve locally for a

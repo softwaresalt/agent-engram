@@ -318,11 +318,15 @@ pub fn count_call_sites(source: &str, language: Language) -> usize {
             if let ExtractedEdge::Calls {
                 caller,
                 callee,
-                is_method: false,
-                is_qualified: false,
+                is_method,
+                is_qualified,
+                raw_qualifier,
+                ..
             } = edge
             {
-                relations.insert((caller.as_str(), callee.as_str()));
+                if !*is_method || *is_qualified || raw_qualifier == "self" {
+                    relations.insert((caller.as_str(), callee.as_str()));
+                }
             }
         }
         relations.len()
@@ -889,6 +893,12 @@ pub fn check_thresholds(
             thresholds.max_false_edge_rate,
             &mut breaches,
         );
+    }
+    if graph.target_correct + graph.target_mismatch > 0 && graph.target_mismatch > 0 {
+        breaches.push(format!(
+            "target_correctness below 1.0: {} mismatched resolved edges",
+            graph.target_mismatch
+        ));
     }
 
     ThresholdCheck {

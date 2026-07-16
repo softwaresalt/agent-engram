@@ -104,6 +104,7 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     // removed as unsafe — symbol IDs are random UUIDs, so re-parsing unchanged
     // files would disturb the existing edge set).
     migrate_function_meta_canonical_path(cozo_db)?;
+    migrate_staged_call_provenance(cozo_db)?;
 
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
     // storage backend does not support vector indexes. Suppress only known-benign
@@ -467,6 +468,33 @@ pub(crate) fn function_meta_has_canonical_path(
     }
 }
 
+/// Return `true` when `staged_call` carries Unit-B raw provenance columns.
+///
+/// Uses `::columns` introspection so a legacy empty staging relation is still
+/// detected accurately.
+pub(crate) fn staged_call_has_provenance(cozo_db: &cozo::DbInstance) -> Result<bool, EngramError> {
+    match cozo_db.run_script(
+        "::columns staged_call",
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    ) {
+        Ok(rows) => Ok(rows.rows.iter().any(|row| {
+            matches!(row.first(), Some(cozo::DataValue::Str(name)) if name.as_str() == "raw_qualifier")
+        })),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("cannot find")
+            {
+                Ok(false)
+            } else {
+                Err(map_db_err(format!("staged_call column introspection: {e}")))
+            }
+        }
+    }
+}
+
 /// Upgrade a legacy `function_meta` relation to carry the additive
 /// `canonical_path` column (091.008-T / Option C A6, precision-neutral).
 ///
@@ -502,6 +530,29 @@ pub(crate) fn migrate_function_meta_canonical_path(
         "function_meta canonical_path migration",
         false,
     )?;
+    Ok(())
+}
+
+/// Upgrade legacy `staged_call` rows to carry Unit-B raw provenance markers.
+///
+/// Existing 084-S/089-F rows default each marker to `""`, which keeps them on
+/// the legacy bare-name path and preserves dehydrate/rehydrate compatibility.
+pub(crate) fn migrate_staged_call_provenance(
+    cozo_db: &cozo::DbInstance,
+) -> Result<(), EngramError> {
+    if staged_call_has_provenance(cozo_db)? {
+        return Ok(());
+    }
+    let migrate = r#"
+?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] :=
+    *staged_call{caller_id, callee_name, source_file, created_at},
+    raw_qualifier = "",
+    qualifier_kind = "",
+    enclosing_canonical_type = ""
+
+:replace staged_call { caller_id, callee_name, source_file => created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type }
+"#;
+    run_script_retrying(cozo_db, migrate, "staged_call provenance migration", false)?;
     Ok(())
 }
 
@@ -773,6 +824,9 @@ pub const CREATE_STAGED_CALL: &str = r#"
     source_file: String
     =>
     created_at: String,
+    raw_qualifier: String,
+    qualifier_kind: String,
+    enclosing_canonical_type: String,
 }
 "#;
 

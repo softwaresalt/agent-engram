@@ -180,3 +180,115 @@ async fn blocklisted_names_are_never_staged() {
         "blocklisted `clone` must NEVER be staged, got {staged:?}"
     );
 }
+
+#[test]
+async fn qualified_and_known_receiver_calls_are_staged_with_raw_provenance() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(
+        ws,
+        "src/a.rs",
+        r#"
+pub mod b;
+
+pub struct Widget;
+
+impl Widget {
+    pub fn caller(&self) {
+        crate::a::b::helper();
+        self.known();
+        Self::static_call();
+        let target = Widget;
+        target.foo();
+    }
+
+    pub fn known(&self) {}
+    pub fn static_call() {}
+}
+"#,
+    );
+    write_sample_file(ws, "src/a/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync");
+
+    let q = queries_for(&data_dir, &branch).await;
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list_staged_calls_with_provenance");
+
+    let helper = staged
+        .iter()
+        .find(|s| s.callee_name == "helper")
+        .unwrap_or_else(|| panic!("helper must be staged with provenance: {staged:?}"));
+    assert_eq!(helper.raw_qualifier, "crate::a::b");
+    assert_eq!(helper.qualifier_kind, "module");
+    assert_eq!(helper.enclosing_canonical_type, "demo::a::Widget");
+
+    let known = staged
+        .iter()
+        .find(|s| s.callee_name == "known")
+        .unwrap_or_else(|| panic!("self.known must be staged with provenance: {staged:?}"));
+    assert_eq!(known.raw_qualifier, "self");
+    assert_eq!(known.qualifier_kind, "method");
+    assert_eq!(known.enclosing_canonical_type, "demo::a::Widget");
+
+    let static_call = staged
+        .iter()
+        .find(|s| s.callee_name == "static_call")
+        .unwrap_or_else(|| panic!("Self::static_call must be staged: {staged:?}"));
+    assert_eq!(static_call.raw_qualifier, "Self");
+    assert_eq!(static_call.qualifier_kind, "self");
+    assert_eq!(static_call.enclosing_canonical_type, "demo::a::Widget");
+
+    assert!(
+        staged.iter().all(|s| s.callee_name != "foo"),
+        "arbitrary receiver target.foo() must remain dropped, got {staged:?}"
+    );
+}
+
+#[test]
+async fn bare_name_and_legacy_staged_calls_have_empty_provenance() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/a.rs", "pub fn caller() {\n    helper();\n}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync");
+
+    let q = queries_for(&data_dir, &branch).await;
+    q.put_staged_call("function:legacy", "legacy_helper", "src/legacy.rs")
+        .await
+        .expect("legacy put_staged_call");
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list_staged_calls_with_provenance");
+
+    for name in ["helper", "legacy_helper"] {
+        let row = staged
+            .iter()
+            .find(|s| s.callee_name == name)
+            .unwrap_or_else(|| panic!("{name} must be staged: {staged:?}"));
+        assert_eq!(row.raw_qualifier, "", "{name} raw qualifier");
+        assert_eq!(row.qualifier_kind, "", "{name} qualifier kind");
+        assert_eq!(row.enclosing_canonical_type, "", "{name} enclosing type");
+    }
+}

@@ -191,3 +191,42 @@ async fn rehydrate_tolerates_extra_and_missing_fields() {
     assert!(staged.iter().any(|s| s.callee_name == "helper"));
     assert!(staged.iter().any(|s| s.callee_name == "widget"));
 }
+
+#[test]
+async fn rehydrate_preserves_provenance_and_defaults_legacy_markers() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let (data_dir, branch) = test_db_params(ws);
+    let jsonl = concat!(
+        r#"{"caller_id":"function:caller1","callee_name":"helper","source_file":"src/a.rs","created_at":"2026-01-01T00:00:00Z","raw_qualifier":"crate::a::b","qualifier_kind":"module","enclosing_canonical_type":"demo::a::Widget"}"#,
+        "\n",
+        r#"{"caller_id":"function:legacy","callee_name":"legacy","source_file":"src/legacy.rs","created_at":"2026-01-02T00:00:00Z"}"#,
+        "\n",
+    );
+    let q = seed_staged_calls_jsonl(&data_dir, &branch, jsonl).await;
+    stamp_current_version(ws);
+
+    hydrate_code_graph(ws, &data_dir, &branch, &q)
+        .await
+        .expect("hydrate");
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list_staged_calls_with_provenance");
+    let helper = staged
+        .iter()
+        .find(|s| s.callee_name == "helper")
+        .unwrap_or_else(|| panic!("helper row must load: {staged:?}"));
+    assert_eq!(helper.raw_qualifier, "crate::a::b");
+    assert_eq!(helper.qualifier_kind, "module");
+    assert_eq!(helper.enclosing_canonical_type, "demo::a::Widget");
+
+    let legacy = staged
+        .iter()
+        .find(|s| s.callee_name == "legacy")
+        .unwrap_or_else(|| panic!("legacy row must load: {staged:?}"));
+    assert_eq!(legacy.raw_qualifier, "");
+    assert_eq!(legacy.qualifier_kind, "");
+    assert_eq!(legacy.enclosing_canonical_type, "");
+}
