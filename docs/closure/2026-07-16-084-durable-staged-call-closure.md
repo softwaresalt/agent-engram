@@ -171,8 +171,10 @@ explicit observation and rollback criteria.
 ### Owner and observation window
 
 * Owner: ship and repository maintainer.
-* Window: the first daemon restarts after a 5.1.0 install, plus CI runs of the `staged_call` and
-  calls-resolution suites.
+* Duration: a bounded 7-day active-observation window that opens at the first real `engram install`
+  or `engram update` to 5.1.0 followed by a daemon restart, plus the next 3 CI runs of the
+  `staged_call` and calls-resolution suites. The window closes after 7 days with no failure signal,
+  or immediately on the first rollback trigger (whichever comes first).
 * Outcome: local gates and CI green; restart durability proven by 089.003 against a full re-index
   oracle with no false edges.
 

@@ -29,6 +29,7 @@ Modified in the merged diff:
 * `src/db/cozo_queries.rs` — `list_staged_calls_full()` returning `StagedCallRecord` (incl. `created_at`).
 * Three new integration tests: `staged_call_dehydration_test.rs`, `staged_call_rehydration_test.rs`, `staged_call_restart_resolution_test.rs`.
 * `Cargo.toml` — new `[[test]]` targets registered.
+* `.backlogit/queue/{089.001-T,089.002-T,089.003-T}.md` -> `.backlogit/archive/` — the three task files were marked done and archived during the build (commit `8ad8124`, part of PR #253 / merge `a0962f6`).
 
 Verified unchanged (listed for context, not part of the diff):
 
