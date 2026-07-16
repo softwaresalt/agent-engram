@@ -104,6 +104,53 @@ async fn serialize_staged_calls_jsonl_is_deterministic_and_idempotent() {
     );
 }
 
+#[test]
+async fn serialize_staged_calls_jsonl_is_deterministic_across_qualifier_ties() {
+    // Regression (091.012-T / dehydration tie-breaker): `raw_qualifier` is part
+    // of the staged_call key, so two rows can share (caller, callee, source,
+    // created_at) yet differ only by qualifier. The serializer must produce a
+    // byte-identical, order-independent result for such ties.
+    let records = vec![
+        StagedCallProvenanceRecord {
+            caller_id: "function:caller".to_string(),
+            callee_name: "build".to_string(),
+            source_file: "src/caller.rs".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            raw_qualifier: "crate::b".to_string(),
+            qualifier_kind: "module".to_string(),
+            enclosing_canonical_type: String::new(),
+        },
+        StagedCallProvenanceRecord {
+            caller_id: "function:caller".to_string(),
+            callee_name: "build".to_string(),
+            source_file: "src/caller.rs".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            raw_qualifier: "crate::a".to_string(),
+            qualifier_kind: "module".to_string(),
+            enclosing_canonical_type: String::new(),
+        },
+    ];
+
+    let first = serialize_staged_calls_jsonl(&records);
+    assert_eq!(first.lines().count(), 2, "both tied rows must serialize");
+
+    let mut reversed = records.clone();
+    reversed.reverse();
+    assert_eq!(
+        serialize_staged_calls_jsonl(&reversed),
+        first,
+        "qualifier ties must serialize deterministically regardless of input order"
+    );
+
+    // The JSON tie-breaker sorts "crate::a" before "crate::b".
+    let lines: Vec<&str> = first.lines().collect();
+    assert!(
+        lines[0].contains("\"raw_qualifier\":\"crate::a\""),
+        "first line must be the qualifier that sorts first, got {}",
+        lines[0]
+    );
+}
+
 // Scenario 2: dehydration writes staged_calls.jsonl and is idempotent.
 #[test]
 async fn dehydrate_writes_staged_calls_jsonl_and_is_idempotent() {

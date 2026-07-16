@@ -1680,14 +1680,15 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     }
 
     /// List every staged call including Unit-B raw provenance, sorted by
-    /// `(caller_id, callee_name, source_file)` for deterministic consumers.
+    /// `(caller_id, callee_name, source_file, raw_qualifier)` — the full staged
+    /// call key — for a total, deterministic order (091.012-T).
     pub async fn list_staged_calls_with_provenance(
         &self,
     ) -> Result<Vec<StagedCallProvenanceRecord>, EngramError> {
         let script = r#"
 ?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] :=
     *staged_call { caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type }
-:order caller_id, callee_name, source_file
+:order caller_id, callee_name, source_file, raw_qualifier
 "#;
         let r = self
             .db
