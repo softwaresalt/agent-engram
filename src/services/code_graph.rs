@@ -243,6 +243,22 @@ async fn reresolve_calls_edges_with_canonical_context(
             .list_calls_edges_by_resolution("calls_resolved_singleton")
             .await?,
     );
+    // Snapshot `direct` pairs (genuine in-file calls resolved at parse time). A
+    // caller that reaches the same in-file target BOTH bare (`foo()`, a `direct`
+    // edge) and via a qualified path (`crate::m::foo()`, staged for this pass)
+    // must NOT have that `direct` edge overwritten with canonical provenance:
+    // `calls_edge` is keyed by `(from, to)`, so the canonical `:put` would
+    // replace `direct` in place. That double-counts the pair in `edges_created`
+    // (it was already counted when the direct edge was created) and — because
+    // the down-migration rollback retracts canonical edges — would delete an edge
+    // that represents a real direct call. The bare-name singleton pass cannot hit
+    // this: a staged call's callee was, by construction, unresolved in-file, so
+    // it never targets an in-file function the caller also calls directly.
+    let direct_pairs: HashSet<(String, String)> = queries
+        .list_calls_edges_by_resolution("direct")
+        .await?
+        .into_iter()
+        .collect();
 
     let mut callers = HashSet::new();
     for call in &staged {
@@ -278,14 +294,17 @@ async fn reresolve_calls_edges_with_canonical_context(
             }
         };
         if let Some(target_id) = target_id {
+            let pair = (call.caller_id.clone(), target_id);
+            // A higher-confidence `direct` edge for this exact pair outranks a
+            // canonical resolution: leave it untouched so its provenance (and the
+            // rollback / count invariants above) stay correct.
+            if direct_pairs.contains(&pair) {
+                continue;
+            }
             queries
-                .create_calls_edge_with_resolution(
-                    &call.caller_id,
-                    &target_id,
-                    "calls_resolved_canonical",
-                )
+                .create_calls_edge_with_resolution(&pair.0, &pair.1, "calls_resolved_canonical")
                 .await?;
-            if created.insert((call.caller_id.clone(), target_id)) {
+            if created.insert(pair) {
                 result.resolved += 1;
             }
         }

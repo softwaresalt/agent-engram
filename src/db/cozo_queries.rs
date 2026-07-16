@@ -162,6 +162,31 @@ pub struct ReresolveResult {
     pub lookups: usize,
 }
 
+/// Counts of resolution-derived `calls_edge` rows retracted by
+/// [`CodeGraphQueries::rollback_calls_resolution`] before the `resolution`
+/// column is dropped (082.010-T + 088-S Unit B).
+///
+/// The down-migration reverts `calls_edge` to its legacy `{from, to =>
+/// created_at}` shape, so every edge NOT resolved directly in-file must be
+/// retracted first — otherwise it would survive the column drop as an
+/// indistinguishable legacy edge. Both provenance classes are surfaced
+/// separately for operator-visible reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CallsResolutionRollback {
+    /// Number of `calls_resolved_singleton` edges retracted.
+    pub singleton_edges: usize,
+    /// Number of `calls_resolved_canonical` edges retracted.
+    pub canonical_edges: usize,
+}
+
+impl CallsResolutionRollback {
+    /// Total resolution-derived edges retracted across both provenance classes.
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.singleton_edges + self.canonical_edges
+    }
+}
+
 /// A call site whose callee could not be resolved within the caller's own
 /// file, staged for the deferred cross-file post-pass (082.002-T).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1476,6 +1501,35 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             .collect())
     }
 
+    /// Retract every `calls_edge` carrying the given resolution-derived
+    /// provenance, preserving `direct` edges (082.010-T rollback step 1).
+    ///
+    /// Must run while the `resolution` column still exists. When the column is
+    /// already absent (rollback already applied) this is a no-op returning `0`,
+    /// keeping the rollback idempotent. Returns the number of edges retracted.
+    async fn retract_all_calls_edges_with_resolution(
+        &self,
+        resolution: &str,
+    ) -> Result<usize, EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(0);
+        }
+        let edges = self.list_calls_edges_by_resolution(resolution).await?;
+        if edges.is_empty() {
+            return Ok(0);
+        }
+        let script = r#"
+?[from, to] := *calls_edge{from, to, resolution}, resolution = $resolution
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("resolution".to_owned(), DataValue::from(resolution));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(edges.len())
+    }
+
     /// Retract every `calls_resolved_singleton` edge, preserving `direct`
     /// edges (082.010-T rollback step 1).
     ///
@@ -1483,41 +1537,49 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// already absent (rollback already applied) this is a no-op returning `0`,
     /// keeping the rollback idempotent. Returns the number of edges retracted.
     pub async fn retract_all_calls_resolved_singleton_edges(&self) -> Result<usize, EngramError> {
-        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
-            return Ok(0);
-        }
-        let singletons = self
-            .list_calls_edges_by_resolution("calls_resolved_singleton")
-            .await?;
-        if singletons.is_empty() {
-            return Ok(0);
-        }
-        let script = r#"
-?[from, to] := *calls_edge{from, to, resolution}, resolution = "calls_resolved_singleton"
-:rm calls_edge { from, to }
-"#;
-        self.db
-            .run_script(script, BTreeMap::new(), ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
-        Ok(singletons.len())
+        self.retract_all_calls_edges_with_resolution("calls_resolved_singleton")
+            .await
     }
 
-    /// Operator-invocable down-migration entry point (082.010-T).
+    /// Retract every `calls_resolved_canonical` edge, preserving `direct`
+    /// edges (088-S Unit B rollback step).
+    ///
+    /// Canonical edges are produced by the qualified/method call resolver
+    /// (Option C Unit B). Like singletons they must be retracted BEFORE the
+    /// `resolution` column is dropped — otherwise the column drop would leave
+    /// them as indistinguishable legacy `{from, to}` edges that survive the
+    /// rollback, contrary to the "only `direct` edges survive" contract. Same
+    /// idempotency guarantee as the singleton retraction.
+    pub async fn retract_all_calls_resolved_canonical_edges(&self) -> Result<usize, EngramError> {
+        self.retract_all_calls_edges_with_resolution("calls_resolved_canonical")
+            .await
+    }
+
+    /// Operator-invocable down-migration entry point (082.010-T + 088-S Unit B).
     ///
     /// Orchestrates the rollback in a STRICT ORDER so every provenance query
     /// runs while its column still exists:
     ///   1. retract ALL `calls_resolved_singleton` edges (direct preserved)
     ///      while the `resolution` column is present;
-    ///   2. THEN drop the `resolution` column, reverting `calls_edge` to
+    ///   2. retract ALL `calls_resolved_canonical` edges (direct preserved),
+    ///      also while the column is present — otherwise Unit B's canonical
+    ///      edges would survive the column drop as indistinguishable legacy
+    ///      edges;
+    ///   3. THEN drop the `resolution` column, reverting `calls_edge` to
     ///      `{from, to => created_at}`.
     ///
     /// Idempotent: a second invocation retracts nothing and finds no column to
-    /// drop, returning `0`. Returns the number of singleton edges retracted.
-    /// The operator-invocable CLI trigger is 082.013-T.
-    pub async fn rollback_calls_resolution(&self) -> Result<usize, EngramError> {
-        let retracted = self.retract_all_calls_resolved_singleton_edges().await?;
+    /// drop, returning a zeroed [`CallsResolutionRollback`]. Returns the
+    /// per-class retracted-edge counts. The operator-invocable CLI trigger is
+    /// 082.013-T.
+    pub async fn rollback_calls_resolution(&self) -> Result<CallsResolutionRollback, EngramError> {
+        let singleton_edges = self.retract_all_calls_resolved_singleton_edges().await?;
+        let canonical_edges = self.retract_all_calls_resolved_canonical_edges().await?;
         crate::db::cozo_backend::schema::rollback_calls_edge_resolution(&self.db)?;
-        Ok(retracted)
+        Ok(CallsResolutionRollback {
+            singleton_edges,
+            canonical_edges,
+        })
     }
 
     /// Record a call site whose callee could not be resolved within the
@@ -1986,11 +2048,12 @@ stale[from, to] :=
     ///
     /// Returns the number of *newly created* singleton edges (`resolved`) and
     /// the number of staged calls examined (`lookups`). `resolved` counts only
-    /// edges that did not already carry `calls_resolved_singleton` provenance,
-    /// so a no-op re-index (staged rows persist and their singletons are already
-    /// present) reports `resolved == 0` rather than recounting every prior
-    /// singleton as newly created. Callers surface `resolved` via
-    /// `IndexResult.edges_created`.
+    /// `(caller, target)` pairs that did not already exist as a
+    /// `calls_resolved_singleton` **or** `calls_resolved_canonical` edge, so a
+    /// no-op re-index (staged rows persist and their edges are already present,
+    /// in either provenance) reports `resolved == 0` rather than recounting a
+    /// prior edge — or a canonical pair this pass transiently rewrites — as newly
+    /// created. Callers surface `resolved` via `IndexResult.edges_created`.
     ///
     /// Revalidating, but non-destructive: for each staged call whose callee name
     /// resolves to exactly one function the singleton edge is upserted; for a
@@ -2034,6 +2097,19 @@ stale[from, to] :=
             .await?
             .into_iter()
             .collect();
+        // Also seed pre-existing CANONICAL pairs. A caller carrying both a bare
+        // (`foo()`) and a qualified/`self` (`X::foo()`, `self.foo()`) form of the
+        // same call ends a full index with `calls_resolved_canonical` provenance
+        // for that `(caller, target)` pair. On the next full re-index this bare
+        // pass re-writes the pair as a singleton (calls_edge is keyed by
+        // `(from, to)`) before the canonical pass restores it; without seeding the
+        // canonical pairs here that re-write would be miscounted as a newly
+        // resolved edge and inflate `edges_created` on an otherwise unchanged
+        // index. Seeding both classes keeps a full re-index idempotent.
+        existing.extend(
+            self.list_calls_edges_by_resolution("calls_resolved_canonical")
+                .await?,
+        );
         let mut resolved = 0usize;
         for call in &staged {
             // Resolve solely when a single function carries the callee name. A

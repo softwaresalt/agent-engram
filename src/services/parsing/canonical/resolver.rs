@@ -182,7 +182,26 @@ fn resolve_core(
         // workspace-crate arm so a generic param named like a crate cannot forge
         // a canonical edge (M2, no-false-edge invariant).
         h if ctx.use_graph.is_generic_param(h) => None,
-        h if ctx.crates.is_workspace_crate(h) => {
+        // Workspace-crate fast path, taken ONLY when the crate name is not
+        // RE-POINTED in this file. A `use` binding shadows the extern-prelude
+        // crate name only when it maps the head to a DIFFERENT path (`use
+        // ext::Widget as demo` makes `demo` mean `ext::Widget`); an identity
+        // re-import whose binding path equals the head (`use demo;` or `use
+        // demo::{self}`) still designates the crate itself, so it stays on the
+        // fast path rather than recursing into the binding arm and failing
+        // closed. A local top-level `mod h` / type `h` also shadows. A shadowing
+        // declaration takes precedence over the extern-prelude crate name in Rust
+        // name resolution, so a re-pointed head must fall through to the
+        // binding/local-root logic below — otherwise `use ext::Widget as demo;
+        // demo::build()` (rename shadow) or a local `mod demo { fn build() {} }`
+        // (module shadow) would forge a false canonical edge to the workspace
+        // crate `demo` (no-false-edge invariant). A leading-`::` absolute path
+        // deliberately bypasses this shadowing via `resolve_absolute`, matching
+        // Rust's `::demo` crate-root escape.
+        h if ctx.crates.is_workspace_crate(h)
+            && ctx.use_graph.bindings_for(h).all(|b| b.path == h)
+            && !ctx.use_graph.has_local_root(h) =>
+        {
             Some(segs.iter().map(|s| (*s).to_owned()).collect())
         }
         h => {
@@ -394,6 +413,88 @@ mod tests {
         assert_eq!(
             resolve(&["z"], "use ext::Widget as Alias;", "Alias::build"),
             None
+        );
+    }
+
+    #[test]
+    fn explicit_alias_shadowing_workspace_crate_fails_closed() {
+        // A `use … as <crate>` rename shadows a same-named workspace crate. The
+        // rename must win over the workspace-crate fast path: here the alias
+        // target `ext::Widget` is external, so resolution fails closed instead of
+        // forging a false edge to the workspace crate `powerbi_tmdl_parser`.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "use ext::Widget as powerbi_tmdl_parser;",
+                "powerbi_tmdl_parser::build"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn local_module_shadowing_workspace_crate_resolves_locally() {
+        // A local top-level `mod <crate>` shadows a same-named workspace crate:
+        // `powerbi_tmdl_parser::build()` refers to the LOCAL module, so it
+        // resolves module-locally rather than taking the workspace-crate fast
+        // path to the external crate root.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "mod powerbi_tmdl_parser {}",
+                "powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("engram::z::powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
+    fn absolute_path_still_reaches_shadowed_workspace_crate() {
+        // A leading-`::` path deliberately escapes local shadowing to the crate
+        // root, so `::powerbi_tmdl_parser::build` reaches the workspace crate even
+        // when a local `mod powerbi_tmdl_parser` exists.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "mod powerbi_tmdl_parser {}",
+                "::powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
+    fn identity_reimport_of_workspace_crate_still_resolves() {
+        // An identity re-import (`use <crate>;`) introduces a binding whose path
+        // EQUALS the head, so it re-designates the crate itself rather than
+        // shadowing it. It must stay on the workspace-crate fast path — not
+        // recurse into the binding arm and fail closed (Cycle-5 regression:
+        // `.next().is_none()` wrongly treated the identity binding as a shadow).
+        assert_eq!(
+            resolve(
+                &["z"],
+                "use powerbi_tmdl_parser;",
+                "powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
+    fn self_group_reimport_of_workspace_crate_still_resolves() {
+        // `use <crate>::{self, …}` also binds the crate name to its own path
+        // (identity), so it likewise stays on the fast path.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "use powerbi_tmdl_parser::{self, tmdl};",
+                "powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("powerbi_tmdl_parser::build")
         );
     }
 

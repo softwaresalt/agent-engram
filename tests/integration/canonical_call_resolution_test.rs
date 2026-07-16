@@ -133,6 +133,50 @@ pub fn caller() {
 }
 
 #[test]
+async fn bare_and_qualified_call_to_same_in_file_target_stays_direct() {
+    // Regression (Cycle-5 Finding A): a caller that reaches the same in-file
+    // function BOTH bare (`helper()`, resolved to a `direct` edge at parse) and
+    // via a qualified path (`crate::thing::helper()`, staged for the canonical
+    // pass) must NOT have its `direct` edge downgraded to
+    // `calls_resolved_canonical`. `calls_edge` is keyed by `(from, to)`, so a
+    // canonical overwrite would (a) double-count the pair in `edges_created` and
+    // (b) make the down-migration rollback — which retracts canonical edges —
+    // delete an edge that represents a genuine direct in-file call.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod thing;\n");
+    write_file(
+        ws,
+        "src/thing.rs",
+        "pub fn helper() {}\npub fn caller() {\n    helper();\n    crate::thing::helper();\n}\n",
+    );
+
+    let q = index(ws).await;
+    let names = name_to_ids(&q).await;
+    let caller_id = names["caller"][0].clone();
+    let helper_id = names["helper"][0].clone();
+    let pair = (caller_id, helper_id);
+
+    let canonical = canonical_edges(&q).await;
+    assert!(
+        !canonical.contains(&pair),
+        "the direct edge must not be downgraded to canonical; canonical={canonical:?}"
+    );
+
+    let direct: HashSet<(String, String)> = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("list direct edges")
+        .into_iter()
+        .collect();
+    assert!(
+        direct.contains(&pair),
+        "the in-file call must remain a direct edge; direct={direct:?}"
+    );
+}
+
+#[test]
 async fn distinct_qualifiers_same_callee_name_both_resolve() {
     // Regression (091.012-T / C2): two qualified calls to the same callee NAME
     // but different qualifiers in one caller must BOTH resolve. `raw_qualifier`
