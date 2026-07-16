@@ -31,5 +31,7 @@ pub mod use_graph;
 pub use module_path::{
     ModulePath, WorkspaceCrates, discover_workspace_crates, module_path_for_file,
 };
-pub use resolver::{CanonicalId, ResolveContext, canonical_path_for_def, resolve_path};
+pub use resolver::{
+    CanonicalId, Qualifier, ResolveContext, canonical_path_for_def, resolve_path, resolve_qualifier,
+};
 pub use use_graph::{UseGraph, extract_use_graph};

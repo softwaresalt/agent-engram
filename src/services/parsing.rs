@@ -26,6 +26,7 @@ use crate::errors::{CodeGraphError, EngramError};
 
 pub(crate) use markdown::chunk_markdown_document_with_title_hint;
 pub use markdown::{MarkdownChunk, chunk_markdown_document};
+pub use rust::classify_call_qualifier;
 
 /// Supported source-language identifiers for Tier-1 code graph parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,5 +499,98 @@ fn callee() {}
                 "Expected Function symbol for signature_excludes_body_block, got a different variant"
             ),
         }
+    }
+
+    // ── A7 (091.009-T): scope-aware body walk + unforgeable Self marker ──
+
+    #[test]
+    fn nested_fn_calls_are_not_attributed_to_outer() {
+        // 088-F2: a call inside a nested `fn` must NOT be attributed to the
+        // enclosing function.
+        let source = "fn outer() {\n    fn inner() {\n        helper();\n    }\n    other();\n}\n";
+        let result = parse_rust_source(source).unwrap();
+        let outer_calls: Vec<&str> = result
+            .edges
+            .iter()
+            .filter_map(|e| match e {
+                ExtractedEdge::Calls { caller, callee, .. } if caller == "outer" => {
+                    Some(callee.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(outer_calls.contains(&"other"), "outer's own call is captured");
+        assert!(
+            !outer_calls.contains(&"helper"),
+            "a nested fn's call must not be attributed to the outer fn (F2)"
+        );
+    }
+
+    #[test]
+    fn closure_calls_stay_with_enclosing_fn() {
+        // Closures share the enclosing scope, so their calls remain the caller's.
+        let source = "fn outer() {\n    let f = || { helper(); };\n}\n";
+        let result = parse_rust_source(source).unwrap();
+        assert!(result.edges.iter().any(|e| matches!(
+            e,
+            ExtractedEdge::Calls { caller, callee, .. } if caller == "outer" && callee == "helper"
+        )));
+    }
+
+    fn classify_first_call(source: &str) -> Option<(canonical::Qualifier, Vec<String>)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut stack = vec![tree.root_node()];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "call_expression" {
+                if let Some(f) = n.child_by_field_name("function") {
+                    return classify_call_qualifier(f, source);
+                }
+            }
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                stack.push(ch);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn classify_self_call_yields_unforgeable_marker() {
+        assert_eq!(
+            classify_first_call("fn f() { Self::make(); }"),
+            Some((canonical::Qualifier::SelfType, vec!["make".to_owned()]))
+        );
+    }
+
+    #[test]
+    fn classify_self_assoc_projection_keeps_intermediate_segment() {
+        assert_eq!(
+            classify_first_call("fn f() { Self::Assoc::make(); }"),
+            Some((
+                canonical::Qualifier::SelfType,
+                vec!["Assoc".to_owned(), "make".to_owned()]
+            ))
+        );
+    }
+
+    #[test]
+    fn classify_module_path_qualifier() {
+        assert_eq!(
+            classify_first_call("fn f() { crate::a::b(); }"),
+            Some((
+                canonical::Qualifier::Path("crate".to_owned()),
+                vec!["a".to_owned(), "b".to_owned()]
+            ))
+        );
+    }
+
+    #[test]
+    fn classify_bare_and_method_calls_are_not_qualified() {
+        assert_eq!(classify_first_call("fn f() { bare(); }"), None);
+        assert_eq!(classify_first_call("fn f() { x.foo(); }"), None);
     }
 }

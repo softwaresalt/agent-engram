@@ -5,6 +5,7 @@
 
 use tree_sitter::{Node, Parser};
 
+use super::canonical::Qualifier;
 use super::{
     ExtractedClass, ExtractedEdge, ExtractedFunction, ExtractedInterface, ExtractedSymbol,
     ParseResult,
@@ -227,8 +228,20 @@ fn extract_calls_from_body(
     caller_name: &str,
     edges: &mut Vec<ExtractedEdge>,
 ) {
-    let mut stack = vec![node];
+    // Walk the caller's body but STOP at nested definitions: a call inside a
+    // nested `impl`/`fn` belongs to that inner scope, not this caller (088-F2).
+    // Seed the stack with the caller's own children so the caller node itself is
+    // not mistaken for a nested definition; closures (which share the caller's
+    // scope) are intentionally NOT boundaries.
+    let mut stack: Vec<Node<'_>> = Vec::new();
+    let mut root_cursor = node.walk();
+    for child in node.children(&mut root_cursor) {
+        stack.push(child);
+    }
     while let Some(current) = stack.pop() {
+        if matches!(current.kind(), "function_item" | "impl_item") {
+            continue;
+        }
         if current.kind() == "call_expression" {
             if let Some((callee, is_method, is_qualified)) = resolve_call_name(current, source) {
                 edges.push(ExtractedEdge::Calls {
@@ -288,6 +301,57 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<(String, bool, bool
     };
     name.filter(|n| !CALL_BLOCKLIST.contains(&n.as_str()))
         .map(|n| (n, is_method, is_qualified))
+}
+
+/// Collect the left-to-right segments of a (possibly nested) `scoped_identifier`
+/// (`a::b::c` → `["a", "b", "c"]`).
+fn scoped_path_segments(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    collect_scoped_segments(node, source, &mut segments);
+    segments
+}
+
+fn collect_scoped_segments(node: Node<'_>, source: &str, out: &mut Vec<String>) {
+    if node.kind() == "scoped_identifier" {
+        if let Some(path) = node.child_by_field_name("path") {
+            collect_scoped_segments(path, source, out);
+        }
+        if let Some(name) = node.child_by_field_name("name") {
+            out.push(super::node_text(name, source));
+        }
+    } else {
+        out.push(super::node_text(node, source));
+    }
+}
+
+/// Classify a call's `function` node into a canonical [`Qualifier`] plus the
+/// trailing path segments (the parts after the qualifier root, ending with the
+/// callee), or `None` for non-path calls (bare identifier / method-receiver).
+///
+/// The `Self` type yields the unforgeable [`Qualifier::SelfType`] marker, set
+/// **only** from the reserved `Self` keyword at the path root — `Self` cannot be
+/// a user identifier, so no other source text can produce the marker
+/// (091.009-T / Option C A7). Consumed by Unit B staging; precision-neutral in
+/// Unit A (qualified calls remain dropped).
+#[must_use]
+pub fn classify_call_qualifier(
+    function_node: Node<'_>,
+    source: &str,
+) -> Option<(Qualifier, Vec<String>)> {
+    if function_node.kind() != "scoped_identifier" {
+        return None;
+    }
+    let mut segments = scoped_path_segments(function_node, source);
+    if segments.len() < 2 {
+        return None;
+    }
+    let root = segments.remove(0);
+    let qualifier = if root == "Self" {
+        Qualifier::SelfType
+    } else {
+        Qualifier::Path(root)
+    };
+    Some((qualifier, segments))
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> String {

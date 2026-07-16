@@ -50,6 +50,24 @@ impl std::fmt::Display for CanonicalId {
     }
 }
 
+/// A call-site qualifier as understood by the resolver.
+///
+/// The `Self` type is represented by the **typed** [`Qualifier::SelfType`]
+/// sentinel — an enum variant a source string cannot reproduce. The parser sets
+/// it only when it observes the `Self` keyword at a scoped-path root inside an
+/// impl (`Self` is a reserved keyword, so it can never be a user identifier).
+/// A source qualifier written as the string `Self` is therefore *not* the
+/// marker: [`resolve_path`] fails closed on a bare `Self` root, so
+/// `Self::Assoc::method()` cannot forge the enclosing-type substitution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Qualifier {
+    /// A source-written path qualifier (module or type path), e.g.
+    /// `crate::a::Widget` or `module`.
+    Path(String),
+    /// The enclosing impl's `Self` type — an unforgeable typed sentinel.
+    SelfType,
+}
+
 /// The context a path expression is resolved against: the current file's module,
 /// the workspace crate set, and the file's use-graph.
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +104,40 @@ pub fn resolve_path(ctx: &ResolveContext, path_expr: &str) -> Option<CanonicalId
     Some(CanonicalId(resolved.join("::")))
 }
 
+/// Resolve a staged call qualifier + trailing segments to a canonical identity,
+/// or `None` (fail-closed).
+///
+/// - [`Qualifier::SelfType`] substitutes the enclosing impl's canonical type
+///   (`enclosing_self`), then appends a **single** method segment. A missing
+///   enclosing type (`Self::` outside an impl) or an intermediate segment
+///   (`Self::Assoc::method` — an associated-type projection) fails closed.
+/// - [`Qualifier::Path`] delegates to [`resolve_path`] over the joined path.
+#[must_use]
+pub fn resolve_qualifier(
+    ctx: &ResolveContext,
+    enclosing_self: Option<&str>,
+    qualifier: &Qualifier,
+    tail: &[&str],
+) -> Option<CanonicalId> {
+    match qualifier {
+        Qualifier::SelfType => match tail {
+            [method] if !method.is_empty() => {
+                let enclosing = enclosing_self?;
+                Some(CanonicalId(format!("{enclosing}::{method}")))
+            }
+            // Bare `Self`, or `Self::Assoc::method` projection → fail-closed.
+            _ => None,
+        },
+        Qualifier::Path(path) => {
+            if tail.is_empty() {
+                resolve_path(ctx, path)
+            } else {
+                resolve_path(ctx, &format!("{path}::{}", tail.join("::")))
+            }
+        }
+    }
+}
+
 /// Resolve `segs` to canonical segments (`[crate_name, seg, …]`), or `None`.
 ///
 /// `in_module_ok` distinguishes a **source** expression (a bare, unimported,
@@ -107,6 +159,11 @@ fn resolve_core(
         "crate" => Some(with_tail(vec![ctx.module.crate_name.clone()], tail)),
         "self" => Some(with_tail(module_segments(ctx.module), tail)),
         "super" => resolve_super(ctx, segs),
+        // A bare `Self` string is never resolved as a path: the enclosing type is
+        // substituted only via the typed `Qualifier::SelfType` marker (A7). This
+        // makes `Self::Assoc::method()` unforgeable — it cannot masquerade as the
+        // Self sentinel.
+        "Self" => None,
         "" => resolve_absolute(ctx, tail),
         h if ctx.crates.is_workspace_crate(h) => {
             Some(segs.iter().map(|s| (*s).to_owned()).collect())
@@ -453,5 +510,84 @@ mod tests {
     #[test]
     fn def_empty_name_fails_closed() {
         assert_eq!(def_canon(&["a"], "", ""), None);
+    }
+
+    fn self_ctx<'a>(
+        crates: &'a WorkspaceCrates,
+        m: &'a ModulePath,
+        ug: &'a UseGraph,
+    ) -> ResolveContext<'a> {
+        ResolveContext {
+            module: m,
+            crates,
+            use_graph: ug,
+        }
+    }
+
+    #[test]
+    fn self_marker_resolves_to_enclosing_type() {
+        let crates = crates();
+        let m = module(&["a"]);
+        let ug = extract_use_graph("");
+        let ctx = self_ctx(&crates, &m, &ug);
+        let got = resolve_qualifier(&ctx, Some("engram::a::Widget"), &Qualifier::SelfType, &["make"]);
+        assert_eq!(got.map(CanonicalId::into_string).as_deref(), Some("engram::a::Widget::make"));
+    }
+
+    #[test]
+    fn self_assoc_projection_fails_closed() {
+        let crates = crates();
+        let m = module(&["a"]);
+        let ug = extract_use_graph("");
+        let ctx = self_ctx(&crates, &m, &ug);
+        // Self::Assoc::method — an associated-type projection is out of scope.
+        assert_eq!(
+            resolve_qualifier(&ctx, Some("engram::a::Widget"), &Qualifier::SelfType, &["Assoc", "method"]),
+            None
+        );
+        // Bare Self with no method also fails closed.
+        assert_eq!(
+            resolve_qualifier(&ctx, Some("engram::a::Widget"), &Qualifier::SelfType, &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn self_outside_impl_fails_closed() {
+        let crates = crates();
+        let m = module(&["a"]);
+        let ug = extract_use_graph("");
+        let ctx = self_ctx(&crates, &m, &ug);
+        assert_eq!(
+            resolve_qualifier(&ctx, None, &Qualifier::SelfType, &["make"]),
+            None
+        );
+    }
+
+    #[test]
+    fn self_string_cannot_forge_the_marker() {
+        // A source path textually rooted at `Self` is NOT the typed marker and
+        // never resolves — only `Qualifier::SelfType` substitutes the enclosing
+        // type (088-F Self-forge defence).
+        assert_eq!(resolve(&["a"], "", "Self::make"), None);
+        assert_eq!(resolve(&["a"], "", "Self::Assoc::make"), None);
+    }
+
+    #[test]
+    fn path_qualifier_delegates_to_resolve_path() {
+        let crates = crates();
+        let m = module(&["z"]);
+        let ug = extract_use_graph("use crate::a::Widget;");
+        let ctx = self_ctx(&crates, &m, &ug);
+        let got = resolve_qualifier(
+            &ctx,
+            None,
+            &Qualifier::Path("Widget".to_owned()),
+            &["build"],
+        );
+        assert_eq!(
+            got.map(CanonicalId::into_string).as_deref(),
+            Some("engram::a::Widget::build")
+        );
     }
 }
