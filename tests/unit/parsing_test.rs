@@ -401,7 +401,7 @@ fn default_name() -> String {
 "#;
     let result = parse_rust_source(source).unwrap();
 
-    // 1 struct (Config) + 1 trait (Configurable) + 1 impl method (Config::configure) + 1 fn (default_name)
+    // 1 struct (Config) + 1 trait (Configurable) + 1 trait impl method + 1 fn (default_name)
     assert_eq!(result.symbols.len(), 4);
 
     // Should have Imports, Defines, InheritsFrom, and Calls edges.
@@ -425,7 +425,7 @@ fn default_name() -> String {
     );
     assert!(result.edges.iter().any(|e| matches!(
         e,
-        ExtractedEdge::Calls { caller, callee, .. } if caller == "Config::configure" && callee == "default_name"
+        ExtractedEdge::Calls { caller, callee, .. } if caller == "<Configurable for Config>::configure" && callee == "default_name"
     )));
 }
 

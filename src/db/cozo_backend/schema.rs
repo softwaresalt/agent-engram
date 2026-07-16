@@ -100,10 +100,14 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
     // precision-neutral. Idempotent shape-detected upgrade; existing rows default
     // to "" (never a canonical match target — D4). New/re-parsed rows are
     // populated opportunistically at index time; pre-existing rows stay "" until
-    // the deferred ID-preserving Unit B backfill (the A8 forced re-index was
-    // removed as unsafe — symbol IDs are random UUIDs, so re-parsing unchanged
-    // files would disturb the existing edge set).
+    // a full re-index or the deferred ID-preserving backfill. That backfill is a
+    // follow-up NOT included in Unit B (091.012-T): the A8 forced re-index was
+    // removed as unsafe (symbol IDs are random UUIDs, so re-parsing unchanged
+    // files would disturb the existing edge set). Until it ships, an
+    // already-indexed workspace gains canonical edges only for files re-parsed by
+    // a normal index/sync (fail-closed: pre-existing rows stay "" = no edge).
     migrate_function_meta_canonical_path(cozo_db)?;
+    migrate_staged_call_provenance(cozo_db)?;
 
     // Phase 4: HNSW vector indexes. Creation may fail on empty tables or when the
     // storage backend does not support vector indexes. Suppress only known-benign
@@ -467,6 +471,33 @@ pub(crate) fn function_meta_has_canonical_path(
     }
 }
 
+/// Return `true` when `staged_call` carries Unit-B raw provenance columns.
+///
+/// Uses `::columns` introspection so a legacy empty staging relation is still
+/// detected accurately.
+pub(crate) fn staged_call_has_provenance(cozo_db: &cozo::DbInstance) -> Result<bool, EngramError> {
+    match cozo_db.run_script(
+        "::columns staged_call",
+        BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    ) {
+        Ok(rows) => Ok(rows.rows.iter().any(|row| {
+            matches!(row.first(), Some(cozo::DataValue::Str(name)) if name.as_str() == "raw_qualifier")
+        })),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("cannot find")
+            {
+                Ok(false)
+            } else {
+                Err(map_db_err(format!("staged_call column introspection: {e}")))
+            }
+        }
+    }
+}
+
 /// Upgrade a legacy `function_meta` relation to carry the additive
 /// `canonical_path` column (091.008-T / Option C A6, precision-neutral).
 ///
@@ -477,8 +508,10 @@ pub(crate) fn function_meta_has_canonical_path(
 /// resolution are unaffected. Idempotent: once the column is present the
 /// function returns immediately, so it is safe to run on every bootstrap.
 /// `canonical_path` is populated opportunistically at index time for
-/// new/re-parsed rows; pre-existing rows remain `""` until the deferred
-/// ID-preserving Unit B backfill (the A8 forced re-index was removed as unsafe).
+/// new/re-parsed rows; pre-existing rows remain `""` until a full re-index or
+/// the deferred ID-preserving backfill (a follow-up NOT included in Unit B; the
+/// A8 forced re-index was removed as unsafe). Empty is never a match target (D4),
+/// so the gap is fail-closed.
 ///
 /// # Errors
 /// Returns [`EngramError`] when column introspection or the `:replace` rewrite
@@ -502,6 +535,32 @@ pub(crate) fn migrate_function_meta_canonical_path(
         "function_meta canonical_path migration",
         false,
     )?;
+    Ok(())
+}
+
+/// Upgrade legacy `staged_call` rows to carry Unit-B raw provenance markers.
+///
+/// Existing 084-S/089-F rows default each marker to `""`, which keeps them on
+/// the legacy bare-name path and preserves dehydrate/rehydrate compatibility.
+/// `raw_qualifier` is promoted into the relation key (091.012-T) so distinct
+/// qualified calls to the same callee name in one caller no longer collide;
+/// legacy rows migrate with `raw_qualifier = ""`.
+pub(crate) fn migrate_staged_call_provenance(
+    cozo_db: &cozo::DbInstance,
+) -> Result<(), EngramError> {
+    if staged_call_has_provenance(cozo_db)? {
+        return Ok(());
+    }
+    let migrate = r#"
+?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] :=
+    *staged_call{caller_id, callee_name, source_file, created_at},
+    raw_qualifier = "",
+    qualifier_kind = "",
+    enclosing_canonical_type = ""
+
+:replace staged_call { caller_id, callee_name, source_file, raw_qualifier, qualifier_kind => created_at, enclosing_canonical_type }
+"#;
+    run_script_retrying(cozo_db, migrate, "staged_call provenance migration", false)?;
     Ok(())
 }
 
@@ -762,17 +821,30 @@ pub const CREATE_REFERENCES_EDGE: &str = r#"
 /// CozoScript `:create` for `staged_call` — a call site whose callee could not
 /// be resolved within the caller's own file (082.002-T).
 ///
-/// Key: `(caller_id, callee_name, source_file)` — every staged row carries its
-/// source file so the staging lifecycle (082.009-T) can clear a file's rows
-/// before re-indexing. The deferred post-pass (082.008-T) reads these rows and
-/// resolves each callee against the workspace-global symbol index.
+/// Key: `(caller_id, callee_name, source_file, raw_qualifier, qualifier_kind)` —
+/// both `raw_qualifier` and `qualifier_kind` are part of the key so two distinct
+/// qualified calls to the same callee name in one caller stay separate rows and
+/// each resolves to its own canonical target instead of overwriting one another.
+/// `raw_qualifier` (091.012-T) separates different qualifiers of the same callee
+/// name (e.g. `crate::a::build()` vs `crate::b::build()`). `qualifier_kind`
+/// additionally separates call sites that share a `raw_qualifier` but differ in
+/// kind and resolved target — notably `self::foo()` (kind `module`) vs
+/// `self.foo()` (kind `method`), which both carry `raw_qualifier == "self"` and
+/// would otherwise collide, silently dropping one canonical edge. Every staged
+/// row carries its source file so the staging lifecycle (082.009-T) can clear a
+/// file's rows before re-indexing. The deferred post-pass (082.008-T /
+/// 091.012-T) reads these rows and resolves each callee against the
+/// workspace-global symbol index.
 pub const CREATE_STAGED_CALL: &str = r#"
 :create staged_call {
     caller_id: String,
     callee_name: String,
-    source_file: String
+    source_file: String,
+    raw_qualifier: String,
+    qualifier_kind: String
     =>
     created_at: String,
+    enclosing_canonical_type: String,
 }
 "#;
 

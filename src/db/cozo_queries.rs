@@ -162,6 +162,31 @@ pub struct ReresolveResult {
     pub lookups: usize,
 }
 
+/// Counts of resolution-derived `calls_edge` rows retracted by
+/// [`CodeGraphQueries::rollback_calls_resolution`] before the `resolution`
+/// column is dropped (082.010-T + 088-S Unit B).
+///
+/// The down-migration reverts `calls_edge` to its legacy `{from, to =>
+/// created_at}` shape, so every edge NOT resolved directly in-file must be
+/// retracted first — otherwise it would survive the column drop as an
+/// indistinguishable legacy edge. Both provenance classes are surfaced
+/// separately for operator-visible reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CallsResolutionRollback {
+    /// Number of `calls_resolved_singleton` edges retracted.
+    pub singleton_edges: usize,
+    /// Number of `calls_resolved_canonical` edges retracted.
+    pub canonical_edges: usize,
+}
+
+impl CallsResolutionRollback {
+    /// Total resolution-derived edges retracted across both provenance classes.
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.singleton_edges + self.canonical_edges
+    }
+}
+
 /// A call site whose callee could not be resolved within the caller's own
 /// file, staged for the deferred cross-file post-pass (082.002-T).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,11 +207,6 @@ pub struct StagedCall {
 /// post-pass itself only needs the first three fields, so the resolver keeps
 /// consuming [`StagedCall`].
 ///
-/// Scope note (084-S): only the four columns that exist on the `staged_call`
-/// relation today are represented. The marker fields `is_method`,
-/// `is_qualified`, and `provenance` are intentionally deferred to 088-S Unit B
-/// (091.011-T); the JSONL format is forward-compatible so they can be added
-/// without a schema-version bump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedCallRecord {
     /// Fully-qualified ID of the calling function (e.g. `function:...`).
@@ -197,6 +217,43 @@ pub struct StagedCallRecord {
     pub source_file: String,
     /// RFC 3339 timestamp recorded when the call was first staged.
     pub created_at: String,
+}
+
+/// A staged call row with Unit-B canonical-resolution provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedCallProvenanceRecord {
+    /// Fully-qualified ID of the calling function (e.g. `function:...`).
+    pub caller_id: String,
+    /// Bare final segment of the called function at the call site.
+    pub callee_name: String,
+    /// Workspace-relative path of the file the call site lives in.
+    pub source_file: String,
+    /// RFC 3339 timestamp recorded when the call was first staged.
+    pub created_at: String,
+    /// Raw source qualifier preceding the callee (`crate::a`, `Self`, `self`).
+    pub raw_qualifier: String,
+    /// Qualifier class: `module`, `type`, `self`, `method`, or empty legacy.
+    pub qualifier_kind: String,
+    /// Canonical enclosing type for known-receiver calls; empty outside impls.
+    pub enclosing_canonical_type: String,
+}
+
+/// Borrowed staged-call write payload including timestamp and raw provenance.
+pub struct StagedCallProvenanceWrite<'a> {
+    /// Fully-qualified ID of the calling function.
+    pub caller_id: &'a str,
+    /// Bare final segment of the called function at the call site.
+    pub callee_name: &'a str,
+    /// Workspace-relative source file path.
+    pub source_file: &'a str,
+    /// RFC 3339 staging timestamp.
+    pub created_at: &'a str,
+    /// Raw source qualifier preceding the callee.
+    pub raw_qualifier: &'a str,
+    /// Qualifier category.
+    pub qualifier_kind: &'a str,
+    /// Canonical enclosing type for known receivers.
+    pub enclosing_canonical_type: &'a str,
 }
 
 /// Information about a `concerns` edge targeting a symbol.
@@ -965,6 +1022,33 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         Ok(r.rows.iter().map(|row| extract_str(row, 1)).collect())
     }
 
+    /// Return a `canonical_path -> [function_id]` index for non-empty canonical
+    /// function identities.
+    ///
+    /// Empty canonical paths are filtered here so D4 ("empty is never a match
+    /// target") is enforced before singleton matching.
+    pub async fn function_ids_by_canonical_path(
+        &self,
+    ) -> Result<HashMap<String, Vec<String>>, EngramError> {
+        let script = r#"
+?[canonical_path, id] :=
+    *function_meta{id, canonical_path},
+    canonical_path != ""
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        for row in &r.rows {
+            index
+                .entry(extract_str(row, 0))
+                .or_default()
+                .push(extract_str(row, 1));
+        }
+        Ok(index)
+    }
+
     /// Look up a function by name (first match).
     pub async fn get_function_by_name(
         &self,
@@ -1417,6 +1501,35 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             .collect())
     }
 
+    /// Retract every `calls_edge` carrying the given resolution-derived
+    /// provenance, preserving `direct` edges (082.010-T rollback step 1).
+    ///
+    /// Must run while the `resolution` column still exists. When the column is
+    /// already absent (rollback already applied) this is a no-op returning `0`,
+    /// keeping the rollback idempotent. Returns the number of edges retracted.
+    async fn retract_all_calls_edges_with_resolution(
+        &self,
+        resolution: &str,
+    ) -> Result<usize, EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(0);
+        }
+        let edges = self.list_calls_edges_by_resolution(resolution).await?;
+        if edges.is_empty() {
+            return Ok(0);
+        }
+        let script = r#"
+?[from, to] := *calls_edge{from, to, resolution}, resolution = $resolution
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("resolution".to_owned(), DataValue::from(resolution));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(edges.len())
+    }
+
     /// Retract every `calls_resolved_singleton` edge, preserving `direct`
     /// edges (082.010-T rollback step 1).
     ///
@@ -1424,41 +1537,49 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// already absent (rollback already applied) this is a no-op returning `0`,
     /// keeping the rollback idempotent. Returns the number of edges retracted.
     pub async fn retract_all_calls_resolved_singleton_edges(&self) -> Result<usize, EngramError> {
-        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
-            return Ok(0);
-        }
-        let singletons = self
-            .list_calls_edges_by_resolution("calls_resolved_singleton")
-            .await?;
-        if singletons.is_empty() {
-            return Ok(0);
-        }
-        let script = r#"
-?[from, to] := *calls_edge{from, to, resolution}, resolution = "calls_resolved_singleton"
-:rm calls_edge { from, to }
-"#;
-        self.db
-            .run_script(script, BTreeMap::new(), ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
-        Ok(singletons.len())
+        self.retract_all_calls_edges_with_resolution("calls_resolved_singleton")
+            .await
     }
 
-    /// Operator-invocable down-migration entry point (082.010-T).
+    /// Retract every `calls_resolved_canonical` edge, preserving `direct`
+    /// edges (088-S Unit B rollback step).
+    ///
+    /// Canonical edges are produced by the qualified/method call resolver
+    /// (Option C Unit B). Like singletons they must be retracted BEFORE the
+    /// `resolution` column is dropped — otherwise the column drop would leave
+    /// them as indistinguishable legacy `{from, to}` edges that survive the
+    /// rollback, contrary to the "only `direct` edges survive" contract. Same
+    /// idempotency guarantee as the singleton retraction.
+    pub async fn retract_all_calls_resolved_canonical_edges(&self) -> Result<usize, EngramError> {
+        self.retract_all_calls_edges_with_resolution("calls_resolved_canonical")
+            .await
+    }
+
+    /// Operator-invocable down-migration entry point (082.010-T + 088-S Unit B).
     ///
     /// Orchestrates the rollback in a STRICT ORDER so every provenance query
     /// runs while its column still exists:
     ///   1. retract ALL `calls_resolved_singleton` edges (direct preserved)
     ///      while the `resolution` column is present;
-    ///   2. THEN drop the `resolution` column, reverting `calls_edge` to
+    ///   2. retract ALL `calls_resolved_canonical` edges (direct preserved),
+    ///      also while the column is present — otherwise Unit B's canonical
+    ///      edges would survive the column drop as indistinguishable legacy
+    ///      edges;
+    ///   3. THEN drop the `resolution` column, reverting `calls_edge` to
     ///      `{from, to => created_at}`.
     ///
     /// Idempotent: a second invocation retracts nothing and finds no column to
-    /// drop, returning `0`. Returns the number of singleton edges retracted.
-    /// The operator-invocable CLI trigger is 082.013-T.
-    pub async fn rollback_calls_resolution(&self) -> Result<usize, EngramError> {
-        let retracted = self.retract_all_calls_resolved_singleton_edges().await?;
+    /// drop, returning a zeroed [`CallsResolutionRollback`]. Returns the
+    /// per-class retracted-edge counts. The operator-invocable CLI trigger is
+    /// 082.013-T.
+    pub async fn rollback_calls_resolution(&self) -> Result<CallsResolutionRollback, EngramError> {
+        let singleton_edges = self.retract_all_calls_resolved_singleton_edges().await?;
+        let canonical_edges = self.retract_all_calls_resolved_canonical_edges().await?;
         crate::db::cozo_backend::schema::rollback_calls_edge_resolution(&self.db)?;
-        Ok(retracted)
+        Ok(CallsResolutionRollback {
+            singleton_edges,
+            canonical_edges,
+        })
     }
 
     /// Record a call site whose callee could not be resolved within the
@@ -1474,8 +1595,40 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         callee_name: &str,
         source_file: &str,
     ) -> Result<(), EngramError> {
-        self.put_staged_call_with_created_at(caller_id, callee_name, source_file, &now_utc_str())
-            .await
+        let created_at = now_utc_str();
+        self.put_staged_call_with_created_at_and_provenance(StagedCallProvenanceWrite {
+            caller_id,
+            callee_name,
+            source_file,
+            created_at: &created_at,
+            raw_qualifier: "",
+            qualifier_kind: "",
+            enclosing_canonical_type: "",
+        })
+        .await
+    }
+
+    /// Record a staged call with Unit-B raw provenance.
+    pub async fn put_staged_call_with_provenance(
+        &self,
+        caller_id: &str,
+        callee_name: &str,
+        source_file: &str,
+        raw_qualifier: &str,
+        qualifier_kind: &str,
+        enclosing_canonical_type: &str,
+    ) -> Result<(), EngramError> {
+        let created_at = now_utc_str();
+        self.put_staged_call_with_created_at_and_provenance(StagedCallProvenanceWrite {
+            caller_id,
+            callee_name,
+            source_file,
+            created_at: &created_at,
+            raw_qualifier,
+            qualifier_kind,
+            enclosing_canonical_type,
+        })
+        .await
     }
 
     /// Record a staged call with an explicit `created_at` timestamp.
@@ -1483,7 +1636,7 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// This is the rehydration entry point (089-F): it re-inserts a staged row
     /// with the timestamp it originally carried, so a dehydrate → rehydrate
     /// round-trip is deterministic and idempotent. Keyed by
-    /// `(caller_id, callee_name, source_file)`.
+    /// `(caller_id, callee_name, source_file, raw_qualifier, qualifier_kind)`.
     pub async fn put_staged_call_with_created_at(
         &self,
         caller_id: &str,
@@ -1491,16 +1644,51 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         source_file: &str,
         created_at: &str,
     ) -> Result<(), EngramError> {
+        self.put_staged_call_with_created_at_and_provenance(StagedCallProvenanceWrite {
+            caller_id,
+            callee_name,
+            source_file,
+            created_at,
+            raw_qualifier: "",
+            qualifier_kind: "",
+            enclosing_canonical_type: "",
+        })
+        .await
+    }
+
+    /// Record a staged call with an explicit timestamp and provenance markers.
+    pub async fn put_staged_call_with_created_at_and_provenance(
+        &self,
+        staged: StagedCallProvenanceWrite<'_>,
+    ) -> Result<(), EngramError> {
         let script = r#"
-?[caller_id, callee_name, source_file, created_at] <-
-    [[$caller_id, $callee_name, $source_file, $created_at]]
-:put staged_call { caller_id, callee_name, source_file => created_at }
+?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] <-
+    [[$caller_id, $callee_name, $source_file, $created_at, $raw_qualifier, $qualifier_kind, $enclosing_canonical_type]]
+:put staged_call { caller_id, callee_name, source_file, raw_qualifier, qualifier_kind => created_at, enclosing_canonical_type }
 "#;
         let mut p = BTreeMap::new();
-        p.insert("caller_id".to_owned(), DataValue::from(caller_id));
-        p.insert("callee_name".to_owned(), DataValue::from(callee_name));
-        p.insert("source_file".to_owned(), DataValue::from(source_file));
-        p.insert("created_at".to_owned(), DataValue::from(created_at));
+        p.insert("caller_id".to_owned(), DataValue::from(staged.caller_id));
+        p.insert(
+            "callee_name".to_owned(),
+            DataValue::from(staged.callee_name),
+        );
+        p.insert(
+            "source_file".to_owned(),
+            DataValue::from(staged.source_file),
+        );
+        p.insert("created_at".to_owned(), DataValue::from(staged.created_at));
+        p.insert(
+            "raw_qualifier".to_owned(),
+            DataValue::from(staged.raw_qualifier),
+        );
+        p.insert(
+            "qualifier_kind".to_owned(),
+            DataValue::from(staged.qualifier_kind),
+        );
+        p.insert(
+            "enclosing_canonical_type".to_owned(),
+            DataValue::from(staged.enclosing_canonical_type),
+        );
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
@@ -1553,6 +1741,35 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
             .collect())
     }
 
+    /// List every staged call including Unit-B raw provenance, sorted by
+    /// `(caller_id, callee_name, source_file, raw_qualifier, qualifier_kind)` —
+    /// the full staged call key — for a total, deterministic order (091.012-T).
+    pub async fn list_staged_calls_with_provenance(
+        &self,
+    ) -> Result<Vec<StagedCallProvenanceRecord>, EngramError> {
+        let script = r#"
+?[caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type] :=
+    *staged_call { caller_id, callee_name, source_file, created_at, raw_qualifier, qualifier_kind, enclosing_canonical_type }
+:order caller_id, callee_name, source_file, raw_qualifier, qualifier_kind
+"#;
+        let r = self
+            .db
+            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows
+            .iter()
+            .map(|row| StagedCallProvenanceRecord {
+                caller_id: extract_str(row, 0),
+                callee_name: extract_str(row, 1),
+                source_file: extract_str(row, 2),
+                created_at: extract_str(row, 3),
+                raw_qualifier: extract_str(row, 4),
+                qualifier_kind: extract_str(row, 5),
+                enclosing_canonical_type: extract_str(row, 6),
+            })
+            .collect())
+    }
+
     /// Remove every staged (unresolved) call recorded for `source_file`
     /// (082.009-T clear-before-reindex / deletion cleanup).
     ///
@@ -1561,10 +1778,10 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     /// stale edge by a later forced post-pass.
     pub async fn clear_staged_calls_for_file(&self, source_file: &str) -> Result<(), EngramError> {
         let script = r#"
-?[caller_id, callee_name, source_file] :=
-    *staged_call { caller_id, callee_name, source_file },
+?[caller_id, callee_name, source_file, raw_qualifier, qualifier_kind] :=
+    *staged_call { caller_id, callee_name, source_file, raw_qualifier, qualifier_kind },
     source_file = $source_file
-:rm staged_call { caller_id, callee_name, source_file }
+:rm staged_call { caller_id, callee_name, source_file, raw_qualifier, qualifier_kind }
 "#;
         let mut p = BTreeMap::new();
         p.insert("source_file".to_owned(), DataValue::from(source_file));
@@ -1574,12 +1791,12 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         Ok(())
     }
 
-    /// Retract `calls_resolved_singleton` edges whose caller OR callee is a
-    /// function defined in `file_path` (082.009-T).
+    /// Retract resolved post-pass edges whose caller OR callee is a function
+    /// defined in `file_path` (082.009-T / 091.012-T).
     ///
     /// Must be invoked BEFORE the file's function metadata is deleted, because
     /// it maps file → function IDs via `function_meta.file_path`. Retracting
-    /// these stale singleton edges before a reindex or deletion prevents
+    /// these stale resolved edges before a reindex or deletion prevents
     /// dangling cross-file edges when a caller or callee changes or is removed.
     /// `direct` edges are left untouched — they are re-created by in-file
     /// resolution on reindex.
@@ -1596,6 +1813,16 @@ stale[from, to] :=
 stale[from, to] :=
     *calls_edge { from, to, resolution },
     resolution = "calls_resolved_singleton",
+    *function_meta { id: to, file_path },
+    file_path = $file_path
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_canonical",
+    *function_meta { id: from, file_path },
+    file_path = $file_path
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "calls_resolved_canonical",
     *function_meta { id: to, file_path },
     file_path = $file_path
 ?[from, to] := stale[from, to]
@@ -1636,6 +1863,33 @@ stale[from, to] :=
         let mut p = BTreeMap::new();
         p.insert("from".to_owned(), DataValue::from(caller_id));
         p.insert("name".to_owned(), DataValue::from(callee_name));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retract all canonical post-pass call edges emitted from `caller_id`.
+    ///
+    /// Unit-B canonical resolution is re-created from the current staged rows on
+    /// every full-index post-pass. Pre-retracting a caller's prior canonical
+    /// edges ensures an ambiguity or failed resolution cannot leave a stale edge.
+    pub async fn retract_canonical_edges_from_caller(
+        &self,
+        caller_id: &str,
+    ) -> Result<(), EngramError> {
+        if !crate::db::cozo_backend::schema::calls_edge_has_resolution(&self.db)? {
+            return Ok(());
+        }
+        let script = r#"
+?[from, to] :=
+    *calls_edge { from, to, resolution },
+    from = $from,
+    resolution = "calls_resolved_canonical"
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("from".to_owned(), DataValue::from(caller_id));
         self.db
             .run_script(script, p, ScriptMutability::Mutable)
             .map_err(|e| map_db_err(e.to_string()))?;
@@ -1794,11 +2048,12 @@ stale[from, to] :=
     ///
     /// Returns the number of *newly created* singleton edges (`resolved`) and
     /// the number of staged calls examined (`lookups`). `resolved` counts only
-    /// edges that did not already carry `calls_resolved_singleton` provenance,
-    /// so a no-op re-index (staged rows persist and their singletons are already
-    /// present) reports `resolved == 0` rather than recounting every prior
-    /// singleton as newly created. Callers surface `resolved` via
-    /// `IndexResult.edges_created`.
+    /// `(caller, target)` pairs that did not already exist as a
+    /// `calls_resolved_singleton` **or** `calls_resolved_canonical` edge, so a
+    /// no-op re-index (staged rows persist and their edges are already present,
+    /// in either provenance) reports `resolved == 0` rather than recounting a
+    /// prior edge — or a canonical pair this pass transiently rewrites — as newly
+    /// created. Callers surface `resolved` via `IndexResult.edges_created`.
     ///
     /// Revalidating, but non-destructive: for each staged call whose callee name
     /// resolves to exactly one function the singleton edge is upserted; for a
@@ -1824,7 +2079,12 @@ stale[from, to] :=
             name_index.entry(name).or_default().push(id);
         }
 
-        let staged = self.list_staged_calls().await?;
+        let staged: Vec<_> = self
+            .list_staged_calls_with_provenance()
+            .await?
+            .into_iter()
+            .filter(|call| call.qualifier_kind.is_empty())
+            .collect();
         let lookups = staged.len();
         // Snapshot the singleton edges that already exist so `resolved` counts
         // only genuinely new provenance. Because staged rows persist across a
@@ -1837,6 +2097,19 @@ stale[from, to] :=
             .await?
             .into_iter()
             .collect();
+        // Also seed pre-existing CANONICAL pairs. A caller carrying both a bare
+        // (`foo()`) and a qualified/`self` (`X::foo()`, `self.foo()`) form of the
+        // same call ends a full index with `calls_resolved_canonical` provenance
+        // for that `(caller, target)` pair. On the next full re-index this bare
+        // pass re-writes the pair as a singleton (calls_edge is keyed by
+        // `(from, to)`) before the canonical pass restores it; without seeding the
+        // canonical pairs here that re-write would be miscounted as a newly
+        // resolved edge and inflate `edges_created` on an otherwise unchanged
+        // index. Seeding both classes keeps a full re-index idempotent.
+        existing.extend(
+            self.list_calls_edges_by_resolution("calls_resolved_canonical")
+                .await?,
+        );
         let mut resolved = 0usize;
         for call in &staged {
             // Resolve solely when a single function carries the callee name. A

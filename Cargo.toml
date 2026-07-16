@@ -629,6 +629,11 @@ path = "tests/integration/unresolved_calls_capture_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_canonical_call_resolution"
+path = "tests/integration/canonical_call_resolution_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "integration_calls_edge_resolution_storage"
 path = "tests/integration/calls_edge_resolution_storage_test.rs"
 required-features = ["cozo-backend"]

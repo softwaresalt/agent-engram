@@ -8,11 +8,12 @@
 //!
 //! The only target defined today is `calls-resolution`, which invokes
 //! [`crate::db::queries::CodeGraphQueries::rollback_calls_resolution`]
-//! (082.010-T): retract every `calls_resolved_singleton` edge, then drop the
-//! `resolution` attribute — in that order, idempotently — so operators can run
-//! the cleanup BEFORE deploying reverted code (plan §7). The CLI layer stays
-//! thin: it only resolves the workspace, opens the DB, invokes the migration,
-//! and prints a summary. All migration logic lives in 082.010-T.
+//! (082.010-T + 088-S Unit B): retract every `calls_resolved_singleton` and
+//! `calls_resolved_canonical` edge, then drop the `resolution` attribute — in
+//! that order, idempotently — so operators can run the cleanup BEFORE deploying
+//! reverted code (plan §7). The CLI layer stays thin: it only resolves the
+//! workspace, opens the DB, invokes the migration, and prints a summary. All
+//! migration logic lives in 082.010-T.
 //!
 //! Exit codes:
 //! - `0` — success (prints the retracted-edge count and column-drop status);
@@ -117,12 +118,14 @@ pub async fn run_migrate_down(target: String, flags: &GlobalFlags, fmt: &OutputF
     let queries = CodeGraphQueries::new(db);
 
     match queries.rollback_calls_resolution().await {
-        Ok(retracted) => {
+        Ok(counts) => {
             fmt.success(
                 flags.id_value(),
                 serde_json::json!({
                     "target": TARGET_CALLS_RESOLUTION,
-                    "retracted_singleton_edges": retracted,
+                    "retracted_singleton_edges": counts.singleton_edges,
+                    "retracted_canonical_edges": counts.canonical_edges,
+                    "retracted_edges": counts.total(),
                     "resolution_column_dropped": true,
                 }),
             );

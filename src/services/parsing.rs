@@ -209,6 +209,12 @@ pub enum ExtractedEdge {
         /// `Type::assoc()` call to an unrelated unique free function. Deferred to
         /// qualification-aware resolution.
         is_qualified: bool,
+        /// Raw source qualifier before the final callee segment. Empty for bare
+        /// calls. Examples: `crate::util`, `Self`, `self`, `Widget`.
+        raw_qualifier: String,
+        /// Conservative qualifier category used by Unit-B staging:
+        /// `module`, `type`, `self`, `method`, or empty for bare calls.
+        qualifier_kind: String,
     },
     /// A `use` declaration importing a path.
     Imports {

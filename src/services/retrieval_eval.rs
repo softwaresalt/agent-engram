@@ -296,33 +296,53 @@ pub fn evaluate_semantic(
 ///
 /// This is the graph metric *denominator*: the parser call-site inventory
 /// (`ExtractedEdge::Calls`) discovered by [`parse_source`], restricted to the
-/// calls the indexer actually attempts to resolve. Method / receiver calls
-/// (`x.foo()`) and path-qualified calls (`a::b()`) are extracted but never
-/// promoted to edges — their targets are indexed under qualified names, so
-/// name-only resolution cannot match them — so they are excluded here to keep
-/// the denominator aligned with resolvable call sites. Blocklisted helpers
-/// (`clone`, `unwrap`, …) are excluded by the parser. A parse failure yields `0`.
+/// calls the indexer can actually resolve. Free-function and path calls,
+/// path-qualified calls (`a::b()`), and known-receiver `self.method()` calls
+/// are all counted: canonical resolution (Option C Unit B) stages and resolves
+/// qualified and `self`-receiver calls, so they are resolvable and belong in
+/// the denominator. Only method calls with an *arbitrary* receiver (`x.foo()`,
+/// where the receiver is not `self`) are excluded — their receiver type is
+/// unknown at parse time, so name-only resolution cannot reach them. This
+/// mirrors the inclusion rule in the body: `!is_method || is_qualified ||
+/// raw_qualifier == "self"`. Blocklisted helpers (`clone`, `unwrap`, …) are
+/// excluded by the parser. A parse failure yields `0`.
 ///
-/// Counts **distinct `(caller, callee)` name pairs**, not raw call occurrences
-/// (084.002-T / 88B5FAFD). The numerator is a count of `calls_edge` rows, keyed
-/// by `(from, to)`, so a caller that invokes the same callee twice contributes a
-/// single edge; counting the denominator in the same distinct-relation unit
-/// keeps `resolution_recall` a ratio of commensurable units and stops a repeated
-/// call from spuriously deflating recall.
+/// Counts **distinct `(caller, callee, raw_qualifier, qualifier_kind)` call-site
+/// identities**, not raw call occurrences (084.002-T / 88B5FAFD; 091.012-T). The
+/// numerator is a count of `calls_edge` rows keyed by `(from, to)` node IDs, and
+/// canonical resolution (Option C Unit B) can produce **several distinct edges
+/// that share a bare callee name**: `crate::a::build()` and `crate::b::build()`
+/// resolve to two different targets, and `self::foo()` (module) vs `self.foo()`
+/// (method) resolve to two more. Keying the denominator on the same
+/// qualifier-aware identity the `staged_call` key uses keeps `resolution_recall`
+/// a ratio of commensurable units: a repeated call to the identical target still
+/// contributes one unit (no spurious deflation), while two same-named calls to
+/// *different* targets contribute two — so recall no longer over-reports a
+/// perfect `1.0` when only one of them actually resolved.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
-        let mut relations: std::collections::HashSet<(&str, &str)> =
+        let mut relations: std::collections::HashSet<(&str, &str, &str, &str)> =
             std::collections::HashSet::new();
         for edge in &result.edges {
             if let ExtractedEdge::Calls {
                 caller,
                 callee,
-                is_method: false,
-                is_qualified: false,
+                is_method,
+                is_qualified,
+                raw_qualifier,
+                qualifier_kind,
+                ..
             } = edge
             {
-                relations.insert((caller.as_str(), callee.as_str()));
+                if !*is_method || *is_qualified || raw_qualifier == "self" {
+                    relations.insert((
+                        caller.as_str(),
+                        callee.as_str(),
+                        raw_qualifier.as_str(),
+                        qualifier_kind.as_str(),
+                    ));
+                }
             }
         }
         relations.len()
@@ -577,8 +597,8 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
     }
 }
 
-/// Outcome of comparing produced `calls_resolved_singleton` edges against a
-/// ground-truth expected-target manifest by EXACT identity (084.004-T).
+/// Outcome of comparing produced resolved `calls` edges (singleton AND canonical)
+/// against a ground-truth expected-target manifest by EXACT identity (084.004-T).
 ///
 /// Unlike `false_edge_rate` — a DANGLING-only lower bound that is blind to
 /// mis-resolution to an existing-but-wrong function
@@ -589,15 +609,20 @@ pub fn compute_graph_metrics(call_sites: usize, resolved: u64, false_edges: u64)
 /// and [`GraphMetrics::target_mismatch`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TargetCorrectness {
-    /// Produced singleton edges present in the manifest (correct callee identity).
+    /// Produced resolved edges present in the manifest (correct callee identity).
     pub target_correct: u64,
-    /// Produced singleton edges absent from the manifest (wrong-but-existing or
+    /// Produced resolved edges absent from the manifest (wrong-but-existing or
     /// dangling) — the gap the dangling-only `false_edge_rate` cannot see.
     pub target_mismatch: u64,
 }
 
-/// Compare produced `calls_resolved_singleton` edges against an expected-target
-/// manifest by EXACT `(caller_id, callee_id)` identity (084.004-T).
+/// Compare produced resolved `calls` edges against an expected-target manifest
+/// by EXACT `(caller_id, callee_id)` identity (084.004-T).
+///
+/// The check is resolution-CLASS-AGNOSTIC: it scores whatever produced edges it
+/// is given by identity alone. The eval harness MUST therefore feed it BOTH
+/// `calls_resolved_singleton` AND `calls_resolved_canonical` edges — otherwise a
+/// wrong-but-existing CANONICAL edge would silently escape the gate (M4).
 ///
 /// `target_correct` counts produced edges present in the manifest;
 /// `target_mismatch` counts produced edges ABSENT from it — i.e. resolved to a
@@ -609,12 +634,12 @@ pub struct TargetCorrectness {
 /// remains `resolution_recall`'s and the dangling aggregate's concern.
 #[must_use]
 pub fn evaluate_target_correctness(
-    produced_singletons: &[(String, String)],
+    produced_edges: &[(String, String)],
     expected_manifest: &HashSet<(String, String)>,
 ) -> TargetCorrectness {
     let mut target_correct = 0u64;
     let mut target_mismatch = 0u64;
-    for edge in produced_singletons {
+    for edge in produced_edges {
         if expected_manifest.contains(edge) {
             target_correct += 1;
         } else {
@@ -889,6 +914,12 @@ pub fn check_thresholds(
             thresholds.max_false_edge_rate,
             &mut breaches,
         );
+    }
+    if graph.target_correct + graph.target_mismatch > 0 && graph.target_mismatch > 0 {
+        breaches.push(format!(
+            "target_correctness below 1.0: {} mismatched resolved edges",
+            graph.target_mismatch
+        ));
     }
 
     ThresholdCheck {

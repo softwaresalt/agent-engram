@@ -9,13 +9,14 @@
 //! - a single explicit `use` alias (substituted, then the *use-path* re-resolved
 //!   with external roots failing closed — kills the `use ext::X as A; A::m()`
 //!   false-edge class, 088-F6);
-//! - an in-module local item (`Type::method` on a type defined in this module).
+//! - a proven in-module local item (`Type::method` on a type defined in this
+//!   module).
 //!
 //! Everything uncertain is dropped: external-crate roots, glob-only bindings,
-//! macro-generated names, `use`/local shadowing, module-shadows-extern-root, and
-//! any ambiguity (≥2 bindings). This is the resolver half of the absolute
-//! no-false-edge invariant (013-D); the singleton match against
-//! `function_meta.canonical_path` in Unit B is the other half.
+//! macro-generated names, unproven bare roots, `use`/local shadowing,
+//! module-shadows-extern-root, and any ambiguity (≥2 bindings). This is the
+//! resolver half of the absolute no-false-edge invariant (013-D); the singleton
+//! match against `function_meta.canonical_path` in Unit B is the other half.
 
 use super::generics::normalize_generics;
 use super::module_path::{ModulePath, WorkspaceCrates, is_module_ident};
@@ -83,6 +84,12 @@ pub struct ResolveContext<'a> {
 /// Crate roots that always denote external code and therefore fail closed unless
 /// a workspace module legitimately re-roots them via `crate::`/`self::`/`super::`.
 const KNOWN_EXTERN_ROOTS: &[&str] = &["std", "core", "alloc", "proc_macro"];
+
+/// Primitive type roots are language built-ins, not workspace modules.
+const PRIMITIVE_TYPE_ROOTS: &[&str] = &[
+    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+    "i128", "isize", "f32", "f64",
+];
 
 /// Maximum alias-substitution depth before failing closed (defends against
 /// pathological/cyclic aliasing).
@@ -168,7 +175,48 @@ fn resolve_core(
         // Self sentinel.
         "Self" => None,
         "" => resolve_absolute(ctx, tail),
-        h if ctx.crates.is_workspace_crate(h) => {
+        // A bare head naming an in-file generic type parameter
+        // (`fn f<T: Bound>() { T::m() }`) cannot be resolved without type
+        // inference and could shadow a same-named local type OR a workspace
+        // crate whose name collides with the parameter — fail closed BEFORE the
+        // workspace-crate arm so a generic param named like a crate cannot forge
+        // a canonical edge (M2, no-false-edge invariant).
+        h if ctx.use_graph.is_generic_param(h) => None,
+        // A bare head naming a block-local type item (`fn f() { struct T; T::m() }`)
+        // may be SHADOWED at the call site by that local type, so resolving it to a
+        // same-named top-level type would forge a false canonical edge — fail closed
+        // (C8-4, no-false-edge invariant). File-wide over-approximation only ever
+        // drops an edge, never invents one.
+        h if ctx.use_graph.is_block_local_type(h) => None,
+        // Workspace-crate fast path, taken ONLY when the crate name is not
+        // RE-POINTED in this file. A `use` binding shadows the extern-prelude
+        // crate name only when it maps the head to a DIFFERENT path (`use
+        // ext::Widget as demo` makes `demo` mean `ext::Widget`); an identity
+        // re-import whose binding path equals the head (`use demo;` or `use
+        // demo::{self}`) still designates the crate itself, so it stays on the
+        // fast path rather than recursing into the binding arm and failing
+        // closed. A local top-level `mod h` / type `h` also shadows, and an
+        // `extern crate ... as h;` alias re-points `h` to a DIFFERENT crate (C8-5).
+        // A shadowing declaration takes precedence over the extern-prelude crate
+        // name in Rust
+        // name resolution, so a re-pointed head must fall through to the
+        // binding/local-root logic below — otherwise `use ext::Widget as demo;
+        // demo::build()` (rename shadow) or a local `mod demo { fn build() {} }`
+        // (module shadow) would forge a false canonical edge to the workspace
+        // crate `demo` (no-false-edge invariant). A Cargo `package = "…"`
+        // dependency rename (`util = { package = "external-util" }`) likewise
+        // rebinds the crate name `util` to an external package even though a
+        // workspace member is literally named `util`, so a dependency-renamed
+        // head must also fail closed (C9-1). A leading-`::` absolute path bypasses
+        // the use/mod/extern-crate shadows via `resolve_absolute` (matching Rust's
+        // `::demo` crate-root escape) but still fails closed on a dependency
+        // rename, which rebinds the crate name itself.
+        h if ctx.crates.is_workspace_crate(h)
+            && ctx.use_graph.bindings_for(h).all(|b| b.path == h)
+            && !ctx.use_graph.has_local_root(h)
+            && !ctx.use_graph.is_extern_crate_alias(h)
+            && !ctx.crates.is_dependency_renamed(h) =>
+        {
             Some(segs.iter().map(|s| (*s).to_owned()).collect())
         }
         h => {
@@ -183,7 +231,7 @@ fn resolve_core(
                 let base = resolve_core(ctx, &use_segs, false, depth + 1)?;
                 return Some(with_tail(base, tail));
             }
-            if KNOWN_EXTERN_ROOTS.contains(&h) {
+            if KNOWN_EXTERN_ROOTS.contains(&h) || PRIMITIVE_TYPE_ROOTS.contains(&h) {
                 return None; // D7: std/core/alloc root, not re-rooted
             }
             if ctx.use_graph.has_glob() {
@@ -192,7 +240,10 @@ fn resolve_core(
             if !in_module_ok {
                 return None; // external crate root in a use-path
             }
-            // In-module local item (`Type::method` on a type defined here).
+            if !ctx.use_graph.has_local_root(h) {
+                return None; // unproven bare root; could be an external crate
+            }
+            // Proven in-module local item (`Type::method` on a type defined here).
             let mut out = module_segments(ctx.module);
             out.push(h.to_owned());
             Some(with_tail(out, tail))
@@ -217,7 +268,12 @@ fn resolve_super(ctx: &ResolveContext, segs: &[&str]) -> Option<Vec<String>> {
 /// workspace crate, else external → fail-closed.
 fn resolve_absolute(ctx: &ResolveContext, tail: &[&str]) -> Option<Vec<String>> {
     let head = *tail.first()?;
-    if ctx.crates.is_workspace_crate(head) {
+    // Membership alone does not prove `::head` designates that member: a Cargo
+    // `package = "…"` rename can rebind the crate name to an EXTERNAL package
+    // (C9-1), so `::util` would mean the external crate even though a workspace
+    // member is named `util`. Fail closed on a dependency-renamed head — the same
+    // ownership requirement as the workspace-crate fast path.
+    if ctx.crates.is_workspace_crate(head) && !ctx.crates.is_dependency_renamed(head) {
         Some(tail.iter().map(|s| (*s).to_owned()).collect())
     } else {
         None
@@ -381,6 +437,88 @@ mod tests {
     }
 
     #[test]
+    fn explicit_alias_shadowing_workspace_crate_fails_closed() {
+        // A `use … as <crate>` rename shadows a same-named workspace crate. The
+        // rename must win over the workspace-crate fast path: here the alias
+        // target `ext::Widget` is external, so resolution fails closed instead of
+        // forging a false edge to the workspace crate `powerbi_tmdl_parser`.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "use ext::Widget as powerbi_tmdl_parser;",
+                "powerbi_tmdl_parser::build"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn local_module_shadowing_workspace_crate_resolves_locally() {
+        // A local top-level `mod <crate>` shadows a same-named workspace crate:
+        // `powerbi_tmdl_parser::build()` refers to the LOCAL module, so it
+        // resolves module-locally rather than taking the workspace-crate fast
+        // path to the external crate root.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "mod powerbi_tmdl_parser {}",
+                "powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("engram::z::powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
+    fn absolute_path_still_reaches_shadowed_workspace_crate() {
+        // A leading-`::` path deliberately escapes local shadowing to the crate
+        // root, so `::powerbi_tmdl_parser::build` reaches the workspace crate even
+        // when a local `mod powerbi_tmdl_parser` exists.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "mod powerbi_tmdl_parser {}",
+                "::powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
+    fn identity_reimport_of_workspace_crate_still_resolves() {
+        // An identity re-import (`use <crate>;`) introduces a binding whose path
+        // EQUALS the head, so it re-designates the crate itself rather than
+        // shadowing it. It must stay on the workspace-crate fast path — not
+        // recurse into the binding arm and fail closed (Cycle-5 regression:
+        // `.next().is_none()` wrongly treated the identity binding as a shadow).
+        assert_eq!(
+            resolve(
+                &["z"],
+                "use powerbi_tmdl_parser;",
+                "powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
+    fn self_group_reimport_of_workspace_crate_still_resolves() {
+        // `use <crate>::{self, …}` also binds the crate name to its own path
+        // (identity), so it likewise stays on the fast path.
+        assert_eq!(
+            resolve(
+                &["z"],
+                "use powerbi_tmdl_parser::{self, tmdl};",
+                "powerbi_tmdl_parser::build"
+            )
+            .as_deref(),
+            Some("powerbi_tmdl_parser::build")
+        );
+    }
+
+    #[test]
     fn known_extern_root_fails_closed() {
         // 088-F1 family: a std/core qualifier never resolves to a workspace def.
         assert_eq!(resolve(&["a"], "", "std::mem::swap"), None);
@@ -396,7 +534,7 @@ mod tests {
     #[test]
     fn in_module_local_type_resolves() {
         assert_eq!(
-            resolve(&["a"], "", "Widget::build").as_deref(),
+            resolve(&["a"], "struct Widget;", "Widget::build").as_deref(),
             Some("engram::a::Widget::build")
         );
     }
@@ -432,6 +570,13 @@ mod tests {
                 },
             ],
             globs: vec![],
+            local_roots: vec![],
+            has_nested_use: false,
+            has_non_default_mod_mapping: false,
+            non_default_mod_roots: vec![],
+            generic_type_params: vec![],
+            block_local_type_names: vec![],
+            extern_crate_aliases: vec![],
         };
         let ctx = ResolveContext {
             module: &m,
@@ -470,7 +615,7 @@ mod tests {
     #[test]
     fn def_impl_method_in_module() {
         assert_eq!(
-            def_canon(&["a"], "", "Widget::build").as_deref(),
+            def_canon(&["a"], "struct Widget;", "Widget::build").as_deref(),
             Some("engram::a::Widget::build")
         );
     }
@@ -487,8 +632,8 @@ mod tests {
     fn def_rmej0_distinct_cross_module_same_name() {
         // The RMeJ0 regression: same source spelling `Widget::m` in different
         // modules must produce distinct canonical identities.
-        let a = def_canon(&["a"], "", "Widget::m");
-        let b = def_canon(&["b"], "", "Widget::m");
+        let a = def_canon(&["a"], "struct Widget;", "Widget::m");
+        let b = def_canon(&["b"], "struct Widget;", "Widget::m");
         assert_eq!(a.as_deref(), Some("engram::a::Widget::m"));
         assert_eq!(b.as_deref(), Some("engram::b::Widget::m"));
         assert_ne!(a, b);
@@ -501,12 +646,12 @@ mod tests {
     #[test]
     fn def_generic_impl_normalises() {
         assert_eq!(
-            def_canon(&["a"], "", "Widget<T>::build").as_deref(),
+            def_canon(&["a"], "struct Widget<T>;", "Widget<T>::build").as_deref(),
             Some("engram::a::Widget::build")
         );
         // Generic argument containing a path must not confuse the type/method split.
         assert_eq!(
-            def_canon(&["a"], "", "Foo<a::B>::build").as_deref(),
+            def_canon(&["a"], "struct Foo<T>;", "Foo<a::B>::build").as_deref(),
             Some("engram::a::Foo::build")
         );
     }

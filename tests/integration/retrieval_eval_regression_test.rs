@@ -555,3 +555,45 @@ async fn real_path_report_populates_target_correctness_fields() {
         "serialized report must expose target_mismatch=0; report: {value}"
     );
 }
+
+#[tokio::test]
+async fn seeded_misresolution_to_real_target_fails_target_correctness_gate() {
+    let (tmp, queries, _dir, _branch) = index_fixture().await;
+    let names = name_to_ids(&queries).await;
+
+    let expected: HashSet<(String, String)> = EXPECTED_SINGLETONS
+        .iter()
+        .map(|(caller, callee)| {
+            let from = names.get(*caller).expect("caller indexed")[0].clone();
+            let to = names.get(*callee).expect("callee indexed")[0].clone();
+            (from, to)
+        })
+        .collect();
+
+    let alpha = names.get("alpha").expect("alpha indexed")[0].clone();
+    let local_a = names.get("local_a").expect("local_a indexed")[0].clone();
+    let wrong_but_real = vec![(alpha, local_a)];
+    let tc = evaluate_target_correctness(&wrong_but_real, &expected);
+
+    let mut graph = real_graph_metrics(tmp.path(), &queries).await;
+    graph.target_correct = tc.target_correct;
+    graph.target_mismatch = tc.target_mismatch;
+    assert_eq!(
+        graph.target_mismatch, 1,
+        "seed must be a real target mismatch"
+    );
+
+    let check = check_thresholds(&semantic_fixture_report(graph), &baseline());
+    assert!(
+        !check.passed,
+        "target-correctness gate must fail a wrong-but-existing callee"
+    );
+    assert!(
+        check
+            .breaches
+            .iter()
+            .any(|b| b.contains("target_correctness")),
+        "breach list must name target_correctness; got {:?}",
+        check.breaches
+    );
+}
