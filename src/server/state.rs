@@ -5,15 +5,16 @@
 //   before the sort.  Most other guard acquisitions are either the sole await
 //   in a method or are released via implicit drop before the next await.
 // - Intentional paired-lock exception: to snapshot/publish the
-//   (`active_workspace`, `workspace_config`) pair atomically, both
-//   `snapshot_dispatch_context` (read guards) and `set_workspace_and_config`
-//   (write guards) hold the `active_workspace` guard across acquisition of the
-//   `workspace_config` guard. Both use the same lock order (`active_workspace`
-//   then `workspace_config`), and no code path acquires the two locks in the
-//   reverse order, so this pairing cannot deadlock. `tokio`'s async guards are
-//   `Send`, so holding one across an `.await` is permitted (unlike
-//   `std::sync` guards); deadlock-freedom here rests on the consistent lock
-//   order, not on a `!Send` compile-time net.
+//   (`active_workspace`, `workspace_config`) pair atomically,
+//   `snapshot_dispatch_context` and `snapshot_workspace_and_config` (read
+//   guards) and `set_workspace_and_config` (write guards) hold the
+//   `active_workspace` guard across acquisition of the `workspace_config` guard.
+//   All use the same lock order (`active_workspace` then `workspace_config`),
+//   and no code path acquires the two locks in the reverse order, so this
+//   pairing cannot deadlock. `tokio`'s async guards are `Send`, so holding one
+//   across an `.await` is permitted (unlike `std::sync` guards);
+//   deadlock-freedom here rests on the consistent lock order, not on a `!Send`
+//   compile-time net.
 // - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
 //   need no locking at all.
 // - No lock is held across an I/O operation; the only await performed while a
@@ -238,6 +239,31 @@ impl AppState {
 
     pub async fn snapshot_workspace(&self) -> Option<WorkspaceSnapshot> {
         self.active_workspace.read().await.clone()
+    }
+
+    /// Atomically snapshot the active workspace binding and loaded config.
+    ///
+    /// This reader acquires `active_workspace` before `workspace_config`, matching
+    /// the paired-lock order used by [`AppState::set_workspace_and_config`] and
+    /// [`AppState::snapshot_dispatch_context`]. Holding both read guards while
+    /// cloning prevents a concurrent atomic writer from being observed as a
+    /// mismatched workspace/config pair.
+    ///
+    /// Returns `None` when either value is absent. Background paths use that
+    /// gating to skip work until both the workspace and its config are loaded;
+    /// unlike [`AppState::snapshot_dispatch_context`], this method never
+    /// substitutes [`WorkspaceConfig::default`]. Both guards are dropped before
+    /// the caller can perform any I/O or other awaited work.
+    pub async fn snapshot_workspace_and_config(
+        &self,
+    ) -> Option<(WorkspaceSnapshot, WorkspaceConfig)> {
+        // Lock-order invariant: when workspace and config are held together,
+        // acquire `active_workspace` first, then `workspace_config`.
+        let workspace_guard = self.active_workspace.read().await;
+        let config_guard = self.workspace_config.read().await;
+        let workspace = workspace_guard.clone()?;
+        let config = config_guard.clone()?;
+        Some((workspace, config))
     }
 
     /// Atomically snapshot the active workspace binding and config for use at dispatch entry.
