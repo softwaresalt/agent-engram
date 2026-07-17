@@ -14,39 +14,46 @@ status: done
 091.020-T - resolution-aware recall denominator for the canonical-resolution eval
 metric. The `resolution_recall` denominator collapses two call-site spellings into
 one unit ONLY when both are proven to share a `(caller_id, target_id)` edge in the
-numerator's resolved-edge set. Blast radius is the `resolution_recall` eval metric
-only; the numerator (real indexed edges) is byte-unchanged.
+numerator's resolved-edge set. The numerator (real indexed edges) is byte-unchanged,
+so the change to the recall METRIC VALUE is confined to the eval denominator. The
+code change is NOT purely eval-local, however: it also adds a new Cozo relation and
+writes a canonical-workspace snapshot on the production full-index and no-drift
+incremental-sync paths (additive and guarded — see Files modified). PR #265 called
+out this broader production-indexing scope explicitly.
 
 The load-bearing invariant: the denominator can under-report (syntax-only, safe) but
 MUST NEVER over-report. Over-report would mean a genuine index-time miss got collapsed
 onto a coincidental edge because eval mis-computed the canonical target.
 
-## The four-cycle adversarial resolution (root cause and terminating design)
+## The adversarial resolution: four remediation passes + a validation pass
 
 Over-report is only possible when eval's canonical-resolution context DIVERGES from
-the index-time context that produced `resolved_edges`. Each Sol pass found one more
-live-recomputed resolution input that could diverge under a stale index:
+the index-time context that produced `resolved_edges`. Each Sol remediation pass found
+one more live-recomputed resolution input that could diverge under a stale index:
 
-* **P1a/P1b (cycle 1-2, e078c91):** eval rebuilt `unsafe_module_prefixes` from the
-  indexed file list, a strict subset of production's discovered-file set. Fixed by
-  reusing the production `discover_files` + `unsafe_module_prefixes` helpers, then
-  found that even the shared helpers recompute from CURRENT disk, not index-time.
-* **P1-A/B/C (cycle 3-4, 2255f7d):** persisted the WHOLE index-time
+* **Cycle 1 (e078c91):** eval rebuilt `unsafe_module_prefixes` from the indexed file
+  list, a strict subset of production's discovered-file set. Fixed by reusing the
+  production `discover_files` + `unsafe_module_prefixes` helpers.
+* **Cycle 2 (6c1b9b0):** the shared helpers still recompute from CURRENT disk, not
+  index-time. Persisted the unsafe-prefix snapshot so eval stops walking live disk.
+* **Cycle 3 (2255f7d):** generalized the persist to the WHOLE index-time
   `CanonicalWorkspace {crates, unsafe_prefixes}` as one JSON snapshot in a new Cozo
   relation `index_canonical_workspace_snapshot`. Collapse is ENABLED iff the snapshot
   is present; written only by a successful full index or a no-drift incremental sync
   (delete-at-start + write-at-success); eval builds its ENTIRE CanonicalWorkspace from
   the snapshot with zero live-disk reads; absent snapshot -> syntax-only.
-* **P1-D (cycle 5, 174b0af):** the per-file `UseGraph`/`ModulePath` was still reparsed
+* **Cycle 4 (174b0af):** the per-file `UseGraph`/`ModulePath` was still reparsed
   from CURRENT caller source at eval time. Closed with a per-file FRESHNESS GATE using
   existing 084.003-T infra: emit the collapse key only when the caller file is fresh
   (`!recorded_hash.is_empty() && !is_index_stale(source, recorded_hash)`); stale or
-  unknown-hash files fall back to syntax-only.
+  unknown-hash files fall back to syntax-only. This commit also hardened the full
+  reindex path.
 
 After 174b0af, no live-recomputed resolution input remains: every canonical-resolution
-input is either persisted (crates + unsafe_prefixes) or per-file freshness-gated.
-Sol's 5th pass confirmed cross-file target-side staleness is NOT a vector (eval never
-reparses target files for canonicalization). Clean verdict -> merge authorized.
+input is either persisted (crates + unsafe_prefixes) or per-file freshness-gated. A
+fifth, validation-only pass (no commit) confirmed cross-file target-side staleness is
+NOT a vector (eval never reparses target files for canonicalization). Clean verdict ->
+merge authorized.
 
 ## Files modified (merged diff)
 
@@ -54,7 +61,10 @@ reparses target files for canonicalization). Clean verdict -> merge authorized.
   gate in `accumulate_call_sites`; `count_call_sites_resolution_aware` is the sole
   collapse path (one call site, inside the gated function); builds CanonicalWorkspace
   entirely from the persisted snapshot.
-* `src/services/eval.rs` - wiring for the persisted-snapshot lookup.
+* `src/tools/eval.rs` - wiring for the persisted-snapshot lookup.
+* `src/services/parsing/canonical/mod.rs` and
+  `src/services/parsing/canonical/module_path.rs` - canonical module-path plumbing
+  used by the resolution-aware denominator.
 * `src/db/cozo_queries.rs` - clear/replace/load for
   `index_canonical_workspace_snapshot`; `is_missing_relation_error` shared helper.
 * `src/db/cozo_backend/schema.rs` - the new snapshot relation.

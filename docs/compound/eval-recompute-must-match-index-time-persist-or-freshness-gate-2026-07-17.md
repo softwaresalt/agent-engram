@@ -40,14 +40,14 @@ genuine miss and over-reported.
 
 ## Why one-input-at-a-time fixing failed
 
-Five adversarial passes (GPT-5.6 Sol @ xhigh, the operator-designated key
+Four remediation passes (GPT-5.6 Sol @ xhigh, the operator-designated key
 reviewer) each found exactly ONE more live-recomputed input after the previous
-one was persisted:
+one was persisted; a fifth, validation-only pass confirmed none remained:
 
-1. prefixes rebuilt from the indexed-file subset -> reuse production discovery
-2. shared helper still recomputes from current disk -> persist prefixes snapshot
-3. crates still rebuilt from live manifests -> persist crates too
-4. per-file use-graph still reparsed from live source -> freshness gate
+1. prefixes rebuilt from the indexed-file subset -> reuse production discovery (e078c91)
+2. shared helper still recomputes from current disk -> persist prefixes snapshot (6c1b9b0)
+3. persist the whole canonical workspace (crates + prefixes) as one snapshot (2255f7d)
+4. per-file use-graph still reparsed from live source -> freshness gate (174b0af)
 
 Persisting inputs individually was whack-a-mole: each fix closed one drift
 vector and revealed the next, because "the canonical context" is a SET of
@@ -81,9 +81,13 @@ index-time inputs, not a single value.
   paths, but a compound case (stale input + a coincidental singleton edge to the
   same target) slips through. Adversarial review that hunts specifically for the
   compound case is worth more than another broad pass.
-- **Keep the numerator byte-unchanged.** The entire remediation touched only the
-  denominator/eval path; the indexed edge set (the numerator) was never modified,
-  so the blast radius stayed confined to the one eval metric.
+- **Keep the numerator byte-unchanged.** The indexed edge set (the numerator) was
+  never modified, so the recall METRIC VALUE change stayed confined to the eval
+  denominator. The remediation was NOT purely eval-local, though: it added a new Cozo
+  relation (`index_canonical_workspace_snapshot`) plus additive, guarded snapshot
+  writes on the production full-index and no-drift incremental-sync paths. Separate
+  "the metric-value blast radius" (eval-only) from "the code change surface" (also the
+  production indexing write path) when recording closure scope.
 
 ## Fix
 
