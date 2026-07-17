@@ -20,7 +20,7 @@
 //! [`crate::services::evaluation`] surface. The two subsystems measure different
 //! things (`retrieval_eval` vs `evaluation`) and must not be conflated.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use tokio::io::AsyncWriteExt;
@@ -34,7 +34,7 @@ use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
-use crate::services::parsing::{ExtractedEdge, Language, parse_source};
+use crate::services::parsing::{ExtractedEdge, Language, canonical, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_rank_of};
 
 /// Maximum bytes retained from a derived known-item query.
@@ -319,6 +319,11 @@ pub fn evaluate_semantic(
 /// contributes one unit (no spurious deflation), while two same-named calls to
 /// *different* targets contribute two — so recall no longer over-reports a
 /// perfect `1.0` when only one of them actually resolved.
+///
+/// This source-only helper has no access to resolved graph IDs, so it preserves
+/// the fail-closed syntactic denominator. Runtime eval uses
+/// [`scan_call_site_inventory_with_resolution`] to collapse only spellings proven
+/// to share the same resolved `(caller_id, target_id)` numerator edge.
 #[must_use]
 pub fn count_call_sites(source: &str, language: Language) -> usize {
     parse_source(source, language).map_or(0, |result| {
@@ -342,6 +347,351 @@ pub fn count_call_sites(source: &str, language: Language) -> usize {
                         raw_qualifier.as_str(),
                         qualifier_kind.as_str(),
                     ));
+                }
+            }
+        }
+        relations.len()
+    })
+}
+
+/// Resolved graph identity data used to make the graph-recall denominator
+/// commensurable with the `(from, to)` numerator.
+#[derive(Debug, Clone, Default)]
+pub struct CallSiteResolutionContext {
+    /// Indexed functions in the evaluated workspace.
+    pub functions: Vec<Function>,
+    /// Resolved `calls_edge` pairs keyed by `(caller_id, callee_id)`.
+    pub resolved_edges: HashSet<(String, String)>,
+    /// Non-empty canonical function identities keyed to matching function IDs.
+    pub canonical_index: HashMap<String, Vec<String>>,
+}
+
+impl CallSiteResolutionContext {
+    /// Build a resolution context from the same indexed graph rows used by the
+    /// resolution-recall numerator.
+    #[must_use]
+    pub fn new(
+        functions: Vec<Function>,
+        resolved_edges: HashSet<(String, String)>,
+        canonical_index: HashMap<String, Vec<String>>,
+    ) -> Self {
+        Self {
+            functions,
+            resolved_edges,
+            canonical_index,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolutionLookup {
+    function_ids_by_file_and_name: HashMap<(String, String), Vec<String>>,
+    function_ids_by_name: HashMap<String, Vec<String>>,
+    canonical_path_by_id: HashMap<String, String>,
+    resolved_edges: HashSet<(String, String)>,
+    canonical_index: HashMap<String, Vec<String>>,
+}
+
+impl ResolutionLookup {
+    fn from_context(context: &CallSiteResolutionContext) -> Option<Self> {
+        if context.functions.is_empty() || context.resolved_edges.is_empty() {
+            return None;
+        }
+
+        let mut function_ids_by_file_and_name: HashMap<(String, String), Vec<String>> =
+            HashMap::new();
+        let mut function_ids_by_name: HashMap<String, Vec<String>> = HashMap::new();
+        for function in &context.functions {
+            function_ids_by_file_and_name
+                .entry((function.file_path.clone(), function.name.clone()))
+                .or_default()
+                .push(function.id.clone());
+            function_ids_by_name
+                .entry(function.name.clone())
+                .or_default()
+                .push(function.id.clone());
+        }
+
+        let mut canonical_path_by_id = HashMap::new();
+        for (canonical_path, ids) in &context.canonical_index {
+            if ids.len() == 1 {
+                canonical_path_by_id.insert(ids[0].clone(), canonical_path.clone());
+            }
+        }
+
+        Some(Self {
+            function_ids_by_file_and_name,
+            function_ids_by_name,
+            canonical_path_by_id,
+            resolved_edges: context.resolved_edges.clone(),
+            canonical_index: context.canonical_index.clone(),
+        })
+    }
+
+    fn unique_caller_id(&self, source_file: &str, caller: &str) -> Option<&str> {
+        let ids = self
+            .function_ids_by_file_and_name
+            .get(&(source_file.to_owned(), caller.to_owned()))?;
+        if ids.len() == 1 {
+            Some(ids[0].as_str())
+        } else {
+            None
+        }
+    }
+
+    fn edge_target_if_present<'a>(&self, caller_id: &str, target_id: &'a str) -> Option<&'a str> {
+        if self
+            .resolved_edges
+            .contains(&(caller_id.to_owned(), target_id.to_owned()))
+        {
+            Some(target_id)
+        } else {
+            None
+        }
+    }
+
+    fn bare_target_id(&self, source_file: &str, caller_id: &str, callee: &str) -> Option<&str> {
+        // Bare-call collapse must mirror the production resolver's proof path,
+        // not merely observe a same-named edge. A same-named qualified edge can
+        // coexist with an unresolved ambiguous bare call; collapsing that would
+        // overstate recall. Only collapse when the in-file direct target or the
+        // workspace-global singleton target is unique and that exact `(from,to)`
+        // edge exists in the numerator identity space.
+        if let Some(ids) = self
+            .function_ids_by_file_and_name
+            .get(&(source_file.to_owned(), callee.to_owned()))
+        {
+            if ids.len() == 1 {
+                let target_id = ids[0].as_str();
+                if self.edge_target_if_present(caller_id, target_id).is_some() {
+                    return Some(target_id);
+                }
+            }
+        }
+
+        let ids = self.function_ids_by_name.get(callee)?;
+        if ids.len() == 1 {
+            self.edge_target_if_present(caller_id, ids[0].as_str())
+        } else {
+            None
+        }
+    }
+
+    fn canonical_target_id(
+        &self,
+        caller_id: &str,
+        target: &canonical::CanonicalId,
+    ) -> Option<&str> {
+        let target = target.clone().into_string();
+        let ids = self.canonical_index.get(&target)?;
+        if ids.len() != 1 {
+            return None;
+        }
+        let target_id = ids[0].as_str();
+        if self
+            .resolved_edges
+            .contains(&(caller_id.to_owned(), target_id.to_owned()))
+        {
+            Some(target_id)
+        } else {
+            None
+        }
+    }
+
+    fn enclosing_canonical_type(&self, caller_id: &str) -> Option<&str> {
+        self.canonical_path_by_id
+            .get(caller_id)?
+            .rsplit_once("::")
+            .map(|(ty, _)| ty)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CanonicalWorkspace {
+    crates: canonical::WorkspaceCrates,
+    unsafe_prefixes: HashSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CallSiteDenominatorKey {
+    Resolved {
+        caller_id: String,
+        target_id: String,
+    },
+    Syntax {
+        source_file: String,
+        caller: String,
+        callee: String,
+        raw_qualifier: String,
+        qualifier_kind: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedCallSite<'a> {
+    source_file: &'a str,
+    caller: &'a str,
+    callee: &'a str,
+    is_method: bool,
+    is_qualified: bool,
+    raw_qualifier: &'a str,
+    qualifier_kind: &'a str,
+}
+
+fn visible_call_site(site: ParsedCallSite<'_>) -> bool {
+    !site.is_method || site.is_qualified || site.raw_qualifier == "self"
+}
+
+fn rust_canonical_ctx(
+    crates: &canonical::WorkspaceCrates,
+    lang: Language,
+    rel_path: &str,
+    source: &str,
+) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+    if lang != Language::Rust {
+        return None;
+    }
+    let module = canonical::module_path_for_file(crates, rel_path)?;
+    Some((module, canonical::extract_use_graph(source)))
+}
+
+fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
+    unsafe_prefixes.iter().any(|prefix| {
+        path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with("::"))
+    })
+}
+
+fn canonical_target_for_call(
+    lookup: &ResolutionLookup,
+    workspace: &CanonicalWorkspace,
+    module: &canonical::ModulePath,
+    use_graph: &canonical::UseGraph,
+    caller_id: &str,
+    site: ParsedCallSite<'_>,
+) -> Option<String> {
+    if use_graph.has_nested_use() || use_graph.has_non_default_mod_mapping() {
+        return None;
+    }
+
+    let ctx = canonical::ResolveContext {
+        module,
+        crates: &workspace.crates,
+        use_graph,
+    };
+    let target = match site.qualifier_kind {
+        "module" | "type" => canonical::resolve_qualifier(
+            &ctx,
+            None,
+            &canonical::Qualifier::Path(site.raw_qualifier.to_owned()),
+            &[site.callee],
+        ),
+        "self" if site.raw_qualifier == "Self" => {
+            let enclosing = lookup.enclosing_canonical_type(caller_id)?;
+            canonical::resolve_qualifier(
+                &ctx,
+                Some(enclosing),
+                &canonical::Qualifier::SelfType,
+                &[site.callee],
+            )
+        }
+        "method" if site.raw_qualifier == "self" => {
+            let enclosing = lookup.enclosing_canonical_type(caller_id)?;
+            canonical::resolve_qualifier(
+                &ctx,
+                Some(enclosing),
+                &canonical::Qualifier::SelfType,
+                &[site.callee],
+            )
+        }
+        _ => None,
+    }?;
+
+    let target_path = target.clone().into_string();
+    if is_under_unsafe_module_prefix(&target_path, &workspace.unsafe_prefixes) {
+        None
+    } else {
+        lookup
+            .canonical_target_id(caller_id, &target)
+            .map(str::to_owned)
+    }
+}
+
+fn resolved_target_id_for_call(
+    lookup: &ResolutionLookup,
+    canonical_ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
+    workspace: Option<&CanonicalWorkspace>,
+    site: ParsedCallSite<'_>,
+) -> Option<String> {
+    let caller_id = lookup.unique_caller_id(site.source_file, site.caller)?;
+    if !site.is_method && !site.is_qualified {
+        return lookup
+            .bare_target_id(site.source_file, caller_id, site.callee)
+            .map(str::to_owned);
+    }
+
+    let (Some((module, use_graph)), Some(workspace)) = (canonical_ctx, workspace) else {
+        return None;
+    };
+    canonical_target_for_call(lookup, workspace, module, use_graph, caller_id, site)
+}
+
+fn syntax_key(site: ParsedCallSite<'_>) -> CallSiteDenominatorKey {
+    CallSiteDenominatorKey::Syntax {
+        source_file: site.source_file.to_owned(),
+        caller: site.caller.to_owned(),
+        callee: site.callee.to_owned(),
+        raw_qualifier: site.raw_qualifier.to_owned(),
+        qualifier_kind: site.qualifier_kind.to_owned(),
+    }
+}
+
+fn count_call_sites_resolution_aware(
+    source_file: &str,
+    source: &str,
+    language: Language,
+    lookup: &ResolutionLookup,
+    workspace: Option<&CanonicalWorkspace>,
+) -> usize {
+    parse_source(source, language).map_or(0, |result| {
+        let canonical_ctx =
+            workspace.and_then(|w| rust_canonical_ctx(&w.crates, language, source_file, source));
+        let mut relations: HashSet<CallSiteDenominatorKey> = HashSet::new();
+        for edge in &result.edges {
+            if let ExtractedEdge::Calls {
+                caller,
+                callee,
+                is_method,
+                is_qualified,
+                raw_qualifier,
+                qualifier_kind,
+                ..
+            } = edge
+            {
+                let site = ParsedCallSite {
+                    source_file,
+                    caller,
+                    callee,
+                    is_method: *is_method,
+                    is_qualified: *is_qualified,
+                    raw_qualifier,
+                    qualifier_kind,
+                };
+                if visible_call_site(site) {
+                    if let Some(target_id) =
+                        resolved_target_id_for_call(lookup, canonical_ctx.as_ref(), workspace, site)
+                    {
+                        if let Some(caller_id) = lookup.unique_caller_id(source_file, caller) {
+                            relations.insert(CallSiteDenominatorKey::Resolved {
+                                caller_id: caller_id.to_owned(),
+                                target_id,
+                            });
+                            continue;
+                        }
+                    }
+                    relations.insert(syntax_key(site));
                 }
             }
         }
@@ -404,17 +754,21 @@ pub struct CallSiteInventory {
 /// does not affect the counts (parsing is per-file and the totals sum).
 const CALL_SITE_SCAN_BATCH_FILES: usize = 64;
 
-/// Sum the distinct call-site relations across one batch of `(language, source,
-/// recorded_hash)` tuples and report whether any source has drifted from its
-/// recorded hash (084.011-T).
+/// Sum the distinct call-site relations across one batch of `(source_file,
+/// language, source, recorded_hash)` tuples and report whether any source has
+/// drifted from its recorded hash (084.011-T).
 ///
 /// Pure and synchronous so it can run off the async runtime one batch at a time.
 /// An unparseable language contributes nothing; the stale flag OR-accumulates so
 /// a single drifted file in any batch surfaces the working-tree drift signal.
-fn accumulate_call_sites(batch: &[(String, String, String)]) -> (usize, bool) {
+fn accumulate_call_sites(
+    batch: &[(String, String, String, String)],
+    resolution: Option<&ResolutionLookup>,
+    canonical_workspace: Option<&CanonicalWorkspace>,
+) -> (usize, bool) {
     let mut total: usize = 0;
     let mut stale = false;
-    for (lang, source, recorded_hash) in batch {
+    for (source_file, lang, source, recorded_hash) in batch {
         // Working-tree drift: the freshly-read content no longer matches the hash
         // recorded at index time, so this denominator and the indexed numerator
         // describe different revisions.
@@ -422,10 +776,63 @@ fn accumulate_call_sites(batch: &[(String, String, String)]) -> (usize, bool) {
             stale = true;
         }
         if let Ok(language) = Language::try_from(lang.as_str()) {
-            total += count_call_sites(source, language);
+            total += resolution.map_or_else(
+                || count_call_sites(source, language),
+                |lookup| {
+                    count_call_sites_resolution_aware(
+                        source_file,
+                        source,
+                        language,
+                        lookup,
+                        canonical_workspace,
+                    )
+                },
+            );
         }
     }
     (total, stale)
+}
+
+fn language_gated(file: &CodeFile, languages: &[String]) -> bool {
+    languages.is_empty()
+        || languages
+            .iter()
+            .any(|lang| lang.eq_ignore_ascii_case(&file.language))
+}
+
+async fn canonical_workspace_for_inventory(
+    workspace_path: &Path,
+    ws_root: &Path,
+    files: &[CodeFile],
+    languages: &[String],
+) -> Option<CanonicalWorkspace> {
+    let crates = canonical::discover_workspace_crates(workspace_path);
+    let mut unsafe_prefixes = HashSet::new();
+    for file in files {
+        if !language_gated(file, languages) || !file.language.eq_ignore_ascii_case("rust") {
+            continue;
+        }
+        let full = workspace_path.join(&file.path);
+        let canon = tokio::fs::canonicalize(&full).await.ok()?;
+        if !canon.starts_with(ws_root) {
+            return None;
+        }
+        let source = tokio::fs::read_to_string(&canon).await.ok()?;
+        let Some((module, use_graph)) =
+            rust_canonical_ctx(&crates, Language::Rust, &file.path, &source)
+        else {
+            continue;
+        };
+        unsafe_prefixes.extend(use_graph.non_default_mod_roots().iter().map(|root| {
+            root.split("::")
+                .fold(module.clone(), |module, segment| module.child(segment))
+                .to_canonical()
+        }));
+    }
+    Some(CanonicalWorkspace {
+        crates,
+        unsafe_prefixes,
+    })
 }
 
 /// Scan the indexed source inventory for the graph-metric denominator and its
@@ -463,6 +870,36 @@ pub async fn scan_call_site_inventory(
     files: &[CodeFile],
     languages: &[String],
 ) -> Result<CallSiteInventory, EngramError> {
+    scan_call_site_inventory_inner(workspace_path, files, languages, None).await
+}
+
+/// Scan the indexed source inventory using resolved graph identity to collapse
+/// only call spellings proven to share the same `(caller_id, target_id)` edge.
+///
+/// The reconciliation is intentionally fail-closed: resolved spellings use the
+/// exact post-resolution edge identity counted by the numerator, while any call
+/// site that cannot be mapped to an existing edge remains keyed by its
+/// qualifier-aware syntax. That can under-report when proof is unavailable, but
+/// it cannot merge a genuinely missed distinct target and over-state recall.
+///
+/// # Errors
+/// Returns a system error if the workspace root cannot be canonicalized, or if
+/// an off-runtime parse task panics.
+pub async fn scan_call_site_inventory_with_resolution(
+    workspace_path: &Path,
+    files: &[CodeFile],
+    languages: &[String],
+    resolution: &CallSiteResolutionContext,
+) -> Result<CallSiteInventory, EngramError> {
+    scan_call_site_inventory_inner(workspace_path, files, languages, Some(resolution)).await
+}
+
+async fn scan_call_site_inventory_inner(
+    workspace_path: &Path,
+    files: &[CodeFile],
+    languages: &[String],
+    resolution: Option<&CallSiteResolutionContext>,
+) -> Result<CallSiteInventory, EngramError> {
     // Canonical workspace root for the containment check below. The bound
     // workspace is canonicalized at `set_workspace` time, so this is expected
     // to succeed; a failure is surfaced rather than silently skewing metrics.
@@ -472,6 +909,13 @@ pub async fn scan_call_site_inventory(
         })
     })?;
 
+    let resolution_lookup = resolution.and_then(ResolutionLookup::from_context);
+    let canonical_workspace = if resolution_lookup.is_some() {
+        canonical_workspace_for_inventory(workspace_path, &ws_root, files, languages).await
+    } else {
+        None
+    };
+
     // Running totals accumulated one bounded batch at a time so the whole corpus
     // of source text is never resident simultaneously (084.011-T).
     let mut call_sites: usize = 0;
@@ -480,16 +924,13 @@ pub async fn scan_call_site_inventory(
     // denominator computed over fewer files than were indexed — and therefore an
     // unreliable recall — is visible rather than silently masked.
     let mut unreadable_files: usize = 0;
-    // Current batch: (language, source, recorded_hash) for readable, in-scope
-    // indexed files. Bounded to CALL_SITE_SCAN_BATCH_FILES entries.
-    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(CALL_SITE_SCAN_BATCH_FILES);
+    // Current batch: (source_file, language, source, recorded_hash) for readable,
+    // in-scope indexed files. Bounded to CALL_SITE_SCAN_BATCH_FILES entries.
+    let mut batch: Vec<(String, String, String, String)> =
+        Vec::with_capacity(CALL_SITE_SCAN_BATCH_FILES);
 
     for file in files {
-        let gated = languages.is_empty()
-            || languages
-                .iter()
-                .any(|lang| lang.eq_ignore_ascii_case(&file.language));
-        if !gated {
+        if !language_gated(file, languages) {
             continue;
         }
         let full = workspace_path.join(&file.path);
@@ -514,12 +955,22 @@ pub async fn scan_call_site_inventory(
             continue;
         }
         match tokio::fs::read_to_string(&canon).await {
-            Ok(source) => batch.push((file.language.clone(), source, file.content_hash.clone())),
+            Ok(source) => batch.push((
+                file.path.clone(),
+                file.language.clone(),
+                source,
+                file.content_hash.clone(),
+            )),
             Err(_) => unreadable_files += 1,
         }
 
         if batch.len() >= CALL_SITE_SCAN_BATCH_FILES {
-            let (count, stale) = parse_call_site_batch(std::mem::take(&mut batch)).await?;
+            let (count, stale) = parse_call_site_batch(
+                std::mem::take(&mut batch),
+                resolution_lookup.clone(),
+                canonical_workspace.clone(),
+            )
+            .await?;
             call_sites += count;
             index_stale |= stale;
             batch.reserve(CALL_SITE_SCAN_BATCH_FILES);
@@ -528,7 +979,8 @@ pub async fn scan_call_site_inventory(
 
     // Flush the final partial batch (may be empty for an all-gated-out corpus).
     if !batch.is_empty() {
-        let (count, stale) = parse_call_site_batch(batch).await?;
+        let (count, stale) =
+            parse_call_site_batch(batch, resolution_lookup, canonical_workspace).await?;
         call_sites += count;
         index_stale |= stale;
     }
@@ -547,15 +999,19 @@ pub async fn scan_call_site_inventory(
 /// # Errors
 /// Returns a system error if the off-runtime parse task panics.
 async fn parse_call_site_batch(
-    batch: Vec<(String, String, String)>,
+    batch: Vec<(String, String, String, String)>,
+    resolution: Option<ResolutionLookup>,
+    canonical_workspace: Option<CanonicalWorkspace>,
 ) -> Result<(usize, bool), EngramError> {
-    tokio::task::spawn_blocking(move || accumulate_call_sites(&batch))
-        .await
-        .map_err(|e| {
-            EngramError::System(SystemError::DatabaseError {
-                reason: format!("retrieval eval call-site parse task failed: {e}"),
-            })
+    tokio::task::spawn_blocking(move || {
+        accumulate_call_sites(&batch, resolution.as_ref(), canonical_workspace.as_ref())
+    })
+    .await
+    .map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("retrieval eval call-site parse task failed: {e}"),
         })
+    })
 }
 
 /// Compute graph resolution metrics from raw counts.
@@ -1129,19 +1585,34 @@ mod tests {
 
         // Two clean Rust sources → one (caller,helper) relation each, not stale.
         let clean = vec![
-            ("rust".to_owned(), src.to_owned(), hash.clone()),
-            ("rust".to_owned(), src.to_owned(), hash.clone()),
+            (
+                "src/a.rs".to_owned(),
+                "rust".to_owned(),
+                src.to_owned(),
+                hash.clone(),
+            ),
+            (
+                "src/b.rs".to_owned(),
+                "rust".to_owned(),
+                src.to_owned(),
+                hash.clone(),
+            ),
         ];
         assert_eq!(
-            accumulate_call_sites(&clean),
+            accumulate_call_sites(&clean, None, None),
             (2, false),
             "a batch's counts sum and a matching hash is not stale"
         );
 
         // A source whose recorded hash diverges from its content flags stale, and
         // the stale flag OR-accumulates across the batch.
-        let drifted = vec![("rust".to_owned(), src.to_owned(), "stale-hash".to_owned())];
-        let (count, stale) = accumulate_call_sites(&drifted);
+        let drifted = vec![(
+            "src/a.rs".to_owned(),
+            "rust".to_owned(),
+            src.to_owned(),
+            "stale-hash".to_owned(),
+        )];
+        let (count, stale) = accumulate_call_sites(&drifted, None, None);
         assert_eq!(count, 1, "the single relation still counts");
         assert!(
             stale,
@@ -1150,12 +1621,18 @@ mod tests {
 
         // An empty batch is the additive identity (zero, not stale) — the path a
         // final partial-batch flush of size zero must take without double count.
-        assert_eq!(accumulate_call_sites(&[]), (0, false));
+        let empty: Vec<(String, String, String, String)> = Vec::new();
+        assert_eq!(accumulate_call_sites(&empty, None, None), (0, false));
 
         // An unparseable language contributes no call sites (and cannot be stale
         // via a parse it never performs; an empty recorded hash disables the check).
-        let unknown = vec![("unknownlang".to_owned(), src.to_owned(), String::new())];
-        assert_eq!(accumulate_call_sites(&unknown), (0, false));
+        let unknown = vec![(
+            "src/a.unknown".to_owned(),
+            "unknownlang".to_owned(),
+            src.to_owned(),
+            String::new(),
+        )];
+        assert_eq!(accumulate_call_sites(&unknown, None, None), (0, false));
     }
 
     // ── 084.006-T (14B33F9F): threshold input validation ─────────────────────

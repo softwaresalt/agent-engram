@@ -9,13 +9,19 @@
 //! Plus a denominator sanity check that the parser call-site inventory
 //! (`count_call_sites`) matches the expected identifier-call count.
 
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
+use engram::models::config::CodeGraphConfig;
 use engram::models::{CodeFile, Function};
+use engram::services::code_graph;
 use engram::services::parsing::Language;
 use engram::services::retrieval_eval::{
-    CallSiteInventory, compute_graph_metrics, count_call_sites, scan_call_site_inventory,
-    source_content_hash,
+    CallSiteInventory, CallSiteResolutionContext, compute_graph_metrics, count_call_sites,
+    scan_call_site_inventory, scan_call_site_inventory_with_resolution, source_content_hash,
 };
 
 #[test]
@@ -176,6 +182,184 @@ fn make_fn(id: &str, name: &str, file_path: &str) -> Function {
         embedding: Vec::new(),
         summary: String::new(),
     }
+}
+
+fn write_file(ws: &Path, rel: &str, content: &str) {
+    let full = ws.join(rel);
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).expect("create dirs");
+    }
+    fs::write(full, content).expect("write source");
+}
+
+fn write_manifest(ws: &Path) {
+    write_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+}
+
+fn fixture_db_params(path: &Path) -> (std::path::PathBuf, String) {
+    use sha2::{Digest, Sha256};
+    let canon = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase();
+    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
+    (std::env::temp_dir().join("engram-test"), branch)
+}
+
+async fn index_fixture(ws: &Path) -> CodeGraphQueries {
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = fixture_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+    CodeGraphQueries::new(db)
+}
+
+async fn resolution_context(q: &CodeGraphQueries) -> CallSiteResolutionContext {
+    let mut resolved_edges: HashSet<(String, String)> = HashSet::new();
+    for resolution in [
+        "direct",
+        "calls_resolved_singleton",
+        "calls_resolved_canonical",
+    ] {
+        resolved_edges.extend(
+            q.list_calls_edges_by_resolution(resolution)
+                .await
+                .expect("list calls edges"),
+        );
+    }
+    CallSiteResolutionContext::new(
+        q.all_functions_for_eval()
+            .await
+            .expect("functions for eval"),
+        resolved_edges,
+        q.function_ids_by_canonical_path()
+            .await
+            .expect("canonical index"),
+    )
+}
+
+async fn indexed_rust_files(q: &CodeGraphQueries) -> Vec<CodeFile> {
+    q.list_code_files()
+        .await
+        .expect("code files")
+        .into_iter()
+        .filter(|file| file.language == "rust")
+        .collect()
+}
+
+// ── 091.020-T: denominator reconciles with resolved edge identity ─────────────
+
+#[tokio::test]
+async fn resolution_aware_denominator_collapses_same_target_spellings() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod thing;\n");
+    write_file(
+        ws,
+        "src/thing.rs",
+        "pub fn helper() {}\npub fn caller() {\n    helper();\n    crate::thing::helper();\n}\n",
+    );
+
+    assert_eq!(
+        count_call_sites(
+            "pub fn helper() {}\npub fn caller() {\n    helper();\n    crate::thing::helper();\n}\n",
+            Language::Rust,
+        ),
+        2,
+        "syntactic inventory sees the two spellings before graph identity reconciliation"
+    );
+
+    let q = index_fixture(ws).await;
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 1,
+        "two spellings proven to share one (caller,target) edge are one expected edge"
+    );
+    assert_eq!(resolved, 1, "the graph stores one deduplicated edge");
+    assert!((metrics.resolution_recall - 1.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_distinct_target_miss() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod a;\npub mod caller;\n");
+    write_file(ws, "src/a.rs", "pub fn build() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    crate::a::build();\n    crate::b::build();\n}\n",
+    );
+
+    let q = index_fixture(ws).await;
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "the unresolved distinct target stays in the denominator rather than being hidden"
+    );
+    assert_eq!(resolved, 1, "only the existing target resolves");
+    assert!((metrics.resolution_recall - 0.5).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_ambiguous_bare_miss() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod caller;\n",
+    );
+    write_file(ws, "src/a.rs", "pub fn build() {}\n");
+    write_file(ws, "src/b.rs", "pub fn build() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    crate::a::build();\n    build();\n}\n",
+    );
+
+    let q = index_fixture(ws).await;
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "an ambiguous bare call must not inherit a same-named qualified edge"
+    );
+    assert_eq!(resolved, 1, "only the qualified call resolves");
+    assert!((metrics.resolution_recall - 0.5).abs() < 1e-9);
 }
 
 /// Build a graph with two resolved edges: one whose caller lives in a Rust file
