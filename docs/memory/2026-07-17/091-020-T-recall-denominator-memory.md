@@ -87,8 +87,11 @@ merge authorized.
   all index-time inputs). The terminating design persists the workspace-global inputs
   as one snapshot and freshness-gates the per-file source-derived input. See the
   compound learning captured this session.
-* **Fail-closed everywhere.** Absent snapshot, empty hash, or stale file all degrade
-  to syntax-only counting, which under-reports but never over-reports.
+* **Fail-closed on the reachable paths; fail-loud on corruption.** Absent snapshot,
+  missing relation, empty hash, or stale file all degrade to syntax-only counting,
+  which under-reports but never over-reports. The one exception is deliberate: a
+  present-but-malformed snapshot is propagated as an error and aborts eval (fail-loud)
+  rather than degrading, since the writer should never emit corrupt JSON.
 * **Sol (GPT-5.6 xhigh) as KEY reviewer before Copilot.** Five adversarial passes on
   successive HEADs drove all P1s to closure pre-Copilot, per operator directive. All 6
   Copilot threads on #265 were then triaged (T1 safe-direction, T2 superseded, T3/T5/6th

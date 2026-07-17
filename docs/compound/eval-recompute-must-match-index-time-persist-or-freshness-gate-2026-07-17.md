@@ -10,8 +10,6 @@ date: "2026-07-17"
 shipment: "091-F"
 ---
 
-# An eval-time recompute that must match index-time state is unsafe unless every input is persisted or freshness-gated
-
 ## Problem
 
 The canonical-resolution recall metric (`resolution_recall`) divides resolved
