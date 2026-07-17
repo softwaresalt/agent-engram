@@ -11,7 +11,23 @@ use engram::shim::tools_catalog;
 
 const DOC_PATH: &str = "docs/cli-mcp-parity.md";
 const PARITY_DOC: &str = include_str!("../../docs/cli-mcp-parity.md");
-const FEATURE_GATED_MCP_TOOLS: &[&str] = &["query_changes", "index_git_history"];
+const TOOLS_MOD: &str = include_str!("../../src/tools/mod.rs");
+const MCP_WITHOUT_CLI_ALLOWLIST: &[&str] = &[
+    "get_retrieval_eval_report",
+    "query_changes",
+    "index_git_history",
+];
+const LOCAL_CLI_ALLOWLIST: &[&str] = &[
+    "shim",
+    "daemon",
+    "install",
+    "update",
+    "reinstall",
+    "uninstall",
+    "manifest",
+    "verify",
+    "migrate-down",
+];
 
 #[derive(Debug)]
 struct MappingRow {
@@ -91,6 +107,30 @@ fn primary_cli_surface(cli_command: &str) -> Option<String> {
 }
 
 #[must_use]
+fn dispatch_tool_names() -> BTreeSet<String> {
+    let dispatch_start = TOOLS_MOD
+        .find("let result = match method {")
+        .expect("dispatch match must exist");
+    let dispatch_tail = &TOOLS_MOD[dispatch_start..];
+    let dispatch_end = dispatch_tail
+        .find("// Record latency")
+        .expect("dispatch match must end before latency recording");
+    dispatch_tail[..dispatch_end]
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('"') || !trimmed.contains("=>") {
+                return None;
+            }
+            trimmed
+                .split_once('"')
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(name, _)| name.to_owned())
+        })
+        .collect()
+}
+
+#[must_use]
 fn run_cli(args: &[&str]) -> (i32, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_engram"))
         .args(args)
@@ -161,6 +201,10 @@ fn every_default_catalog_tool_is_documented_as_mapped_or_gap() {
         );
         if row.cli_command == "-" {
             assert!(
+                MCP_WITHOUT_CLI_ALLOWLIST.contains(&name),
+                "MCP-only row for '{name}' must be explicitly allowlisted in the drift guard"
+            );
+            assert!(
                 row.notes.contains("gap") || row.notes.contains("MCP-only"),
                 "MCP-only row for '{name}' must include a gap rationale"
             );
@@ -174,21 +218,63 @@ fn every_default_catalog_tool_is_documented_as_mapped_or_gap() {
 }
 
 #[test]
-fn documented_mcp_rows_match_default_or_feature_gated_tools() {
+fn documented_mcp_rows_match_catalog_or_dispatch_tools() {
     let catalog = tools_catalog::all_tools()
         .iter()
         .map(|tool| tool.name.to_string())
         .collect::<BTreeSet<_>>();
+    let dispatch = dispatch_tool_names();
 
     for row in parse_mapping_rows()
         .iter()
         .filter(|row| row.mcp_tool != "-")
     {
         assert!(
-            catalog.contains(&row.mcp_tool)
-                || FEATURE_GATED_MCP_TOOLS.contains(&row.mcp_tool.as_str()),
-            "documented MCP tool '{}' is neither in the default catalog nor a known feature-gated dispatch tool",
+            catalog.contains(&row.mcp_tool) || dispatch.contains(&row.mcp_tool),
+            "documented MCP tool '{}' is neither in the catalog nor the dispatch table",
             row.mcp_tool
+        );
+    }
+}
+
+#[test]
+fn every_dispatch_tool_is_documented_as_mapped_or_allowlisted_gap() {
+    let rows = parse_mapping_rows();
+    let by_mcp = rows
+        .iter()
+        .filter(|row| row.mcp_tool != "-")
+        .map(|row| (row.mcp_tool.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+
+    for name in dispatch_tool_names() {
+        let row = by_mcp
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("dispatch tool '{name}' is missing from {DOC_PATH}"));
+        if row.cli_command == "-" {
+            assert!(
+                MCP_WITHOUT_CLI_ALLOWLIST.contains(&name.as_str()),
+                "dispatch tool '{name}' has no CLI command but is not explicitly allowlisted"
+            );
+        }
+    }
+}
+
+#[test]
+fn mcp_gap_allowlist_matches_documented_gap_rows() {
+    let rows = parse_mapping_rows();
+    let by_mcp = rows
+        .iter()
+        .filter(|row| row.mcp_tool != "-")
+        .map(|row| (row.mcp_tool.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+
+    for gap in MCP_WITHOUT_CLI_ALLOWLIST {
+        let row = by_mcp.get(gap).unwrap_or_else(|| {
+            panic!("MCP gap allowlist entry '{gap}' is missing from {DOC_PATH}")
+        });
+        assert_eq!(
+            row.cli_command, "-",
+            "MCP gap allowlist entry '{gap}' must remain documented as MCP-only"
         );
     }
 }
@@ -250,6 +336,18 @@ fn local_cli_only_rows_are_explicitly_allowlisted_with_rationale() {
         assert_eq!(
             row.surface, "local",
             "CLI-only command '{}' must be marked local",
+            row.cli_command
+        );
+        let Some(path) = command_path(&row.cli_command) else {
+            panic!(
+                "CLI-only command '{}' must include an engram command",
+                row.cli_command
+            );
+        };
+        let command_key = path.join(" ");
+        assert!(
+            LOCAL_CLI_ALLOWLIST.contains(&command_key.as_str()),
+            "CLI-only command '{}' must be explicitly allowlisted in the drift guard",
             row.cli_command
         );
         let rationale = row.notes.to_lowercase();
