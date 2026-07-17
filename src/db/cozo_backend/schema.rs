@@ -848,19 +848,20 @@ pub const CREATE_STAGED_CALL: &str = r#"
 }
 "#;
 
-/// CozoScript `:create` for the index-time unsafe module-prefix snapshot.
+/// CozoScript `:create` for the index-time canonical workspace snapshot.
 ///
-/// Key: `snapshot_id` (currently `"current"`). The single row's `prefixes`
-/// value records the exact unsafe-prefix set used by the latest full index or
-/// incremental sync for this branch-scoped database. This relation is created
-/// by the writer, not bootstrap, so older databases with no persisted snapshot
-/// remain distinguishable from freshly indexed databases whose prefix set is
-/// legitimately empty.
-pub const CREATE_INDEX_UNSAFE_MODULE_PREFIX_SNAPSHOT: &str = r#"
-:create index_unsafe_module_prefix_snapshot {
+/// Key: `snapshot_id` (currently `"current"`). The single row records the
+/// serialized canonical workspace context (crate roots, dependency-renamed
+/// keys, and unsafe prefixes) used by a successful full-index baseline, or by
+/// an incremental sync only when the recomputed context matches the previous
+/// baseline. This relation is created by the writer, not bootstrap, so older
+/// databases with no persisted snapshot remain distinguishable from freshly
+/// indexed databases whose context is legitimately empty.
+pub const CREATE_INDEX_CANONICAL_WORKSPACE_SNAPSHOT: &str = r#"
+:create index_canonical_workspace_snapshot {
     snapshot_id: String
     =>
-    prefixes: [String],
+    canonical_workspace_json: String,
     recorded_at: String,
 }
 "#;

@@ -118,7 +118,7 @@ pub async fn run_retrieval_eval(
         functions,
         resolved_edges,
         queries.function_ids_by_canonical_path().await?,
-        queries.load_index_unsafe_module_prefixes().await?,
+        queries.load_index_canonical_workspace_snapshot().await?,
     );
     let inventory = retrieval_eval::scan_call_site_inventory_with_resolution(
         &parts.workspace_path,

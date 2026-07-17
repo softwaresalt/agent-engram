@@ -428,6 +428,9 @@ async fn index_workspace_impl(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    let _previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
+    queries.clear_index_canonical_workspace_snapshot().await?;
+
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation
     // (computed once per index run; Rust-only, precision-neutral).
     let crates = canonical::discover_workspace_crates(ws_path);
@@ -435,6 +438,10 @@ async fn index_workspace_impl(
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
     let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &files);
+    let canonical_workspace = canonical::CanonicalWorkspace {
+        crates: crates.clone(),
+        unsafe_prefixes: unsafe_prefixes.clone(),
+    };
     info!(
         files_found = files.len(),
         "code graph: discovered source files"
@@ -931,7 +938,7 @@ async fn index_workspace_impl(
         );
     }
     queries
-        .replace_index_unsafe_module_prefixes(&unsafe_prefixes)
+        .replace_index_canonical_workspace_snapshot(&canonical_workspace)
         .await?;
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1034,12 +1041,19 @@ pub async fn sync_workspace_with_progress(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
+    queries.clear_index_canonical_workspace_snapshot().await?;
+
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation.
     let crates = canonical::discover_workspace_crates(ws_path);
 
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
     let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &current_files);
+    let canonical_workspace = canonical::CanonicalWorkspace {
+        crates: crates.clone(),
+        unsafe_prefixes: unsafe_prefixes.clone(),
+    };
 
     // Load all indexed code files from DB.
     let indexed_files = queries.list_code_files().await?;
@@ -1658,9 +1672,16 @@ pub async fn sync_workspace_with_progress(
             "code graph sync: re-resolved deferred references edges"
         );
     }
-    queries
-        .replace_index_unsafe_module_prefixes(&unsafe_prefixes)
-        .await?;
+    if previous_canonical_workspace.as_ref() == Some(&canonical_workspace) {
+        queries
+            .replace_index_canonical_workspace_snapshot(&canonical_workspace)
+            .await?;
+    } else {
+        debug!(
+            had_previous = previous_canonical_workspace.is_some(),
+            "code graph sync: canonical workspace context drifted or lacks a full-index baseline; retrieval-eval collapse remains disabled"
+        );
+    }
 
     // ── Record sync summary ──────────────────────────────────────────
     let sync_summary = format!(

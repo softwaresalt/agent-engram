@@ -365,8 +365,8 @@ pub struct CallSiteResolutionContext {
     pub resolved_edges: HashSet<(String, String)>,
     /// Non-empty canonical function identities keyed to matching function IDs.
     pub canonical_index: HashMap<String, Vec<String>>,
-    /// Index-time unsafe prefixes persisted with the graph edge set.
-    pub unsafe_prefixes: Option<HashSet<String>>,
+    /// Complete index-time canonical workspace context persisted with the graph edge set.
+    pub canonical_workspace: Option<canonical::CanonicalWorkspace>,
 }
 
 impl CallSiteResolutionContext {
@@ -377,13 +377,13 @@ impl CallSiteResolutionContext {
         functions: Vec<Function>,
         resolved_edges: HashSet<(String, String)>,
         canonical_index: HashMap<String, Vec<String>>,
-        unsafe_prefixes: Option<HashSet<String>>,
+        canonical_workspace: Option<canonical::CanonicalWorkspace>,
     ) -> Self {
         Self {
             functions,
             resolved_edges,
             canonical_index,
-            unsafe_prefixes,
+            canonical_workspace,
         }
     }
 }
@@ -511,12 +511,6 @@ impl ResolutionLookup {
     }
 }
 
-#[derive(Debug, Clone)]
-struct CanonicalWorkspace {
-    crates: canonical::WorkspaceCrates,
-    unsafe_prefixes: HashSet<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CallSiteDenominatorKey {
     Resolved {
@@ -562,7 +556,7 @@ fn rust_canonical_ctx(
 
 fn canonical_target_for_call(
     lookup: &ResolutionLookup,
-    workspace: &CanonicalWorkspace,
+    workspace: &canonical::CanonicalWorkspace,
     module: &canonical::ModulePath,
     use_graph: &canonical::UseGraph,
     caller_id: &str,
@@ -618,7 +612,7 @@ fn canonical_target_for_call(
 fn resolved_target_id_for_call(
     lookup: &ResolutionLookup,
     canonical_ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
-    workspace: Option<&CanonicalWorkspace>,
+    workspace: Option<&canonical::CanonicalWorkspace>,
     site: ParsedCallSite<'_>,
 ) -> Option<String> {
     let caller_id = lookup.unique_caller_id(site.source_file, site.caller)?;
@@ -649,7 +643,7 @@ fn count_call_sites_resolution_aware(
     source: &str,
     language: Language,
     lookup: &ResolutionLookup,
-    workspace: Option<&CanonicalWorkspace>,
+    workspace: Option<&canonical::CanonicalWorkspace>,
 ) -> usize {
     parse_source(source, language).map_or(0, |result| {
         let canonical_ctx =
@@ -760,7 +754,7 @@ const CALL_SITE_SCAN_BATCH_FILES: usize = 64;
 fn accumulate_call_sites(
     batch: &[(String, String, String, String)],
     resolution: Option<&ResolutionLookup>,
-    canonical_workspace: Option<&CanonicalWorkspace>,
+    canonical_workspace: Option<&canonical::CanonicalWorkspace>,
 ) -> (usize, bool) {
     let mut total: usize = 0;
     let mut stale = false;
@@ -794,17 +788,6 @@ fn language_gated(file: &CodeFile, languages: &[String]) -> bool {
         || languages
             .iter()
             .any(|lang| lang.eq_ignore_ascii_case(&file.language))
-}
-
-fn canonical_workspace_for_inventory(
-    workspace_path: &Path,
-    unsafe_prefixes: HashSet<String>,
-) -> CanonicalWorkspace {
-    let crates = canonical::discover_workspace_crates(workspace_path);
-    CanonicalWorkspace {
-        crates,
-        unsafe_prefixes,
-    }
 }
 
 /// Scan the indexed source inventory for the graph-metric denominator and its
@@ -881,21 +864,18 @@ async fn scan_call_site_inventory_inner(
         })
     })?;
 
-    // Without a persisted index-time unsafe-prefix snapshot, resolution-aware
-    // collapse is disabled entirely. Syntax-only counting is the safe upgrade
-    // fallback: it can under-report but cannot hide a qualified miss by
-    // recomputing a smaller current-disk prefix set than the one that produced
-    // the stored edges.
-    let index_unsafe_prefixes = resolution.and_then(|context| context.unsafe_prefixes.clone());
-    let resolution_lookup = if index_unsafe_prefixes.is_some() {
+    // Without a persisted full index-time canonical workspace snapshot,
+    // resolution-aware collapse is disabled entirely. Syntax-only counting is
+    // the safe upgrade/drift fallback: it can under-report but cannot hide a
+    // qualified miss by recomputing a smaller live-disk context than the one
+    // that produced the stored edges.
+    let canonical_workspace = resolution.and_then(|context| context.canonical_workspace.clone());
+    let resolution_lookup = if canonical_workspace.is_some() {
         resolution.and_then(ResolutionLookup::from_context)
     } else {
         None
     };
-    let canonical_workspace = resolution_lookup
-        .as_ref()
-        .and(index_unsafe_prefixes)
-        .map(|prefixes| canonical_workspace_for_inventory(workspace_path, prefixes));
+    let canonical_workspace = resolution_lookup.as_ref().and(canonical_workspace);
 
     // Running totals accumulated one bounded batch at a time so the whole corpus
     // of source text is never resident simultaneously (084.011-T).
@@ -982,7 +962,7 @@ async fn scan_call_site_inventory_inner(
 async fn parse_call_site_batch(
     batch: Vec<(String, String, String, String)>,
     resolution: Option<ResolutionLookup>,
-    canonical_workspace: Option<CanonicalWorkspace>,
+    canonical_workspace: Option<canonical::CanonicalWorkspace>,
 ) -> Result<(usize, bool), EngramError> {
     tokio::task::spawn_blocking(move || {
         accumulate_call_sites(&batch, resolution.as_ref(), canonical_workspace.as_ref())
