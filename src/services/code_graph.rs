@@ -428,7 +428,6 @@ async fn index_workspace_impl(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
-    let _previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
     queries.clear_index_canonical_workspace_snapshot().await?;
 
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation

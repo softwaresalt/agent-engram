@@ -819,6 +819,81 @@ async fn canonical_snapshot_uses_persisted_dependency_renames() {
     );
 }
 
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_use_graph_drift_miss() {
+    let original_source = "use external::thing as Alias;\n\npub fn caller() {\n    helper();\n    Alias::helper();\n}\n";
+    let drifted_source =
+        "use crate::thing as Alias;\n\npub fn caller() {\n    helper();\n    Alias::helper();\n}\n";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod caller;\npub mod thing;\n");
+    write_file(ws, "src/thing.rs", "pub fn helper() {}\n");
+    write_file(ws, "src/caller.rs", original_source);
+
+    let q = index_fixture(ws).await;
+    assert!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load snapshot")
+            .is_some(),
+        "full index must publish a canonical workspace snapshot"
+    );
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    assert_eq!(
+        resolved, 1,
+        "index-time external alias keeps the qualified call missed while the bare singleton resolves"
+    );
+
+    write_file(ws, "src/caller.rs", drifted_source);
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan drifted use graph");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+    assert!(
+        inventory.index_stale,
+        "the caller file hash must reveal that eval reparsed a non-index-time use graph"
+    );
+    assert_eq!(
+        inventory.call_sites, 2,
+        "stale caller files must use syntax-only counting so the index-time alias miss is preserved"
+    );
+    assert!(metrics.resolution_recall < 1.0);
+
+    let fresh_tmp = tempfile::tempdir().expect("fresh tempdir");
+    let fresh_ws = fresh_tmp.path();
+    write_manifest(fresh_ws);
+    write_file(fresh_ws, "src/lib.rs", "pub mod caller;\npub mod thing;\n");
+    write_file(fresh_ws, "src/thing.rs", "pub fn helper() {}\n");
+    write_file(fresh_ws, "src/caller.rs", drifted_source);
+    let fresh_q = index_fixture(fresh_ws).await;
+    let fresh_files = indexed_rust_files(&fresh_q).await;
+    let fresh_context = resolution_context(&fresh_q).await;
+    let fresh_inventory = scan_call_site_inventory_with_resolution(
+        fresh_ws,
+        &fresh_files,
+        &["rust".to_owned()],
+        &fresh_context,
+    )
+    .await
+    .expect("scan fresh use graph");
+    let fresh_resolved = fresh_q.count_calls_edges().await.expect("fresh resolved");
+    let fresh_metrics = compute_graph_metrics(fresh_inventory.call_sites, fresh_resolved, 0);
+    assert!(
+        !fresh_inventory.index_stale,
+        "fresh control must keep resolution-aware collapse enabled"
+    );
+    assert_eq!(
+        fresh_inventory.call_sites, 1,
+        "fresh alias and bare call proven to share one edge still collapse"
+    );
+    assert!((fresh_metrics.resolution_recall - 1.0).abs() < 1e-9);
+}
+
 /// Build a graph with two resolved edges: one whose caller lives in a Rust file
 /// and one whose caller lives in a TypeScript file, both calling the same target.
 async fn graph_with_multilang_edges() -> (tempfile::TempDir, CodeGraphQueries) {

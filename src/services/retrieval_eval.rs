@@ -759,25 +759,37 @@ fn accumulate_call_sites(
     let mut total: usize = 0;
     let mut stale = false;
     for (source_file, lang, source, recorded_hash) in batch {
+        let file_stale = is_index_stale(source, recorded_hash);
+        let file_fresh_for_resolution = !recorded_hash.is_empty() && !file_stale;
+
         // Working-tree drift: the freshly-read content no longer matches the hash
         // recorded at index time, so this denominator and the indexed numerator
         // describe different revisions.
-        if is_index_stale(source, recorded_hash) {
+        if file_stale {
             stale = true;
         }
         if let Ok(language) = Language::try_from(lang.as_str()) {
-            total += resolution.map_or_else(
-                || count_call_sites(source, language),
-                |lookup| {
-                    count_call_sites_resolution_aware(
-                        source_file,
-                        source,
-                        language,
-                        lookup,
-                        canonical_workspace,
-                    )
-                },
-            );
+            total += if file_fresh_for_resolution {
+                resolution.map_or_else(
+                    || count_call_sites(source, language),
+                    |lookup| {
+                        count_call_sites_resolution_aware(
+                            source_file,
+                            source,
+                            language,
+                            lookup,
+                            canonical_workspace,
+                        )
+                    },
+                )
+            } else {
+                // Per-file canonical inputs (`ModulePath` + `UseGraph`) are
+                // reparsed from the caller source. Only use them when the file's
+                // index-time hash is known and still matches; stale or legacy
+                // unknown-hash files fall back to syntax-only counting so a live
+                // alias/import drift cannot collapse an index-time miss.
+                count_call_sites(source, language)
+            };
         }
     }
     (total, stale)
