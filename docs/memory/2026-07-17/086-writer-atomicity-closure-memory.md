@@ -46,8 +46,9 @@ workspace+config atomicity fix (082-S adversarial review F4) is merged to main.
 
 * Both write locks acquired in the reader's order (active_workspace -> workspace_config). Only two
   crate-wide double-lock sites (reader read/read, writer write/write), both same order -> no
-  inversion -> deadlock-free. RwLock guards are Send, which is why holding across the second lock's
-  await compiles.
+  inversion -> deadlock-free. Deadlock-freedom follows solely from that lock order; separately, RwLock
+  guards are Send, which keeps the resulting future Send/schedulable - a distinct property, not the
+  reason the paired-lock hold compiles.
 * Capacity check (LimitReached) runs first while holding both guards; Err returns with no partial
   publish. Byte-identical to set_workspace's check.
 * Adversarial review before Copilot (operator directive): GPT-5.6 Sol @ xhigh (key rust/correctness)

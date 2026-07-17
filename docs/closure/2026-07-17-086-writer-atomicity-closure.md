@@ -170,13 +170,20 @@ rollback posture. It changes no DB schema, no JSONL format, and no command routi
 
 ### Owner and observation window
 
-* Owner: ship and repository maintainer.
-* Duration: passive. The guard runs on every code-touching PR. No timed production window is
-  required because engram is a local single-binary daemon with no fleet rollout; the change takes
-  effect on the next binary the operator runs.
-* Outcome (pre-release validation): local gates green (fmt, clippy pedantic); atomicity 3/3;
-  affected suites green; adversarial review (Sol xhigh + Gemini) clean on the core fix; 1 Copilot
-  pass resolved; 4-point merge gate CLEAN at `4888935`.
+* Owner: repository maintainer (operator); ship hands off the post-deploy check.
+* Window: bounded to the first 3 workspace binds after the operator next builds and runs the updated
+  binary, or 7 days from that first run, whichever comes first. Engram is a local single-binary daemon
+  with no runtime telemetry or fleet rollout, so observation is a manual check, not a dashboard.
+* Active check: after each of the first binds in the window, run `get_workspace_status` (or the CLI
+  status equivalent) and confirm the reported workspace and config form a consistent pair (no
+  new-workspace/old-config tear) and that bind latency stays within the WS-6 SLA. Silence is not
+  treated as success - the check is performed, not assumed.
+* Closeout: at window end, record the outcome (healthy / degraded / rolled back) in this record.
+* Pre-release validation (already complete): local gates green (fmt, clippy pedantic); atomicity 3/3;
+  affected suites green; adversarial review (Sol xhigh + Gemini) clean on the core fix; 1 Copilot pass
+  resolved; 4-point merge gate CLEAN at `4888935`.
+* Post-deploy outcome: PENDING the operator's next build/run of the updated binary (operator is
+  currently AFK). To be recorded at window close per the active check above.
 
 ### Rollback trigger and procedure
 
