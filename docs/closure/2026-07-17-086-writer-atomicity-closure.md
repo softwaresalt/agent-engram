@@ -104,7 +104,7 @@ Both P2 documentation findings were applied and folded into the amended commit `
 T041 audit comment was rewritten to document the intentional paired-lock exception and drop the
 inaccurate `!Send` claim, and the reader rustdoc now references `set_workspace_and_config`.
 
-### Copilot - 1 review pass, resolved
+### Copilot - 1 review-fix cycle, resolved
 
 * `81ba27d` - 1 finding: the note at `get_workspace_status` (`lifecycle.rs`) was stale - it still
   described the old two-await publish and called strict atomicity an 082-S F4 follow-up, when this
@@ -180,8 +180,9 @@ rollback posture. It changes no DB schema, no JSONL format, and no command routi
   treated as success - the check is performed, not assumed.
 * Closeout: at window end, record the outcome (healthy / degraded / rolled back) in this record.
 * Pre-release validation (already complete): local gates green (fmt, clippy pedantic); atomicity 3/3;
-  affected suites green; adversarial review (Sol xhigh + Gemini) clean on the core fix; 1 Copilot pass
-  resolved; 4-point merge gate CLEAN at `4888935`.
+  affected suites green; adversarial review (Sol xhigh + Gemini) clean on the core fix; one Copilot
+  review-fix cycle resolved (finding on `81ba27d`, clean re-review on `4888935`); 4-point merge gate
+  CLEAN at `4888935`.
 * Post-deploy outcome: PENDING the operator's next build/run of the updated binary (operator is
   currently AFK). To be recorded at window close per the active check above.
 
