@@ -41,7 +41,7 @@ fn rust_canonical_ctx(
 
 /// Collect module prefixes whose default filesystem identity is unsafe because
 /// a top-level `mod` declaration remaps or conditionally gates that module.
-fn unsafe_module_prefixes(
+pub(crate) fn unsafe_module_prefixes(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     files: &[std::path::PathBuf],
@@ -75,7 +75,7 @@ fn unsafe_module_prefixes(
     prefixes
 }
 
-fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
+pub(crate) fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
     unsafe_prefixes.iter().any(|prefix| {
         path == prefix
             || path
@@ -1804,7 +1804,7 @@ async fn relink_concerns_edges(
 }
 
 /// Discover all source files in the workspace using `.gitignore`-aware traversal.
-fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::PathBuf> {
+pub(crate) fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::PathBuf> {
     let mut builder = ignore::WalkBuilder::new(ws_path);
     builder
         .hidden(true)

@@ -30,10 +30,12 @@ use sha2::{Digest, Sha256};
 use crate::errors::{ConfigError, EngramError, SystemError};
 use crate::models::CodeFile;
 use crate::models::Function;
+use crate::models::config::CodeGraphConfig;
 use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
+use crate::services::code_graph;
 use crate::services::parsing::{ExtractedEdge, Language, canonical, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_rank_of};
 
@@ -555,15 +557,6 @@ fn rust_canonical_ctx(
     Some((module, canonical::extract_use_graph(source)))
 }
 
-fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
-    unsafe_prefixes.iter().any(|prefix| {
-        path == prefix
-            || path
-                .strip_prefix(prefix)
-                .is_some_and(|suffix| suffix.starts_with("::"))
-    })
-}
-
 fn canonical_target_for_call(
     lookup: &ResolutionLookup,
     workspace: &CanonicalWorkspace,
@@ -610,7 +603,7 @@ fn canonical_target_for_call(
     }?;
 
     let target_path = target.clone().into_string();
-    if is_under_unsafe_module_prefix(&target_path, &workspace.unsafe_prefixes) {
+    if code_graph::is_under_unsafe_module_prefix(&target_path, &workspace.unsafe_prefixes) {
         None
     } else {
         lookup
@@ -800,39 +793,21 @@ fn language_gated(file: &CodeFile, languages: &[String]) -> bool {
             .any(|lang| lang.eq_ignore_ascii_case(&file.language))
 }
 
-async fn canonical_workspace_for_inventory(
+fn canonical_workspace_for_inventory(
     workspace_path: &Path,
-    ws_root: &Path,
-    files: &[CodeFile],
-    languages: &[String],
-) -> Option<CanonicalWorkspace> {
+    config: &CodeGraphConfig,
+) -> CanonicalWorkspace {
     let crates = canonical::discover_workspace_crates(workspace_path);
-    let mut unsafe_prefixes = HashSet::new();
-    for file in files {
-        if !language_gated(file, languages) || !file.language.eq_ignore_ascii_case("rust") {
-            continue;
-        }
-        let full = workspace_path.join(&file.path);
-        let canon = tokio::fs::canonicalize(&full).await.ok()?;
-        if !canon.starts_with(ws_root) {
-            return None;
-        }
-        let source = tokio::fs::read_to_string(&canon).await.ok()?;
-        let Some((module, use_graph)) =
-            rust_canonical_ctx(&crates, Language::Rust, &file.path, &source)
-        else {
-            continue;
-        };
-        unsafe_prefixes.extend(use_graph.non_default_mod_roots().iter().map(|root| {
-            root.split("::")
-                .fold(module.clone(), |module, segment| module.child(segment))
-                .to_canonical()
-        }));
-    }
-    Some(CanonicalWorkspace {
+    // Use the production discovery input and unsafe-prefix helper, not the
+    // indexed `file_node` list. Discovered-but-skipped Rust files can carry
+    // `#[path]`/`#[cfg]` module remaps; missing those prefixes would let eval
+    // resolve qualified misses that production intentionally rejected.
+    let discovered = code_graph::discover_files(workspace_path, config);
+    let unsafe_prefixes = code_graph::unsafe_module_prefixes(workspace_path, &crates, &discovered);
+    CanonicalWorkspace {
         crates,
         unsafe_prefixes,
-    })
+    }
 }
 
 /// Scan the indexed source inventory for the graph-metric denominator and its
@@ -870,7 +845,7 @@ pub async fn scan_call_site_inventory(
     files: &[CodeFile],
     languages: &[String],
 ) -> Result<CallSiteInventory, EngramError> {
-    scan_call_site_inventory_inner(workspace_path, files, languages, None).await
+    scan_call_site_inventory_inner(workspace_path, files, languages, None, None).await
 }
 
 /// Scan the indexed source inventory using resolved graph identity to collapse
@@ -890,8 +865,16 @@ pub async fn scan_call_site_inventory_with_resolution(
     files: &[CodeFile],
     languages: &[String],
     resolution: &CallSiteResolutionContext,
+    code_graph_config: &CodeGraphConfig,
 ) -> Result<CallSiteInventory, EngramError> {
-    scan_call_site_inventory_inner(workspace_path, files, languages, Some(resolution)).await
+    scan_call_site_inventory_inner(
+        workspace_path,
+        files,
+        languages,
+        Some(resolution),
+        Some(code_graph_config),
+    )
+    .await
 }
 
 async fn scan_call_site_inventory_inner(
@@ -899,6 +882,7 @@ async fn scan_call_site_inventory_inner(
     files: &[CodeFile],
     languages: &[String],
     resolution: Option<&CallSiteResolutionContext>,
+    code_graph_config: Option<&CodeGraphConfig>,
 ) -> Result<CallSiteInventory, EngramError> {
     // Canonical workspace root for the containment check below. The bound
     // workspace is canonicalized at `set_workspace` time, so this is expected
@@ -910,11 +894,10 @@ async fn scan_call_site_inventory_inner(
     })?;
 
     let resolution_lookup = resolution.and_then(ResolutionLookup::from_context);
-    let canonical_workspace = if resolution_lookup.is_some() {
-        canonical_workspace_for_inventory(workspace_path, &ws_root, files, languages).await
-    } else {
-        None
-    };
+    let canonical_workspace = resolution_lookup
+        .as_ref()
+        .and(code_graph_config)
+        .map(|config| canonical_workspace_for_inventory(workspace_path, config));
 
     // Running totals accumulated one bounded batch at a time so the whole corpus
     // of source text is never resident simultaneously (084.011-T).

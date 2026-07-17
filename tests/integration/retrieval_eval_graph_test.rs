@@ -9,7 +9,7 @@
 //! Plus a denominator sanity check that the parser call-site inventory
 //! (`count_call_sites`) matches the expected identifier-call count.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -280,10 +280,15 @@ async fn resolution_aware_denominator_collapses_same_target_spellings() {
     let q = index_fixture(ws).await;
     let files = indexed_rust_files(&q).await;
     let context = resolution_context(&q).await;
-    let inventory =
-        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
-            .await
-            .expect("scan");
+    let inventory = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &context,
+        &CodeGraphConfig::default(),
+    )
+    .await
+    .expect("scan");
     let resolved = q.count_calls_edges().await.expect("resolved count");
     let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
 
@@ -311,10 +316,15 @@ async fn resolution_aware_denominator_preserves_distinct_target_miss() {
     let q = index_fixture(ws).await;
     let files = indexed_rust_files(&q).await;
     let context = resolution_context(&q).await;
-    let inventory =
-        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
-            .await
-            .expect("scan");
+    let inventory = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &context,
+        &CodeGraphConfig::default(),
+    )
+    .await
+    .expect("scan");
     let resolved = q.count_calls_edges().await.expect("resolved count");
     let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
 
@@ -347,10 +357,15 @@ async fn resolution_aware_denominator_preserves_ambiguous_bare_miss() {
     let q = index_fixture(ws).await;
     let files = indexed_rust_files(&q).await;
     let context = resolution_context(&q).await;
-    let inventory =
-        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
-            .await
-            .expect("scan");
+    let inventory = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &context,
+        &CodeGraphConfig::default(),
+    )
+    .await
+    .expect("scan");
     let resolved = q.count_calls_edges().await.expect("resolved count");
     let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
 
@@ -360,6 +375,64 @@ async fn resolution_aware_denominator_preserves_ambiguous_bare_miss() {
     );
     assert_eq!(resolved, 1, "only the qualified call resolves");
     assert!((metrics.resolution_recall - 0.5).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_skipped_remap_miss() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    #[path = \"actual.rs\"]\n    pub mod inner;\n}\n",
+    );
+    let caller_source = "pub fn caller() {\n    helper();\n    crate::outer::inner::helper();\n}\n";
+    write_file(ws, "src/caller.rs", caller_source);
+
+    let files = vec![CodeFile {
+        id: "file:caller".to_owned(),
+        path: "src/caller.rs".to_owned(),
+        language: "rust".to_owned(),
+        size_bytes: caller_source.len() as u64,
+        content_hash: source_content_hash(caller_source),
+        last_indexed_at: "2026-07-17T00:00:00Z".to_owned(),
+    }];
+    let mut resolved_edges = HashSet::new();
+    resolved_edges.insert(("fn:caller".to_owned(), "fn:helper".to_owned()));
+    let mut canonical_index = HashMap::new();
+    canonical_index.insert(
+        "demo::outer::inner::helper".to_owned(),
+        vec!["fn:helper".to_owned()],
+    );
+    let context = CallSiteResolutionContext::new(
+        vec![
+            make_fn("fn:caller", "caller", "src/caller.rs"),
+            make_fn("fn:helper", "helper", "src/outer/inner.rs"),
+        ],
+        resolved_edges,
+        canonical_index,
+    );
+
+    let inventory = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &context,
+        &CodeGraphConfig::default(),
+    )
+    .await
+    .expect("scan");
+    let metrics = compute_graph_metrics(inventory.call_sites, 1, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "discover-only remap prefixes must preserve the qualified miss instead of sharing the singleton edge"
+    );
+    assert!(
+        metrics.resolution_recall < 1.0,
+        "the skipped mod-declaring file makes the qualified call a real miss"
+    );
 }
 
 /// Build a graph with two resolved edges: one whose caller lives in a Rust file
