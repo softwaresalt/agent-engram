@@ -152,9 +152,11 @@ flake. This is a candidate for a DB-connect hardening chore.
 
 ## Release observability
 
-Feature 090-F changes no runtime surface, schema, or on-disk format, so the rollout carries no
-runtime rollback risk. The observability posture is inverted from a normal feature: the shipped
-artifact **is** the monitor.
+Feature 090-F changes no command routing, tool schema, dispatch table, or on-disk format. The only
+runtime-visible changes are documentation strings — the `engram --help` output
+(`src/bin/engram.rs`) and the MCP tool-catalog descriptions (`src/shim/tools_catalog.rs`) — so the
+rollout carries no runtime rollback risk. The observability posture is inverted from a normal
+feature: the shipped artifact **is** the monitor.
 
 ### Healthy signals
 
