@@ -85,6 +85,14 @@ fn parse_mapping_rows() -> Vec<MappingRow> {
         !rows.is_empty(),
         "canonical mapping table must not be empty"
     );
+    let mut seen_mcp = BTreeSet::new();
+    for row in rows.iter().filter(|row| row.mcp_tool != "-") {
+        assert!(
+            seen_mcp.insert(row.mcp_tool.as_str()),
+            "duplicate MCP mapping row for '{}' in {DOC_PATH}",
+            row.mcp_tool
+        );
+    }
     rows
 }
 
@@ -107,6 +115,24 @@ fn primary_cli_surface(cli_command: &str) -> Option<String> {
 }
 
 #[must_use]
+fn dispatch_pattern_literals(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let Some((patterns, _handler)) = trimmed.split_once("=>") else {
+        return Vec::new();
+    };
+    patterns
+        .split('|')
+        .filter_map(|pattern| {
+            let pattern = pattern.trim();
+            pattern
+                .strip_prefix('"')
+                .and_then(|rest| rest.split_once('"'))
+                .map(|(name, _)| name.to_owned())
+        })
+        .collect()
+}
+
+#[must_use]
 fn dispatch_tool_names() -> BTreeSet<String> {
     let dispatch_start = TOOLS_MOD
         .find("let result = match method {")
@@ -117,17 +143,18 @@ fn dispatch_tool_names() -> BTreeSet<String> {
         .expect("dispatch match must end before latency recording");
     dispatch_tail[..dispatch_end]
         .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('"') || !trimmed.contains("=>") {
-                return None;
-            }
-            trimmed
-                .split_once('"')
-                .and_then(|(_, rest)| rest.split_once('"'))
-                .map(|(name, _)| name.to_owned())
-        })
+        .flat_map(dispatch_pattern_literals)
         .collect()
+}
+
+#[test]
+fn dispatch_pattern_parser_collects_alternative_literals() {
+    let names = dispatch_pattern_literals(r#""old_tool" | "new_tool" => handler(params)"#);
+    assert_eq!(
+        names,
+        vec!["old_tool".to_owned(), "new_tool".to_owned()],
+        "dispatch parser must collect every literal in an alternation arm"
+    );
 }
 
 #[must_use]
@@ -255,6 +282,19 @@ fn every_dispatch_tool_is_documented_as_mapped_or_allowlisted_gap() {
                 MCP_WITHOUT_CLI_ALLOWLIST.contains(&name.as_str()),
                 "dispatch tool '{name}' has no CLI command but is not explicitly allowlisted"
             );
+            assert_eq!(
+                row.surface, "daemon",
+                "dispatch tool '{name}' must be documented as daemon-backed"
+            );
+            assert!(
+                row.notes.contains("gap") || row.notes.contains("MCP-only"),
+                "dispatch tool '{name}' gap row must keep its rationale"
+            );
+        } else {
+            assert!(
+                row.cli_command.starts_with("engram "),
+                "dispatch tool '{name}' must map to an engram CLI command"
+            );
         }
     }
 }
@@ -359,6 +399,25 @@ fn local_cli_only_rows_are_explicitly_allowlisted_with_rationale() {
             row.cli_command
         );
     }
+}
+
+#[test]
+fn local_cli_allowlist_matches_documented_local_rows() {
+    let documented = parse_mapping_rows()
+        .iter()
+        .filter(|row| row.mcp_tool == "-" && row.cli_command != "-")
+        .filter_map(|row| command_path(&row.cli_command))
+        .map(|path| path.join(" "))
+        .collect::<BTreeSet<_>>();
+    let allowlisted = LOCAL_CLI_ALLOWLIST
+        .iter()
+        .map(|entry| (*entry).to_owned())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        documented, allowlisted,
+        "local CLI allowlist must exactly match documented local-only rows"
+    );
 }
 
 #[test]
