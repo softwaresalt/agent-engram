@@ -30,6 +30,26 @@ fn schema(v: Value) -> Arc<Map<String, Value>> {
     })
 }
 
+macro_rules! cli_desc {
+    ($summary:literal, $cli:literal) => {
+        concat!(
+            $summary,
+            " CLI: `",
+            $cli,
+            "`. See `docs/cli-mcp-parity.md`."
+        )
+    };
+}
+
+macro_rules! mcp_only_desc {
+    ($summary:literal) => {
+        concat!(
+            $summary,
+            " MCP-only daemon surface. See `docs/cli-mcp-parity.md`."
+        )
+    };
+}
+
 /// Return the full list of Engram MCP tools.
 ///
 /// The returned `Vec` has exactly [`TOOL_COUNT`] entries with unique names.
@@ -38,7 +58,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Workspace / lifecycle ──────────────────────────────────────────
         Tool::new(
             "set_workspace",
-            "Bind the daemon to a workspace directory. Must be called before any other tool.",
+            cli_desc!(
+                "Bind the daemon to a workspace directory. Must be called before any other tool.",
+                "engram bind [path]"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -52,7 +75,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_daemon_status",
-            "Return runtime metrics for the running daemon (version, uptime, memory, connections).",
+            cli_desc!(
+                "Return runtime metrics for the running daemon (version, uptime, memory, connections).",
+                "engram daemon-status"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -60,7 +86,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_workspace_status",
-            "Return the current workspace status including code graph statistics, stale files, and connection info.",
+            cli_desc!(
+                "Return the current workspace status including code graph statistics, stale files, and connection info.",
+                "engram workspace-status"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -68,7 +97,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "flush_state",
-            "Persist in-memory workspace state to disk (.engram/ files). Safe to call at any time.",
+            cli_desc!(
+                "Persist in-memory workspace state to disk (.engram/ files). Safe to call at any time.",
+                "engram flush"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -81,7 +113,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "query_memory",
-            "Search workspace context records (decisions, notes) using a natural language query.",
+            cli_desc!(
+                "Search workspace context records (decisions, notes) using a natural language query.",
+                "engram query-memory"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -104,7 +139,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Statistics ────────────────────────────────────────────────────
         Tool::new(
             "get_workspace_statistics",
-            "Return aggregate statistics for the workspace: task counts by status, label distribution, and more.",
+            cli_desc!(
+                "Return aggregate statistics for the workspace: task counts by status, label distribution, and more.",
+                "engram stats"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -113,7 +151,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Code graph ────────────────────────────────────────────────────
         Tool::new(
             "index_workspace",
-            "Parse and index the workspace source files into the code graph. Run once after `set_workspace`.",
+            cli_desc!(
+                "Parse and index the workspace source files into the code graph. Run once after `set_workspace`.",
+                "engram index"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -126,7 +167,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "sync_workspace",
-            "Incrementally synchronize changed source files into the code graph since the last index.",
+            cli_desc!(
+                "Incrementally synchronize changed source files into the code graph since the last index.",
+                "engram sync"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -134,7 +178,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "map_code",
-            "Return the call graph and usages for a named symbol up to a configurable depth.",
+            cli_desc!(
+                "Return the call graph and usages for a named symbol up to a configurable depth.",
+                "engram map-code"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -158,7 +205,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "list_symbols",
-            "List symbols (functions, structs, enums, etc.) indexed in the code graph, with optional filters.",
+            cli_desc!(
+                "List symbols (functions, structs, enums, etc.) indexed in the code graph, with optional filters.",
+                "engram symbols"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -188,7 +238,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Context / search ───────────────────────────────────────────────
         Tool::new(
             "unified_search",
-            "Search across tasks, context records, and code symbols using a single natural language query.",
+            cli_desc!(
+                "Search across tasks, context records, and code symbols using a single natural language query.",
+                "engram search"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -220,7 +273,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "impact_analysis",
-            "Analyze impact over the code call graph by symbol_name or the Power BI dependency graph by powerbi_node_id.",
+            cli_desc!(
+                "Analyze impact over the code call graph by symbol_name or the Power BI dependency graph by powerbi_node_id.",
+                "engram impact"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -255,7 +311,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "lint_dax",
-            "Lint the DAX in the bound workspace's indexed Power BI model(s), returning { conformant, findings[] }. Applies Tier-1 syntactic rules and Tier-2 schema-aware rules (broken column/measure refs, unqualified-column and qualified-measure style findings, and measure-to-measure cycles) by reparsing measure and calculated-column expressions against the model-scope-aggregated schema.",
+            cli_desc!(
+                "Lint the DAX in the bound workspace's indexed Power BI model(s), returning { conformant, findings[] }. Applies Tier-1 syntactic rules and Tier-2 schema-aware rules (broken column/measure refs, unqualified-column and qualified-measure style findings, and measure-to-measure cycles) by reparsing measure and calculated-column expressions against the model-scope-aggregated schema.",
+                "engram lint-dax"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -269,7 +328,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Observability ──────────────────────────────────────────────────
         Tool::new(
             "get_health_report",
-            "Return runtime health metrics for the daemon including memory usage, tool call counts, event processing statistics, and query latency percentiles (p50/p95/p99).",
+            cli_desc!(
+                "Return runtime health metrics for the daemon including memory usage, tool call counts, event processing statistics, and query latency percentiles (p50/p95/p99).",
+                "engram health"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -277,7 +339,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_branch_metrics",
-            "Return the persisted metrics summary for a branch, or compare two branches.",
+            cli_desc!(
+                "Return the persisted metrics summary for a branch, or compare two branches.",
+                "engram branch-metrics"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -294,7 +359,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_token_savings_report",
-            "Return a concise text summary of the current branch's tracked token delivery.",
+            cli_desc!(
+                "Return a concise text summary of the current branch's tracked token delivery.",
+                "engram report token-savings"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -302,7 +370,10 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_evaluation_report",
-            "Compute an agent efficiency evaluation report from recorded usage events. Returns per-agent scoring, anomaly flags (token ratio spikes, error bursts, tool hammering), and actionable recommendations.",
+            cli_desc!(
+                "Compute an agent efficiency evaluation report from recorded usage events. Returns per-agent scoring, anomaly flags (token ratio spikes, error bursts, tool hammering), and actionable recommendations.",
+                "engram report eval"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -311,7 +382,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Retrieval + graph-recall evaluation (081-F) ────────────────────
         Tool::new(
             "run_retrieval_eval",
-            "Run the portable retrieval + graph-recall evaluation over the indexed workspace. Derives ground truth automatically (semantic self-retrieval from indexed function docstrings, falling back to the function name; graph resolution recall from the parser call-site inventory) and returns a structured RetrievalEvalReport with semantic (precision@k, recall@k, MRR, nDCG) and graph (resolution_recall, false_edge_rate) metrics. Evaluates functions only — not arbitrary symbols or qualified-name uniqueness. Disabled by default; returns an empty report unless enabled via the [retrieval_eval] config section. Distinct from get_evaluation_report (agent efficiency).",
+            cli_desc!(
+                "Run the portable retrieval + graph-recall evaluation over the indexed workspace. Derives ground truth automatically (semantic self-retrieval from indexed function docstrings, falling back to the function name; graph resolution recall from the parser call-site inventory) and returns a structured RetrievalEvalReport with semantic (precision@k, recall@k, MRR, nDCG) and graph (resolution_recall, false_edge_rate) metrics. Evaluates functions only — not arbitrary symbols or qualified-name uniqueness. Disabled by default; returns an empty report unless enabled via the [retrieval_eval] config section. Distinct from get_evaluation_report (agent efficiency).",
+                "engram eval"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -319,7 +393,9 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_retrieval_eval_report",
-            "Return the latest persisted retrieval + graph-recall evaluation report (RetrievalEvalReport) for the current branch, or a well-formed empty report when no run exists. Distinct from get_evaluation_report (agent efficiency).",
+            mcp_only_desc!(
+                "Return the latest persisted retrieval + graph-recall evaluation report (RetrievalEvalReport) for the current branch, or a well-formed empty report when no run exists. Distinct from get_evaluation_report (agent efficiency)."
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
@@ -328,14 +404,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── Sandboxed Query ────────────────────────────────────────────────
         Tool::new(
             "query_graph",
-            "Execute a structured graph query against the workspace code and backlog graph. \
-             Three operations are supported: \
-             `neighborhood` (BFS from a root node), \
-             `find_path` (shortest path between two nodes), and \
-             `transitive_closure` (all nodes reachable from a root). \
-             Edge types: code (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`) \
-             and backlog (`parent_of`, `depends_on`, `backlog_references`). \
-             Results are capped at 500 nodes.",
+            cli_desc!(
+                "Execute a structured graph query against the workspace code and backlog graph. Three operations are supported: `neighborhood` (BFS from a root node), `find_path` (shortest path between two nodes), and `transitive_closure` (all nodes reachable from a root). Edge types: code (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`) and backlog (`parent_of`, `depends_on`, `backlog_references`). Results are capped at 500 nodes.",
+                "engram query-graph"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -381,7 +453,10 @@ pub fn all_tools() -> Vec<Tool> {
         // ── DB observability ──────────────────────────────────────────────
         Tool::new(
             "get_mutable_script_retry_metrics",
-            "Return mutable-script SQLITE_BUSY retry telemetry: monotonic retry count and timestamp of the most recent retry. Does not require a workspace to be bound.",
+            cli_desc!(
+                "Return mutable-script SQLITE_BUSY retry telemetry: monotonic retry count and timestamp of the most recent retry. Does not require a workspace to be bound.",
+                "engram report retry-metrics"
+            ),
             schema(json!({
                 "type": "object",
                 "properties": {}
