@@ -48,7 +48,7 @@ The audit is grounded in the current source:
 | `-` | `engram install` | local | Local installer writes workspace integration artifacts |
 | `-` | `engram update` | local | Local installer maintenance updates runtime artifacts |
 | `-` | `engram reinstall` | local | Local installer maintenance rewrites runtime artifacts while preserving data |
-| `-` | `engram uninstall` | local | Local installer maintenance removes runtime artifacts |
+| `-` | `engram uninstall` | local | Local installer command; default removes the entire `.engram/` directory, while `--keep-data` preserves `config.toml` and deletes only runtime artifacts |
 | `-` | `engram manifest` | local | Local command emits the compile-time MCP catalog without contacting a daemon |
 | `-` | `engram verify <path>` | local | Local structural markdown and TMDL conformance gate; no daemon or database |
 | `-` | `engram migrate-down <target>` | local | Operator-invoked destructive down-migration; intentionally not exposed as MCP |
@@ -85,7 +85,7 @@ Current CLI-only commands are intentionally local or internal:
 * `engram install`: workspace integration setup
 * `engram update`: runtime artifact maintenance
 * `engram reinstall`: runtime artifact maintenance
-* `engram uninstall`: runtime artifact removal
+* `engram uninstall`: default removes the entire `.engram/` directory; `--keep-data` deletes only runtime artifacts and preserves `config.toml`
 * `engram manifest`: local tools-list rendering from the compile-time catalog
 * `engram verify <path>`: local structural conformance gate
 * `engram migrate-down <target>`: operator-invoked destructive maintenance

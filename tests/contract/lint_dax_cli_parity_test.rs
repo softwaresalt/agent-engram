@@ -10,6 +10,12 @@ use std::process::Command;
 use engram::shim::tools_catalog;
 
 const DOC_PATH: &str = "docs/cli-mcp-parity.md";
+/// Externally resolvable canonical parity-doc URL that CLI help and MCP tool
+/// descriptions must reference. The released binary is installed globally and
+/// runs against arbitrary workspaces, so a repository-relative path would not
+/// resolve for MCP clients or operators — the reference must be a stable URL.
+const DOC_URL: &str =
+    "https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md";
 const PARITY_DOC: &str = include_str!("../../docs/cli-mcp-parity.md");
 const TOOLS_MOD: &str = include_str!("../../src/tools/mod.rs");
 const MCP_WITHOUT_CLI_ALLOWLIST: &[&str] = &[
@@ -453,8 +459,8 @@ fn cli_help_and_mcp_catalog_reference_canonical_doc() {
     let (code, stdout, stderr) = run_cli(&["--help"]);
     assert_eq!(code, 0, "engram --help must exit 0; stderr:\n{stderr}");
     assert!(
-        stdout.contains(DOC_PATH),
-        "top-level CLI help must reference {DOC_PATH}; stdout:\n{stdout}"
+        stdout.contains(DOC_URL),
+        "top-level CLI help must reference {DOC_URL}; stdout:\n{stdout}"
     );
 
     let rows = parse_mapping_rows();
@@ -468,8 +474,8 @@ fn cli_help_and_mcp_catalog_reference_canonical_doc() {
         let name = tool.name.as_ref();
         let description = tool.description.as_deref().unwrap_or_default();
         assert!(
-            description.contains(DOC_PATH),
-            "MCP tool '{name}' description must reference {DOC_PATH}: {description}"
+            description.contains(DOC_URL),
+            "MCP tool '{name}' description must reference {DOC_URL}: {description}"
         );
         let row = by_mcp
             .get(name)

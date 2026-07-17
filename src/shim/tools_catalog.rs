@@ -36,7 +36,7 @@ macro_rules! cli_desc {
             $summary,
             " CLI: `",
             $cli,
-            "`. See `docs/cli-mcp-parity.md`."
+            "`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md"
         )
     };
 }
@@ -45,7 +45,7 @@ macro_rules! mcp_only_desc {
     ($summary:literal) => {
         concat!(
             $summary,
-            " MCP-only daemon surface. See `docs/cli-mcp-parity.md`."
+            " MCP-only daemon surface. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md"
         )
     };
 }
