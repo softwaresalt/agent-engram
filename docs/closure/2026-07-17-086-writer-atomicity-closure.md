@@ -66,8 +66,10 @@ The fix holds both write guards for the whole publish. Correctness rests on a lo
 proof: crate-wide there are exactly two sites that acquire both locks - the reader
 `snapshot_dispatch_context` (read/read) and the new writer (write/write) - and both acquire
 `active_workspace` before `workspace_config`. No site acquires them in the reverse order, so
-the paired-lock exception cannot deadlock. `tokio::sync::RwLock` guards are `Send`, which is
-precisely why holding the first guard across the second lock's `.await` compiles.
+the paired-lock exception cannot deadlock. That deadlock-freedom follows solely from the
+consistent lock order. Separately, `tokio::sync::RwLock` guards are `Send`, so holding the
+first guard across the second lock's `.await` keeps the resulting future `Send` and schedulable
+on the multithreaded runtime - a distinct property from deadlock-freedom, not its cause.
 
 ### Capacity check first, no partial publish
 
@@ -140,9 +142,12 @@ rollback posture. It changes no DB schema, no JSONL format, and no command routi
 * `integration_get_workspace_status_atomicity` passes (3/3) in CI. Because the test drives a real
   A->B / B->A writer transition against a concurrent atomic reader, a green run is direct evidence
   that the writer publishes atomically.
-* Bind latency stays within the 029-F WS-6 SLA. The atomic method holds both write guards only for
-  in-memory swaps with no `.await` on I/O inside the critical section, so the publish cost is
-  unchanged from the two-await sequence.
+* The 029-F WS-6 bind-latency SLA test passes (relaxed 2,000 ms threshold in debug CI; the 500 ms
+  target applies to release builds). The atomic method holds both write guards only for in-memory
+  swaps with no I/O `.await` inside the critical section, so the critical section stays bounded. Its
+  contention profile is not identical to the old two-await sequence - the writer now holds
+  `active_workspace` while awaiting `workspace_config` - so this records the green SLA contract
+  rather than claiming an unchanged publish cost.
 
 ### Failure signals
 
@@ -159,8 +164,9 @@ rollback posture. It changes no DB schema, no JSONL format, and no command routi
   integration_config 5, integration_daemon_lifecycle 7, integration_multi_workspace 6,
   integration_workspace_id_drift 2, integration_workspace_lifecycle_workflow 4, unit_branch_workspace 6,
   unit_workspace_config_policy 9).
-* Threshold to investigate: any failure of the atomicity test, or any observed
-  new-workspace/old-config status read.
+* Threshold to investigate: any failure of the atomicity test; any observed
+  new-workspace/old-config status read; or a WS-6 bind-latency SLA breach - bind latency exceeding
+  the 500 ms release target, or the relaxed 2,000 ms threshold the debug-CI SLA test enforces.
 
 ### Owner and observation window
 
