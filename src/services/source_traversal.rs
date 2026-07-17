@@ -32,6 +32,24 @@ pub(crate) fn collect_files_in_workspace(
     files
 }
 
+/// Return true when `path` is a physical regular file whose canonical target
+/// remains under `canonical_root`.
+///
+/// The final path component is inspected with `symlink_metadata`, so a file
+/// symlink is not treated as live. Intermediate directory symlinks still work
+/// when their resolved target remains inside the workspace.
+#[must_use]
+pub(crate) fn is_regular_file_in_workspace(path: &Path, canonical_root: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    path.canonicalize()
+        .is_ok_and(|canonical| canonical.starts_with(canonical_root))
+}
+
 fn collect_recursive(
     dir: &Path,
     canonical_root: &Path,

@@ -7,7 +7,7 @@
 //! `compute_deleted_paths` reports workspace-relative paths whose backing
 //! files are gone.
 //!
-//! Tests: S-PFC-01..S-PFC-09
+//! Tests: S-PFC-01..S-PFC-10
 
 use std::fs;
 use std::path::Path;
@@ -273,6 +273,48 @@ fn compute_deleted_paths_rejects_workspace_escape() {
             .iter()
             .any(|p| p.contains("..") || p.starts_with('/')),
         "workspace-escape recorded paths must not be reported as deleted: got {deleted:?}"
+    );
+}
+
+/// S-PFC-10: deletion sweeps mirror collectors by treating final-component file
+/// symlinks as deleted while preserving regular files and absent paths.
+#[test]
+fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let regular_path = workspace.path().join("regular.pbism");
+    let symlink_target = workspace.path().join("target.pbism");
+    let symlink_path = workspace.path().join("indexed.pbism");
+    fs::write(&regular_path, "{}").expect("write regular pbism");
+    fs::write(&symlink_target, "{}").expect("write target pbism");
+    if !create_symlink_file(&symlink_target, &symlink_path) {
+        return;
+    }
+
+    let external = TempDir::new().expect("external tempdir");
+    let external_dir = external.path().join("escape");
+    fs::create_dir_all(&external_dir).expect("create external dir");
+    fs::write(external_dir.join("outside.pbism"), "{}").expect("write external pbism");
+    if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
+        return;
+    }
+
+    let deleted = compute_deleted_paths(
+        &[
+            "regular.pbism".to_string(),
+            "indexed.pbism".to_string(),
+            "linked-outside/outside.pbism".to_string(),
+            "absent.pbism".to_string(),
+        ],
+        workspace.path(),
+    );
+
+    assert_eq!(
+        deleted,
+        vec![
+            "indexed.pbism".to_string(),
+            "linked-outside/outside.pbism".to_string(),
+            "absent.pbism".to_string(),
+        ]
     );
 }
 

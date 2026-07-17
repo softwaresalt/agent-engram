@@ -35,7 +35,7 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
-use crate::services::source_traversal::collect_files_in_workspace;
+use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
@@ -107,9 +107,7 @@ pub fn compute_deleted_paths(
             };
 
             let candidate = workspace_root.join(relative_path);
-            let is_deleted = candidate
-                .canonicalize()
-                .map_or(true, |canonical| !canonical.starts_with(&canonical_root));
+            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
             is_deleted.then(|| rel.clone())
         })
         .collect()

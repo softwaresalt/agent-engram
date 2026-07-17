@@ -18,7 +18,7 @@ use crate::models::backlog_graph::{
 };
 use crate::models::registry::ContentSource;
 use crate::services::parsing::frontmatter;
-use crate::services::source_traversal::collect_files_in_workspace;
+use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -33,15 +33,30 @@ pub fn compute_file_hash(content: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Return the subset of `known_paths` whose files no longer exist on disk.
+/// Return the subset of `known_paths` whose files no longer exist under
+/// `workspace_root`.
 ///
-/// Paths must be absolute.  Any entry in `known_paths` for which
-/// [`std::path::Path::exists`] returns `false` is included in the output.
+/// Final-component symlinks are treated as deleted, matching the backlog
+/// collector's file-symlink skip behavior. Files reached through an
+/// in-workspace directory symlink are preserved when their canonical target
+/// remains under `workspace_root`.
 #[must_use]
-pub fn compute_deleted_paths(known_paths: &[String]) -> Vec<String> {
+pub fn compute_deleted_paths(known_paths: &[String], workspace_root: &Path) -> Vec<String> {
+    let Ok(canonical_root) = workspace_root.canonicalize() else {
+        return known_paths.to_vec();
+    };
+
     known_paths
         .iter()
-        .filter(|p| !Path::new(p).exists())
+        .filter(|path| {
+            let path = Path::new(path.as_str());
+            let candidate = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workspace_root.join(path)
+            };
+            !is_regular_file_in_workspace(&candidate, &canonical_root)
+        })
         .cloned()
         .collect()
 }
@@ -364,29 +379,15 @@ pub async fn sweep_deleted_backlog_files(
 ) -> Result<usize, EngramError> {
     let existing = queries.select_backlog_nodes(Some(&source.path)).await?;
 
-    let known_paths: Vec<String> = existing
-        .iter()
-        .map(|n| {
-            workspace_root
-                .join(&n.file_path)
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
-        .collect();
+    let known_paths: Vec<String> = existing.iter().map(|n| n.file_path.clone()).collect();
 
-    let deleted = compute_deleted_paths(&known_paths);
+    let deleted = compute_deleted_paths(&known_paths, workspace_root);
     let mut removed = 0_usize;
 
-    for abs_path in &deleted {
-        // Convert absolute path back to workspace-relative for the DB call.
-        let rel = PathBuf::from(abs_path)
-            .strip_prefix(workspace_root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| abs_path.clone());
-
+    for rel in &deleted {
         debug!(path = %rel, "sweeping deleted backlog file");
-        queries.delete_backlog_node_by_file_path(&rel).await?;
-        queries.delete_backlog_content_record_by_path(&rel).await?;
+        queries.delete_backlog_node_by_file_path(rel).await?;
+        queries.delete_backlog_content_record_by_path(rel).await?;
         removed += 1;
     }
 

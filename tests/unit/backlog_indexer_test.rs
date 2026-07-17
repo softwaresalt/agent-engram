@@ -29,6 +29,24 @@ fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
+fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+    match symlink_file(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create file symlink: {error}"),
+    }
+}
+
 fn write_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     fs::write(&path, content).expect("write file");
@@ -175,11 +193,58 @@ fn deletion_sweep_detects_removed_files() {
             .replace('\\', "/"),
     ];
 
-    let deleted = compute_deleted_paths(&known);
+    let deleted = compute_deleted_paths(&known, dir.path());
     assert_eq!(deleted.len(), 1, "only gone.md should appear as deleted");
     assert!(
         deleted[0].contains("gone.md"),
         "the deleted path should reference gone.md"
+    );
+}
+
+/// S-BI-09: deletion sweeps mirror collectors by treating final-component file
+/// symlinks and directory-symlink escapes as deleted while preserving regular
+/// files and absent paths.
+#[test]
+fn deletion_sweep_reports_symlink_candidates_and_escapes_as_deleted() {
+    use engram::services::backlog_indexer::compute_deleted_paths;
+
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let external = TempDir::new().expect("external tempdir");
+    let regular_path = write_file(workspace.path(), "regular.md", "---\nid: regular\n---\n");
+    let target_path = write_file(workspace.path(), "target.md", "---\nid: target\n---\n");
+    let symlink_path = workspace.path().join("indexed.md");
+    if !create_symlink_file(&target_path, &symlink_path) {
+        return;
+    }
+
+    let external_dir = external.path().join("escape");
+    fs::create_dir_all(&external_dir).expect("create external dir");
+    fs::write(external_dir.join("outside.md"), "---\nid: outside\n---\n").expect("write outside");
+    if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
+        return;
+    }
+
+    let known = vec![
+        regular_path.to_string_lossy().replace('\\', "/"),
+        symlink_path.to_string_lossy().replace('\\', "/"),
+        workspace
+            .path()
+            .join("linked-outside")
+            .join("outside.md")
+            .to_string_lossy()
+            .replace('\\', "/"),
+        workspace
+            .path()
+            .join("absent.md")
+            .to_string_lossy()
+            .replace('\\', "/"),
+    ];
+
+    let deleted = compute_deleted_paths(&known, workspace.path());
+
+    assert_eq!(
+        deleted,
+        vec![known[1].clone(), known[2].clone(), known[3].clone()]
     );
 }
 

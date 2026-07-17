@@ -48,7 +48,7 @@ use crate::services::powerbi_indexer::{
     build_powerbi_graph_data_from_model, compute_file_hash, extract_model_summaries_from_model,
     make_node_id,
 };
-use crate::services::source_traversal::collect_files_in_workspace;
+use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 
 /// File extensions that belong to the PBIP project-definition layout.
 ///
@@ -128,9 +128,7 @@ pub fn compute_deleted_paths(
                 return None;
             };
             let candidate = workspace_root.join(relative_path);
-            let is_deleted = candidate
-                .canonicalize()
-                .map_or(true, |canonical| !canonical.starts_with(&canonical_root));
+            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
             is_deleted.then(|| rel.clone())
         })
         .collect()

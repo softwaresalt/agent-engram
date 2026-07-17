@@ -13,7 +13,7 @@ use crate::models::notebook::NotebookIndexResult;
 use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::notebook_extract::extract_notebook;
-use crate::services::source_traversal::collect_files_in_workspace;
+use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 
 /// Collect all notebook files under `dir` recursively.
 #[must_use]
@@ -67,9 +67,7 @@ fn compute_deleted_paths(
             };
 
             let candidate = workspace_root.join(relative_path);
-            let is_deleted = candidate
-                .canonicalize()
-                .map_or(true, |canonical| !canonical.starts_with(&canonical_root));
+            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
             is_deleted.then(|| rel.clone())
         })
         .collect()
@@ -377,5 +375,45 @@ mod tests {
                 "symlink cycles should not collect duplicate real files; got {rel_paths:?}"
             );
         }
+    }
+
+    #[test]
+    fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let regular_path = workspace.path().join("regular.ipynb");
+        let symlink_target = workspace.path().join("target.ipynb");
+        let symlink_path = workspace.path().join("indexed.ipynb");
+        fs::write(&regular_path, "{}").expect("write regular notebook");
+        fs::write(&symlink_target, "{}").expect("write target notebook");
+        if !create_symlink_file(&symlink_target, &symlink_path) {
+            return;
+        }
+
+        let external = TempDir::new().expect("external tempdir");
+        let external_dir = external.path().join("escape");
+        fs::create_dir_all(&external_dir).expect("create external dir");
+        fs::write(external_dir.join("outside.ipynb"), "{}").expect("write external notebook");
+        if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
+            return;
+        }
+
+        let deleted = super::compute_deleted_paths(
+            &[
+                "regular.ipynb".to_string(),
+                "indexed.ipynb".to_string(),
+                "linked-outside/outside.ipynb".to_string(),
+                "absent.ipynb".to_string(),
+            ],
+            workspace.path(),
+        );
+
+        assert_eq!(
+            deleted,
+            vec![
+                "indexed.ipynb".to_string(),
+                "linked-outside/outside.ipynb".to_string(),
+                "absent.ipynb".to_string(),
+            ]
+        );
     }
 }
