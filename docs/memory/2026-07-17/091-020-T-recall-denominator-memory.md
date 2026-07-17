@@ -109,9 +109,11 @@ canonicalization). Clean verdict -> merge authorized.
 * 091.015-T -> blocked. The ID-preserving canonical_path backfill is technically
   feasible, but WHEN to run it (auto-on-startup vs opt-in vs force-sync) is an open
   product+performance decision with blast radius on large already-indexed workspaces -
-  the exact area where the operator removed the A8 forced-reindex as unsafe. Recall is
-  already recoverable via a normal re-index (latency, not correctness). Needs operator
-  input on the trigger design.
+  the exact area where the operator removed the A8 forced-reindex as unsafe. For
+  unchanged legacy rows the recall gap PERSISTS: a normal re-index runs force=false and
+  hash-skips unchanged files (code_graph.rs:532-541; indexing.rs:99-104), so recovery
+  needs a --force reparse (removed as unsafe) or a per-file content change, not a plain
+  reindex. Needs operator input on the trigger design.
 
 ## Next steps
 
