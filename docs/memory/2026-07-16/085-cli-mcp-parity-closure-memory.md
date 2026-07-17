@@ -42,8 +42,7 @@ Closure work touched only documentation and backlog state:
 
 * `docs/closure/2026-07-16-085-cli-mcp-parity-closure.md`
 * `docs/memory/2026-07-16/085-cli-mcp-parity-closure-memory.md`
-* `.backlogit/archive/085-S.md`, `.backlogit/archive/090-F.md`
-* `.backlogit/queue/090.005-T.md` (new deferred follow-up)
+* `.backlogit/archive/085-S.md`, `.backlogit/archive/090-F.md` (moved from queue on archival)
 
 ## Key decisions
 
@@ -64,8 +63,9 @@ Closure work touched only documentation and backlog state:
   `.engram/`; `--keep-data` preserves `config.toml` and removes only runtime artifacts
   (`src/installer/mod.rs:642-698`).
 * **090-F archived with the shipment.** The 085-S manifest lists 090-F; the deferred functional
-  gap-closure (090.004-T) and routing-identity registry (090.005-T) remain queued as follow-ons,
-  matching the 088-S pattern (archive the feature, keep deferred child tasks queued).
+  gap-closure (090.004-T, status `blocked`) and routing-identity registry (090.005-T, status
+  `queued`) remain in the backlog as follow-ons, matching the 088-S pattern (archive the feature,
+  keep deferred child tasks in the backlog).
 
 ## Adversarial and Copilot cycle summary
 
@@ -76,7 +76,7 @@ Adversarial review ran BEFORE Copilot to minimize Copilot iterations (operator d
 * Independent adversarial code review (`gpt-5.6-sol`) pre-Copilot: 2 P2s on the drift guard
   (union-check masks catalog<->dispatch drift; line parser under-counts wrapped `|` arms) - fixed
   in `ee3f035` via the superset oracle.
-* Copilot - 5 passes, all resolved:
+* Copilot - 4 passes, all resolved:
   * `2561d83a` clean.
   * `ee3f035` 7 findings: T1/T2 uninstall docs + T3/T4/T7 canonical URL fixed in `7d8db7d`; T5
     (routing-identity) + T6 (feature-gated wrapped-arm) deferred to `090.005-T`.

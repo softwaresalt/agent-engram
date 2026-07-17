@@ -112,7 +112,7 @@ state the destructive default.
   (security), `gpt-5.6-terra` (scope) — P1/P2/P3 findings fixed before the PR opened.
 * **Independent adversarial code review (pre-Copilot):** `gpt-5.6-sol` raised two P2s on the
   drift guard; fixed in `ee3f035` (the superset oracle above).
-* **Copilot — 5 review passes, all resolved:**
+* **Copilot — 4 review passes, all resolved:**
   * `2561d83a` — clean (0 threads).
   * `ee3f035` — 7 findings. T1/T2 (uninstall docs), T3/T4/T7 (canonical URL) fixed in `7d8db7d`.
     T5 (help-resolution does not verify routing identity) and T6 (feature-gated wrapped-arm
@@ -130,7 +130,7 @@ state the destructive default.
   shipment**: the shipment delivered the audit, doc, and guard. Whether any confirmed asymmetry
   should be closed (e.g. adding a CLI analog for an MCP-only tool) is a product-scope decision to
   be re-harvested into a follow-on shipment from the 090.001 audit findings — not implemented from
-  the stale list. Kept queued.
+  the stale list. Kept in the backlog with status `blocked`.
 * `090.005-T` (queued) — CLI<->MCP parity: routing-identity + compiler-checked dispatch registry.
   Deepens the guard from existence+documentation parity to routing identity (T5) and a
   compiler-checked dispatch-name registry that includes feature-gated names (T6).
@@ -187,7 +187,7 @@ artifact **is** the monitor.
   next code-touching PR rather than immediately. This is acceptable because drift originates from
   code-surface changes, which always trigger CI. No timed window is required because there is no
   runtime rollout.
-* Outcome (pre-release validation): local gates and CI green; 5 Copilot passes resolved; 4-point
+* Outcome (pre-release validation): local gates and CI green; 4 Copilot passes resolved; 4-point
   merge gate CLEAN at `444feef`.
 
 ### Rollback trigger and procedure
@@ -204,6 +204,7 @@ artifact **is** the monitor.
 ## Verdict
 
 SHIPPED. Merged to main as merge commit `945ece65` via PR #259. Shipment 085-S and feature 090-F
-are archived; tasks 090.001-T / 090.002-T / 090.003-T are done. Deferred follow-ups 090.004-T
-(functional gap closure) and 090.005-T (routing-identity + dispatch registry) remain queued. Next
-in queue: 086-S (092-F, writer-side workspace+config atomicity).
+are archived; tasks 090.001-T / 090.002-T / 090.003-T are done. Deferred follow-ups remain in the
+backlog: 090.004-T (functional gap closure) is `blocked` pending re-harvest, and 090.005-T
+(routing-identity + dispatch registry) is `queued`. Next in queue: 086-S (092-F, writer-side
+workspace+config atomicity).
