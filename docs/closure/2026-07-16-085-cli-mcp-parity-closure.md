@@ -142,8 +142,11 @@ The `build` job failed once at `7d8db7d` on
 (`tests/integration/retrieval_eval_regression_test.rs`): the asserted resolved-edge count was 1
 instead of the ground-truth 3. The root cause was an upstream `cozo::storage::sqlite` `connect_db`
 panic on a tokio worker thread (`cozo-0.7.6/src/storage/sqlite.rs:49`) that degraded the graph
-build for that run — an environmental DB-connection flake, not a code regression. The 085-S diff
-is documentation, a contract test, and one backlog file; it touches no retrieval-eval or DB code.
+build for that run — an environmental DB-connection flake, not a code regression. The full 085-S
+merge (`945ece65`) diff is the new mapping doc (`docs/cli-mcp-parity.md`), the modified contract
+test (`tests/contract/lint_dax_cli_parity_test.rs`), CLI/catalog description strings
+(`src/bin/engram.rs`, `src/shim/tools_catalog.rs`), and four backlog files (090.001-T–090.003-T
+archived, 090.005-T added); none of it is retrieval-eval or DB code.
 The job went green on the next run (`444feef`, a one-line backlog-file change), confirming the
 flake. This is a candidate for a DB-connect hardening chore.
 
@@ -176,9 +179,14 @@ artifact **is** the monitor.
 ### Owner and observation window
 
 * Owner: ship and repository maintainer.
-* Duration: passive — the contract test runs on every PR that touches `src/tools/`,
-  `src/shim/tools_catalog.rs`, `src/bin/engram.rs`, or `docs/cli-mcp-parity.md`. No timed window
-  is required because there is no runtime rollout.
+* Duration: passive, with a coverage caveat. The guard runs whenever a PR changes a non-doc path
+  (`src/tools/`, `src/shim/tools_catalog.rs`, `src/bin/engram.rs`, `tests/**`, `Cargo.toml`),
+  which is exactly when the code surface it protects can drift. CI `paths-ignore` excludes
+  `docs/**` for pull requests, so a PR that edits **only** `docs/cli-mcp-parity.md` skips the
+  build and does not re-run the guard; a doc-only inconsistency would therefore surface on the
+  next code-touching PR rather than immediately. This is acceptable because drift originates from
+  code-surface changes, which always trigger CI. No timed window is required because there is no
+  runtime rollout.
 * Outcome (pre-release validation): local gates and CI green; 5 Copilot passes resolved; 4-point
   merge gate CLEAN at `444feef`.
 
@@ -186,9 +194,12 @@ artifact **is** the monitor.
 
 * Trigger: the mapping doc or drift guard is later found to encode an incorrect parity claim that
   blocks legitimate surface changes.
-* Procedure: revert the merge with `git revert -m 1 945ece65`. Blast radius is nil at runtime —
-  the revert only removes a doc, a contract test, and doc-reference strings in tool descriptions
-  and CLI help; the daemon and CLI behavior are unchanged either way.
+* Procedure: revert the merge with `git revert -m 1 945ece65`. Runtime blast radius is nil — the
+  daemon and CLI behavior are unchanged either way; the revert removes the mapping doc, the
+  contract-test changes, and the doc-reference strings in tool descriptions and CLI help. Note the
+  revert also reverses the backlog metadata in the same commit: it moves `090.001-T`–`090.003-T`
+  out of the archive back to the queue and removes `090.005-T`. That backlog state is inert
+  (no runtime effect), but re-apply it manually after the revert if the archival should stand.
 
 ## Verdict
 

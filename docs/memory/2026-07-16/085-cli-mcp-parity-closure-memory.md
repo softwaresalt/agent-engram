@@ -29,10 +29,14 @@ backlog reconciliation were produced on branch `feat/085-closure` from the `ship
 ## Files modified in the shipped feature
 
 * `docs/cli-mcp-parity.md` (new canonical mapping doc)
-* `tests/contract/lint_dax_cli_parity_test.rs` (new drift-guard contract test)
+* `tests/contract/lint_dax_cli_parity_test.rs` (modified — extended the existing DAX-lint contract
+  test with the CLI<->MCP parity/drift-guard assertions; the `[[test]]` target
+  `contract_lint_dax_cli_parity` already existed, so `Cargo.toml` was unchanged)
 * `src/shim/tools_catalog.rs` (`cli_desc!` / `mcp_only_desc!` macros reference the canonical doc URL)
 * `src/bin/engram.rs` (`long_about` references the canonical doc URL)
-* `Cargo.toml` (`[[test]]` entry `contract_lint_dax_cli_parity`)
+* `.backlogit/archive/090.001-T.md`, `.backlogit/archive/090.002-T.md`,
+  `.backlogit/archive/090.003-T.md` (archived on the feature branch), `.backlogit/queue/090.005-T.md`
+  (new deferred follow-up)
 
 Closure work touched only documentation and backlog state:
 
