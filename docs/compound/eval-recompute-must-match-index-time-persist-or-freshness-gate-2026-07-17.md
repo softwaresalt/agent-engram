@@ -19,10 +19,12 @@ edges by a call-site denominator. To avoid double-counting two spellings of the
 same call (e.g. `helper()` and `module::helper()`), the denominator collapses
 them into one unit when both resolve to the same `(caller_id, target_id)` edge.
 
-The load-bearing invariant is that the denominator may UNDER-report (treat two
-spellings as distinct when they are the same, safe) but must NEVER OVER-report
-(collapse a genuine index-time MISS onto a coincidental edge, inflating recall
-toward a false 1.0).
+The load-bearing invariant is a property of the METRIC, not the denominator's raw
+count. Recall = resolved / call_sites, so treating two equivalent spellings as
+distinct OVER-counts the denominator and makes recall UNDER-report (safe); collapsing
+a genuine index-time MISS onto a coincidental edge UNDER-counts the denominator and
+makes recall OVER-report (inflating it toward a false 1.0). Recall may under-report but
+must NEVER over-report.
 
 Over-report is only reachable when eval's canonical-resolution context DIVERGES
 from the index-time context that produced `resolved_edges`. Canonical resolution

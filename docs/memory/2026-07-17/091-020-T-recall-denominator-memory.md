@@ -21,9 +21,13 @@ writes a canonical-workspace snapshot on the production full-index and no-drift
 incremental-sync paths (additive and guarded — see Files modified). PR #265 called
 out this broader production-indexing scope explicitly.
 
-The load-bearing invariant: the denominator can under-report (syntax-only, safe) but
-MUST NEVER over-report. Over-report would mean a genuine index-time miss got collapsed
-onto a coincidental edge because eval mis-computed the canonical target.
+The load-bearing invariant is about the METRIC, not the denominator's raw count.
+Recall = resolved / call_sites, so syntax-only counting OVER-counts the denominator
+(it treats two equivalent spellings as distinct), which makes recall UNDER-report —
+the safe direction. The metric MUST NEVER OVER-report. Over-report happens when a
+genuine index-time miss is collapsed onto a coincidental edge: that UNDER-counts the
+denominator, inflating recall toward a false 1.0, because eval mis-computed the
+canonical target.
 
 ## The adversarial resolution: four remediation passes + a validation pass
 
