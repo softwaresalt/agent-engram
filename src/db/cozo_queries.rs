@@ -128,6 +128,21 @@ fn is_busy_error(message: &str) -> bool {
     normalized.contains("locked") || normalized.contains("busy")
 }
 
+fn is_relation_exists_error(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("already")
+        || normalized.contains("defined")
+        || normalized.contains("conflicts")
+        || normalized.contains("existing")
+}
+
+fn is_missing_relation_error(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("not found")
+        || normalized.contains("does not exist")
+        || normalized.contains("cannot find")
+}
+
 fn record_mutable_retry_telemetry() {
     MUTABLE_RETRY_COUNT.fetch_add(1, Ordering::Relaxed);
     // `0` is the sentinel for "no retry yet", so clamp to at least 1ms.
@@ -1047,6 +1062,69 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
                 .push(extract_str(row, 1));
         }
         Ok(index)
+    }
+
+    async fn ensure_index_unsafe_module_prefix_snapshot_relation(&self) -> Result<(), EngramError> {
+        let create = crate::db::cozo_backend::schema::CREATE_INDEX_UNSAFE_MODULE_PREFIX_SNAPSHOT;
+        match self
+            .run_script_busy_retry_mutable(create, BTreeMap::new())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if is_relation_exists_error(&e.to_string()) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Persist the exact unsafe module-prefix set used by the latest graph
+    /// indexing run.
+    pub async fn replace_index_unsafe_module_prefixes(
+        &self,
+        prefixes: &HashSet<String>,
+    ) -> Result<(), EngramError> {
+        self.ensure_index_unsafe_module_prefix_snapshot_relation()
+            .await?;
+
+        let mut sorted: Vec<String> = prefixes.iter().cloned().collect();
+        sorted.sort();
+        let script = r#"
+?[snapshot_id, prefixes, recorded_at] <- [["current", $prefixes, $recorded_at]]
+
+:put index_unsafe_module_prefix_snapshot { snapshot_id => prefixes, recorded_at }
+"#;
+        let mut params = BTreeMap::new();
+        params.insert("prefixes".to_owned(), string_list_to_datavalue(&sorted));
+        let now = now_utc_str();
+        params.insert("recorded_at".to_owned(), DataValue::from(now.as_str()));
+        self.run_script_busy_retry_mutable(script, params)
+            .await
+            .map(|_| ())
+    }
+
+    /// Load the persisted index-time unsafe module-prefix snapshot.
+    ///
+    /// `Ok(None)` means the database predates the snapshot writer; callers must
+    /// fail closed instead of recomputing from current disk.
+    pub async fn load_index_unsafe_module_prefixes(
+        &self,
+    ) -> Result<Option<HashSet<String>>, EngramError> {
+        let script = r#"
+?[prefixes] :=
+    *index_unsafe_module_prefix_snapshot{snapshot_id, prefixes},
+    snapshot_id = "current"
+"#;
+        let rows = match self
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) if is_missing_relation_error(&e.to_string()) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some(row) = rows.rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some(extract_string_list(row, 0).into_iter().collect()))
     }
 
     /// Look up a function by name (first match).

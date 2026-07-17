@@ -848,6 +848,23 @@ pub const CREATE_STAGED_CALL: &str = r#"
 }
 "#;
 
+/// CozoScript `:create` for the index-time unsafe module-prefix snapshot.
+///
+/// Key: `snapshot_id` (currently `"current"`). The single row's `prefixes`
+/// value records the exact unsafe-prefix set used by the latest full index or
+/// incremental sync for this branch-scoped database. This relation is created
+/// by the writer, not bootstrap, so older databases with no persisted snapshot
+/// remain distinguishable from freshly indexed databases whose prefix set is
+/// legitimately empty.
+pub const CREATE_INDEX_UNSAFE_MODULE_PREFIX_SNAPSHOT: &str = r#"
+:create index_unsafe_module_prefix_snapshot {
+    snapshot_id: String
+    =>
+    prefixes: [String],
+    recorded_at: String,
+}
+"#;
+
 /// CozoScript `:create` for `schema_meta` — durable key/value schema metadata
 /// (082.003-T remediation).
 ///

@@ -930,6 +930,9 @@ async fn index_workspace_impl(
             "code graph: resolved cross-file singleton calls edges"
         );
     }
+    queries
+        .replace_index_unsafe_module_prefixes(&unsafe_prefixes)
+        .await?;
 
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
@@ -1655,6 +1658,9 @@ pub async fn sync_workspace_with_progress(
             "code graph sync: re-resolved deferred references edges"
         );
     }
+    queries
+        .replace_index_unsafe_module_prefixes(&unsafe_prefixes)
+        .await?;
 
     // ── Record sync summary ──────────────────────────────────────────
     let sync_summary = format!(

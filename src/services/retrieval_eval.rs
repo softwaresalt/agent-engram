@@ -30,7 +30,6 @@ use sha2::{Digest, Sha256};
 use crate::errors::{ConfigError, EngramError, SystemError};
 use crate::models::CodeFile;
 use crate::models::Function;
-use crate::models::config::CodeGraphConfig;
 use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
@@ -366,6 +365,8 @@ pub struct CallSiteResolutionContext {
     pub resolved_edges: HashSet<(String, String)>,
     /// Non-empty canonical function identities keyed to matching function IDs.
     pub canonical_index: HashMap<String, Vec<String>>,
+    /// Index-time unsafe prefixes persisted with the graph edge set.
+    pub unsafe_prefixes: Option<HashSet<String>>,
 }
 
 impl CallSiteResolutionContext {
@@ -376,11 +377,13 @@ impl CallSiteResolutionContext {
         functions: Vec<Function>,
         resolved_edges: HashSet<(String, String)>,
         canonical_index: HashMap<String, Vec<String>>,
+        unsafe_prefixes: Option<HashSet<String>>,
     ) -> Self {
         Self {
             functions,
             resolved_edges,
             canonical_index,
+            unsafe_prefixes,
         }
     }
 }
@@ -795,15 +798,9 @@ fn language_gated(file: &CodeFile, languages: &[String]) -> bool {
 
 fn canonical_workspace_for_inventory(
     workspace_path: &Path,
-    config: &CodeGraphConfig,
+    unsafe_prefixes: HashSet<String>,
 ) -> CanonicalWorkspace {
     let crates = canonical::discover_workspace_crates(workspace_path);
-    // Use the production discovery input and unsafe-prefix helper, not the
-    // indexed `file_node` list. Discovered-but-skipped Rust files can carry
-    // `#[path]`/`#[cfg]` module remaps; missing those prefixes would let eval
-    // resolve qualified misses that production intentionally rejected.
-    let discovered = code_graph::discover_files(workspace_path, config);
-    let unsafe_prefixes = code_graph::unsafe_module_prefixes(workspace_path, &crates, &discovered);
     CanonicalWorkspace {
         crates,
         unsafe_prefixes,
@@ -845,7 +842,7 @@ pub async fn scan_call_site_inventory(
     files: &[CodeFile],
     languages: &[String],
 ) -> Result<CallSiteInventory, EngramError> {
-    scan_call_site_inventory_inner(workspace_path, files, languages, None, None).await
+    scan_call_site_inventory_inner(workspace_path, files, languages, None).await
 }
 
 /// Scan the indexed source inventory using resolved graph identity to collapse
@@ -865,16 +862,8 @@ pub async fn scan_call_site_inventory_with_resolution(
     files: &[CodeFile],
     languages: &[String],
     resolution: &CallSiteResolutionContext,
-    code_graph_config: &CodeGraphConfig,
 ) -> Result<CallSiteInventory, EngramError> {
-    scan_call_site_inventory_inner(
-        workspace_path,
-        files,
-        languages,
-        Some(resolution),
-        Some(code_graph_config),
-    )
-    .await
+    scan_call_site_inventory_inner(workspace_path, files, languages, Some(resolution)).await
 }
 
 async fn scan_call_site_inventory_inner(
@@ -882,7 +871,6 @@ async fn scan_call_site_inventory_inner(
     files: &[CodeFile],
     languages: &[String],
     resolution: Option<&CallSiteResolutionContext>,
-    code_graph_config: Option<&CodeGraphConfig>,
 ) -> Result<CallSiteInventory, EngramError> {
     // Canonical workspace root for the containment check below. The bound
     // workspace is canonicalized at `set_workspace` time, so this is expected
@@ -893,11 +881,21 @@ async fn scan_call_site_inventory_inner(
         })
     })?;
 
-    let resolution_lookup = resolution.and_then(ResolutionLookup::from_context);
+    // Without a persisted index-time unsafe-prefix snapshot, resolution-aware
+    // collapse is disabled entirely. Syntax-only counting is the safe upgrade
+    // fallback: it can under-report but cannot hide a qualified miss by
+    // recomputing a smaller current-disk prefix set than the one that produced
+    // the stored edges.
+    let index_unsafe_prefixes = resolution.and_then(|context| context.unsafe_prefixes.clone());
+    let resolution_lookup = if index_unsafe_prefixes.is_some() {
+        resolution.and_then(ResolutionLookup::from_context)
+    } else {
+        None
+    };
     let canonical_workspace = resolution_lookup
         .as_ref()
-        .and(code_graph_config)
-        .map(|config| canonical_workspace_for_inventory(workspace_path, config));
+        .and(index_unsafe_prefixes)
+        .map(|prefixes| canonical_workspace_for_inventory(workspace_path, prefixes));
 
     // Running totals accumulated one bounded batch at a time so the whole corpus
     // of source text is never resident simultaneously (084.011-T).

@@ -21,7 +21,6 @@ use serde_json::Value;
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, SystemError, WorkspaceError};
-use crate::models::config::CodeGraphConfig;
 use crate::models::retrieval_eval::{RetrievalEvalConfig, RetrievalEvalReport};
 use crate::server::state::SharedState;
 use crate::services::retrieval_eval;
@@ -36,8 +35,6 @@ struct SnapshotParts {
     branch: String,
     /// Retrieval-eval configuration.
     config: RetrievalEvalConfig,
-    /// Code-graph indexing configuration used for discovery parity.
-    code_graph_config: CodeGraphConfig,
 }
 
 /// Resolve the workspace paths, active branch and retrieval-eval config,
@@ -59,7 +56,6 @@ async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramErro
         data_dir: ctx.workspace.data_dir,
         branch: ctx.workspace.branch,
         config: ctx.config.retrieval_eval,
-        code_graph_config: ctx.config.code_graph,
     })
 }
 
@@ -122,13 +118,13 @@ pub async fn run_retrieval_eval(
         functions,
         resolved_edges,
         queries.function_ids_by_canonical_path().await?,
+        queries.load_index_unsafe_module_prefixes().await?,
     );
     let inventory = retrieval_eval::scan_call_site_inventory_with_resolution(
         &parts.workspace_path,
         &files,
         &parts.config.languages,
         &resolution_context,
-        &parts.code_graph_config,
     )
     .await?;
     // Numerator is gated to the *same* configured caller languages as the
