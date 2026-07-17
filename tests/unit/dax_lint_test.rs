@@ -6,7 +6,7 @@
 //! `dax.deprecated_function`, `dax.malformed_ref`) with a positive and a
 //! negative fixture, plus end-to-end `verify_tmdl_dax` conformance mapping.
 //!
-//! Tests: S-DAXLINT-01 through S-DAXLINT-14.
+//! Tests: S-DAXLINT-01 through S-DAXLINT-16.
 
 use engram::services::dax_lint::{lint_dax_expression, verify_tmdl_dax};
 use engram::services::verify::{Severity, VerifyFinding};
@@ -72,6 +72,20 @@ fn empty_expression_flags_comment_only_body() {
     assert_eq!(flagged.severity, Severity::Warning);
 }
 
+/// S-DAXLINT-15: a `--` comment-only expression is effectively empty.
+#[test]
+fn empty_expression_flags_dash_dash_comment_only_body() {
+    let findings = lint_dax_expression(
+        "m.tmdl",
+        "Sales[Blank] (measure)",
+        "-- waiting for the business definition",
+    );
+    assert!(
+        rules(&findings).contains(&"dax.empty_expression"),
+        "`--` comment-only expression should flag dax.empty_expression: {findings:?}"
+    );
+}
+
 /// S-DAXLINT-06 (negative): a real expression is not flagged as empty.
 #[test]
 fn empty_expression_ignores_real_body() {
@@ -132,6 +146,35 @@ fn divide_operator_ignores_divide_function_and_literals() {
     assert!(
         !rules(&in_string).contains(&"dax.divide_operator"),
         "'/' inside a string must not flag dax.divide_operator: {in_string:?}"
+    );
+}
+
+/// S-DAXLINT-16: `--` comments do not contribute division or deprecated-function
+/// findings, while `--` inside strings and bracketed identifiers remains data.
+#[test]
+fn divide_operator_ignores_dash_dash_comments_but_not_literals() {
+    let in_comment = lint_dax_expression(
+        "m.tmdl",
+        "Sales[X] (measure)",
+        "SUM(Sales[Amount]) -- Fake[Column] / EARLIER(Fake[Column])",
+    );
+    assert!(
+        !rules(&in_comment).contains(&"dax.divide_operator"),
+        "'/' inside a `--` comment must not flag dax.divide_operator: {in_comment:?}"
+    );
+    assert!(
+        !rules(&in_comment).contains(&"dax.deprecated_function"),
+        "functions inside a `--` comment must not flag dax.deprecated_function: {in_comment:?}"
+    );
+
+    let in_literals = lint_dax_expression(
+        "m.tmdl",
+        "Sales[X] (measure)",
+        r#"Sales[Amount--Net] / 2 & "a--b""#,
+    );
+    assert!(
+        rules(&in_literals).contains(&"dax.divide_operator"),
+        "`--` inside a bracket or string must not hide the real division: {in_literals:?}"
     );
 }
 

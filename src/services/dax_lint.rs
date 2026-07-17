@@ -24,7 +24,7 @@ use std::path::Path;
 use powerbi_tmdl_parser::{DaxDiagnostic, extract_dax_references};
 
 use crate::models::powerbi::PowerBiSemanticModel;
-use crate::services::powerbi_indexer::{ModelScopeSchema, collect_powerbi_files};
+use crate::services::powerbi_indexer::{ModelScopeSchema, collect_powerbi_files_in_workspace};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
 use crate::services::verify::{Severity, VerifyFinding, VerifyReport};
 
@@ -159,39 +159,92 @@ fn is_effectively_empty(expression: &str) -> bool {
     strip_comments(expression).trim().is_empty()
 }
 
-/// Remove `//` line comments and `/* */` block comments from a DAX expression.
+/// Remove DAX line (`//`, `--`) and block (`/* */`) comments from an expression.
 ///
-/// This is a coarse pass used only for the emptiness check; it does not attempt
-/// to preserve string literals, which is acceptable because any surviving
-/// string content still makes the expression non-empty.
+/// String literals, quoted identifiers, and bracketed names are preserved so a
+/// `--` sequence inside data is not mistaken for a comment.
 fn strip_comments(expression: &str) -> String {
     let chars: Vec<char> = expression.chars().collect();
     let mut out = String::with_capacity(chars.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
-            i += 2;
-            while i < chars.len() && chars[i] != '\n' {
+        match chars[i] {
+            '"' => i = copy_string_literal(&chars, i, &mut out),
+            '\'' => i = copy_quoted_identifier(&chars, i, &mut out),
+            '[' => i = copy_bracketed_name(&chars, i, &mut out),
+            '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
+                i = skip_line_comment(&chars, i + 2);
+            }
+            '-' if i + 1 < chars.len() && chars[i + 1] == '-' => {
+                i = skip_line_comment(&chars, i + 2);
+            }
+            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                i = skip_block_comment(&chars, i + 2);
+            }
+            c => {
+                out.push(c);
                 i += 1;
             }
-        } else if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(chars.len());
-        } else {
-            out.push(chars[i]);
-            i += 1;
         }
     }
     out
 }
 
+fn skip_line_comment(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() && chars[i] != '\n' {
+        i += 1;
+    }
+    i
+}
+
+fn skip_block_comment(chars: &[char], mut i: usize) -> usize {
+    while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+        i += 1;
+    }
+    (i + 2).min(chars.len())
+}
+
+fn copy_string_literal(chars: &[char], start: usize, out: &mut String) -> usize {
+    copy_delimited(chars, start, out, '"', '"')
+}
+
+fn copy_quoted_identifier(chars: &[char], start: usize, out: &mut String) -> usize {
+    copy_delimited(chars, start, out, '\'', '\'')
+}
+
+fn copy_bracketed_name(chars: &[char], start: usize, out: &mut String) -> usize {
+    copy_delimited(chars, start, out, '[', ']')
+}
+
+fn copy_delimited(
+    chars: &[char],
+    start: usize,
+    out: &mut String,
+    open: char,
+    close: char,
+) -> usize {
+    debug_assert_eq!(chars[start], open);
+    out.push(chars[start]);
+    let mut i = start + 1;
+    while i < chars.len() {
+        out.push(chars[i]);
+        if chars[i] == close {
+            if i + 1 < chars.len() && chars[i + 1] == close {
+                out.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            return i + 1;
+        }
+        i += 1;
+    }
+    i
+}
+
 /// Whether the expression uses a bare `/` division operator.
 ///
 /// Strings, quoted identifiers, bracketed references, and comments are skipped
-/// so a `/` inside a literal or a `//` / `/*` comment is not misreported.
+/// so a `/` inside a literal or a line/block comment is not misreported.
 fn contains_bare_division(expression: &str) -> bool {
     let chars: Vec<char> = expression.chars().collect();
     let mut i = 0;
@@ -247,6 +300,12 @@ fn contains_bare_division(expression: &str) -> bool {
                 i += 1;
             }
             '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '-' if i + 1 < chars.len() && chars[i + 1] == '-' => {
                 i += 2;
                 while i < chars.len() && chars[i] != '\n' {
                     i += 1;
@@ -587,7 +646,7 @@ pub fn lint_indexed_models(
         if !source_dir.is_dir() {
             continue;
         }
-        for file_path in collect_powerbi_files(&source_dir) {
+        for file_path in collect_powerbi_files_in_workspace(&source_dir, workspace_root) {
             let is_tmdl = file_path
                 .extension()
                 .and_then(|ext| ext.to_str())

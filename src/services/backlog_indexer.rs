@@ -6,7 +6,7 @@
 //! registry source has `content_type == "backlog"`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
@@ -18,6 +18,7 @@ use crate::models::backlog_graph::{
 };
 use crate::models::registry::ContentSource;
 use crate::services::parsing::frontmatter;
+use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -32,39 +33,77 @@ pub fn compute_file_hash(content: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Return the subset of `known_paths` whose files no longer exist on disk.
+/// Return the subset of `known_paths` whose files no longer exist under
+/// `workspace_root`.
 ///
-/// Paths must be absolute.  Any entry in `known_paths` for which
-/// [`std::path::Path::exists`] returns `false` is included in the output.
+/// Each entry is validated as a workspace-relative candidate before any
+/// filesystem probe: absolute paths, root-relative paths, `..` traversal, and
+/// drive prefixes cannot name a live in-workspace file, so they are skipped
+/// without touching the filesystem outside the workspace root.
+///
+/// Final-component symlinks are treated as deleted, matching the backlog
+/// collector's file-symlink skip behavior. Files reached through an
+/// in-workspace directory symlink are preserved when their canonical target
+/// remains under `workspace_root`.
 #[must_use]
-pub fn compute_deleted_paths(known_paths: &[String]) -> Vec<String> {
+pub fn compute_deleted_paths(known_paths: &[String], workspace_root: &Path) -> Vec<String> {
+    let Ok(canonical_root) = workspace_root.canonicalize() else {
+        return known_paths.to_vec();
+    };
+
     known_paths
         .iter()
-        .filter(|p| !Path::new(p).exists())
-        .cloned()
+        .filter_map(|raw| {
+            let Some(relative) = workspace_relative_path(raw) else {
+                warn!(
+                    path = %raw,
+                    "skipping backlog deletion sweep path that escapes the workspace root"
+                );
+                return None;
+            };
+            let candidate = workspace_root.join(relative);
+            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
+            is_deleted.then(|| raw.clone())
+        })
         .collect()
 }
 
-/// Collect all files under `dir` recursively, sorted by path.
-fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(collect_md_files(&path));
-            } else if path.is_file()
-                && path
-                    .extension()
-                    .map(|e| e.eq_ignore_ascii_case("md"))
-                    .unwrap_or(false)
-            {
-                files.push(path);
-            }
-        }
+/// Reject paths that cannot name a live in-workspace file.
+///
+/// Mirrors the Power BI, PBIP, and notebook indexers: absolute paths,
+/// root-relative paths (`\foo` / `/foo` on Windows), `..` traversal, and drive
+/// prefixes are refused so the deletion sweep never probes outside the
+/// workspace root.
+fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
+    let path = Path::new(rel_path);
+    if path.is_absolute()
+        || path.has_root()
+        || path.components().any(|component| {
+            component == Component::ParentDir || matches!(component, Component::Prefix(_))
+        })
+    {
+        return None;
     }
-    files.sort();
-    files
+
+    Some(path.to_path_buf())
+}
+
+/// Collect all backlog markdown files under `dir` recursively, sorted by path.
+#[must_use]
+pub fn collect_backlog_files(dir: &Path) -> Vec<PathBuf> {
+    collect_backlog_files_in_workspace(dir, dir)
+}
+
+/// Collect backlog markdown files under `dir`, traversing only symlinked
+/// directories whose canonical target remains under `workspace_root`.
+#[must_use]
+pub fn collect_backlog_files_in_workspace(dir: &Path, workspace_root: &Path) -> Vec<PathBuf> {
+    collect_files_in_workspace(dir, workspace_root, is_backlog_file)
+}
+
+fn is_backlog_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
 }
 
 // ── Core extraction ───────────────────────────────────────────────────────
@@ -276,7 +315,7 @@ pub async fn index_backlog_source(
         return Ok(result);
     }
 
-    let files = collect_md_files(&source_dir);
+    let files = collect_backlog_files_in_workspace(&source_dir, workspace_root);
     result.total_files = files.len();
 
     for file_path in &files {
@@ -367,29 +406,15 @@ pub async fn sweep_deleted_backlog_files(
 ) -> Result<usize, EngramError> {
     let existing = queries.select_backlog_nodes(Some(&source.path)).await?;
 
-    let known_paths: Vec<String> = existing
-        .iter()
-        .map(|n| {
-            workspace_root
-                .join(&n.file_path)
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
-        .collect();
+    let known_paths: Vec<String> = existing.iter().map(|n| n.file_path.clone()).collect();
 
-    let deleted = compute_deleted_paths(&known_paths);
+    let deleted = compute_deleted_paths(&known_paths, workspace_root);
     let mut removed = 0_usize;
 
-    for abs_path in &deleted {
-        // Convert absolute path back to workspace-relative for the DB call.
-        let rel = PathBuf::from(abs_path)
-            .strip_prefix(workspace_root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| abs_path.clone());
-
+    for rel in &deleted {
         debug!(path = %rel, "sweeping deleted backlog file");
-        queries.delete_backlog_node_by_file_path(&rel).await?;
-        queries.delete_backlog_content_record_by_path(&rel).await?;
+        queries.delete_backlog_node_by_file_path(rel).await?;
+        queries.delete_backlog_content_record_by_path(rel).await?;
         removed += 1;
     }
 

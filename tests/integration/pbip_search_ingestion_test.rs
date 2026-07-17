@@ -3,16 +3,18 @@
 //!
 //! Verifies that `collect_pbip_files` walks a PBIP project tree and finds
 //! `.pbip`, `.pbir`, `.pbism`, project-definition JSON, and `definition/**/*.tmdl`
-//! files while ignoring unrelated noise and symbolic links; and that
+//! files while bounding symlink traversal and ignoring unrelated noise; and that
 //! `compute_deleted_paths` reports workspace-relative paths whose backing
 //! files are gone.
 //!
-//! Tests: S-PFC-01..S-PFC-09
+//! Tests: S-PFC-01..S-PFC-10
 
 use std::fs;
 use std::path::Path;
 
-use engram::services::pbip_indexer::{collect_pbip_files, compute_deleted_paths};
+use engram::services::pbip_indexer::{
+    collect_pbip_files, collect_pbip_files_in_workspace, compute_deleted_paths,
+};
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -274,16 +276,56 @@ fn compute_deleted_paths_rejects_workspace_escape() {
     );
 }
 
-/// S-PFC-09: `collect_pbip_files` skips symlinked files and symlinked
-/// directories so a PBIP source cannot escape its workspace root or recurse
-/// through an alias loop. Matches the
-/// `collect_notebook_files_skips_symlinked_paths` containment contract.
+/// S-PFC-10: deletion sweeps mirror collectors by treating final-component file
+/// symlinks as deleted while preserving regular files and absent paths.
+#[test]
+fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let regular_path = workspace.path().join("regular.pbism");
+    let symlink_target = workspace.path().join("target.pbism");
+    let symlink_path = workspace.path().join("indexed.pbism");
+    fs::write(&regular_path, "{}").expect("write regular pbism");
+    fs::write(&symlink_target, "{}").expect("write target pbism");
+    if !create_symlink_file(&symlink_target, &symlink_path) {
+        return;
+    }
+
+    let external = TempDir::new().expect("external tempdir");
+    let external_dir = external.path().join("escape");
+    fs::create_dir_all(&external_dir).expect("create external dir");
+    fs::write(external_dir.join("outside.pbism"), "{}").expect("write external pbism");
+    if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
+        return;
+    }
+
+    let deleted = compute_deleted_paths(
+        &[
+            "regular.pbism".to_string(),
+            "indexed.pbism".to_string(),
+            "linked-outside/outside.pbism".to_string(),
+            "absent.pbism".to_string(),
+        ],
+        workspace.path(),
+    );
+
+    assert_eq!(
+        deleted,
+        vec![
+            "indexed.pbism".to_string(),
+            "linked-outside/outside.pbism".to_string(),
+            "absent.pbism".to_string(),
+        ]
+    );
+}
+
+/// S-PFC-09: symlink traversal stays within the workspace, follows legitimate
+/// in-workspace directories once, and terminates through alias cycles.
 ///
 /// Symlink creation requires elevated privileges on Windows. When the
 /// helpers return `false` (`PermissionDenied`), the test silently skips so
 /// CI on Windows runners without symlink privilege does not fail spuriously.
 #[test]
-fn collect_pbip_files_skips_symlinked_paths() {
+fn collect_pbip_files_handles_symlink_cycles_and_workspace_bounds() {
     let workspace = TempDir::new().expect("tempdir");
     let external = TempDir::new().expect("tempdir");
 
@@ -293,6 +335,10 @@ fn collect_pbip_files_skips_symlinked_paths() {
     fs::write(pbip_dir.join("Project.pbip"), "{}").expect("write real pbip");
     fs::write(nested_dir.join("model.tmdl"), "model X\n").expect("write nested tmdl");
 
+    let shared_dir = workspace.path().join("shared");
+    fs::create_dir_all(&shared_dir).expect("create shared pbip dir");
+    fs::write(shared_dir.join("shared.pbism"), "{}").expect("write shared pbism");
+
     let escape_dir = external.path().join("escape");
     fs::create_dir_all(&escape_dir).expect("create external pbip dir");
     let external_file = escape_dir.join("outside.pbism");
@@ -301,14 +347,18 @@ fn collect_pbip_files_skips_symlinked_paths() {
     let linked_dir_created = create_symlink_dir(&escape_dir, &pbip_dir.join("linked-dir"));
     let linked_file_created =
         create_symlink_file(&external_file, &pbip_dir.join("linked-file.pbism"));
+    let linked_shared_created = create_symlink_dir(&shared_dir, &pbip_dir.join("linked-shared"));
+    if linked_shared_created {
+        let _ = create_symlink_dir(&pbip_dir, &shared_dir.join("cycle"));
+    }
 
-    if !linked_dir_created && !linked_file_created {
+    if !linked_dir_created && !linked_file_created && !linked_shared_created {
         // Symlink creation requires elevation on Windows; if neither succeeded
         // there is nothing to assert here.
         return;
     }
 
-    let files = collect_pbip_files(workspace.path());
+    let files = collect_pbip_files_in_workspace(&pbip_dir, workspace.path());
     let rel_paths: Vec<String> = files
         .iter()
         .map(|path| {
@@ -330,7 +380,23 @@ fn collect_pbip_files_skips_symlinked_paths() {
         "real nested .tmdl should be collected; got {rel_paths:?}"
     );
     assert!(
-        !rel_paths.iter().any(|p| p.contains("linked-")),
-        "symlinked files and directories must be skipped; got {rel_paths:?}"
+        !rel_paths.iter().any(|p| p.contains("outside.pbism")),
+        "workspace-escaping symlink targets must be skipped; got {rel_paths:?}"
     );
+    if linked_shared_created {
+        assert!(
+            rel_paths
+                .iter()
+                .any(|p| p == "pbip/linked-shared/shared.pbism"),
+            "in-workspace symlinked directories should be collected; got {rel_paths:?}"
+        );
+        assert_eq!(
+            rel_paths
+                .iter()
+                .filter(|p| p.ends_with("shared.pbism"))
+                .count(),
+            1,
+            "symlink cycles should not collect duplicate real files; got {rel_paths:?}"
+        );
+    }
 }

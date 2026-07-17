@@ -28,7 +28,6 @@
 //!   records and graph nodes for files removed from disk.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::FileType;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -49,6 +48,7 @@ use crate::services::powerbi_indexer::{
     build_powerbi_graph_data_from_model, compute_file_hash, extract_model_summaries_from_model,
     make_node_id,
 };
+use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 
 /// File extensions that belong to the PBIP project-definition layout.
 ///
@@ -67,61 +67,24 @@ const PBIP_EXTENSIONS: &[&str] = &["pbip", "pbir", "pbism", "json", "tmdl"];
 /// or `.tmdl`. Files with other extensions are ignored even when they sit
 /// alongside PBIP files.
 ///
-/// Symbolic links — whether to files or directories — are skipped without
-/// following so a PBIP source cannot escape its workspace root or recurse
-/// into an alias loop. This matches the
-/// [`crate::services::notebook_indexer::collect_notebook_files`] containment
-/// contract.
+/// Directory symlinks are followed only when their canonical target remains
+/// within the traversal root; file symlinks are skipped. Use
+/// [`collect_pbip_files_in_workspace`] when the source directory is narrower
+/// than the workspace root and legitimate symlinked source directories may live
+/// elsewhere inside the same workspace.
 ///
-/// Returns an empty list if `dir` does not exist, resolves through a
-/// symlink, or cannot be read. A `warn!` log entry is emitted in the
-/// `read_dir` failure case so that field traces can distinguish "no files"
-/// from "could not read directory".
+/// Returns an empty list if `dir` does not exist, escapes the traversal root, or
+/// cannot be read.
 #[must_use]
 pub fn collect_pbip_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if physical_file_type(dir).is_some_and(|file_type| file_type.is_dir()) {
-        collect_recursive(dir, &mut files);
-    }
-    files.sort();
-    files
+    collect_pbip_files_in_workspace(dir, dir)
 }
 
-fn physical_file_type(path: &Path) -> Option<FileType> {
-    std::fs::symlink_metadata(path)
-        .ok()
-        .map(|metadata| metadata.file_type())
-}
-
-fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            warn!(
-                path = %dir.display(),
-                error = %err,
-                "skipping PBIP directory that could not be read"
-            );
-            return;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_type) = physical_file_type(&path) else {
-            continue;
-        };
-
-        if file_type.is_symlink() {
-            continue;
-        }
-
-        if file_type.is_dir() {
-            collect_recursive(&path, files);
-        } else if file_type.is_file() && is_pbip_file(&path) {
-            files.push(path);
-        }
-    }
+/// Collect PBIP files under `dir`, traversing only symlinked directories whose
+/// canonical target remains under `workspace_root`.
+#[must_use]
+pub fn collect_pbip_files_in_workspace(dir: &Path, workspace_root: &Path) -> Vec<PathBuf> {
+    collect_files_in_workspace(dir, workspace_root, is_pbip_file)
 }
 
 fn is_pbip_file(path: &Path) -> bool {
@@ -150,6 +113,10 @@ pub fn compute_deleted_paths(
     workspace_relative_paths: &[String],
     workspace_root: &Path,
 ) -> Vec<String> {
+    let Ok(canonical_root) = workspace_root.canonicalize() else {
+        return workspace_relative_paths.to_vec();
+    };
+
     workspace_relative_paths
         .iter()
         .filter_map(|rel| {
@@ -160,7 +127,9 @@ pub fn compute_deleted_paths(
                 );
                 return None;
             };
-            (!workspace_root.join(relative_path).exists()).then(|| rel.clone())
+            let candidate = workspace_root.join(relative_path);
+            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
+            is_deleted.then(|| rel.clone())
         })
         .collect()
 }
@@ -692,15 +661,15 @@ pub async fn index_pbip_source(
     let mut result = PbipIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !physical_file_type(&source_dir).is_some_and(|file_type| file_type.is_dir()) {
+    if !source_dir.exists() {
         debug!(
             path = %source.path,
-            "PBIP source directory does not exist or resolves through a symlink — skipping"
+            "PBIP source directory does not exist — skipping"
         );
         return Ok(result);
     }
 
-    let files = collect_pbip_files(&source_dir);
+    let files = collect_pbip_files_in_workspace(&source_dir, workspace_root);
     result.total_files = files.len();
 
     // Snapshot every collected, in-bounds, UTF-8 file.

@@ -5,14 +5,51 @@
 //! entity-summary extraction.  These tests run without a `CozoDB` instance,
 //! mirroring the precedent set by `backlog_indexer_test.rs`.
 //!
-//! Tests: S-PIN-01 through S-PIN-13
+//! Tests: S-PIN-01 through S-PIN-24
 
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 use engram::services::powerbi_indexer::{
     collect_powerbi_files, compute_deleted_paths, compute_file_hash, extract_entity_summaries,
 };
+
+#[cfg(unix)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
+fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+    match symlink_file(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create file symlink: {error}"),
+    }
+}
+
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
+fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+    match symlink_dir(src, dst) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!("create directory symlink: {error}"),
+    }
+}
 
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
@@ -120,6 +157,72 @@ fn compute_deleted_paths_ignores_escape_attempts() {
         deleted,
         vec!["gone.json".to_string()],
         "only safe workspace-relative paths should participate in deletion sweeps"
+    );
+}
+
+/// S-PIN-23: a workspace-relative symlink that now resolves outside the
+/// workspace is treated as ineligible/deleted instead of preserved by
+/// `Path::exists` following the symlink.
+#[test]
+fn compute_deleted_paths_treats_outside_symlink_target_as_deleted() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let external = TempDir::new().expect("external tempdir");
+    let external_file = external.path().join("outside.tmdl");
+    fs::write(&external_file, "table Outside").expect("write external tmdl");
+
+    let link_path = workspace.path().join("linked.tmdl");
+    if !create_symlink_file(&external_file, &link_path) {
+        return;
+    }
+
+    let deleted = compute_deleted_paths(&["linked.tmdl".to_string()], workspace.path());
+
+    assert_eq!(
+        deleted,
+        vec!["linked.tmdl".to_string()],
+        "symlinks resolving outside the workspace must be swept as deleted"
+    );
+}
+
+/// S-PIN-24: deletion sweeps mirror collectors by treating final-component
+/// file symlinks as deleted while preserving regular files and absent paths.
+#[test]
+fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let regular_path = workspace.path().join("regular.tmdl");
+    let symlink_target = workspace.path().join("target.tmdl");
+    let symlink_path = workspace.path().join("indexed.tmdl");
+    fs::write(&regular_path, "table Regular").expect("write regular tmdl");
+    fs::write(&symlink_target, "table Target").expect("write target tmdl");
+    if !create_symlink_file(&symlink_target, &symlink_path) {
+        return;
+    }
+
+    let external = TempDir::new().expect("external tempdir");
+    let external_dir = external.path().join("escape");
+    fs::create_dir_all(&external_dir).expect("create external dir");
+    fs::write(external_dir.join("outside.tmdl"), "table Outside").expect("write external tmdl");
+    if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
+        return;
+    }
+
+    let deleted = compute_deleted_paths(
+        &[
+            "regular.tmdl".to_string(),
+            "indexed.tmdl".to_string(),
+            "linked-outside/outside.tmdl".to_string(),
+            "absent.tmdl".to_string(),
+        ],
+        workspace.path(),
+    );
+
+    assert_eq!(
+        deleted,
+        vec![
+            "indexed.tmdl".to_string(),
+            "linked-outside/outside.tmdl".to_string(),
+            "absent.tmdl".to_string(),
+        ]
     );
 }
 

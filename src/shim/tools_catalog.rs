@@ -220,13 +220,13 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "impact_analysis",
-            "Identify tasks and context records likely affected by changes to a named code symbol.",
+            "Analyze impact over the code call graph by symbol_name or the Power BI dependency graph by powerbi_node_id.",
             schema(json!({
                 "type": "object",
                 "properties": {
                     "symbol_name": {
                         "type": "string",
-                        "description": "Name of the changed symbol to analyse"
+                        "description": "Code symbol name used as the impact root for code call graph analysis. Provide this or powerbi_node_id."
                     },
                     "powerbi_node_id": {
                         "type": "string",
@@ -234,7 +234,7 @@ pub fn all_tools() -> Vec<Tool> {
                     },
                     "depth": {
                         "type": "integer",
-                        "description": "How many hops in the call graph to explore (default 1)",
+                        "description": "Maximum hops to traverse in the code call graph or Power BI dependency graph (default 1)",
                         "default": 1
                     },
                     "max_nodes": {
