@@ -13,7 +13,12 @@ use engram::cli::output::OutputFormatter;
 /// The shim subcommand (default) is the MCP client entry point; the daemon
 /// subcommand is spawned automatically by the shim.
 #[derive(Debug, Parser)]
-#[command(name = "engram", version = engram::shim::version::ENGRAM_BUILD_HASH, about)]
+#[command(
+    name = "engram",
+    version = engram::shim::version::ENGRAM_BUILD_HASH,
+    about,
+    long_about = "Engram workspace-local MCP plugin.\n\nManages per-workspace daemon processes that serve MCP tool calls via stdio. The shim subcommand (default) is the MCP client entry point; the daemon subcommand is spawned automatically by the shim.\n\nCanonical CLI/MCP parity map: https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
