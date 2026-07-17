@@ -19,8 +19,9 @@ worktree off the merged `main` (`e0f8e44`).
 
 ## Tasks completed
 
-* `087.001-T` - DAX lint results carry an index-version fingerprint so stale lint summaries are
-  detectable.
+* `087.001-T` - a version namespace (`TMDL_DAX_INDEX_VERSION`) is folded into the persisted `.tmdl`
+  content hash, so bumping it invalidates the incremental hash-skip and forces a one-time re-index of
+  unchanged Power BI files (no `--force` or file edit needed).
 * `087.002-T` - DAX `--` line comments are tokenized so references and division inside comments no
   longer emit findings.
 * `087.003-T` - `impact_analysis` PowerBI behavior documented.
@@ -72,7 +73,7 @@ Closure work touched only documentation and backlog state:
 
 ## Adversarial and Copilot cycle summary
 
-One pre-PR cross-model adversarial review (rust `gpt-5.6-sol`, security `gemini-3.1-pro`, scope
+One pre-PR cross-model adversarial review (rust `gpt-5.6-sol`, security `gemini-3.1-pro-preview`, scope
 `gpt-5.6-terra`, follow-up `gemini-3.5-flash`) fixed three P1s and deferred one P2. Four Copilot
 cycles followed:
 

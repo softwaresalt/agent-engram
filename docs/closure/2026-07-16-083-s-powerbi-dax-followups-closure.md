@@ -20,7 +20,7 @@ branch: feat/083-powerbi-dax-followups
 scope: "PowerBI/DAX follow-ups plus symlink-cycle-safe centralized source traversal and deletion sweeps"
 reviewers:
   - gpt-5.6-sol
-  - gemini-3.1-pro
+  - gemini-3.1-pro-preview
   - gpt-5.6-terra
   - gemini-3.5-flash
   - copilot
@@ -52,7 +52,7 @@ gated.
 
 | Task | Delivered |
 |---|---|
-| `087.001-T` | DAX lint results carry an index-version fingerprint so stale lint summaries are detectable |
+| `087.001-T` | A version namespace (`TMDL_DAX_INDEX_VERSION`) is folded into the persisted `.tmdl` content hash, so bumping it invalidates the incremental hash-skip and forces a one-time re-index of unchanged Power BI files after a DAX-capable upgrade (no `--force` or file edit needed) |
 | `087.002-T` | DAX `--` line comments are tokenized so references and division inside comments no longer produce findings |
 | `087.003-T` | `impact_analysis` PowerBI behavior documented |
 | `087.004-T` | `collect_recursive` is symlink-cycle-safe: directory symlinks are followed only when their canonical target stays under the workspace root, and canonical directory visits are tracked to prevent cycles and alias duplication |
@@ -63,7 +63,7 @@ PowerBI, PBIP, notebook, and backlog indexers, replacing four independent per-in
 ## Adversarial and Copilot review
 
 Per the operator directive to minimize Copilot iterations, a cross-model adversarial review ran
-before the PR opened (rust `gpt-5.6-sol`, security `gemini-3.1-pro`, scope `gpt-5.6-terra`,
+before the PR opened (rust `gpt-5.6-sol`, security `gemini-3.1-pro-preview`, scope `gpt-5.6-terra`,
 follow-up `gemini-3.5-flash`). It fixed three P1 findings pre-PR and deferred one P2
 (local concurrent-read / TOCTOU hardening).
 
@@ -135,8 +135,10 @@ Copilot independently surfaced it, confirming the deferral rather than expanding
   root.
 * Deletion sweeps never probe the filesystem outside the workspace root: absolute, root-relative,
   `..`, and drive-prefix paths are rejected before any probe.
-* The traversal and sweep behavior is additive to indexing correctness; it removes stale records and
-  contains traversal, and does not change which in-workspace files are indexed.
+* The traversal and sweep behavior is additive to indexing correctness: it removes stale records and
+  contains traversal. It does not add or drop in-workspace content, though canonical-directory dedup
+  can change which alias path is emitted for a symlink-aliased file (the known path-selection
+  behavior tracked by deferred `087.005-T`).
 
 ### Pre-deploy audit
 
