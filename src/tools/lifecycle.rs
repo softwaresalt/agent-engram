@@ -161,8 +161,9 @@ pub async fn set_workspace(
         file_mtimes: hydration.file_mtimes.clone(),
     };
 
-    state.set_workspace(snapshot).await?;
-    state.set_workspace_config(Some(ws_config.clone())).await;
+    state
+        .set_workspace_and_config(snapshot, Some(ws_config.clone()))
+        .await?;
     crate::services::query_stats::reset_timing();
 
     // Queue a background scan immediately. The DB connect + hydrate +
@@ -472,11 +473,10 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
     // `workspace_config()` AFTER the `connect_db` round-trip. That wide gap let a
     // concurrent `set_workspace` pair this workspace's path/branch with a
     // DIFFERENT config's `retrieval_eval_enabled`; taking both under one
-    // dispatch-context read eliminates that WIDE tear window. NOTE: `set_workspace`
-    // still publishes the binding and its config in two separate awaits, so this
-    // is not a strict atomic publish/observe guarantee — the residual, much
-    // narrower writer-side window is a tracked follow-up (082-S review F4), not
-    // closed here.
+    // dispatch-context read eliminates that WIDE tear window. The writer side is
+    // now atomic too: `set_workspace_and_config` (092.001-T) publishes the binding
+    // and its config under both write locks, in the same lock order this reader
+    // uses, so this handler observes a fully consistent (workspace, config) pair.
     let Some(ctx) = state.snapshot_dispatch_context().await else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };

@@ -22,7 +22,9 @@
 #![allow(clippy::doc_markdown)]
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -30,10 +32,41 @@ use std::time::Duration;
 use serde_json::json;
 use tempfile::TempDir;
 
+use engram::errors::WorkspaceError;
 use engram::models::config::WorkspaceConfig;
 use engram::models::retrieval_eval::RetrievalEvalConfig;
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use engram::tools;
+
+#[allow(dead_code)]
+type PublishFuture<'a> = Pin<Box<dyn Future<Output = Result<(), WorkspaceError>> + Send + 'a>>;
+
+// The red phase uses this extension method to model the old two-await writer.
+// Once `AppState` has an inherent method with this name, method resolution
+// selects the production atomic writer instead.
+#[allow(dead_code)]
+trait NonAtomicPublishForRedHarness {
+    fn set_workspace_and_config(
+        &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> PublishFuture<'_>;
+}
+
+impl NonAtomicPublishForRedHarness for AppState {
+    fn set_workspace_and_config(
+        &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> PublishFuture<'_> {
+        Box::pin(async move {
+            self.set_workspace(snapshot).await?;
+            tokio::time::sleep(Duration::from_micros(50)).await;
+            self.set_workspace_config(config).await;
+            Ok(())
+        })
+    }
+}
 
 /// Build a workspace snapshot with a distinct `path` but a shared `data_dir`
 /// (so the reader's `connect_db` targets one database and stays fast).
@@ -168,4 +201,119 @@ async fn get_workspace_status_never_tears_workspace_and_config() {
          samples (observed A={observed_a}, B={observed_b}): {torn:?}",
         torn.len()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn snapshot_dispatch_context_never_observes_writer_side_torn_publish() {
+    let shared = TempDir::new().expect("shared data-dir tempdir");
+    let data_dir = shared.path().join(".engram");
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let dir_b = TempDir::new().expect("workspace B tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+    let path_b = dir_b.path().to_string_lossy().into_owned();
+
+    let state = Arc::new(AppState::new(10));
+    let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
+    let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
+    let cfg_a = config_with_eval(true);
+    let cfg_b = config_with_eval(false);
+
+    state
+        .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+        .await
+        .expect("seed bind A");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_state = state.clone();
+    let writer_stop = stop.clone();
+    let writer = tokio::spawn(async move {
+        while !writer_stop.load(Ordering::Relaxed) {
+            writer_state
+                .set_workspace_and_config(snap_b.clone(), Some(cfg_b.clone()))
+                .await
+                .expect("bind B with config B");
+            tokio::task::yield_now().await;
+            writer_state
+                .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+                .await
+                .expect("bind A with config A");
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let mut torn_count = 0u32;
+    let mut torn_examples: Vec<(String, bool)> = Vec::new();
+    let mut observed_a = 0u32;
+    let mut observed_b = 0u32;
+    let mut iterations = 0u32;
+    while (iterations < 1_000 || observed_a == 0 || observed_b == 0) && iterations < 20_000 {
+        iterations += 1;
+        let Some(snapshot) = state.snapshot_dispatch_context().await else {
+            continue;
+        };
+        let path = snapshot.workspace.path;
+        let enabled = snapshot.config.retrieval_eval.enabled;
+        if path == path_a {
+            observed_a += 1;
+        } else if path == path_b {
+            observed_b += 1;
+        }
+        let torn_pair = (path == path_a && !enabled) || (path == path_b && enabled);
+        if torn_pair {
+            torn_count += 1;
+            if torn_examples.len() < 8 {
+                torn_examples.push((path, enabled));
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.await.expect("writer task must join");
+
+    assert!(
+        observed_a > 0 && observed_b > 0,
+        "test is vacuous unless BOTH checked states are observed \
+         (A={observed_a}, B={observed_b}, iterations={iterations})"
+    );
+    assert!(
+        torn_count == 0,
+        "snapshot_dispatch_context returned {torn_count} torn (workspace, config) pair(s) across \
+         {iterations} samples (observed A={observed_a}, B={observed_b}); \
+         examples: {torn_examples:?}"
+    );
+}
+
+#[tokio::test]
+async fn set_workspace_and_config_limit_reached_leaves_state_unchanged() {
+    let shared = TempDir::new().expect("shared data-dir tempdir");
+    let data_dir = shared.path().join(".engram");
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let dir_b = TempDir::new().expect("workspace B tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+    let path_b = dir_b.path().to_string_lossy().into_owned();
+
+    let state = AppState::new(1);
+    let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
+    let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
+
+    state
+        .set_workspace_and_config(snap_a, Some(config_with_eval(true)))
+        .await
+        .expect("seed bind A");
+
+    let result = state
+        .set_workspace_and_config(snap_b, Some(config_with_eval(false)))
+        .await;
+
+    assert!(
+        matches!(result, Err(WorkspaceError::LimitReached { limit: 1 })),
+        "expected LimitReached, got {result:?}"
+    );
+    let snapshot = state
+        .snapshot_dispatch_context()
+        .await
+        .expect("workspace remains bound");
+    assert_eq!(snapshot.workspace.path, path_a);
+    assert!(snapshot.config.retrieval_eval.enabled);
 }
