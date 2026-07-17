@@ -1,15 +1,23 @@
-// RwLock Deadlock Audit (T041, 2026-03-09):
-// - All RwLock/Mutex guards are dropped before any `.await` point.
+// RwLock Deadlock Audit (T041, 2026-03-09; updated 092.001-T, 2026-07-17):
+// - Most RwLock/Mutex guards are dropped before any `.await` point.
 //   `record_tool_latency` explicitly calls `drop(latencies)` before the
 //   atomic increment; `latency_percentiles` explicitly calls `drop(latencies)`
-//   before the sort.  All other guard acquisitions are either the sole await
+//   before the sort.  Most other guard acquisitions are either the sole await
 //   in a method or are released via implicit drop before the next await.
-// - Rust's `!Send` bound on `MutexGuard` / `RwLockGuard` would produce a
-//   compile-time error if any guard were held across an await in a multi-
-//   threaded context, providing a mechanical safety net on top of the audit.
+// - Intentional paired-lock exception: to snapshot/publish the
+//   (`active_workspace`, `workspace_config`) pair atomically, both
+//   `snapshot_dispatch_context` (read guards) and `set_workspace_and_config`
+//   (write guards) hold the `active_workspace` guard across acquisition of the
+//   `workspace_config` guard. Both use the same lock order (`active_workspace`
+//   then `workspace_config`), and no code path acquires the two locks in the
+//   reverse order, so this pairing cannot deadlock. `tokio`'s async guards are
+//   `Send`, so holding one across an `.await` is permitted (unlike
+//   `std::sync` guards); deadlock-freedom here rests on the consistent lock
+//   order, not on a `!Send` compile-time net.
 // - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
 //   need no locking at all.
-// - No lock is held across I/O operations.
+// - No lock is held across an I/O operation; the only await performed while a
+//   guard is held is the paired lock acquisition described above.
 // Verdict: no deadlock potential identified.
 
 use std::collections::{HashMap, VecDeque};
@@ -31,8 +39,9 @@ use crate::services::hydration::FileFingerprint;
 /// Atomic point-in-time snapshot of workspace binding and config taken at dispatch entry.
 ///
 /// Both fields are captured under a single logical read so that a concurrent
-/// `set_workspace_config` call cannot change the policy that was checked at
-/// the start of a tool call. See TASK-018 for full context.
+/// `set_workspace_and_config` (or `set_workspace_config`) call cannot change
+/// the workspace/config pair that was checked at the start of a tool call.
+/// See TASK-018 for full context.
 #[derive(Clone, Debug)]
 pub struct DispatchSnapshot {
     /// Clone of the active workspace binding at snapshot time.
@@ -235,14 +244,17 @@ impl AppState {
     ///
     /// Both read locks are held simultaneously while cloning, in a consistent order
     /// (`active_workspace` then `workspace_config`), so that a concurrent
-    /// [`AppState::set_workspace`] or [`AppState::set_workspace_config`] call cannot produce
-    /// a mismatched workspace/config pair from different points in time. Both guards are
-    /// dropped at the end of this function.
+    /// [`AppState::set_workspace_and_config`] call cannot produce a mismatched
+    /// workspace/config pair from different points in time. Both guards are dropped at
+    /// the end of this function.
     ///
-    /// Returns `None` when no workspace is bound; `set_workspace` must be called first.
+    /// Returns `None` when no workspace is bound; `set_workspace` or
+    /// `set_workspace_and_config` must be called first.
     /// When a workspace is bound but no config has been loaded, the snapshot uses
     /// [`WorkspaceConfig::default`] so that dispatch proceeds with policy disabled.
     pub async fn snapshot_dispatch_context(&self) -> Option<DispatchSnapshot> {
+        // Lock-order invariant: when workspace and config are held together,
+        // acquire `active_workspace` first, then `workspace_config`.
         let workspace_guard = self.active_workspace.read().await;
         let config_guard = self.workspace_config.read().await;
         let workspace = workspace_guard.clone()?;
@@ -261,6 +273,33 @@ impl AppState {
         }
 
         *workspace = Some(snapshot);
+        Ok(())
+    }
+
+    /// Atomically publish a workspace binding and its config.
+    ///
+    /// Performs the same workspace capacity check as [`AppState::set_workspace`] before
+    /// mutating either value, so a [`WorkspaceError::LimitReached`] leaves the prior
+    /// workspace and config unchanged.
+    pub async fn set_workspace_and_config(
+        &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> Result<(), WorkspaceError> {
+        // Lock-order invariant: when workspace and config are held together,
+        // acquire `active_workspace` first, then `workspace_config`.
+        let mut workspace = self.active_workspace.write().await;
+        let mut workspace_config = self.workspace_config.write().await;
+        if let Some(active) = workspace.as_ref() {
+            if active.workspace_id != snapshot.workspace_id && self.max_workspaces <= 1 {
+                return Err(WorkspaceError::LimitReached {
+                    limit: self.max_workspaces,
+                });
+            }
+        }
+
+        *workspace = Some(snapshot);
+        *workspace_config = config;
         Ok(())
     }
 

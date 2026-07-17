@@ -161,8 +161,9 @@ pub async fn set_workspace(
         file_mtimes: hydration.file_mtimes.clone(),
     };
 
-    state.set_workspace(snapshot).await?;
-    state.set_workspace_config(Some(ws_config.clone())).await;
+    state
+        .set_workspace_and_config(snapshot, Some(ws_config.clone()))
+        .await?;
     crate::services::query_stats::reset_timing();
 
     // Queue a background scan immediately. The DB connect + hydrate +
