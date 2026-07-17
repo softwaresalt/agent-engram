@@ -361,6 +361,77 @@ async fn cross_file_non_default_module_mapping_emits_no_edge_to_stray_default_fi
 }
 
 #[test]
+async fn non_default_mod_prepass_preserves_exact_safe_canonical_edges() {
+    // Characterization for 091.016-T: a global non-default `#[path]` module
+    // mapping makes unsafe prefixes non-empty, but unrelated safe canonical
+    // calls must keep the exact same indexed edge set.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "#[path = \"actual.rs\"]\npub mod remapped;\npub mod caller;\npub mod util;\npub mod widget;\n",
+    );
+    write_file(ws, "src/actual.rs", "pub fn target() {}\n");
+    write_file(ws, "src/remapped.rs", "pub fn target() {}\n");
+    write_file(ws, "src/util.rs", "pub fn helper() {}\n");
+    write_file(
+        ws,
+        "src/widget.rs",
+        "pub struct Widget;\nimpl Widget { pub fn build() {} }\n",
+    );
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() { crate::util::helper(); crate::widget::Widget::build(); }\npub fn second() { crate::util::helper(); }\n",
+    );
+
+    let q = index(ws).await;
+    let snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load canonical snapshot")
+        .expect("canonical workspace snapshot");
+    assert!(
+        snapshot.unsafe_prefixes.contains("demo::remapped"),
+        "fixture must exercise a non-empty unsafe-prefix pre-pass; snapshot={snapshot:?}"
+    );
+
+    let names_by_id: HashMap<String, String> = q
+        .all_functions()
+        .await
+        .expect("all_functions")
+        .into_iter()
+        .map(|function| (function.id, function.name))
+        .collect();
+    let edge_names: HashSet<(String, String)> = canonical_edges(&q)
+        .await
+        .into_iter()
+        .map(|(from, to)| {
+            let from_name = names_by_id
+                .get(&from)
+                .unwrap_or_else(|| panic!("missing caller id {from}"))
+                .clone();
+            let to_name = names_by_id
+                .get(&to)
+                .unwrap_or_else(|| panic!("missing callee id {to}"))
+                .clone();
+            (from_name, to_name)
+        })
+        .collect();
+    let expected = HashSet::from([
+        ("caller".to_owned(), "helper".to_owned()),
+        ("caller".to_owned(), "Widget::build".to_owned()),
+        ("second".to_owned(), "helper".to_owned()),
+    ]);
+    assert_eq!(
+        edge_names, expected,
+        "canonical call edges must remain byte-for-byte equivalent for safe modules"
+    );
+}
+
+#[test]
 async fn empty_canonical_path_is_never_a_match_target() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();

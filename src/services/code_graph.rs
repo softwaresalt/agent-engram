@@ -20,6 +20,22 @@ use crate::services::embedding;
 use crate::services::parsing::canonical;
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
+type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
+
+/// Cached Rust canonical context produced by the global unsafe-module pre-pass.
+#[derive(Debug, Clone)]
+struct CachedRustCanonicalContext {
+    content_hash: String,
+    context: Option<RustCanonicalContext>,
+}
+
+/// Global unsafe-module pre-pass output for a single index or sync run.
+#[derive(Debug, Default)]
+pub(crate) struct UnsafeModulePrepass {
+    unsafe_prefixes: HashSet<String>,
+    rust_contexts: HashMap<String, CachedRustCanonicalContext>,
+}
+
 /// Build the per-file canonical resolution context for a Rust source file, or
 /// `None` for non-Rust files and for layouts whose module path is not
 /// deterministically derivable (fail-closed → empty `canonical_path`).
@@ -31,7 +47,7 @@ fn rust_canonical_ctx(
     lang: Language,
     rel_path: &str,
     source: &str,
-) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+) -> Option<RustCanonicalContext> {
     if lang != Language::Rust {
         return None;
     }
@@ -41,12 +57,12 @@ fn rust_canonical_ctx(
 
 /// Collect module prefixes whose default filesystem identity is unsafe because
 /// a top-level `mod` declaration remaps or conditionally gates that module.
-pub(crate) fn unsafe_module_prefixes(
+pub(crate) async fn unsafe_module_prepass(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     files: &[std::path::PathBuf],
-) -> HashSet<String> {
-    let mut prefixes = HashSet::new();
+) -> UnsafeModulePrepass {
+    let mut prepass = UnsafeModulePrepass::default();
     for file_path in files {
         if language_from_path(file_path) != "rust" {
             continue;
@@ -55,24 +71,47 @@ pub(crate) fn unsafe_module_prefixes(
             continue;
         };
         let rel_path = rel.to_string_lossy().replace('\\', "/");
-        let Ok(source) = std::fs::read_to_string(file_path) else {
+        let Ok(source) = tokio::fs::read_to_string(file_path).await else {
             continue;
         };
-        let Some((module, use_graph)) =
-            rust_canonical_ctx(crates, Language::Rust, &rel_path, &source)
-        else {
-            continue;
-        };
-        prefixes.extend(use_graph.non_default_mod_roots().iter().map(|root| {
-            // `root` may be a nested relative path (`outer::inner`) captured from
-            // a `#[path]`/`#[cfg]` remap inside an inline module body, so descend
-            // it segment-by-segment: the unsafe prefix is the full nested module.
-            root.split("::")
-                .fold(module.clone(), |m, seg| m.child(seg))
-                .to_canonical()
-        }));
+        let content_hash = sha256_hex(&source);
+        let context = rust_canonical_ctx(crates, Language::Rust, &rel_path, &source);
+        if let Some((module, use_graph)) = &context {
+            prepass
+                .unsafe_prefixes
+                .extend(use_graph.non_default_mod_roots().iter().map(|root| {
+                    // `root` may be a nested relative path (`outer::inner`) captured from
+                    // a `#[path]`/`#[cfg]` remap inside an inline module body, so descend
+                    // it segment-by-segment: the unsafe prefix is the full nested module.
+                    root.split("::")
+                        .fold(module.clone(), |m, seg| m.child(seg))
+                        .to_canonical()
+                }));
+        }
+        prepass.rust_contexts.insert(
+            rel_path,
+            CachedRustCanonicalContext {
+                content_hash,
+                context,
+            },
+        );
     }
-    prefixes
+    prepass
+}
+
+fn rust_ctx_from_prepass_cache(
+    rust_contexts: &HashMap<String, CachedRustCanonicalContext>,
+    rel_path: &str,
+    content_hash: &str,
+    compute: impl FnOnce() -> Option<RustCanonicalContext>,
+) -> Option<RustCanonicalContext> {
+    if let Some(entry) = rust_contexts
+        .get(rel_path)
+        .filter(|entry| entry.content_hash == content_hash)
+    {
+        return entry.context.clone();
+    }
+    compute()
 }
 
 pub(crate) fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
@@ -436,7 +475,8 @@ async fn index_workspace_impl(
 
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
-    let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &files);
+    let prepass = unsafe_module_prepass(ws_path, &crates, &files).await;
+    let unsafe_prefixes = prepass.unsafe_prefixes.clone();
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
@@ -590,7 +630,7 @@ async fn index_workspace_impl(
                 path: rel_path.clone(),
                 language: lang.clone(),
                 size_bytes,
-                content_hash,
+                content_hash: content_hash.clone(),
                 last_indexed_at: chrono::Utc::now().to_rfc3339(),
             };
             queries.upsert_code_file(&code_file).await?;
@@ -623,7 +663,12 @@ async fn index_workspace_impl(
             let mut interface_ids: Vec<(String, String)> = Vec::new();
 
             // A6: per-file canonical context (Rust-only; None → empty canonical_path).
-            let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+            let rust_ctx = rust_ctx_from_prepass_cache(
+                &prepass.rust_contexts,
+                &rel_path,
+                &content_hash,
+                || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
+            );
 
             for symbol in &parse_result.symbols {
                 match symbol {
@@ -1048,7 +1093,8 @@ pub async fn sync_workspace_with_progress(
 
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
-    let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &current_files);
+    let prepass = unsafe_module_prepass(ws_path, &crates, &current_files).await;
+    let unsafe_prefixes = prepass.unsafe_prefixes.clone();
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
@@ -1319,7 +1365,12 @@ pub async fn sync_workspace_with_progress(
             let mut embed_ids: Vec<String> = Vec::new();
 
             // A6: per-file canonical context (Rust-only; None → empty canonical_path).
-            let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+            let rust_ctx = rust_ctx_from_prepass_cache(
+                &prepass.rust_contexts,
+                &rel_path,
+                &content_hash,
+                || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
+            );
             // C8-1: note whether this changed file carries a non-default `#[path]`/
             // `#[cfg]` mod mapping, which can make a module prefix newly UNSAFE and
             // strand stale canonical edges from other unchanged callers under it.
@@ -1981,4 +2032,62 @@ fn find_interface_id(ids: &[(String, String)], name: &str) -> Option<String> {
     ids.iter()
         .find(|(n, _)| n == name)
         .map(|(_, id)| id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cached_context(crate_name: &str) -> RustCanonicalContext {
+        (
+            canonical::ModulePath {
+                crate_name: crate_name.to_owned(),
+                segments: Vec::new(),
+            },
+            canonical::UseGraph::default(),
+        )
+    }
+
+    #[test]
+    fn matching_prepass_cache_reuses_context_without_recomputing() {
+        let mut rust_contexts = HashMap::new();
+        rust_contexts.insert(
+            "src/lib.rs".to_owned(),
+            CachedRustCanonicalContext {
+                content_hash: "cached-hash".to_owned(),
+                context: Some(cached_context("cached")),
+            },
+        );
+
+        let context =
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "cached-hash", || {
+                panic!("cache hits must not recompute canonical context")
+            });
+
+        assert_eq!(
+            context.map(|(module, _)| module.to_canonical()),
+            Some("cached".to_owned())
+        );
+    }
+
+    #[test]
+    fn stale_prepass_cache_recomputes_context() {
+        let mut rust_contexts = HashMap::new();
+        rust_contexts.insert(
+            "src/lib.rs".to_owned(),
+            CachedRustCanonicalContext {
+                content_hash: "old-hash".to_owned(),
+                context: Some(cached_context("cached")),
+            },
+        );
+
+        let context = rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "new-hash", || {
+            Some(cached_context("recomputed"))
+        });
+
+        assert_eq!(
+            context.map(|(module, _)| module.to_canonical()),
+            Some("recomputed".to_owned())
+        );
+    }
 }
