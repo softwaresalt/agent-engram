@@ -8,7 +8,7 @@
 //! the sibling-change reparse (stale-caught / add-cleared), the `model_path`
 //! selector, and the unindexed-path error.
 //!
-//! Tests: S-DAXT2-01 through S-DAXT2-10.
+//! Tests: S-DAXT2-01 through S-DAXT2-14.
 
 use std::fs;
 use std::path::Path;
@@ -119,7 +119,7 @@ fn broken_refs_fire_but_valid_cross_table_ref_is_clean() {
     );
 }
 
-/// S-DAXT2-11: references and division in a DAX `--` comment do not produce
+/// S-DAXT2-14: references and division in a DAX `--` comment do not produce
 /// Tier-1 division findings or Tier-2 broken-reference findings.
 #[test]
 fn dash_dash_comment_references_do_not_fire_findings() {

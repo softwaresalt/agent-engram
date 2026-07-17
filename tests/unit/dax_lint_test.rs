@@ -6,7 +6,7 @@
 //! `dax.deprecated_function`, `dax.malformed_ref`) with a positive and a
 //! negative fixture, plus end-to-end `verify_tmdl_dax` conformance mapping.
 //!
-//! Tests: S-DAXLINT-01 through S-DAXLINT-14.
+//! Tests: S-DAXLINT-01 through S-DAXLINT-16.
 
 use engram::services::dax_lint::{lint_dax_expression, verify_tmdl_dax};
 use engram::services::verify::{Severity, VerifyFinding};

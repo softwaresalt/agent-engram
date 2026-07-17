@@ -37,6 +37,7 @@ fn is_notebook_file(path: &Path) -> bool {
 fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
     let path = Path::new(rel_path);
     if path.is_absolute()
+        || path.has_root()
         || path.components().any(|component| {
             component == Component::ParentDir || matches!(component, Component::Prefix(_))
         })

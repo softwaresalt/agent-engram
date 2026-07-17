@@ -6,7 +6,7 @@
 //! registry source has `content_type == "backlog"`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
@@ -36,6 +36,11 @@ pub fn compute_file_hash(content: &[u8]) -> String {
 /// Return the subset of `known_paths` whose files no longer exist under
 /// `workspace_root`.
 ///
+/// Each entry is validated as a workspace-relative candidate before any
+/// filesystem probe: absolute paths, root-relative paths, `..` traversal, and
+/// drive prefixes cannot name a live in-workspace file, so they are skipped
+/// without touching the filesystem outside the workspace root.
+///
 /// Final-component symlinks are treated as deleted, matching the backlog
 /// collector's file-symlink skip behavior. Files reached through an
 /// in-workspace directory symlink are preserved when their canonical target
@@ -48,17 +53,39 @@ pub fn compute_deleted_paths(known_paths: &[String], workspace_root: &Path) -> V
 
     known_paths
         .iter()
-        .filter(|path| {
-            let path = Path::new(path.as_str());
-            let candidate = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                workspace_root.join(path)
+        .filter_map(|raw| {
+            let Some(relative) = workspace_relative_path(raw) else {
+                warn!(
+                    path = %raw,
+                    "skipping backlog deletion sweep path that escapes the workspace root"
+                );
+                return None;
             };
-            !is_regular_file_in_workspace(&candidate, &canonical_root)
+            let candidate = workspace_root.join(relative);
+            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
+            is_deleted.then(|| raw.clone())
         })
-        .cloned()
         .collect()
+}
+
+/// Reject paths that cannot name a live in-workspace file.
+///
+/// Mirrors the Power BI, PBIP, and notebook indexers: absolute paths,
+/// root-relative paths (`\foo` / `/foo` on Windows), `..` traversal, and drive
+/// prefixes are refused so the deletion sweep never probes outside the
+/// workspace root.
+fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
+    let path = Path::new(rel_path);
+    if path.is_absolute()
+        || path.has_root()
+        || path.components().any(|component| {
+            component == Component::ParentDir || matches!(component, Component::Prefix(_))
+        })
+    {
+        return None;
+    }
+
+    Some(path.to_path_buf())
 }
 
 /// Collect all backlog markdown files under `dir` recursively, sorted by path.

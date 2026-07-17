@@ -5,7 +5,7 @@
 //! entity-summary extraction.  These tests run without a `CozoDB` instance,
 //! mirroring the precedent set by `backlog_indexer_test.rs`.
 //!
-//! Tests: S-PIN-01 through S-PIN-15
+//! Tests: S-PIN-01 through S-PIN-24
 
 use std::fs;
 use std::path::Path;
@@ -160,7 +160,7 @@ fn compute_deleted_paths_ignores_escape_attempts() {
     );
 }
 
-/// S-PIN-14: a workspace-relative symlink that now resolves outside the
+/// S-PIN-23: a workspace-relative symlink that now resolves outside the
 /// workspace is treated as ineligible/deleted instead of preserved by
 /// `Path::exists` following the symlink.
 #[test]
@@ -184,7 +184,7 @@ fn compute_deleted_paths_treats_outside_symlink_target_as_deleted() {
     );
 }
 
-/// S-PIN-15: deletion sweeps mirror collectors by treating final-component
+/// S-PIN-24: deletion sweeps mirror collectors by treating final-component
 /// file symlinks as deleted while preserving regular files and absent paths.
 #[test]
 fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {

@@ -179,19 +179,8 @@ fn deletion_sweep_detects_removed_files() {
     // Create one file on disk.
     write_file(dir.path(), "live.md", "---\nid: live\n---\n");
 
-    // Tell the sweep about two "known" paths; one no longer exists.
-    let known = vec![
-        dir.path()
-            .join("live.md")
-            .to_str()
-            .unwrap()
-            .replace('\\', "/"),
-        dir.path()
-            .join("gone.md")
-            .to_str()
-            .unwrap()
-            .replace('\\', "/"),
-    ];
+    // Tell the sweep about two workspace-relative "known" paths; one is gone.
+    let known = vec!["live.md".to_string(), "gone.md".to_string()];
 
     let deleted = compute_deleted_paths(&known, dir.path());
     assert_eq!(deleted.len(), 1, "only gone.md should appear as deleted");
@@ -210,7 +199,7 @@ fn deletion_sweep_reports_symlink_candidates_and_escapes_as_deleted() {
 
     let workspace = TempDir::new().expect("workspace tempdir");
     let external = TempDir::new().expect("external tempdir");
-    let regular_path = write_file(workspace.path(), "regular.md", "---\nid: regular\n---\n");
+    write_file(workspace.path(), "regular.md", "---\nid: regular\n---\n");
     let target_path = write_file(workspace.path(), "target.md", "---\nid: target\n---\n");
     let symlink_path = workspace.path().join("indexed.md");
     if !create_symlink_file(&target_path, &symlink_path) {
@@ -225,26 +214,49 @@ fn deletion_sweep_reports_symlink_candidates_and_escapes_as_deleted() {
     }
 
     let known = vec![
-        regular_path.to_string_lossy().replace('\\', "/"),
-        symlink_path.to_string_lossy().replace('\\', "/"),
-        workspace
-            .path()
-            .join("linked-outside")
-            .join("outside.md")
-            .to_string_lossy()
-            .replace('\\', "/"),
-        workspace
-            .path()
-            .join("absent.md")
-            .to_string_lossy()
-            .replace('\\', "/"),
+        "regular.md".to_string(),
+        "indexed.md".to_string(),
+        "linked-outside/outside.md".to_string(),
+        "absent.md".to_string(),
     ];
 
     let deleted = compute_deleted_paths(&known, workspace.path());
 
     assert_eq!(
         deleted,
-        vec![known[1].clone(), known[2].clone(), known[3].clone()]
+        vec![
+            "indexed.md".to_string(),
+            "linked-outside/outside.md".to_string(),
+            "absent.md".to_string(),
+        ]
+    );
+}
+
+/// S-BI-10: deletion sweeps refuse to probe absolute, root-relative, or `..`
+/// paths, skipping poisoned records instead of touching the filesystem outside
+/// the workspace root.
+#[test]
+fn deletion_sweep_skips_paths_that_escape_the_workspace() {
+    use engram::services::backlog_indexer::compute_deleted_paths;
+
+    let workspace = TempDir::new().expect("workspace tempdir");
+    write_file(workspace.path(), "live.md", "---\nid: live\n---\n");
+
+    let known = vec![
+        "live.md".to_string(),
+        "../escape.md".to_string(),
+        workspace
+            .path()
+            .join("live.md")
+            .to_string_lossy()
+            .to_string(),
+    ];
+
+    let deleted = compute_deleted_paths(&known, workspace.path());
+
+    assert!(
+        deleted.is_empty(),
+        "live file is kept and escaping paths are skipped without probing: {deleted:?}"
     );
 }
 
