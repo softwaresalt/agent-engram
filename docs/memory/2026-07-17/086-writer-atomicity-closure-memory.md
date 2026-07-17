@@ -15,13 +15,13 @@ tasks:
 Shipment 086-S (feature 092-F, task 092.001-T) is fully shipped and closed. The writer-side
 workspace+config atomicity fix (082-S adversarial review F4) is merged to main.
 
-## Task IDs completed
+## Task and backlog status updates
 
 * `092.001-T` - Atomic `set_workspace_and_config`; bind flow migrated; non-vacuous A->B/B->A
   atomicity test. Status -> done.
 * `092-F` - Covering feature. Status -> archived.
 * `086-S` - Shipment. Status -> archived.
-* `092.002-T` - Created (queued). Deferred reader-side atomicity follow-up.
+* `092.002-T` - Created this closure, remains queued. Deferred reader-side atomicity follow-up.
 
 ## Files modified (merged branch feat/086-writer-atomicity)
 

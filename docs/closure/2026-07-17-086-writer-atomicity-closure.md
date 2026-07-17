@@ -180,8 +180,10 @@ rollback posture. It changes no DB schema, no JSONL format, and no command routi
   sequence (`set_workspace` then `set_workspace_config`) and removes the atomicity test additions.
   Runtime blast radius is contained to the bind publish path: no schema, format, or routing change
   is reversed, so no data migration is involved. The revert reopens the F4 tear window but does not
-  corrupt state. The revert also reverses the backlog metadata in the same commit if it is present;
-  re-apply archival manually after the revert if it should stand.
+  corrupt state. Backlog state is unaffected by the code revert: the archival of 086-S / 092-F /
+  092.001-T and the creation of 092.002-T live in this separate closure PR (#262), not in merge
+  `106be1d`, so reverting `106be1d` leaves the backlog unchanged. If the backlog archival itself
+  should be undone, revert this closure PR instead.
 
 ## Verdict
 
