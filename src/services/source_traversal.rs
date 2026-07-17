@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::fs::FileType;
 use std::path::{Path, PathBuf};
 
+use tracing::warn;
+
 /// Collect files under `dir` whose paths satisfy `is_target_file`.
 ///
 /// Directory symlinks are traversed only when their canonical target remains
@@ -64,8 +66,16 @@ fn collect_recursive(
         return;
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warn!(
+                dir = %dir.display(),
+                %error,
+                "skipping unreadable directory during source traversal"
+            );
+            return;
+        }
     };
     let mut entries: Vec<_> = entries
         .flatten()
