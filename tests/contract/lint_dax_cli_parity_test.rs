@@ -132,6 +132,11 @@ fn dispatch_pattern_literals(line: &str) -> Vec<String> {
         .collect()
 }
 
+// Line-based scan of the `match method` dispatch block. It relies on each arm
+// keeping its tool literal on the same line as `=>` (the current one-tool-per-arm
+// style). Any future under-count (for example a rustfmt-wrapped alternation arm)
+// or a stale catalog entry is caught loudly by `dispatch_table_is_superset_of_catalog`,
+// which uses the compiler-checked `tools_catalog::all_tools()` set as an oracle.
 #[must_use]
 fn dispatch_tool_names() -> BTreeSet<String> {
     let dispatch_start = TOOLS_MOD
@@ -262,6 +267,29 @@ fn documented_mcp_rows_match_catalog_or_dispatch_tools() {
             row.mcp_tool
         );
     }
+}
+
+/// The text-scanned dispatch set must remain a superset of the structured runtime
+/// catalog. `tools_catalog::all_tools()` is a compiler-checked source of tool names,
+/// so it acts as an oracle: if the line-based dispatch parser ever under-counts (for
+/// example a future rustfmt-wrapped alternation arm drops a literal) or a catalog
+/// entry becomes stale after its dispatch arm is removed, this test fails loudly
+/// instead of silently passing. Feature-gated dispatch-only tools (such as
+/// `query_changes`/`index_git_history` under `git-graph`) are permitted because the
+/// subset direction only constrains catalog ⊆ dispatch, never the reverse.
+#[test]
+fn dispatch_table_is_superset_of_catalog() {
+    let dispatch = dispatch_tool_names();
+    let missing = tools_catalog::all_tools()
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .filter(|name| !dispatch.contains(name))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "catalog tools missing from the parsed dispatch table \
+         (parser under-count or stale catalog entry): {missing:?}"
+    );
 }
 
 #[test]
