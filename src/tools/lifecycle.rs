@@ -333,10 +333,7 @@ async fn background_db_hydration(
 
     if offline_count > 0 && auto_reindex {
         check_cancel!();
-        if let (Some(snapshot), Some(ws_config)) = (
-            state.snapshot_workspace().await,
-            state.workspace_config().await,
-        ) {
+        if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
             let ws_path = PathBuf::from(&snapshot.path);
             tracing::info!(
                 offline_count,
@@ -394,10 +391,7 @@ pub async fn drain_pending_sync(state: &AppState) {
         return;
     }
     tracing::info!("drain_pending_sync: running coalesced sync after indexing completed");
-    if let (Some(snapshot), Some(ws_config)) = (
-        state.snapshot_workspace().await,
-        state.workspace_config().await,
-    ) {
+    if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
         if state.try_start_indexing() {
             let ws_path = PathBuf::from(&snapshot.path);
             match sync_code_graph(
