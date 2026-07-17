@@ -1,6 +1,6 @@
 ---
 title: "An eval-time recompute that must match index-time state is unsafe unless every input is persisted or freshness-gated"
-description: "The resolution-aware recall denominator (091.020-T) collapses two call-site spellings into one unit only when they share a resolved edge, but eval recomputed the canonical-resolution context (crates, unsafe_module_prefixes, per-file use-graph/module-path) from CURRENT disk. Any input that diverged from the index-time context under a stale index could re-open the collapse onto a coincidental edge and over-report recall. Four adversarial passes each found ONE more live-recomputed input; persisting inputs one at a time was whack-a-mole. The terminating design persists the workspace-global inputs as one snapshot and freshness-gates the per-file source-derived input, after which no live-recomputed resolution input remains."
+description: "The resolution-aware recall denominator (091.020-T) collapses two call-site spellings into one unit only when they share a resolved edge, but eval recomputed the canonical-resolution context (crates, unsafe_module_prefixes, per-file use-graph/module-path) from CURRENT disk. Any input that diverged from the index-time context under a stale index could re-open the collapse onto a coincidental edge and over-report recall. Four adversarial passes each found ONE more live-recomputed input; persisting inputs one at a time was whack-a-mole. The terminating design persists the workspace-global inputs as one snapshot and freshness-gates the per-file source-derived input (which is still recomputed from live source but verified byte-for-byte against the index-time content hash), after which no resolution input can diverge silently from index-time state."
 problem_type: "eval_metric_over_report_from_index_time_context_divergence"
 category: "correctness-invariant"
 component: "src/services/retrieval_eval.rs resolution_recall denominator / src/services/code_graph.rs canonical snapshot persistence"
@@ -102,5 +102,7 @@ no-drift incremental sync; the eval builds its entire CanonicalWorkspace from th
 snapshot (no live-disk reads) and disables collapse when it is absent. Add a
 per-file freshness gate in `accumulate_call_sites` so the per-file use-graph is
 only trusted when the caller file's content hash matches the index-time hash.
-After both, no live-recomputed resolution input remains, so the denominator
-provably never over-reports. Merged in PR #265 (merge commit ce3872a).
+After both, no resolution input can diverge silently from index-time state — the
+per-file use-graph is still recomputed from live source but verified against the
+index-time content hash before use — so the denominator provably never over-reports.
+Merged in PR #265 (merge commit ce3872a).

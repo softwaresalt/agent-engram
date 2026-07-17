@@ -53,11 +53,14 @@ one more live-recomputed resolution input that could diverge under a stale index
   unknown-hash files fall back to syntax-only. This commit also hardened the full
   reindex path.
 
-After 174b0af, no live-recomputed resolution input remains: every canonical-resolution
-input is either persisted (crates + unsafe_prefixes) or per-file freshness-gated. A
-fifth, validation-only pass (no commit) confirmed cross-file target-side staleness is
-NOT a vector (eval never reparses target files for canonicalization). Clean verdict ->
-merge authorized.
+After 174b0af, no canonical-resolution input can DIVERGE SILENTLY from index-time
+state: the workspace-global inputs (crates + unsafe_prefixes) are loaded from the
+persisted snapshot, and the per-file use-graph/module-path is still recomputed from
+live caller source but the freshness gate verifies it byte-for-byte against the
+index-time content hash before the collapse key is emitted (stale/unknown-hash files
+fall back to syntax-only). A fifth, validation-only pass (no commit) confirmed
+cross-file target-side staleness is NOT a vector (eval never reparses target files for
+canonicalization). Clean verdict -> merge authorized.
 
 ## Files modified (merged diff)
 
