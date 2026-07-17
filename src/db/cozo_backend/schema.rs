@@ -848,6 +848,24 @@ pub const CREATE_STAGED_CALL: &str = r#"
 }
 "#;
 
+/// CozoScript `:create` for the index-time canonical workspace snapshot.
+///
+/// Key: `snapshot_id` (currently `"current"`). The single row records the
+/// serialized canonical workspace context (crate roots, dependency-renamed
+/// keys, and unsafe prefixes) used by a successful full-index baseline, or by
+/// an incremental sync only when the recomputed context matches the previous
+/// baseline. This relation is created by the writer, not bootstrap, so older
+/// databases with no persisted snapshot remain distinguishable from freshly
+/// indexed databases whose context is legitimately empty.
+pub const CREATE_INDEX_CANONICAL_WORKSPACE_SNAPSHOT: &str = r#"
+:create index_canonical_workspace_snapshot {
+    snapshot_id: String
+    =>
+    canonical_workspace_json: String,
+    recorded_at: String,
+}
+"#;
+
 /// CozoScript `:create` for `schema_meta` — durable key/value schema metadata
 /// (082.003-T remediation).
 ///

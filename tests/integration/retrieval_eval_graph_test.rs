@@ -9,13 +9,20 @@
 //! Plus a denominator sanity check that the parser call-site inventory
 //! (`count_call_sites`) matches the expected identifier-call count.
 
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
+
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
+use engram::models::config::CodeGraphConfig;
 use engram::models::{CodeFile, Function};
+use engram::services::code_graph;
 use engram::services::parsing::Language;
+use engram::services::parsing::canonical::{self, CanonicalWorkspace};
 use engram::services::retrieval_eval::{
-    CallSiteInventory, compute_graph_metrics, count_call_sites, scan_call_site_inventory,
-    source_content_hash,
+    CallSiteInventory, CallSiteResolutionContext, compute_graph_metrics, count_call_sites,
+    scan_call_site_inventory, scan_call_site_inventory_with_resolution, source_content_hash,
 };
 
 #[test]
@@ -176,6 +183,715 @@ fn make_fn(id: &str, name: &str, file_path: &str) -> Function {
         embedding: Vec::new(),
         summary: String::new(),
     }
+}
+
+fn write_file(ws: &Path, rel: &str, content: &str) {
+    let full = ws.join(rel);
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).expect("create dirs");
+    }
+    fs::write(full, content).expect("write source");
+}
+
+fn write_manifest(ws: &Path) {
+    write_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+}
+
+fn write_workspace_manifest_with_rename(ws: &Path) {
+    write_file(
+        ws,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"app\", \"util\"]\nresolver = \"3\"\n",
+    );
+    write_file(
+        ws,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nutil = { package = \"external-util\", version = \"1\" }\n",
+    );
+    write_file(
+        ws,
+        "util/Cargo.toml",
+        "[package]\nname = \"util\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+}
+
+fn write_workspace_manifest_without_rename(ws: &Path) {
+    write_file(
+        ws,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"app\", \"util\"]\nresolver = \"3\"\n",
+    );
+    write_file(
+        ws,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_file(
+        ws,
+        "util/Cargo.toml",
+        "[package]\nname = \"util\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+}
+
+fn fixture_db_params(path: &Path) -> (std::path::PathBuf, String) {
+    use sha2::{Digest, Sha256};
+    let canon = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase();
+    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
+    (std::env::temp_dir().join("engram-test"), branch)
+}
+
+async fn index_fixture(ws: &Path) -> CodeGraphQueries {
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = fixture_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+    CodeGraphQueries::new(db)
+}
+
+async fn resolution_context(q: &CodeGraphQueries) -> CallSiteResolutionContext {
+    let mut resolved_edges: HashSet<(String, String)> = HashSet::new();
+    for resolution in [
+        "direct",
+        "calls_resolved_singleton",
+        "calls_resolved_canonical",
+    ] {
+        resolved_edges.extend(
+            q.list_calls_edges_by_resolution(resolution)
+                .await
+                .expect("list calls edges"),
+        );
+    }
+    CallSiteResolutionContext::new(
+        q.all_functions_for_eval()
+            .await
+            .expect("functions for eval"),
+        resolved_edges,
+        q.function_ids_by_canonical_path()
+            .await
+            .expect("canonical index"),
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("canonical workspace"),
+    )
+}
+
+async fn indexed_rust_files(q: &CodeGraphQueries) -> Vec<CodeFile> {
+    q.list_code_files()
+        .await
+        .expect("code files")
+        .into_iter()
+        .filter(|file| file.language == "rust")
+        .collect()
+}
+
+// ── 091.020-T: denominator reconciles with resolved edge identity ─────────────
+
+#[tokio::test]
+async fn resolution_aware_denominator_collapses_same_target_spellings() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod thing;\n");
+    write_file(
+        ws,
+        "src/thing.rs",
+        "pub fn helper() {}\npub fn caller() {\n    helper();\n    crate::thing::helper();\n}\n",
+    );
+
+    assert_eq!(
+        count_call_sites(
+            "pub fn helper() {}\npub fn caller() {\n    helper();\n    crate::thing::helper();\n}\n",
+            Language::Rust,
+        ),
+        2,
+        "syntactic inventory sees the two spellings before graph identity reconciliation"
+    );
+
+    let q = index_fixture(ws).await;
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 1,
+        "two spellings proven to share one (caller,target) edge are one expected edge"
+    );
+    assert_eq!(resolved, 1, "the graph stores one deduplicated edge");
+    assert!((metrics.resolution_recall - 1.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_distinct_target_miss() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod a;\npub mod caller;\n");
+    write_file(ws, "src/a.rs", "pub fn build() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    crate::a::build();\n    crate::b::build();\n}\n",
+    );
+
+    let q = index_fixture(ws).await;
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "the unresolved distinct target stays in the denominator rather than being hidden"
+    );
+    assert_eq!(resolved, 1, "only the existing target resolves");
+    assert!((metrics.resolution_recall - 0.5).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_ambiguous_bare_miss() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod caller;\n",
+    );
+    write_file(ws, "src/a.rs", "pub fn build() {}\n");
+    write_file(ws, "src/b.rs", "pub fn build() {}\n");
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    crate::a::build();\n    build();\n}\n",
+    );
+
+    let q = index_fixture(ws).await;
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "an ambiguous bare call must not inherit a same-named qualified edge"
+    );
+    assert_eq!(resolved, 1, "only the qualified call resolves");
+    assert!((metrics.resolution_recall - 0.5).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_skipped_remap_miss() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    #[path = \"actual.rs\"]\n    pub mod inner;\n}\n",
+    );
+    let caller_source = "pub fn caller() {\n    helper();\n    crate::outer::inner::helper();\n}\n";
+    write_file(ws, "src/caller.rs", caller_source);
+
+    let files = vec![CodeFile {
+        id: "file:caller".to_owned(),
+        path: "src/caller.rs".to_owned(),
+        language: "rust".to_owned(),
+        size_bytes: caller_source.len() as u64,
+        content_hash: source_content_hash(caller_source),
+        last_indexed_at: "2026-07-17T00:00:00Z".to_owned(),
+    }];
+    let mut resolved_edges = HashSet::new();
+    resolved_edges.insert(("fn:caller".to_owned(), "fn:helper".to_owned()));
+    let mut canonical_index = HashMap::new();
+    canonical_index.insert(
+        "demo::outer::inner::helper".to_owned(),
+        vec!["fn:helper".to_owned()],
+    );
+    let unsafe_prefixes = HashSet::from(["demo::outer::inner".to_owned()]);
+    let canonical_workspace = CanonicalWorkspace {
+        crates: canonical::discover_workspace_crates(ws),
+        unsafe_prefixes,
+    };
+    let context = CallSiteResolutionContext::new(
+        vec![
+            make_fn("fn:caller", "caller", "src/caller.rs"),
+            make_fn("fn:helper", "helper", "src/outer/inner.rs"),
+        ],
+        resolved_edges,
+        canonical_index,
+        Some(canonical_workspace),
+    );
+
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let metrics = compute_graph_metrics(inventory.call_sites, 1, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "discover-only remap prefixes must preserve the qualified miss instead of sharing the singleton edge"
+    );
+    assert!(
+        metrics.resolution_recall < 1.0,
+        "the skipped mod-declaring file makes the qualified call a real miss"
+    );
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_disables_collapse_without_persisted_prefixes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    helper();\n    crate::outer::inner::helper();\n}\n",
+    );
+    let files = vec![CodeFile {
+        id: "file:caller".to_owned(),
+        path: "src/caller.rs".to_owned(),
+        language: "rust".to_owned(),
+        size_bytes: 0,
+        content_hash: source_content_hash(
+            "pub fn caller() {\n    helper();\n    crate::outer::inner::helper();\n}\n",
+        ),
+        last_indexed_at: "2026-07-17T00:00:00Z".to_owned(),
+    }];
+    let mut resolved_edges = HashSet::new();
+    resolved_edges.insert(("fn:caller".to_owned(), "fn:helper".to_owned()));
+    let mut canonical_index = HashMap::new();
+    canonical_index.insert(
+        "demo::outer::inner::helper".to_owned(),
+        vec!["fn:helper".to_owned()],
+    );
+    let legacy_db = connect_db(&ws.join(".legacy-db"), "legacy")
+        .await
+        .expect("legacy db");
+    let legacy_queries = CodeGraphQueries::new(legacy_db);
+    let legacy_snapshot = legacy_queries
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load legacy snapshot");
+    assert!(
+        legacy_snapshot.is_none(),
+        "a database without the snapshot relation must be distinguishable from an empty persisted set"
+    );
+    let context = CallSiteResolutionContext::new(
+        vec![
+            make_fn("fn:caller", "caller", "src/caller.rs"),
+            make_fn("fn:helper", "helper", "src/outer/inner.rs"),
+        ],
+        resolved_edges,
+        canonical_index,
+        legacy_snapshot,
+    );
+
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "missing index-time prefix snapshot must fall back to syntax-only counting"
+    );
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_uses_persisted_prefixes_after_remap_removed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    #[path = \"actual.rs\"]\n    pub mod inner;\n}\n",
+    );
+    let caller_source = "pub fn caller() {\n    helper();\n    crate::outer::inner::helper();\n}\n";
+    write_file(ws, "src/caller.rs", caller_source);
+    write_file(ws, "src/outer/inner.rs", "pub fn helper() {}\n");
+
+    let q = index_fixture(ws).await;
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    assert_eq!(
+        resolved, 1,
+        "the singleton edge is resolved while the unsafe qualified call is not"
+    );
+    let snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load snapshot")
+        .expect("persisted canonical workspace");
+    assert!(
+        snapshot.unsafe_prefixes.contains("demo::outer::inner"),
+        "index-time remap prefix must be persisted with the edge snapshot"
+    );
+
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    pub mod inner;\n}\n",
+    );
+    let files = indexed_rust_files(&q).await;
+    let base_context = resolution_context(&q).await;
+    let caller_id = base_context
+        .functions
+        .iter()
+        .find(|function| function.name == "caller")
+        .expect("caller function")
+        .id
+        .clone();
+    let helper_id = base_context
+        .functions
+        .iter()
+        .find(|function| function.name == "helper")
+        .expect("helper function")
+        .id
+        .clone();
+    assert!(
+        base_context
+            .resolved_edges
+            .contains(&(caller_id.clone(), helper_id.clone())),
+        "the coincidental singleton edge exists in the numerator identity space"
+    );
+    let mut stale_canonical_index = base_context.canonical_index.clone();
+    stale_canonical_index.insert("demo::outer::inner::helper".to_owned(), vec![helper_id]);
+    let context = CallSiteResolutionContext::new(
+        base_context.functions.clone(),
+        base_context.resolved_edges.clone(),
+        stale_canonical_index.clone(),
+        Some(snapshot),
+    );
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+
+    assert_eq!(
+        inventory.call_sites, 2,
+        "the persisted index-time prefix preserves the qualified miss even when current disk lacks the remap declaration"
+    );
+    assert!(
+        inventory.index_stale,
+        "the changed declaring file remains visible as stale inventory"
+    );
+    assert!(metrics.resolution_recall < 1.0);
+
+    let shrunken_prefix_context = CallSiteResolutionContext::new(
+        base_context.functions,
+        base_context.resolved_edges,
+        stale_canonical_index,
+        Some(CanonicalWorkspace {
+            crates: canonical::discover_workspace_crates(ws),
+            unsafe_prefixes: HashSet::new(),
+        }),
+    );
+    let collapsed_inventory = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &shrunken_prefix_context,
+    )
+    .await
+    .expect("scan with shrunken prefixes");
+    assert_eq!(
+        collapsed_inventory.call_sites, 1,
+        "non-vacuous guard: a current-disk recompute that lost the prefix would collapse the miss"
+    );
+}
+
+#[tokio::test]
+async fn canonical_snapshot_removed_after_incremental_context_drift() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    #[path = \"actual.rs\"]\n    pub mod inner;\n}\n",
+    );
+    write_file(
+        ws,
+        "src/caller.rs",
+        "pub fn caller() {\n    helper();\n    crate::outer::inner::helper();\n}\n",
+    );
+    write_file(ws, "src/outer/inner.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = fixture_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("full index");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+    let q = CodeGraphQueries::new(db);
+    assert!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load full snapshot")
+            .is_some(),
+        "full index establishes the baseline snapshot"
+    );
+
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub mod caller;\npub mod outer {\n    pub mod inner;\n}\n",
+    );
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("incremental sync");
+    let snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load drift snapshot");
+    assert!(
+        snapshot.is_none(),
+        "incremental context drift must leave canonical collapse disabled"
+    );
+
+    let files = indexed_rust_files(&q).await;
+    let base_context = resolution_context(&q).await;
+    let helper_id = base_context
+        .functions
+        .iter()
+        .find(|function| function.name == "helper")
+        .expect("helper function")
+        .id
+        .clone();
+    let mut stale_canonical_index = base_context.canonical_index.clone();
+    stale_canonical_index.insert("demo::outer::inner::helper".to_owned(), vec![helper_id]);
+    let context = CallSiteResolutionContext::new(
+        base_context.functions.clone(),
+        base_context.resolved_edges.clone(),
+        stale_canonical_index.clone(),
+        snapshot,
+    );
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan with drift-disabled snapshot");
+    assert_eq!(
+        inventory.call_sites, 2,
+        "drift-disabled collapse preserves the qualified miss"
+    );
+
+    let shrunken_context = CallSiteResolutionContext::new(
+        base_context.functions,
+        base_context.resolved_edges,
+        stale_canonical_index,
+        Some(CanonicalWorkspace {
+            crates: canonical::discover_workspace_crates(ws),
+            unsafe_prefixes: HashSet::new(),
+        }),
+    );
+    let collapsed = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &shrunken_context,
+    )
+    .await
+    .expect("scan with shrunken snapshot");
+    assert_eq!(
+        collapsed.call_sites, 1,
+        "control: replacing the snapshot with the shrunken context would collapse the miss"
+    );
+}
+
+#[tokio::test]
+async fn incremental_sync_without_prior_snapshot_keeps_collapse_disabled() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(
+        ws,
+        "src/lib.rs",
+        "pub fn helper() {}\npub fn caller() {\n    helper();\n    crate::helper();\n}\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = fixture_db_params(ws);
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("baseline-less sync");
+    let db = connect_db(&data_dir, &branch).await.expect("connect_db");
+    let q = CodeGraphQueries::new(db);
+    let snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load baseline-less snapshot");
+    assert!(
+        snapshot.is_none(),
+        "incremental sync without a prior full-index baseline must not enable collapse"
+    );
+
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan baseline-less sync");
+    assert_eq!(
+        inventory.call_sites, 2,
+        "baseline-less sync falls back to syntax-only counting"
+    );
+}
+
+#[tokio::test]
+async fn canonical_snapshot_uses_persisted_dependency_renames() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_workspace_manifest_with_rename(ws);
+    write_file(
+        ws,
+        "app/src/lib.rs",
+        "pub fn caller() {\n    helper();\n    util::thing::helper();\n}\n",
+    );
+    write_file(ws, "util/src/lib.rs", "pub mod thing;\n");
+    write_file(ws, "util/src/thing.rs", "pub fn helper() {}\n");
+
+    let q = index_fixture(ws).await;
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    assert_eq!(
+        resolved, 1,
+        "the bare singleton edge exists while the dependency-renamed qualified call is missed"
+    );
+
+    write_workspace_manifest_without_rename(ws);
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan persisted rename");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+    assert_eq!(
+        inventory.call_sites, 2,
+        "eval must use the index-time dependency rename context, not the live manifest"
+    );
+    assert!(metrics.resolution_recall < 1.0);
+
+    let live_prefix_context = CallSiteResolutionContext::new(
+        context.functions,
+        context.resolved_edges,
+        context.canonical_index,
+        Some(CanonicalWorkspace {
+            crates: canonical::discover_workspace_crates(ws),
+            unsafe_prefixes: HashSet::new(),
+        }),
+    );
+    let collapsed = scan_call_site_inventory_with_resolution(
+        ws,
+        &files,
+        &["rust".to_owned()],
+        &live_prefix_context,
+    )
+    .await
+    .expect("scan with live manifest context");
+    assert_eq!(
+        collapsed.call_sites, 1,
+        "control: rebuilding crates from the live manifest would collapse the miss"
+    );
+}
+
+#[tokio::test]
+async fn resolution_aware_denominator_preserves_use_graph_drift_miss() {
+    let original_source = "use external::thing as Alias;\n\npub fn caller() {\n    helper();\n    Alias::helper();\n}\n";
+    let drifted_source =
+        "use crate::thing as Alias;\n\npub fn caller() {\n    helper();\n    Alias::helper();\n}\n";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod caller;\npub mod thing;\n");
+    write_file(ws, "src/thing.rs", "pub fn helper() {}\n");
+    write_file(ws, "src/caller.rs", original_source);
+
+    let q = index_fixture(ws).await;
+    assert!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load snapshot")
+            .is_some(),
+        "full index must publish a canonical workspace snapshot"
+    );
+    let resolved = q.count_calls_edges().await.expect("resolved count");
+    assert_eq!(
+        resolved, 1,
+        "index-time external alias keeps the qualified call missed while the bare singleton resolves"
+    );
+
+    write_file(ws, "src/caller.rs", drifted_source);
+    let files = indexed_rust_files(&q).await;
+    let context = resolution_context(&q).await;
+    let inventory =
+        scan_call_site_inventory_with_resolution(ws, &files, &["rust".to_owned()], &context)
+            .await
+            .expect("scan drifted use graph");
+    let metrics = compute_graph_metrics(inventory.call_sites, resolved, 0);
+    assert!(
+        inventory.index_stale,
+        "the caller file hash must reveal that eval reparsed a non-index-time use graph"
+    );
+    assert_eq!(
+        inventory.call_sites, 2,
+        "stale caller files must use syntax-only counting so the index-time alias miss is preserved"
+    );
+    assert!(metrics.resolution_recall < 1.0);
+
+    let fresh_tmp = tempfile::tempdir().expect("fresh tempdir");
+    let fresh_ws = fresh_tmp.path();
+    write_manifest(fresh_ws);
+    write_file(fresh_ws, "src/lib.rs", "pub mod caller;\npub mod thing;\n");
+    write_file(fresh_ws, "src/thing.rs", "pub fn helper() {}\n");
+    write_file(fresh_ws, "src/caller.rs", drifted_source);
+    let fresh_q = index_fixture(fresh_ws).await;
+    let fresh_files = indexed_rust_files(&fresh_q).await;
+    let fresh_context = resolution_context(&fresh_q).await;
+    let fresh_inventory = scan_call_site_inventory_with_resolution(
+        fresh_ws,
+        &fresh_files,
+        &["rust".to_owned()],
+        &fresh_context,
+    )
+    .await
+    .expect("scan fresh use graph");
+    let fresh_resolved = fresh_q.count_calls_edges().await.expect("fresh resolved");
+    let fresh_metrics = compute_graph_metrics(fresh_inventory.call_sites, fresh_resolved, 0);
+    assert!(
+        !fresh_inventory.index_stale,
+        "fresh control must keep resolution-aware collapse enabled"
+    );
+    assert_eq!(
+        fresh_inventory.call_sites, 1,
+        "fresh alias and bare call proven to share one edge still collapse"
+    );
+    assert!((fresh_metrics.resolution_recall - 1.0).abs() < 1e-9);
 }
 
 /// Build a graph with two resolved edges: one whose caller lives in a Rust file

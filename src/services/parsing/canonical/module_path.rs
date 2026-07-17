@@ -20,11 +20,14 @@
 //! derivation, so a file selected through such a mapping is still assigned its
 //! filesystem-derived path. Full non-default-`mod` rigor lands with Unit B (D1).
 
+use std::collections::HashSet;
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 /// A workspace crate: its Rust identifier name and the workspace-relative
 /// directory that owns its `src/` tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrateRoot {
     /// Crate identifier with hyphens normalised to underscores, e.g.
     /// `powerbi_tmdl_parser`.
@@ -52,7 +55,7 @@ impl CrateRoot {
 /// Crate roots are kept sorted by descending `dir` length so that a file is
 /// attributed to the **most specific** (longest-prefix) crate — a member crate
 /// wins over the workspace-root crate.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCrates {
     crates: Vec<CrateRoot>,
     /// Dependency keys rebound to an EXTERNAL package via Cargo's `package = "…"`
@@ -61,6 +64,21 @@ pub struct WorkspaceCrates {
     /// workspace-crate fast path must fail closed for it rather than forge an
     /// edge to the colliding member. Sorted + deduped.
     renamed_dep_keys: Vec<String>,
+}
+
+/// Canonical Rust workspace context captured at graph-index time.
+///
+/// Retrieval eval uses this whole snapshot as one unit when reconciling
+/// denominator spellings against resolved edge identities. Loading the same
+/// crate roots, dependency rename set, and unsafe module prefixes that produced
+/// the indexed edges prevents live-manifest or live-remap drift from turning a
+/// genuine miss into a collapsed hit.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalWorkspace {
+    /// Workspace crate roots and dependency-renamed keys.
+    pub crates: WorkspaceCrates,
+    /// Module prefixes whose canonical resolution is unsafe.
+    pub unsafe_prefixes: HashSet<String>,
 }
 
 impl WorkspaceCrates {

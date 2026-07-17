@@ -24,6 +24,7 @@ use crate::db::cozo_backend::{CozoDb, map_db_err};
 use crate::errors::{EngramError, SystemError};
 use crate::models::TraversalDirection;
 use crate::models::code_edge::CodeEdgeType;
+use crate::services::parsing::canonical;
 
 pub use crate::models::FileHashRecord;
 
@@ -126,6 +127,21 @@ pub(crate) fn reset_retry_metrics() {
 fn is_busy_error(message: &str) -> bool {
     let normalized = message.to_lowercase();
     normalized.contains("locked") || normalized.contains("busy")
+}
+
+fn is_relation_exists_error(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("already")
+        || normalized.contains("defined")
+        || normalized.contains("conflicts")
+        || normalized.contains("existing")
+}
+
+fn is_missing_relation_error(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("not found")
+        || normalized.contains("does not exist")
+        || normalized.contains("cannot find")
 }
 
 fn record_mutable_retry_telemetry() {
@@ -1047,6 +1063,99 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
                 .push(extract_str(row, 1));
         }
         Ok(index)
+    }
+
+    async fn ensure_index_canonical_workspace_snapshot_relation(&self) -> Result<(), EngramError> {
+        let create = crate::db::cozo_backend::schema::CREATE_INDEX_CANONICAL_WORKSPACE_SNAPSHOT;
+        match self
+            .run_script_busy_retry_mutable(create, BTreeMap::new())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if is_relation_exists_error(&e.to_string()) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Remove the published index-time canonical workspace snapshot.
+    ///
+    /// A missing relation or row is treated as an already-disabled snapshot.
+    pub async fn clear_index_canonical_workspace_snapshot(&self) -> Result<(), EngramError> {
+        let script = r#"
+?[snapshot_id] <- [["current"]]
+
+:rm index_canonical_workspace_snapshot { snapshot_id }
+"#;
+        match self
+            .run_script_busy_retry_mutable(script, BTreeMap::new())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if is_missing_relation_error(&e.to_string()) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Persist the exact canonical workspace context used by a successful graph
+    /// indexing baseline.
+    pub async fn replace_index_canonical_workspace_snapshot(
+        &self,
+        workspace: &canonical::CanonicalWorkspace,
+    ) -> Result<(), EngramError> {
+        self.ensure_index_canonical_workspace_snapshot_relation()
+            .await?;
+
+        let snapshot_json = serde_json::to_string(workspace).map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("failed to serialize canonical workspace snapshot: {e}"),
+            })
+        })?;
+        let script = r#"
+?[snapshot_id, canonical_workspace_json, recorded_at] <- [["current", $canonical_workspace_json, $recorded_at]]
+
+:put index_canonical_workspace_snapshot { snapshot_id => canonical_workspace_json, recorded_at }
+"#;
+        let mut params = BTreeMap::new();
+        params.insert(
+            "canonical_workspace_json".to_owned(),
+            DataValue::from(snapshot_json.as_str()),
+        );
+        let now = now_utc_str();
+        params.insert("recorded_at".to_owned(), DataValue::from(now.as_str()));
+        self.run_script_busy_retry_mutable(script, params)
+            .await
+            .map(|_| ())
+    }
+
+    /// Load the persisted index-time canonical workspace snapshot.
+    ///
+    /// `Ok(None)` means the database predates the snapshot writer; callers must
+    /// fail closed instead of recomputing from current disk.
+    pub async fn load_index_canonical_workspace_snapshot(
+        &self,
+    ) -> Result<Option<canonical::CanonicalWorkspace>, EngramError> {
+        let script = r#"
+?[canonical_workspace_json] :=
+    *index_canonical_workspace_snapshot{snapshot_id, canonical_workspace_json},
+    snapshot_id = "current"
+"#;
+        let rows = match self
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) if is_missing_relation_error(&e.to_string()) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some(row) = rows.rows.first() else {
+            return Ok(None);
+        };
+        let snapshot_json = extract_str(row, 0);
+        serde_json::from_str(&snapshot_json).map(Some).map_err(|e| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("failed to deserialize canonical workspace snapshot: {e}"),
+            })
+        })
     }
 
     /// Look up a function by name (first match).

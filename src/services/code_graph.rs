@@ -41,7 +41,7 @@ fn rust_canonical_ctx(
 
 /// Collect module prefixes whose default filesystem identity is unsafe because
 /// a top-level `mod` declaration remaps or conditionally gates that module.
-fn unsafe_module_prefixes(
+pub(crate) fn unsafe_module_prefixes(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     files: &[std::path::PathBuf],
@@ -75,7 +75,7 @@ fn unsafe_module_prefixes(
     prefixes
 }
 
-fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
+pub(crate) fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
     unsafe_prefixes.iter().any(|prefix| {
         path == prefix
             || path
@@ -428,6 +428,8 @@ async fn index_workspace_impl(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    queries.clear_index_canonical_workspace_snapshot().await?;
+
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation
     // (computed once per index run; Rust-only, precision-neutral).
     let crates = canonical::discover_workspace_crates(ws_path);
@@ -435,6 +437,10 @@ async fn index_workspace_impl(
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
     let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &files);
+    let canonical_workspace = canonical::CanonicalWorkspace {
+        crates: crates.clone(),
+        unsafe_prefixes: unsafe_prefixes.clone(),
+    };
     info!(
         files_found = files.len(),
         "code graph: discovered source files"
@@ -930,6 +936,9 @@ async fn index_workspace_impl(
             "code graph: resolved cross-file singleton calls edges"
         );
     }
+    queries
+        .replace_index_canonical_workspace_snapshot(&canonical_workspace)
+        .await?;
 
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
@@ -1031,12 +1040,19 @@ pub async fn sync_workspace_with_progress(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
+    queries.clear_index_canonical_workspace_snapshot().await?;
+
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation.
     let crates = canonical::discover_workspace_crates(ws_path);
 
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
     let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &current_files);
+    let canonical_workspace = canonical::CanonicalWorkspace {
+        crates: crates.clone(),
+        unsafe_prefixes: unsafe_prefixes.clone(),
+    };
 
     // Load all indexed code files from DB.
     let indexed_files = queries.list_code_files().await?;
@@ -1655,6 +1671,16 @@ pub async fn sync_workspace_with_progress(
             "code graph sync: re-resolved deferred references edges"
         );
     }
+    if previous_canonical_workspace.as_ref() == Some(&canonical_workspace) {
+        queries
+            .replace_index_canonical_workspace_snapshot(&canonical_workspace)
+            .await?;
+    } else {
+        debug!(
+            had_previous = previous_canonical_workspace.is_some(),
+            "code graph sync: canonical workspace context drifted or lacks a full-index baseline; retrieval-eval collapse remains disabled"
+        );
+    }
 
     // ── Record sync summary ──────────────────────────────────────────
     let sync_summary = format!(
@@ -1804,7 +1830,7 @@ async fn relink_concerns_edges(
 }
 
 /// Discover all source files in the workspace using `.gitignore`-aware traversal.
-fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::PathBuf> {
+pub(crate) fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<std::path::PathBuf> {
     let mut builder = ignore::WalkBuilder::new(ws_path);
     builder
         .hidden(true)

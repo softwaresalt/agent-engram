@@ -106,10 +106,25 @@ pub async fn run_retrieval_eval(
     // false edges = resolved edges whose callee matches no known definition.
     // Database read errors propagate rather than degrading to fabricated zeros.
     let files = queries.list_code_files().await?;
-    let inventory = retrieval_eval::scan_call_site_inventory(
+    let mut resolved_edges = std::collections::HashSet::new();
+    for resolution in [
+        "direct",
+        "calls_resolved_singleton",
+        "calls_resolved_canonical",
+    ] {
+        resolved_edges.extend(queries.list_calls_edges_by_resolution(resolution).await?);
+    }
+    let resolution_context = retrieval_eval::CallSiteResolutionContext::new(
+        functions,
+        resolved_edges,
+        queries.function_ids_by_canonical_path().await?,
+        queries.load_index_canonical_workspace_snapshot().await?,
+    );
+    let inventory = retrieval_eval::scan_call_site_inventory_with_resolution(
         &parts.workspace_path,
         &files,
         &parts.config.languages,
+        &resolution_context,
     )
     .await?;
     // Numerator is gated to the *same* configured caller languages as the

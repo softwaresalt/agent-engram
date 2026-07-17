@@ -29,7 +29,8 @@ pub mod resolver;
 pub mod use_graph;
 
 pub use module_path::{
-    ModulePath, WorkspaceCrates, discover_workspace_crates, module_path_for_file,
+    CanonicalWorkspace, ModulePath, WorkspaceCrates, discover_workspace_crates,
+    module_path_for_file,
 };
 pub use resolver::{
     CanonicalId, Qualifier, ResolveContext, canonical_path_for_def, resolve_path, resolve_qualifier,
