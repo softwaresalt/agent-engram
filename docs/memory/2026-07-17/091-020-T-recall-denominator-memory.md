@@ -93,7 +93,9 @@ merge authorized.
 
 ## Backlog outcome
 
-* 091.020-T -> done -> archived (merge ce3872a recorded via commit comment).
+* 091.020-T -> done -> archived; full merge SHA ce3872a is recorded in the archived
+  item's `commit:` frontmatter field (`.backlogit/archive/091.020-T.md`) for tracked
+  traceability (the backlogit comment log is gitignored, so it is not durable).
 * 091.015-T -> blocked. The ID-preserving canonical_path backfill is technically
   feasible, but WHEN to run it (auto-on-startup vs opt-in vs force-sync) is an open
   product+performance decision with blast radius on large already-indexed workspaces -

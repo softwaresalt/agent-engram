@@ -73,9 +73,13 @@ index-time inputs, not a single value.
     (`!recorded_hash.is_empty() && !is_index_stale(...)`); stale or unknown-hash
     files degrade to the safe direction.
 - **"Fail-closed" must mean fail toward the SAFE direction of the invariant, not
-  just "return None on error."** Here every degradation path (absent snapshot,
-  empty hash, stale file, deserialize error) lands on syntax-only counting, which
-  under-reports but never over-reports.
+  just "return None on error."** The reachable degradation paths (absent snapshot,
+  missing relation, empty rows, empty hash, stale file) all land on syntax-only
+  counting, which under-reports but never over-reports. One path is deliberately
+  fail-LOUD instead: a present-but-malformed snapshot row is a hard error that aborts
+  eval (`load_index_canonical_workspace_snapshot` returns `Err`, propagated by `?` in
+  `src/tools/eval.rs`) rather than silently degrading. A corrupt snapshot signals a
+  real defect the writer should never produce, so surfacing it beats masking it.
 - **A same-caller coincidental edge is a real over-report vector, not a
   theoretical one.** The backstop `resolved_edges.contains(...)` blocks most
   paths, but a compound case (stale input + a coincidental singleton edge to the
