@@ -483,10 +483,13 @@ pub async fn run_with_shutdown(
                         // give ≈ 3 s of headroom for the hydration writer to
                         // finish its transaction.
                         let should_flush = 'sync: {
-                            let Some(snapshot) = state_auto.snapshot_workspace().await else {
-                                break 'sync false;
-                            };
-                            let Some(ws_config) = state_auto.workspace_config().await else {
+                            // 092.003-T: atomic (workspace, config) read. A single
+                            // snapshot removes the (workspace_i, config_j) tear window a
+                            // concurrent bind could open between two separate reads; it
+                            // still skips the sync when either value is absent.
+                            let Some((snapshot, ws_config)) =
+                                state_auto.snapshot_workspace_and_config().await
+                            else {
                                 break 'sync false;
                             };
                             let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -664,10 +667,10 @@ pub async fn run_with_shutdown(
 
                 if pending_reindex && state_watcher.try_start_indexing() {
                     let should_flush = 'sync: {
-                        let Some(snapshot) = state_watcher.snapshot_workspace().await else {
-                            break 'sync false;
-                        };
-                        let Some(ws_config) = state_watcher.workspace_config().await else {
+                        // 092.003-T: atomic (workspace, config) read (see run_with_shutdown).
+                        let Some((snapshot, ws_config)) =
+                            state_watcher.snapshot_workspace_and_config().await
+                        else {
                             break 'sync false;
                         };
                         let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -896,10 +899,10 @@ pub async fn run_with_shutdown_v2(
                             return;
                         }
                         let should_flush = 'sync: {
-                            let Some(snapshot) = state_auto.snapshot_workspace().await else {
-                                break 'sync false;
-                            };
-                            let Some(ws_config) = state_auto.workspace_config().await else {
+                            // 092.003-T: atomic (workspace, config) read (see run_with_shutdown).
+                            let Some((snapshot, ws_config)) =
+                                state_auto.snapshot_workspace_and_config().await
+                            else {
                                 break 'sync false;
                             };
                             let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -1121,10 +1124,10 @@ pub async fn run_with_shutdown_v2(
                         if !pending_reindex {
                             break 'sync false;
                         }
-                        let Some(snapshot) = state_watcher.snapshot_workspace().await else {
-                            break 'sync false;
-                        };
-                        let Some(ws_config) = state_watcher.workspace_config().await else {
+                        // 092.003-T: atomic (workspace, config) read (see run_with_shutdown).
+                        let Some((snapshot, ws_config)) =
+                            state_watcher.snapshot_workspace_and_config().await
+                        else {
                             break 'sync false;
                         };
                         let ws_path = std::path::PathBuf::from(&snapshot.path);

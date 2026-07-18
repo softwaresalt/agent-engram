@@ -33,7 +33,7 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use engram::errors::WorkspaceError;
-use engram::models::config::WorkspaceConfig;
+use engram::models::config::{CodeGraphConfig, WorkspaceConfig};
 use engram::models::retrieval_eval::RetrievalEvalConfig;
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use engram::tools;
@@ -114,6 +114,20 @@ fn config_with_eval(enabled: bool) -> WorkspaceConfig {
         retrieval_eval: RetrievalEvalConfig {
             enabled,
             ..RetrievalEvalConfig::default()
+        },
+        ..WorkspaceConfig::default()
+    }
+}
+
+/// A `WorkspaceConfig` distinguished by a `code_graph` field. The daemon
+/// auto-sync / watcher closures (`run_with_shutdown` / `run_with_shutdown_v2`,
+/// migrated in 092.003-T) consume `ws_config.code_graph`, so this models the
+/// exact config surface those background paths read alongside the workspace.
+fn config_with_max_file_size(max_file_size_bytes: u64) -> WorkspaceConfig {
+    WorkspaceConfig {
+        code_graph: CodeGraphConfig {
+            max_file_size_bytes,
+            ..CodeGraphConfig::default()
         },
         ..WorkspaceConfig::default()
     }
@@ -440,4 +454,107 @@ async fn set_workspace_and_config_limit_reached_leaves_state_unchanged() {
         .expect("workspace remains bound");
     assert_eq!(snapshot.workspace.path, path_a);
     assert!(snapshot.config.retrieval_eval.enabled);
+}
+
+/// Daemon background-sync regression (092.003-T).
+///
+/// The auto-sync and file-watcher closures in `run_with_shutdown` and
+/// `run_with_shutdown_v2` previously read the workspace and its config in two
+/// separate awaits (`snapshot_workspace()` then `workspace_config()`), leaving
+/// the same `(workspace_i, config_j)` tear window that 092.002-T closed in
+/// `lifecycle.rs`. Those four sites now read the pair atomically via
+/// `AppState::snapshot_workspace_and_config()`. Each site consumes
+/// `ws_config.code_graph` (passed to `code_graph::sync_workspace`), so this test
+/// pins the atomicity guarantee to the `code_graph` surface the daemon actually
+/// reads — distinct from the `retrieval_eval` field the status-handler test
+/// above exercises.
+///
+/// The writer flips between two self-consistent states —
+/// (workspace A, `max_file_size_bytes` = LARGE) and
+/// (workspace B, `max_file_size_bytes` = SMALL) — while the reader repeatedly
+/// samples the atomic pair. A cross pair (A + SMALL, or B + LARGE) is a torn
+/// read and fails the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn snapshot_workspace_and_config_never_tears_daemon_code_graph_pair() {
+    const LARGE: u64 = 8_000_000;
+    const SMALL: u64 = 1_024;
+
+    let shared = TempDir::new().expect("shared data-dir tempdir");
+    let data_dir = shared.path().join(".engram");
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let dir_b = TempDir::new().expect("workspace B tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+    let path_b = dir_b.path().to_string_lossy().into_owned();
+
+    let state = Arc::new(AppState::new(10));
+    let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
+    let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
+    let cfg_a = config_with_max_file_size(LARGE);
+    let cfg_b = config_with_max_file_size(SMALL);
+
+    state
+        .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+        .await
+        .expect("seed bind A");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_state = state.clone();
+    let writer_stop = stop.clone();
+    let writer = tokio::spawn(async move {
+        while !writer_stop.load(Ordering::Relaxed) {
+            writer_state
+                .set_workspace_and_config(snap_b.clone(), Some(cfg_b.clone()))
+                .await
+                .expect("bind B with config B");
+            tokio::task::yield_now().await;
+            writer_state
+                .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+                .await
+                .expect("bind A with config A");
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let mut torn_count = 0u32;
+    let mut torn_examples: Vec<(String, u64)> = Vec::new();
+    let mut observed_a = 0u32;
+    let mut observed_b = 0u32;
+    let mut iterations = 0u32;
+    while (iterations < 1_000 || observed_a == 0 || observed_b == 0) && iterations < 20_000 {
+        iterations += 1;
+        let Some((snapshot, config)) = state.snapshot_workspace_and_config().await else {
+            continue;
+        };
+        let path = snapshot.path;
+        let max_size = config.code_graph.max_file_size_bytes;
+        if path == path_a {
+            observed_a += 1;
+        } else if path == path_b {
+            observed_b += 1;
+        }
+        let torn_pair =
+            (path == path_a && max_size != LARGE) || (path == path_b && max_size != SMALL);
+        if torn_pair {
+            torn_count += 1;
+            if torn_examples.len() < 8 {
+                torn_examples.push((path, max_size));
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.await.expect("writer task must join");
+
+    assert!(
+        observed_a > 0 && observed_b > 0,
+        "test is vacuous unless BOTH checked states are observed \
+         (A={observed_a}, B={observed_b}, iterations={iterations})"
+    );
+    assert!(
+        torn_count == 0,
+        "snapshot_workspace_and_config returned {torn_count} torn (workspace, code_graph) pair(s) \
+         across {iterations} samples (observed A={observed_a}, B={observed_b}); \
+         examples: {torn_examples:?}"
+    );
 }
