@@ -24,9 +24,13 @@ large-workspace benchmark were spun off to follow-up **091.021-T**.
   instead of blocking `std::fs`, so it no longer blocks the async index runtime.
 - **Option 2 (parse-dedup):** the parsed Rust canonical contexts
   (`ModulePath` / `UseGraph`) computed in the pre-pass are hash-checked and
-  reused in the main pass, eliminating the duplicate parse. On a content-hash
-  mismatch the code recomputes that file's context — reproducing exactly the
-  pre-cache behavior.
+  reused in the **main per-file symbol pass**, eliminating that pass's duplicate
+  parse. On a content-hash mismatch the code recomputes that file's context —
+  reproducing exactly the pre-cache behavior. NOTE: this reuse covers the
+  pre-pass ↔ main-symbol-pass parse only. The full-index post-pass
+  `reresolve_calls_edges_with_canonical_context` still re-parses each staged
+  file via `rust_ctx_for_staged_file` (a third parse); wiring the pre-pass cache
+  into that post-pass is tracked in follow-up **091.021-T**.
 - **Load-bearing invariant:** canonical edge output is byte-identical to the
   pre-091.016 baseline. Pure performance; no canonical edge added, dropped, or
   reordered.
@@ -73,8 +77,10 @@ large-workspace benchmark were spun off to follow-up **091.021-T**.
 ## Follow-up
 
 - **091.021-T** (queued): single-snapshot source reuse — remove the second
-  canonical pre-pass read and close the global-prefix TOCTOU; includes the
-  large-workspace benchmark. Low priority, correctness-neutral today.
+  canonical pre-pass read, wire the pre-pass cache into the full-index post-pass
+  `reresolve_calls_edges_with_canonical_context` (which still re-parses staged
+  files), and close the global-prefix TOCTOU; includes the large-workspace
+  benchmark. Low priority, correctness-neutral today.
 
 ## Next steps
 
