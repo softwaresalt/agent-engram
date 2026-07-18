@@ -28,10 +28,22 @@ atomically through one shared seam. Merged via PR #271 (merge commit `23f4030`).
   `WorkspaceError::NotSet` (fail-closed). Signature takes `&AppState` so it is
   deref-coercible from `&Arc<AppState>`/`SharedState` at handler sites and callable
   from tests holding `AppState`/`Arc<AppState>`.
-- All four handlers route through the seam via
-  `crate::tools::snapshot_graph_handler_context(&state).await?`, replacing the prior
-  per-site `let Some(ctx) = state.snapshot_dispatch_context().await else { ... NotSet };`.
-  Downstream `ctx.workspace.*` / `ctx.config.*` usage is byte-identical.
+- All four handlers now take one atomic `DispatchSnapshot` via
+  `crate::tools::snapshot_graph_handler_context(&state).await?` and read
+  `ctx.workspace.data_dir` / `ctx.workspace.branch` / `ctx.config` from that single
+  snapshot. The real pre-migration reads that this replaced (per PR #271's diff):
+  - **`index_workspace`, `sync_workspace`** previously read the workspace via
+    `AppState::snapshot_workspace().ok_or(NotSet)?` in the outer handler and,
+    separately, read the config via `AppState::workspace_config().await.unwrap_or_default()`
+    inside their `_inner` helper — two distinct awaited reads with the tear window
+    between them.
+  - **`map_code`, `impact_analysis`** previously called `ensure_workspace(&state)`
+    (presence gate), then separately `state.workspace_config().await.unwrap_or_default()`
+    (config, default-substituting) and `workspace_db(&state)` (data_dir + branch) —
+    again multiple separate awaited reads a concurrent bind could tear apart.
+  The value flow moved into the single `ctx`; downstream field usage
+  (`ctx.workspace.*` / `ctx.config.*`) is behavior-preserving, not literally
+  byte-identical to the removed multi-read code.
 - **Why `snapshot_dispatch_context` (not `snapshot_workspace_and_config`)**: the
   handlers default-substitute `WorkspaceConfig::default()` on missing config;
   `snapshot_dispatch_context` already does that (returns `None` only when the
