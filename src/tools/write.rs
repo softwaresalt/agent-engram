@@ -12,6 +12,7 @@ use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{resolve_git_branch, workspace_hash};
 use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
+use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
 use crate::server::state::SharedState;
 use crate::services::dehydration;
@@ -125,13 +126,17 @@ pub async fn index_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let snapshot = state
-        .snapshot_workspace()
-        .await
-        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    let ws_path = PathBuf::from(&snapshot.path);
-    let data_dir = snapshot.data_dir.clone();
-    let branch = snapshot.branch.clone();
+    // 092.004-T: capture the workspace binding and its config in one atomic
+    // snapshot so the `code_graph` config used for indexing cannot tear away
+    // from the workspace path/data_dir/branch if a concurrent bind lands before
+    // the (previously separate) inner config read.
+    let Some(ctx) = state.snapshot_dispatch_context().await else {
+        return Err(EngramError::Workspace(WorkspaceError::NotSet));
+    };
+    let ws_path = PathBuf::from(&ctx.workspace.path);
+    let data_dir = ctx.workspace.data_dir.clone();
+    let branch = ctx.workspace.branch.clone();
+    let code_graph = ctx.config.code_graph.clone();
 
     // Reject if indexing is already running.
     if !state.try_start_indexing() {
@@ -141,7 +146,8 @@ pub async fn index_workspace(
     begin_indexing_scan_progress(&state).await;
 
     // Run the indexing logic, ensuring the flag is cleared on all exit paths.
-    let result = index_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
+    let result =
+        index_workspace_inner(&state, &ws_path, &data_dir, &branch, code_graph, params).await;
     finalize_indexing_request(&state, &result, true, |state| {
         Box::pin(drain_pending_sync(state))
     })
@@ -155,6 +161,7 @@ async fn index_workspace_inner(
     ws_path: &std::path::Path,
     data_dir: &std::path::Path,
     branch: &str,
+    config: CodeGraphConfig,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let parsed: IndexWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
@@ -163,12 +170,6 @@ async fn index_workspace_inner(
                 reason: e.to_string(),
             })
         })?;
-
-    let config = state
-        .workspace_config()
-        .await
-        .map(|c| c.code_graph.clone())
-        .unwrap_or_default();
 
     let last_completed_at = state
         .scan_progress_snapshot()
@@ -219,13 +220,16 @@ pub async fn sync_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let snapshot = state
-        .snapshot_workspace()
-        .await
-        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    let ws_path = PathBuf::from(&snapshot.path);
-    let data_dir = snapshot.data_dir.clone();
-    let mut branch = snapshot.branch.clone();
+    // 092.004-T: atomic (workspace, config) snapshot (see index_workspace). The
+    // branch-resolution block below may re-point the active workspace branch,
+    // but the captured `code_graph` config is unaffected by that mutation.
+    let Some(ctx) = state.snapshot_dispatch_context().await else {
+        return Err(EngramError::Workspace(WorkspaceError::NotSet));
+    };
+    let ws_path = PathBuf::from(&ctx.workspace.path);
+    let data_dir = ctx.workspace.data_dir.clone();
+    let mut branch = ctx.workspace.branch.clone();
+    let code_graph = ctx.config.code_graph.clone();
 
     if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
         if resolved_branch != branch {
@@ -255,7 +259,8 @@ pub async fn sync_workspace(
     begin_indexing_scan_progress(&state).await;
 
     // Run the sync logic, ensuring the flag is cleared on all exit paths.
-    let result = sync_workspace_inner(&state, &ws_path, &data_dir, &branch, params).await;
+    let result =
+        sync_workspace_inner(&state, &ws_path, &data_dir, &branch, code_graph, params).await;
     finalize_indexing_request(&state, &result, false, |state| {
         Box::pin(drain_pending_sync(state))
     })
@@ -269,15 +274,10 @@ async fn sync_workspace_inner(
     ws_path: &std::path::Path,
     data_dir: &std::path::Path,
     branch: &str,
+    config: CodeGraphConfig,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let _ = params; // no params for sync_workspace currently
-
-    let config = state
-        .workspace_config()
-        .await
-        .map(|c| c.code_graph.clone())
-        .unwrap_or_default();
 
     let last_completed_at = state
         .scan_progress_snapshot()
