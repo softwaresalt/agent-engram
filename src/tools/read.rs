@@ -236,12 +236,10 @@ const fn default_map_max_nodes() -> usize {
 /// Falls back to vector search when the exact symbol name is not found.
 /// Returns full source bodies for all nodes (FR-148).
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    // 092.004-T: one atomic (workspace, config) snapshot replaces the separate
-    // presence check, config read, and workspace_db read so a concurrent bind
-    // cannot tear the (workspace, config) pair consumed below.
-    let Some(ctx) = state.snapshot_dispatch_context().await else {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    };
+    // 092.004-T: one atomic (workspace, config) capture via the shared graph-
+    // handler seam replaces the separate presence check, config read, and
+    // workspace_db read so a concurrent bind cannot tear the pair consumed below.
+    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
 
     // Read-only: graph state may be partially written during a background
     // index. Returning available symbol graph context is more useful than
@@ -757,12 +755,10 @@ pub async fn impact_analysis(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    // 092.004-T: one atomic (workspace, config) snapshot replaces the separate
-    // presence check, config read, and workspace_db read so a concurrent bind
-    // cannot tear the (workspace, config) pair consumed below.
-    let Some(ctx) = state.snapshot_dispatch_context().await else {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    };
+    // 092.004-T: one atomic (workspace, config) capture via the shared graph-
+    // handler seam replaces the separate presence check, config read, and
+    // workspace_db read so a concurrent bind cannot tear the pair consumed below.
+    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
 
     // Read-only: graph may be partially populated during a background index.
     // Returning available impact data is more useful than an IndexInProgress error.

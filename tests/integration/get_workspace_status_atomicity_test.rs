@@ -32,7 +32,7 @@ use std::time::Duration;
 use serde_json::json;
 use tempfile::TempDir;
 
-use engram::errors::WorkspaceError;
+use engram::errors::{EngramError, WorkspaceError};
 use engram::models::config::WorkspaceConfig;
 use engram::models::retrieval_eval::RetrievalEvalConfig;
 use engram::server::state::{AppState, WorkspaceSnapshot};
@@ -445,6 +445,107 @@ async fn snapshot_dispatch_context_never_observes_writer_side_torn_publish() {
         "snapshot_dispatch_context returned {torn_count} torn (workspace, config) pair(s) across \
          {iterations} samples (observed A={observed_a}, B={observed_b}); \
          examples: {torn_examples:?}"
+    );
+}
+
+/// 092.004-T: the four graph tool handlers (`index_workspace`, `sync_workspace`,
+/// `map_code`, `impact_analysis`) all acquire their `(workspace, config)` pair
+/// through `tools::snapshot_graph_handler_context`. This stresses that shared
+/// seam directly under paired A/A <-> B/B rebinding; every observed pair must be
+/// self-consistent, mirroring the daemon seam guard from 092.003-T. Pinning the
+/// seam's atomicity keeps the single choke point the handlers share honest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn graph_handler_seam_never_observes_torn_pair() {
+    let shared = TempDir::new().expect("shared data-dir tempdir");
+    let data_dir = shared.path().join(".engram");
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let dir_b = TempDir::new().expect("workspace B tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+    let path_b = dir_b.path().to_string_lossy().into_owned();
+
+    let state = Arc::new(AppState::new(10));
+    let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
+    let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
+    let cfg_a = config_with_eval(true);
+    let cfg_b = config_with_eval(false);
+
+    state
+        .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+        .await
+        .expect("seed bind A");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_state = state.clone();
+    let writer_stop = stop.clone();
+    let writer = tokio::spawn(async move {
+        while !writer_stop.load(Ordering::Relaxed) {
+            writer_state
+                .set_workspace_and_config(snap_b.clone(), Some(cfg_b.clone()))
+                .await
+                .expect("bind B with config B");
+            tokio::task::yield_now().await;
+            writer_state
+                .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+                .await
+                .expect("bind A with config A");
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let mut torn_count = 0u32;
+    let mut torn_examples: Vec<(String, bool)> = Vec::new();
+    let mut observed_a = 0u32;
+    let mut observed_b = 0u32;
+    let mut iterations = 0u32;
+    while (iterations < 1_000 || observed_a == 0 || observed_b == 0) && iterations < 20_000 {
+        iterations += 1;
+        let snapshot = tools::snapshot_graph_handler_context(&state)
+            .await
+            .expect("workspace stays bound throughout the stress loop");
+        let path = snapshot.workspace.path;
+        let enabled = snapshot.config.retrieval_eval.enabled;
+        if path == path_a {
+            observed_a += 1;
+        } else if path == path_b {
+            observed_b += 1;
+        }
+        let torn_pair = (path == path_a && !enabled) || (path == path_b && enabled);
+        if torn_pair {
+            torn_count += 1;
+            if torn_examples.len() < 8 {
+                torn_examples.push((path, enabled));
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.await.expect("writer task must join");
+
+    assert!(
+        observed_a > 0 && observed_b > 0,
+        "test is vacuous unless BOTH checked states are observed \
+         (A={observed_a}, B={observed_b}, iterations={iterations})"
+    );
+    assert!(
+        torn_count == 0,
+        "snapshot_graph_handler_context returned {torn_count} torn (workspace, config) pair(s) \
+         across {iterations} samples (observed A={observed_a}, B={observed_b}); \
+         examples: {torn_examples:?}"
+    );
+}
+
+/// 092.004-T: the shared seam maps "no workspace bound" to `NotSet`, preserving
+/// each graph handler's pre-migration early-error contract.
+#[tokio::test]
+async fn graph_handler_seam_errors_not_set_when_unbound() {
+    let state = AppState::new(10);
+    let err = tools::snapshot_graph_handler_context(&state)
+        .await
+        .expect_err("unbound workspace must error");
+    assert!(
+        matches!(err, EngramError::Workspace(WorkspaceError::NotSet)),
+        "expected NotSet, got {err:?}"
     );
 }
 

@@ -126,13 +126,10 @@ pub async fn index_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    // 092.004-T: capture the workspace binding and its config in one atomic
-    // snapshot so the `code_graph` config used for indexing cannot tear away
-    // from the workspace path/data_dir/branch if a concurrent bind lands before
-    // the (previously separate) inner config read.
-    let Some(ctx) = state.snapshot_dispatch_context().await else {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    };
+    // 092.004-T: atomic (workspace, config) capture via the shared graph-handler
+    // seam so the `code_graph` config used for indexing cannot tear away from the
+    // workspace path/data_dir/branch under a concurrent bind.
+    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
     let ws_path = PathBuf::from(&ctx.workspace.path);
     let data_dir = ctx.workspace.data_dir.clone();
     let branch = ctx.workspace.branch.clone();
@@ -220,12 +217,10 @@ pub async fn sync_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    // 092.004-T: atomic (workspace, config) snapshot (see index_workspace). The
-    // branch-resolution block below may re-point the active workspace branch,
-    // but the captured `code_graph` config is unaffected by that mutation.
-    let Some(ctx) = state.snapshot_dispatch_context().await else {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    };
+    // 092.004-T: atomic (workspace, config) capture via the shared graph-handler
+    // seam (see index_workspace). The branch-resolution block below may re-point
+    // the active workspace branch, but the captured `code_graph` is unaffected.
+    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
     let ws_path = PathBuf::from(&ctx.workspace.path);
     let data_dir = ctx.workspace.data_dir.clone();
     let mut branch = ctx.workspace.branch.clone();
