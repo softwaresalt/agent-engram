@@ -103,13 +103,16 @@ fn rust_ctx_from_prepass_cache(
     rust_contexts: &HashMap<String, CachedRustCanonicalContext>,
     rel_path: &str,
     content_hash: &str,
+    force_cache_miss: bool,
     compute: impl FnOnce() -> Option<RustCanonicalContext>,
 ) -> Option<RustCanonicalContext> {
-    if let Some(entry) = rust_contexts
-        .get(rel_path)
-        .filter(|entry| entry.content_hash == content_hash)
-    {
-        return entry.context.clone();
+    if !force_cache_miss {
+        if let Some(entry) = rust_contexts
+            .get(rel_path)
+            .filter(|entry| entry.content_hash == content_hash)
+        {
+            return entry.context.clone();
+        }
     }
     compute()
 }
@@ -451,7 +454,7 @@ pub async fn index_workspace_with_progress(
     force: bool,
     progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<IndexResult, EngramError> {
-    index_workspace_impl(ws_path, data_dir, branch, config, force, progress).await
+    index_workspace_impl(ws_path, data_dir, branch, config, force, progress, false).await
 }
 
 async fn index_workspace_impl(
@@ -461,6 +464,7 @@ async fn index_workspace_impl(
     config: &CodeGraphConfig,
     force: bool,
     mut progress: Option<&mut ProgressCallback<'_>>,
+    force_prepass_cache_miss: bool,
 ) -> Result<IndexResult, EngramError> {
     let start = std::time::Instant::now();
 
@@ -667,6 +671,7 @@ async fn index_workspace_impl(
                 &prepass.rust_contexts,
                 &rel_path,
                 &content_hash,
+                force_prepass_cache_miss,
                 || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
             );
 
@@ -1369,6 +1374,7 @@ pub async fn sync_workspace_with_progress(
                 &prepass.rust_contexts,
                 &rel_path,
                 &content_hash,
+                false,
                 || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
             );
             // C8-1: note whether this changed file carries a non-default `#[path]`/
@@ -2036,7 +2042,17 @@ fn find_interface_id(ids: &[(String, String)], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
     use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CanonicalFixtureOutput {
+        unsafe_prefixes: BTreeSet<String>,
+        canonical_edges: BTreeSet<(String, String)>,
+    }
 
     fn cached_context(crate_name: &str) -> RustCanonicalContext {
         (
@@ -2046,6 +2062,125 @@ mod tests {
             },
             canonical::UseGraph::default(),
         )
+    }
+
+    fn write_file_result(ws: &Path, rel: &str, content: &str) -> std::io::Result<()> {
+        let full = ws.join(rel);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(full, content)
+    }
+
+    fn write_manifest_result(ws: &Path) -> std::io::Result<()> {
+        write_file_result(
+            ws,
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+    }
+
+    fn repo_local_temp_root() -> anyhow::Result<PathBuf> {
+        let root = std::env::current_dir()?
+            .join("target")
+            .join("prepass-cache-tests");
+        fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    fn test_db_params(path: &Path) -> (PathBuf, String) {
+        let branch_source = path.to_string_lossy().to_lowercase();
+        let branch = format!("{:x}", Sha256::digest(branch_source.as_bytes()));
+        (path.join(".engram-test-data"), branch)
+    }
+
+    async fn stable_canonical_edges(
+        queries: &CodeGraphQueries,
+    ) -> anyhow::Result<BTreeSet<(String, String)>> {
+        let functions_by_id: HashMap<String, String> = queries
+            .all_functions()
+            .await?
+            .into_iter()
+            .map(|function| {
+                (
+                    function.id,
+                    format!(
+                        "{}:{}:{}-{}",
+                        function.file_path, function.name, function.line_start, function.line_end
+                    ),
+                )
+            })
+            .collect();
+        let mut edges = BTreeSet::new();
+        for (from, to) in queries
+            .list_calls_edges_by_resolution("calls_resolved_canonical")
+            .await?
+        {
+            let from_identity = functions_by_id
+                .get(&from)
+                .ok_or_else(|| anyhow::anyhow!("missing caller id {from}"))?
+                .clone();
+            let to_identity = functions_by_id
+                .get(&to)
+                .ok_or_else(|| anyhow::anyhow!("missing callee id {to}"))?
+                .clone();
+            edges.insert((from_identity, to_identity));
+        }
+        Ok(edges)
+    }
+
+    async fn index_canonical_fixture(
+        force_prepass_cache_miss: bool,
+    ) -> anyhow::Result<CanonicalFixtureOutput> {
+        let temp_root = repo_local_temp_root()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("prepass-cache-")
+            .tempdir_in(temp_root)?;
+        let ws = tmp.path();
+        write_manifest_result(ws)?;
+        write_file_result(
+            ws,
+            "src/lib.rs",
+            "#[path = \"actual.rs\"]\npub mod remapped;\npub mod caller;\npub mod util;\npub mod widget;\n",
+        )?;
+        write_file_result(ws, "src/actual.rs", "pub fn target() {}\n")?;
+        write_file_result(ws, "src/remapped.rs", "pub fn target() {}\n")?;
+        write_file_result(ws, "src/util.rs", "pub fn helper() {}\n")?;
+        write_file_result(
+            ws,
+            "src/widget.rs",
+            "pub struct Widget;\nimpl Widget { pub fn build() {} }\n",
+        )?;
+        write_file_result(
+            ws,
+            "src/caller.rs",
+            "pub fn caller() { crate::util::helper(); crate::widget::Widget::build(); }\npub fn second() { crate::util::helper(); }\n",
+        )?;
+
+        let config = CodeGraphConfig::default();
+        let (data_dir, branch) = test_db_params(ws);
+        index_workspace_impl(
+            ws,
+            &data_dir,
+            &branch,
+            &config,
+            false,
+            None,
+            force_prepass_cache_miss,
+        )
+        .await?;
+        let db = connect_db(&data_dir, &branch).await?;
+        let queries = CodeGraphQueries::new(db);
+        let snapshot = queries
+            .load_index_canonical_workspace_snapshot()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing canonical workspace snapshot"))?;
+        let unsafe_prefixes = snapshot.unsafe_prefixes.into_iter().collect();
+        let canonical_edges = stable_canonical_edges(&queries).await?;
+        Ok(CanonicalFixtureOutput {
+            unsafe_prefixes,
+            canonical_edges,
+        })
     }
 
     #[test]
@@ -2060,7 +2195,7 @@ mod tests {
         );
 
         let context =
-            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "cached-hash", || {
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "cached-hash", false, || {
                 panic!("cache hits must not recompute canonical context")
             });
 
@@ -2081,13 +2216,57 @@ mod tests {
             },
         );
 
-        let context = rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "new-hash", || {
-            Some(cached_context("recomputed"))
-        });
+        let context =
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "new-hash", false, || {
+                Some(cached_context("recomputed"))
+            });
 
         assert_eq!(
             context.map(|(module, _)| module.to_canonical()),
             Some("recomputed".to_owned())
         );
+    }
+
+    #[test]
+    fn forced_prepass_cache_miss_recomputes_matching_hash() {
+        let mut rust_contexts = HashMap::new();
+        rust_contexts.insert(
+            "src/lib.rs".to_owned(),
+            CachedRustCanonicalContext {
+                content_hash: "cached-hash".to_owned(),
+                context: Some(cached_context("cached")),
+            },
+        );
+
+        let context =
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "cached-hash", true, || {
+                Some(cached_context("forced-recompute"))
+            });
+
+        assert_eq!(
+            context.map(|(module, _)| module.to_canonical()),
+            Some("forced-recompute".to_owned()),
+            "control: the forced-miss seam must exercise the recompute branch even when hashes match"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_prepass_cache_miss_preserves_prefixes_and_edges() -> anyhow::Result<()> {
+        let cache_reuse = index_canonical_fixture(false).await?;
+        let recompute_fallback = index_canonical_fixture(true).await?;
+
+        assert!(
+            cache_reuse.unsafe_prefixes.contains("demo::remapped"),
+            "fixture must keep unsafe prefixes non-empty"
+        );
+        assert!(
+            !cache_reuse.canonical_edges.is_empty(),
+            "fixture must produce canonical edges so equivalence is non-vacuous"
+        );
+        assert_eq!(
+            cache_reuse, recompute_fallback,
+            "cache reuse and forced recompute fallback must index identical unsafe prefixes and canonical edges"
+        );
+        Ok(())
     }
 }
