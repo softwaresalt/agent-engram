@@ -32,10 +32,11 @@ use std::time::Duration;
 use serde_json::json;
 use tempfile::TempDir;
 
-use engram::errors::WorkspaceError;
+use engram::errors::{EngramError, WorkspaceError};
 use engram::models::config::WorkspaceConfig;
 use engram::models::retrieval_eval::RetrievalEvalConfig;
 use engram::server::state::{AppState, WorkspaceSnapshot};
+use engram::services::code_graph;
 use engram::tools;
 
 #[allow(dead_code)]
@@ -216,6 +217,46 @@ async fn snapshot_workspace_and_config_returns_none_when_config_absent() {
     assert!(
         state.snapshot_workspace_and_config().await.is_none(),
         "reader-side background paths must skip when config is absent"
+    );
+}
+
+// ── 092.004-T: the tool handlers rely on the COMPLEMENT of the test above ─────
+//
+// index_workspace, sync_workspace, map_code, and impact_analysis migrated their
+// paired (workspace, config) reads to a single `snapshot_dispatch_context()`.
+// That primitive is the behavior-preserving choice precisely because — unlike
+// `snapshot_workspace_and_config()` (which None-gates on absent config, proven
+// above) — it default-substitutes the config when a workspace is bound but no
+// config has been loaded. If that default-substitution ever regressed (or a
+// handler were "simplified" to `snapshot_workspace_and_config`), those handlers
+// would wrongly return `WorkspaceError::NotSet` on a config-less-but-bound
+// workspace instead of proceeding with `WorkspaceConfig::default()`.
+#[tokio::test]
+async fn snapshot_dispatch_context_default_substitutes_absent_config() {
+    let shared = TempDir::new().expect("shared data-dir tempdir");
+    let data_dir = shared.path().join(".engram");
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+
+    let state = AppState::new(10);
+    state
+        .set_workspace(make_snapshot("ws-a", &path_a, &data_dir))
+        .await
+        .expect("bind A without config");
+
+    let ctx = state
+        .snapshot_dispatch_context()
+        .await
+        .expect("dispatch context present when workspace bound and config absent");
+    assert_eq!(
+        ctx.workspace.path, path_a,
+        "snapshot must carry the bound workspace"
+    );
+    assert_eq!(
+        ctx.config,
+        WorkspaceConfig::default(),
+        "absent config must default-substitute, not None-gate — this is what \
+         the migrated tool handlers depend on (092.004-T)"
     );
 }
 
@@ -405,6 +446,164 @@ async fn snapshot_dispatch_context_never_observes_writer_side_torn_publish() {
         "snapshot_dispatch_context returned {torn_count} torn (workspace, config) pair(s) across \
          {iterations} samples (observed A={observed_a}, B={observed_b}); \
          examples: {torn_examples:?}"
+    );
+}
+
+/// 092.004-T: a genuine handler-level routing guard that fails if `map_code`
+/// bypasses the shared atomicity seam.
+///
+/// Runs the real `map_code` handler under paired A/B rebinding. Workspace A
+/// (its own data-dir, indexed with the marker symbol) is bound with
+/// `max_traversal_depth = DEPTH_A`; workspace B (its own data-dir, WITHOUT the
+/// marker) with `DEPTH_B`. Each response reveals BOTH the workspace it read
+/// (`root` present iff data-dir A) and the config it read (echoed
+/// `effective_depth`). A handler that reverted to separate workspace/config
+/// reads could observe a torn pair — `root` present with `effective_depth ==
+/// DEPTH_B`, or `root` absent with `== DEPTH_A` — which this test rejects. This
+/// is the enforceable routing coverage the seam-only guard cannot provide: it
+/// exercises the real handler, so it stays honest even if a handler later
+/// stopped routing through the seam.
+#[allow(clippy::too_many_lines)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn map_code_handler_never_observes_torn_pair() {
+    const DEPTH_A: usize = 2;
+    const DEPTH_B: usize = 9;
+    const MARKER: &str = "alpha_marker";
+
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let dir_b = TempDir::new().expect("workspace B tempdir");
+    let data_a = TempDir::new().expect("data-dir A tempdir");
+    let data_b = TempDir::new().expect("data-dir B tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+    let path_b = dir_b.path().to_string_lossy().into_owned();
+    let data_dir_a = data_a.path().join(".engram");
+    let data_dir_b = data_b.path().join(".engram");
+
+    // Only workspace A's source defines the marker symbol.
+    std::fs::write(
+        dir_a.path().join("marker.rs"),
+        format!("pub fn {MARKER}() {{}}\n"),
+    )
+    .expect("write A source");
+    std::fs::write(dir_b.path().join("other.rs"), "pub fn other_fn() {}\n")
+        .expect("write B source");
+
+    // Index each workspace into its own data-dir on branch "main" (matching
+    // `make_snapshot`), so `map_code`'s `connect_db` targets the right graph.
+    let index_cfg = WorkspaceConfig::default().code_graph;
+    code_graph::index_workspace(dir_a.path(), &data_dir_a, "main", &index_cfg, false)
+        .await
+        .expect("index workspace A");
+    code_graph::index_workspace(dir_b.path(), &data_dir_b, "main", &index_cfg, false)
+        .await
+        .expect("index workspace B");
+
+    let state = Arc::new(AppState::new(10));
+    let snap_a = make_snapshot("ws-a", &path_a, &data_dir_a);
+    let snap_b = make_snapshot("ws-b", &path_b, &data_dir_b);
+    let cfg_a = WorkspaceConfig {
+        code_graph: engram::models::config::CodeGraphConfig {
+            max_traversal_depth: DEPTH_A,
+            ..WorkspaceConfig::default().code_graph
+        },
+        ..WorkspaceConfig::default()
+    };
+    let cfg_b = WorkspaceConfig {
+        code_graph: engram::models::config::CodeGraphConfig {
+            max_traversal_depth: DEPTH_B,
+            ..WorkspaceConfig::default().code_graph
+        },
+        ..WorkspaceConfig::default()
+    };
+
+    state
+        .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+        .await
+        .expect("seed bind A");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_state = state.clone();
+    let writer_stop = stop.clone();
+    let writer = tokio::spawn(async move {
+        while !writer_stop.load(Ordering::Relaxed) {
+            writer_state
+                .set_workspace_and_config(snap_b.clone(), Some(cfg_b.clone()))
+                .await
+                .expect("bind B with config B");
+            tokio::task::yield_now().await;
+            writer_state
+                .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
+                .await
+                .expect("bind A with config A");
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let mut torn = 0u32;
+    let mut torn_examples: Vec<(bool, usize)> = Vec::new();
+    let mut observed_a = 0u32;
+    let mut observed_b = 0u32;
+    let mut iterations = 0u32;
+    // The real handler opens a DB per call, so keep the iteration bound modest
+    // while still requiring both bindings to be observed for non-vacuity.
+    while (iterations < 100 || observed_a == 0 || observed_b == 0) && iterations < 2_000 {
+        iterations += 1;
+        let resp = tools::read::map_code(
+            state.clone(),
+            Some(json!({ "symbol_name": MARKER, "depth": 999 })),
+        )
+        .await
+        .expect("map_code must not error for a bound, indexed workspace");
+        let root_present = !resp["root"].is_null();
+        let effective_depth = usize::try_from(
+            resp["effective_depth"]
+                .as_u64()
+                .expect("effective_depth is a number"),
+        )
+        .expect("effective_depth fits usize");
+        if root_present {
+            observed_a += 1;
+        } else {
+            observed_b += 1;
+        }
+        let torn_pair = (root_present && effective_depth == DEPTH_B)
+            || (!root_present && effective_depth == DEPTH_A);
+        if torn_pair {
+            torn += 1;
+            if torn_examples.len() < 8 {
+                torn_examples.push((root_present, effective_depth));
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.await.expect("writer task must join");
+
+    assert!(
+        observed_a > 0 && observed_b > 0,
+        "test is vacuous unless BOTH bindings are exercised \
+         (A={observed_a}, B={observed_b}, iterations={iterations})"
+    );
+    assert!(
+        torn == 0,
+        "map_code observed {torn} torn (workspace, config) pair(s) across {iterations} \
+         samples (root-present-with-DEPTH_B or root-absent-with-DEPTH_A); \
+         examples (root_present, effective_depth): {torn_examples:?}"
+    );
+}
+
+/// 092.004-T: the shared seam maps "no workspace bound" to `NotSet`, preserving
+/// each graph handler's pre-migration early-error contract.
+#[tokio::test]
+async fn graph_handler_seam_errors_not_set_when_unbound() {
+    let state = AppState::new(10);
+    let err = tools::snapshot_graph_handler_context(&state)
+        .await
+        .expect_err("unbound workspace must error");
+    assert!(
+        matches!(err, EngramError::Workspace(WorkspaceError::NotSet)),
+        "expected NotSet, got {err:?}"
     );
 }
 

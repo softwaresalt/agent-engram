@@ -236,7 +236,10 @@ const fn default_map_max_nodes() -> usize {
 /// Falls back to vector search when the exact symbol name is not found.
 /// Returns full source bodies for all nodes (FR-148).
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    ensure_workspace(&state).await?;
+    // 092.004-T: one atomic (workspace, config) capture via the shared graph-
+    // handler seam replaces the separate presence check, config read, and
+    // workspace_db read so a concurrent bind cannot tear the pair consumed below.
+    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
 
     // Read-only: graph state may be partially written during a background
     // index. Returning available symbol graph context is more useful than
@@ -249,12 +252,14 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
             })
         })?;
 
-    // Clamp depth and max_nodes to config limits (FR-149)
-    let config = state.workspace_config().await.unwrap_or_default();
+    // Clamp depth and max_nodes to config limits (FR-149). Config, data_dir, and
+    // branch all derive from the single atomic snapshot above (092.004-T).
+    let config = ctx.config;
     let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
     let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
 
-    let (data_dir, branch) = workspace_db(&state).await?;
+    let data_dir = ctx.workspace.data_dir;
+    let branch = ctx.workspace.branch;
     let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 
@@ -750,7 +755,10 @@ pub async fn impact_analysis(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    ensure_workspace(&state).await?;
+    // 092.004-T: one atomic (workspace, config) capture via the shared graph-
+    // handler seam replaces the separate presence check, config read, and
+    // workspace_db read so a concurrent bind cannot tear the pair consumed below.
+    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
 
     // Read-only: graph may be partially populated during a background index.
     // Returning available impact data is more useful than an IndexInProgress error.
@@ -762,15 +770,17 @@ pub async fn impact_analysis(
             })
         })?;
 
-    // FR-149: clamp depth to config limits.
-    let config = state.workspace_config().await.unwrap_or_default();
+    // FR-149: clamp depth to config limits. Config, data_dir, and branch all
+    // derive from the single atomic snapshot above (092.004-T).
+    let config = ctx.config;
     let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
     let effective_max_nodes = parsed
         .max_nodes
         .clamp(1, 100)
         .min(config.code_graph.max_traversal_nodes);
 
-    let (data_dir, branch) = workspace_db(&state).await?;
+    let data_dir = ctx.workspace.data_dir;
+    let branch = ctx.workspace.branch;
     let db = connect_db(&data_dir, &branch).await?;
     let cg_queries = CodeGraphQueries::new(db);
 

@@ -9,9 +9,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::errors::{EngramError, SystemError};
+use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::metrics::{CoarseParams, UsageEvent};
-use crate::server::state::SharedState;
+use crate::server::state::{AppState, DispatchSnapshot, SharedState};
 use crate::services::{metrics, policy};
 
 pub mod doctor;
@@ -32,6 +32,32 @@ fn not_implemented(method: &str) -> EngramError {
     EngramError::System(SystemError::InvalidParams {
         reason: format!("{method} not implemented"),
     })
+}
+
+/// Atomically capture the active workspace binding and its config for the
+/// graph-oriented tool handlers.
+///
+/// All four graph handlers — `index_workspace`, `sync_workspace`, `map_code`,
+/// and `impact_analysis` (092.004-T) — route their `(workspace, config)`
+/// acquisition through this single seam so the pair is always read under one
+/// consistent view relative to a concurrent
+/// [`AppState::set_workspace_and_config`] bind, and so no handler can silently
+/// drift back to two separate awaited reads.
+///
+/// A bound workspace with no loaded config default-substitutes
+/// [`crate::models::config::WorkspaceConfig::default`] (via
+/// [`AppState::snapshot_dispatch_context`]), matching each handler's
+/// pre-migration behavior.
+///
+/// # Errors
+/// Returns [`WorkspaceError::NotSet`] when no workspace is currently bound.
+pub async fn snapshot_graph_handler_context(
+    state: &AppState,
+) -> Result<DispatchSnapshot, EngramError> {
+    state
+        .snapshot_dispatch_context()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
 fn should_record_metrics(method: &str) -> bool {
