@@ -32,8 +32,9 @@ use crate::daemon::watcher::{WatcherConfig, start_watcher};
 use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
+use crate::models::config::WorkspaceConfig;
 use crate::models::health::ScanProgress;
-use crate::server::state::{AppState, SharedState};
+use crate::server::state::{AppState, SharedState, WorkspaceSnapshot};
 use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
 
@@ -350,6 +351,23 @@ async fn process_request(
 
 // ── Daemon entry point ───────────────────────────────────────────────────────
 
+/// Atomically snapshot the active `(workspace, config)` pair for a daemon
+/// background-sync closure, returning `None` when either value is absent.
+///
+/// This is the single acquisition seam shared by the auto-sync and file-watcher
+/// closures in [`run_with_shutdown`] and [`run_with_shutdown_v2`] (092.003-T).
+/// Routing all four sites through one helper keeps the atomicity guarantee
+/// testable: [`AppState::snapshot_workspace_and_config`] holds both read locks
+/// together, so a concurrent [`AppState::set_workspace_and_config`] cannot yield
+/// a torn `(workspace_i, config_j)` pair. Reverting this body to two separate
+/// reads would reopen that window — the `daemon_sync_context_never_tears_pair`
+/// unit test guards against exactly that regression.
+async fn snapshot_daemon_sync_context(
+    state: &AppState,
+) -> Option<(WorkspaceSnapshot, WorkspaceConfig)> {
+    state.snapshot_workspace_and_config().await
+}
+
 /// Run the daemon accept loop with graceful shutdown support.
 ///
 /// Steps:
@@ -483,10 +501,11 @@ pub async fn run_with_shutdown(
                         // give ≈ 3 s of headroom for the hydration writer to
                         // finish its transaction.
                         let should_flush = 'sync: {
-                            let Some(snapshot) = state_auto.snapshot_workspace().await else {
-                                break 'sync false;
-                            };
-                            let Some(ws_config) = state_auto.workspace_config().await else {
+                            // 092.003-T: single atomic (workspace, config) read via
+                            // the shared daemon seam; skips when either value is absent.
+                            let Some((snapshot, ws_config)) =
+                                snapshot_daemon_sync_context(&state_auto).await
+                            else {
                                 break 'sync false;
                             };
                             let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -664,10 +683,10 @@ pub async fn run_with_shutdown(
 
                 if pending_reindex && state_watcher.try_start_indexing() {
                     let should_flush = 'sync: {
-                        let Some(snapshot) = state_watcher.snapshot_workspace().await else {
-                            break 'sync false;
-                        };
-                        let Some(ws_config) = state_watcher.workspace_config().await else {
+                        // 092.003-T: shared daemon (workspace, config) seam.
+                        let Some((snapshot, ws_config)) =
+                            snapshot_daemon_sync_context(&state_watcher).await
+                        else {
                             break 'sync false;
                         };
                         let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -896,10 +915,10 @@ pub async fn run_with_shutdown_v2(
                             return;
                         }
                         let should_flush = 'sync: {
-                            let Some(snapshot) = state_auto.snapshot_workspace().await else {
-                                break 'sync false;
-                            };
-                            let Some(ws_config) = state_auto.workspace_config().await else {
+                            // 092.003-T: shared daemon (workspace, config) seam.
+                            let Some((snapshot, ws_config)) =
+                                snapshot_daemon_sync_context(&state_auto).await
+                            else {
                                 break 'sync false;
                             };
                             let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -1121,10 +1140,10 @@ pub async fn run_with_shutdown_v2(
                         if !pending_reindex {
                             break 'sync false;
                         }
-                        let Some(snapshot) = state_watcher.snapshot_workspace().await else {
-                            break 'sync false;
-                        };
-                        let Some(ws_config) = state_watcher.workspace_config().await else {
+                        // 092.003-T: shared daemon (workspace, config) seam.
+                        let Some((snapshot, ws_config)) =
+                            snapshot_daemon_sync_context(&state_watcher).await
+                        else {
                             break 'sync false;
                         };
                         let ws_path = std::path::PathBuf::from(&snapshot.path);
@@ -1290,6 +1309,112 @@ mod tests {
     use crate::server::state::AppState;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
+
+    /// 092.003-T: the shared daemon `(workspace, config)` acquisition seam must
+    /// never expose a torn pair to a background-sync closure while a concurrent
+    /// bind is flipping the active workspace. This is the regression guard for
+    /// [`snapshot_daemon_sync_context`]: reverting its body to two separate
+    /// reads reopens the tear window and makes this test fail.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn daemon_sync_context_never_tears_pair() {
+        use crate::models::config::CodeGraphConfig;
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        const LARGE: u64 = 8_000_000;
+        const SMALL: u64 = 1_024;
+
+        fn snapshot_for(path: &str) -> WorkspaceSnapshot {
+            WorkspaceSnapshot {
+                workspace_id: format!("ws-{path}"),
+                workspace_uuid: format!("uuid-{path}"),
+                branch: "main".to_owned(),
+                data_dir: std::path::PathBuf::from("unused"),
+                path: path.to_owned(),
+                last_flush: None,
+                stale_files: false,
+                connection_count: 0,
+                file_mtimes: HashMap::new(),
+            }
+        }
+        fn config_with(max_file_size_bytes: u64) -> WorkspaceConfig {
+            WorkspaceConfig {
+                code_graph: CodeGraphConfig {
+                    max_file_size_bytes,
+                    ..CodeGraphConfig::default()
+                },
+                ..WorkspaceConfig::default()
+            }
+        }
+
+        // Two internally-consistent (workspace, config) states. A torn read
+        // pairs one state's `path` with the other's `max_file_size_bytes`.
+        let snapshot_a = snapshot_for("/ws/a");
+        let snapshot_b = snapshot_for("/ws/b");
+        let config_a = config_with(LARGE);
+        let config_b = config_with(SMALL);
+
+        let state = Arc::new(AppState::new(10));
+        state
+            .set_workspace_and_config(snapshot_a.clone(), Some(config_a.clone()))
+            .await
+            .expect("seed bind A");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_state = state.clone();
+        let writer_stop = stop.clone();
+        let writer = tokio::spawn(async move {
+            while !writer_stop.load(Ordering::Relaxed) {
+                writer_state
+                    .set_workspace_and_config(snapshot_b.clone(), Some(config_b.clone()))
+                    .await
+                    .expect("bind B");
+                tokio::task::yield_now().await;
+                writer_state
+                    .set_workspace_and_config(snapshot_a.clone(), Some(config_a.clone()))
+                    .await
+                    .expect("bind A");
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let mut torn = 0u32;
+        let mut observed_a = 0u32;
+        let mut observed_b = 0u32;
+        let mut iterations = 0u32;
+        while (iterations < 2_000 || observed_a == 0 || observed_b == 0) && iterations < 50_000 {
+            iterations += 1;
+            let Some((snap, cfg)) = snapshot_daemon_sync_context(&state).await else {
+                continue;
+            };
+            let max = cfg.code_graph.max_file_size_bytes;
+            if snap.path == "/ws/a" {
+                observed_a += 1;
+                if max != LARGE {
+                    torn += 1;
+                }
+            } else if snap.path == "/ws/b" {
+                observed_b += 1;
+                if max != SMALL {
+                    torn += 1;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        writer.await.expect("writer task joins");
+
+        assert!(
+            observed_a > 0 && observed_b > 0,
+            "vacuous test: must observe both bound states (A={observed_a}, B={observed_b})"
+        );
+        assert_eq!(
+            torn, 0,
+            "daemon sync context tore {torn} (workspace, config) pair(s) across \
+             {iterations} samples (A={observed_a}, B={observed_b})"
+        );
+    }
 
     #[cfg(unix)]
     const SOCKET_SUFFIX_LEN: usize = "/.engram/run/engram.sock".len();
