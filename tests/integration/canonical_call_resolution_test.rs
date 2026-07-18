@@ -806,3 +806,55 @@ async fn dependency_rename_collision_does_not_create_false_canonical_edge() {
         }
     }
 }
+
+// Regression (088 / PR #248 salvage): `super::`-rooted qualified calls must resolve
+// via canonical module-path derivation to the correct parent-module target, and must
+// never link to a same-named decoy in an unrelated module. A decoy `other::helper`
+// shares the callee name with `parent::helper`; `super::helper()` in `parent::child`
+// must produce the canonical edge to `parent::helper` (recall) and no edge to the
+// decoy (precision). PR #248 conservatively deferred all `super::` calls; the
+// canonical design resolves them precisely.
+#[test]
+async fn super_rooted_call_resolves_to_parent_not_same_name_decoy() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_manifest(ws);
+    write_file(ws, "src/lib.rs", "pub mod parent;\npub mod other;\n");
+    write_file(ws, "src/parent.rs", "pub fn helper() {}\npub mod child;\n");
+    write_file(
+        ws,
+        "src/parent/child.rs",
+        "pub fn caller() {\n    super::helper();\n}\n",
+    );
+    write_file(ws, "src/other.rs", "pub fn helper() {}\n");
+
+    let q = index(ws).await;
+    let edges = canonical_edges(&q).await;
+
+    let mut caller_id: Option<String> = None;
+    let mut parent_helper_id: Option<String> = None;
+    let mut other_helper_id: Option<String> = None;
+    for f in q.all_functions().await.expect("all_functions") {
+        let file = f.file_path.replace('\\', "/");
+        if f.name == "caller" {
+            caller_id = Some(f.id.clone());
+        } else if f.name == "helper" && file.ends_with("parent.rs") {
+            parent_helper_id = Some(f.id.clone());
+        } else if f.name == "helper" && file.ends_with("other.rs") {
+            other_helper_id = Some(f.id.clone());
+        }
+    }
+
+    let caller_id = caller_id.expect("caller indexed");
+    let parent_helper_id = parent_helper_id.expect("parent::helper indexed");
+    let other_helper_id = other_helper_id.expect("other::helper indexed (decoy)");
+
+    assert!(
+        edges.contains(&(caller_id.clone(), parent_helper_id)),
+        "super::helper() must resolve to parent::helper: {edges:?}"
+    );
+    assert!(
+        !edges.contains(&(caller_id, other_helper_id)),
+        "super::helper() must not link to the same-name decoy other::helper: {edges:?}"
+    );
+}
