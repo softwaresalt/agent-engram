@@ -36,6 +36,7 @@ use engram::errors::{EngramError, WorkspaceError};
 use engram::models::config::WorkspaceConfig;
 use engram::models::retrieval_eval::RetrievalEvalConfig;
 use engram::server::state::{AppState, WorkspaceSnapshot};
+use engram::services::code_graph;
 use engram::tools;
 
 #[allow(dead_code)]
@@ -448,26 +449,72 @@ async fn snapshot_dispatch_context_never_observes_writer_side_torn_publish() {
     );
 }
 
-/// 092.004-T: the four graph tool handlers (`index_workspace`, `sync_workspace`,
-/// `map_code`, `impact_analysis`) all acquire their `(workspace, config)` pair
-/// through `tools::snapshot_graph_handler_context`. This stresses that shared
-/// seam directly under paired A/A <-> B/B rebinding; every observed pair must be
-/// self-consistent, mirroring the daemon seam guard from 092.003-T. Pinning the
-/// seam's atomicity keeps the single choke point the handlers share honest.
+/// 092.004-T: a genuine handler-level routing guard that fails if `map_code`
+/// bypasses the shared atomicity seam.
+///
+/// Runs the real `map_code` handler under paired A/B rebinding. Workspace A
+/// (its own data-dir, indexed with the marker symbol) is bound with
+/// `max_traversal_depth = DEPTH_A`; workspace B (its own data-dir, WITHOUT the
+/// marker) with `DEPTH_B`. Each response reveals BOTH the workspace it read
+/// (`root` present iff data-dir A) and the config it read (echoed
+/// `effective_depth`). A handler that reverted to separate workspace/config
+/// reads could observe a torn pair — `root` present with `effective_depth ==
+/// DEPTH_B`, or `root` absent with `== DEPTH_A` — which this test rejects. This
+/// is the enforceable routing coverage the seam-only guard cannot provide: it
+/// exercises the real handler, so it stays honest even if a handler later
+/// stopped routing through the seam.
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn graph_handler_seam_never_observes_torn_pair() {
-    let shared = TempDir::new().expect("shared data-dir tempdir");
-    let data_dir = shared.path().join(".engram");
+async fn map_code_handler_never_observes_torn_pair() {
+    const DEPTH_A: usize = 2;
+    const DEPTH_B: usize = 9;
+    const MARKER: &str = "alpha_marker";
+
     let dir_a = TempDir::new().expect("workspace A tempdir");
     let dir_b = TempDir::new().expect("workspace B tempdir");
+    let data_a = TempDir::new().expect("data-dir A tempdir");
+    let data_b = TempDir::new().expect("data-dir B tempdir");
     let path_a = dir_a.path().to_string_lossy().into_owned();
     let path_b = dir_b.path().to_string_lossy().into_owned();
+    let data_dir_a = data_a.path().join(".engram");
+    let data_dir_b = data_b.path().join(".engram");
+
+    // Only workspace A's source defines the marker symbol.
+    std::fs::write(
+        dir_a.path().join("marker.rs"),
+        format!("pub fn {MARKER}() {{}}\n"),
+    )
+    .expect("write A source");
+    std::fs::write(dir_b.path().join("other.rs"), "pub fn other_fn() {}\n")
+        .expect("write B source");
+
+    // Index each workspace into its own data-dir on branch "main" (matching
+    // `make_snapshot`), so `map_code`'s `connect_db` targets the right graph.
+    let index_cfg = WorkspaceConfig::default().code_graph;
+    code_graph::index_workspace(dir_a.path(), &data_dir_a, "main", &index_cfg, false)
+        .await
+        .expect("index workspace A");
+    code_graph::index_workspace(dir_b.path(), &data_dir_b, "main", &index_cfg, false)
+        .await
+        .expect("index workspace B");
 
     let state = Arc::new(AppState::new(10));
-    let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
-    let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
-    let cfg_a = config_with_eval(true);
-    let cfg_b = config_with_eval(false);
+    let snap_a = make_snapshot("ws-a", &path_a, &data_dir_a);
+    let snap_b = make_snapshot("ws-b", &path_b, &data_dir_b);
+    let cfg_a = WorkspaceConfig {
+        code_graph: engram::models::config::CodeGraphConfig {
+            max_traversal_depth: DEPTH_A,
+            ..WorkspaceConfig::default().code_graph
+        },
+        ..WorkspaceConfig::default()
+    };
+    let cfg_b = WorkspaceConfig {
+        code_graph: engram::models::config::CodeGraphConfig {
+            max_traversal_depth: DEPTH_B,
+            ..WorkspaceConfig::default().code_graph
+        },
+        ..WorkspaceConfig::default()
+    };
 
     state
         .set_workspace_and_config(snap_a.clone(), Some(cfg_a.clone()))
@@ -492,28 +539,39 @@ async fn graph_handler_seam_never_observes_torn_pair() {
         }
     });
 
-    let mut torn_count = 0u32;
-    let mut torn_examples: Vec<(String, bool)> = Vec::new();
+    let mut torn = 0u32;
+    let mut torn_examples: Vec<(bool, usize)> = Vec::new();
     let mut observed_a = 0u32;
     let mut observed_b = 0u32;
     let mut iterations = 0u32;
-    while (iterations < 1_000 || observed_a == 0 || observed_b == 0) && iterations < 20_000 {
+    // The real handler opens a DB per call, so keep the iteration bound modest
+    // while still requiring both bindings to be observed for non-vacuity.
+    while (iterations < 100 || observed_a == 0 || observed_b == 0) && iterations < 2_000 {
         iterations += 1;
-        let snapshot = tools::snapshot_graph_handler_context(&state)
-            .await
-            .expect("workspace stays bound throughout the stress loop");
-        let path = snapshot.workspace.path;
-        let enabled = snapshot.config.retrieval_eval.enabled;
-        if path == path_a {
+        let resp = tools::read::map_code(
+            state.clone(),
+            Some(json!({ "symbol_name": MARKER, "depth": 999 })),
+        )
+        .await
+        .expect("map_code must not error for a bound, indexed workspace");
+        let root_present = !resp["root"].is_null();
+        let effective_depth = usize::try_from(
+            resp["effective_depth"]
+                .as_u64()
+                .expect("effective_depth is a number"),
+        )
+        .expect("effective_depth fits usize");
+        if root_present {
             observed_a += 1;
-        } else if path == path_b {
+        } else {
             observed_b += 1;
         }
-        let torn_pair = (path == path_a && !enabled) || (path == path_b && enabled);
+        let torn_pair = (root_present && effective_depth == DEPTH_B)
+            || (!root_present && effective_depth == DEPTH_A);
         if torn_pair {
-            torn_count += 1;
+            torn += 1;
             if torn_examples.len() < 8 {
-                torn_examples.push((path, enabled));
+                torn_examples.push((root_present, effective_depth));
             }
         }
         tokio::task::yield_now().await;
@@ -524,14 +582,14 @@ async fn graph_handler_seam_never_observes_torn_pair() {
 
     assert!(
         observed_a > 0 && observed_b > 0,
-        "test is vacuous unless BOTH checked states are observed \
+        "test is vacuous unless BOTH bindings are exercised \
          (A={observed_a}, B={observed_b}, iterations={iterations})"
     );
     assert!(
-        torn_count == 0,
-        "snapshot_graph_handler_context returned {torn_count} torn (workspace, config) pair(s) \
-         across {iterations} samples (observed A={observed_a}, B={observed_b}); \
-         examples: {torn_examples:?}"
+        torn == 0,
+        "map_code observed {torn} torn (workspace, config) pair(s) across {iterations} \
+         samples (root-present-with-DEPTH_B or root-absent-with-DEPTH_A); \
+         examples (root_present, effective_depth): {torn_examples:?}"
     );
 }
 
