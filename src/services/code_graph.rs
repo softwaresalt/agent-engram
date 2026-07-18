@@ -99,6 +99,20 @@ pub(crate) async fn unsafe_module_prepass(
     prepass
 }
 
+/// Return the pre-pass-cached Rust canonical context on a content-hash match,
+/// otherwise recompute it.
+///
+/// On a hash mismatch this recomputes only the file's per-file context
+/// (`ModulePath` / `UseGraph`); it intentionally does not refresh the global
+/// `unsafe_prefixes`, which are a snapshot taken during `unsafe_module_prepass`.
+/// This keeps canonical edge output byte-identical to the pre-cache baseline
+/// (the load-bearing invariant): on a match the context and prefixes come from
+/// one snapshot; on a mismatch the recompute reproduces exactly what the main
+/// pass computed before context caching existed. The pre-pass/main-pass
+/// `TOCTOU` on cross-file unsafe-prefix discovery — a file gaining a `#[path]`
+/// or `#[cfg] mod` remap between the two reads — is a pre-existing property of
+/// the two-phase pre-pass architecture, unchanged by this cache; closing it
+/// would require a single-snapshot rebuild and is out of scope here.
 fn rust_ctx_from_prepass_cache(
     rust_contexts: &HashMap<String, CachedRustCanonicalContext>,
     rel_path: &str,
