@@ -20,6 +20,22 @@ use crate::services::embedding;
 use crate::services::parsing::canonical;
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
+type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
+
+/// Cached Rust canonical context produced by the global unsafe-module pre-pass.
+#[derive(Debug, Clone)]
+struct CachedRustCanonicalContext {
+    content_hash: String,
+    context: Option<RustCanonicalContext>,
+}
+
+/// Global unsafe-module pre-pass output for a single index or sync run.
+#[derive(Debug, Default)]
+pub(crate) struct UnsafeModulePrepass {
+    unsafe_prefixes: HashSet<String>,
+    rust_contexts: HashMap<String, CachedRustCanonicalContext>,
+}
+
 /// Build the per-file canonical resolution context for a Rust source file, or
 /// `None` for non-Rust files and for layouts whose module path is not
 /// deterministically derivable (fail-closed → empty `canonical_path`).
@@ -31,7 +47,7 @@ fn rust_canonical_ctx(
     lang: Language,
     rel_path: &str,
     source: &str,
-) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+) -> Option<RustCanonicalContext> {
     if lang != Language::Rust {
         return None;
     }
@@ -41,12 +57,12 @@ fn rust_canonical_ctx(
 
 /// Collect module prefixes whose default filesystem identity is unsafe because
 /// a top-level `mod` declaration remaps or conditionally gates that module.
-pub(crate) fn unsafe_module_prefixes(
+pub(crate) async fn unsafe_module_prepass(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     files: &[std::path::PathBuf],
-) -> HashSet<String> {
-    let mut prefixes = HashSet::new();
+) -> UnsafeModulePrepass {
+    let mut prepass = UnsafeModulePrepass::default();
     for file_path in files {
         if language_from_path(file_path) != "rust" {
             continue;
@@ -55,24 +71,64 @@ pub(crate) fn unsafe_module_prefixes(
             continue;
         };
         let rel_path = rel.to_string_lossy().replace('\\', "/");
-        let Ok(source) = std::fs::read_to_string(file_path) else {
+        let Ok(source) = tokio::fs::read_to_string(file_path).await else {
             continue;
         };
-        let Some((module, use_graph)) =
-            rust_canonical_ctx(crates, Language::Rust, &rel_path, &source)
-        else {
-            continue;
-        };
-        prefixes.extend(use_graph.non_default_mod_roots().iter().map(|root| {
-            // `root` may be a nested relative path (`outer::inner`) captured from
-            // a `#[path]`/`#[cfg]` remap inside an inline module body, so descend
-            // it segment-by-segment: the unsafe prefix is the full nested module.
-            root.split("::")
-                .fold(module.clone(), |m, seg| m.child(seg))
-                .to_canonical()
-        }));
+        let content_hash = sha256_hex(&source);
+        let context = rust_canonical_ctx(crates, Language::Rust, &rel_path, &source);
+        if let Some((module, use_graph)) = &context {
+            prepass
+                .unsafe_prefixes
+                .extend(use_graph.non_default_mod_roots().iter().map(|root| {
+                    // `root` may be a nested relative path (`outer::inner`) captured from
+                    // a `#[path]`/`#[cfg]` remap inside an inline module body, so descend
+                    // it segment-by-segment: the unsafe prefix is the full nested module.
+                    root.split("::")
+                        .fold(module.clone(), |m, seg| m.child(seg))
+                        .to_canonical()
+                }));
+        }
+        prepass.rust_contexts.insert(
+            rel_path,
+            CachedRustCanonicalContext {
+                content_hash,
+                context,
+            },
+        );
     }
-    prefixes
+    prepass
+}
+
+/// Return the pre-pass-cached Rust canonical context on a content-hash match,
+/// otherwise recompute it.
+///
+/// On a hash mismatch this recomputes only the file's per-file context
+/// (`ModulePath` / `UseGraph`); it intentionally does not refresh the global
+/// `unsafe_prefixes`, which are a snapshot taken during `unsafe_module_prepass`.
+/// This keeps canonical edge output byte-identical to the pre-cache baseline
+/// (the load-bearing invariant): on a match the context and prefixes come from
+/// one snapshot; on a mismatch the recompute reproduces exactly what the main
+/// pass computed before context caching existed. The pre-pass/main-pass
+/// `TOCTOU` on cross-file unsafe-prefix discovery — a file gaining a `#[path]`
+/// or `#[cfg] mod` remap between the two reads — is a pre-existing property of
+/// the two-phase pre-pass architecture, unchanged by this cache; closing it
+/// would require a single-snapshot rebuild and is out of scope here.
+fn rust_ctx_from_prepass_cache(
+    rust_contexts: &HashMap<String, CachedRustCanonicalContext>,
+    rel_path: &str,
+    content_hash: &str,
+    force_cache_miss: bool,
+    compute: impl FnOnce() -> Option<RustCanonicalContext>,
+) -> Option<RustCanonicalContext> {
+    if !force_cache_miss {
+        if let Some(entry) = rust_contexts
+            .get(rel_path)
+            .filter(|entry| entry.content_hash == content_hash)
+        {
+            return entry.context.clone();
+        }
+    }
+    compute()
 }
 
 pub(crate) fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSet<String>) -> bool {
@@ -412,7 +468,7 @@ pub async fn index_workspace_with_progress(
     force: bool,
     progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<IndexResult, EngramError> {
-    index_workspace_impl(ws_path, data_dir, branch, config, force, progress).await
+    index_workspace_impl(ws_path, data_dir, branch, config, force, progress, false).await
 }
 
 async fn index_workspace_impl(
@@ -422,6 +478,7 @@ async fn index_workspace_impl(
     config: &CodeGraphConfig,
     force: bool,
     mut progress: Option<&mut ProgressCallback<'_>>,
+    force_prepass_cache_miss: bool,
 ) -> Result<IndexResult, EngramError> {
     let start = std::time::Instant::now();
 
@@ -436,7 +493,8 @@ async fn index_workspace_impl(
 
     // ── Step 1: Discover files ──────────────────────────────────────
     let files = discover_files(ws_path, config);
-    let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &files);
+    let prepass = unsafe_module_prepass(ws_path, &crates, &files).await;
+    let unsafe_prefixes = prepass.unsafe_prefixes.clone();
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
@@ -590,7 +648,7 @@ async fn index_workspace_impl(
                 path: rel_path.clone(),
                 language: lang.clone(),
                 size_bytes,
-                content_hash,
+                content_hash: content_hash.clone(),
                 last_indexed_at: chrono::Utc::now().to_rfc3339(),
             };
             queries.upsert_code_file(&code_file).await?;
@@ -623,7 +681,13 @@ async fn index_workspace_impl(
             let mut interface_ids: Vec<(String, String)> = Vec::new();
 
             // A6: per-file canonical context (Rust-only; None → empty canonical_path).
-            let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+            let rust_ctx = rust_ctx_from_prepass_cache(
+                &prepass.rust_contexts,
+                &rel_path,
+                &content_hash,
+                force_prepass_cache_miss,
+                || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
+            );
 
             for symbol in &parse_result.symbols {
                 match symbol {
@@ -1048,7 +1112,8 @@ pub async fn sync_workspace_with_progress(
 
     // Discover current files on disk.
     let current_files = discover_files(ws_path, config);
-    let unsafe_prefixes = unsafe_module_prefixes(ws_path, &crates, &current_files);
+    let prepass = unsafe_module_prepass(ws_path, &crates, &current_files).await;
+    let unsafe_prefixes = prepass.unsafe_prefixes.clone();
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
@@ -1319,7 +1384,13 @@ pub async fn sync_workspace_with_progress(
             let mut embed_ids: Vec<String> = Vec::new();
 
             // A6: per-file canonical context (Rust-only; None → empty canonical_path).
-            let rust_ctx = rust_canonical_ctx(&crates, lang_enum, &rel_path, &source);
+            let rust_ctx = rust_ctx_from_prepass_cache(
+                &prepass.rust_contexts,
+                &rel_path,
+                &content_hash,
+                false,
+                || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
+            );
             // C8-1: note whether this changed file carries a non-default `#[path]`/
             // `#[cfg]` mod mapping, which can make a module prefix newly UNSAFE and
             // strand stale canonical edges from other unchanged callers under it.
@@ -1981,4 +2052,235 @@ fn find_interface_id(ids: &[(String, String)], name: &str) -> Option<String> {
     ids.iter()
         .find(|(n, _)| n == name)
         .map(|(_, id)| id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CanonicalFixtureOutput {
+        unsafe_prefixes: BTreeSet<String>,
+        canonical_edges: BTreeSet<(String, String)>,
+    }
+
+    fn cached_context(crate_name: &str) -> RustCanonicalContext {
+        (
+            canonical::ModulePath {
+                crate_name: crate_name.to_owned(),
+                segments: Vec::new(),
+            },
+            canonical::UseGraph::default(),
+        )
+    }
+
+    fn write_file_result(ws: &Path, rel: &str, content: &str) -> std::io::Result<()> {
+        let full = ws.join(rel);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(full, content)
+    }
+
+    fn write_manifest_result(ws: &Path) -> std::io::Result<()> {
+        write_file_result(
+            ws,
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+    }
+
+    fn repo_local_temp_root() -> anyhow::Result<PathBuf> {
+        let root = std::env::current_dir()?
+            .join("target")
+            .join("prepass-cache-tests");
+        fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    fn test_db_params(path: &Path) -> (PathBuf, String) {
+        let branch_source = path.to_string_lossy().to_lowercase();
+        let branch = format!("{:x}", Sha256::digest(branch_source.as_bytes()));
+        (path.join(".engram-test-data"), branch)
+    }
+
+    async fn stable_canonical_edges(
+        queries: &CodeGraphQueries,
+    ) -> anyhow::Result<BTreeSet<(String, String)>> {
+        let functions_by_id: HashMap<String, String> = queries
+            .all_functions()
+            .await?
+            .into_iter()
+            .map(|function| {
+                (
+                    function.id,
+                    format!(
+                        "{}:{}:{}-{}",
+                        function.file_path, function.name, function.line_start, function.line_end
+                    ),
+                )
+            })
+            .collect();
+        let mut edges = BTreeSet::new();
+        for (from, to) in queries
+            .list_calls_edges_by_resolution("calls_resolved_canonical")
+            .await?
+        {
+            let from_identity = functions_by_id
+                .get(&from)
+                .ok_or_else(|| anyhow::anyhow!("missing caller id {from}"))?
+                .clone();
+            let to_identity = functions_by_id
+                .get(&to)
+                .ok_or_else(|| anyhow::anyhow!("missing callee id {to}"))?
+                .clone();
+            edges.insert((from_identity, to_identity));
+        }
+        Ok(edges)
+    }
+
+    async fn index_canonical_fixture(
+        force_prepass_cache_miss: bool,
+    ) -> anyhow::Result<CanonicalFixtureOutput> {
+        let temp_root = repo_local_temp_root()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("prepass-cache-")
+            .tempdir_in(temp_root)?;
+        let ws = tmp.path();
+        write_manifest_result(ws)?;
+        write_file_result(
+            ws,
+            "src/lib.rs",
+            "#[path = \"actual.rs\"]\npub mod remapped;\npub mod caller;\npub mod util;\npub mod widget;\n",
+        )?;
+        write_file_result(ws, "src/actual.rs", "pub fn target() {}\n")?;
+        write_file_result(ws, "src/remapped.rs", "pub fn target() {}\n")?;
+        write_file_result(ws, "src/util.rs", "pub fn helper() {}\n")?;
+        write_file_result(
+            ws,
+            "src/widget.rs",
+            "pub struct Widget;\nimpl Widget { pub fn build() {} }\n",
+        )?;
+        write_file_result(
+            ws,
+            "src/caller.rs",
+            "pub fn caller() { crate::util::helper(); crate::widget::Widget::build(); }\npub fn second() { crate::util::helper(); }\n",
+        )?;
+
+        let config = CodeGraphConfig::default();
+        let (data_dir, branch) = test_db_params(ws);
+        index_workspace_impl(
+            ws,
+            &data_dir,
+            &branch,
+            &config,
+            false,
+            None,
+            force_prepass_cache_miss,
+        )
+        .await?;
+        let db = connect_db(&data_dir, &branch).await?;
+        let queries = CodeGraphQueries::new(db);
+        let snapshot = queries
+            .load_index_canonical_workspace_snapshot()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing canonical workspace snapshot"))?;
+        let unsafe_prefixes = snapshot.unsafe_prefixes.into_iter().collect();
+        let canonical_edges = stable_canonical_edges(&queries).await?;
+        Ok(CanonicalFixtureOutput {
+            unsafe_prefixes,
+            canonical_edges,
+        })
+    }
+
+    #[test]
+    fn matching_prepass_cache_reuses_context_without_recomputing() {
+        let mut rust_contexts = HashMap::new();
+        rust_contexts.insert(
+            "src/lib.rs".to_owned(),
+            CachedRustCanonicalContext {
+                content_hash: "cached-hash".to_owned(),
+                context: Some(cached_context("cached")),
+            },
+        );
+
+        let context =
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "cached-hash", false, || {
+                panic!("cache hits must not recompute canonical context")
+            });
+
+        assert_eq!(
+            context.map(|(module, _)| module.to_canonical()),
+            Some("cached".to_owned())
+        );
+    }
+
+    #[test]
+    fn stale_prepass_cache_recomputes_context() {
+        let mut rust_contexts = HashMap::new();
+        rust_contexts.insert(
+            "src/lib.rs".to_owned(),
+            CachedRustCanonicalContext {
+                content_hash: "old-hash".to_owned(),
+                context: Some(cached_context("cached")),
+            },
+        );
+
+        let context =
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "new-hash", false, || {
+                Some(cached_context("recomputed"))
+            });
+
+        assert_eq!(
+            context.map(|(module, _)| module.to_canonical()),
+            Some("recomputed".to_owned())
+        );
+    }
+
+    #[test]
+    fn forced_prepass_cache_miss_recomputes_matching_hash() {
+        let mut rust_contexts = HashMap::new();
+        rust_contexts.insert(
+            "src/lib.rs".to_owned(),
+            CachedRustCanonicalContext {
+                content_hash: "cached-hash".to_owned(),
+                context: Some(cached_context("cached")),
+            },
+        );
+
+        let context =
+            rust_ctx_from_prepass_cache(&rust_contexts, "src/lib.rs", "cached-hash", true, || {
+                Some(cached_context("forced-recompute"))
+            });
+
+        assert_eq!(
+            context.map(|(module, _)| module.to_canonical()),
+            Some("forced-recompute".to_owned()),
+            "control: the forced-miss seam must exercise the recompute branch even when hashes match"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_prepass_cache_miss_preserves_prefixes_and_edges() -> anyhow::Result<()> {
+        let cache_reuse = index_canonical_fixture(false).await?;
+        let recompute_fallback = index_canonical_fixture(true).await?;
+
+        assert!(
+            cache_reuse.unsafe_prefixes.contains("demo::remapped"),
+            "fixture must keep unsafe prefixes non-empty"
+        );
+        assert!(
+            !cache_reuse.canonical_edges.is_empty(),
+            "fixture must produce canonical edges so equivalence is non-vacuous"
+        );
+        assert_eq!(
+            cache_reuse, recompute_fallback,
+            "cache reuse and forced recompute fallback must index identical unsafe prefixes and canonical edges"
+        );
+        Ok(())
+    }
 }
