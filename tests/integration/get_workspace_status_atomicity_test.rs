@@ -219,6 +219,46 @@ async fn snapshot_workspace_and_config_returns_none_when_config_absent() {
     );
 }
 
+// ── 092.004-T: the tool handlers rely on the COMPLEMENT of the test above ─────
+//
+// index_workspace, sync_workspace, map_code, and impact_analysis migrated their
+// paired (workspace, config) reads to a single `snapshot_dispatch_context()`.
+// That primitive is the behavior-preserving choice precisely because — unlike
+// `snapshot_workspace_and_config()` (which None-gates on absent config, proven
+// above) — it default-substitutes the config when a workspace is bound but no
+// config has been loaded. If that default-substitution ever regressed (or a
+// handler were "simplified" to `snapshot_workspace_and_config`), those handlers
+// would wrongly return `WorkspaceError::NotSet` on a config-less-but-bound
+// workspace instead of proceeding with `WorkspaceConfig::default()`.
+#[tokio::test]
+async fn snapshot_dispatch_context_default_substitutes_absent_config() {
+    let shared = TempDir::new().expect("shared data-dir tempdir");
+    let data_dir = shared.path().join(".engram");
+    let dir_a = TempDir::new().expect("workspace A tempdir");
+    let path_a = dir_a.path().to_string_lossy().into_owned();
+
+    let state = AppState::new(10);
+    state
+        .set_workspace(make_snapshot("ws-a", &path_a, &data_dir))
+        .await
+        .expect("bind A without config");
+
+    let ctx = state
+        .snapshot_dispatch_context()
+        .await
+        .expect("dispatch context present when workspace bound and config absent");
+    assert_eq!(
+        ctx.workspace.path, path_a,
+        "snapshot must carry the bound workspace"
+    );
+    assert_eq!(
+        ctx.config,
+        WorkspaceConfig::default(),
+        "absent config must default-substitute, not None-gate — this is what \
+         the migrated tool handlers depend on (092.004-T)"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_workspace_status_never_tears_workspace_and_config() {
     let shared = TempDir::new().expect("shared data-dir tempdir");
