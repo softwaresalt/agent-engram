@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerInfo,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -58,11 +58,18 @@ impl ShimHandler {
 
 impl ServerHandler for ShimHandler {
     /// Return this shim's identity information.
+    ///
+    /// Advertises the `tools` capability so spec-compliant MCP clients call
+    /// `tools/list` and `tools/call`; without it engram's tools are silently
+    /// omitted from the agent even though [`list_tools`](ServerHandler::list_tools)
+    /// and [`call_tool`](ServerHandler::call_tool) are implemented.
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::default().with_server_info(Implementation::new(
+        let mut info = ServerInfo::default().with_server_info(Implementation::new(
             "engram-shim",
             env!("CARGO_PKG_VERSION"),
-        ))
+        ));
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info
     }
 
     /// Forward a tool call to the daemon via IPC and translate the response.
@@ -170,4 +177,27 @@ pub async fn run_shim(endpoint: String, timeout: Duration) -> Result<(), EngramE
         })
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The shim's `initialize` handshake MUST advertise the `tools` capability.
+    ///
+    /// Spec-compliant MCP clients (e.g. Copilot CLI) only call `tools/list` and
+    /// `tools/call` when the server advertises the `tools` capability in its
+    /// `InitializeResult`. Regression guard: `ServerInfo::default()` sets
+    /// `capabilities.tools = None`, which caused engram's tools to be silently
+    /// omitted from the agent even though `list_tools`/`call_tool` are implemented.
+    #[test]
+    fn get_info_advertises_tools_capability() {
+        let handler = ShimHandler::new(String::new(), Duration::from_secs(1));
+        let info = handler.get_info();
+        assert!(
+            info.capabilities.tools.is_some(),
+            "shim get_info() must advertise the MCP tools capability so clients discover engram tools"
+        );
+    }
 }
