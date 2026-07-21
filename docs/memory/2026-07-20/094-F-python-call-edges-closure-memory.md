@@ -72,10 +72,14 @@ session performed post-merge closure only.
   `map_code`/`impact_analysis`/`query_graph` surfaces and unit/integration
   tests. Recorded as a justified N/A rather than an open observability gap.
 - **Bug split (FF7DE872 out of FE8B3B2D).** The same-file same-name shadowing
-  correctness gap (`find_function_id` returns FIRST match) is a special case the
-  namespace feature would subsume, but it can and should be fixed independently
-  and sooner. Split into standalone bug **FF7DE872** so it is NOT gated behind
-  the namespace deliberation.
+  correctness gap (`find_function_id` returns FIRST match) is an **independent**
+  direct-edge / source-order fix, **not** a special case the namespace feature
+  subsumes: same-file bare calls resolve on the direct-edge path
+  (`code_graph.rs:896-908`) before canonical post-processing, and the canonical
+  index fails closed on duplicate `canonical_path` (`cozo_queries.rs:1021-1025`)
+  so it cannot apply shadowing semantics. Split into standalone bug **FF7DE872**
+  so it can be fixed independently and sooner, on its own code path, NOT gated
+  behind the namespace deliberation.
 - **Harvest source reconciled.** Stash **CD1EAE09** (the 094-F harvest source,
   previously "IMPLEMENTATION DEFERRED / planning-only") was updated to reflect
   the shipped outcome and archived (DB state `removed`).

@@ -91,10 +91,19 @@ This layers on top of 094-F's U3 language-scoping; it does not replace it.
 ## Relationship to the Same-File Shadowing Bug (FF7DE872)
 
 The same-file same-name shadowing correctness bug — `find_function_id`
-(`src/services/code_graph.rs:2037`) returns the FIRST match by name — is a
-special case this feature would subsume. It was deliberately **split out** to
-bug **FF7DE872** so it can be fixed independently and sooner, and is **not**
-gated behind this deliberation.
+(`src/services/code_graph.rs:2037`) returns the FIRST match by name — is an
+**independent** direct-edge / source-order fix, **not** a special case this
+feature subsumes. Same-file bare calls resolve via `find_function_id` on the
+**direct-edge path** (`code_graph.rs:896-908` creates the edge directly when
+both caller and callee resolve in-file) *before* any canonical/singleton
+post-processing; only callee-unresolved (cross-file) calls are staged for the
+post-pass this feature extends. And the canonical index preserves duplicate
+`id`s and **fails closed** on ambiguous `canonical_path`
+(`cozo_queries.rs:1021-1025`) — it cannot apply shadowing / last-wins semantics.
+So this namespace feature (which only disambiguates cross-file/cross-module
+*staged* calls) would **not** resolve FF7DE872. It was deliberately **split
+out** to bug **FF7DE872** so it can be fixed independently and sooner, on its own
+code path, and is **not** gated behind this deliberation.
 
 ## Sequencing
 

@@ -66,9 +66,16 @@ same-name, same-file definition; it is simply the *shadowed* one.
 
 ## Resolution (deferred — tracked as bug FF7DE872)
 
-Not fixed in 094-F. Split out of the namespace-resolution deliberation
-(FE8B3B2D) so it can be fixed **independently and sooner**, NOT gated behind
-that larger feature (which would subsume it as a special case). Candidate fixes:
+Not fixed in 094-F. This is an **independent** fix on the **direct-edge path**,
+**not** a special case the FE8B3B2D namespace feature subsumes: same-file bare
+calls resolve via `find_function_id` and get a direct edge
+(`code_graph.rs:896-908`) *before* any canonical/singleton post-processing, and
+the canonical index fails closed on duplicate `canonical_path`
+(`cozo_queries.rs:1021-1025`) — so the namespace feature (which only
+disambiguates cross-file/cross-module *staged* calls) can never apply the
+source-order / last-wins semantics this bug needs. Split out of the
+namespace-resolution deliberation (FE8B3B2D) so it can be fixed **independently
+and sooner**, on its own code path. Candidate fixes:
 
 - **Fail closed** on `>1` same-file same-name candidate (mirror the cross-file
   singleton post-pass ambiguity handling), or
