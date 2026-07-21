@@ -167,8 +167,12 @@ graph. Known limitations:
 * **Builtin blocklist.** A conservative blocklist (for example `print`, `len`,
   `str`) suppresses common-builtin noise.
 * **Dynamism lowers precision.** Python's runtime dispatch and rebinding mean
-  edges are heuristic and lower-precision than Rust; existing indexes gain Python
-  edges only after a re-index (`engram sync` / `index_workspace`).
+  edges are heuristic and lower-precision than Rust.
+* **Forced re-index for existing files.** `engram sync` and a non-forced
+  `index_workspace` skip unchanged files by content hash, so files already
+  indexed before this capability landed will not acquire Python call edges on a
+  normal sync. Pick them up with a forced full reparse (`engram index` or
+  `engram sync --full`).
 
 ## Module boundaries
 
