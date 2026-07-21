@@ -18,13 +18,19 @@ plus the language-scoping hardening of the shared cross-file singleton
 resolver. Evidence gathered from the merged tree on `main` at
 `5f18b79`.
 
+> **Operational closure** for this feature is recorded separately in
+> [`docs/closure/2026-07-20-094-F-operational-closure.md`](./2026-07-20-094-F-operational-closure.md)
+> (runtime-verification outcome, SLIs, rollback trigger/procedure, and
+> observation window). This compound-refresh report captures durable *learnings*
+> only and is **not** a substitute for that operational-closure record.
+
 ## New Entries Created (mode=apply)
 
 | File | Category | Learning |
 |---|---|---|
 | `best-practices/python-bare-call-edge-extraction-body-scoped-2026-07-20.md` | best-practices | Only-Rust-emitted-Calls baseline; Python bare-call extraction must walk the `body` field only, stop at nested callable/class scopes (inner-fn calls omitted), and drop attribute/method + subscript/chained calls fail-closed (013-D). |
 | `best-practices/language-scoped-singleton-resolver-filter-before-count-2026-07-20.md` | best-practices | Cross-file singleton resolver must filter candidates by the caller's language BEFORE the exactly-one check; pinned by a discriminating mixed-language positive test. |
-| `workflow-issues/new-extraction-logic-needs-forced-reindex-2026-07-20.md` | workflow-issues | Hash-skip + full-index-only post-pass mean existing unchanged `.py` files need `engram index` / `engram sync --full` to acquire new edge types. |
+| `workflow-issues/new-extraction-logic-needs-forced-reindex-2026-07-20.md` | workflow-issues | Content-hash skip (plain `sync`, `index`, and `sync --full` all pass force=false) + full-index-only post-pass mean existing unchanged `.py` files need a forced reindex — `engram sync --force` (or `engram index --force`) — to acquire new edge types. |
 | `bugs/same-file-same-name-shadowing-first-match-wrong-edge-2026-07-20.md` | bugs | `find_function_id` returns FIRST name match → same-file same-name shadowing binds a wrong (shadowed) target; known issue, tracked as bug FF7DE872. |
 
 ## Entries Reviewed for Overlap (classification: keep)
