@@ -259,3 +259,36 @@ async fn ambiguous_name_contributes_no_edge() {
         "no singleton edge may resolve to an ambiguous `dup` definition; got {singletons:?}"
     );
 }
+
+// 094.003-T (U3 Rust-path regression): language-scoping the cross-file singleton
+// resolver is a NO-OP for the current Rust-only staged population. Re-running the
+// pure-Rust fixture must still produce EXACTLY the ground-truth singleton manifest
+// — same-language == Rust, so no candidate is filtered out and none is newly
+// admitted. Guards specifically against the language-scope change (join to
+// file_node.language) regressing existing Rust singleton resolution.
+#[test]
+async fn rust_singleton_resolution_unchanged_under_language_scope() {
+    let (_tmp, q) = index_fixture().await;
+    let names = name_to_ids(&q).await;
+
+    let expected: HashSet<(String, String)> = EXPECTED_SINGLETONS
+        .iter()
+        .map(|(caller, callee)| {
+            let from = names.get(*caller).expect("caller must be indexed")[0].clone();
+            let to = names.get(*callee).expect("callee must be indexed")[0].clone();
+            (from, to)
+        })
+        .collect();
+
+    let actual: HashSet<(String, String)> = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singletons")
+        .into_iter()
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "Rust singleton resolution must be unchanged under same-language scoping"
+    );
+}

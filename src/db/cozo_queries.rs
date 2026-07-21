@@ -2165,27 +2165,58 @@ stale[from, to] :=
     /// created. Callers surface `resolved` via `IndexResult.edges_created`.
     ///
     /// Revalidating, but non-destructive: for each staged call whose callee name
-    /// resolves to exactly one function the singleton edge is upserted; for a
-    /// staged call whose name resolves to zero or to two-or-more functions, any
-    /// singleton previously resolved from that caller for that name is retracted
-    /// (targeted revalidation), so a call that became ambiguous — or lost its
-    /// unique target — does not leave a stale edge. Retraction is scoped to
+    /// resolves to exactly one **same-language** function the singleton edge is
+    /// upserted; for a staged call whose name resolves to zero or to
+    /// two-or-more same-language functions, any singleton previously resolved
+    /// from that caller for that name is retracted (targeted revalidation), so a
+    /// call that became ambiguous — or lost its unique target — does not leave a
+    /// stale edge. Candidates are scoped to the caller file's language (joining
+    /// `function_meta` to `file_node.language`), so a bare call can never
+    /// mis-bind to a lone same-named definition in another language (013-D
+    /// no-false-edge invariant, 082-F target-correctness gate); this is a no-op
+    /// for the current Rust-only staged population. Retraction is scoped to
     /// currently-staged callers only, so singleton edges whose staging was not
     /// repopulated (e.g. after JSONL rehydration or a fresh upgrade, where edges
     /// are restored but `staged_call` rows are not) are preserved rather than
     /// destroyed. `direct` (in-file) edges are never touched.
     pub async fn reresolve_calls_edges(&self) -> Result<ReresolveResult, EngramError> {
-        // Workspace-global name -> [id] index (one round-trip).
-        let script = r#"?[name, id] := *function_meta { id, name }"#;
+        // Workspace-global, LANGUAGE-SCOPED candidate index: name -> [(id,
+        // language)]. Joining function_meta to its owning file's language lets
+        // the singleton resolver treat "exactly one definition" as "exactly one
+        // SAME-LANGUAGE definition" (filtered below), so a staged bare call can
+        // never mis-bind to a lone same-named definition in another language.
+        // This upholds the 013-D no-false-edge invariant and the 082-F
+        // target-correctness gate. It is a no-op for the current Rust-only
+        // staged population, where every candidate is already Rust.
+        let script = r#"
+?[name, id, language] :=
+    *function_meta { id, name, file_path },
+    *file_node { path: file_path, language }
+"#;
         let r = self
             .db
             .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
             .map_err(|e| map_db_err(e.to_string()))?;
-        let mut name_index: HashMap<String, Vec<String>> = HashMap::new();
+        let mut name_index: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for row in &r.rows {
             let name = extract_str(row, 0);
             let id = extract_str(row, 1);
-            name_index.entry(name).or_default().push(id);
+            let language = extract_str(row, 2);
+            name_index.entry(name).or_default().push((id, language));
+        }
+
+        // Caller file -> language, so each staged call's caller language is
+        // known (derived from the file the call site lives in).
+        let lang_script = r#"?[path, language] := *file_node { path, language }"#;
+        let lr = self
+            .db
+            .run_script(lang_script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let mut file_language: HashMap<String, String> = HashMap::new();
+        for row in &lr.rows {
+            let path = extract_str(row, 0);
+            let language = extract_str(row, 1);
+            file_language.insert(path, language);
         }
 
         let staged: Vec<_> = self
@@ -2221,32 +2252,37 @@ stale[from, to] :=
         );
         let mut resolved = 0usize;
         for call in &staged {
-            // Resolve solely when a single function carries the callee name. A
-            // zero or ambiguous (2+) match retracts any stale singleton this
-            // caller previously had for the name, so revalidation stays targeted
-            // and never touches singletons whose staging was not repopulated.
-            match name_index.get(&call.callee_name) {
-                Some(ids) if ids.len() == 1 => {
-                    self.create_calls_edge_with_resolution(
-                        &call.caller_id,
-                        &ids[0],
-                        "calls_resolved_singleton",
-                    )
-                    .await?;
-                    // Count only the first time this (caller, target) pair is
-                    // seen as a singleton — pre-existing edges and within-run
-                    // duplicates are excluded.
-                    if existing.insert((call.caller_id.clone(), ids[0].clone())) {
-                        resolved += 1;
-                    }
+            // Resolve solely when a single SAME-LANGUAGE function carries the
+            // callee name. The caller's language is derived from the file the
+            // call site lives in; a missing caller-file language fails closed
+            // (no same-language candidate -> retract). A zero or ambiguous (2+)
+            // same-language match retracts any stale singleton this caller
+            // previously had for the name, so revalidation stays targeted and
+            // never touches singletons whose staging was not repopulated.
+            let caller_language = file_language.get(&call.source_file);
+            let same_language: Vec<&String> = name_index
+                .get(&call.callee_name)
+                .into_iter()
+                .flatten()
+                .filter(|(_, language)| Some(language) == caller_language)
+                .map(|(id, _)| id)
+                .collect();
+            if same_language.len() == 1 {
+                self.create_calls_edge_with_resolution(
+                    &call.caller_id,
+                    same_language[0].as_str(),
+                    "calls_resolved_singleton",
+                )
+                .await?;
+                // Count only the first time this (caller, target) pair is
+                // seen as a singleton — pre-existing edges and within-run
+                // duplicates are excluded.
+                if existing.insert((call.caller_id.clone(), same_language[0].clone())) {
+                    resolved += 1;
                 }
-                _ => {
-                    self.retract_singleton_edge_from_caller_by_name(
-                        &call.caller_id,
-                        &call.callee_name,
-                    )
+            } else {
+                self.retract_singleton_edge_from_caller_by_name(&call.caller_id, &call.callee_name)
                     .await?;
-                }
             }
         }
         Ok(ReresolveResult { resolved, lookups })

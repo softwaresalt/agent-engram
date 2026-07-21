@@ -123,6 +123,57 @@ The main read surfaces fall into three groups:
 Default builds include the embeddings feature, so semantic search is available
 unless you choose a non-default build.
 
+## Code call graph
+
+The code graph includes `calls_edge` relationships between functions, surfaced
+through `map_code`, `impact_analysis`, and `query_graph`. A call is recorded as a
+**direct** edge when the caller and callee live in the same file, and is resolved
+in a cross-file post-pass when the called name matches an unambiguous
+same-language definition (a `calls_resolved_singleton`).
+
+Call-edge extraction currently covers Rust and, as a v1 pilot, Python. For
+Python, extraction promotes **bare (unqualified) function calls** — for example
+`helper()` inside a top-level `def` — to call edges. Cross-file resolution is
+**language-scoped**: a Python bare call only resolves to a Python definition and
+can never bind to a same-named Rust (or other-language) symbol. This upholds the
+no-false-edge invariant and the target-correctness gate — the resolver filters
+candidates to the caller's own language *before* the unambiguous-singleton check,
+so a Python `parse()` will not mis-bind to a Rust `fn parse`. The filter is a
+no-op for the existing Rust-only staged population, and Rust singleton
+resolution is unchanged.
+
+### Python call-graph v1 limitations
+
+The Python pilot is intentionally narrow and best-effort; it is not a sound call
+graph. Known limitations:
+
+* **Bare-call-only promotion.** Only unqualified calls are promoted. Attribute
+  and method calls (`obj.method()`, `self.helper()`) are detected but neither
+  promoted nor staged — they fail closed and produce no edge (nested bare calls
+  in their arguments are still captured).
+* **Class method bodies are not captured.** Methods are not yet indexed as
+  symbols, so calls inside class methods are out of scope.
+* **Decorated top-level defs are skipped.** A `@decorator`-wrapped top-level
+  function (`decorated_definition`) is a named v1 non-goal and is not extracted.
+* **Top-level functions only; inner-function calls omitted.** Extraction runs
+  for root-level `def`s and stops descending at nested `function_definition`,
+  `lambda`, and `class_definition` boundaries. Calls made *inside* a nested or
+  inner function are therefore **omitted entirely** — they are neither
+  attributed to that inner function nor to the enclosing one. Calls in parameter
+  defaults and annotations are also excluded, since they run at definition time
+  rather than on call.
+* **Chained/subscript calls skipped.** Forms like `a()()` and `d[key]()` are not
+  modeled in v1.
+* **Builtin blocklist.** A conservative blocklist (for example `print`, `len`,
+  `str`) suppresses common-builtin noise.
+* **Dynamism lowers precision.** Python's runtime dispatch and rebinding mean
+  edges are heuristic and lower-precision than Rust.
+* **Forced re-index for existing files.** `engram sync` and a non-forced
+  `index_workspace` skip unchanged files by content hash, so files already
+  indexed before this capability landed will not acquire Python call edges on a
+  normal sync. Pick them up with a forced full reparse (`engram index` or
+  `engram sync --full`).
+
 ## Module boundaries
 
 | Area | Responsibility |

@@ -55,6 +55,9 @@ fn extract_top_level(
                     edges.push(ExtractedEdge::Defines {
                         symbol_name: func.name.clone(),
                     });
+                    // Attribute call edges only to the owning top-level function
+                    // (mirrors rust.rs placement after the Defines push).
+                    extract_calls_from_body(child, source, &func.name, edges);
                     symbols.push(ExtractedSymbol::Function(func));
                 }
             }
@@ -174,4 +177,153 @@ fn extract_docstring(node: Node<'_>, source: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Builtin/idiomatic Python callees that add graph noise without navigational
+/// value. Mirrors the intent of `rust.rs`'s `CALL_BLOCKLIST`. Conservative by
+/// design; tuned via integration/eval evidence rather than assumption.
+const PYTHON_CALL_BLOCKLIST: &[&str] = &[
+    "print",
+    "len",
+    "str",
+    "int",
+    "float",
+    "bool",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "range",
+    "super",
+    "isinstance",
+    "issubclass",
+    "getattr",
+    "setattr",
+    "hasattr",
+    "enumerate",
+    "zip",
+    "map",
+    "filter",
+    "open",
+    "type",
+    "repr",
+    "format",
+    "sorted",
+    "sum",
+    "min",
+    "max",
+    "abs",
+    "next",
+    "iter",
+    "id",
+    "vars",
+    "dir",
+];
+
+/// A resolved Python call site. `is_qualified` is never set for Python (no `::`
+/// path form), so no Rust-style `scoped_*` helpers are needed.
+struct ResolvedCallName {
+    callee: String,
+    is_method: bool,
+    is_qualified: bool,
+    raw_qualifier: String,
+    qualifier_kind: String,
+}
+
+/// DFS over a top-level function's BODY emitting `Calls` edges, stopping at
+/// nested `function_definition`, `lambda`, and `class_definition` boundaries so
+/// calls are attributed only to their owning top-level function.
+///
+/// The walk is seeded with the children of the function's `body` field only.
+/// Parameter default values, parameter/return annotations, and decorators are
+/// intentionally excluded: their calls (e.g. `def f(x=build_default()): ...`)
+/// run at DEFINITION time in the enclosing scope, not when the function
+/// executes, so attributing them to this function would emit a false edge
+/// (013-D no-false-edge invariant). A function with no `body` field yields no
+/// edges (fails closed, panic-free).
+fn extract_calls_from_body(
+    node: Node<'_>,
+    source: &str,
+    caller_name: &str,
+    edges: &mut Vec<ExtractedEdge>,
+) {
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
+    let mut stack: Vec<Node<'_>> = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        stack.push(child);
+    }
+    while let Some(current) = stack.pop() {
+        // Do not descend into nested callable/class scopes: their calls belong
+        // to that inner scope, not the owning top-level function.
+        if matches!(
+            current.kind(),
+            "function_definition" | "lambda" | "class_definition"
+        ) {
+            continue;
+        }
+        if current.kind() == "call" {
+            if let Some(call) = resolve_call_name(current, source) {
+                edges.push(ExtractedEdge::Calls {
+                    caller: caller_name.to_owned(),
+                    callee: call.callee,
+                    is_method: call.is_method,
+                    is_qualified: call.is_qualified,
+                    raw_qualifier: call.raw_qualifier,
+                    qualifier_kind: call.qualifier_kind,
+                });
+            }
+        }
+        let mut child_cursor = current.walk();
+        for child in current.children(&mut child_cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+/// Classify a Python `call` node's `function` child.
+///
+/// * `identifier` (`foo()`) → bare call, promoted (`is_method:false`).
+/// * `attribute` (`obj.foo()`, `self.bar()`) → marked `is_method:true` with an
+///   EMPTY `raw_qualifier`, so `should_stage_provenance_call(true, false, "")`
+///   returns `false` and the consumer drops it (never promoted, never staged —
+///   fails closed, closing the `self`-receiver leak). The callee is the
+///   `attribute` field text (NOT Rust's `field`); the receiver `object` is
+///   intentionally not copied.
+/// * any other kind (`subscript` `d[k]()`, chained `a().b()` whose function is a
+///   call) → skipped in v1 (`None`), forward-compatible and panic-free.
+///
+/// Blocklisted callees resolve to `None`.
+fn resolve_call_name(node: Node<'_>, source: &str) -> Option<ResolvedCallName> {
+    let function_node = node.child_by_field_name("function")?;
+    let call = match function_node.kind() {
+        "identifier" => ResolvedCallName {
+            callee: super::node_text(function_node, source),
+            is_method: false,
+            is_qualified: false,
+            raw_qualifier: String::new(),
+            qualifier_kind: String::new(),
+        },
+        "attribute" => {
+            let callee = function_node
+                .child_by_field_name("attribute")
+                .map(|n| super::node_text(n, source))?;
+            ResolvedCallName {
+                callee,
+                is_method: true,
+                is_qualified: false,
+                // Empty on purpose: fails closed at should_stage_provenance_call.
+                raw_qualifier: String::new(),
+                qualifier_kind: "method".to_owned(),
+            }
+        }
+        _ => return None,
+    };
+    if PYTHON_CALL_BLOCKLIST.contains(&call.callee.as_str()) {
+        None
+    } else {
+        Some(call)
+    }
 }
