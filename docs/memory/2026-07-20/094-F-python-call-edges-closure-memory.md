@@ -101,6 +101,8 @@ successfully. No audit-log rewrite; no `--force-gates` needed.
 - **Per-language rollout** (TS/Go/C#/Node): each new language inherits the
   language-scoped singleton resolver; re-run the mixed-language ordering proof
   when adding each.
-- **Operational reminder:** existing `.py` files need a forced reindex
-  (`engram index` / `engram sync --full`) to acquire the new edges — a plain
-  incremental `engram sync` hash-skips unchanged files.
+- **Operational reminder:** existing `.py` files need a **forced** reindex
+  (`engram sync --force`, or equivalently `engram index --force`) to acquire the
+  new edges. Plain `engram sync`, `engram index`, and `engram sync --full` all
+  pass `force=false` and hash-skip unchanged files (a no-op for backfill); only
+  `--force` sends `{"force": true}` and re-parses them.

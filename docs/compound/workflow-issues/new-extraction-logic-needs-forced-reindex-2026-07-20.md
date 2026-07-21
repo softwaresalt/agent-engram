@@ -1,6 +1,6 @@
 ---
 title: "New edge-extraction logic needs a forced reindex — hash-skip leaves unchanged files stale"
-description: "engram sync and non-forced index skip files whose content hash is unchanged, and the cross-file singleton resolution post-pass runs on full/--force index only; after shipping new edge-extraction logic, existing unchanged .py files do NOT acquire the new edges until engram index / engram sync --full"
+description: "engram sync, engram index, and engram sync --full all pass force=false and hash-skip files whose content is unchanged (only --force sends {force:true} to bypass the content-hash skip); after shipping new edge-extraction logic, existing unchanged .py files do NOT acquire the new edges until a forced reindex: engram sync --force (equivalently engram index --force)"
 problem_type: "stale_data"
 category: "workflow-issues"
 component: "src/services/code_graph.rs"
@@ -14,7 +14,8 @@ feature: "094-F"
 shipment: "089-S"
 citations:
   - "https://github.com/softwaresalt/agent-engram/pull/277"
-  - "src/services/code_graph.rs (cross-file singleton post-pass: 'Full / --force index only — NOT the incremental sync path' ~L985-1002)"
+  - "src/services/code_graph.rs (cross-file singleton post-pass: full-scan index path only — NOT the incremental sync path ~L985-1002)"
+  - "src/cli/commands/indexing.rs (run_sync/run_index -> force_params: only --force sends {\"force\":true}; plain sync, index, and sync --full pass force=false, ~L10-105)"
   - "docs/compound/sync-workspace-record-file-hash-required-2026-05-08.md"
   - "docs/compound/hydrate-code-graph-fast-path-already-indexed-2026-05-08.md"
 tags:
@@ -41,32 +42,40 @@ binary knows how to extract them.
 
 Two compounding freshness behaviors:
 
-1. **Content-hash skip.** `engram sync` (and a non-forced `engram index`) skip
-   files whose content hash matches the recorded hash — an intentional
-   performance optimization. But the skip is keyed on *file content*, not on the
-   *extractor / grammar version*. When the extractor gains new edge types, an
-   unchanged source file is skipped and keeps its old, edge-less graph. The file
-   "hasn't changed," so it is never re-parsed.
+1. **Content-hash skip.** `engram sync`, `engram index`, and even
+   `engram sync --full` all pass `force=false` and skip files whose content hash
+   matches the recorded hash — an intentional performance optimization. Only
+   `--force` sends `{"force": true}` to bypass it (`src/cli/commands/indexing.rs`
+   `run_sync` / `run_index` → `force_params`). The skip is keyed on *file
+   content*, not on the *extractor / grammar version*. When the extractor gains
+   new edge types, an unchanged source file is skipped and keeps its old,
+   edge-less graph. The file "hasn't changed," so it is never re-parsed —
+   regardless of `--full`.
 
 2. **Full-index-only post-pass.** The cross-file singleton resolution post-pass
    that turns staged bare calls into resolved `calls_resolved_singleton` edges
-   runs on **full / `--force` index only — NOT the incremental sync path**
-   (performance gate; `src/services/code_graph.rs`). Even if a file were
-   re-parsed incrementally, cross-file resolution would not complete without a
-   full pass.
+   runs on the **full-scan index path — NOT the incremental `sync_workspace`
+   path** (performance gate; `src/services/code_graph.rs`). `engram index` and
+   `engram sync --full` do take the full-scan path (so the post-pass runs), but
+   because of the content-hash skip above they re-parse nothing for unchanged
+   files — leaving no new bare calls for the post-pass to resolve. `--force` is
+   what re-parses unchanged files so the post-pass has fresh edges to work with.
 
 ## Resolution / Operational Guidance
 
-After upgrading engram to a build with new edge-extraction logic, force a full
-re-parse so existing unchanged files acquire the new edges:
+After upgrading engram to a build with new edge-extraction logic, run a
+**forced** reindex so existing unchanged files are re-parsed and acquire the new
+edges:
 
 ```bash
-engram index          # forced reindex of the workspace, or
-engram sync --full    # full sync (runs the cross-file singleton post-pass)
+engram sync --force    # bypasses the content-hash skip; re-parses ALL files, or
+engram index --force   # equivalent (index is the full-scan alias; add --force)
 ```
 
-A plain `engram sync` (incremental) is **not** sufficient to backfill new edge
-types onto files that have not otherwise changed.
+Neither a plain `engram sync` (incremental) NOR `engram index` / `engram sync
+--full` is sufficient: all three pass `force=false`, so the content-hash skip
+leaves already-indexed files untouched — a no-op for backfill. Only `--force`
+sends `{"force": true}` and re-parses unchanged files.
 
 ## Prevention
 
