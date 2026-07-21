@@ -230,21 +230,29 @@ struct ResolvedCallName {
     qualifier_kind: String,
 }
 
-/// DFS over a top-level function's subtree emitting `Calls` edges, stopping at
+/// DFS over a top-level function's BODY emitting `Calls` edges, stopping at
 /// nested `function_definition`, `lambda`, and `class_definition` boundaries so
 /// calls are attributed only to their owning top-level function.
 ///
-/// The walk is seeded with the owning function's direct children so the owning
-/// `function_definition` node itself is not treated as a nested-scope boundary.
+/// The walk is seeded with the children of the function's `body` field only.
+/// Parameter default values, parameter/return annotations, and decorators are
+/// intentionally excluded: their calls (e.g. `def f(x=build_default()): ...`)
+/// run at DEFINITION time in the enclosing scope, not when the function
+/// executes, so attributing them to this function would emit a false edge
+/// (013-D no-false-edge invariant). A function with no `body` field yields no
+/// edges (fails closed, panic-free).
 fn extract_calls_from_body(
     node: Node<'_>,
     source: &str,
     caller_name: &str,
     edges: &mut Vec<ExtractedEdge>,
 ) {
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
     let mut stack: Vec<Node<'_>> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
         stack.push(child);
     }
     while let Some(current) = stack.pop() {

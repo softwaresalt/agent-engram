@@ -155,9 +155,13 @@ graph. Known limitations:
   symbols, so calls inside class methods are out of scope.
 * **Decorated top-level defs are skipped.** A `@decorator`-wrapped top-level
   function (`decorated_definition`) is a named v1 non-goal and is not extracted.
-* **Nested-function scope only.** Calls are attributed to their owning function;
-  extraction stops descending at nested `function_definition`, `lambda`, and
-  `class_definition` boundaries.
+* **Top-level functions only; inner-function calls omitted.** Extraction runs
+  for root-level `def`s and stops descending at nested `function_definition`,
+  `lambda`, and `class_definition` boundaries. Calls made *inside* a nested or
+  inner function are therefore **omitted entirely** — they are neither
+  attributed to that inner function nor to the enclosing one. Calls in parameter
+  defaults and annotations are also excluded, since they run at definition time
+  rather than on call.
 * **Chained/subscript calls skipped.** Forms like `a()()` and `d[key]()` are not
   modeled in v1.
 * **Builtin blocklist.** A conservative blocklist (for example `print`, `len`,

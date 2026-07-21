@@ -1750,3 +1750,29 @@ fn python_degrades_gracefully_on_unmodeled_call_shapes() {
         "chained-call segment b must not be a spurious bare edge; got {calls:?}"
     );
 }
+
+/// Scenario 7 — calls in parameter defaults / annotations must NOT be
+/// attributed to the function. A default value runs at DEFINITION time in the
+/// enclosing scope, so `def f(x=build_default()): ...` must not emit an
+/// `f -> build_default` edge (013-D no-false-edge invariant). The body call is
+/// still captured.
+#[test]
+fn python_ignores_calls_in_parameter_defaults() {
+    let source = "def build_default():\n    return 1\n\n\ndef helper():\n    return 2\n\n\ndef f(x=build_default()):\n    helper()\n";
+    let calls = python_call_edges(source);
+    assert!(
+        !calls
+            .iter()
+            .any(|(caller, callee, ..)| caller == "f" && callee == "build_default"),
+        "a call in a parameter default must NOT create f -> build_default; got {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(caller, callee, is_method, is_qualified, _)| caller == "f"
+                && callee == "helper"
+                && !*is_method
+                && !*is_qualified),
+        "the body call f -> helper must still be captured; got {calls:?}"
+    );
+}
