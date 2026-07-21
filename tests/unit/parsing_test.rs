@@ -1566,3 +1566,187 @@ fn test_sql_schema_qualified_create() {
         "Class symbol name must be 'public.users' for schema-qualified CREATE TABLE; got: {classes:?}"
     );
 }
+
+// ── 094-F: Python bare-call extraction (U1 RED harness) ──────────────────────
+//
+// These tests define the target behavior for Python `calls_edge` extraction:
+// bare-call-only promotion, attribute calls marked (is_method) but never
+// promoted and never staged, DFS scope boundaries at nested callables/classes,
+// a builtin blocklist, and graceful degradation on unmodeled call shapes. They
+// FAIL until Unit 2 implements `extract_calls_from_body` / `resolve_call_name`
+// in `src/services/parsing/python.rs`. Authored via the already-public
+// `parse_source(_, Language::Python)` surface — no new `pub` wrapper.
+
+/// Collect `(caller, callee, is_method, is_qualified, raw_qualifier)` tuples from
+/// a Python source's `Calls` edges via the public parser surface.
+fn python_call_edges(source: &str) -> Vec<(String, String, bool, bool, String)> {
+    let result = parse_source(source, Language::Python).expect("Python parse must succeed");
+    result
+        .edges
+        .iter()
+        .filter_map(|e| match e {
+            ExtractedEdge::Calls {
+                caller,
+                callee,
+                is_method,
+                is_qualified,
+                raw_qualifier,
+                ..
+            } => Some((
+                caller.clone(),
+                callee.clone(),
+                *is_method,
+                *is_qualified,
+                raw_qualifier.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Scenario 1 — positive bare calls are promoted (`is_method:false`).
+#[test]
+fn python_extracts_bare_call_edges() {
+    let source = "def orchestrate():\n    step_one()\n    step_two()\n\ndef step_one():\n    pass\n\ndef step_two():\n    pass\n";
+    let calls = python_call_edges(source);
+    assert!(
+        calls.iter().any(
+            |(caller, callee, is_method, is_qualified, _)| caller == "orchestrate"
+                && callee == "step_one"
+                && !*is_method
+                && !*is_qualified
+        ),
+        "expected bare Calls(orchestrate->step_one, is_method:false); got {calls:?}"
+    );
+    assert!(
+        calls.iter().any(
+            |(caller, callee, is_method, is_qualified, _)| caller == "orchestrate"
+                && callee == "step_two"
+                && !*is_method
+                && !*is_qualified
+        ),
+        "expected bare Calls(orchestrate->step_two, is_method:false); got {calls:?}"
+    );
+}
+
+/// Scenario 2 — attribute / method calls are marked (`is_method:true`) but never
+/// promoted to a bare edge and never staged (empty `raw_qualifier` so
+/// `should_stage_provenance_call(true, false, "")` fails closed). The positive
+/// `is_method:true` assertion makes the negative non-vacuous: a silent-drop
+/// mapping error (wrong `attribute`/`object` field names) fails loudly.
+#[test]
+fn python_attribute_calls_marked_not_promoted_not_staged() {
+    let source = "def f():\n    obj.save()\n\ndef g():\n    self.foo()\n";
+    let calls = python_call_edges(source);
+
+    // Strong count: ZERO promotable (bare) edges for the attribute callees.
+    let promotable = calls
+        .iter()
+        .filter(|(_, callee, is_method, is_qualified, _)| {
+            (callee == "save" || callee == "foo") && !*is_method && !*is_qualified
+        })
+        .count();
+    assert_eq!(
+        promotable, 0,
+        "attribute calls must NOT be promoted to bare Calls edges; got {calls:?}"
+    );
+
+    // Non-vacuous positive: the attribute call IS captured, is_method:true, with
+    // an EMPTY raw_qualifier (fails closed at should_stage_provenance_call).
+    let save = calls
+        .iter()
+        .find(|(_, callee, ..)| callee == "save")
+        .expect("obj.save() must be captured as an is_method attribute call");
+    assert!(
+        save.2,
+        "obj.save() must be marked is_method:true; got {save:?}"
+    );
+    assert!(
+        save.4.is_empty(),
+        "obj.save() raw_qualifier must be EMPTY so it fails closed; got {save:?}"
+    );
+    let foo = calls
+        .iter()
+        .find(|(_, callee, ..)| callee == "foo")
+        .expect("self.foo() must be captured as an is_method attribute call");
+    assert!(
+        foo.2,
+        "self.foo() must be marked is_method:true; got {foo:?}"
+    );
+    assert!(
+        foo.4.is_empty(),
+        "self.foo() raw_qualifier must be EMPTY so it fails closed; got {foo:?}"
+    );
+}
+
+/// Scenario 3 — DFS still recurses into an attribute call's arguments, so a
+/// nested bare call inside `obj.save(compute())` is captured.
+#[test]
+fn python_recurses_into_attribute_call_arguments() {
+    let source = "def f():\n    obj.save(compute())\n";
+    let calls = python_call_edges(source);
+    assert!(
+        calls
+            .iter()
+            .any(|(caller, callee, is_method, is_qualified, _)| caller == "f"
+                && callee == "compute"
+                && !*is_method
+                && !*is_qualified),
+        "nested bare call compute() inside obj.save(...) must be captured; got {calls:?}"
+    );
+}
+
+/// Scenario 4 — builtin no-ops are dropped by the blocklist.
+#[test]
+fn skips_builtin_calls_in_call_discovery() {
+    let source = "def f():\n    print(x)\n    real_call()\n";
+    let calls = python_call_edges(source);
+    let callees: Vec<&str> = calls.iter().map(|(_, c, ..)| c.as_str()).collect();
+    assert!(
+        callees.contains(&"real_call"),
+        "real_call() must be captured; got {callees:?}"
+    );
+    assert!(
+        !callees.contains(&"print"),
+        "builtin print() must be blocklisted; got {callees:?}"
+    );
+}
+
+/// Scenario 5 — calls are attributed only to their owning top-level function;
+/// DFS stops at nested `function_definition` boundaries.
+#[test]
+fn python_attributes_calls_to_owning_scope_only() {
+    let source = "def outer():\n    def inner():\n        leaf()\n    top()\n";
+    let calls = python_call_edges(source);
+    assert!(
+        calls
+            .iter()
+            .any(|(caller, callee, ..)| caller == "outer" && callee == "top"),
+        "top() must be attributed to outer(); got {calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(caller, callee, ..)| caller == "outer" && callee == "leaf"),
+        "leaf() inside nested inner() must NOT be attributed to outer(); got {calls:?}"
+    );
+}
+
+/// Scenario 6 — unmodeled call shapes (subscript-call `d["k"]()`, chained-call
+/// `a().b()`) degrade gracefully: no panic and no spurious bare edge for the
+/// unmodeled callee `b` (the chained attribute segment).
+#[test]
+fn python_degrades_gracefully_on_unmodeled_call_shapes() {
+    let source = "def f():\n    d[\"k\"]()\n    a().b()\n";
+    // Must not panic / error.
+    let calls = python_call_edges(source);
+    // The chained `.b()` segment must never become a bare promotable edge.
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, callee, is_method, is_qualified, _)| callee == "b"
+                && !*is_method
+                && !*is_qualified),
+        "chained-call segment b must not be a spurious bare edge; got {calls:?}"
+    );
+}
