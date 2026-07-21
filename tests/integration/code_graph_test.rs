@@ -599,3 +599,159 @@ async fn duplicate_canonical_path_rows_are_not_collapsed() {
         "two rows sharing a canonical_path must not collapse to one (fail-closed multiplicity)"
     );
 }
+
+// ── 094-F (U4): Python call-graph integration + adversarial acceptance ───────
+
+/// U4.1 — an intra-file Python bare call produces a `direct` `calls_edge`, and the
+/// graph traversal used by `map_code`/`impact_analysis` (`graph_neighborhood`)
+/// surfaces the caller -> callee relationship.
+#[test]
+async fn python_intra_file_bare_call_direct_edge_and_traversal() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "svc.py",
+        "def orchestrate():\n    helper()\n\n\ndef helper():\n    return 1\n",
+    );
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let orchestrate = q
+        .find_symbols_by_name("orchestrate")
+        .await
+        .expect("find orchestrate");
+    let helper = q.find_symbols_by_name("helper").await.expect("find helper");
+    assert_eq!(orchestrate.len(), 1, "orchestrate must be indexed once");
+    assert_eq!(helper.len(), 1, "helper must be indexed once");
+    let orchestrate_id = orchestrate[0].id.clone();
+    let helper_id = helper[0].id.clone();
+
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        direct
+            .iter()
+            .any(|(from, to)| from == &orchestrate_id && to == &helper_id),
+        "intra-file bare call must produce a direct calls_edge orchestrate->helper; got {direct:?}"
+    );
+
+    let bfs = q
+        .graph_neighborhood(&orchestrate_id, 2, 50)
+        .await
+        .expect("graph neighborhood");
+    assert!(
+        bfs.edges
+            .iter()
+            .any(|e| e.edge_type == "calls" && e.from == orchestrate_id && e.to == helper_id),
+        "map_code/impact_analysis traversal must include a calls edge orchestrate->helper; got {:?}",
+        bfs.edges
+    );
+    assert!(
+        bfs.neighbors.iter().any(|n| n.id == helper_id),
+        "helper must appear as a traversal neighbor of orchestrate"
+    );
+}
+
+/// U4.2 — a cross-file Python bare call resolves to the callee's EXACT id
+/// (target-identity per the 082-F acceptance gate, not mere row-existence).
+#[test]
+async fn python_cross_file_call_resolves_to_exact_target() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "def orchestrate():\n    helper()\n");
+    write_sample_file(ws, "b.py", "def helper():\n    return 1\n");
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let orchestrate = q
+        .find_symbols_by_name("orchestrate")
+        .await
+        .expect("find orchestrate");
+    let helper = q.find_symbols_by_name("helper").await.expect("find helper");
+    assert_eq!(orchestrate.len(), 1, "orchestrate must be indexed once");
+    assert_eq!(
+        helper.len(),
+        1,
+        "helper must be defined exactly once (in b.py)"
+    );
+    let orchestrate_id = orchestrate[0].id.clone();
+    let helper_id = helper[0].id.clone();
+
+    let singletons = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("singleton edges");
+    // Target-identity: the resolved edge must point to B's EXACT helper id.
+    assert!(
+        singletons.contains(&(orchestrate_id.clone(), helper_id.clone())),
+        "cross-file call must resolve to B's EXACT helper id (target-identity); got {singletons:?}"
+    );
+    // No mis-binding: every singleton originating from orchestrate targets helper.
+    assert!(
+        singletons
+            .iter()
+            .filter(|(from, _)| from == &orchestrate_id)
+            .all(|(_, to)| to == &helper_id),
+        "orchestrate must not resolve to any target other than B's helper; got {singletons:?}"
+    );
+}
+
+/// U4.3 (ADVERSARIAL) — a Python bare call `parse()` whose only workspace-global
+/// `parse` definition is a Rust `fn parse` must NOT bind to it, proving the
+/// language-scoped resolver (Unit 3) blocks cross-language mis-binding (013-D
+/// no-false-edge invariant, 082-F target-correctness gate).
+#[test]
+async fn python_bare_call_does_not_bind_to_rust_definition() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "caller.py", "def run():\n    parse()\n");
+    write_sample_file(ws, "engine.rs", "pub fn parse() {\n    let _ = 1;\n}\n");
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let run = q.find_symbols_by_name("run").await.expect("find run");
+    let parse = q.find_symbols_by_name("parse").await.expect("find parse");
+    assert_eq!(run.len(), 1, "run must be indexed once");
+    assert_eq!(
+        parse.len(),
+        1,
+        "exactly one parse (the Rust fn) must exist workspace-global"
+    );
+    let run_id = run[0].id.clone();
+    let parse_id = parse[0].id.clone();
+
+    for resolution in [
+        "direct",
+        "calls_resolved_singleton",
+        "calls_resolved_canonical",
+    ] {
+        let edges = q
+            .list_calls_edges_by_resolution(resolution)
+            .await
+            .expect("list edges");
+        assert!(
+            !edges
+                .iter()
+                .any(|(from, to)| from == &run_id && to == &parse_id),
+            "Python run() must NOT bind to the Rust parse fn via {resolution}; got {edges:?}"
+        );
+    }
+}
