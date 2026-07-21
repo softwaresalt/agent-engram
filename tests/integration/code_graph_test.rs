@@ -755,3 +755,72 @@ async fn python_bare_call_does_not_bind_to_rust_definition() {
         );
     }
 }
+
+/// U4.4 (ordering proof) — when a Python callee name is defined in BOTH Python
+/// and Rust, a Python caller must resolve to the PYTHON target. This is the
+/// mixed-language positive case: it fails unless language filtering happens
+/// BEFORE the singleton unambiguity check (a global-singleton-first ordering
+/// would see two `helper` candidates, deem them ambiguous, and create NO edge).
+#[test]
+async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_def() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "def orchestrate():\n    helper()\n");
+    write_sample_file(ws, "b.py", "def helper():\n    return 1\n");
+    write_sample_file(ws, "r.rs", "pub fn helper() {\n    let _ = 1;\n}\n");
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let orchestrate = q
+        .find_symbols_by_name("orchestrate")
+        .await
+        .expect("find orchestrate");
+    assert_eq!(orchestrate.len(), 1, "orchestrate must be indexed once");
+    let orchestrate_id = orchestrate[0].id.clone();
+
+    let helpers = q.find_symbols_by_name("helper").await.expect("find helper");
+    let py_helper = helpers
+        .iter()
+        .find(|s| s.file_path.replace('\\', "/").contains("b.py"))
+        .expect("Python helper (b.py) must be indexed");
+    let rust_helper = helpers
+        .iter()
+        .find(|s| s.file_path.replace('\\', "/").contains("r.rs"))
+        .expect("Rust helper (r.rs) must be indexed");
+    assert_ne!(
+        py_helper.id, rust_helper.id,
+        "the two same-name helpers must be distinct symbols"
+    );
+
+    let singletons = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("singleton edges");
+    // Positive: resolves to the PYTHON helper (proves filter-before-singleton).
+    assert!(
+        singletons.contains(&(orchestrate_id.clone(), py_helper.id.clone())),
+        "Python caller must resolve to the Python helper in b.py; got {singletons:?}"
+    );
+    // Negative: must never bind to the same-named Rust helper via any resolution.
+    for resolution in [
+        "direct",
+        "calls_resolved_singleton",
+        "calls_resolved_canonical",
+    ] {
+        let edges = q
+            .list_calls_edges_by_resolution(resolution)
+            .await
+            .expect("list edges");
+        assert!(
+            !edges
+                .iter()
+                .any(|(from, to)| from == &orchestrate_id && to == &rust_helper.id),
+            "Python caller must NOT bind to the Rust helper via {resolution}; got {edges:?}"
+        );
+    }
+}
