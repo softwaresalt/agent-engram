@@ -34,8 +34,9 @@ impl-plan, no harvest, no shipment created.
   relation is **directed** (source file/symbol → referenced object;
   `schema.rs:811-819`) — it just does not encode dataset read/write roles (the
   SQL extractor tags refs with a literal `source="select"/"insert"` context);
-  CTAS `from` likely dropped (top-level-only descent); Spark DDL grammar coverage
-  UNVERIFIED (can't test without compiling Rust).
+  CTAS `from` likely dropped (top-level-only descent); Spark **table**-DDL grammar
+  coverage (INSERT OVERWRITE, CTAS) UNVERIFIED (can't test without compiling Rust);
+  temp-view DDL coverage no longer gates v1 (temp-view lineage deferred — Fork F).
 - **Q2b:** PySpark lineage cannot reuse `094-F` — method/attribute calls are
   `is_method` and not promoted; needs net-new method-chain + string-literal-arg
   analyzer in `python.rs`. **Note:** literal-arg extraction alone can't link
@@ -49,25 +50,29 @@ impl-plan, no harvest, no shipment created.
   fully-qualified `catalog.schema.table` (name-only + two-part keys forbidden),
   paths by an **already-absolute** normalized URI (relative path literals like
   `"src"` fail closed — never prefix-guessed); temp views are session-scoped →
-  **not durable nodes** (no cross-cell edge). This is one **general fail-closed
-  predicate** (resolve only already-unambiguous, session-independent,
-  fully-qualified references; drop everything else), not a per-surface list.
+  **not durable nodes**, so **temp-view graph lineage (same-cell + cross-cell) is
+  out of v1 scope — deferred to Fork A**; v1 edges connect table/path datasets
+  only. This is one **general fail-closed predicate** (resolve only
+  already-unambiguous, session-independent, fully-qualified references; drop
+  everything else), not a per-surface list.
 - **Q4:** `chunk_index` preserves **source** order — NOT execution order (Jupyter
   runs cells out of order; Spark temp-view visibility follows **SparkSession**
   execution order, and session scope ≠ notebook scope) — and there is no
   notebook-scoped symbol table. `execution_count` is **not** trustworthy
-  provenance (binds neither cell source nor session identity), so cross-cell
-  temp-view lineage **fails closed and drops the graph edge** absent trusted
-  {source identity + common isolated session + order}; only **source order
-  (`chunk_index`, already persisted)** is surfaced as metadata — `execution_count`
-  is not parsed/persisted in v1 (deferred to a gated unit) (new **Fork F**). Rhymes
-  with `FF7DE872`.
+  provenance (binds neither cell source nor session identity), so **all temp-view
+  lineage is deferred from v1** — a temp view has no durable node (Q3) and the
+  cross-cell case is additionally unprovable absent trusted {source identity +
+  common isolated session + order}; only **source order (`chunk_index`, already
+  persisted)** is surfaced as metadata — `execution_count` is not parsed/persisted
+  in v1 (deferred to a gated unit) (new **Fork F**). Rhymes with `FF7DE872`.
 - **Q5:** Drop (don't guess) non-literal names/paths, f-string/variable SQL,
   config paths **and relative path literals** (`"src"`, `"data/foo"` — only
   already-absolute URIs resolve), **one- and two-part (`db.table`) names — only
   fully-qualified three-part `catalog.schema.table` literals resolve**, dynamic
-  control flow, grammar ERROR fallbacks, cross-cell temp-view references,
-  **execution-order / session provenance that isn't trusted** (013-D).
+  control flow, grammar ERROR fallbacks; **temp-view lineage (same-cell +
+  cross-cell) is deferred from v1 entirely** (no durable node + unprovable
+  session/order), not merely dropped; **execution-order / session provenance that
+  isn't trusted** never authorizes an edge (013-D).
 
 ## Decision forks surfaced to operator
 
@@ -80,19 +85,23 @@ impl-plan, no harvest, no shipment created.
 - **E** DataFrame dataflow propagation — connect `read → df → write` across
   separate expressions (single-expression-only fail-closed scope vs a fail-closed
   DataFrame dataflow resolver).
-- **F** Cross-cell temp-view lineage under 013-D (fail-closed) — `chunk_index` is
-  source order and `execution_count` is not trustworthy provenance (binds neither
-  cell source nor SparkSession identity), so the v1 default **drops** cross-cell
-  temp-view graph edges; only source order (`chunk_index`, already persisted) is
-  metadata (`execution_count` is not parsed/persisted in v1 — deferred to a gated
-  unit); trusted-provenance cross-cell lineage {source id + common isolated session
-  + order} is deferred.
+- **F** Temp-view lineage representation — **deferred from v1 entirely** (v1 =
+  table/path lineage only). A temp view has no durable `dataset_node` (Q3) and
+  cross-cell resolution is unprovable under 013-D (`chunk_index` is source order;
+  `execution_count` is untrustworthy provenance — binds neither cell source nor
+  SparkSession identity). Future: a Fork A cell/session-scoped ephemeral node for
+  same-cell lineage, plus trusted provenance {source id + common isolated session +
+  order} for any cross-cell edge. Source order (`chunk_index`) = metadata only,
+  never an edge; `execution_count` not parsed/persisted (gated unit, deferred).
 
 ## State / next steps
 
 - Stash `07BFA98E` left **active** pending operator fork decision (NOT harvested).
 - Out-of-scope entries `FE8B3B2D`, `FF7DE872` untouched.
 - `main` and `start.ps1` untouched; stopped at merge gate (PR opened, not merged).
+- **v1 scope (what the extractors PRODUCE):** lineage graph edges for **table**
+  (`catalog.schema.table`) and **path** (absolute URI) datasets only; **temp-view
+  lineage is deferred** (Fork A / Fork F), so v1 emits no temp-view edge.
 - Suggested next Stage action: conditions 1–4 formalize Forks **A/C/E/F** (the
   material GO/NO-GO decisions); Forks **B** (notebook→parser routing / line-magic
   policy) and **D** (PySpark method-chain extraction scope) are additional

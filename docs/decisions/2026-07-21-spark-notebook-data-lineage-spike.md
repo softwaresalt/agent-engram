@@ -30,8 +30,9 @@ read→write→derives-from edges) across PySpark and `%%sql` cells inside `.ipy
 notebooks, and — if so — what is the smallest repo-aligned approach and the
 correct decomposition under the 2-hour rule?
 
-This is a **data-lineage graph** (nodes = datasets/tables/temp-views; edges =
-read / write / derives-from), which is a *distinct abstraction* from the
+This is a **data-lineage graph** (domain nodes = datasets/tables/temp-views; edges =
+read / write / derives-from; **v1 models table and path datasets only — temp-view
+lineage is deferred, see Q3 / Fork F**), which is a *distinct abstraction* from the
 function **call** graph delivered by phase 1 (`094-F`, Python bare-call `Calls`
 edges). The dependency-satisfying **implementation** was merged as
 `5f18b796853cb82f977494672fa280046bcbe5b8` (`5f18b79`) via **PR #277**; the
@@ -160,18 +161,21 @@ parse SQL" and "we produce lineage":
    of a top-level `statement`**. In `CREATE TABLE t AS SELECT … FROM src`, the
    `from` is nested *inside* the `create_table` node, so the read side (`src`)
    is not captured today — only the `Defines(t)` is.
-3. **Spark-specific DDL grammar coverage is UNVERIFIED.** `CREATE OR REPLACE
-   TEMPORARY VIEW`, `INSERT OVERWRITE`, and `saveAsTable`-equivalent SQL are
-   Spark dialect surface; the `sql.rs` header already notes `CREATE PROCEDURE`
-   parses as `ERROR` in tree-sitter-sequel 0.3 (`sql.rs:11-14`). Whether the
-   grammar parses Spark temp-view DDL or degrades to `ERROR` **cannot be
-   confirmed without compiling/running Rust**, which is outside a Stage spike.
-   This is a gating condition (see Fork C).
+3. **Spark-specific DDL grammar coverage is UNVERIFIED.** `INSERT OVERWRITE` and
+   `saveAsTable`-equivalent SQL (plus CTAS `from` descent) are Spark dialect
+   surface needed for **table** lineage; the `sql.rs` header already notes
+   `CREATE PROCEDURE` parses as `ERROR` in tree-sitter-sequel 0.3 (`sql.rs:11-14`).
+   Whether the grammar parses these or degrades to `ERROR` **cannot be confirmed
+   without compiling/running Rust**, which is outside a Stage spike. This is a
+   gating condition (see Fork C). **`CREATE OR REPLACE TEMPORARY VIEW` coverage is
+   NOT a v1 gate** — temp-view lineage is deferred from v1 (Q3 / Fork F), so its
+   grammar coverage matters only to that future feature.
 
 **(b) PySpark — cannot reuse the phase-1 `Calls` extractor.** PySpark lineage
 lives in **method/attribute call chains with string-literal arguments**:
 `spark.read.parquet("…")`, `spark.table("db.t")`, `spark.sql("…")`,
-`df.createOrReplaceTempView("v")`, `df.write.mode(…).saveAsTable("db.out")`,
+`df.createOrReplaceTempView("v")` (**temp-view DDL — captured content, but no v1
+lineage edge; deferred, see Q3 / Fork F**), `df.write.mode(…).saveAsTable("db.out")`,
 `df.write.save("path")`. The phase-1 extractor deliberately **marks
 attribute/method calls `is_method` and does NOT promote them to edges**
 (`ExtractedEdge::Calls` doc, `src/services/parsing.rs:186-199`; phase-1 spike
@@ -250,8 +254,10 @@ Applying the predicate to `dataset_node.id`:
   FS/session config, so they are **dropped** — never prefix-guessed — absent trusted
   filesystem-base provenance.
 * **Temp views are NOT durable `dataset_node`s.** Their identity is
-  **SparkSession-scoped**, so they get no persistent node and no cross-cell edge
-  (consistent with the Fork F fail-closed default below).
+  **SparkSession-scoped**, so they get no persistent node, **so temp-view graph
+  lineage (same-cell and cross-cell) is out of v1 scope — deferred pending the
+  Fork A ephemeral-node decision.** v1 lineage edges connect only table
+  (`catalog.schema.table`) and path (absolute URI) `dataset_node`s.
 
 **Identity vs. provenance (a Fork A schema-design point).** The canonical
 `dataset_node.id` is *global*, but the mirrored `powerbi_node` shape carries
@@ -322,15 +328,17 @@ independent facts make a source-order — *or even an `execution_count`-ordered*
    reconnect, restart, or share a session). So notebook-only "last-def-wins" can
    bind `FROM v` to the **wrong** runtime definition — a false edge.
 
-Under the **absolute 013-D no-false-edge invariant** the conclusion is strict: a
-cross-cell temp-view **graph edge** may be emitted **only** with *trusted
-provenance* binding **{source identity + a common isolated session + order}**.
-Absent that — i.e. the normal static-`.ipynb` case — the resolver **fails closed
-and drops** the cross-cell edge. Approximate ordering may at most be
+Under the **absolute 013-D no-false-edge invariant** the conclusion is strict:
+because a temp view has no durable `dataset_node` (Q3) and static analysis cannot
+prove a **common isolated session + valid order** (the {source identity + session +
+order} provenance is absent in the normal static-`.ipynb` case), **all temp-view
+graph lineage — same-cell and cross-cell alike — is deferred from v1.** If added
+later it requires the Fork A cell/session-scoped ephemeral representation, plus
+trusted provenance for any cross-cell edge. Approximate ordering may at most be
 **non-authoritative metadata / hints — never a `lineage_*` edge.** In v1 the only
 such signal that actually persists is **source order (`chunk_index`)**;
 `execution_count` is not parsed/persisted (no model field) and is deferred to a
-gated notebook-metadata unit. This is surfaced below as **Fork F**.
+gated notebook-metadata unit. This deferral is surfaced below as **Fork F**.
 
 ### Q5 — Fail-closed boundaries (honor 013-D no-false-edge)
 
@@ -354,28 +362,29 @@ closed — dropped, not guessed**:
   current catalog+schema and a **two-part `db.table`** name against the current
   catalog (session/config state, e.g. `spark_catalog` vs a Unity/multi-catalog
   setup), so neither is unambiguous (per the Q3 predicate). Resolve only
-  **fully-qualified three-part `catalog.schema.table`** literals (plus
-  same-cell/single-expression lineage); **drop** one- and two-part names as
-  catalog/schema-ambiguous, along with cross-cell temp-view references (see the
-  temp-view bullets below).
+  **fully-qualified three-part `catalog.schema.table`** literals (plus same-cell /
+  single-expression **table/path** lineage); **drop** one- and two-part names as
+  catalog/schema-ambiguous. Temp-view references (both same-cell and cross-cell)
+  are **deferred from v1 entirely** (see the temp-view bullets below).
 * **Dynamic control flow** — table names assembled in loops/conditionals or
   returned from helper functions.
 * **Grammar `ERROR` fallbacks** — if tree-sitter-sequel cannot parse a Spark DDL
-  statement (e.g. `CREATE OR REPLACE TEMP VIEW`, `INSERT OVERWRITE`), drop the
-  statement rather than partial-guess.
-* **Cross-cell temp-view references** — a `FROM v` / `spark.table("v")` whose
-  `createOrReplaceTempView("v")` (or SQL temp-view DDL) lives in a *different*
-  cell → **drop the graph edge by default.** Static analysis cannot prove the two
-  cells ran in the **same SparkSession in a valid order** (Q4), so no `lineage_*`
-  edge is emitted without trusted session+source provenance.
-* **Execution-order / session provenance is not an edge authority** — when the
-  only signal is `execution_count` or source order, that is **not sufficient** to
-  authorize a cross-cell edge (it binds neither cell *source* nor SparkSession
-  identity — Q4). Absent trusted provenance {source identity + common isolated
-  session + order}, cross-cell temp-view lineage is **dropped** as a graph edge;
-  the only ordering v1 surfaces as metadata is **source order (`chunk_index`)** —
-  `execution_count` is not parsed/persisted (deferred) — and it is **never an
-  edge** (see Fork F).
+  statement (e.g. `INSERT OVERWRITE`, CTAS), drop the statement rather than
+  partial-guess. (`CREATE OR REPLACE TEMP VIEW` coverage is not a v1 concern —
+  temp-view lineage is deferred, see Q3 / Fork F.)
+* **Temp-view references — deferred from v1 (not merely dropped).** Any temp-view
+  lineage — a same-cell `createOrReplaceTempView("v")` → `FROM v`, or the
+  cross-cell case — is **out of v1 scope**: a temp view has no durable
+  `dataset_node` (Q3), and for the cross-cell case static analysis also cannot
+  prove the cells ran in the **same SparkSession in a valid order** (Q4). v1 emits
+  **no** temp-view `lineage_*` edge; the representation is deferred to Fork A (see
+  Fork F).
+* **Execution-order / session provenance is not an edge authority** — even for the
+  deferred temp-view feature, `execution_count` or source order alone is **not
+  sufficient** to authorize a cross-cell edge (it binds neither cell *source* nor
+  SparkSession identity — Q4). The only ordering v1 persists is **source order
+  (`chunk_index`)**, exposed as metadata only, **never an edge**; `execution_count`
+  is not parsed/persisted (deferred).
 
 This matches the conservative posture of `094-F` (extract-and-mark, promote only
 unambiguous singletons) and 013-D.
@@ -405,10 +414,12 @@ this NOT a low-uncertainty GO:**
   cell/line magics** (`%%sql`/`%sql`) before parsing and decide how to treat
   `%sql` line-magic cells — see U4.
 * **Fork C — SQL lineage semantics + grammar coverage (UNVERIFIED).** Enhance
-  `sql.rs` (CTAS descent, temp-view DDL, directional read→write linking) vs.
-  build a lineage-specific SQL analyzer — and the tree-sitter-sequel 0.3
-  coverage of Spark DDL is unknown and **cannot be verified without compiling
-  Rust** (outside a Stage spike). This directly drives approach and effort.
+  `sql.rs` (CTAS `from` descent, `INSERT [OVERWRITE]` table targets, directional
+  read→write linking — **table lineage only**; temp-view DDL is out of v1 scope,
+  deferred to Fork A/F) vs. build a lineage-specific SQL analyzer — and the
+  tree-sitter-sequel 0.3 coverage of Spark **table** DDL is unknown and **cannot
+  be verified without compiling Rust** (outside a Stage spike). This directly
+  drives approach and effort.
 * **Fork D — PySpark method-chain + literal-argument extraction.** Net-new,
   distinct from `094-F`; needs a Spark method whitelist and argument-literal
   reader.
@@ -416,7 +427,7 @@ this NOT a low-uncertainty GO:**
   spark.read.…("s3://…/in"); …; df.write.…("cat.sch.out")` shape binds source and sink through
   a DataFrame variable across *separate expressions*, so literal-argument
   extraction alone yields **no `src → out` edge**. Options: (a) **scope v1 to
-  single-expression chains + temp-view DDL only** and fail-closed drop
+  single-expression chains over table/path datasets only** and fail-closed drop
   multi-expression DataFrame flows (simplest, lowest recall); or (b) add a
   **fail-closed DataFrame dataflow resolver** scoped to a **single cell** for static
   v1 (track `df_var → dataset` bindings, propagate through transforms, drop on
@@ -424,37 +435,38 @@ this NOT a low-uncertainty GO:**
   scope** — the same session/order ambiguity Fork F drops for temp views). The
   Q6 effort estimate must include this, since it covers a core part of the
   stated goal (`read → df → write`).
-* **Fork F — Cross-cell temp-view lineage under 013-D (fail-closed).**
-  `chunk_index` is *source* order (not execution order), and `execution_count` is
-  **not** trustworthy provenance — it binds neither the current cell *source* nor
-  any SparkSession identity, and a SparkSession's scope is not the notebook's
-  scope. So neither may **authorize** a cross-cell graph edge without risking a
-  false edge. Options:
-  * **(c) DEFAULT / v1 recommendation — fail-closed DROP.** For the normal static
-    `.ipynb` case (no trusted session+source provenance), **drop cross-cell
-    temp-view graph lineage.** Only references satisfying the **Q3 general
-    resolution predicate** still resolve — same-cell / single-expression lineage
-    over three-part `catalog.schema.table` literals or already-absolute URIs;
-    everything else fails closed (cross-cell temp-view edges, one-/two-part names,
-    relative path literals — see Q3/Q5).
-  * **(a′/b′) METADATA-ONLY (never a graph edge).** Surface **source order** — the
-    already-persisted `chunk_index` (`NotebookCellRecord.chunk_index`, a 1-based
-    source ordinal set in `notebook_extract.rs`) — as a **non-authoritative hint /
-    metadata** on content records, explicitly **not** a `lineage_*` edge, carrying
-    the precision caveat. **`execution_count` is NOT parsed or persisted in v1** (no
-    field on `NotebookCell`/`NotebookCellRecord`/`ContentRecord`); surfacing
-    execution-order metadata would require a **gated notebook-metadata persistence
-    unit** — deferred / out of scope for v1 (see the trusted-provenance option
-    below).
-  * **(future) trusted-provenance lineage.** Real cross-cell graph lineage needs
-    provenance binding **{source identity + a common isolated session + order}**
-    (e.g. runtime lineage / kernel execution logs) — out of scope for a static
-    v1; noted as deferred.
-  See Q4/Q5.
-* **Cross-cell temp-view resolution** (Q4, gated by Fork F) is a genuine
-  fail-closed problem: static analysis cannot prove same-session/valid-order, so
-  the v1 default is to **drop** cross-cell temp-view graph edges (ordering is
-  metadata only). It interacts with the `FF7DE872` shadowing class.
+* **Fork F — Temp-view lineage representation (deferred from v1).** v1 emits **no**
+  temp-view graph lineage at all (same-cell or cross-cell): a temp view has no
+  durable `dataset_node` (Q3), and cross-cell resolution is additionally unprovable
+  under 013-D — `chunk_index` is *source* order (not execution order), and
+  `execution_count` is **not** trustworthy provenance (it binds neither the cell
+  *source* nor any SparkSession identity, and a SparkSession's scope is not the
+  notebook's scope), so neither may **authorize** an edge without risking a false
+  one. The open fork is **whether/how to add temp-view lineage in a later version**
+  (a Fork A / schema-shape decision):
+  * **(future, Option A) cell/session-scoped ephemeral node.** Introduce a
+    non-durable temp-view representation so *same-cell* `createOrReplaceTempView →
+    FROM v` lineage has a graph target; still no cross-cell edge without trusted
+    provenance.
+  * **(future) trusted-provenance cross-cell lineage.** Real cross-cell graph
+    lineage needs provenance binding **{source identity + a common isolated session
+    + order}** (e.g. runtime lineage / kernel execution logs) — out of scope for a
+    static v1.
+  * **metadata note (v1, never an edge).** The only ordering v1 persists is
+    **source order** — the already-persisted `chunk_index`
+    (`NotebookCellRecord.chunk_index`, a 1-based source ordinal set in
+    `notebook_extract.rs`) — usable as a **non-authoritative hint / metadata** on
+    content records, explicitly **not** a `lineage_*` edge. **`execution_count` is
+    NOT parsed or persisted in v1** (no field on
+    `NotebookCell`/`NotebookCellRecord`/`ContentRecord`); surfacing execution-order
+    metadata would require a **gated notebook-metadata persistence unit** — also
+    deferred.
+  See Q3/Q4/Q5.
+* **Temp-view lineage (Q3/Q4, folded into Fork F) is deferred from v1 entirely.**
+  Both the same-cell case (no durable node) and the cross-cell case (unprovable
+  same-session/valid-order) are out of v1 scope; v1 does **table/path lineage
+  only**. Ordering may be metadata but never an edge. This interacts with the
+  `FF7DE872` shadowing class.
 
 **Blast radius is elevated** (touches `src/db/` schema, a new subgraph, the
 notebook indexer, `sql.rs`, `python.rs`, plus new traversal/MCP surface) —
@@ -486,21 +498,23 @@ separate GO/NO-GO conditions.)*
    annotations) and the scope of reversing the `063-F` "no notebook graph edges"
    v1 boundary.
 2. **A short, code-touching grammar-coverage probe (Ship-side, Fork C):**
-   confirm whether tree-sitter-sequel 0.3 parses `CREATE OR REPLACE TEMP VIEW`,
-   `INSERT OVERWRITE`, and `CREATE TABLE AS SELECT` (CTAS `from` descent), or
-   whether a grammar swap / lineage-specific analyzer is needed. This is the
-   single highest-leverage unknown.
+   confirm whether tree-sitter-sequel 0.3 parses `INSERT OVERWRITE` and
+   `CREATE TABLE AS SELECT` (CTAS `from` descent) — the DDL needed for **table**
+   lineage — or whether a grammar swap / lineage-specific analyzer is needed.
+   (Temp-view DDL coverage is **not** a v1 gate; temp-view lineage is deferred,
+   Fork F.) This is the single highest-leverage unknown.
 3. **A decision on Fork E** (DataFrame dataflow): single-expression-only
    fail-closed scope, or a fail-closed DataFrame dataflow resolver — this
    determines whether the most common `read → df → write` shape yields lineage
    at all.
-4. **A decision on Fork F** (cross-cell temp-view lineage): confirm the
-   **fail-closed drop** default for static `.ipynb` analysis — drop the cross-cell
-   graph edge absent trusted session+source provenance, with **source order
-   (`chunk_index`)** as metadata only, never an edge (`execution_count` is not
-   parsed/persisted in v1 — deferred) — plus its interaction with
-   `FF7DE872`, and whether to invest later in trusted-provenance cross-cell
-   lineage; required so cross-cell resolution can **never** emit a false edge
+4. **A decision on Fork F** (temp-view lineage representation): confirm that
+   **temp-view lineage is deferred from v1 entirely** (v1 = table/path lineage
+   only) — a temp view has no durable node (Q3) and cross-cell resolution is
+   unprovable under 013-D — with **source order (`chunk_index`)** as metadata only,
+   never an edge (`execution_count` is not parsed/persisted in v1 — deferred). The
+   later ephemeral-node representation (same-cell) and any trusted-provenance
+   cross-cell lineage are a **Fork A / schema-shape decision**; note its
+   interaction with `FF7DE872`. Required so v1 can **never** emit a false edge
    under 013-D.
 
 Suggested next Stage action once conditions 1–4 are answered: route to the
@@ -515,18 +529,20 @@ A candidate feature `Spark notebook data-lineage subgraph` decomposed under the
 tests / docs kept in separate tasks):
 
 * **U0 — Grammar-coverage probe (Ship-side, gates the plan).** Prove/disprove
-  tree-sitter-sequel 0.3 coverage of Spark temp-view DDL, `INSERT OVERWRITE`,
-  and CTAS `from` descent with a throwaway fixture; record findings. *(Resolves
+  tree-sitter-sequel 0.3 coverage of Spark `INSERT OVERWRITE` and CTAS `from`
+  descent — the **table**-lineage DDL — with a throwaway fixture; record findings.
+  (Temp-view DDL is out of v1 scope, so not probed here.) *(Resolves the narrowed
   Fork C before build tasks are sized.)*
 * **U1 — Lineage schema (`src/db/`).** Add `dataset_node` + `lineage_edge`
   (namespaced `edge_type`), mirroring `powerbi_node`/`powerbi_edge`; idempotent
   `:create` + bootstrap wiring + migration guard. *(schema only)*
 * **U2 — PySpark read/write extraction (`python.rs`).** Whitelist + string-literal
-  argument reader for `spark.read.*`/`spark.table`/`createOrReplaceTempView`/
-  `write.saveAsTable`/`write.save`; emit lineage endpoints **only for references
-  that satisfy the Q3 general resolution predicate** (three-part
-  `catalog.schema.table` literals or already-absolute URIs); fail-closed drop on
-  non-literals, relative path literals, and one-/two-part names. Scope of
+  argument reader for `spark.read.*`/`spark.table`/`write.saveAsTable`/`write.save`;
+  emit lineage endpoints **only for references that satisfy the Q3 general
+  resolution predicate** (three-part `catalog.schema.table` literals or
+  already-absolute URIs); fail-closed drop on non-literals, relative path literals,
+  and one-/two-part names. `createOrReplaceTempView` may be **captured as content
+  but produces no v1 lineage edge** (temp-view lineage deferred — Fork F). Scope of
   multi-expression DataFrame flows is gated by **Fork E**. *(python parser only)*
 * **U2b — DataFrame dataflow resolver (only if Fork E option (b) is chosen).**
   Track `df_var → dataset` bindings and propagate read sources to writes **within a
@@ -536,8 +552,9 @@ tests / docs kept in separate tasks):
   same kernel/session/execution-order ambiguity Fork F drops for temp views; it would
   require the same trusted provenance. *(dataflow resolver only)*
 * **U3 — Spark-SQL lineage extraction (`sql.rs`).** Directional read→write
-  linking, CTAS `from` descent, temp-view DDL, `INSERT [OVERWRITE]` targets —
-  scoped by the U0 outcome. *(sql parser only)*
+  linking, CTAS `from` descent, `INSERT [OVERWRITE]` table targets — **table
+  lineage only**, scoped by the U0 outcome. (Temp-view DDL is out of v1 scope,
+  deferred — Fork F.) *(sql parser only)*
 * **U4 — Notebook cell routing (`notebook_extract`/`notebook_indexer`).** Route
   `python` and `sql` code cells into the lineage extractors while preserving
   `chunk_index` ordering. **Must strip the leading magic token before parsing:**
@@ -550,22 +567,23 @@ tests / docs kept in separate tasks):
   just that line's payload or **exclude line-magic cells from v1** — otherwise
   the parser hits tree-sitter-sequel `ERROR` or consumes following Python lines
   as SQL. *(notebook path only)*
-* **U5 — Cross-cell temp-view resolver (fail-closed).** Per **Fork F**, the v1
-  default **drops** cross-cell temp-view *graph* edges (static analysis cannot
-  prove same-session/valid-order); resolve only same-cell/single-expression
-  references that satisfy the **Q3 general resolution predicate** (three-part
-  `catalog.schema.table` literals or already-absolute URIs). One-/two-part names,
-  relative path literals, and cross-cell temp views all fail closed. The only
-  ordering signal v1 surfaces is **source order via the already-persisted
-  `chunk_index`** — **metadata only, never a `lineage_*` edge**; `execution_count`
-  is not parsed/persisted in v1 (no model field) and its metadata surface is
-  deferred to a gated notebook-metadata unit. Regression fixtures for shadowing /
-  forward-reference / out-of-order drops. *(resolver only)*
+* **U5 — DEFERRED (not a v1 build unit): temp-view lineage.** Per **Fork F**, v1
+  emits **no** temp-view graph lineage (same-cell or cross-cell), so there is no
+  cross-cell temp-view resolver to build in v1. A temp view has no durable node
+  (Q3) and cross-cell resolution is unprovable under 013-D. If temp-view lineage is
+  added later it is a **Fork A / schema-shape** effort (a cell/session-scoped
+  ephemeral node for same-cell lineage, plus trusted provenance for cross-cell) —
+  out of this decomposition. The only ordering signal v1 persists is **source order
+  via `chunk_index`** — **metadata only, never a `lineage_*` edge**;
+  `execution_count` is not parsed/persisted in v1 (no model field). v1 regression
+  fixtures instead assert that temp-view references (both kinds) and one-/two-part
+  names / relative path literals **fail closed** (no edge). *(deferred — see Fork
+  F; not a build unit)*
 * **U6 — Fixtures + retrieval-eval.** Lineage fixture matrix and precision
   measurement across the resolvable and dropped cases. *(tests only)*
 * **U7 — Architecture / quality-doc notes.** Document v1 limits and fail-closed
-  boundaries (three-part catalog qualification, cross-cell drop, DataFrame-flow
-  scope, grammar-coverage caveats). *(docs only)*
+  boundaries (three-part catalog qualification, **temp-view lineage deferred from
+  v1**, DataFrame-flow single-cell scope, grammar-coverage caveats). *(docs only)*
 
 This sketch is **not** promoted to backlog by this spike; it is provided so the
 operator can weigh scope while deciding the forks above.
