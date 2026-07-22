@@ -178,12 +178,16 @@ attribute/method calls `is_method` and does NOT promote them to edges**
 `2026-07-20-…-spike.md:76-88`, :199-208). Lineage therefore needs a **new**
 PySpark analyzer that (i) recognizes a small whitelist of Spark read/write
 method chains and (ii) reads their **string-literal** arguments as dataset
-names/paths. This is qualitatively different from bare-call promotion and shares
-no code with `094-F` beyond living in the same `python.rs` file.
+names/paths — resolving only those that satisfy the **Q3 general resolution
+predicate** (three-part `catalog.schema.table` or already-absolute URIs; the
+two-part names and relative literals in the shape examples above are illustrative
+syntax that fails closed). This is qualitatively different from bare-call
+promotion and shares no code with `094-F` beyond living in the same `python.rs`
+file.
 
 **Critically, method-chain + literal-argument extraction alone cannot connect a
 read to a write for the most common Spark shape** — `df =
-spark.read.parquet("src"); …; df.write.saveAsTable("out")` — because the source
+spark.read.parquet("s3://bucket/in"); …; df.write.saveAsTable("cat.sch.out")` — because the source
 (read) and sink (write) live in *separate expressions* bound through a
 **DataFrame variable**. Producing the `src → out` lineage edge requires DataFrame
 assignment/transformation propagation (intra-cell and intra-notebook dataflow),
@@ -217,14 +221,34 @@ notebook_path, source_path, content_hash, ingested_at }` and a directed
 **`dataset_node.id` must be a *defined* canonical identity — not a bare name.**
 A path-scoped key (Power BI style) would duplicate the same table across every
 notebook that touches it, and a name-only key collides across catalogs and
-sessions, so identity must be pinned decisively:
+sessions, so identity must be pinned decisively.
+
+> **General resolution predicate (fail-closed).** A reference resolves to a
+> `lineage_*` graph edge (and to a durable `dataset_node`) **only if it is already
+> an unambiguous, session-independent, fully-qualified identifier** whose meaning
+> does not depend on runtime / session / config state:
+> * **Tables / views:** a three-part `catalog.schema.table` literal (documented
+>   normalization, e.g. Spark's identifier case-folding).
+> * **Paths:** an already-absolute normalized URI (scheme + absolute path).
+>
+> **Everything else fails closed** — one- and two-part table names, **relative path
+> literals** (`"src"`, `"data/foo"`), config-/widget-/parameter-derived paths, and
+> dynamically-assembled or non-literal names — because resolving them requires
+> runtime / session / config state a static analyzer cannot trust. Such references
+> are **dropped** (or surfaced as **metadata only**, never a `lineage_*` edge)
+> absent trusted provenance. This is a single predicate, complete by construction
+> — not a per-surface list; Q5, Fork F, U2, and U5 are instances of it.
+
+Applying the predicate to `dataset_node.id`:
 
 * **Tables / views** — keyed by the **fully-qualified `catalog.schema.table`**
-  literal, with a documented normalization (e.g. Spark's identifier case-folding).
-  **Name-only and two-part (`db.table`) keys are forbidden** — they are
-  catalog/schema-ambiguous (Spark resolves them against session/config state) and
-  collide across catalogs and sessions.
-* **Paths** — keyed by a **normalized absolute URI** (scheme + normalized path).
+  literal (per the predicate above); name-only and two-part (`db.table`) keys are
+  **forbidden** as catalog/schema-ambiguous (Spark resolves them against
+  session/config state) and collide across catalogs and sessions.
+* **Paths** — keyed by an **already-absolute normalized URI** (scheme + absolute
+  path). **Relative path literals** (`"src"`, `"data/foo"`) resolve against runtime
+  FS/session config, so they are **dropped** — never prefix-guessed — absent trusted
+  filesystem-base provenance.
 * **Temp views are NOT durable `dataset_node`s.** Their identity is
   **SparkSession-scoped**, so they get no persistent node and no cross-cell edge
   (consistent with the Fork F fail-closed default below).
@@ -299,23 +323,30 @@ below as **Fork F**.
 
 ### Q5 — Fail-closed boundaries (honor 013-D no-false-edge)
 
-Enumerated cases that MUST be **dropped, not guessed** (an edge is emitted only
-when both endpoints are literal and unambiguously resolvable):
+These are **instances of the Q3 general resolution predicate**, not a separate
+policy: an edge is emitted only when both endpoints satisfy it (already
+unambiguous, session-independent, fully-qualified). Everything below **fails
+closed — dropped, not guessed**:
 
 * **Non-literal dataset names/paths** — `spark.table(name_var)`,
   `.saveAsTable(cfg["out"])`, `spark.read.parquet(base + "/x")`, any argument
   that is not a bare string literal.
 * **f-strings / interpolated SQL** — `spark.sql(f"SELECT … FROM {tbl}")` and any
   `spark.sql(<non-literal>)`.
-* **Config-driven paths** — `spark.read.load(config.path)`, widget/parameter
-  substitution.
+* **Config-driven and relative paths** — `spark.read.load(config.path)`,
+  widget/parameter substitution, and **relative path literals** (`"src"`,
+  `"data/foo"`, `df.write.save("path")`): Spark resolves these against runtime
+  FS/session config, so a static analyzer would have to **guess a base prefix**.
+  Only **already-absolute normalized URIs** resolve; relative literals are
+  **dropped** (never prefix-guessed) absent trusted filesystem-base provenance.
 * **Catalog/schema ambiguity** — Spark resolves a **one-part** name against the
   current catalog+schema and a **two-part `db.table`** name against the current
   catalog (session/config state, e.g. `spark_catalog` vs a Unity/multi-catalog
-  setup), so neither is unambiguous. Resolve only **fully-qualified three-part
-  `catalog.schema.table`** literals (plus same-cell/single-expression lineage);
-  **drop** one- and two-part names as catalog/schema-ambiguous, along with
-  cross-cell temp-view references (see the temp-view bullets below).
+  setup), so neither is unambiguous (per the Q3 predicate). Resolve only
+  **fully-qualified three-part `catalog.schema.table`** literals (plus
+  same-cell/single-expression lineage); **drop** one- and two-part names as
+  catalog/schema-ambiguous, along with cross-cell temp-view references (see the
+  temp-view bullets below).
 * **Dynamic control flow** — table names assembled in loops/conditionals or
   returned from helper functions.
 * **Grammar `ERROR` fallbacks** — if tree-sitter-sequel cannot parse a Spark DDL
@@ -370,7 +401,7 @@ this NOT a low-uncertainty GO:**
   distinct from `094-F`; needs a Spark method whitelist and argument-literal
   reader.
 * **Fork E — DataFrame dataflow propagation.** The common `df =
-  spark.read.…("src"); …; df.write.…("out")` shape binds source and sink through
+  spark.read.…("s3://…/in"); …; df.write.…("cat.sch.out")` shape binds source and sink through
   a DataFrame variable across *separate expressions*, so literal-argument
   extraction alone yields **no `src → out` edge**. Options: (a) **scope v1 to
   single-expression chains + temp-view DDL only** and fail-closed drop
@@ -387,10 +418,11 @@ this NOT a low-uncertainty GO:**
   false edge. Options:
   * **(c) DEFAULT / v1 recommendation — fail-closed DROP.** For the normal static
     `.ipynb` case (no trusted session+source provenance), **drop cross-cell
-    temp-view graph lineage.** Same-cell / single-expression lineage and
-    **fully-qualified three-part `catalog.schema.table`** literals still resolve;
-    only cross-cell temp-view edges are dropped. (One- and two-part `db.table`
-    names are catalog/schema-ambiguous — see Q5 — and are also dropped.)
+    temp-view graph lineage.** Only references satisfying the **Q3 general
+    resolution predicate** still resolve — same-cell / single-expression lineage
+    over three-part `catalog.schema.table` literals or already-absolute URIs;
+    everything else fails closed (cross-cell temp-view edges, one-/two-part names,
+    relative path literals — see Q3/Q5).
   * **(a′/b′) METADATA-ONLY (never a graph edge).** If useful, surface source-order
     or `execution_count`-derived ordering as **non-authoritative hints / metadata**
     on content records — explicitly **not** `lineage_*` edges — carrying the
@@ -424,6 +456,12 @@ design uncertainty" bar, so the pipeline stops here and surfaces the forks to
 the operator rather than pushing a plan/shipment past an honest spike.
 
 **Conditions that must be resolved before an impl-plan is honest:**
+
+*(Conditions 1–4 formalize Forks **A, C, E, F** — the material GO/NO-GO decisions.
+Forks **B** (notebook→parser routing / line-magic policy, Q2a/U4) and **D**
+(PySpark method-chain extraction scope, Q1b/U2) are lower-uncertainty
+routing/extraction-scope decisions resolved during `deliberate`/`impl-plan`, not
+separate GO/NO-GO conditions.)*
 
 1. **Operator decision on Fork A** (lineage *subgraph* vs. lightweight
    annotations) and the scope of reversing the `063-F` "no notebook graph edges"
@@ -465,9 +503,11 @@ tests / docs kept in separate tasks):
   `:create` + bootstrap wiring + migration guard. *(schema only)*
 * **U2 — PySpark read/write extraction (`python.rs`).** Whitelist + string-literal
   argument reader for `spark.read.*`/`spark.table`/`createOrReplaceTempView`/
-  `write.saveAsTable`/`write.save`; emit lineage endpoints; fail-closed on
-  non-literals. Scope of multi-expression DataFrame flows is gated by **Fork E**.
-  *(python parser only)*
+  `write.saveAsTable`/`write.save`; emit lineage endpoints **only for references
+  that satisfy the Q3 general resolution predicate** (three-part
+  `catalog.schema.table` literals or already-absolute URIs); fail-closed drop on
+  non-literals, relative path literals, and one-/two-part names. Scope of
+  multi-expression DataFrame flows is gated by **Fork E**. *(python parser only)*
 * **U2b — DataFrame dataflow resolver (only if Fork E option (b) is chosen).**
   Track `df_var → dataset` bindings and propagate read sources to writes within a
   cell/notebook; fail-closed drop on reassignment/branching/non-literal.
@@ -489,9 +529,10 @@ tests / docs kept in separate tasks):
   as SQL. *(notebook path only)*
 * **U5 — Cross-cell temp-view resolver (fail-closed).** Per **Fork F**, the v1
   default **drops** cross-cell temp-view *graph* edges (static analysis cannot
-  prove same-session/valid-order); resolve only same-cell/single-expression and
-  **fully-qualified three-part `catalog.schema.table`** literals (one- and
-  two-part names are catalog/schema-ambiguous — dropped). Any
+  prove same-session/valid-order); resolve only same-cell/single-expression
+  references that satisfy the **Q3 general resolution predicate** (three-part
+  `catalog.schema.table` literals or already-absolute URIs). One-/two-part names,
+  relative path literals, and cross-cell temp views all fail closed. Any
   source-order/`execution_count` ordering is surfaced as **metadata only, never a
   `lineage_*` edge**. Regression fixtures for shadowing / forward-reference /
   out-of-order drops. *(resolver only)*

@@ -47,8 +47,11 @@ impl-plan, no harvest, no shipment created.
   (`schema.rs:1023-1057`). Do NOT overload `calls_edge`/`references_edge`.
   `dataset_node.id` is a **defined** canonical identity: tables/views keyed by
   fully-qualified `catalog.schema.table` (name-only + two-part keys forbidden),
-  paths by normalized absolute URI; temp views are session-scoped → **not durable
-  nodes** (no cross-cell edge).
+  paths by an **already-absolute** normalized URI (relative path literals like
+  `"src"` fail closed — never prefix-guessed); temp views are session-scoped →
+  **not durable nodes** (no cross-cell edge). This is one **general fail-closed
+  predicate** (resolve only already-unambiguous, session-independent,
+  fully-qualified references; drop everything else), not a per-surface list.
 - **Q4:** `chunk_index` preserves **source** order — NOT execution order (Jupyter
   runs cells out of order; Spark temp-view visibility follows **SparkSession**
   execution order, and session scope ≠ notebook scope) — and there is no
@@ -58,10 +61,11 @@ impl-plan, no harvest, no shipment created.
   {source identity + common isolated session + order}; source-order/`execution_count`
   ordering is metadata only (new **Fork F**). Rhymes with `FF7DE872`.
 - **Q5:** Drop (don't guess) non-literal names/paths, f-string/variable SQL,
-  config paths, **one- and two-part (`db.table`) names — only fully-qualified
-  three-part `catalog.schema.table` literals resolve**, dynamic control flow,
-  grammar ERROR fallbacks, cross-cell temp-view references, **execution-order /
-  session provenance that isn't trusted** (013-D).
+  config paths **and relative path literals** (`"src"`, `"data/foo"` — only
+  already-absolute URIs resolve), **one- and two-part (`db.table`) names — only
+  fully-qualified three-part `catalog.schema.table` literals resolve**, dynamic
+  control flow, grammar ERROR fallbacks, cross-cell temp-view references,
+  **execution-order / session provenance that isn't trusted** (013-D).
 
 ## Decision forks surfaced to operator
 
@@ -85,6 +89,9 @@ impl-plan, no harvest, no shipment created.
 - Stash `07BFA98E` left **active** pending operator fork decision (NOT harvested).
 - Out-of-scope entries `FE8B3B2D`, `FF7DE872` untouched.
 - `main` and `start.ps1` untouched; stopped at merge gate (PR opened, not merged).
-- Suggested next Stage action once conditions 1–4 (Forks A–F) are answered:
-  `deliberate` (Forks A/C) → `impl-plan` → `plan-harden` → `plan-review` →
-  `harvest`.
+- Suggested next Stage action: conditions 1–4 formalize Forks **A/C/E/F** (the
+  material GO/NO-GO decisions); Forks **B** (notebook→parser routing / line-magic
+  policy) and **D** (PySpark method-chain extraction scope) are additional
+  lower-uncertainty decisions folded into the `deliberate`/`impl-plan` step. Once
+  those are answered: `deliberate` (Forks A/C) → `impl-plan` → `plan-harden` →
+  `plan-review` → `harvest`.
