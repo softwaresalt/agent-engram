@@ -42,9 +42,13 @@ scope-lock v1:
 * **A3 = Fork E Option (b)** — a **single-cell** fail-closed DataFrame dataflow
   resolver (track `df_var → dataset` within one cell; drop on
   reassignment/branch/non-literal; **cross-cell `df` propagation OUT**).
-* **A4 = U0 grammar probe is a HARD pre-harvest gate** — a narrow, throwaway,
+* **A4 = U0 grammar probe is a HARD gate before U3** — a narrow, throwaway,
   spike-style probe of tree-sitter-sequel Spark **table**-DDL coverage
-  (`INSERT OVERWRITE` + CTAS `from`-descent). See the **U0 stage-time
+  (`INSERT OVERWRITE` + CTAS `from`-descent). Ratified as a pre-harvest gate;
+  because the probe requires compiling/running Rust (Ship-side, outside the Stage
+  role boundary), it is realized per A4's explicit fallback as **gated task-1
+  (`095.001-T`) with a HARD checkpoint before U3 is sized or built** — it is NOT
+  run at stage time and does NOT block harvest. See the **U0 stage-time
   feasibility decision** below.
 * **A5 = precision floor now** — v1 must emit **zero false edges** (fixture-based,
   013-D); empirical **recall / corpus prevalence** is NOT a pre-plan number — it
@@ -294,12 +298,21 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 
 * **Changes** in `src/services/notebook_extract.rs` / `notebook_indexer.rs`:
   route `python` and `sql` code cells into the U2/U3 extractors while preserving
-  `chunk_index` ordering. **Strip the leading magic token before parsing** —
-  today `notebook_extract` stores the full source including the magic
-  (`:54`) and `magic_language` only peeks (`:111`); strip `%%sql` before handing
-  text to `sql.rs`. For `%sql` **line-magic** (single `%`, only its own line is
-  SQL) choose one v1 policy: parse just that line's payload **or** exclude
-  line-magic cells from v1 (documented in U7) — otherwise the parser hits
+  `chunk_index` ordering. The extractors MUST receive the **raw cell source**, not
+  the persisted retrieval-wrapped `content`: `notebook_extract` stores each code
+  cell's `content` as `format!("Language: {language}. {trimmed}")` (`:49-55`) —
+  i.e. a synthetic `Language: {lang}. ` prefix **plus** the original source, which
+  itself still carries the `%%sql`/`%sql` magic — and `magic_language` only *peeks*
+  (`:111`). Handing that field to `python.rs`/`sql.rs` would parse the wrapper +
+  magic as code. **Resolution**: capture a dedicated **raw parse-source** at
+  extraction time (from the pre-wrap `trimmed`, `notebook_extract.rs:24`) with
+  (a) the `Language: {lang}. ` retrieval wrapper **never applied** and (b) the
+  leading cell magic (`%%sql`/`%%spark`) **stripped**, and route THAT to the
+  extractors — never the retrieval `content`. **Fail-closed**: if the raw
+  parse-source cannot be recovered for a cell, emit **no** lineage for that cell
+  rather than parsing the wrapper. For `%sql` **line-magic** (single `%`, only its
+  own line is SQL) choose one v1 policy: parse just that line's payload **or**
+  exclude line-magic cells from v1 (documented in U7) — otherwise the parser hits
   tree-sitter-sequel `ERROR` or consumes following Python lines as SQL.
 * **Persistence + incremental delete**: after invoking the U2/U2b/U3 extractors,
   call the U1 writers (`upsert_dataset_nodes` / `upsert_lineage_edges` /
@@ -313,10 +326,12 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 * **Files**: `src/services/notebook_extract.rs`, `src/services/notebook_indexer.rs`.
   ≤ 3 files, notebook-path only.
 * **Tests**: an `.ipynb` fixture with one `%%sql` cell + one PySpark cell routes
-  to the lineage extractors, magic stripped, `chunk_index` preserved; a `%sql`
-  line-magic cell is handled per the chosen policy (no `ERROR`, no cross-cell
-  bleed); re-indexing the fixture with a cell removed drops that cell's lineage
-  edge (no stale edge).
+  to the lineage extractors with the **exact byte-for-byte parse-source asserted**
+  — no `Language: {lang}. ` wrapper and no leading magic token in the text handed
+  to `python.rs`/`sql.rs` — and `chunk_index` preserved; a `%sql` line-magic cell
+  is handled per the chosen policy (no `ERROR`, no cross-cell bleed); an
+  unrecoverable raw source emits **no** edge (fail-closed); re-indexing the fixture
+  with a cell removed drops that cell's lineage edge (no stale edge).
 * **Milestone**: notebook cells reach the lineage extractors end-to-end and
   persist through the U1 write path with correct incremental delete.
 
@@ -877,3 +892,15 @@ one authorized read-surface unit added purely for retrievability).
 
 Decomposition delta: **+2 build units** — **U4b** (indexer freshness) and **U8**
 (read surface). DAG stays acyclic: `U4 → U4b`, `U1 → U8`, `U4b → U6`, `U8 → U7`.
+
+### PR #281 external review (Copilot) — re-review at HEAD `3d4021f1`, 2 findings, all resolved
+
+Copilot's re-review after the 10-finding cycle raised **2 plan-doc findings**;
+both triaged **valid** and resolved on branch `stage/spark-lineage-plan`. **Gate
+remains PASS** — both are documentation-consistency / unit-completeness fixes
+within the ratified v1 scope (no scope change).
+
+| # | Finding | Disposition | Resolution |
+|---|---|---|---|
+| C1 | A4 bullet labels U0 a "pre-harvest gate", contradicting the U0 stage-time decision (deferred to gated task-1, checkpoint before U3) and the harvested task `095.001-T` ("HARD PRE-U3 GATE") | **valid** | Relabeled to a **HARD gate before U3**, realized — per A4's explicit fallback — as gated task-1 `095.001-T`; A4 ratification intent preserved; now consistent with the U0 decision + task file |
+| C2 | Extractors would receive the retrieval-wrapped `content` (`Language: {lang}. {trimmed}`, `notebook_extract.rs:49-55`); stripping only the magic still leaves the `Language: {lang}. ` prefix, so the parser input is invalid | **valid** | U4 now routes a dedicated **raw parse-source** (retrieval wrapper never applied + magic stripped), never the persisted `content`; fail-closed if raw source unrecoverable; byte-exact parse-source test added; mirrored in task `095.006-T` |
