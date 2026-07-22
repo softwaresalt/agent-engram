@@ -176,9 +176,14 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     edge-evidence (**Review comment 2**). Operation-node role edges
     (`lineage_reads`/`lineage_writes`) are **deferred**.
   * `CREATE_LINEAGE_EDGE_EVIDENCE` — `lineage_edge_evidence { from_id, to_id,
-    edge_type, notebook_path => content_hash, chunk_index, ingested_at }` — one row
-    per (edge, notebook) observation (**Review comment 2**), making the same edge
-    emitted by two notebooks **independently scope-deletable**. v1 records no
+    edge_type, notebook_path, chunk_index => content_hash, ingested_at }` — one row
+    per (edge, notebook, **cell**) observation (**Review comments 2 + E1**):
+    `chunk_index` is part of the **key** so the same edge observed in two cells of
+    one notebook yields **two** evidence rows — a notebook-level key would let `:put`
+    overwrite the cell provenance the plan must preserve. The same edge emitted by
+    two notebooks (or two cells) is **independently scope-deletable**; notebook-scope
+    deletion still removes **all** rows matching `notebook_path` (the added key
+    column does not affect the scope predicate). v1 records no
     separate dataset-evidence relation: a `dataset_node` is created **only as an
     endpoint of an emitted `lineage_edge`** and is retained iff it is an endpoint
     of a surviving `lineage_edge`, so a dataset's provenance is transitively the
@@ -193,8 +198,9 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     `:put` batch-upsert): `upsert_dataset_nodes`, `upsert_lineage_edges`,
     `upsert_lineage_edge_evidence`, plus `delete_lineage_by_scope(notebook_path)`
     (mirroring `delete_content_records_by_scope`, `notebook_indexer.rs:164`) which
-    performs a fail-closed cascade: **(1)** delete that notebook's
-    `lineage_edge_evidence` rows, **(2)** GC `lineage_edge` rows left with **zero**
+    performs a fail-closed cascade: **(1)** delete **all** that notebook's
+    `lineage_edge_evidence` rows (every cell, matched by `notebook_path`), **(2)** GC
+    `lineage_edge` rows left with **zero**
     remaining evidence, **(3)** GC `dataset_node` rows no longer incident to any
     surviving edge — never a first-match delete (FF7DE872). **This is the lineage
     WRITE path** — the notebook router (U4) calls these; lineage does **NOT** flow
@@ -209,7 +215,10 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   provenance clobber, comment 1); **shared-edge deletion test** — two notebooks
   emit the SAME edge; `delete_lineage_by_scope(N1)` retains the edge (still
   evidenced by N2), and a later `delete_lineage_by_scope(N2)` removes the edge and
-  GCs its now-orphan `dataset_node`s (comment 2).
+  GCs its now-orphan `dataset_node`s (comment 2); **same-edge/two-cells test** — one
+  notebook emits the SAME edge from two cells; **two** `lineage_edge_evidence` rows
+  with distinct `chunk_index` round-trip (no `:put` overwrite), and
+  `delete_lineage_by_scope(N)` removes **both** (comment E1).
 * **Milestone**: the lineage subgraph exists, round-trips, and has an
   upsert/scope-delete write API; no emitter yet.
 
@@ -221,17 +230,23 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   `df.write.saveAsTable`, `df.write.save`, `df.write.mode(...).saveAsTable/save`)
   + a **string-literal argument reader**, exposed as a **public extractor
   function** `spark_lineage::extract_python_lineage(source, authority_ctx) ->
-  Vec<LineageEndpoint>`. `parse_source` returns `ParseResult { symbols, edges }`
+  Vec<SparkLineageEvent>`. **`SparkLineageEvent` is the shared U2→U2b contract type,
+  owned and defined by U2** (in the `spark_lineage` module): it wraps the resolved
+  `LineageEndpoint` (or an unresolved marker) plus the AST metadata U2b needs to
+  fail closed — `role` (Read/Write), the bound/receiver **variable** (`Option<name>`,
+  `None` when the receiver is not a simple name), the **source-order** index within
+  the cell, and the **enclosing scope** (top-level cell body vs. a branch/loop
+  block) (**comment E2**). `parse_source` returns `ParseResult { symbols, edges }`
   (`parsing.rs:247,263`) and has **no lineage carrier**, so the extractor is a
-  **separate public API U4 calls directly** — it does **NOT** add a variant to
+  **separate public API U4/U2b call directly** — it does **NOT** add a variant to
   `ExtractedEdge`/`ParseResult` or route through the `code_graph` consumer (that
   pipeline skips `.ipynb`). Resolves the P1 gap and the **comment-3** test-API gap.
-  Emit a lineage endpoint **only when the literal satisfies the Q3 general
-  resolution predicate**: a **table** endpoint requires a 3-part
+  Emit an event whose endpoint is **resolved only when the literal satisfies the Q3
+  general resolution predicate**: a **table** endpoint requires a 3-part
   `catalog.schema.table` literal **AND** a trusted metastore authority resolved
   from `authority_ctx`; a **path** endpoint requires an already-absolute URI with a
   storage authority. A 3-part literal **without** a trusted authority is
-  **insufficient** and drops (**comment 10**).
+  **insufficient** and stays unresolved/dropped (**comment 10**).
 * **Fail-closed (013-D)**: drop non-literals, f-strings, relative-path literals,
   one-/two-part names, **3-part names with no trusted authority**, config/widget/
   parameter args. `createOrReplaceTempView` is **captured as content but emits NO
@@ -248,32 +263,44 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   submodule). ≤ 3 files, python-parser only.
 * **Tests**: call `extract_python_lineage(src, authority_ctx)` **directly** (not
   `parse_source`): with a trusted authority injected, a resolvable
-  `spark.table("c.s.t")` / `spark.read.parquet("s3://b/p")` yields the expected
-  endpoint; the **same `spark.table("c.s.t")` with NO trusted authority yields
-  zero** (comment 10); each fail-closed case (relative literal, 2-part name,
-  f-string, variable arg, `createOrReplaceTempView`, **`spark.sql("CREATE TABLE …
-  AS SELECT …")` — deferred, comment D2**) yields **zero** endpoints
+  `spark.table("c.s.t")` / `spark.read.parquet("s3://b/p")` yields an event whose
+  resolved endpoint is the expected dataset ref **and which carries its `role`,
+  receiver variable, source order, and scope** for U2b (comment E2); the **same
+  `spark.table("c.s.t")` with NO trusted authority yields zero** resolved endpoints
+  (comment 10); each fail-closed case (relative literal, 2-part name, f-string,
+  variable arg, `createOrReplaceTempView`, **`spark.sql("CREATE TABLE …
+  AS SELECT …")` — deferred, comment D2**) yields **zero** resolved endpoints
   (strong `== 0` assertion so a silent-drop bug fails loudly).
 * **Milestone**: single-expression PySpark reads/writes yield authority-bound
   resolvable endpoints; everything ambiguous or unauthorized fails closed.
 
 ### Unit 2b — Single-cell DataFrame dataflow resolver (domain: dataflow; **A3 Option b**) — test-first
 
-* **Changes**: a fail-closed resolver that, **within a single cell**, tracks
-  `df_var → dataset` bindings from U2's read endpoints and propagates them to
-  write endpoints to emit `lineage_derives_from(write_target, read_source)` for
-  the common `df = spark.read.…("s3://…/in"); df.write.…("c.s.out")` shape.
-* **Fail-closed scope**: drop on `df` reassignment, branch/conditional binding,
-  loop binding, or any non-literal in the chain. **Cross-cell `df` propagation is
-  OUT** (a `df` can be reassigned in another cell / a rebuilt session — the same
-  session/order ambiguity A6 drops for temp views).
+* **Changes**: a fail-closed resolver that consumes U2's `Vec<SparkLineageEvent>`
+  and, **within a single cell**, tracks `df_var → dataset` bindings using each
+  event's receiver variable + source order + scope to link a read event to a later
+  write event on the same variable, emitting `lineage_derives_from(write_target,
+  read_source)` for the common `df = spark.read.…("s3://…/in");
+  df.write.…("c.s.out")` shape. It performs **no second AST walk** — U2 is the
+  single extraction source of truth; U2b analyses only the event stream.
+* **Fail-closed scope** (derived from the event metadata): drop on `df`
+  **reassignment** (two events bind the same receiver variable before the write),
+  **branch/loop scope** (a binding or write whose event scope is not the top-level
+  cell body), an **unresolved receiver variable** (`receiver = None`), a read event
+  whose endpoint U2 left unresolved, or any non-literal in the chain — each yields
+  **no edge**. **Cross-cell `df` propagation is OUT** (a `df` can be reassigned in
+  another cell / a rebuilt session — the same session/order ambiguity A6 drops for
+  temp views).
 * **Files**: the `spark_lineage` dataflow resolver (new module or sibling of U2's
   literal reader). ≤ 3 files, dataflow only. Kept separate from U2 to preserve
   width isolation (extraction vs. propagation are distinct concerns).
 * **Tests**: `df = spark.read.parquet("s3://b/in"); df.write.saveAsTable("c.s.out")`
   → `derives_from(c.s.out, s3://b/in)`; reassignment (`df = other; df.write…`) →
-  no edge; branch binding → no edge; a two-cell split of the same flow → **no**
-  cross-cell edge.
+  no edge; branch/loop-scoped binding → no edge; **unresolved receiver** (write on a
+  `df` never bound to a resolved read, or a non-simple-name receiver) → no edge; a
+  two-cell split of the same flow → **no** cross-cell edge. A **U2↔U2b contract
+  test** asserts U2 emits events carrying the `role` / receiver variable /
+  source-order / scope metadata U2b consumes (comment E2).
 * **Milestone**: the core `read → df → write` shape yields lineage within a cell;
   multi-cell/ambiguous flows fail closed.
 
@@ -937,3 +964,15 @@ convergence). **Gate remains PASS**; ratified v1 scope unchanged.
 |---|---|---|---|
 | D1 | Retention invariant not enforced by the write path: U4 upserting standalone U2 endpoints could create a `dataset_node` with no edge and no evidence row → unreachable via `lineage_edge_evidence`, un-scope-deletable | **valid** (bounded clarification) | U4 node creation is now **edge-driven, never endpoint-driven** — only `dataset_node`s that are endpoints of an emitted `lineage_edge` are upserted; a standalone read (`spark.table("c.s.t")` with no write) emits **zero nodes + zero edges** (fail-closed). Invariant stated in U1 + enforced in U4; standalone-read test added; consistent with the U4b sweep + canonical-only node decision |
 | D2 | `spark.sql(<literal>)` is whitelisted in U2 but its arg is SQL *text*, not an identifier; U4 routes Python cells only to U2/U2b, so literal `spark.sql("CTAS…")` has no path to the U3 SQL extractor | **valid** (documented exclusion chosen) | **Option (b)**: `spark.sql` **removed from the v1 whitelist** and documented as a deferred exclusion (like temp-view/permanent-view). Rationale: option (a) U2→U3 string-SQL delegation is a cross-unit call path + new tests = added build scope declined at the cycle limit; the **equivalent CTAS/`INSERT` lineage is still captured via `%%sql` cells** (U3). Whitelist, U2 fail-closed tests, and the U7 limits doc (`095.008-T`) updated to match |
+
+### PR #281 external review (Copilot) — re-review at HEAD `e1204d34`, 2 findings, all resolved (final convergence cycle)
+
+Copilot's cycle-4 re-review raised **2 findings** (1 schema, 1 unit contract). Both
+triaged **valid** and resolved as **bounded clarifications — no new build scope**
+(operator-authorized final convergence cycle). **Gate remains PASS**; ratified v1
+scope unchanged.
+
+| # | Finding | Disposition | Resolution |
+|---|---|---|---|
+| E1 | `lineage_edge_evidence` keyed by `(from_id,to_id,edge_type,notebook_path)` — `:put` overwrites the single `chunk_index` for the same edge observed in two cells of one notebook, losing cell provenance | **valid** (bounded schema-key fix) | `chunk_index` added to the evidence **key** (`{from_id,to_id,edge_type,notebook_path,chunk_index => content_hash,ingested_at}`): the same edge in two cells → **two** rows; notebook-scope delete still removes **all** rows by `notebook_path`. Same-edge/two-cells round-trip + delete test added; mirrored in `095.002-T`/`095.006-T` |
+| E2 | Flat `Vec<LineageEndpoint>` cannot carry the receiver variable / source order / reassignment / branch-loop scope the U2b resolver needs to fail closed | **valid** (bounded contract fix) | **Option (a)**: U2 now owns & emits a shared **`SparkLineageEvent`** (resolved endpoint + `role` + receiver variable + source order + enclosing scope); U2b consumes the event stream (no second AST walk) and fails closed on reassignment / non-top-level scope / unresolved receiver. U2↔U2b contract tests added; mirrored in `095.003-T`/`095.004-T` |
