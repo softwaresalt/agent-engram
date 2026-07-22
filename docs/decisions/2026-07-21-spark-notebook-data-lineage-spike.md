@@ -248,25 +248,38 @@ Do **not** overload:
 Cell **ordering is available**: `chunk_index` = cell ordinal and
 `chunk_id = cell-NNNN` (`notebook_extract.rs:29-30`). But every cell is
 extracted **independently** into an isolated content record; there is **no
-notebook-scoped, order-aware symbol/dataset table** today. Temp views are
-Spark-**session**-scoped (not catalog-persisted): a `createOrReplaceTempView("v")`
-in cell N and a `%%sql … FROM v` (or `spark.table("v")`) in cell M must resolve
-**within one notebook**. This is net-new and is the hardest correctness problem
-in the whole effort — and it rhymes with the same-file last-def-wins shadowing
-hazard already tracked independently in stash `FF7DE872`.
+notebook-scoped, order-aware symbol/dataset table** today. Temp views are scoped
+to the **SparkSession**, not to the notebook or the catalog: a
+`createOrReplaceTempView("v")` and a later `%%sql … FROM v` (or `spark.table("v")`)
+refer to the same object only when they run in the **same live session**. This is
+net-new and is the hardest correctness problem in the whole effort — and it rhymes
+with the same-file last-def-wins shadowing hazard already tracked independently in
+stash `FF7DE872`.
 
-**Crucial caveat: `chunk_index` is SOURCE order, not EXECUTION order.** Jupyter
-cells can be run out of order, and a Spark temp view's visibility is determined
-by session **execution** order — so a naïve source-order "last-definition-wins"
-resolver can emit a **false** lineage edge, directly violating the 013-D
-fail-closed invariant. Execution semantics are therefore a load-bearing
-decision, surfaced below as **Fork F**, with three honest options: (a) use
-**execution provenance** — the notebook JSON's per-cell `execution_count` (when
-present and monotonic) reflects actual run order; (b) a clearly-**labelled static
-source-order approximation** carrying its precision caveat; or (c) **drop
-cross-cell temp-view resolution when execution order is unknown/ambiguous** (the
-fail-closed default). Any lineage resolver must fail closed on
-ambiguous/forward/out-of-order references rather than guess.
+**Why static cross-cell resolution cannot safely emit a graph edge (013-D).** Two
+independent facts make a source-order — *or even an `execution_count`-ordered* —
+"last-definition-wins" resolver unsafe as an **edge authority**:
+
+1. **`chunk_index` is SOURCE order, not EXECUTION order.** Jupyter cells can run
+   in any order, so the textual position of a `createOrReplaceTempView` says
+   nothing about whether it actually defined the view a later `FROM v` observed.
+2. **`execution_count` is NOT trustworthy execution provenance.** It does **not**
+   bind the current cell *source* to what actually ran (a cell can be edited after
+   it executed), and it carries **no kernel / SparkSession identity**. A monotonic
+   counter can coexist with edited cells, restarted kernels, or a session shared
+   across notebooks — and, as above, a **SparkSession's scope is not the
+   notebook's scope** (an `.ipynb` has no session identity; notebooks can
+   reconnect, restart, or share a session). So notebook-only "last-def-wins" can
+   bind `FROM v` to the **wrong** runtime definition — a false edge.
+
+Under the **absolute 013-D no-false-edge invariant** the conclusion is strict: a
+cross-cell temp-view **graph edge** may be emitted **only** with *trusted
+provenance* binding **{source identity + a common isolated session + order}**.
+Absent that — i.e. the normal static-`.ipynb` case — the resolver **fails closed
+and drops** the cross-cell edge. Approximate ordering (source order or
+`execution_count`) may at most be recorded as **non-authoritative metadata / hints
+on content records; it must never create a `lineage_*` edge.** This is surfaced
+below as **Fork F**.
 
 ### Q5 — Fail-closed boundaries (honor 013-D no-false-edge)
 
@@ -281,19 +294,26 @@ when both endpoints are literal and unambiguously resolvable):
 * **Config-driven paths** — `spark.read.load(config.path)`, widget/parameter
   substitution.
 * **Catalog/database ambiguity** — an unqualified name that could resolve to
-  multiple catalogs/schemas; resolve only (a) within-notebook temp views and
-  (b) explicitly-qualified `db.table` literals; drop bare ambiguous names.
+  multiple catalogs/schemas; resolve only **explicitly-qualified `db.table`
+  literals** (plus same-cell/single-expression lineage); drop bare ambiguous
+  names and cross-cell temp-view references (see the temp-view bullets below).
 * **Dynamic control flow** — table names assembled in loops/conditionals or
   returned from helper functions.
 * **Grammar `ERROR` fallbacks** — if tree-sitter-sequel cannot parse a Spark DDL
   statement (e.g. `CREATE OR REPLACE TEMP VIEW`, `INSERT OVERWRITE`), drop the
   statement rather than partial-guess.
-* **Forward/unresolved temp views** — a `FROM v` with no in-notebook,
-  earlier-in-order `createOrReplaceTempView("v")` (or SQL temp-view DDL) → drop.
-* **Unknown/out-of-order execution** — when cell execution order cannot be
-  established from `execution_count` (absent, non-monotonic, or a cell never
-  executed), drop cross-cell temp-view resolution rather than assume source
-  order (see Fork F).
+* **Cross-cell temp-view references** — a `FROM v` / `spark.table("v")` whose
+  `createOrReplaceTempView("v")` (or SQL temp-view DDL) lives in a *different*
+  cell → **drop the graph edge by default.** Static analysis cannot prove the two
+  cells ran in the **same SparkSession in a valid order** (Q4), so no `lineage_*`
+  edge is emitted without trusted session+source provenance.
+* **Execution-order / session provenance is not an edge authority** — when the
+  only signal is `execution_count` or source order, that is **not sufficient** to
+  authorize a cross-cell edge (it binds neither cell *source* nor SparkSession
+  identity — Q4). Absent trusted provenance {source identity + common isolated
+  session + order}, cross-cell temp-view lineage is **dropped** as a graph edge;
+  any ordering derived from `execution_count`/source order is **metadata only,
+  never an edge** (see Fork F).
 
 This matches the conservative posture of `094-F` (extract-and-mark, promote only
 unambiguous singletons) and 013-D.
@@ -340,15 +360,30 @@ this NOT a low-uncertainty GO:**
   propagate through transforms, drop on reassignment/branching/non-literal). The
   Q6 effort estimate must include this, since it covers a core part of the
   stated goal (`read → df → write`).
-* **Fork F — Notebook execution-order vs. source-order.** `chunk_index` is
-  *source* order; Jupyter runs cells in any order and Spark temp-view visibility
-  follows *execution* order, so a source-order resolver can emit false edges.
-  Options: (a) execution provenance via monotonic `execution_count`; (b) a
-  labelled static source-order approximation; or (c) fail-closed drop when
-  execution order is unknown. See Q4/Q5.
+* **Fork F — Cross-cell temp-view lineage under 013-D (fail-closed).**
+  `chunk_index` is *source* order (not execution order), and `execution_count` is
+  **not** trustworthy provenance — it binds neither the current cell *source* nor
+  any SparkSession identity, and a SparkSession's scope is not the notebook's
+  scope. So neither may **authorize** a cross-cell graph edge without risking a
+  false edge. Options:
+  * **(c) DEFAULT / v1 recommendation — fail-closed DROP.** For the normal static
+    `.ipynb` case (no trusted session+source provenance), **drop cross-cell
+    temp-view graph lineage.** Same-cell / single-expression lineage and
+    explicitly-qualified `db.table` literals still resolve; only cross-cell
+    temp-view edges are dropped.
+  * **(a′/b′) METADATA-ONLY (never a graph edge).** If useful, surface source-order
+    or `execution_count`-derived ordering as **non-authoritative hints / metadata**
+    on content records — explicitly **not** `lineage_*` edges — carrying the
+    precision caveat.
+  * **(future) trusted-provenance lineage.** Real cross-cell graph lineage needs
+    provenance binding **{source identity + a common isolated session + order}**
+    (e.g. runtime lineage / kernel execution logs) — out of scope for a static
+    v1; noted as deferred.
+  See Q4/Q5.
 * **Cross-cell temp-view resolution** (Q4, gated by Fork F) is a genuine
-  order-aware, last-wins correctness problem interacting with the `FF7DE872`
-  shadowing class.
+  fail-closed problem: static analysis cannot prove same-session/valid-order, so
+  the v1 default is to **drop** cross-cell temp-view graph edges (ordering is
+  metadata only). It interacts with the `FF7DE872` shadowing class.
 
 **Blast radius is elevated** (touches `src/db/` schema, a new subgraph, the
 notebook indexer, `sql.rs`, `python.rs`, plus new traversal/MCP surface) —
@@ -378,16 +413,18 @@ the operator rather than pushing a plan/shipment past an honest spike.
    `INSERT OVERWRITE`, and `CREATE TABLE AS SELECT` (CTAS `from` descent), or
    whether a grammar swap / lineage-specific analyzer is needed. This is the
    single highest-leverage unknown.
-3. **A design decision on cross-cell temp-view resolution** (order-aware,
-   last-wins, fail-closed) and its interaction with `FF7DE872`.
+3. **Confirmation of the cross-cell temp-view fail-closed default** — drop the
+   graph edge absent trusted session+source provenance; treat `execution_count`/
+   source order as metadata only — and its interaction with `FF7DE872`.
 4. **A decision on Fork E** (DataFrame dataflow): single-expression-only
    fail-closed scope, or a fail-closed DataFrame dataflow resolver — this
    determines whether the most common `read → df → write` shape yields lineage
    at all.
-5. **A decision on Fork F** (execution vs. source order): use `execution_count`
-   provenance, a labelled source-order approximation, or fail-closed drop when
-   execution order is unknown — required so cross-cell resolution cannot emit a
-   false edge under out-of-order execution.
+5. **A decision on Fork F** (cross-cell lineage): confirm the **fail-closed drop**
+   default for static `.ipynb` analysis — with `execution_count`/source order as
+   metadata only, never an edge — and whether to invest later in
+   trusted-provenance cross-cell lineage; required so cross-cell resolution can
+   **never** emit a false edge under 013-D.
 
 Suggested next Stage action once conditions 1–5 are answered: route to the
 `deliberate` skill on Forks A/C (subgraph shape + SQL approach), then
@@ -431,9 +468,13 @@ docs kept in separate tasks):
   just that line's payload or **exclude line-magic cells from v1** — otherwise
   the parser hits tree-sitter-sequel `ERROR` or consumes following Python lines
   as SQL. *(notebook path only)*
-* **U5 — Cross-cell temp-view resolver.** Notebook-scoped, order-aware,
-  last-wins resolution with fail-closed drops; regression fixtures for
-  shadowing/forward-reference. *(resolver only)*
+* **U5 — Cross-cell temp-view resolver (fail-closed).** Per **Fork F**, the v1
+  default **drops** cross-cell temp-view *graph* edges (static analysis cannot
+  prove same-session/valid-order); resolve only same-cell/single-expression and
+  explicitly-qualified `db.table` literals. Any source-order/`execution_count`
+  ordering is surfaced as **metadata only, never a `lineage_*` edge**. Regression
+  fixtures for shadowing / forward-reference / out-of-order drops. *(resolver
+  only)*
 * **U6 — Fixtures + retrieval-eval + docs.** Lineage fixture matrix, precision
   measurement, and architecture/quality-doc notes on v1 limits and fail-closed
   boundaries. *(tests + docs only)*
