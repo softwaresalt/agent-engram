@@ -33,7 +33,10 @@ correct decomposition under the 2-hour rule?
 This is a **data-lineage graph** (nodes = datasets/tables/temp-views; edges =
 read / write / derives-from), which is a *distinct abstraction* from the
 function **call** graph delivered by phase 1 (`094-F`, Python bare-call `Calls`
-edges, now **MERGED** at `6e049621` and closed). Phase 1 satisfies this spike's
+edges). The dependency-satisfying **implementation** was merged as
+`5f18b796853cb82f977494672fa280046bcbe5b8` (`5f18b79`) via **PR #277**; the
+separate post-merge **closure** (docs only) was merged as `6e049621` via
+**PR #278**, after which `094-F` is closed. Phase 1 satisfies this spike's
 sequencing dependency (operator ordering: Python calls first, then Spark
 lineage). The phase-1 spike itself flagged this work as the sequenced follow-on
 and correctly predicted it "should reuse the notebook extractor rather than the
@@ -354,8 +357,9 @@ operator can weigh scope while deciding the forks above.
   notebook support + explicit v1 non-goals (graph edges, cross-cell lineage)
 * `docs/decisions/2026-07-20-python-call-edge-extraction-spike.md:228-233` —
   phase-1 spike sequencing this follow-on to the notebook extractor
-* Feature `094-F` (MERGED `6e049621`) — phase-1 Python calls, dependency
-  satisfied
+* Feature `094-F` — phase-1 Python calls. **Implementation** merged as
+  `5f18b79` (PR #277) — this is the merge that satisfies the dependency;
+  **closure** (docs) merged as `6e049621` (PR #278)
 * Stash `07BFA98E` (this spike); related deferrals `FE8B3B2D`, `FF7DE872`
   (out of scope; `FF7DE872` shares the last-wins shadowing hazard relevant to
   Q4)

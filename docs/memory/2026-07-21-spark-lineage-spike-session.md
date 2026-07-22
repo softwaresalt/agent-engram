@@ -9,7 +9,9 @@
 
 Stage stash entry `07BFA98E` — time-boxed **spike** on Spark notebook
 data-lineage tracking (phase 2). Dependency `094-F` (Python bare-call `Calls`
-edges, phase 1) is MERGED (`6e049621`) and closed → sequencing satisfied.
+edges, phase 1): **implementation** merged as `5f18b79` (PR #277) — the merge
+that satisfies sequencing; **closure** (docs) merged as `6e049621` (PR #278);
+`094-F` now closed.
 
 ## Outcome — CONDITIONAL GO, HALT at findings
 
