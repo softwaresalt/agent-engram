@@ -232,8 +232,13 @@ sessions, so identity must be pinned decisively.
 > an unambiguous, session-independent, fully-qualified identifier** whose meaning
 > does not depend on runtime / session / config state:
 > * **Tables / views:** a three-part `catalog.schema.table` literal (documented
->   normalization, e.g. Spark's identifier case-folding).
-> * **Paths:** an already-absolute normalized URI (scheme + absolute path).
+>   normalization, e.g. Spark's identifier case-folding) **bound to the resolved
+>   catalog's trusted backing metastore / data-source authority** — a bare
+>   `catalog.schema.table` string is *not* globally unique (the same three-part
+>   name denotes different objects under different configured metastores).
+> * **Paths:** an already-absolute normalized URI **bound to its storage authority
+>   (scheme + host/root)** — an absolute path alone can be environment-local (the
+>   same URI denotes different data across environments).
 >
 > **Everything else fails closed** — one- and two-part table names, **relative path
 > literals** (`"src"`, `"data/foo"`), config-/widget-/parameter-derived paths, and
@@ -246,13 +251,23 @@ sessions, so identity must be pinned decisively.
 Applying the predicate to `dataset_node.id`:
 
 * **Tables / views** — keyed by the **fully-qualified `catalog.schema.table`**
-  literal (per the predicate above); name-only and two-part (`db.table`) keys are
-  **forbidden** as catalog/schema-ambiguous (Spark resolves them against
-  session/config state) and collide across catalogs and sessions.
+  literal **plus the resolved catalog's trusted backing metastore / data-source
+  authority** (per the predicate above); name-only and two-part (`db.table`) keys
+  are **forbidden** as catalog/schema-ambiguous (Spark resolves them against
+  session/config state) and collide across catalogs and sessions. A bare
+  three-part string is **not** a globally unique identity — the same
+  `catalog.schema.table` denotes different objects under different configured
+  metastores — so if the trusted metastore authority is not statically resolvable
+  the reference **fails closed (no edge)**; it is never merged across metastores on
+  the bare string. *(Fork A schema-shape refinement — identity axis.)*
 * **Paths** — keyed by an **already-absolute normalized URI** (scheme + absolute
-  path). **Relative path literals** (`"src"`, `"data/foo"`) resolve against runtime
-  FS/session config, so they are **dropped** — never prefix-guessed — absent trusted
-  filesystem-base provenance.
+  path) **bound to its storage authority (scheme + host/root)**. **Relative path
+  literals** (`"src"`, `"data/foo"`) resolve against runtime FS/session config, so
+  they are **dropped** — never prefix-guessed — absent trusted filesystem-base
+  provenance. An absolute path can be **environment-local** (the same URI denotes
+  different data across environments); if the storage authority is not statically
+  resolvable the reference **fails closed (no edge)** rather than merging distinct
+  datasets across environments. *(Fork A schema-shape refinement — identity axis.)*
 * **Temp views are NOT durable `dataset_node`s.** Their identity is
   **SparkSession-scoped**, so they get no persistent node, **so temp-view graph
   lineage (same-cell and cross-cell) is out of v1 scope — deferred pending the
@@ -406,7 +421,12 @@ this NOT a low-uncertainty GO:**
   schema + traversal + MCP surface), or a lighter "lineage hints on content
   records"? `063-F` v1 *deliberately deferred* notebook graph edges and
   cross-cell lineage; reversing a documented product boundary is an
-  operator-level decision, not a plan detail.
+  operator-level decision, not a plan detail. Fork A must also resolve
+  **cross-metastore / cross-environment canonical-key ambiguity** — the
+  `dataset_node.id` binds the trusted metastore / data-source authority (catalog
+  backing metastore for tables; storage authority for URIs) or **fails closed** —
+  in addition to the ephemeral temp-view representation and the
+  identity-vs-provenance (multi-source evidence) axis noted under Q3.
 * **Fork B — Notebook→parser routing.** Cells are content-text today. Lineage
   requires a **new** notebook code-cell extraction path (extend
   `notebook_extract`/`notebook_indexer` to parse `python` and `sql` cells),

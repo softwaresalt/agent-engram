@@ -47,9 +47,14 @@ impl-plan, no harvest, no shipment created.
   with namespaced `edge_type`), mirroring `powerbi_node`/`powerbi_edge`
   (`schema.rs:1023-1057`). Do NOT overload `calls_edge`/`references_edge`.
   `dataset_node.id` is a **defined** canonical identity: tables/views keyed by
-  fully-qualified `catalog.schema.table` (name-only + two-part keys forbidden),
-  paths by an **already-absolute** normalized URI (relative path literals like
-  `"src"` fail closed — never prefix-guessed); temp views are session-scoped →
+  fully-qualified `catalog.schema.table` **plus the resolved catalog's trusted
+  backing metastore / data-source authority** (name-only + two-part keys
+  forbidden; a bare three-part string is not globally unique across metastores),
+  paths by an **already-absolute** normalized URI **bound to its storage authority**
+  (relative path literals like `"src"` fail closed — never prefix-guessed; an
+  absolute URI can be environment-local). **If the trusted authority is not
+  statically resolvable → fail closed (no edge)**, never a cross-metastore/cross-env
+  key merge (a **Fork A identity refinement**); temp views are session-scoped →
   **not durable nodes**, so **temp-view graph lineage (same-cell + cross-cell) is
   out of v1 scope — deferred to Fork A**; v1 edges connect table/path datasets
   only. This is one **general fail-closed predicate** (resolve only
