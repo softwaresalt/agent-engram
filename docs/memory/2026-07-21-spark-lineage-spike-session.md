@@ -45,16 +45,23 @@ impl-plan, no harvest, no shipment created.
 - **Q3:** Use a new lineage subgraph (`dataset_node` + directed `lineage_edge`
   with namespaced `edge_type`), mirroring `powerbi_node`/`powerbi_edge`
   (`schema.rs:1023-1057`). Do NOT overload `calls_edge`/`references_edge`.
+  `dataset_node.id` is a **defined** canonical identity: tables/views keyed by
+  fully-qualified `catalog.schema.table` (name-only + two-part keys forbidden),
+  paths by normalized absolute URI; temp views are session-scoped → **not durable
+  nodes** (no cross-cell edge).
 - **Q4:** `chunk_index` preserves **source** order — NOT execution order (Jupyter
-  runs cells out of order; Spark temp-view visibility follows session execution
-  order) — and there is no notebook-scoped symbol table; cross-cell temp-view
-  resolution must be execution-aware/fail-closed or it can emit a **false edge**
-  (new **Fork F**: `execution_count` provenance vs labelled source-order approx
-  vs fail-closed drop). Rhymes with `FF7DE872`.
+  runs cells out of order; Spark temp-view visibility follows **SparkSession**
+  execution order, and session scope ≠ notebook scope) — and there is no
+  notebook-scoped symbol table. `execution_count` is **not** trustworthy
+  provenance (binds neither cell source nor session identity), so cross-cell
+  temp-view lineage **fails closed and drops the graph edge** absent trusted
+  {source identity + common isolated session + order}; source-order/`execution_count`
+  ordering is metadata only (new **Fork F**). Rhymes with `FF7DE872`.
 - **Q5:** Drop (don't guess) non-literal names/paths, f-string/variable SQL,
-  config paths, catalog ambiguity, dynamic control flow, grammar ERROR
-  fallbacks, forward/unresolved temp views, **unknown/out-of-order cell
-  execution** (013-D).
+  config paths, **one- and two-part (`db.table`) names — only fully-qualified
+  three-part `catalog.schema.table` literals resolve**, dynamic control flow,
+  grammar ERROR fallbacks, cross-cell temp-view references, **execution-order /
+  session provenance that isn't trusted** (013-D).
 
 ## Decision forks surfaced to operator
 
@@ -67,14 +74,17 @@ impl-plan, no harvest, no shipment created.
 - **E** DataFrame dataflow propagation — connect `read → df → write` across
   separate expressions (single-expression-only fail-closed scope vs a fail-closed
   DataFrame dataflow resolver).
-- **F** Notebook execution-order vs source-order — `chunk_index` is source order,
-  not execution order; resolve via `execution_count` provenance, a labelled
-  source-order approximation, or fail-closed drop when execution order is unknown.
+- **F** Cross-cell temp-view lineage under 013-D (fail-closed) — `chunk_index` is
+  source order and `execution_count` is not trustworthy provenance (binds neither
+  cell source nor SparkSession identity), so the v1 default **drops** cross-cell
+  temp-view graph edges; ordering is metadata only; trusted-provenance cross-cell
+  lineage {source id + common isolated session + order} is deferred.
 
 ## State / next steps
 
 - Stash `07BFA98E` left **active** pending operator fork decision (NOT harvested).
 - Out-of-scope entries `FE8B3B2D`, `FF7DE872` untouched.
 - `main` and `start.ps1` untouched; stopped at merge gate (PR opened, not merged).
-- Suggested next Stage action after forks 1–3 answered: `deliberate` (Forks A/C)
-  → `impl-plan` → `plan-harden` → `plan-review` → `harvest`.
+- Suggested next Stage action once conditions 1–4 (Forks A–F) are answered:
+  `deliberate` (Forks A/C) → `impl-plan` → `plan-harden` → `plan-review` →
+  `harvest`.

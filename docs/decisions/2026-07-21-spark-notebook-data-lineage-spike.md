@@ -210,12 +210,28 @@ The **Power BI precedent is the right template** for lineage:
   (`schema.rs:1042-1057`).
 
 **Recommendation:** model lineage as a new subgraph mirroring this pattern. Add
-a `dataset_node { id => name, kind ∈ {table, view, temp_view, path},
+a `dataset_node { id => name, kind ∈ {table, view, path},
 notebook_path, source_path, content_hash, ingested_at }` and a directed
-`lineage_edge { from_id, to_id, edge_type => … }`. Define **exact endpoint
-semantics per edge type** so the direction is unambiguous (a bare `reads`/`writes`
-between two *datasets* has no actor endpoint and is ambiguous, so it is
-deliberately avoided):
+`lineage_edge { from_id, to_id, edge_type => … }`.
+
+**`dataset_node.id` must be a *defined* canonical identity — not a bare name.**
+A path-scoped key (Power BI style) would duplicate the same table across every
+notebook that touches it, and a name-only key collides across catalogs and
+sessions, so identity must be pinned decisively:
+
+* **Tables / views** — keyed by the **fully-qualified `catalog.schema.table`**
+  literal, with a documented normalization (e.g. Spark's identifier case-folding).
+  **Name-only and two-part (`db.table`) keys are forbidden** — they are
+  catalog/schema-ambiguous (Spark resolves them against session/config state) and
+  collide across catalogs and sessions.
+* **Paths** — keyed by a **normalized absolute URI** (scheme + normalized path).
+* **Temp views are NOT durable `dataset_node`s.** Their identity is
+  **SparkSession-scoped**, so they get no persistent node and no cross-cell edge
+  (consistent with the Fork F fail-closed default below).
+
+Then define **exact endpoint semantics per edge type** so the direction is
+unambiguous (a bare `reads`/`writes` between two *datasets* has no actor endpoint
+and is ambiguous, so it is deliberately avoided):
 
 * **Core edge — dataset→dataset derivation:** `edge_type = lineage_derives_from`
   with `from_id = the written/derived dataset` and `to_id = a source dataset it
@@ -293,10 +309,13 @@ when both endpoints are literal and unambiguously resolvable):
   `spark.sql(<non-literal>)`.
 * **Config-driven paths** — `spark.read.load(config.path)`, widget/parameter
   substitution.
-* **Catalog/database ambiguity** — an unqualified name that could resolve to
-  multiple catalogs/schemas; resolve only **explicitly-qualified `db.table`
-  literals** (plus same-cell/single-expression lineage); drop bare ambiguous
-  names and cross-cell temp-view references (see the temp-view bullets below).
+* **Catalog/schema ambiguity** — Spark resolves a **one-part** name against the
+  current catalog+schema and a **two-part `db.table`** name against the current
+  catalog (session/config state, e.g. `spark_catalog` vs a Unity/multi-catalog
+  setup), so neither is unambiguous. Resolve only **fully-qualified three-part
+  `catalog.schema.table`** literals (plus same-cell/single-expression lineage);
+  **drop** one- and two-part names as catalog/schema-ambiguous, along with
+  cross-cell temp-view references (see the temp-view bullets below).
 * **Dynamic control flow** — table names assembled in loops/conditionals or
   returned from helper functions.
 * **Grammar `ERROR` fallbacks** — if tree-sitter-sequel cannot parse a Spark DDL
@@ -369,8 +388,9 @@ this NOT a low-uncertainty GO:**
   * **(c) DEFAULT / v1 recommendation — fail-closed DROP.** For the normal static
     `.ipynb` case (no trusted session+source provenance), **drop cross-cell
     temp-view graph lineage.** Same-cell / single-expression lineage and
-    explicitly-qualified `db.table` literals still resolve; only cross-cell
-    temp-view edges are dropped.
+    **fully-qualified three-part `catalog.schema.table`** literals still resolve;
+    only cross-cell temp-view edges are dropped. (One- and two-part `db.table`
+    names are catalog/schema-ambiguous — see Q5 — and are also dropped.)
   * **(a′/b′) METADATA-ONLY (never a graph edge).** If useful, surface source-order
     or `execution_count`-derived ordering as **non-authoritative hints / metadata**
     on content records — explicitly **not** `lineage_*` edges — carrying the
@@ -413,20 +433,19 @@ the operator rather than pushing a plan/shipment past an honest spike.
    `INSERT OVERWRITE`, and `CREATE TABLE AS SELECT` (CTAS `from` descent), or
    whether a grammar swap / lineage-specific analyzer is needed. This is the
    single highest-leverage unknown.
-3. **Confirmation of the cross-cell temp-view fail-closed default** — drop the
-   graph edge absent trusted session+source provenance; treat `execution_count`/
-   source order as metadata only — and its interaction with `FF7DE872`.
-4. **A decision on Fork E** (DataFrame dataflow): single-expression-only
+3. **A decision on Fork E** (DataFrame dataflow): single-expression-only
    fail-closed scope, or a fail-closed DataFrame dataflow resolver — this
    determines whether the most common `read → df → write` shape yields lineage
    at all.
-5. **A decision on Fork F** (cross-cell lineage): confirm the **fail-closed drop**
-   default for static `.ipynb` analysis — with `execution_count`/source order as
-   metadata only, never an edge — and whether to invest later in
-   trusted-provenance cross-cell lineage; required so cross-cell resolution can
-   **never** emit a false edge under 013-D.
+4. **A decision on Fork F** (cross-cell temp-view lineage): confirm the
+   **fail-closed drop** default for static `.ipynb` analysis — drop the cross-cell
+   graph edge absent trusted session+source provenance, with `execution_count`/
+   source order as metadata only, never an edge — plus its interaction with
+   `FF7DE872`, and whether to invest later in trusted-provenance cross-cell
+   lineage; required so cross-cell resolution can **never** emit a false edge
+   under 013-D.
 
-Suggested next Stage action once conditions 1–5 are answered: route to the
+Suggested next Stage action once conditions 1–4 are answered: route to the
 `deliberate` skill on Forks A/C (subgraph shape + SQL approach), then
 `impl-plan` → `plan-harden` (blast radius warrants it) → `plan-review` →
 `harvest`.
@@ -435,7 +454,7 @@ Suggested next Stage action once conditions 1–5 are answered: route to the
 
 A candidate feature `Spark notebook data-lineage subgraph` decomposed under the
 2-hour rule with width isolation (schema / SQL / PySpark / notebook / resolver /
-docs kept in separate tasks):
+tests / docs kept in separate tasks):
 
 * **U0 — Grammar-coverage probe (Ship-side, gates the plan).** Prove/disprove
   tree-sitter-sequel 0.3 coverage of Spark temp-view DDL, `INSERT OVERWRITE`,
@@ -471,13 +490,16 @@ docs kept in separate tasks):
 * **U5 — Cross-cell temp-view resolver (fail-closed).** Per **Fork F**, the v1
   default **drops** cross-cell temp-view *graph* edges (static analysis cannot
   prove same-session/valid-order); resolve only same-cell/single-expression and
-  explicitly-qualified `db.table` literals. Any source-order/`execution_count`
-  ordering is surfaced as **metadata only, never a `lineage_*` edge**. Regression
-  fixtures for shadowing / forward-reference / out-of-order drops. *(resolver
-  only)*
-* **U6 — Fixtures + retrieval-eval + docs.** Lineage fixture matrix, precision
-  measurement, and architecture/quality-doc notes on v1 limits and fail-closed
-  boundaries. *(tests + docs only)*
+  **fully-qualified three-part `catalog.schema.table`** literals (one- and
+  two-part names are catalog/schema-ambiguous — dropped). Any
+  source-order/`execution_count` ordering is surfaced as **metadata only, never a
+  `lineage_*` edge**. Regression fixtures for shadowing / forward-reference /
+  out-of-order drops. *(resolver only)*
+* **U6 — Fixtures + retrieval-eval.** Lineage fixture matrix and precision
+  measurement across the resolvable and dropped cases. *(tests only)*
+* **U7 — Architecture / quality-doc notes.** Document v1 limits and fail-closed
+  boundaries (three-part catalog qualification, cross-cell drop, DataFrame-flow
+  scope, grammar-coverage caveats). *(docs only)*
 
 This sketch is **not** promoted to backlog by this spike; it is provided so the
 operator can weigh scope while deciding the forks above.
