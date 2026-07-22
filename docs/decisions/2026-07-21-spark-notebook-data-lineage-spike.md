@@ -253,6 +253,16 @@ Applying the predicate to `dataset_node.id`:
   **SparkSession-scoped**, so they get no persistent node and no cross-cell edge
   (consistent with the Fork F fail-closed default below).
 
+**Identity vs. provenance (a Fork A schema-design point).** The canonical
+`dataset_node.id` is *global*, but the mirrored `powerbi_node` shape carries
+**single-valued** provenance columns (`notebook_path`/`source_path`/`content_hash`).
+A dataset referenced by two notebooks would overwrite those on re-index, and a
+Power-BI-style deletion sweep could remove a node/edges still evidenced by another
+notebook. **Fork A must therefore separate canonical dataset identity from
+per-notebook observations/evidence and define multi-source edge provenance** (e.g.
+evidence rows keyed by notebook). This is a schema-shape decision folded into
+Fork A, not a new GO/NO-GO condition.
+
 Then define **exact endpoint semantics per edge type** so the direction is
 unambiguous (a bare `reads`/`writes` between two *datasets* has no actor endpoint
 and is ambiguous, so it is deliberately avoided):
@@ -408,8 +418,10 @@ this NOT a low-uncertainty GO:**
   extraction alone yields **no `src → out` edge**. Options: (a) **scope v1 to
   single-expression chains + temp-view DDL only** and fail-closed drop
   multi-expression DataFrame flows (simplest, lowest recall); or (b) add a
-  **fail-closed DataFrame dataflow resolver** (track `df_var → dataset` bindings,
-  propagate through transforms, drop on reassignment/branching/non-literal). The
+  **fail-closed DataFrame dataflow resolver** scoped to a **single cell** for static
+  v1 (track `df_var → dataset` bindings, propagate through transforms, drop on
+  reassignment/branching/non-literal; **cross-cell `df_var` propagation is out of
+  scope** — the same session/order ambiguity Fork F drops for temp views). The
   Q6 effort estimate must include this, since it covers a core part of the
   stated goal (`read → df → write`).
 * **Fork F — Cross-cell temp-view lineage under 013-D (fail-closed).**
@@ -517,9 +529,12 @@ tests / docs kept in separate tasks):
   non-literals, relative path literals, and one-/two-part names. Scope of
   multi-expression DataFrame flows is gated by **Fork E**. *(python parser only)*
 * **U2b — DataFrame dataflow resolver (only if Fork E option (b) is chosen).**
-  Track `df_var → dataset` bindings and propagate read sources to writes within a
-  cell/notebook; fail-closed drop on reassignment/branching/non-literal.
-  *(dataflow resolver only)*
+  Track `df_var → dataset` bindings and propagate read sources to writes **within a
+  single cell**; fail-closed drop on reassignment/branching/non-literal. **Cross-cell
+  `df_var` propagation is out of scope for static v1** — a `df_var` can be reassigned
+  in another cell and cells may run in a different/rebuilt session, so it carries the
+  same kernel/session/execution-order ambiguity Fork F drops for temp views; it would
+  require the same trusted provenance. *(dataflow resolver only)*
 * **U3 — Spark-SQL lineage extraction (`sql.rs`).** Directional read→write
   linking, CTAS `from` descent, temp-view DDL, `INSERT [OVERWRITE]` targets —
   scoped by the U0 outcome. *(sql parser only)*
@@ -568,8 +583,10 @@ operator can weigh scope while deciding the forks above.
   `create_procedure` → ERROR note)
 * `src/services/parsing.rs:186-242` — `ExtractedEdge::Calls` (method calls not
   promoted) and `ExtractedEdge::References` shape
-* `src/services/parsing.rs:263-280` — `parse_source` language dispatch
-  (`Language::Sql` → `.sql` files only)
+* `src/services/parsing.rs:263-280` — `parse_source` language dispatch (dispatches
+  on the `Language` enum, **not** file extension; `Language::Sql` parses any text via
+  `sql.rs`. The `.sql`-only limit is imposed by `default_supported_languages()` /
+  the filesystem indexer, not `parse_source` — see the next line.)
 * `src/models/config.rs:167-177` — `default_supported_languages()` (no `sql`; SQL
   graph indexing is opt-in, not default)
 * `tests/integration/lang_ipc_indexing_test.rs:366-380` — integration test that
