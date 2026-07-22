@@ -97,8 +97,15 @@ The indexer (`src/services/notebook_indexer.rs`) turns those records into
 `ContentRecord` rows via `extract_notebook` (`notebook_indexer.rs:15`,
 `:9-16`). It **does not call `parse_source`**. And `.ipynb` is **not** a
 language-bearing extension in `language_from_path`
-(`src/services/code_graph.rs:1962-1983` — no `ipynb` arm; it falls through to
-the raw extension → `unknown`).
+(`src/services/code_graph.rs:1962-1983`): with no `ipynb` arm it classifies as
+the **raw extension `"ipynb"`** (`_ => ext`, :1979; the doc-comment at
+:1960-1961 states "Unrecognized extensions fall through to the raw extension; a
+path with no extension is `unknown`"). Because `ipynb` is **not in
+`config.supported_languages`**, the file is then **skipped**
+(`code_graph.rs:602-606`: `if !config.supported_languages.contains(&lang) {
+files_skipped += 1; … }`) *before* it ever reaches tree-sitter — so notebooks
+never enter the code-graph path, but the classification is `"ipynb"`, not
+`"unknown"`).
 
 The `063-F` spike **explicitly listed as v1 non-goals**: "symbol extraction from
 notebook cells through the code graph pipeline", "cross-cell execution semantics
@@ -188,10 +195,14 @@ notebook_path, source_path, content_hash, ingested_at }` and a directed
 Do **not** overload:
 
 * `calls_edge` — function→function semantics; wrong node domain.
-* `references_edge` — undirected qualified-name reference keyed by a literal
-  `source` string, wired **only** to `.sql` files via `parse_source`
-  (`parsing.rs:263-280`, `Language::Sql` at `sql.rs`), and carries no read/write
-  direction (`schema.rs:807-819`).
+* `references_edge` — a **directed** source→target reference relation
+  (`from, to, qualified_name`; `schema.rs:807-819`), wired **only** to `.sql`
+  files via `parse_source` (`parsing.rs:263-280`, `Language::Sql` at `sql.rs`).
+  SQL indexing creates file→resolved-class edges, or a file→file self-loop when
+  the target does not resolve (`code_graph.rs:935-945`). Its direction encodes
+  **source file/symbol → referenced object**, *not* **dataset read/write
+  roles** — which is exactly why a separate directional lineage relation is
+  still warranted.
 
 ### Q4 — Cross-cell resolution: ordering is preserved, but no notebook-scoped symbol table exists
 

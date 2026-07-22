@@ -30,10 +30,12 @@ impl-plan, no harvest, no shipment created.
   (`code_graph.rs:1962-1983`). `063-F` v1 explicitly deferred notebook graph
   edges + cross-cell lineage.
 - **Q2a:** SQL parser exists — `sql.rs` on tree-sitter-sequel 0.3, emits
-  Defines/References. No new dep for basic reads/writes. BUT References are
-  non-directional (literal `source="select"/"insert"`), CTAS `from` likely
-  dropped (top-level-only descent), and Spark DDL grammar coverage is UNVERIFIED
-  (can't test without compiling Rust).
+  Defines/References. No new dep for basic reads/writes. BUT the `references_edge`
+  relation is **directed** (source file/symbol → referenced object;
+  `schema.rs:811-819`) — it just does not encode dataset read/write roles (the
+  SQL extractor tags refs with a literal `source="select"/"insert"` context);
+  CTAS `from` likely dropped (top-level-only descent); Spark DDL grammar coverage
+  UNVERIFIED (can't test without compiling Rust).
 - **Q2b:** PySpark lineage cannot reuse `094-F` — method/attribute calls are
   `is_method` and not promoted; needs net-new method-chain + string-literal-arg
   analyzer in `python.rs`.
