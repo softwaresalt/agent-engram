@@ -50,7 +50,7 @@ gating is **unquantified** and is validated in the **Fork A GO/NO-GO** decision
 - **Q3:** Use a new lineage subgraph (`dataset_node` + directed `lineage_edge`
   with namespaced `edge_type`), mirroring `powerbi_node`/`powerbi_edge`
   (`schema.rs:1023-1057`). Do NOT overload `calls_edge`/`references_edge`.
-  `dataset_node.id` is a **defined** canonical identity: tables/views keyed by
+  `dataset_node.id` is a **defined** canonical identity (`kind = {table, path}`): tables keyed by
   fully-qualified `catalog.schema.table` **plus the resolved catalog's trusted
   backing metastore / data-source authority** (name-only + two-part keys
   forbidden; a bare three-part string is not globally unique across metastores),
@@ -60,8 +60,13 @@ gating is **unquantified** and is validated in the **Fork A GO/NO-GO** decision
   statically resolvable → fail closed (no edge)**, never a cross-metastore/cross-env
   key merge (a **Fork A identity refinement**); temp views are session-scoped →
   **not durable nodes**, so **temp-view graph lineage (same-cell + cross-cell) is
-  out of v1 scope — deferred to Fork A**; v1 edges connect table/path datasets
-  only. This is one **general fail-closed predicate** (resolve only
+  out of v1 scope — deferred to Fork A**. **Permanent (durable) catalog views are
+  also deferred from v1 for a DISTINCT reason** — a `CREATE [OR REPLACE] VIEW` is
+  durable/metastore-registered/three-part-qualified/authority-bindable, so it is
+  fully **representable** and satisfies the predicate; it is scope-minimized out of
+  v1 as a clean future extension (re-add the `view` kind + `CREATE [OR REPLACE]
+  VIEW` DDL), **not** a Fork A unrepresentability issue. v1 edges connect table/path
+  datasets only. This is one **general fail-closed predicate** (resolve only
   already-unambiguous, session-independent, fully-qualified references; drop
   everything else), not a per-surface list.
 - **Q4:** `chunk_index` preserves **source** order — NOT execution order (Jupyter

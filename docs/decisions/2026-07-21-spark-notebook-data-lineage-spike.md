@@ -220,7 +220,7 @@ The **Power BI precedent is the right template** for lineage:
   (`schema.rs:1042-1057`).
 
 **Recommendation:** model lineage as a new subgraph mirroring this pattern. Add
-a `dataset_node { id => name, kind ∈ {table, view, path},
+a `dataset_node { id => name, kind ∈ {table, path},
 notebook_path, source_path, content_hash, ingested_at }` and a directed
 `lineage_edge { from_id, to_id, edge_type => … }`.
 
@@ -233,7 +233,7 @@ sessions, so identity must be pinned decisively.
 > `lineage_*` graph edge (and to a durable `dataset_node`) **only if it is already
 > an unambiguous, session-independent, fully-qualified identifier** whose meaning
 > does not depend on runtime / session / config state:
-> * **Tables / views:** a three-part `catalog.schema.table` literal (documented
+> * **Tables:** a three-part `catalog.schema.table` literal (documented
 >   normalization, e.g. Spark's identifier case-folding) **bound to the resolved
 >   catalog's trusted backing metastore / data-source authority** — a bare
 >   `catalog.schema.table` string is *not* globally unique (the same three-part
@@ -252,7 +252,7 @@ sessions, so identity must be pinned decisively.
 
 Applying the predicate to `dataset_node.id`:
 
-* **Tables / views** — keyed by the **fully-qualified `catalog.schema.table`**
+* **Tables** — keyed by the **fully-qualified `catalog.schema.table`**
   literal **plus the resolved catalog's trusted backing metastore / data-source
   authority** (per the predicate above); name-only and two-part (`db.table`) keys
   are **forbidden** as catalog/schema-ambiguous (Spark resolves them against
@@ -275,6 +275,15 @@ Applying the predicate to `dataset_node.id`:
   lineage (same-cell and cross-cell) is out of v1 scope — deferred pending the
   Fork A ephemeral-node decision.** v1 lineage edges connect only table
   (`catalog.schema.table`) and path (absolute URI) `dataset_node`s.
+* **Permanent (durable) catalog views are DEFERRED from v1 — distinct from temp
+  views.** A `CREATE [OR REPLACE] VIEW db.v AS …` object is durable,
+  metastore-registered, three-part-qualified, and authority-bindable, so it
+  *satisfies* the resolution predicate above and is fully **representable** as a
+  durable `dataset_node`. It is excluded from v1 **only for scope minimization** —
+  a clean future extension (re-add the `view` node kind + `CREATE [OR REPLACE]
+  VIEW` DDL coverage). This is **not** a Fork A unrepresentability concern (unlike
+  temp views, which have no durable node); the v1 grammar probe (U0 / Fork C) stays
+  **table-DDL only** (no `CREATE VIEW`).
 
 **Identity vs. provenance (a Fork A schema-design point).** The canonical
 `dataset_node.id` is *global*, but the mirrored `powerbi_node` shape carries
