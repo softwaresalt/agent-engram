@@ -88,7 +88,14 @@ gh api repos/<owner>/<repo>/pulls/<n> --jq '.head.sha'
 # surface normalizes it to `copilot-pull-request-reviewer` (no `[bot]`
 # suffix). An exact `==` match against either form silently drops the review
 # and the load-bearing gate can never be satisfied.
-gh api repos/<owner>/<repo>/pulls/<n>/reviews \
+#
+# `--paginate` is REQUIRED: `gh api` returns only the first 30 reviews by
+# default, and the list is ordered oldest-first, so the newest review (the one
+# at HEAD) is LAST. After a multi-cycle review loop (>30 total reviews) the HEAD
+# review spills onto page 2+ and an un-paginated call silently reports a stale
+# commit_id, falsely failing the gate. See
+# `docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md`.
+gh api --paginate repos/<owner>/<repo>/pulls/<n>/reviews \
   --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'
 ```
 
