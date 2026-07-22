@@ -48,7 +48,12 @@ Both of these are **individually insufficient** merge signals:
 Before merging, confirm **all four**, and re-run the whole check after any push:
 
 1. **A Copilot review exists whose `commit_id` == current HEAD sha.**
-   `gh api repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'`
+   `gh api --paginate repos/<owner>/<repo>/pulls/<n>/reviews --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'`
+   Use `--paginate`: the `/reviews` endpoint returns only the first 30 reviews
+   (oldest-first) by default, so once a review loop exceeds 30 total reviews the
+   HEAD review spills to page 2+ and an un-paginated call falsely reports a stale
+   `commit_id`. See the companion learning
+   `gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md`.
    Use a **prefix** match: the REST `/reviews` endpoint returns the login
    `copilot-pull-request-reviewer[bot]`, while the GraphQL/`gh pr view` surface
    normalizes it to `copilot-pull-request-reviewer`. An exact `==` match against
