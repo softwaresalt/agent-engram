@@ -58,8 +58,10 @@ impl-plan, no harvest, no shipment created.
   notebook-scoped symbol table. `execution_count` is **not** trustworthy
   provenance (binds neither cell source nor session identity), so cross-cell
   temp-view lineage **fails closed and drops the graph edge** absent trusted
-  {source identity + common isolated session + order}; source-order/`execution_count`
-  ordering is metadata only (new **Fork F**). Rhymes with `FF7DE872`.
+  {source identity + common isolated session + order}; only **source order
+  (`chunk_index`, already persisted)** is surfaced as metadata — `execution_count`
+  is not parsed/persisted in v1 (deferred to a gated unit) (new **Fork F**). Rhymes
+  with `FF7DE872`.
 - **Q5:** Drop (don't guess) non-literal names/paths, f-string/variable SQL,
   config paths **and relative path literals** (`"src"`, `"data/foo"` — only
   already-absolute URIs resolve), **one- and two-part (`db.table`) names — only
@@ -81,8 +83,10 @@ impl-plan, no harvest, no shipment created.
 - **F** Cross-cell temp-view lineage under 013-D (fail-closed) — `chunk_index` is
   source order and `execution_count` is not trustworthy provenance (binds neither
   cell source nor SparkSession identity), so the v1 default **drops** cross-cell
-  temp-view graph edges; ordering is metadata only; trusted-provenance cross-cell
-  lineage {source id + common isolated session + order} is deferred.
+  temp-view graph edges; only source order (`chunk_index`, already persisted) is
+  metadata (`execution_count` is not parsed/persisted in v1 — deferred to a gated
+  unit); trusted-provenance cross-cell lineage {source id + common isolated session
+  + order} is deferred.
 
 ## State / next steps
 

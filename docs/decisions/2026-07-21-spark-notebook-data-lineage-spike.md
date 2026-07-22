@@ -316,10 +316,11 @@ Under the **absolute 013-D no-false-edge invariant** the conclusion is strict: a
 cross-cell temp-view **graph edge** may be emitted **only** with *trusted
 provenance* binding **{source identity + a common isolated session + order}**.
 Absent that — i.e. the normal static-`.ipynb` case — the resolver **fails closed
-and drops** the cross-cell edge. Approximate ordering (source order or
-`execution_count`) may at most be recorded as **non-authoritative metadata / hints
-on content records; it must never create a `lineage_*` edge.** This is surfaced
-below as **Fork F**.
+and drops** the cross-cell edge. Approximate ordering may at most be
+**non-authoritative metadata / hints — never a `lineage_*` edge.** In v1 the only
+such signal that actually persists is **source order (`chunk_index`)**;
+`execution_count` is not parsed/persisted (no model field) and is deferred to a
+gated notebook-metadata unit. This is surfaced below as **Fork F**.
 
 ### Q5 — Fail-closed boundaries (honor 013-D no-false-edge)
 
@@ -362,8 +363,9 @@ closed — dropped, not guessed**:
   authorize a cross-cell edge (it binds neither cell *source* nor SparkSession
   identity — Q4). Absent trusted provenance {source identity + common isolated
   session + order}, cross-cell temp-view lineage is **dropped** as a graph edge;
-  any ordering derived from `execution_count`/source order is **metadata only,
-  never an edge** (see Fork F).
+  the only ordering v1 surfaces as metadata is **source order (`chunk_index`)** —
+  `execution_count` is not parsed/persisted (deferred) — and it is **never an
+  edge** (see Fork F).
 
 This matches the conservative posture of `094-F` (extract-and-mark, promote only
 unambiguous singletons) and 013-D.
@@ -423,10 +425,15 @@ this NOT a low-uncertainty GO:**
     over three-part `catalog.schema.table` literals or already-absolute URIs;
     everything else fails closed (cross-cell temp-view edges, one-/two-part names,
     relative path literals — see Q3/Q5).
-  * **(a′/b′) METADATA-ONLY (never a graph edge).** If useful, surface source-order
-    or `execution_count`-derived ordering as **non-authoritative hints / metadata**
-    on content records — explicitly **not** `lineage_*` edges — carrying the
-    precision caveat.
+  * **(a′/b′) METADATA-ONLY (never a graph edge).** Surface **source order** — the
+    already-persisted `chunk_index` (`NotebookCellRecord.chunk_index`, a 1-based
+    source ordinal set in `notebook_extract.rs`) — as a **non-authoritative hint /
+    metadata** on content records, explicitly **not** a `lineage_*` edge, carrying
+    the precision caveat. **`execution_count` is NOT parsed or persisted in v1** (no
+    field on `NotebookCell`/`NotebookCellRecord`/`ContentRecord`); surfacing
+    execution-order metadata would require a **gated notebook-metadata persistence
+    unit** — deferred / out of scope for v1 (see the trusted-provenance option
+    below).
   * **(future) trusted-provenance lineage.** Real cross-cell graph lineage needs
     provenance binding **{source identity + a common isolated session + order}**
     (e.g. runtime lineage / kernel execution logs) — out of scope for a static
@@ -477,8 +484,9 @@ separate GO/NO-GO conditions.)*
    at all.
 4. **A decision on Fork F** (cross-cell temp-view lineage): confirm the
    **fail-closed drop** default for static `.ipynb` analysis — drop the cross-cell
-   graph edge absent trusted session+source provenance, with `execution_count`/
-   source order as metadata only, never an edge — plus its interaction with
+   graph edge absent trusted session+source provenance, with **source order
+   (`chunk_index`)** as metadata only, never an edge (`execution_count` is not
+   parsed/persisted in v1 — deferred) — plus its interaction with
    `FF7DE872`, and whether to invest later in trusted-provenance cross-cell
    lineage; required so cross-cell resolution can **never** emit a false edge
    under 013-D.
@@ -532,10 +540,12 @@ tests / docs kept in separate tasks):
   prove same-session/valid-order); resolve only same-cell/single-expression
   references that satisfy the **Q3 general resolution predicate** (three-part
   `catalog.schema.table` literals or already-absolute URIs). One-/two-part names,
-  relative path literals, and cross-cell temp views all fail closed. Any
-  source-order/`execution_count` ordering is surfaced as **metadata only, never a
-  `lineage_*` edge**. Regression fixtures for shadowing / forward-reference /
-  out-of-order drops. *(resolver only)*
+  relative path literals, and cross-cell temp views all fail closed. The only
+  ordering signal v1 surfaces is **source order via the already-persisted
+  `chunk_index`** — **metadata only, never a `lineage_*` edge**; `execution_count`
+  is not parsed/persisted in v1 (no model field) and its metadata surface is
+  deferred to a gated notebook-metadata unit. Regression fixtures for shadowing /
+  forward-reference / out-of-order drops. *(resolver only)*
 * **U6 — Fixtures + retrieval-eval.** Lineage fixture matrix and precision
   measurement across the resolvable and dropped cases. *(tests only)*
 * **U7 — Architecture / quality-doc notes.** Document v1 limits and fail-closed
