@@ -167,6 +167,15 @@ method chains and (ii) reads their **string-literal** arguments as dataset
 names/paths. This is qualitatively different from bare-call promotion and shares
 no code with `094-F` beyond living in the same `python.rs` file.
 
+**Critically, method-chain + literal-argument extraction alone cannot connect a
+read to a write for the most common Spark shape** — `df =
+spark.read.parquet("src"); …; df.write.saveAsTable("out")` — because the source
+(read) and sink (write) live in *separate expressions* bound through a
+**DataFrame variable**. Producing the `src → out` lineage edge requires DataFrame
+assignment/transformation propagation (intra-cell and intra-notebook dataflow),
+which the U2 sketch does not by itself cover. This is a distinct, load-bearing
+design decision — surfaced below as **Fork E**.
+
 ### Q3 — Graph schema: introduce a lineage subgraph (do not overload existing edges)
 
 The Cozo schema (`src/db/cozo_backend/schema.rs`) has code-graph edges
@@ -269,7 +278,7 @@ staging/resolution patterns (`staged_call`, `schema.rs:821-857`). No obviously
 blocking dependency was found and no in-flight lineage work exists (the only
 `lineage` hits in `src/` are Power BI `lineageTag` GUIDs — unrelated).
 
-**But four material design forks and one un-resolvable-in-spike unknown make
+**But five material design forks and one un-resolvable-in-spike unknown make
 this NOT a low-uncertainty GO:**
 
 * **Fork A — Graph vs. annotation.** Build a real lineage *subgraph* (new
@@ -289,6 +298,16 @@ this NOT a low-uncertainty GO:**
 * **Fork D — PySpark method-chain + literal-argument extraction.** Net-new,
   distinct from `094-F`; needs a Spark method whitelist and argument-literal
   reader.
+* **Fork E — DataFrame dataflow propagation.** The common `df =
+  spark.read.…("src"); …; df.write.…("out")` shape binds source and sink through
+  a DataFrame variable across *separate expressions*, so literal-argument
+  extraction alone yields **no `src → out` edge**. Options: (a) **scope v1 to
+  single-expression chains + temp-view DDL only** and fail-closed drop
+  multi-expression DataFrame flows (simplest, lowest recall); or (b) add a
+  **fail-closed DataFrame dataflow resolver** (track `df_var → dataset` bindings,
+  propagate through transforms, drop on reassignment/branching/non-literal). The
+  Q6 effort estimate must include this, since it covers a core part of the
+  stated goal (`read → df → write`).
 * **Cross-cell temp-view resolution** (Q4) is a genuine order-aware,
   last-wins correctness problem interacting with the `FF7DE872` shadowing class.
 
@@ -322,8 +341,12 @@ the operator rather than pushing a plan/shipment past an honest spike.
    single highest-leverage unknown.
 3. **A design decision on cross-cell temp-view resolution** (order-aware,
    last-wins, fail-closed) and its interaction with `FF7DE872`.
+4. **A decision on Fork E** (DataFrame dataflow): single-expression-only
+   fail-closed scope, or a fail-closed DataFrame dataflow resolver — this
+   determines whether the most common `read → df → write` shape yields lineage
+   at all.
 
-Suggested next Stage action once conditions 1–3 are answered: route to the
+Suggested next Stage action once conditions 1–4 are answered: route to the
 `deliberate` skill on Forks A/C (subgraph shape + SQL approach), then
 `impl-plan` → `plan-harden` (blast radius warrants it) → `plan-review` →
 `harvest`.
@@ -344,7 +367,12 @@ docs kept in separate tasks):
 * **U2 — PySpark read/write extraction (`python.rs`).** Whitelist + string-literal
   argument reader for `spark.read.*`/`spark.table`/`createOrReplaceTempView`/
   `write.saveAsTable`/`write.save`; emit lineage endpoints; fail-closed on
-  non-literals. *(python parser only)*
+  non-literals. Scope of multi-expression DataFrame flows is gated by **Fork E**.
+  *(python parser only)*
+* **U2b — DataFrame dataflow resolver (only if Fork E option (b) is chosen).**
+  Track `df_var → dataset` bindings and propagate read sources to writes within a
+  cell/notebook; fail-closed drop on reassignment/branching/non-literal.
+  *(dataflow resolver only)*
 * **U3 — Spark-SQL lineage extraction (`sql.rs`).** Directional read→write
   linking, CTAS `from` descent, temp-view DDL, `INSERT [OVERWRITE]` targets —
   scoped by the U0 outcome. *(sql parser only)*

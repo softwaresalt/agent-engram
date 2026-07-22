@@ -38,7 +38,10 @@ impl-plan, no harvest, no shipment created.
   UNVERIFIED (can't test without compiling Rust).
 - **Q2b:** PySpark lineage cannot reuse `094-F` — method/attribute calls are
   `is_method` and not promoted; needs net-new method-chain + string-literal-arg
-  analyzer in `python.rs`.
+  analyzer in `python.rs`. **Note:** literal-arg extraction alone can't link
+  `df = spark.read(...src)` to `df.write(...out)` (source + sink in separate
+  expressions via a DataFrame var) — connecting them needs DataFrame dataflow
+  propagation (new **Fork E**).
 - **Q3:** Use a new lineage subgraph (`dataset_node` + directed `lineage_edge`
   with namespaced `edge_type`), mirroring `powerbi_node`/`powerbi_edge`
   (`schema.rs:1023-1057`). Do NOT overload `calls_edge`/`references_edge`.
@@ -57,6 +60,9 @@ impl-plan, no harvest, no shipment created.
 - **C** SQL lineage semantics + tree-sitter-sequel Spark-DDL coverage (needs a
   Ship-side code-touching probe — highest-leverage unknown).
 - **D** PySpark method-chain/literal extraction (net-new).
+- **E** DataFrame dataflow propagation — connect `read → df → write` across
+  separate expressions (single-expression-only fail-closed scope vs a fail-closed
+  DataFrame dataflow resolver).
 
 ## State / next steps
 
