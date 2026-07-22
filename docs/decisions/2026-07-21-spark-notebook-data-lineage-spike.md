@@ -131,8 +131,17 @@ notebooks and does not model directional lineage.**
   (`join`/`cross_join`/`lateral_join`/`lateral_cross_join`,
   `sql.rs:172-213`) and `insert` targets (`sql.rs:219-239`).
 
-So **no new SQL dependency is needed for basic table reads/writes.** But three
-material gaps stand between "we can parse SQL" and "we produce lineage":
+So **no new SQL dependency is needed for basic table reads/writes** — but note
+that the parser *existing* is not the same as SQL indexing being *enabled*:
+**SQL graph indexing is not on by default.** `sql` is absent from
+`default_supported_languages()` (`src/models/config.rs:167-177` — rust, python,
+typescript, tsx, javascript, go, csharp), so a workspace must explicitly
+configure `"sql"` for `.sql` files to be indexed at all (the integration test
+enables it explicitly, `tests/integration/lang_ipc_indexing_test.rs:366-380`).
+For notebook lineage this is moot — cells route via the notebook path regardless
+— but the accurate reuse baseline is "the SQL parser exists and works", not "SQL
+indexing is on out-of-the-box." Three further material gaps stand between "we can
+parse SQL" and "we produce lineage":
 
 1. **Not directional lineage.** The `References` edge is keyed by a *literal*
    `source = "select"` / `"insert"`
@@ -221,10 +230,11 @@ Do **not** overload:
 * `calls_edge` — function→function semantics; wrong node domain.
 * `references_edge` — a **directed** source→target reference relation
   (`from, to, qualified_name`; `schema.rs:807-819`), wired **only** to `.sql`
-  files via `parse_source` (`parsing.rs:263-280`, `Language::Sql` at `sql.rs`).
-  SQL indexing creates file→resolved-class edges, or a file→file self-loop when
-  the target does not resolve (`code_graph.rs:935-945`). Its direction encodes
-  **source file/symbol → referenced object**, *not* **dataset read/write
+  files via `parse_source` (`parsing.rs:263-280`, `Language::Sql` at `sql.rs`) —
+  and only when `sql` is explicitly in `supported_languages` (not default; see
+  Q2a). SQL indexing creates file→resolved-class edges, or a file→file self-loop
+  when the target does not resolve (`code_graph.rs:935-945`). Its direction
+  encodes **source file/symbol → referenced object**, *not* **dataset read/write
   roles** — which is exactly why a separate directional lineage relation is
   still warranted.
 
@@ -304,7 +314,9 @@ this NOT a low-uncertainty GO:**
 * **Fork B — Notebook→parser routing.** Cells are content-text today. Lineage
   requires a **new** notebook code-cell extraction path (extend
   `notebook_extract`/`notebook_indexer` to parse `python` and `sql` cells),
-  crossing exactly the boundary `063-F` v1 excluded.
+  crossing exactly the boundary `063-F` v1 excluded. That path must also **strip
+  cell/line magics** (`%%sql`/`%sql`) before parsing and decide how to treat
+  `%sql` line-magic cells — see U4.
 * **Fork C — SQL lineage semantics + grammar coverage (UNVERIFIED).** Enhance
   `sql.rs` (CTAS descent, temp-view DDL, directional read→write linking) vs.
   build a lineage-specific SQL analyzer — and the tree-sitter-sequel 0.3
@@ -404,7 +416,16 @@ docs kept in separate tasks):
   scoped by the U0 outcome. *(sql parser only)*
 * **U4 — Notebook cell routing (`notebook_extract`/`notebook_indexer`).** Route
   `python` and `sql` code cells into the lineage extractors while preserving
-  `chunk_index` ordering. *(notebook path only)*
+  `chunk_index` ordering. **Must strip the leading magic token before parsing:**
+  `notebook_extract` today stores the *full* cell source including the magic
+  (`content = format!("Language: {language}. {trimmed}")`,
+  `notebook_extract.rs:54`) and `magic_language` only *peeks* at the first
+  non-empty line without stripping it (`notebook_extract.rs:111-128`). So strip
+  `%%sql` before handing text to `sql.rs`; and for `%sql` **line-magic**
+  (`MAGIC_SQL_LINE`, single `%`, where only its own line is SQL) either parse
+  just that line's payload or **exclude line-magic cells from v1** — otherwise
+  the parser hits tree-sitter-sequel `ERROR` or consumes following Python lines
+  as SQL. *(notebook path only)*
 * **U5 — Cross-cell temp-view resolver.** Notebook-scoped, order-aware,
   last-wins resolution with fail-closed drops; regression fixtures for
   shadowing/forward-reference. *(resolver only)*
@@ -418,7 +439,8 @@ operator can weigh scope while deciding the forks above.
 ## References
 
 * `src/services/notebook_extract.rs:15-128` — notebook cell extraction (content
-  text, magic precedence; cells never parsed)
+  text incl. the leading magic token, which is *not* stripped; magic precedence;
+  cells never parsed)
 * `src/services/notebook_indexer.rs:9-35` — `.ipynb` → `ContentRecord` (no
   `parse_source` call)
 * `src/services/code_graph.rs:1962-1983` — `language_from_path` (no `ipynb` arm)
@@ -429,6 +451,10 @@ operator can weigh scope while deciding the forks above.
   promoted) and `ExtractedEdge::References` shape
 * `src/services/parsing.rs:263-280` — `parse_source` language dispatch
   (`Language::Sql` → `.sql` files only)
+* `src/models/config.rs:167-177` — `default_supported_languages()` (no `sql`; SQL
+  graph indexing is opt-in, not default)
+* `tests/integration/lang_ipc_indexing_test.rs:366-380` — integration test that
+  explicitly enables `sql` indexing
 * `src/db/cozo_backend/schema.rs:13-18, 66-71` — code-graph edge relations
 * `src/db/cozo_backend/schema.rs:807-819` — `references_edge` shape
 * `src/db/cozo_backend/schema.rs:1023-1057` — `powerbi_node`/`powerbi_edge`
