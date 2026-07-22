@@ -179,9 +179,12 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     edge_type, notebook_path => content_hash, chunk_index, ingested_at }` — one row
     per (edge, notebook) observation (**Review comment 2**), making the same edge
     emitted by two notebooks **independently scope-deletable**. v1 records no
-    separate dataset-evidence relation: a `dataset_node` is retained iff it is an
-    endpoint of a surviving `lineage_edge`, so a dataset's provenance is
-    transitively the union of its incident edges' evidence.
+    separate dataset-evidence relation: a `dataset_node` is created **only as an
+    endpoint of an emitted `lineage_edge`** and is retained iff it is an endpoint
+    of a surviving `lineage_edge`, so a dataset's provenance is transitively the
+    union of its incident edges' evidence. A standalone read/write endpoint that
+    never becomes part of an edge produces **no node and no edge** (fail-closed),
+    keeping every node reachable via `lineage_edge_evidence` (**Review comment D1**).
   * Register all three in the schema-bootstrap `scripts` array (`:86-87` region);
     idempotent `:create`; migration guard consistent with the existing
     `migrate_*` pattern.
@@ -214,7 +217,7 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 
 * **Changes** in `src/services/parsing/python.rs` (a new `spark_lineage`
   submodule; distinct from `094-F` bare-call promotion): a **Spark method
-  whitelist** (`spark.read.<fmt>`, `spark.read.load`, `spark.table`, `spark.sql`,
+  whitelist** (`spark.read.<fmt>`, `spark.read.load`, `spark.table`,
   `df.write.saveAsTable`, `df.write.save`, `df.write.mode(...).saveAsTable/save`)
   + a **string-literal argument reader**, exposed as a **public extractor
   function** `spark_lineage::extract_python_lineage(source, authority_ctx) ->
@@ -232,8 +235,15 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 * **Fail-closed (013-D)**: drop non-literals, f-strings, relative-path literals,
   one-/two-part names, **3-part names with no trusted authority**, config/widget/
   parameter args. `createOrReplaceTempView` is **captured as content but emits NO
-  v1 edge** (A6, temp-view deferred). This unit does **not** link source→sink
-  across expressions (that is U2b).
+  v1 edge** (A6, temp-view deferred). **`spark.sql(...)` is deferred OUT of v1
+  (Review comment D2)**: its argument is SQL *text*, not a table/path identifier,
+  so it does not belong in the identifier-endpoint reader; wiring it would require
+  routing the literal into the U3 SQL extractor (a cross-unit delegation declined
+  at the cycle limit). It emits **no** v1 lineage from the Python path — the
+  **equivalent CTAS/`INSERT` lineage is still captured when the statement is
+  written in a `%%sql` cell** (U3), so this defers only the Python-string-embedded
+  form (documented in U7, a clean future extension). This unit does **not** link
+  source→sink across expressions (that is U2b).
 * **Files**: `src/services/parsing/python.rs` (+ the new `spark_lineage`
   submodule). ≤ 3 files, python-parser only.
 * **Tests**: call `extract_python_lineage(src, authority_ctx)` **directly** (not
@@ -241,7 +251,8 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   `spark.table("c.s.t")` / `spark.read.parquet("s3://b/p")` yields the expected
   endpoint; the **same `spark.table("c.s.t")` with NO trusted authority yields
   zero** (comment 10); each fail-closed case (relative literal, 2-part name,
-  f-string, variable arg, `createOrReplaceTempView`) yields **zero** endpoints
+  f-string, variable arg, `createOrReplaceTempView`, **`spark.sql("CREATE TABLE …
+  AS SELECT …")` — deferred, comment D2**) yields **zero** endpoints
   (strong `== 0` assertion so a silent-drop bug fails loudly).
 * **Milestone**: single-expression PySpark reads/writes yield authority-bound
   resolvable endpoints; everything ambiguous or unauthorized fails closed.
@@ -315,8 +326,12 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   exclude line-magic cells from v1 (documented in U7) — otherwise the parser hits
   tree-sitter-sequel `ERROR` or consumes following Python lines as SQL.
 * **Persistence + incremental delete**: after invoking the U2/U2b/U3 extractors,
-  call the U1 writers (`upsert_dataset_nodes` / `upsert_lineage_edges` /
-  `upsert_lineage_edge_evidence`); on notebook re-index of a **changed** file,
+  **assemble edges first, then upsert only the `dataset_node`s that are endpoints
+  of an emitted `lineage_edge`** — node creation is **edge-driven, never
+  endpoint-driven**, so a standalone read/write endpoint with no counterpart edge
+  writes nothing (fail-closed, **Review comment D1**). Call the U1 writers
+  (`upsert_dataset_nodes` / `upsert_lineage_edges` / `upsert_lineage_edge_evidence`)
+  with that edge-referenced node set; on notebook re-index of a **changed** file,
   first `delete_lineage_by_scope(notebook_path)` (mirroring `index_notebook_source`
   → `delete_content_records_by_scope`, `notebook_indexer.rs:98,164`) so stale
   per-notebook edge-evidence + now-unevidenced edges are removed while a
@@ -330,8 +345,11 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   — no `Language: {lang}. ` wrapper and no leading magic token in the text handed
   to `python.rs`/`sql.rs` — and `chunk_index` preserved; a `%sql` line-magic cell
   is handled per the chosen policy (no `ERROR`, no cross-cell bleed); an
-  unrecoverable raw source emits **no** edge (fail-closed); re-indexing the fixture
-  with a cell removed drops that cell's lineage edge (no stale edge).
+  unrecoverable raw source emits **no** edge (fail-closed); **a cell containing only
+  a bare read (`spark.table("c.s.t")` with no downstream write) produces zero
+  `dataset_node`s and zero edges** (edge-driven node creation, **Review comment
+  D1**); re-indexing the fixture with a cell removed drops that cell's lineage edge
+  (no stale edge).
 * **Milestone**: notebook cells reach the lineage extractors end-to-end and
   persist through the U1 write path with correct incremental delete.
 
@@ -431,7 +449,10 @@ non-build unit, not a task.)*
   qualification + **trusted metastore/storage authority binding** (or drop);
   temp-view lineage **deferred (unrepresentable, Fork A)**; permanent-view
   lineage **deferred (scope-minimization, future extension: re-add `view` kind +
-  `CREATE [OR REPLACE] VIEW` DDL)**; source order (`chunk_index`) = metadata only,
+  `CREATE [OR REPLACE] VIEW` DDL)**; **`spark.sql(...)` string-embedded SQL
+  deferred from the Python path (scope-minimization, comment D2 — the equivalent
+  CTAS/`INSERT` lineage is captured via `%%sql` cells; future extension: delegate
+  the literal to the U3 SQL extractor)**; source order (`chunk_index`) = metadata only,
   never an edge; the `%sql` line-magic policy chosen in U4; the **read surface**
   (lineage is queried via the U8-extended `query_graph`; there is **no**
   `query_sql` tool); the **zero-false-edge rollback trigger** (any confirmed false
@@ -904,3 +925,15 @@ within the ratified v1 scope (no scope change).
 |---|---|---|---|
 | C1 | A4 bullet labels U0 a "pre-harvest gate", contradicting the U0 stage-time decision (deferred to gated task-1, checkpoint before U3) and the harvested task `095.001-T` ("HARD PRE-U3 GATE") | **valid** | Relabeled to a **HARD gate before U3**, realized — per A4's explicit fallback — as gated task-1 `095.001-T`; A4 ratification intent preserved; now consistent with the U0 decision + task file |
 | C2 | Extractors would receive the retrieval-wrapped `content` (`Language: {lang}. {trimmed}`, `notebook_extract.rs:49-55`); stripping only the magic still leaves the `Language: {lang}. ` prefix, so the parser input is invalid | **valid** | U4 now routes a dedicated **raw parse-source** (retrieval wrapper never applied + magic stripped), never the persisted `content`; fail-closed if raw source unrecoverable; byte-exact parse-source test added; mirrored in task `095.006-T` |
+
+### PR #281 external review (Copilot) — re-review at HEAD `be0af166`, 2 findings, all resolved (final automated cycle)
+
+Copilot's re-review after the C1/C2 fixes raised **2 plan-doc findings** (cycle 3,
+the 3-cycle review limit). Both triaged **valid** and resolved as **bounded plan
+clarifications / a documented exclusion — no new build scope** (cycle-limit
+convergence). **Gate remains PASS**; ratified v1 scope unchanged.
+
+| # | Finding | Disposition | Resolution |
+|---|---|---|---|
+| D1 | Retention invariant not enforced by the write path: U4 upserting standalone U2 endpoints could create a `dataset_node` with no edge and no evidence row → unreachable via `lineage_edge_evidence`, un-scope-deletable | **valid** (bounded clarification) | U4 node creation is now **edge-driven, never endpoint-driven** — only `dataset_node`s that are endpoints of an emitted `lineage_edge` are upserted; a standalone read (`spark.table("c.s.t")` with no write) emits **zero nodes + zero edges** (fail-closed). Invariant stated in U1 + enforced in U4; standalone-read test added; consistent with the U4b sweep + canonical-only node decision |
+| D2 | `spark.sql(<literal>)` is whitelisted in U2 but its arg is SQL *text*, not an identifier; U4 routes Python cells only to U2/U2b, so literal `spark.sql("CTAS…")` has no path to the U3 SQL extractor | **valid** (documented exclusion chosen) | **Option (b)**: `spark.sql` **removed from the v1 whitelist** and documented as a deferred exclusion (like temp-view/permanent-view). Rationale: option (a) U2→U3 string-SQL delegation is a cross-unit call path + new tests = added build scope declined at the cycle limit; the **equivalent CTAS/`INSERT` lineage is still captured via `%%sql` cells** (U3). Whitelist, U2 fail-closed tests, and the U7 limits doc (`095.008-T`) updated to match |
