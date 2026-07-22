@@ -45,12 +45,16 @@ impl-plan, no harvest, no shipment created.
 - **Q3:** Use a new lineage subgraph (`dataset_node` + directed `lineage_edge`
   with namespaced `edge_type`), mirroring `powerbi_node`/`powerbi_edge`
   (`schema.rs:1023-1057`). Do NOT overload `calls_edge`/`references_edge`.
-- **Q4:** Cell ordering preserved (`chunk_index`), but no notebook-scoped symbol
-  table; temp-view resolution must be order-aware/last-wins/fail-closed (rhymes
-  with `FF7DE872`).
+- **Q4:** `chunk_index` preserves **source** order — NOT execution order (Jupyter
+  runs cells out of order; Spark temp-view visibility follows session execution
+  order) — and there is no notebook-scoped symbol table; cross-cell temp-view
+  resolution must be execution-aware/fail-closed or it can emit a **false edge**
+  (new **Fork F**: `execution_count` provenance vs labelled source-order approx
+  vs fail-closed drop). Rhymes with `FF7DE872`.
 - **Q5:** Drop (don't guess) non-literal names/paths, f-string/variable SQL,
   config paths, catalog ambiguity, dynamic control flow, grammar ERROR
-  fallbacks, forward/unresolved temp views (013-D).
+  fallbacks, forward/unresolved temp views, **unknown/out-of-order cell
+  execution** (013-D).
 
 ## Decision forks surfaced to operator
 
@@ -63,6 +67,9 @@ impl-plan, no harvest, no shipment created.
 - **E** DataFrame dataflow propagation — connect `read → df → write` across
   separate expressions (single-expression-only fail-closed scope vs a fail-closed
   DataFrame dataflow resolver).
+- **F** Notebook execution-order vs source-order — `chunk_index` is source order,
+  not execution order; resolve via `execution_count` provenance, a labelled
+  source-order approximation, or fail-closed drop when execution order is unknown.
 
 ## State / next steps
 

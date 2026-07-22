@@ -236,11 +236,22 @@ extracted **independently** into an isolated content record; there is **no
 notebook-scoped, order-aware symbol/dataset table** today. Temp views are
 Spark-**session**-scoped (not catalog-persisted): a `createOrReplaceTempView("v")`
 in cell N and a `%%sql … FROM v` (or `spark.table("v")`) in cell M must resolve
-**within one notebook, in cell order, last-definition-wins**. This is net-new and
-is the hardest correctness problem in the whole effort — and it rhymes with the
-same-file last-def-wins shadowing hazard already tracked independently in stash
-`FF7DE872`. Any lineage resolver must fail closed on ambiguous/forward
-references rather than guess.
+**within one notebook**. This is net-new and is the hardest correctness problem
+in the whole effort — and it rhymes with the same-file last-def-wins shadowing
+hazard already tracked independently in stash `FF7DE872`.
+
+**Crucial caveat: `chunk_index` is SOURCE order, not EXECUTION order.** Jupyter
+cells can be run out of order, and a Spark temp view's visibility is determined
+by session **execution** order — so a naïve source-order "last-definition-wins"
+resolver can emit a **false** lineage edge, directly violating the 013-D
+fail-closed invariant. Execution semantics are therefore a load-bearing
+decision, surfaced below as **Fork F**, with three honest options: (a) use
+**execution provenance** — the notebook JSON's per-cell `execution_count` (when
+present and monotonic) reflects actual run order; (b) a clearly-**labelled static
+source-order approximation** carrying its precision caveat; or (c) **drop
+cross-cell temp-view resolution when execution order is unknown/ambiguous** (the
+fail-closed default). Any lineage resolver must fail closed on
+ambiguous/forward/out-of-order references rather than guess.
 
 ### Q5 — Fail-closed boundaries (honor 013-D no-false-edge)
 
@@ -264,6 +275,10 @@ when both endpoints are literal and unambiguously resolvable):
   statement rather than partial-guess.
 * **Forward/unresolved temp views** — a `FROM v` with no in-notebook,
   earlier-in-order `createOrReplaceTempView("v")` (or SQL temp-view DDL) → drop.
+* **Unknown/out-of-order execution** — when cell execution order cannot be
+  established from `execution_count` (absent, non-monotonic, or a cell never
+  executed), drop cross-cell temp-view resolution rather than assume source
+  order (see Fork F).
 
 This matches the conservative posture of `094-F` (extract-and-mark, promote only
 unambiguous singletons) and 013-D.
@@ -278,7 +293,7 @@ staging/resolution patterns (`staged_call`, `schema.rs:821-857`). No obviously
 blocking dependency was found and no in-flight lineage work exists (the only
 `lineage` hits in `src/` are Power BI `lineageTag` GUIDs — unrelated).
 
-**But five material design forks and one un-resolvable-in-spike unknown make
+**But six material design forks and one un-resolvable-in-spike unknown make
 this NOT a low-uncertainty GO:**
 
 * **Fork A — Graph vs. annotation.** Build a real lineage *subgraph* (new
@@ -308,8 +323,15 @@ this NOT a low-uncertainty GO:**
   propagate through transforms, drop on reassignment/branching/non-literal). The
   Q6 effort estimate must include this, since it covers a core part of the
   stated goal (`read → df → write`).
-* **Cross-cell temp-view resolution** (Q4) is a genuine order-aware,
-  last-wins correctness problem interacting with the `FF7DE872` shadowing class.
+* **Fork F — Notebook execution-order vs. source-order.** `chunk_index` is
+  *source* order; Jupyter runs cells in any order and Spark temp-view visibility
+  follows *execution* order, so a source-order resolver can emit false edges.
+  Options: (a) execution provenance via monotonic `execution_count`; (b) a
+  labelled static source-order approximation; or (c) fail-closed drop when
+  execution order is unknown. See Q4/Q5.
+* **Cross-cell temp-view resolution** (Q4, gated by Fork F) is a genuine
+  order-aware, last-wins correctness problem interacting with the `FF7DE872`
+  shadowing class.
 
 **Blast radius is elevated** (touches `src/db/` schema, a new subgraph, the
 notebook indexer, `sql.rs`, `python.rs`, plus new traversal/MCP surface) —
@@ -345,8 +367,12 @@ the operator rather than pushing a plan/shipment past an honest spike.
    fail-closed scope, or a fail-closed DataFrame dataflow resolver — this
    determines whether the most common `read → df → write` shape yields lineage
    at all.
+5. **A decision on Fork F** (execution vs. source order): use `execution_count`
+   provenance, a labelled source-order approximation, or fail-closed drop when
+   execution order is unknown — required so cross-cell resolution cannot emit a
+   false edge under out-of-order execution.
 
-Suggested next Stage action once conditions 1–4 are answered: route to the
+Suggested next Stage action once conditions 1–5 are answered: route to the
 `deliberate` skill on Forks A/C (subgraph shape + SQL approach), then
 `impl-plan` → `plan-harden` (blast radius warrants it) → `plan-review` →
 `harvest`.
