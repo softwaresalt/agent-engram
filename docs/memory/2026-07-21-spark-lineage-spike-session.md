@@ -15,10 +15,14 @@ that satisfies sequencing; **closure** (docs) merged as `6e049621` (PR #278);
 
 ## Outcome — CONDITIONAL GO, HALT at findings
 
-Feasibility is **yes** with heavy reuse, but there are **material design forks +
-one grammar-coverage unknown that cannot be resolved inside a Stage spike**, so
-per the decision gate the pipeline **stops at the findings artifact**. No
-impl-plan, no harvest, no shipment created.
+**Technical feasibility is yes** with heavy reuse, and the spike establishes the
+design constraints — but there are **material design forks + one grammar-coverage
+unknown that cannot be resolved inside a Stage spike**, so per the decision gate
+the pipeline **stops at the findings artifact**. No impl-plan, no harvest, no
+shipment created. **Product value is asserted by the operator, not measured here**
+— empirical lineage **recall / corpus prevalence** under the fail-closed authority
+gating is **unquantified** and is validated in the **Fork A GO/NO-GO** decision
+(the spike proves feasibility, not ROI).
 
 **Findings artifact:** `docs/decisions/2026-07-21-spark-notebook-data-lineage-spike.md`
 

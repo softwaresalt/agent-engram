@@ -25,10 +25,12 @@ tags:
 
 ## Goal
 
-Is it feasible and worthwhile to model **data-lineage** (dataset/table/temp-view
+Is it **technically feasible** to model **data-lineage** (dataset/table/temp-view
 read→write→derives-from edges) across PySpark and `%%sql` cells inside `.ipynb`
 notebooks, and — if so — what is the smallest repo-aligned approach and the
-correct decomposition under the 2-hour rule?
+correct decomposition under the 2-hour rule? (Product **value** — corpus
+prevalence, demand, expected lineage **recall** — is an operator/product question
+this spike **frames but does not measure**.)
 
 This is a **data-lineage graph** (domain nodes = datasets/tables/temp-views; edges =
 read / write / derives-from; **v1 models table and path datasets only — temp-view
@@ -499,12 +501,17 @@ spike, forcing an impl-plan now would be dishonest.
 **Conclusion: CONDITIONAL GO — HALT at this findings artifact.**
 **Confidence: medium** (feasibility high; design uncertainty material).
 
-Data-lineage over PySpark + `%%sql` notebooks is feasible and worthwhile and
-reuses substantial existing infrastructure, but it carries material design forks
-and one grammar-coverage unknown that cannot be resolved within a Stage spike.
-Per the staging decision gate, this does **not** meet the "clear GO with low
-design uncertainty" bar, so the pipeline stops here and surfaces the forks to
-the operator rather than pushing a plan/shipment past an honest spike.
+Data-lineage over PySpark + `%%sql` notebooks is **technically feasible** (heavy
+reuse of existing parser/schema patterns), and this spike establishes the design
+constraints, but it carries material design forks and one grammar-coverage unknown
+that cannot be resolved within a Stage spike. **Product value is asserted by the
+operator, not measured by this spike** — empirical lineage **recall / corpus
+prevalence** under the fail-closed authority gating (which the trusted
+metastore/storage-authority requirement makes stricter) is **unquantified**, and is
+**validated as part of the Fork A GO/NO-GO decision.** Per the staging decision
+gate, this does **not** meet the "clear GO with low design uncertainty" bar, so the
+pipeline stops here and surfaces the forks to the operator rather than pushing a
+plan/shipment past an honest spike.
 
 **Conditions that must be resolved before an impl-plan is honest:**
 
