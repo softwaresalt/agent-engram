@@ -126,7 +126,12 @@ notebooks and does not model directional lineage.**
 (`sql.rs:35`) and emits:
 
 * `Defines` for `create_table` / `create_view` (→ `ExtractedSymbol::Class`) and
-  `create_function` / `create_procedure` (`sql.rs:72-87`).
+  `create_function` (`sql.rs:72-87`). The same match arm also includes
+  `create_procedure`, but that arm is **currently dormant**: tree-sitter-sequel
+  0.3 parses `CREATE PROCEDURE` as `ERROR` (`sql.rs:11-14`), so it never emits a
+  definition today. The working `Defines` emitters are therefore
+  `create_table` / `create_view` / `create_function` (consistent with gap #3
+  below).
 * `References` for `from`-clause relations including JOIN variants
   (`join`/`cross_join`/`lateral_join`/`lateral_cross_join`,
   `sql.rs:172-213`) and `insert` targets (`sql.rs:219-239`).
