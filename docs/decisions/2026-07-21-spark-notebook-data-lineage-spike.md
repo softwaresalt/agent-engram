@@ -186,11 +186,26 @@ The **Power BI precedent is the right template** for lineage:
   collisions with code and backlog edge types in shared traversal"
   (`schema.rs:1042-1057`).
 
-**Recommendation:** model lineage as a new subgraph mirroring this pattern —
-e.g. `dataset_node { id => name, kind ∈ {table, view, temp_view, path},
+**Recommendation:** model lineage as a new subgraph mirroring this pattern. Add
+a `dataset_node { id => name, kind ∈ {table, view, temp_view, path},
 notebook_path, source_path, content_hash, ingested_at }` and a directed
-`lineage_edge { from_id, to_id, edge_type => … }` with a namespaced `edge_type`
-(e.g. `lineage_reads`, `lineage_writes`, `lineage_derives_from`).
+`lineage_edge { from_id, to_id, edge_type => … }`. Define **exact endpoint
+semantics per edge type** so the direction is unambiguous (a bare `reads`/`writes`
+between two *datasets* has no actor endpoint and is ambiguous, so it is
+deliberately avoided):
+
+* **Core edge — dataset→dataset derivation:** `edge_type = lineage_derives_from`
+  with `from_id = the written/derived dataset` and `to_id = a source dataset it
+  reads from` ("written derives from source"). This is the primary lineage edge
+  and needs no actor endpoint.
+* **Optional role edges (only if read/write roles must be modeled):** introduce
+  an **operation node** (the notebook cell or Spark op, acting as the endpoint)
+  and emit `edge_type = lineage_reads` as `operation→dataset` and
+  `edge_type = lineage_writes` as `operation→dataset`, so both directions carry
+  an unambiguous actor.
+
+This keeps Q3 implementable as written and directly informs **Fork A** and the
+eventual `deliberate` step.
 
 Do **not** overload:
 
