@@ -1,6 +1,6 @@
 ---
-title: "Single-model incremental bot review of a PLAN/design doc does not converge to zero — certify contracts with a one-pass multi-model adversarial review, then apply an explicit stop-and-merge rule"
-description: "PR #281 (a docs+backlog-only implementation plan, no code) ran 10 Copilot review cycles whose findings-per-cycle refused to converge (10→3→2→2→7→6→4→2→9→0). Each fix edited the plan, and the next single-model cycle read the NEW text and surfaced NEW issues in a different category (contract ambiguity → task granularity → stale disposition-log history → decomposition seams). A single-pass multi-model adversarial review certified the architecture SOUND and reframed the divergence as contract ambiguity, not design flaws. Convergence to 0 was only achieved by an explicit STOP rule: fix genuine contradictions, document limitations + rollback triggers instead of expanding scope, defer granularity to the Ship harness-architect re-split, and RESOLVE remaining low-confidence nits as backlog deferrals rather than fixing them (fixing spawns fresh text for the next cycle to flag)."
+title: "Single-model incremental bot review of a PLAN/design doc does not converge monotonically or cheaply — it oscillates and terminates only under an explicit stop rule; certify contracts once with a multi-model adversarial review"
+description: "PR #281 (a docs+backlog-only implementation plan, no code) ran 10 Copilot review cycles whose findings-per-cycle oscillated instead of trending down (10→3→2→2→7→6→4→2→9→0). Each fix edited the plan, and the next single-model cycle read the NEW text and surfaced NEW issues in a different category (contract ambiguity → task granularity → stale disposition-log history → decomposition seams). The count DID reach 0 at cycle 10 — but only after an explicit stop rule halted doc edits; left to run, single-model incremental review does not self-terminate. A single-pass multi-model adversarial review certified the architecture SOUND and reframed the divergence as contract ambiguity, not design flaws. The stop rule: fix genuine contradictions, document limitations + rollback triggers instead of expanding scope, split over-granular tasks before harvest (never defer a 2-hour-gate violation to Ship), and RESOLVE remaining low-confidence nits as backlog deferrals rather than fixing them (fixing spawns fresh text for the next cycle to flag)."
 problem_type: "review_convergence + process_hazard + plan_doc_review"
 category: "workflow-issues"
 component: ".github/skills/plan-review; Adversarial Review agent; ship/stage review-fix loop; docs/exec-plans/*-plan.md under Copilot review"
@@ -40,16 +40,21 @@ cycle:      1   2   3   4   5   6   7   8   9   10
 findings:  10   3   2   2   7   6   4   2   9    0
 ```
 
-The count refused to trend to zero. Each cycle we fixed every finding, pushed,
-and re-requested review — and the next cycle came back with a *new* batch, often
-larger than the previous one (note the 2→7 and 2→9 jumps). Chasing "zero
-findings" via single-model incremental review would have looped indefinitely and
-burned enormous review-cycle budget on a document with no executable code.
+The count **oscillated** instead of trending monotonically down: each cycle we
+fixed every finding, pushed, and re-requested review — and the next cycle came
+back with a *new* batch, often larger than the previous one (note the 2→7 and
+2→9 jumps). It *did* reach 0 at cycle 10, but only after we stopped editing the
+doc (see Resolution). The thesis is therefore not "review never reaches zero" —
+it did — but that single-model incremental review of a plan **does not converge
+monotonically or cheaply and does not self-terminate**: left to run, fix-and-push
+keeps re-arming the cycle and burns enormous review-cycle budget on a document
+with no executable code.
 
 ## Root Cause
 
-**A plan/design document under single-model incremental review is a moving
-target, not a converging one.**
+**A plan/design document under single-model incremental review behaves like a
+moving target rather than a monotonically converging one — it can reach zero, but
+only when edits stop, not on its own.**
 
 - For *code*, a review finding maps to a defect; fixing it removes the defect and
   shrinks the reviewable surface, so findings trend down.
@@ -91,9 +96,17 @@ then **cap** the single-model cycles with an explicit stop-and-merge rule.
    - **Known limitation** → **document** it in a "v1 Limitations & Deferred
      Items" section with a rollback trigger; do **not** expand scope to make the
      finding disappear.
-   - **Task granularity / decomposition** → **defer** to the Ship
-     harness-architect re-split (enumerate the split boundaries in the task, but
-     don't re-plan them now).
+   - **Task granularity / decomposition** → **split the task before
+     harvest/staging** — do **not** defer it to Ship. The 2-hour /
+     3-test-scenario limit is a NON-NEGOTIABLE gate
+     (`constitution.instructions.md`, Task Granularity), and `harness-architect`
+     only scaffolds *ready* tasks — it "prepares the red phase and stops there"
+     and does not re-decompose backlog work
+     (`harness-architect/SKILL.md`, Purpose + Step 1). Deferring an over-granular
+     task to the Ship harness-architect institutionalizes a gate violation. On
+     #281 this deferral shipped in `095.004-T` (6 scenarios vs the 3-scenario
+     ceiling) — that was a **deviation to correct, not a pattern to copy**. Split
+     it during planning/harvest so every harvested task is gate-compliant.
    - **Low-confidence nit / append-only-history "staleness"** → **RESOLVE the
      thread with a backlog-deferral rationale; do NOT edit the doc.** Editing to
      silence a nit only spawns fresh text for the next cycle to flag.
@@ -101,25 +114,33 @@ then **cap** the single-model cycles with an explicit stop-and-merge rule.
 3. **Merge on the gate, not on "zero findings."** Once contracts are certified
    and real contradictions are fixed, run the 4-point merge gate
    (`commit_id == HEAD` review present, Copilot off `requested_reviewers`, 0
-   unresolved threads, `mergeable_state == clean`) and merge. On #281, cycle 10
-   returned **"reviewed 17 of 18 files and generated no new comments"** — zero
-   new findings — precisely because the STOP rule stopped editing the doc to
-   chase nits. The one residual suppressed low-confidence note just restated the
-   already-deferred granularity item.
+   unresolved threads, `mergeable_state == clean`) and merge. Observed on #281:
+   cycle 10 ran on `dfb99579` (the final reconciliation commit — the doc was not
+   edited again afterward to chase nits) and returned **"reviewed 17 of 18 files
+   and generated no new comments."** Note this is zero *public* comments, not a
+   fully clean review: one low-confidence granularity finding remained,
+   **suppressed** rather than posted. The observed facts are that no new public
+   threads appeared once edits stopped, the 4-point gate was clean, and the PR
+   merged — not a proven causal law that stopping edits guarantees zero findings.
 
 ## Prevention
 
-- **For plan/design docs, do not target "0 findings" via single-model
-  incremental bot review.** It is a moving target that contract-clarification
-  actively feeds. Budget it as bounded, not exhaustive.
+- **For plan/design docs, do not chase "0 findings" via single-model
+  incremental bot review.** Reaching zero is achieved by *stopping edits* once
+  contracts are certified, not by exhaustively fixing — each fix feeds the next
+  cycle. Budget the review as bounded, not exhaustive.
 - **Escalate to a one-pass multi-model adversarial review to certify
   architecture/contracts.** Treat its SOUND verdict — not the bot's finding
-  count — as the "design is done" signal. (Escalation criteria already live in
-  `adversarial-review.instructions.md`; a persistently non-converging plan review
-  is a valid trigger.)
+  count — as the "design is done" signal. Note: persistent non-convergence is
+  **not** currently an automatic escalation trigger in
+  `adversarial-review.instructions.md` — the listed triggers are 3+ P0/P1
+  findings, security-sensitive scope touching auth/crypto/data/PII, or an
+  explicit operator request. On #281 the adversarial review was
+  **operator-triggered**. If you want non-convergence to auto-escalate, propose
+  it as a new trigger in that instruction file rather than assuming it applies.
 - **Classify every residual finding before touching the doc.** Only
-  correctness/contract contradictions warrant an edit. Granularity → defer to
-  Ship; limitations → document; nits/append-only-history → resolve as backlog.
+  correctness/contract contradictions warrant an edit. Granularity → split before
+  harvest; limitations → document; nits/append-only-history → resolve as backlog.
 - **Expect append-only disposition logs to look "stale" to bots.** They record
   superseded decisions *by design*. Resolve such flags as intended history; do
   **not** rewrite the log — rewriting destroys the audit trail and adds new text
