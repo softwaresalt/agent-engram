@@ -86,7 +86,17 @@ then **cap** the single-model cycles with an explicit stop-and-merge rule.
    assembled by consensus) certified #281's architecture **SOUND** and reframed
    the ongoing Copilot divergence as **contract ambiguity, not design flaws**.
    This is the load-bearing move: it gives you a defensible "the design is done"
-   signal that a single-model incremental review never emits.
+   signal that a single-model incremental review never emits. **Caveat — the
+   verdict only covers the revision the reviewers actually saw.** On #281 the
+   adversarial pass ran on an early revision (`a9ec72ed`); the plan then changed
+   materially in later cycles, and cycle 9 exposed a genuine U2 seam
+   contradiction introduced *after* certification — a contract edit that never
+   got multi-model review. So a SOUND verdict is not a durable, open-ended
+   "design is done" stamp. After certification you MUST either **freeze the
+   certified contract text** (treat further edits to it as scope changes) or
+   **re-run certification when a material contract change lands**. Purely
+   editorial or limitation-documenting edits do not require re-certification;
+   changes to type contracts, unit seams, or dependency direction do.
 
 2. **Apply an explicit STOP rule after adversarial certification.** For each
    remaining single-model finding, classify and route — do **not** reflexively
