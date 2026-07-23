@@ -557,13 +557,16 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   → `delete_content_records_by_scope`, `notebook_indexer.rs:98,164`) so stale
   per-notebook edge-evidence + now-unevidenced edges are removed while a
   `dataset_node` still evidenced by another notebook is retained. (Resolves the P2
-  re-index/GC finding.) **After extraction, U4 unconditionally stamps
-  `upsert_lineage_index_state(notebook_path, CURRENT_EXTRACTOR_VERSION)` for _every_
-  extracted notebook — regardless of edge count, including zero-lineage notebooks**
-  — so an unchanged zero-lineage notebook hash-skips on the next run instead of
-  re-extracting every time (**AR-03**). **Freshness of _unchanged_ notebooks
-  (version backfill) and _whole-notebook deletion_ cleanup are handled by U4b**
-  (Review comments 4/5).
+    re-index/GC finding.) **As its FINAL write — only after every node/edge/evidence
+    upsert for the notebook has succeeded — the U4 write-path unconditionally stamps
+    `upsert_lineage_index_state(notebook_path, CURRENT_EXTRACTOR_VERSION)` for _every_
+    extracted notebook, regardless of edge count, including zero-lineage notebooks**
+    — so an unchanged zero-lineage notebook hash-skips on the next run instead of
+    re-extracting every time (**AR-03**), while a failure in any earlier write leaves
+    the notebook **un-stamped** so it re-extracts (partial-graph recovery — the stamp
+    must never precede a graph write, **cycle-7 I1**). **Freshness of _unchanged_ notebooks
+    (version backfill) and _whole-notebook deletion_ cleanup are handled by U4b**
+    (Review comments 4/5).
 * **Files**: `src/models/notebook.rs` (the `raw_parse_source` carrier field, **AR-10**),
   `src/services/notebook_extract.rs`, `src/services/notebook_indexer.rs`. ≤ 3 files,
   notebook-path only.
@@ -856,7 +859,7 @@ over 16 items** (feature + 15 tasks).
 | **R1 — U3 sizing unknown**: tree-sitter-sequel 0.3 coverage of `INSERT OVERWRITE` / CTAS `from`-descent is unverified until U0 | U0 is a **hard gated task-1 with a checkpoint before U3 is built**; U3 sizing carries an explicit (A)/(B) fork; residual risk flagged here and in U3 |
 | **R2 — cross-metastore/-environment key merge** (false-merge of distinct datasets under one node) | Authority-in-key (the canonical `dataset_node` id embeds the stable `metastore_authority_id`/storage-authority so two metastores sharing `catalog.schema.table` stay distinct — **AR-01**) or fail closed (U1a/U2/U3/U1b); U6 asserts unresolvable-authority *and* cross-authority-distinctness cases |
 | **R3 — false lineage edge on ambiguous names/paths** (013-D violation) | One general fail-closed predicate applied uniformly (U2/U3); U6 precision floor asserts 0 edges on all dropped cases |
-| **R4 — `%sql` line-magic mis-parse** (parser consumes following Python lines / hits `ERROR`) | U4 strips the magic and picks an explicit line-magic policy (parse-own-line or exclude); U7 documents it |
+| **R4 — `%%sql` cell-magic mis-parse** (parser consumes following lines / hits `ERROR`) | `%sql` **line-magic** cells are **excluded from v1** (decided — AR-11); only `%%sql` **cell-magic** routes to U3, so R4's residual risk is just a `%%sql` mis-parse, handled by the magic-strip + `raw_parse_source` carrier; U7 documents the policy |
 | **R5 — multi-source evidence clobbered on re-index** | `lineage_edge_evidence` keyed by `(from_id, to_id, edge_type, notebook_path, chunk_index)` — the `chunk_index` (cell) dimension keeps the same edge observed in two cells as two rows (cycle-4 E1 / **AR-20**) — and `dataset_node` canonical-only (**U1a**); shared-edge scope-delete + same-edge/two-cell round-trip + canonical-identity round-trip tests |
 | **R6 — cross-cell `df`/temp-view false edge** | Both explicitly OUT of v1 (A3/A6); U6 asserts multi-cell `df` and temp-view refs fail closed |
 | **R7 — schema migration on existing indexes** | Additive `:create` with idempotent bootstrap + migration guard (U1); no destructive change; nodes/edges regenerate on re-index |
@@ -1035,8 +1038,6 @@ rollback, and guardrails so the risky work is specific and reviewable.
 
 * **U0 grammar checkpoint** (blocks U3 sizing/build) — Ship-side; must resolve
   before U3.
-* **`%sql` line-magic policy** (U4) — parse-own-line vs. exclude-from-v1: a
-  low-risk implementation decision resolved in U4/deliberation, documented in U7.
 * **Fork A recall/prevalence GO/NO-GO** — a *post-build* value gate (after U6),
   not a pre-execution blocker.
 
@@ -1122,8 +1123,12 @@ surfaced by the cycle-6 adversarial review; future work may lift them):
   **single-threaded per notebook**, so intra-notebook races do not occur. Intended
   ordering: **evidence-and-nodes-before-edge** (edge-driven-node invariant D1 requires
   nodes to exist first) under a per-notebook **scope-replace** (delete-then-insert)
-  critical section; a partial-failure recovery is a **full re-extraction of the
-  notebook** on the next run (the scope-delete makes re-extraction idempotent).
+  critical section; the `lineage_index_state` freshness stamp is issued as the
+  **FINAL write** (only after every node/edge/evidence upsert succeeds), so a
+  pre-stamp failure leaves the notebook **un-stamped** and U4b's hash+version skip
+  predicate cannot skip — and thus cannot freeze — the partial graph; a partial-failure
+  recovery is therefore a **full re-extraction of the notebook** on the next run (the
+  scope-delete makes re-extraction idempotent — cycle-7 I1).
 
 ## Following Steps (outside this plan)
 
@@ -1369,7 +1374,7 @@ documented v1 limitation.
 |---|---|---|---|
 | AR-01 (G3) | `catalog.schema.table` collides across metastores | **fixed** | Canonical `dataset_node` id embeds a **required** stable `metastore_authority_id` (table) / storage-authority id (path) + a catalog→authority mapping; unmapped catalog ⇒ no authority ⇒ **no node/edge** (fail-closed). Tests: cross-authority distinctness + unmapped-catalog fail-closed. Plan U1a/U2 key, R2/A5 trace; tasks `095.002-T` (key) + `095.011-T` (config) |
 | AR-02 (G4) | `df = spark.read(...)` modeled as read-call + separate rebind ⇒ self-invalidation | **fixed** | A resolved Spark-read assignment is **one atomic `Bind` event** (no self-invalidation); rebind/invalidation events fire **only** for **non-Spark** RHS reassignments. Contract test: `df = spark.read("in"); df.write("out")` → one read→`df` bind + one write edge, no self-invalidation. Tasks `095.003-T` (U2) + `095.004-T` (U2b) |
-| AR-03 | Edge-driven-only stamping re-extracts zero-lineage notebooks every run | **fixed** | U4 calls `upsert_lineage_index_state(path, CURRENT_VERSION)` **unconditionally** per extracted notebook (incl. zero-lineage); corrected the false U4b "neither one-shot nor perpetual reindex" claim for the zero-lineage case. Zero-lineage skip test (2nd run hash-skips). Tasks `095.006-T` (U4) + `095.009-T` (U4b) |
+| AR-03 | Edge-driven-only stamping re-extracts zero-lineage notebooks every run | **fixed** | The U4 write-path calls `upsert_lineage_index_state(path, CURRENT_VERSION)` **unconditionally AND as the FINAL write** — only after all node/edge/evidence upserts succeed, so a pre-stamp failure leaves the notebook un-stamped and it re-extracts (partial-graph recovery pin, cycle-7 I1) — per extracted notebook (incl. zero-lineage); corrected the false U4b "neither one-shot nor perpetual reindex" claim for the zero-lineage case. Zero-lineage skip test + stamp-absent recovery test (a stamp-less partial graph is NOT skipped on the 2nd run). Tasks `095.015-T` (U4 write-path) + `095.009-T` (U4b) |
 | AR-04 (G2) | U1 exceeds the 2-hour granularity rule | **fixed** | Split U1 → **U1a** (`095.002-T`: relations + bootstrap + value types) and **U1a′** (`095.012-T`: writers + 4-step delete cascade + tests). **No new "U1b"** (that label already belongs to `095.011-T` — the flagged collision). DAG rewired: U2/U2b/U3/U4/U8 now depend on **U1a′**. **+1 task ⇒ `090-S` 12→13**, DAG re-drawn. **G6 fold-in:** the U1b authority test **stubs** the U2/U3/U4 pipeline via a seam (verifies propagation in isolation) so **U1b depends on U1a only** (not U2/U3); the end-to-end lineage assertion lives in U4/U6 |
 | AR-05 (G5) | Missing canonical orientation for `lineage_derives_from` | **fixed** | Added the orientation sentence in U1/U7: `from_id` = **written target** → `to_id` = **read source**; data flows source→target, edge encodes derives-from. Replaced "read→write linking" → "derives-from linking" in U3. Task `095.005-T` |
 | AR-06 | Downstream-consumer discovery direction undocumented; reciprocal-edge temptation | **fixed** | Documented traversal **direction** in U8/U7: **outgoing**/`find_path` from a target reaches its **sources** (upstream); **incoming** neighborhood reaches **consumers** (downstream). Added a U8 incoming-direction test. **Refuted** the reciprocal `lineage_flows_to` edge as scope creep (A6). Task `095.010-T` (U8) — see note below on numbering |
@@ -1401,7 +1406,7 @@ documented v1 limitation.
 | AR-22 | `delete_lineage_by_scope` gains **step (4)** deleting the notebook's `lineage_index_state` row; asserted in the whole-file-deletion test | **fixed** |
 | AR-27 | Corrected the `INSERT` syntax in `095.005-T` to Spark's `INSERT OVERWRITE TABLE …` / `INSERT INTO …` (matches U0 + the test) | **fixed** (task) |
 
-**Documented as v1 limitations** (new "## v1 Limitations & Deferred Items" section — no new task files): **AR-12** (authority-config changes don't backfill unchanged notebooks) → **documented-v1**; **AR-16** (U8 needs a dedicated traversal loop + `dataset_node` resolver, not an allowlist append) → **documented-v1**; **AR-17** (malformed-JSON notebook leaves stale content+lineage via early `continue`) → **documented-v1 / deferred-095-F**; **AR-18** (U1b propagation may widen `index_notebook_source`'s signature + its `ingestion.rs` caller; ≤3-file list may need +1) → **documented-v1**; **AR-28** (three non-atomic upserts + 4-step delete cascade; single-threaded per notebook; evidence/nodes-before-edge ordering + full-re-extraction recovery) → **documented-v1**.
+**Documented as v1 limitations** (new "## v1 Limitations & Deferred Items" section — no new task files): **AR-12** (authority-config changes don't backfill unchanged notebooks) → **documented-v1**; **AR-16** (U8 needs a dedicated traversal loop + `dataset_node` resolver, not an allowlist append) → **documented-v1**; **AR-17** (malformed-JSON notebook leaves stale content+lineage via early `continue`) → **documented-v1 / deferred-095-F**; **AR-18** (U1b propagation may widen `index_notebook_source`'s signature + its `ingestion.rs` caller; ≤3-file list may need +1) → **documented-v1**; **AR-28** (three non-atomic upserts + 4-step delete cascade; single-threaded per notebook; evidence/nodes-before-edge ordering, **stamp issued as the FINAL write** so a pre-stamp failure leaves no stamp and the partial graph re-extracts — full-re-extraction recovery, cycle-7 I1) → **documented-v1**.
 
 **Numbering caveat (flagged):** the finding text for **AR-06** said "Touch the U8 task (`095.008-T`)", but **`095.008-T` is U7 (docs)**; **U8 is `095.010-T`**. AR-06's traversal-direction changes were applied to **`095.010-T` (U8)**; the U7 direction doc-note to `095.008-T`.
 
