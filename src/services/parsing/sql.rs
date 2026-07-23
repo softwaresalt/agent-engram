@@ -251,6 +251,9 @@ fn extract_insert_references(node: Node<'_>, source: &str, edges: &mut Vec<Extra
 /// U0 (095.001-T, Outcome A) confirmed enhancing `sql.rs` suffices: CTAS from-descent,
 /// INSERT target/source extraction, and a bounded `TABLE`-keyword normalization shim
 /// (tree-sitter-sequel 0.3 mis-parses the Spark `TABLE` keyword).
+/// U3 Spark-SQL lineage extractor, re-exported for the notebook router (U4a).
+pub(crate) use sql_lineage::extract_sql_lineage;
+
 #[allow(dead_code)]
 pub(super) mod sql_lineage {
     use std::collections::HashSet;

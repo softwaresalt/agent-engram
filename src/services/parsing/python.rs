@@ -344,6 +344,9 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<ResolvedCallName> {
 /// and a 3-part literal with no trusted authority all yield **no** resolved
 /// endpoint. `spark.sql(...)` is deferred out of v1 (removed from the
 /// whitelist); `createOrReplaceTempView(...)` is content-only (no edge).
+/// U2a→U2c→U2b lineage extractors, re-exported for the notebook router (U4a).
+pub(crate) use spark_lineage::{extract_python_lineage, resolve_cell_candidates};
+
 // `#[allow(dead_code)]`: this is the U2a → U2c seam. Its consumer, the
 // `extract_python_lineage` event stream, arrives in U2c (095.013-T); until then
 // the resolver + value types are exercised only by the U2a unit tests.

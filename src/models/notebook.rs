@@ -127,6 +127,18 @@ pub struct NotebookCellRecord {
 
     /// Searchable notebook cell text excluding outputs and execution state.
     pub content: String,
+
+    /// Non-persisted raw cell source handed to the Spark-lineage extractors
+    /// (095-F, Unit U4a).
+    ///
+    /// The author-written source with the `Language: {lang}. ` retrieval wrapper
+    /// **never** applied and the leading cell magic stripped. `None` when the
+    /// cell is not routable for lineage (markdown, a `%sql` line-magic cell —
+    /// AR-11, a non-PySpark/Spark-SQL cell magic) or the source could not be
+    /// recovered — fail-closed, no lineage is emitted for the cell (AR-10). This
+    /// field is a transient extraction carrier and is not written to any content
+    /// record.
+    pub raw_parse_source: Option<String>,
 }
 
 /// Extracted notebook content ready for content-record persistence.
