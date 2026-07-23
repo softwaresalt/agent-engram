@@ -232,15 +232,15 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     (`src/models/content.rs:26`) with **no version slot**, so a durable check needs
     its own state (**cycle-5 F5** — the finding explicitly blesses a "separately
     specified version-state design"). Writer `upsert_lineage_index_state(path,
-    version)` + reader `lineage_index_version(path)`, consumed by U4b.
+    version)` + reader `lineage_index_version(path)` (**U1a″**, task `095.014-T`),
+    consumed by the U4 write-path stamp + U4b.
   * Register all four relations in the schema-bootstrap `scripts` array (`:86-87` region);
     idempotent `:create`; migration guard consistent with the existing
     `migrate_*` pattern.
   * **(U1a′) db write helpers** in `src/db/cozo_queries.rs` mirroring
     `upsert_powerbi_nodes` / `upsert_powerbi_edges` (`cozo_queries.rs:5471-5520`,
     `:put` batch-upsert): `upsert_dataset_nodes`, `upsert_lineage_edges`,
-    `upsert_lineage_edge_evidence`, `upsert_lineage_index_state` /
-    `lineage_index_version` (freshness state), plus
+    `upsert_lineage_edge_evidence`, plus
     `delete_lineage_by_scope(notebook_path)` (mirroring
     `delete_content_records_by_scope`, `notebook_indexer.rs:164`) which performs a
     fail-closed cascade: **(1)** delete **all** that notebook's
@@ -252,6 +252,14 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     (FF7DE872). **This is the lineage WRITE path (U1a′)** — the notebook router (U4)
     calls these; lineage does **NOT** flow through the `code_graph` `ExtractedEdge`
     consumer (that file walk skips `.ipynb`). Resolves the P1 write-path gap.
+* **(U1a″) version-state helpers (H3 split — task `095.014-T`)** in
+    `src/db/cozo_queries.rs`: the freshness read/write pair
+    `upsert_lineage_index_state(path, version)` + `lineage_index_version(path)` for the
+    `lineage_index_state` relation, consumed by the U4 write-path's final-write stamp and
+    U4b's skip predicate. **U1a′ (`095.012-T`) owns ONLY the node/edge/evidence writers +
+    the 4-step scope-delete/GC cascade; the version-state helpers are U1a″ (`095.014-T`)
+    — the two do not overlap.** (The cascade's step-(4) `lineage_index_state` row deletion
+    is a direct `:rm` inside `delete_lineage_by_scope` in U1a′, not the U1a″ writer.)
 * **(U1a) Shared lineage value types (foundation)** — the cross-cutting Rust types every
     emitter and writer shares, defined once here so no unit invents its own carrier:
     `LineageEndpoint` (a resolved, authority-bound dataset ref — `kind ∈ {table,path}`
@@ -282,7 +290,7 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   GCs its now-orphan `dataset_node`s (comment 2); **same-edge/two-cells test** — one
   notebook emits the SAME edge from two cells; **two** `lineage_edge_evidence` rows
   with distinct `chunk_index` round-trip (no `:put` overwrite), and
-  `delete_lineage_by_scope(N)` removes **both** (comment E1); **version-state test**
+  `delete_lineage_by_scope(N)` removes **both** (comment E1); **(U1a″) version-state test**
   — `upsert_lineage_index_state` then `lineage_index_version` round-trips the
   extractor version, and it **survives a store re-open** (durable, not in-memory)
   (cycle-5 F5); and `delete_lineage_by_scope(N)` also removes `N`'s
@@ -333,14 +341,20 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 
 > **Split (H4 cycle-7 — the former single U2 exceeded the 2-hour granularity gate:
 > >4 test scenarios).** **U2a** (task `095.003-T`) = the Spark method-chain
-> extraction + endpoint resolution + authority resolution that produces the resolved
-> `LineageEndpoint` / `LineageEdgeCandidate` **IR**. **U2c** (task `095.013-T`) = the
-> assignment-and-scope **event emission** — the 3-kind `SparkLineageEvent` model (read
-> *Bind* / write call / non-Spark rebind-invalidation) + per-form scope analysis over
-> that IR — exposing `extract_python_lineage`. **The seam contract = the
-> `LineageEndpoint`/candidate IR.** **U2c depends on U2a**; **U2b** (`095.004-T`)
-> consumes U2c's event stream (**U2b now depends on U2c**). The prose below describes
-> both halves; each is sized under the gate (see the per-task granularity lines).
+> extraction + endpoint resolution + authority resolution that resolves each Spark
+> read/write **call** to a `LineageEndpoint` plus its **receiver variable, source
+> order, and enclosing scope** — call-level resolved data, **NOT** `LineageEdgeCandidate`
+> (U2a does not link reads to writes). **U2c** (task `095.013-T`) = the
+> assignment-and-scope **event emission** — it consumes U2a's resolved call data and
+> emits the 3-kind `SparkLineageEvent` stream (read *Bind* / write call / non-Spark
+> rebind-invalidation) + per-form scope analysis, exposing `extract_python_lineage`.
+> **The U2a→U2c seam carries resolved `LineageEndpoint` + call-level receiver/order/scope
+> data — NOT `LineageEdgeCandidate`.** Candidates are produced **downstream by U2b's
+> single-cell dataflow join** (see U2b, below), which joins a read event to a later
+> write event over the event stream → `Vec<LineageEdgeCandidate>`. **U2c depends on
+> U2a**; **U2b** (`095.004-T`) consumes U2c's event stream (**U2b depends on U2c**).
+> Chain: **U2a → U2c → U2b** (edges 003→013→004). The prose below describes both
+> halves; each is sized under the gate (see the per-task granularity lines).
 
 * **Changes** in `src/services/parsing/python.rs` (a new `spark_lineage`
   submodule; distinct from `094-F` bare-call promotion): a **Spark method
@@ -754,7 +768,7 @@ U0 (grammar probe, gated task-1) ──▶ U3 (sql lineage, sized by U0)
 U1a (schema relations + bootstrap + shared value types) ──▶ U1a′ (db writers + scope-delete/GC cascade)
 U1a ──▶ U1a″ (version-state lineage_index_state read/write helpers)
 U1a ──▶ U1b (authority config + live propagation; test stubs the pipeline via a seam — no U2/U3 dep, AR-04/G6)
-U1a′ ──▶ U2a (pyspark extraction/resolution → LineageEndpoint/candidate IR) ──▶ U2c (assignment/scope event emission) ──▶ U2b (single-cell df resolver)
+U1a′ ──▶ U2a (pyspark extraction/resolution → resolved LineageEndpoints + receivers) ──▶ U2c (assignment/scope event emission) ──▶ U2b (single-cell df resolver)
 U1a′ ──▶ U3
 U2b, U3, U1b ──▶ U4a (notebook routing + magic-strip + raw_parse_source + %sql policy → collects candidates)
 U4a, U1a′, U1a″ ──▶ U4 write-path (flatten+persist edges/evidence + unconditional index_state stamp) ──▶ U4b (freshness: version backfill + deletion sweep)
@@ -1074,7 +1088,11 @@ suite is the merge gate. (All Ship-side; Stage does not run these.)
 * **Rollback trigger (Review comment 8)**: the **zero-false-edge invariant is the
   rollback trigger** — any **confirmed false lineage edge** observed after release
   **disables/reverts lineage indexing** (revert the U1–U4b/U8 commits; the additive
-  relations are left empty/absent, other subgraphs untouched). **Observation
+  relations are left empty/absent, other subgraphs untouched). The invariant is scoped
+  to **successfully-parsed** notebook content: a *changed-to-malformed* notebook that
+  retains its **last-valid** (not fabricated) edges is a bounded, documented **staleness**
+  window (see v1 Limitations, AR-17), handled by its own operator rollback trigger, not
+  this one. **Observation
   window**: the first release cycle and the first cohort of indexed real notebooks.
   **Owner**: code-graph parsing + db-schema area.
 * **Operational closure**: record the behavioral expansion (notebooks now yield
@@ -1095,23 +1113,33 @@ surfaced by the cycle-6 adversarial review; future work may lift them):
   authority), so a permanent-view reference **emits a `table` edge** rather than
   failing closed. Only **temp-view** references are asserted fail-closed. Future: a
   `view` kind + `CREATE [OR REPLACE] VIEW` DDL to label them precisely.
-* **Authority-config changes do not backfill unchanged notebooks (AR-12).** Adding or
-  remapping a metastore authority does **not** retroactively re-canonicalize datasets
-  in notebooks whose `content_hash` is unchanged; the **extractor version-bump is the
-  only manual trigger** for a full re-extraction. (Connects to AR-01: the authority is
-  embedded in the canonical key, so a remap changes identities that only re-extraction
-  will observe.)
+* **Authority-config remap is not auto-detected (AR-12 / Cluster D).** Because a
+  dataset's canonical `dataset_node.id` **embeds its resolved authority** and the
+  freshness skip predicate keys only on **content-hash + extractor-version**, adding or
+  **remapping** a metastore authority while notebook content is unchanged leaves existing
+  nodes/edges under their **OLD authority identity** — the config change is not
+  retroactively re-canonicalized (connects to AR-01). This is a **config-operation
+  limitation, not a per-notebook correctness bug**. **Rollback trigger / operator
+  action**: after changing authority config, **force a full re-index**
+  (`index_workspace force=true` / equivalent) to re-key existing datasets; stale-authority
+  edges observed ⇒ force re-index. (The extractor version-bump is the other manual trigger
+  for a full re-extraction.)
 * **U8 lineage traversal needs a dedicated traversal branch, not an allowlist append
   (AR-16).** Reaching the lineage subgraph via `query_graph` requires a dedicated
   traversal loop + a `dataset_node` resolver inside `bfs_directed_impl`/`find_path`
   (verified: `cozo_queries.rs:4485/4497/4531-4536`), **not** a tuple appended to the
   edge allowlist. TDD for U8 should expect this shape.
-* **Malformed-JSON notebooks leave stale content + lineage (AR-17).** A previously
-  indexed notebook that later becomes malformed JSON hits the `continue` in the
-  indexer **before** the scope-delete, leaving its prior content **and** lineage rows
-  in place (this mirrors the existing content-record behavior). Documented edge case;
-  an optional `095-F` backlog follow-up could add a pre-parse scope-delete for the
-  malformed transition. **(deferred → 095-F)**
+* **Changed-to-malformed notebooks retain last-valid lineage (AR-17).** A notebook that
+  transitions from valid to **malformed-unparseable** JSON is skipped at parse
+  (`notebook_indexer.rs:158-164`) and **returns before** the lineage scope-delete, so its
+  **last-valid** `lineage_edge`/evidence rows remain queryable until the notebook is
+  **successfully re-indexed or deleted** (this mirrors the existing content-record
+  behavior). This is a bounded **staleness** window — the retained edges are *last-valid*,
+  **not newly fabricated** — so it does **not** violate the zero-false-edge invariant
+  (which is scoped to **successfully-parsed** content). **Rollback trigger / operator
+  action**: malformed-transition staleness observed in lineage query results ⇒ the
+  operator **deletes or re-indexes** the affected notebook. An optional `095-F` follow-up
+  could add a pre-parse scope-delete for the malformed transition. **(deferred → 095-F)**
 * **U1b propagation may widen `index_notebook_source`'s signature (AR-18).** Threading
   the `LineageAuthorityContext` into the live write path may require changing
   `index_notebook_source`'s signature and its `ingestion.rs` caller; U1b's ≤3-file
@@ -1442,3 +1470,22 @@ persistence + freshness stamp). Shipment **`090-S`** grows **13 → 16 items** (
 `095.003-T` U2a **4 / 3**; `095.013-T` U2c **4 / 3**; `095.012-T` U1a′ **4 / 3**;
 `095.014-T` U1a″ **2 / 2**; `095.006-T` U4a **4 / 3**; `095.015-T` U4 write-path
 **4 / 3**. **No cycles; Gate remains PASS; ratified v1 scope unchanged.**
+
+### Cycle-9 Reconciliation (final)
+
+Copilot's cycle-9 re-review of HEAD `1b1d5b4e` raised **9 findings in 5 clusters** —
+all wording/scope reconciliation (no new task IDs, no task splits, no dependency-edge
+changes). Per operator direction (Option 1) this is **one consolidated commit**, docs +
+backlog only. Shipment `090-S` stays **16 items / 20 DAG edges**.
+
+| Cluster | Finding | Disposition |
+|---|---|---|
+| **A** | Stale version-helper ownership — plan + `095.002-T` still assigned `upsert_lineage_index_state`/`lineage_index_version` to U1a′ (`095.012-T`) after the H3 split moved them to U1a″ (`095.014-T`) | **fixed** — reassigned the version-state read/write helpers (+ their durable version-state test) to **U1a″ (`095.014-T`)**; **U1a′ (`095.012-T`) now owns ONLY** the node/edge/evidence writers + the 4-step scope-delete/GC cascade. 012 and 014 are non-overlapping in both the plan helper list and `095.002-T`'s handoff. |
+| **B** | U2a/U2c/U2b IR seam self-contradictory — the cycle-7 split text wrongly said U2a produces the "candidate IR" | **fixed** — corrected the chain to **U2a → U2c → U2b** (edges 003→013→004 unchanged). **U2a (`095.003-T`)** produces **call-level resolved endpoint/receiver data** (each Spark read/write call → `LineageEndpoint` + receiver + source order + scope), does NOT link reads→writes, does NOT build candidates. **U2c (`095.013-T`)** consumes that and emits the `SparkLineageEvent` stream; does NOT consume/produce `LineageEdgeCandidate`. **U2b (`095.004-T`)** joins events → `Vec<LineageEdgeCandidate>` (already correct — L432). Seam carries resolved endpoints, NOT candidates. |
+| **C** | Changed-to-malformed transition | **documented v1 limitation** (no cleanup scope added) — a valid→malformed-unparseable notebook is skipped at parse (`notebook_indexer.rs:158-164`) BEFORE the lineage scope-delete, retaining LAST-VALID lineage until re-index/deletion. Added a v1-Limitations entry + rollback trigger; scoped the zero-false-edge invariant to **successfully-parsed notebooks** (bounded staleness, not fabricated edges). Note added to `095.009-T` (no test scenario). |
+| **D** | Authority-remap + hash-skip | **documented v1 limitation** (no invalidation scope added) — dataset ids embed resolved authority and the hash+version skip does not detect authority-CONFIG changes, so remapping authority leaves nodes/edges under their OLD identity. Added a v1-Limitations entry + rollback trigger (**force full re-index** after authority-config change). Plan-only. |
+| **E** | U2b (`095.004-T`) still >3 scenarios | **Ship-deferred split** (no split now — avoids manifest churn) — added a Ship-time decomposition note enumerating the **6 scenarios** (happy-path read→write; reassignment/rebind; nested-scope invalidation; unresolved-receiver fail-closed; cross-cell rejection; U2c event-contract) and replaced the granularity claim with an honest **"EXCEEDS gate — Ship-time split required (scenarios enumerated)"** line so it is not a silent violation. |
+
+**Backlog effects (cycle-9):** **none** — no new tasks, no task splits, no
+dependency-edge changes. Shipment `090-S` stays **16 items / 20 DAG edges**; topo order
+unchanged and acyclic. **Gate remains PASS; ratified v1 scope unchanged.**
