@@ -618,12 +618,599 @@ pub(super) mod spark_lineage {
         LineageScope::TopLevel
     }
 
+    // ── U2c: assignment/scope event emission (SparkLineageEvent stream) ────────
+
+    /// The lexical form a lineage-relevant statement/binding came from (AR-07).
+    ///
+    /// Records which form each event came from so U2b can honor top-level
+    /// binds/writes and treat every other form as an invalidation.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum EventScope {
+        /// A direct statement of the module/cell body (the only edge-eligible
+        /// scope).
+        TopLevel,
+        /// Inside an `if`/`elif`/`else` branch block.
+        Branch,
+        /// Inside a `for`/`while` loop block.
+        Loop,
+        /// Inside a comprehension or generator expression.
+        Comprehension,
+        /// Inside a `with`/`try`/`except`/`finally` block, or a `with`/`except`
+        /// `as` target.
+        WithExcept,
+        /// Inside a nested `def`/`class` block, or a `def`/`class` name binding.
+        NestedDef,
+        /// An augmented assignment (`df += …`).
+        AugmentedAssign,
+        /// A walrus binding (`df := …`).
+        Walrus,
+        /// A `del` of the name.
+        Del,
+        /// An `import` binding of the name.
+        Import,
+        /// A `for`-statement loop-target binding.
+        ForTarget,
+        /// A `with`-item `as` target binding.
+        WithTarget,
+    }
+
+    /// A tagged assignment/scope lineage event — the shared U2 → U2b contract.
+    ///
+    /// Every kind carries a source-order key and enclosing [`EventScope`] so
+    /// U2b's single-cell dataflow join can honor top-level binds/writes (AR-07)
+    /// and invalidate a tracked binding on any other rebind form (F2).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum SparkLineageEvent {
+        /// A resolved Spark read bound to a receiver variable as ONE atomic
+        /// event (`df = spark.read.…(literal)` / `df = spark.table(literal)`).
+        /// The assignment *is* the read, so it never self-invalidates (AR-02).
+        ReadBind {
+            /// The assignment-target variable the read is bound to.
+            variable: String,
+            /// The U2a-resolved read endpoint, or `None` (fail closed).
+            endpoint: Option<LineageEndpoint>,
+            /// Source-order key (statement start byte).
+            order: usize,
+            /// Enclosing scope form (AR-07).
+            scope: EventScope,
+        },
+        /// A Spark write call (`df.write.…(literal)`), carrying the chain-root
+        /// base simple-name receiver (AR-13; `None` when the root is not a
+        /// simple name).
+        WriteCall {
+            /// The chain-root base simple-name receiver, or `None`.
+            receiver: Option<String>,
+            /// The U2a-resolved target endpoint, or `None` (fail closed).
+            endpoint: Option<LineageEndpoint>,
+            /// Source-order key (call start byte).
+            order: usize,
+            /// Enclosing scope form (AR-07).
+            scope: EventScope,
+        },
+        /// A non-Spark (re)binding / invalidation of a tracked name (`df =
+        /// other`, `df = compute()`, augmented/walrus/del/import/for/with/
+        /// comprehension rebind). Lets U2b invalidate a prior binding and fail
+        /// closed at a later write (F2). `spark` is tracked, so `spark = other`
+        /// invalidates (AR-29).
+        Invalidate {
+            /// The tracked name being rebound/invalidated.
+            variable: String,
+            /// Source-order key (statement start byte).
+            order: usize,
+            /// The rebinding form (AR-07).
+            scope: EventScope,
+        },
+    }
+
+    /// Walk `source` and emit the assignment/scope [`SparkLineageEvent`] stream.
+    ///
+    /// The public U2c entry point. Consumes U2a's per-call resolution
+    /// ([`resolve_one_call`]) and correlates it with the surrounding
+    /// assignment/scope structure. It does **not** link reads to writes or build
+    /// [`crate::models::lineage::LineageEdgeCandidate`]s — that is U2b's
+    /// single-cell dataflow join over this event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngramError`] if the Python grammar cannot be loaded or
+    /// tree-sitter fails to produce a parse tree.
+    pub(crate) fn extract_python_lineage(
+        source: &str,
+        authority_ctx: &LineageAuthorityContext,
+    ) -> Result<Vec<SparkLineageEvent>, EngramError> {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .map_err(|e| {
+                EngramError::CodeGraph(CodeGraphError::ParseFailed {
+                    reason: format!("Failed to set Python grammar: {e}"),
+                })
+            })?;
+        let tree = parser.parse(source, None).ok_or_else(|| {
+            EngramError::CodeGraph(CodeGraphError::ParseFailed {
+                reason: "tree-sitter returned no parse tree for Python source".to_owned(),
+            })
+        })?;
+
+        let mut events = Vec::new();
+        collect_events(
+            tree.root_node(),
+            source,
+            authority_ctx,
+            EventScope::TopLevel,
+            &mut events,
+        );
+        events.sort_by_key(event_order);
+        Ok(events)
+    }
+
+    /// The source-order key of any event kind.
+    fn event_order(event: &SparkLineageEvent) -> usize {
+        match event {
+            SparkLineageEvent::ReadBind { order, .. }
+            | SparkLineageEvent::WriteCall { order, .. }
+            | SparkLineageEvent::Invalidate { order, .. } => *order,
+        }
+    }
+
+    /// Recursively emit events for `node`, threading the enclosing scope.
+    fn collect_events(
+        node: Node<'_>,
+        source: &str,
+        ctx: &LineageAuthorityContext,
+        enclosing: EventScope,
+        out: &mut Vec<SparkLineageEvent>,
+    ) {
+        handle_node(node, source, ctx, enclosing, out);
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let child_scope = if child.kind() == "block" {
+                block_scope(node.kind(), enclosing)
+            } else if is_comprehension(node.kind()) {
+                EventScope::Comprehension
+            } else {
+                enclosing
+            };
+            collect_events(child, source, ctx, child_scope, out);
+        }
+    }
+
+    /// The scope a `block` child introduces, given its parent's kind.
+    fn block_scope(parent_kind: &str, current: EventScope) -> EventScope {
+        match parent_kind {
+            "if_statement" | "elif_clause" | "else_clause" => EventScope::Branch,
+            "for_statement" | "while_statement" => EventScope::Loop,
+            "with_statement"
+            | "try_statement"
+            | "except_clause"
+            | "except_group_clause"
+            | "finally_clause" => EventScope::WithExcept,
+            "function_definition" | "class_definition" => EventScope::NestedDef,
+            _ => current,
+        }
+    }
+
+    /// Whether a node kind is a comprehension / generator expression.
+    fn is_comprehension(kind: &str) -> bool {
+        matches!(
+            kind,
+            "list_comprehension"
+                | "set_comprehension"
+                | "dictionary_comprehension"
+                | "generator_expression"
+        )
+    }
+
+    /// Emit the event(s) contributed by a single node (no recursion).
+    fn handle_node(
+        node: Node<'_>,
+        source: &str,
+        ctx: &LineageAuthorityContext,
+        enclosing: EventScope,
+        out: &mut Vec<SparkLineageEvent>,
+    ) {
+        match node.kind() {
+            "assignment" => handle_assignment(node, source, ctx, enclosing, out),
+            "augmented_assignment" => {
+                emit_target_invalidations(
+                    node.child_by_field_name("left"),
+                    source,
+                    node.start_byte(),
+                    EventScope::AugmentedAssign,
+                    out,
+                );
+            }
+            "named_expression" => {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|n| simple_identifier(n, source))
+                {
+                    push_invalidate(out, name, node.start_byte(), EventScope::Walrus);
+                }
+            }
+            "delete_statement" => {
+                for name in delete_targets(node, source) {
+                    push_invalidate(out, name, node.start_byte(), EventScope::Del);
+                }
+            }
+            "import_statement" | "import_from_statement" => {
+                for name in import_bound_names(node, source) {
+                    push_invalidate(out, name, node.start_byte(), EventScope::Import);
+                }
+            }
+            "for_statement" => {
+                emit_target_invalidations(
+                    node.child_by_field_name("left"),
+                    source,
+                    node.start_byte(),
+                    EventScope::ForTarget,
+                    out,
+                );
+            }
+            "for_in_clause" => {
+                emit_target_invalidations(
+                    node.child_by_field_name("left"),
+                    source,
+                    node.start_byte(),
+                    EventScope::Comprehension,
+                    out,
+                );
+            }
+            "with_statement" => {
+                for name in with_clause_targets(node, source) {
+                    push_invalidate(out, name, node.start_byte(), EventScope::WithTarget);
+                }
+            }
+            "except_clause" => {
+                for name in except_target(node, source) {
+                    push_invalidate(out, name, node.start_byte(), EventScope::WithExcept);
+                }
+            }
+            "function_definition" | "class_definition" => {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|n| simple_identifier(n, source))
+                {
+                    push_invalidate(out, name, node.start_byte(), EventScope::NestedDef);
+                }
+            }
+            "call" => {
+                if let Some(resolved) = resolve_one_call(node, source, ctx) {
+                    if resolved.role == SparkCallRole::Write {
+                        out.push(SparkLineageEvent::WriteCall {
+                            receiver: resolved.receiver,
+                            endpoint: resolved.endpoint,
+                            order: node.start_byte(),
+                            scope: enclosing,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Emit a [`SparkLineageEvent::ReadBind`] for a top-level-resolvable Spark
+    /// read assignment, otherwise emit an [`SparkLineageEvent::Invalidate`] for
+    /// every simple-name target (non-Spark rebind, F2).
+    fn handle_assignment(
+        node: Node<'_>,
+        source: &str,
+        ctx: &LineageAuthorityContext,
+        enclosing: EventScope,
+        out: &mut Vec<SparkLineageEvent>,
+    ) {
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let names = collect_target_names(left, source);
+        if let (1, Some(right)) = (names.len(), node.child_by_field_name("right")) {
+            if right.kind() == "call" {
+                if let Some(resolved) = resolve_one_call(right, source, ctx) {
+                    if resolved.role == SparkCallRole::Read {
+                        out.push(SparkLineageEvent::ReadBind {
+                            variable: names[0].clone(),
+                            endpoint: resolved.endpoint,
+                            order: node.start_byte(),
+                            scope: enclosing,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+        for name in names {
+            push_invalidate(out, name, node.start_byte(), enclosing);
+        }
+    }
+
+    /// Push an invalidation event for every simple-name target of `target`.
+    fn emit_target_invalidations(
+        target: Option<Node<'_>>,
+        source: &str,
+        order: usize,
+        scope: EventScope,
+        out: &mut Vec<SparkLineageEvent>,
+    ) {
+        if let Some(target) = target {
+            for name in collect_target_names(target, source) {
+                push_invalidate(out, name, order, scope);
+            }
+        }
+    }
+
+    /// Append an [`SparkLineageEvent::Invalidate`].
+    fn push_invalidate(
+        out: &mut Vec<SparkLineageEvent>,
+        variable: String,
+        order: usize,
+        scope: EventScope,
+    ) {
+        out.push(SparkLineageEvent::Invalidate {
+            variable,
+            order,
+            scope,
+        });
+    }
+
+    /// Return the identifier text of `node` when it is a bare `identifier`.
+    fn simple_identifier(node: Node<'_>, source: &str) -> Option<String> {
+        (node.kind() == "identifier").then(|| node_text(node, source).to_owned())
+    }
+
+    /// Collect the simple-name targets of an assignment/loop target node.
+    ///
+    /// Handles a bare `identifier` and flat tuple/list patterns; subscript and
+    /// attribute targets bind no simple name and yield nothing.
+    fn collect_target_names(target: Node<'_>, source: &str) -> Vec<String> {
+        match target.kind() {
+            "identifier" => vec![node_text(target, source).to_owned()],
+            "pattern_list" | "tuple_pattern" | "list_pattern" | "tuple" | "list" => {
+                let mut names = Vec::new();
+                let mut cursor = target.walk();
+                for child in target.children(&mut cursor) {
+                    if child.kind() == "identifier" {
+                        names.push(node_text(child, source).to_owned());
+                    }
+                }
+                names
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Collect the simple-name targets of a `del` statement.
+    fn delete_targets(node: Node<'_>, source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => names.push(node_text(child, source).to_owned()),
+                "expression_list" | "pattern_list" | "tuple" => {
+                    let mut inner = child.walk();
+                    for grand in child.children(&mut inner) {
+                        if grand.kind() == "identifier" {
+                            names.push(node_text(grand, source).to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Collect the names an `import` / `from … import …` binds into scope.
+    fn import_bound_names(node: Node<'_>, source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children_by_field_name("name", &mut cursor) {
+            match child.kind() {
+                "aliased_import" => {
+                    if let Some(name) = child
+                        .child_by_field_name("alias")
+                        .and_then(|a| simple_identifier(a, source))
+                    {
+                        names.push(name);
+                    }
+                }
+                "dotted_name" => {
+                    if let Some(first) = child.named_child(0) {
+                        if first.kind() == "identifier" {
+                            names.push(node_text(first, source).to_owned());
+                        }
+                    }
+                }
+                "identifier" => names.push(node_text(child, source).to_owned()),
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Collect the `as` targets of a `with` statement's `with_clause`.
+    fn with_clause_targets(with_stmt: Node<'_>, source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cursor = with_stmt.walk();
+        for child in with_stmt.children(&mut cursor) {
+            if child.kind() != "with_clause" {
+                continue;
+            }
+            let mut items = child.walk();
+            for item in child.children(&mut items) {
+                if item.kind() == "with_item" {
+                    if let Some(name) = item
+                        .child_by_field_name("value")
+                        .and_then(|v| as_pattern_alias(v, source))
+                    {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Return the `as` target of an `except` clause, if any.
+    fn except_target(except_clause: Node<'_>, source: &str) -> Vec<String> {
+        except_clause
+            .child_by_field_name("value")
+            .and_then(|v| as_pattern_alias(v, source))
+            .map(|n| vec![n])
+            .unwrap_or_default()
+    }
+
+    /// Extract the bound identifier from an `as_pattern` (`… as name`).
+    fn as_pattern_alias(node: Node<'_>, source: &str) -> Option<String> {
+        if node.kind() != "as_pattern" {
+            return None;
+        }
+        let alias = node.child_by_field_name("alias")?;
+        let mut cursor = alias.walk();
+        for child in alias.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                return Some(node_text(child, source).to_owned());
+            }
+        }
+        simple_identifier(alias, source)
+    }
+
     #[cfg(test)]
     mod tests {
         use std::collections::BTreeMap;
 
         use super::*;
         use crate::models::lineage::DatasetKind;
+
+        #[test]
+        fn atomic_bind_then_write_emits_one_readbind_one_write_no_self_invalidation() {
+            let ctx = trusted_ctx();
+            let source = concat!(
+                "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                "df.write.saveAsTable(\"cat.sch.out\")\n",
+            );
+
+            let events = extract_python_lineage(source, &ctx).expect("extract");
+
+            let read_binds: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, SparkLineageEvent::ReadBind { .. }))
+                .collect();
+            assert_eq!(read_binds.len(), 1, "exactly one read Bind");
+            match read_binds[0] {
+                SparkLineageEvent::ReadBind {
+                    variable,
+                    endpoint,
+                    scope,
+                    ..
+                } => {
+                    assert_eq!(variable, "df", "read bound to the assignment target");
+                    assert_eq!(endpoint.as_ref().expect("resolved").name, "s3://bucket/in");
+                    assert_eq!(*scope, EventScope::TopLevel);
+                }
+                _ => unreachable!(),
+            }
+
+            let writes: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, SparkLineageEvent::WriteCall { .. }))
+                .collect();
+            assert_eq!(writes.len(), 1, "exactly one write event");
+
+            // AR-02: the read bind must NOT also emit a self-invalidation of df.
+            assert!(
+                !events.iter().any(|e| matches!(
+                    e,
+                    SparkLineageEvent::Invalidate { variable, .. } if variable == "df"
+                )),
+                "atomic read bind does not self-invalidate (AR-02)"
+            );
+        }
+
+        #[test]
+        fn mode_chain_write_resolves_chain_root_receiver() {
+            let ctx = trusted_ctx();
+            let source = "df.write.mode(\"overwrite\").saveAsTable(\"cat.sch.out\")\n";
+
+            let events = extract_python_lineage(source, &ctx).expect("extract");
+            let write = events
+                .iter()
+                .find_map(|e| match e {
+                    SparkLineageEvent::WriteCall {
+                        receiver, endpoint, ..
+                    } => Some((receiver, endpoint)),
+                    _ => None,
+                })
+                .expect("write event");
+            // AR-13: the chain-root base simple-name is `df`.
+            assert_eq!(write.0.as_deref(), Some("df"));
+            assert_eq!(write.1.as_ref().expect("resolved").name, "cat.sch.out");
+        }
+
+        #[test]
+        fn per_form_rebinds_each_emit_invalidation_events() {
+            let ctx = trusted_ctx();
+            // Each snippet rebinds the tracked name `df` (or `spark`) via a
+            // distinct binding form; every one must emit an invalidation.
+            let cases: &[(&str, &str)] = &[
+                ("plain non-Spark", "df = other\n"),
+                ("branch", "if c:\n    df = other\n"),
+                ("loop", "for x in items:\n    df = other\n"),
+                ("comprehension", "z = [x for df in items]\n"),
+                ("with target", "with open(f) as df:\n    pass\n"),
+                (
+                    "except target",
+                    "try:\n    pass\nexcept E as df:\n    pass\n",
+                ),
+                ("augmented assign", "df += 1\n"),
+                ("walrus", "y = (df := compute())\n"),
+                ("del", "del df\n"),
+                ("import alias", "import pandas as df\n"),
+                ("from-import", "from mod import df\n"),
+                ("def rebind", "def df():\n    pass\n"),
+                ("class rebind", "class df:\n    pass\n"),
+                ("session rebind (AR-29)", "spark = other\n"),
+            ];
+            for (label, src) in cases {
+                let events = extract_python_lineage(src, &ctx).expect("extract");
+                let target = if label.contains("AR-29") {
+                    "spark"
+                } else {
+                    "df"
+                };
+                assert!(
+                    events.iter().any(|e| matches!(
+                        e,
+                        SparkLineageEvent::Invalidate { variable, .. } if variable == target
+                    )),
+                    "form `{label}` must emit an invalidation for `{target}`"
+                );
+                // Fail-closed: a non-Spark rebind is never misread as a bind.
+                assert!(
+                    !events.iter().any(|e| matches!(
+                        e,
+                        SparkLineageEvent::ReadBind { variable, .. } if variable == target
+                    )),
+                    "form `{label}` must not emit a read bind for `{target}`"
+                );
+            }
+        }
+
+        #[test]
+        fn spark_sql_and_temp_view_emit_no_write_events() {
+            let ctx = trusted_ctx();
+            let source = concat!(
+                "spark.sql(\"CREATE TABLE cat.sch.x AS SELECT 1\")\n",
+                "df.createOrReplaceTempView(\"v\")\n",
+            );
+            let events = extract_python_lineage(source, &ctx).expect("extract");
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, SparkLineageEvent::WriteCall { .. })),
+                "spark.sql (deferred) and createOrReplaceTempView (content-only) emit no write"
+            );
+        }
 
         /// A trusted authority context: catalog `cat` → `prod-metastore`, and a
         /// trusted `s3://bucket` storage authority.
