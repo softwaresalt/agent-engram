@@ -15,7 +15,7 @@ feature: "095-F"
 pr: 281
 related_pr: [239, 240, 243, 280]
 citations:
-  - "PR #281 review cycles 1-10 (HEAD progression a9ec72ed→d79f1b16→22fe3dce→1b1d5b4e→dfb99579)"
+  - "PR #281 review cycles 1-10 (later-cycle HEAD progression, cycles 5-9 + adversarial: a9ec72ed [post-c5] → d79f1b16 [adversarial] → 22fe3dce [c7] → 1b1d5b4e [c8] → dfb99579 [c9 reconciliation; c10 re-reviewed this same HEAD] → merged 8c95b321; cycle 1-4 heads not individually retained)"
   - "docs/compound/copilot-review-merge-gate-wait-for-head-review-2026-07-11.md"
   - "docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md"
   - ".github/skills/plan-review/SKILL.md"
