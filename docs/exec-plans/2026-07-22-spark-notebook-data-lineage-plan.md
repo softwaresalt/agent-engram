@@ -122,7 +122,7 @@ agent (Ship) permitted to compile Rust.
 | A3 Fork E Option (b) single-cell df resolver | **U2b**: `df_var → dataset` propagation within one cell → **`LineageEdgeCandidate`**; drop on reassignment (incl. **non-Spark `df = other`**, cycle-5 F2) / branch / non-literal; cross-cell OUT |
 | A4 U0 grammar probe as hard gate | **U0**: gated task-1 + checkpoint before U3 sizing (deferred at stage time; see above) |
 | A5 precision floor (0 false edges); recall → Fork A checkpoint | **U6**: fixture matrix asserts 0 false edges on all dropped cases; recall **measured against the fixture ground truth** (a dedicated lineage metric, **not** `run_retrieval_eval`), not asserted |
-| A6 temp-view OUT (unrepresentable); permanent-view OUT (scope-min) | **U2/U3** emit no view edge; `dataset_node.kind = {table, path}`; **U6** asserts temp-view refs fail closed; **U7** documents both deferrals |
+| A6 temp-view OUT (unrepresentable); permanent-view indistinguishable-from-table in v1 (AR-08) | **U2/U3** emit no *temp*-view edge; `dataset_node.kind = {table, path}`; a permanent view is recorded as `kind = table` (v1 cannot distinguish it — **U6** asserts only *temp*-view refs fail closed); **U7** documents both |
 | PySpark literal read/write extraction (net-new) | **U2**: Spark method whitelist + literal-arg reader in `python.rs` |
 | Spark-SQL directional read→write (table only), CTAS/INSERT OVERWRITE | **U3**: directional linking + CTAS `from`-descent + `INSERT [OVERWRITE]` targets → **`LineageEdgeCandidate`** (target+sources) grouping, scoped by U0 |
 | Notebook cell routing + magic stripping | **U4**: route `python`/`sql` cells to extractors, strip `%%sql`/`%sql`, preserve `chunk_index` |
@@ -154,25 +154,48 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   analyzer is required. This decision **sizes U3** before U3 is built.
 * **Milestone**: U3 sizing risk (R1) closed; recorded in the closure artifact.
 
-### Unit 1 — Lineage subgraph schema (domain: schema, `src/db/`) — test-first
+### Unit 1a + U1a′ — Lineage subgraph schema + value types (U1a) and db writers + scope-delete cascade (U1a′) (domain: schema, `src/db/`) — test-first
+
+> **Split (AR-04 — the former single U1 exceeded the 2-hour granularity rule).**
+> **U1a** (task `095.002-T`) = the four relations + bootstrap registration + the
+> shared value types. **U1a′** (task `095.012-T`) = the db write helpers + the
+> scope-delete cascade + their round-trip/deletion/version-state tests; **U1a′
+> depends on U1a**. The extractors (U2/U2b/U3) and the router/read units (U4/U4b/U8)
+> depend on **U1a′** (a conservative acyclic ordering on the fully-established
+> schema+writer foundation); the shared value types they consume are defined in U1a
+> and available transitively. Elsewhere in this plan, "the U1 writers" = **U1a′** and
+> "U1's relations / types / schema" = **U1a**. **U1b** (authority context,
+> `095.011-T`) depends only on **U1a** (it needs the `LineageAuthorityContext` type;
+> its test stubs the U2/U3/U4 pipeline via a seam, so it does **not** depend on
+> U2/U3 — AR-04/G6).
 
 * **Changes** in `src/db/cozo_backend/schema.rs`, mirroring
   `CREATE_POWERBI_NODE` / `CREATE_POWERBI_EDGE` (`:1029-1057`) but **fixing the
   Power BI single-valued-provenance hazard** (its `file_path`/`source_path`/
   `content_hash`/`ingested_at` columns are overwritten when a second source
   touches the same node). Canonical identity and per-notebook provenance are split
-  across three relations:
+  across three relations, plus a fourth freshness-state relation (all **U1a**):
   * `CREATE_DATASET_NODE` — `dataset_node { id => name, kind }` — **canonical
     fields ONLY** (**Review comment 1**). `kind ∈ {table, path}` (no `view`); `id`
-    is the authority-bound canonical key (3-part `catalog.schema.table` + metastore
-    authority, or absolute URI + storage authority). **No `notebook_path` /
+    is the authority-bound canonical key — a 3-part `catalog.schema.table` plus a
+    **stable `metastore_authority_id`** (the trusted metastore/catalog authority), or
+    an absolute URI plus a storage-authority id — with the **authority embedded in the
+    `id`** so two distinct metastores that share the same `catalog.schema.table`
+    resolve to **distinct** `dataset_node`s and never collide (**AR-01**,
+    user-approved Option A). An **unmapped catalog ⇒ no resolvable authority ⇒ no node
+    and no edge** (fail-closed). **No `notebook_path` /
     `source_path` / `content_hash` / `ingested_at`** on the node — those are
     per-notebook and live in evidence. A second notebook referencing the same
     dataset re-asserts the identical canonical row; it never clobbers provenance.
   * `CREATE_LINEAGE_EDGE` — `lineage_edge { from_id, to_id, edge_type =>
-    first_ingested_at }` with a **`lineage_` namespace prefix**. **v1 emits exactly
-    one edge type: `lineage_derives_from`** (written-dataset `from_id` derives from
-    a read-source `to_id`). The edge row carries **no per-notebook `source_path`**
+    ingested_at }` with a **`lineage_` namespace prefix**. **v1 emits exactly
+    one edge type: `lineage_derives_from`**, **oriented `from_id` = the written
+    target dataset → `to_id` = the read source dataset**: data flows source→target,
+    but the edge encodes **derives-from** (the target derives from the source)
+    (**AR-05**). `ingested_at` is **replaced on every re-index** (`:put` overwrite —
+    not a first-seen minimum; renamed from `first_ingested_at` to reflect that
+    replace semantics, **AR-15**); per-observation timing lives in
+    `lineage_edge_evidence`. The edge row carries **no per-notebook `source_path`**
     — one edge can be evidenced by several notebooks, so its provenance lives in
     edge-evidence (**Review comment 2**). Operation-node role edges
     (`lineage_reads`/`lineage_writes`) are **deferred**.
@@ -203,20 +226,23 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   * Register all four relations in the schema-bootstrap `scripts` array (`:86-87` region);
     idempotent `:create`; migration guard consistent with the existing
     `migrate_*` pattern.
-  * **db write helpers** in `src/db/cozo_queries.rs` mirroring
+  * **(U1a′) db write helpers** in `src/db/cozo_queries.rs` mirroring
     `upsert_powerbi_nodes` / `upsert_powerbi_edges` (`cozo_queries.rs:5471-5520`,
     `:put` batch-upsert): `upsert_dataset_nodes`, `upsert_lineage_edges`,
-    `upsert_lineage_edge_evidence`, plus `delete_lineage_by_scope(notebook_path)`
-    (mirroring `delete_content_records_by_scope`, `notebook_indexer.rs:164`) which
-    performs a fail-closed cascade: **(1)** delete **all** that notebook's
+    `upsert_lineage_edge_evidence`, `upsert_lineage_index_state` /
+    `lineage_index_version` (freshness state), plus
+    `delete_lineage_by_scope(notebook_path)` (mirroring
+    `delete_content_records_by_scope`, `notebook_indexer.rs:164`) which performs a
+    fail-closed cascade: **(1)** delete **all** that notebook's
     `lineage_edge_evidence` rows (every cell, matched by `notebook_path`), **(2)** GC
-    `lineage_edge` rows left with **zero**
-    remaining evidence, **(3)** GC `dataset_node` rows no longer incident to any
-    surviving edge — never a first-match delete (FF7DE872). **This is the lineage
-    WRITE path** — the notebook router (U4) calls these; lineage does **NOT** flow
-    through the `code_graph` `ExtractedEdge` consumer (that file walk skips
-    `.ipynb`). Resolves the P1 write-path gap.
-* **Shared lineage value types (foundation)** — the cross-cutting Rust types every
+    `lineage_edge` rows left with **zero** remaining evidence, **(3)** GC
+    `dataset_node` rows no longer incident to any surviving edge, **(4)** delete the
+    notebook's `lineage_index_state` row for `notebook_path` (**AR-22** — so a whole
+    deleted notebook leaves no freshness-state orphan) — never a first-match delete
+    (FF7DE872). **This is the lineage WRITE path (U1a′)** — the notebook router (U4)
+    calls these; lineage does **NOT** flow through the `code_graph` `ExtractedEdge`
+    consumer (that file walk skips `.ipynb`). Resolves the P1 write-path gap.
+* **(U1a) Shared lineage value types (foundation)** — the cross-cutting Rust types every
     emitter and writer shares, defined once here so no unit invents its own carrier:
     `LineageEndpoint` (a resolved, authority-bound dataset ref — `kind ∈ {table,path}`
     + canonical id); **`LineageEdgeCandidate { target: LineageEndpoint, sources:
@@ -226,13 +252,17 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     for that one statement or dataflow, so a CTAS with multiple sources — or multiple
     statements in one cell — keeps its target↔source pairing (**cycle-5 F3/F4**; a flat
     `Vec<LineageEndpoint>` loses which target each source belongs to); and
-    `LineageAuthorityContext` (the trusted-authority handle the U2/U3 extractors consume
-    — its config surface + live propagation are **U1b**, below). These are plain data
+    `LineageAuthorityContext` (the trusted-authority handle the U2/U3 extractors
+    consume — it carries a **stable `metastore_authority_id`** and a
+    **catalog→authority mapping** used to embed the authority in the canonical
+    `dataset_node.id`, **AR-01**; its config surface + live propagation are **U1b**,
+    below). These are plain data
     types (no logic); `SparkLineageEvent` stays owned by U2 (the Python-path event
     model).
-* **Files**: `src/db/cozo_backend/schema.rs`, `src/db/cozo_queries.rs` (+ a small
-    shared lineage value-types module). ≤ 3 files, db domain.
-* **Tests**: bootstrap idempotent (double `:create` no-op); `upsert_*` +
+* **Files (U1a)**: `src/db/cozo_backend/schema.rs` + a small shared lineage
+    value-types module. **Files (U1a′)**: `src/db/cozo_queries.rs`. Each ≤ 3 files,
+    db domain.
+* **Tests (U1a)**: bootstrap idempotent (double `:create` no-op). **Tests (U1a′)**: `upsert_*` +
   round-trip a `dataset_node`, a `lineage_derives_from` edge, and its
   `lineage_edge_evidence`; **canonical-identity test** — re-upserting the same
   dataset from a second notebook leaves `dataset_node { name, kind }` unchanged (no
@@ -245,9 +275,10 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   `delete_lineage_by_scope(N)` removes **both** (comment E1); **version-state test**
   — `upsert_lineage_index_state` then `lineage_index_version` round-trips the
   extractor version, and it **survives a store re-open** (durable, not in-memory)
-  (cycle-5 F5).
-* **Milestone**: the lineage subgraph exists, round-trips, and has an
-  upsert/scope-delete write API; no emitter yet.
+  (cycle-5 F5); and `delete_lineage_by_scope(N)` also removes `N`'s
+  `lineage_index_state` row (**AR-22**).
+* **Milestone**: the lineage subgraph exists (U1a: relations + value types),
+  round-trips, and has an upsert/scope-delete write API (U1a′); no emitter yet.
 
 ### Unit 1b — Notebook lineage authority context: config surface + live propagation (domain: config/indexer-integration) — test-first
 
@@ -259,10 +290,12 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   lineage, and v1 would ship table lineage that is **unreachable in production**. This
   is the impl-time propagation gap F1 flags — split into its own prerequisite unit
   (not silently folded into U4) so the width stays isolated.
-* **Changes**: (a) a **config surface** — add a trusted-authority configuration
-  (metastore default `catalog`/`schema` + a storage-authority allowlist) to engram's
-  config; (b) **construction** — build a `LineageAuthorityContext` (type defined in
-  U1) from that config at index time; (c) **propagation** — thread the context through
+* **Changes**: (a) a **config surface** — add a trusted-authority configuration: a
+  **stable `metastore_authority_id`** + a **catalog→authority mapping** (which catalog
+  belongs to which trusted metastore authority) + metastore default `catalog`/`schema`
+  + a storage-authority allowlist — to engram's config (**AR-01**); (b) **construction**
+  — build a `LineageAuthorityContext` (type defined in **U1a**) from that config at
+  index time; (c) **propagation** — thread the context through
   `src/services/notebook_indexer.rs` into the U2/U3 extractor calls (which already
   accept `authority_ctx`). **Fail-closed**: an absent or empty authority config yields
   an **empty** `LineageAuthorityContext`, so every table/path identity stays
@@ -271,13 +304,18 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 * **Files**: engram config surface + `src/services/notebook_indexer.rs` propagation.
   ≤ 3 files, config/indexer-integration domain (width-isolated from the parsers and
   the schema).
-* **Tests**: with a configured trusted authority, a live index of a fixture notebook
-  produces the expected authority-bound table edge; with **no** authority configured,
-  the same notebook produces **zero** table/path edges (fail-closed parity with the
-  U2/U3 unit-level drop).
-* **Dependencies**: depends on **U1** (uses `LineageAuthorityContext`); **U4 depends
-  on U1b** — U4 needs the built-and-threaded context to persist real (non-test)
-  lineage.
+* **Tests (AR-04/G6 — isolated, pipeline stubbed)**: verify **in isolation** that a
+  configured trusted authority is constructed into a `LineageAuthorityContext` and
+  **propagated to the extractor call boundary** — a stubbed/seam extractor asserts it
+  receives the expected non-empty context; with **no** authority configured it
+  receives an **empty** context and the seam yields **zero** endpoints. U1b does
+  **not** drive U2/U3/U4 end-to-end — the end-to-end "produces the expected
+  authority-bound edge" assertion lives in **U4/U6**, so **U1b does NOT depend on
+  U2/U3** (it stubs the downstream pipeline via a seam).
+* **Dependencies**: depends on **U1a** only (uses `LineageAuthorityContext`); **U4
+  depends on U1b** — U4 needs the built-and-threaded context to persist real
+  (non-test) lineage. **No dependency on U2/U3** (test stubs the pipeline via a seam,
+  **AR-04/G6**).
 * **Milestone**: positive table/path lineage is reachable in the live indexer, gated
   by trusted-authority config; absent config fails closed.
 
@@ -290,17 +328,27 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   + a **string-literal argument reader**, exposed as a **public extractor
   function** `spark_lineage::extract_python_lineage(source, authority_ctx) ->
   Vec<SparkLineageEvent>`. **`SparkLineageEvent` is the shared U2→U2b contract type,
-    owned and defined by U2** (in the `spark_lineage` module) — a **tagged event** with
-    two kinds, both carrying the **source-order** index and the **enclosing scope**
-    (top-level cell body vs. a branch/loop block): **(1) a Spark read/write call** event
-    (the resolved `LineageEndpoint` or an unresolved marker + `role` Read/Write + the
-    bound/receiver **variable**, `Option<name>`, `None` when the receiver is not a
-    simple name), and **(2) a variable (re)binding / invalidation** event emitted for
-    **any** assignment whose left side is a tracked name — **including a NON-Spark RHS**
-    (`df = other`, `df = compute()`). The rebind event is what lets U2b invalidate a
-    prior `df → dataset` binding and fail closed at a later `df.write`: a resolver that
-    saw only whitelisted Spark-call events could not detect `df = other` and would emit
-    a **false edge** (**cycle-5 F2**; extends the cycle-4 **comment E2** event model). `parse_source` returns `ParseResult { symbols, edges }`
+    owned and defined by U2** (in the `spark_lineage` module) — a **tagged event** whose
+    kinds all carry the **source-order** index and the **enclosing scope** (a `scope`
+    enum: top-level cell/module body vs. any nested block — branch, loop, comprehension,
+    `with`/`except` target, `def`/`class`, **AR-07**). The kinds are: **(1) a resolved
+    read *Bind*** — `df = spark.read.…(literal)` / `df = spark.table(literal)` binds the
+    **receiver variable** to a resolved (or unresolved-marker) read `LineageEndpoint` as
+    **one atomic event** (the assignment *is* the read; U2 does **NOT** also emit a
+    separate rebind/invalidation for that same statement — no self-invalidation,
+    **AR-02**); **(2) a write call** — `df.write.…(literal)` with `role = Write`, the
+    resolved target endpoint, and the **receiver variable resolved to the base
+    simple-name at the chain root** so `df.write.mode("overwrite").saveAsTable(…)` binds
+    to `df` (**AR-13**; `Option<name>`, `None` when the root receiver is not a simple
+    name); and **(3) a variable (re)binding / *invalidation*** event emitted for **any
+    _non-Spark_ assignment** to a tracked name — `df = other`, `df = compute()`,
+    augmented/walrus, `del`, an `import`/`for`/`with`/comprehension target that rebinds
+    the name — so U2b can invalidate a prior `df → dataset` binding and fail closed at a
+    later `df.write` (**cycle-5 F2**; a resolver seeing only whitelisted Spark calls
+    could not detect `df = other` and would emit a **false edge**; extends the cycle-4
+    **comment E2** model). **`spark` itself is a tracked name**, so `spark = other`
+    invalidates downstream session reads (**AR-29**). `parse_source` returns
+    `ParseResult { symbols, edges }`
   (`parsing.rs:247,263`) and has **no lineage carrier**, so the extractor is a
   **separate public API U4/U2b call directly** — it does **NOT** add a variant to
   `ExtractedEdge`/`ParseResult` or route through the `code_graph` consumer (that
@@ -329,14 +377,22 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   `parse_source`): with a trusted authority injected, a resolvable
   `spark.table("c.s.t")` / `spark.read.parquet("s3://b/p")` yields an event whose
   resolved endpoint is the expected dataset ref **and which carries its `role`,
-  receiver variable, source order, and scope** for U2b (comment E2); the **same
-  `spark.table("c.s.t")` with NO trusted authority yields zero** resolved endpoints
-  (comment 10); a **non-Spark reassignment** (`df = other`) emits a
-  **rebind/invalidation event** (not a Spark-call event) so U2b can drop the `df`
-  binding (**cycle-5 F2**); each fail-closed case (relative literal, 2-part name, f-string,
-  variable arg, `createOrReplaceTempView`, **`spark.sql("CREATE TABLE …
-  AS SELECT …")` — deferred, comment D2**) yields **zero** resolved endpoints
-  (strong `== 0` assertion so a silent-drop bug fails loudly).
+  receiver variable, source order, and scope** for U2b (comment E2); an
+  **atomic-bind sequence test** — `df = spark.read.parquet("s3://b/in"); df.write.saveAsTable("c.s.out")`
+  emits **exactly** one read *Bind* (receiver `df`) + one write event, with **no**
+  self-invalidation rebind at the read (**AR-02**); a **mode-chain receiver test** —
+  `df.write.mode("overwrite").saveAsTable("c.s.out")` resolves the receiver to the base
+  `df` (**AR-13**); the **same `spark.table("c.s.t")` with NO trusted authority yields
+  zero** resolved endpoints (comment 10); a **non-Spark reassignment** (`df = other`)
+  emits a **rebind/invalidation event** (not a Bind) so U2b can drop the `df` binding
+  (**cycle-5 F2**); **per-form invalidation rejection tests** — a tracked-name rebind
+  inside a branch, a loop, a comprehension, a `with`/`except` target, and via
+  augmented/walrus each emit an invalidation event (never a silent drop, **AR-07**),
+  and `spark = other` invalidates the session (**AR-29**); each fail-closed case
+  (relative literal, 2-part name, f-string, variable arg, `createOrReplaceTempView`,
+  **`spark.sql("CREATE TABLE … AS SELECT …")` — deferred, comment D2**) yields
+  **zero** resolved endpoints (strong `== 0` assertion so a silent-drop bug fails
+  loudly).
 * **Milestone**: single-expression PySpark reads/writes yield authority-bound
   resolvable endpoints; everything ambiguous or unauthorized fails closed.
 
@@ -353,22 +409,26 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   **no second AST walk** — U2 is the single extraction source of truth; U2b analyses
   only the event stream. **Return type: `Vec<LineageEdgeCandidate>`** (**cycle-5 F3**
   — a directional target↔sources carrier, not a flat endpoint list).
-* **Fail-closed scope** (derived from the event metadata): drop on `df`
-  **reassignment** — **any** rebind event for the tracked variable before the write,
-  whether to another Spark read, a **non-Spark expression** (`df = other`), or an
-  unresolvable RHS, invalidates the binding (**cycle-5 F2** — now observable because
-  U2 emits rebind events from its full AST walk, not only whitelisted Spark calls),
-  **branch/loop scope** (a binding or write whose event scope is not the top-level
-  cell body), an **unresolved receiver variable** (`receiver = None`), a read event
-  whose endpoint U2 left unresolved, or any non-literal in the chain — each yields
-  **no edge**. **Cross-cell `df` propagation is OUT** (a `df` can be reassigned in
-  another cell / a rebuilt session — the same session/order ambiguity A6 drops for
-  temp views).
+* **Fail-closed scope** (derived from the event metadata): a resolved read **Bind**
+  (`df = spark.read…`) establishes the binding and is **not** itself an invalidation
+  (**AR-02**). Drop (no edge) on `df` **reassignment** — **any** _non-Spark_
+  invalidation event for the tracked variable before the write (`df = other`, an
+  unresolvable RHS, an augmented/walrus/`del`/`import`/`for`/`with`/comprehension
+  rebind) invalidates the binding (**cycle-5 F2 / AR-07** — observable because U2
+  emits invalidation events from its full AST walk, not only whitelisted Spark calls);
+  a binding or write whose event **scope is not the top-level cell/module body**
+  (branch, loop, comprehension, `with`/`except`, nested `def`/`class` — **AR-07**); an
+  **unresolved receiver variable** (`receiver = None` — e.g. a non-simple-name chain
+  root); a read whose endpoint U2 left unresolved; or any non-literal in the chain —
+  each yields **no edge**. **Cross-cell `df` propagation is OUT** (a `df` can be
+  reassigned in another cell / a rebuilt session — the same session/order ambiguity
+  A6 drops for temp views).
 * **Files**: the `spark_lineage` dataflow resolver (new module or sibling of U2's
   literal reader). ≤ 3 files, dataflow only. Kept separate from U2 to preserve
   width isolation (extraction vs. propagation are distinct concerns).
 * **Tests**: `df = spark.read.parquet("s3://b/in"); df.write.saveAsTable("c.s.out")`
-  → a `LineageEdgeCandidate` U4 persists as `derives_from(c.s.out, s3://b/in)`;
+  → a `LineageEdgeCandidate` U4 persists as `derives_from(c.s.out, s3://b/in)` (the
+  read Bind does **not** self-invalidate, **AR-02**);
   reassignment (`df = other; df.write…`) → **no edge** (the non-Spark rebind event
   invalidates the binding — now achievable, **cycle-5 F2**); branch/loop-scoped
   binding → no edge; **unresolved receiver** (write on a `df` never bound to a
@@ -391,7 +451,8 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   tables, or multiple statements in one cell, keeps its target↔source pairing and U4
   persists the correct directional edges (**cycle-5 F3/F4**; a flat
   `Vec<LineageEndpoint>` could not carry which write target each read belongs to).
-  Directional **read→write** linking — CTAS `from`-descent (descend into the
+  Directional **derives-from** linking (target derives from source, **AR-05**) — CTAS
+  `from`-descent (descend into the
   `from` nested inside `create_table`), `INSERT [OVERWRITE]` table targets → emit
   `lineage_derives_from(target, sources)` — **table lineage ONLY** (no
   `CREATE VIEW`, no temp-view DDL — A6). Endpoints resolve only 3-part
@@ -428,15 +489,23 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   itself still carries the `%%sql`/`%sql` magic — and `magic_language` only *peeks*
   (`:111`). Handing that field to `python.rs`/`sql.rs` would parse the wrapper +
   magic as code. **Resolution**: capture a dedicated **raw parse-source** at
-  extraction time (from the pre-wrap `trimmed`, `notebook_extract.rs:24`) with
-  (a) the `Language: {lang}. ` retrieval wrapper **never applied** and (b) the
-  leading cell magic (`%%sql`/`%%spark`) **stripped**, and route THAT to the
-  extractors — never the retrieval `content`. **Fail-closed**: if the raw
-  parse-source cannot be recovered for a cell, emit **no** lineage for that cell
-  rather than parsing the wrapper. For `%sql` **line-magic** (single `%`, only its
-  own line is SQL) choose one v1 policy: parse just that line's payload **or**
-  exclude line-magic cells from v1 (documented in U7) — otherwise the parser hits
-  tree-sitter-sequel `ERROR` or consumes following Python lines as SQL. The
+  extraction time and carry it on an explicit, **non-persisted**
+  `raw_parse_source: Option<String>` field added to the cell record
+  (`src/models/notebook.rs`, **AR-10**), populated from the pre-wrap `trimmed`
+  (`notebook_extract.rs:24`) as `trim()` with (a) the `Language: {lang}. ` retrieval
+  wrapper **never applied** and (b) the leading **cell-magic line stripped** — the
+  real magics are `%%sql` / `%sql` / `%%scala` / `%%sparkr` / `%%python`
+  (`notebook_extract.rs:7-11`; **there is no `%%spark` magic**, **AR-14**). Route
+  `raw_parse_source` to the extractors — never the retrieval `content`.
+  **Fail-closed**: if `raw_parse_source` is `None` (unrecoverable), emit **no**
+  lineage for that cell rather than parsing the wrapper. **`%sql` line-magic policy
+  (decided, v1 — AR-11)**: a `%sql` **line-magic** cell (single `%`, only its own
+  line is SQL, the rest Python) is **excluded from v1 lineage** — only `%%sql`
+  **cell-magic** cells route to the SQL extractor. This is the fail-closed choice: it
+  avoids feeding the SQL parser a mixed Python/SQL body (tree-sitter-sequel `ERROR` /
+  cross-line bleed). Accepted → `%%sql` (whole cell to U3); excluded → `%sql`
+  line-magic, `%%scala`, `%%sparkr`; plain `python` / `%%python` cells route to U2.
+  Documented in U7. The
   extractors' trusted `authority_ctx` is **built and threaded by U1b** (config surface
   + propagation); with no configured authority the router still runs but emits **no**
   table/path edge (fail-closed, **cycle-5 F1**), so **U4 depends on U1b**.
@@ -454,22 +523,30 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   → `delete_content_records_by_scope`, `notebook_indexer.rs:98,164`) so stale
   per-notebook edge-evidence + now-unevidenced edges are removed while a
   `dataset_node` still evidenced by another notebook is retained. (Resolves the P2
-  re-index/GC finding.) **Freshness of *unchanged* notebooks (version backfill)
-  and *whole-notebook deletion* cleanup are handled by U4b** (Review comments 4/5).
-* **Files**: `src/services/notebook_extract.rs`, `src/services/notebook_indexer.rs`.
-  ≤ 3 files, notebook-path only.
+  re-index/GC finding.) **After extraction, U4 unconditionally stamps
+  `upsert_lineage_index_state(notebook_path, CURRENT_EXTRACTOR_VERSION)` for _every_
+  extracted notebook — regardless of edge count, including zero-lineage notebooks**
+  — so an unchanged zero-lineage notebook hash-skips on the next run instead of
+  re-extracting every time (**AR-03**). **Freshness of _unchanged_ notebooks
+  (version backfill) and _whole-notebook deletion_ cleanup are handled by U4b**
+  (Review comments 4/5).
+* **Files**: `src/models/notebook.rs` (the `raw_parse_source` carrier field, **AR-10**),
+  `src/services/notebook_extract.rs`, `src/services/notebook_indexer.rs`. ≤ 3 files,
+  notebook-path only.
 * **Tests**: an `.ipynb` fixture with one `%%sql` cell + one PySpark cell routes
-  to the lineage extractors with the **exact byte-for-byte parse-source asserted**
+  to the lineage extractors with the **exact byte-for-byte `raw_parse_source` asserted**
   — no `Language: {lang}. ` wrapper and no leading magic token in the text handed
-  to `python.rs`/`sql.rs` — and `chunk_index` preserved; a `%sql` line-magic cell
-  is handled per the chosen policy (no `ERROR`, no cross-cell bleed); an
-  unrecoverable raw source emits **no** edge (fail-closed); **a cell containing only
-  a bare read (`spark.table("c.s.t")` with no downstream write) produces zero
-  `dataset_node`s and zero edges** (edge-driven node creation, **Review comment
-  D1**); a **multi-source candidate** (a CTAS reading two tables) persists **two**
-  directional `lineage_edge`s sharing the write target, each with its own per-cell
-  evidence (**cycle-5 F3**); re-indexing the fixture with a cell removed drops that cell's lineage edge
-  (no stale edge).
+  to `python.rs`/`sql.rs` — and `chunk_index` preserved; a **`%sql` line-magic cell is
+  excluded** (routed to neither extractor, no `ERROR`, no cross-cell bleed — **AR-11**);
+  an unrecoverable `raw_parse_source = None` emits **no** edge (fail-closed); **a cell
+  containing only a bare read (`spark.table("c.s.t")` with no downstream write)
+  produces zero `dataset_node`s and zero edges** (edge-driven node creation, **Review
+  comment D1**); a **zero-lineage notebook** is **still stamped in `lineage_index_state`**
+  so a second unchanged run **hash-skips** it (no perpetual re-extract — **AR-03**); a
+  **multi-source candidate** (a CTAS reading two tables) persists **two** directional
+  `lineage_edge`s sharing the write target, each with its own per-cell evidence
+  (**cycle-5 F3**); re-indexing the fixture with a cell removed drops that cell's
+  lineage edge (no stale edge).
 * **Milestone**: notebook cells reach the lineage extractors end-to-end and
   persist through the U1 write path with correct incremental delete.
 
@@ -487,9 +564,12 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
     `upsert_lineage_index_state` / `lineage_index_version`), **not** a constant + an
     in-memory check. Extend the skip predicate to also require the persisted extractor
     version to match the current one; a version **bump** forces re-extraction
-    (backfill) of unchanged notebooks, then re-persists the new version so the notebook
-    is skipped again at the new version — proving the check is **neither a one-shot nor
-    a perpetual reindex**. No forced full-reindex flag required.
+    (backfill) of unchanged notebooks, then re-persists the new version (via U4's
+    **unconditional** `upsert_lineage_index_state` stamp — every extracted notebook,
+    including **zero-lineage** ones, **AR-03**) so the notebook is skipped again at the
+    new version — proving the check is **neither a one-shot nor a perpetual reindex**,
+    *including for notebooks that produced no edges*. No forced full-reindex flag
+    required.
   * **Deleted-notebook lineage sweep (Review comment 5)**:
     `sweep_deleted_notebook_files` (`notebook_indexer.rs:238-263`) deletes only
     `content` records for removed notebooks and has **no lineage cleanup**, so
@@ -501,9 +581,12 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 * **Tests**: (1) an **unchanged** notebook with a bumped extractor version
   re-extracts and its lineage appears (upgrade/backfill), then a **subsequent**
   re-index at the same version is **skipped** (durable — not perpetual reindex), and
-  the persisted version **survives a store re-open** (cycle-5 F5); (2) deleting a whole
-  notebook removes its `lineage_edge`/`lineage_edge_evidence` while an edge still
-  evidenced by another notebook survives (whole-file deletion GC).
+  the persisted version **survives a store re-open** (cycle-5 F5); (1b) an **unchanged
+  zero-lineage** notebook is **stamped** and then **hash-skipped** on the next run —
+  not re-extracted every time (**AR-03**); (2) deleting a whole notebook removes its
+  `lineage_edge`/`lineage_edge_evidence` **and its `lineage_index_state` row**
+  (**AR-22**) while an edge still evidenced by another notebook survives (whole-file
+  deletion GC).
 * **Milestone**: lineage stays fresh across version upgrades and whole-notebook
   deletions, not only changed-file re-index.
 
@@ -517,29 +600,41 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   resolver does not know `dataset_node`. As shipped, lineage rows would be
   unreachable through any MCP surface.
 * **Changes**: extend the **existing** `query_graph` traversal (**no new MCP
-  tool** — preserves the "no new tool" intent while making the data reachable):
-  add a lineage entry (`("lineage_derives_from", "lineage_edge")`) to the
-  `bfs_directed_impl` / `find_path` allowlists, and teach the node resolver to
-  resolve `dataset_node` ids/kinds (mirroring the Power BI precedent —
-  `query_graph_neighborhood` (`cozo_queries.rs:4859`) +
-  `powerbi_graph_node_to_json` (`src/tools/read.rs:1015`)). **Update every read
-  surface that advertises edge types** (**cycle-5 F6**): the **MCP tool description**
-  in `src/shim/tools_catalog.rs:405-445` (which today enumerates only `code (…)` +
-  `backlog (…)` edge types — `:408` — and omits lineage, so agents cannot discover
-  it) **and** the `query_graph` tool-doc comment (`read.rs:1391-1393`), both to
-  advertise `lineage_derives_from`. The CLI `edge_types` arg help
-  (`src/bin/engram.rs:270`) is generic ("all types", no enumeration), so it needs no
-  per-type change but is confirmed consistent.
+  tool** — preserves the "no new tool" intent while making the data reachable). This
+  is **not** a mere tuple appended to the allowlist: lineage needs a **dedicated
+  traversal branch + a `dataset_node` resolver** inside `bfs_directed_impl` /
+  `find_path` (`cozo_queries.rs:4921-4940`), mirroring the Power BI precedent —
+  `query_graph_neighborhood` (`cozo_queries.rs:4859`) + `powerbi_graph_node_to_json`
+  (`src/tools/read.rs:1015`) — that recognizes `("lineage_derives_from",
+  "lineage_edge")` and projects `dataset_node` ids/kinds (**AR-16**; see v1
+  Limitations). **Traversal direction (AR-06/AR-05)**: because `lineage_derives_from`
+  is oriented **target `from_id` → source `to_id`**, an **outgoing** neighborhood /
+  `find_path` from a **target** reaches its **upstream sources**; discovering
+  **downstream consumers** ("what derives from source Y") requires an **incoming**
+  (`TraversalDirection::Incoming`) neighborhood from the source — **not** a reciprocal
+  `lineage_flows_to` edge, which is **refused as scope creep** (A6 scope-min):
+  direction semantics already express both readings. **Update every read surface that
+  advertises edge types** (**cycle-5 F6 / AR-26**): the **MCP tool description** in
+  `src/shim/tools_catalog.rs:405-445` (today enumerates only `code (…)` + `backlog
+  (…)` — `:408` — omitting **both** Power BI *and* lineage though Power BI is already
+  traversable) is corrected to advertise the full set **`code / backlog / powerbi /
+  lineage`** (or explicitly mark the enumeration non-exhaustive), **and** the
+  `query_graph` tool-doc comment (`read.rs:1391-1393`), both to advertise
+  `lineage_derives_from`. The CLI `edge_types` arg help (`src/bin/engram.rs:270`) is
+  generic ("all types", no enumeration), so it needs no per-type change but is
+  confirmed consistent.
 * **Files**: `src/db/cozo_queries.rs`, `src/tools/read.rs`,
   `src/shim/tools_catalog.rs`. ≤ 3 files, traversal + tool-doc surfaces
   (width-isolated from the parsers and the notebook path).
 * **Tests**: a tool-contract test that, given seeded `dataset_node` +
-  `lineage_derives_from` rows (via U1 writers), a `query_graph`
-  `neighborhood`/`find_path` over `lineage_derives_from` returns the dataset nodes
-  and the derives edge; an unrelated `calls` query is unaffected (no regression); and
-  a **catalog contract test** asserting the `query_graph` MCP tool description
-  (`tools_catalog.rs`) advertises the `lineage_derives_from` edge type, so lineage is
-  discoverable (**cycle-5 F6**).
+  `lineage_derives_from` rows (via the U1a′ writers), an **outgoing** `query_graph`
+  `neighborhood`/`find_path` from a **target** returns its **upstream source** dataset
+  nodes and the derives edge; an **incoming** neighborhood from a **source** returns
+  the **downstream target(s)** that derive from it (**AR-06** direction coverage); an
+  unrelated `calls` query is unaffected (no regression); and a **catalog contract
+  test** asserting the `query_graph` MCP tool description (`tools_catalog.rs`)
+  advertises `lineage_derives_from` (and the corrected `code/backlog/powerbi/lineage`
+  enumeration), so lineage is discoverable (**cycle-5 F6 / AR-26**).
 * **Milestone**: persisted lineage is reachable by agents through `query_graph`;
   no new MCP tool introduced.
 
@@ -563,8 +658,15 @@ non-build unit, not a task.)*
     `INSERT OVERWRITE`, absolute-path read/write, single-cell `read → df → write`.
   * **Dropped** (must produce **zero** edges — **A5 precision floor**): temp-view
     same-cell + cross-cell, one-/two-part names, **3-part names with no trusted
-    authority**, relative-path literals, f-string/variable SQL, config/widget
-    paths, unresolvable metastore/storage authority, multi-cell `df` flow.
+    authority**, relative-path literals, f-string/variable SQL,
+    **`spark.sql(<any arg>)` — deferred (A6/D2)** (incl. a literal
+    `spark.sql("CREATE TABLE c.s.t AS SELECT … FROM c.s.src")` fixture asserting
+    **zero** edges, **AR-09**), config/widget paths, unresolvable metastore/storage
+    authority, multi-cell `df` flow. **NOT in the dropped set: permanent (catalog)
+    views** — v1 **cannot** distinguish a permanent view from a table (both are a
+    3-part name + authority), so a permanent-view reference **does** emit a
+    `kind = table` edge; this is a **documented v1 limitation**, not a fail-closed
+    case (**AR-08**). Only **temp-view** references are asserted to fail closed.
 * **A5**: assert **0 false edges** on every dropped case (fixture-based precision
   floor). **Measure recall against the fixture ground truth** — report it, do
   **not** assert a target (feeds the **Fork A GO/NO-GO checkpoint**). **Do NOT use
@@ -583,18 +685,25 @@ non-build unit, not a task.)*
 
 ### Unit 7 — Architecture / quality-doc notes (domain: docs) — docs
 
-* **Changes**: document v1 limits and fail-closed boundaries — 3-part catalog
-  qualification + **trusted metastore/storage authority binding** (or drop);
-  temp-view lineage **deferred (unrepresentable, Fork A)**; permanent-view
-  lineage **deferred (scope-minimization, future extension: re-add `view` kind +
-  `CREATE [OR REPLACE] VIEW` DDL)**; **`spark.sql(...)` string-embedded SQL
-  deferred from the Python path (scope-minimization, comment D2 — the equivalent
-  CTAS/`INSERT` lineage is captured via `%%sql` cells; future extension: delegate
-  the literal to the U3 SQL extractor)**; source order (`chunk_index`) = metadata only,
-  never an edge; the `%sql` line-magic policy chosen in U4; the **read surface**
-  (lineage is queried via the U8-extended `query_graph`; there is **no**
-  `query_sql` tool); the **zero-false-edge rollback trigger** (any confirmed false
-  lineage edge disables/reverts lineage indexing); and that the **verdict is
+* **Changes**: document v1 limits and fail-closed boundaries — the **edge
+  orientation** (`lineage_derives_from`: `from_id` = written target → `to_id` = read
+  source; data flows source→target, the edge encodes derives-from — **AR-05**); 3-part
+  catalog qualification + **trusted metastore/storage authority binding** (or drop),
+  with the **authority embedded in the canonical key** so metastores don't collide
+  (**AR-01**); temp-view lineage **deferred (unrepresentable, Fork A)**; **permanent
+  (catalog) views are NOT distinguishable from tables in v1, so they are recorded as
+  `kind = table` — a documented limitation, not a fail-closed drop (AR-08)** (future
+  extension: a `view` kind + `CREATE [OR REPLACE] VIEW` DDL); **`spark.sql(...)`
+  string-embedded SQL deferred from the Python path (scope-minimization, comment D2 —
+  the equivalent CTAS/`INSERT` lineage is captured via `%%sql` cells; future
+  extension: delegate the literal to the U3 SQL extractor)**; source order
+  (`chunk_index`) = metadata only, never an edge; the **decided `%sql` line-magic
+  policy — line-magic cells are excluded from v1; only `%%sql` cell-magic routes to
+  the SQL extractor (AR-11)**; the **read surface** (lineage is queried via the
+  U8-extended `query_graph` — **outgoing** from a target reaches sources, **incoming**
+  from a source reaches consumers, **AR-06**; there is **no** `query_sql` tool); the
+  **zero-false-edge rollback trigger** (any confirmed false lineage edge
+  disables/reverts lineage indexing); and that the **verdict is
     feasibility-only — product value is operator-asserted, empirical *fixture* recall
     feeds the Fork A GO/NO-GO checkpoint, and real-corpus prevalence remains a separate
     *unmeasured* future gate (not supplied by U6, cycle-5 F7)**.
@@ -605,26 +714,30 @@ non-build unit, not a task.)*
 
 ```text
 U0 (grammar probe, gated task-1) ──▶ U3 (sql lineage, sized by U0)
-U1 (schema + writers + shared types) ──▶ U1b (authority config + live propagation)
-U1 ──▶ U2 (pyspark literals) ──▶ U2b (single-cell df resolver)
-U1 ──▶ U3
-U1, U1b, U2, U2b, U3 ──▶ U4 (notebook routing + U1 write path) ──▶ U4b (freshness: version backfill + deletion sweep)
-U1 ──▶ U8 (query_graph lineage traversal + dataset_node resolution)
+U1a (schema relations + bootstrap + shared value types) ──▶ U1a′ (db writers + scope-delete cascade)
+U1a ──▶ U1b (authority config + live propagation; test stubs the U2/U3/U4 pipeline via a seam — no U2/U3 dep, AR-04/G6)
+U1a′ ──▶ U2 (pyspark literals) ──▶ U2b (single-cell df resolver)
+U1a′ ──▶ U3
+U1a′, U1b, U2, U2b, U3 ──▶ U4 (notebook routing + U1a′ write path) ──▶ U4b (freshness: version backfill + deletion sweep)
+U1a′ ──▶ U8 (query_graph lineage traversal + dataset_node resolution)
 U4, U4b ──▶ U6 (lineage fixtures + precision/recall metric)
 U6, U8 ──▶ U7 (docs)
 U5 = DEFERRED (no build node; its fail-closed assertions live inside U6)
 ```
 
-No cycles. **U0 must land before U3 is sized/built** (hard gate, A4). U1 (schema +
-write helpers + the shared `LineageEndpoint`/`LineageEdgeCandidate`/
-`LineageAuthorityContext` value types) precedes every emitter, the router, and the
-read surface. **U1b** (authority config surface + live propagation) builds on U1 and
-feeds U4. U2b builds on U2. U4 invokes the U2/U3 extractors, consumes their
-`LineageEdgeCandidate`s, threads U1b's authority context, **and** calls the U1
-writers, so it depends on U1, U1b, U2, U2b, U3; U4b hardens the indexer lifecycle
-after U4 (and reads U1's `lineage_index_state`). U8 (read surface) needs only U1's
-relations. U6 exercises the full pipeline (U1–U4b); U7 documents the measured
-behavior and the U8 read surface.
+No cycles. **U0 must land before U3 is sized/built** (hard gate, A4). **U1a** (schema
+relations + bootstrap + the shared `LineageEndpoint`/`LineageEdgeCandidate`/
+`LineageAuthorityContext` value types) is the foundation; **U1a′** (db write helpers +
+scope-delete cascade) builds on U1a and precedes every emitter, the router, and the
+read surface. **U1b** (authority config surface + live propagation) builds on **U1a**
+(it needs only the `LineageAuthorityContext` type; its test stubs the U2/U3/U4 pipeline
+via a seam, so it does **not** depend on U2/U3 — AR-04/G6) and feeds U4. U2b builds on
+U2. U4 invokes the U2/U3 extractors, consumes their `LineageEdgeCandidate`s, threads
+U1b's authority context, **and** calls the U1a′ writers, so it depends on U1a′, U1b,
+U2, U2b, U3; U4b hardens the indexer lifecycle after U4 (and reads U1a's
+`lineage_index_state` via the U1a′ helper). U8 (read surface) needs the U1a′ writers
+(to seed its contract test) + U1a's relations. U6 exercises the full pipeline
+(U1a–U4b); U7 documents the measured behavior and the U8 read surface.
 
 ## Decisions and Rationale
 
@@ -645,9 +758,11 @@ behavior and the U8 read surface.
   and notebooks are indexed by `index_notebook_source` →
   `upsert_content_record` / `delete_content_records_by_scope`
   (`notebook_indexer.rs:98,164`). The general `code_graph` file walk **skips
-  `.ipynb`**. So the extractors (U2/U3) stay **pure** (return `LineageEndpoint`s)
-  and the notebook router (U4) persists them via new U1 writers with a
-  per-notebook scope-delete on re-index — never through `ExtractedEdge`. *(Added
+  `.ipynb`**. So the extractors (U2/U3) stay **pure** (return
+  `LineageEdgeCandidate`s — statement-grouped `{ target, sources }` — never a flat
+  `Vec<LineageEndpoint>`, cycle-5 F3/F4 / **AR-25**) and the notebook router (U4)
+  persists them via the U1a′ writers with a per-notebook scope-delete on re-index —
+  never through `ExtractedEdge`. *(Added
   after plan-review: resolves the P1 integration-point gap and the P2 GC gap.)*
 * **v1 edge type is `lineage_derives_from` only; no *new* MCP tool, but the
   existing `query_graph` traversal is extended (U8).** Operation-node role edges
@@ -662,19 +777,26 @@ behavior and the U8 read surface.
   inaccurate.)*
 * **Authority-in-key or fail closed (013-D).** A bare `catalog.schema.table`
   string is not globally unique across metastores, and an absolute URI can be
-  environment-local; when the trusted authority is not statically resolvable the
-  reference is **dropped** — never merged across metastores/environments.
+  environment-local; the canonical `dataset_node` id therefore **embeds the stable
+  `metastore_authority_id`/storage-authority** (**AR-01**) so two metastores sharing
+  `catalog.schema.table` yield **distinct** nodes. When the trusted authority is not
+  statically resolvable (unmapped catalog) the reference is **dropped** — never merged
+  across metastores/environments, never emitted.
 * **Single-cell df resolver (A3 Option b), not literal-only.** Literal-argument
   extraction alone cannot connect `df = spark.read(...); df.write(...)` — the most
   common Spark shape — because source and sink live in separate expressions.
   Option (a) would yield near-zero recall; Option (b) recovers the common case
   while staying fail-closed. Cross-cell `df` is dropped for the same
   session/order reason temp views are.
-* **Temp-view OUT (unrepresentable) vs. permanent-view OUT (scope-min) — distinct
-  (A6).** Temp views have no durable node and cross-cell order is unprovable
-  under 013-D → Fork A. Permanent views *are* durable/authority-bindable and
-  *satisfy* the predicate; they are excluded only to minimize v1 scope and are a
-  clean future extension. Conflating them would misframe the roadmap.
+* **Temp-view OUT (unrepresentable) vs. permanent-view (indistinguishable from a
+  table in v1) — distinct (A6).** Temp views have no durable node and cross-cell order
+  is unprovable under 013-D → Fork A (asserted fail-closed in U6). Permanent views
+  *are* durable/authority-bindable and *satisfy* the identity predicate — but v1 has
+  **no signal to tell a permanent view apart from a table** (both are a 3-part name +
+  authority), so a permanent-view reference is **recorded as `kind = table`** rather
+  than fail-closed-dropped: a **documented v1 limitation** (**AR-08**), not an enforced
+  exclusion. A future `view` kind + `CREATE [OR REPLACE] VIEW` DDL would label them
+  precisely. Conflating them with temp views would misframe the roadmap.
 * **U0 as a gated task-1, not stage-time work (A4).** Compiling Rust to probe the
   grammar is Ship-side per the ratified spike and the Stage role boundary;
   relocating the gate one hop downstream preserves it without a boundary
@@ -691,10 +813,10 @@ behavior and the U8 read surface.
 | Risk | Mitigation |
 |---|---|
 | **R1 — U3 sizing unknown**: tree-sitter-sequel 0.3 coverage of `INSERT OVERWRITE` / CTAS `from`-descent is unverified until U0 | U0 is a **hard gated task-1 with a checkpoint before U3 is built**; U3 sizing carries an explicit (A)/(B) fork; residual risk flagged here and in U3 |
-| **R2 — cross-metastore/-environment key merge** (false-merge of distinct datasets under one node) | Authority-in-key or fail closed (U1/U2/U3); U6 asserts unresolvable-authority cases produce zero edges |
+| **R2 — cross-metastore/-environment key merge** (false-merge of distinct datasets under one node) | Authority-in-key (the canonical `dataset_node` id embeds the stable `metastore_authority_id`/storage-authority so two metastores sharing `catalog.schema.table` stay distinct — **AR-01**) or fail closed (U1a/U2/U3/U1b); U6 asserts unresolvable-authority *and* cross-authority-distinctness cases |
 | **R3 — false lineage edge on ambiguous names/paths** (013-D violation) | One general fail-closed predicate applied uniformly (U2/U3); U6 precision floor asserts 0 edges on all dropped cases |
 | **R4 — `%sql` line-magic mis-parse** (parser consumes following Python lines / hits `ERROR`) | U4 strips the magic and picks an explicit line-magic policy (parse-own-line or exclude); U7 documents it |
-| **R5 — multi-source evidence clobbered on re-index** | `lineage_edge_evidence` keyed by `(from_id, to_id, edge_type, notebook_path)` and `dataset_node` canonical-only (U1); shared-edge scope-delete + canonical-identity round-trip tests |
+| **R5 — multi-source evidence clobbered on re-index** | `lineage_edge_evidence` keyed by `(from_id, to_id, edge_type, notebook_path, chunk_index)` — the `chunk_index` (cell) dimension keeps the same edge observed in two cells as two rows (cycle-4 E1 / **AR-20**) — and `dataset_node` canonical-only (**U1a**); shared-edge scope-delete + same-edge/two-cell round-trip + canonical-identity round-trip tests |
 | **R6 — cross-cell `df`/temp-view false edge** | Both explicitly OUT of v1 (A3/A6); U6 asserts multi-cell `df` and temp-view refs fail closed |
 | **R7 — schema migration on existing indexes** | Additive `:create` with idempotent bootstrap + migration guard (U1); no destructive change; nodes/edges regenerate on re-index |
 | **R8 — blast radius** (schema + two parser families + notebook path + traversal surface) | Width-isolated units + `plan-harden` (below) + ordered quality gates |
@@ -722,8 +844,9 @@ silent assumption.
 ## Plan Hardening Signals (REQUIRED)
 
 * **Public API / schema / contract change** — **PRESENT.** New Cozo relations
-  (`dataset_node`, `lineage_edge`, `lineage_edge_evidence`) and an **extended
-  `query_graph` lineage traversal (U8)**. Additive, but a schema/contract change.
+  (`dataset_node`, `lineage_edge`, `lineage_edge_evidence`, `lineage_index_state`) and
+  an **extended `query_graph` lineage traversal (U8)**. Additive, but a schema/contract
+  change.
 * **Security / auth / permission / compliance** — *absent.*
 * **Migration / backfill / destructive / irreversible** — *low.* Additive
   `:create` + bootstrap migration guard; no destructive step; edges regenerate on
@@ -739,7 +862,8 @@ below.)
 
 ## Plan Hardening
 
-**Hardening required: yes.** This plan adds three Cozo relations, a potential new
+**Hardening required: yes.** This plan adds four Cozo relations (`dataset_node`,
+`lineage_edge`, `lineage_edge_evidence`, `lineage_index_state`), a potential new
 lineage traversal surface, and touches two parser families plus the notebook
 ingestion path — a multi-family, schema-touching, contract-changing profile with
 an unresolved external grammar checkpoint (U0). This section deepens verification,
@@ -892,7 +1016,8 @@ suite is the merge gate. (All Ship-side; Stage does not run these.)
 ## Runtime Verification and Closure
 
 * **Changed runtime surface**: a new lineage subgraph (`dataset_node` /
-  `lineage_edge` / `lineage_edge_evidence`) begins recording dataset read→write
+  `lineage_edge` / `lineage_edge_evidence`, plus the `lineage_index_state` freshness
+  relation) begins recording dataset read→write
   edges for `.ipynb` notebooks (previously none). **No *new* MCP tool in v1**, but
   the existing `query_graph` traversal is **extended (U8)** to reach the subgraph
   (there is no `query_sql` tool; `query_graph`'s allowlists don't include lineage
@@ -912,10 +1037,52 @@ suite is the merge gate. (All Ship-side; Stage does not run these.)
   **Owner**: code-graph parsing + db-schema area.
 * **Operational closure**: record the behavioral expansion (notebooks now yield
   lineage edges), the documented precision floor + fail-closed boundaries, and the
-  **Fork A recall/prevalence GO/NO-GO checkpoint** as the value-validation gate.
+  **Fork A fixture-recall GO/NO-GO checkpoint** as the value-validation gate
+  (real-corpus prevalence remains a separate *unmeasured* future gate, AR-24).
   Precision is monitored by the U6 fixture gate (must stay at 0 false edges);
   recall is tracked by the U6 lineage metric. Ownership: code-graph parsing +
   db-schema area.
+
+## v1 Limitations & Deferred Items
+
+Documented v1 constraints (no new task files — each is a bounded, accepted limitation
+surfaced by the cycle-6 adversarial review; future work may lift them):
+
+* **Permanent (catalog) views are recorded as `kind = table` (AR-08).** v1 has no
+  signal to distinguish a permanent view from a table (both are a 3-part name +
+  authority), so a permanent-view reference **emits a `table` edge** rather than
+  failing closed. Only **temp-view** references are asserted fail-closed. Future: a
+  `view` kind + `CREATE [OR REPLACE] VIEW` DDL to label them precisely.
+* **Authority-config changes do not backfill unchanged notebooks (AR-12).** Adding or
+  remapping a metastore authority does **not** retroactively re-canonicalize datasets
+  in notebooks whose `content_hash` is unchanged; the **extractor version-bump is the
+  only manual trigger** for a full re-extraction. (Connects to AR-01: the authority is
+  embedded in the canonical key, so a remap changes identities that only re-extraction
+  will observe.)
+* **U8 lineage traversal needs a dedicated traversal branch, not an allowlist append
+  (AR-16).** Reaching the lineage subgraph via `query_graph` requires a dedicated
+  traversal loop + a `dataset_node` resolver inside `bfs_directed_impl`/`find_path`
+  (verified: `cozo_queries.rs:4485/4497/4531-4536`), **not** a tuple appended to the
+  edge allowlist. TDD for U8 should expect this shape.
+* **Malformed-JSON notebooks leave stale content + lineage (AR-17).** A previously
+  indexed notebook that later becomes malformed JSON hits the `continue` in the
+  indexer **before** the scope-delete, leaving its prior content **and** lineage rows
+  in place (this mirrors the existing content-record behavior). Documented edge case;
+  an optional `095-F` backlog follow-up could add a pre-parse scope-delete for the
+  malformed transition. **(deferred → 095-F)**
+* **U1b propagation may widen `index_notebook_source`'s signature (AR-18).** Threading
+  the `LineageAuthorityContext` into the live write path may require changing
+  `index_notebook_source`'s signature and its `ingestion.rs` caller; U1b's ≤3-file
+  list may therefore need **+1** file at implementation time. Flagged so TDD does not
+  treat the file count as hard.
+* **Lineage writes are non-atomic (AR-28).** The node/edge/evidence upserts are **three
+  non-atomic upserts** plus a **four-step delete cascade** — matching the existing
+  Power BI (`cozo_queries.rs:5471-5520`) and content-record patterns; the indexer is
+  **single-threaded per notebook**, so intra-notebook races do not occur. Intended
+  ordering: **evidence-and-nodes-before-edge** (edge-driven-node invariant D1 requires
+  nodes to exist first) under a per-notebook **scope-replace** (delete-then-insert)
+  critical section; a partial-failure recovery is a **full re-extraction of the
+  notebook** on the next run (the scope-delete makes re-extraction idempotent).
 
 ## Following Steps (outside this plan)
 
@@ -923,7 +1090,9 @@ suite is the merge gate. (All Ship-side; Stage does not run these.)
    feature + tasks (U0–U4, U4b, U8, U6, U7; U5 deferred) → assemble a **queued**
    shipment (mirroring how `094-F`/`089-S` was staged). Stage stops after pushing
    the branch; the Orchestrator opens the PR.
-2. **Fork A GO/NO-GO checkpoint**: after U6 quantifies recall/prevalence, the
+2. **Fork A GO/NO-GO checkpoint**: after U6 quantifies **fixture** recall (real-corpus
+   prevalence remains **unmeasured** — a separate future gate, not supplied by U6,
+   cycle-5 F7 / **AR-24**), the
    operator decides whether v1 lineage recall justifies the feature (product
    value validation the spike deliberately did not measure).
 3. Future extensions (out of v1): temp-view ephemeral-node lineage (Fork A),
@@ -985,10 +1154,10 @@ classification.
   and notebooks persist via `index_notebook_source` →
   `upsert_content_record`/`delete_content_records_by_scope`
   (`notebook_indexer.rs:98,164`). Without a defined write path the decomposition
-  would have wired the wrong consumer. **Resolution**: U1 now owns
+  would have wired the wrong consumer. **Resolution**: U1a′ now owns
   `upsert_dataset_nodes`/`upsert_lineage_edges`/`upsert_lineage_edge_evidence` +
   `delete_lineage_by_scope`; U2/U2b/U3 are **pure** extractors returning
-  `LineageEndpoint`s; U4 (notebook router) persists via the U1 writers — never
+  `LineageEdgeCandidate`s; U4 (notebook router) persists via the U1a′ writers — never
   through `ExtractedEdge`. Recorded as a new Decision bullet.
 
 **P2 (moderate) — resolved**
@@ -1012,7 +1181,7 @@ classification.
 
 **P3 (advisory) — noted**
 
-* `U6` combines fixtures + retrieval-eval in one tests-domain unit; acceptable
+* `U6` combines fixtures + the precision/recall metric in one tests-domain unit; acceptable
   under width isolation (both are the tests domain) but could split if it exceeds
   the 2-hour rule at build time. Executor's discretion.
 
@@ -1134,3 +1303,61 @@ creep.
 | F7 | The Fork-A checkpoint claimed U6 quantifies real-corpus **prevalence**, but U6 measures only curated-fixture recall; the spike left prevalence unmeasured | **valid** | **Narrowed the checkpoint**: U6 supplies **fixture recall only**; **real-corpus prevalence remains UNMEASURED** — a separate future measurement, not supplied by U6. Adjusted the checkpoint, the U6 milestone, and the U7 doc note. Mirrored in `095.007-T` |
 
 **Backlog effects:** +1 task **`095.011-T` (U1b)**, wired `095.002-T → 095.011-T → 095.006-T`; added to shipment **`090-S`** (now 12 items); DAG remains acyclic. Tasks mirrored: `095.002-T` (candidate + authority value types, `lineage_index_state` relation), `095.003-T` (rebind events), `095.004-T` (candidate output + non-Spark invalidation), `095.005-T` (candidate return), `095.006-T` (candidate flatten + U1b dep), `095.007-T` (fixture-recall-only), `095.009-T` (durable version-state), `095.010-T` (`tools_catalog` surface).
+
+### Adversarial Review Disposition (Cycle 6 → Consolidated)
+
+A full multi-model **adversarial review** of the plan at HEAD `a9ec72ed` concluded the
+architecture is **sound and source-grounded**; the 6-cycle Copilot divergence was
+**contract ambiguity, not design**. Per operator direction this is **one consolidated
+revision (single commit)** applying the complete converged finding set (AR-01…AR-29)
+to both the plan doc **and** every affected backlog artifact. Ratified v1 scope
+(table/path only; temp-view + permanent-view + `spark.sql` deferred; precision floor
+= 0 false edges; recall = Fork-A **fixture** checkpoint) and the absolute fail-closed
+invariant are **unchanged**; **Gate remains PASS**. The **only** intended scope
+additions are AR-01 (authority-in-key), AR-10 (`raw_parse_source` carrier), and AR-04
+(U1 task split); everything else is a bounded clarification, stale-text correction, or
+documented v1 limitation.
+
+**Must-fix contract pins (encoded in plan + task files):**
+
+| AR | Finding (root) | Disposition | Resolution |
+|---|---|---|---|
+| AR-01 (G3) | `catalog.schema.table` collides across metastores | **fixed** | Canonical `dataset_node` id embeds a **required** stable `metastore_authority_id` (table) / storage-authority id (path) + a catalog→authority mapping; unmapped catalog ⇒ no authority ⇒ **no node/edge** (fail-closed). Tests: cross-authority distinctness + unmapped-catalog fail-closed. Plan U1a/U2 key, R2/A5 trace; tasks `095.002-T` (key) + `095.011-T` (config) |
+| AR-02 (G4) | `df = spark.read(...)` modeled as read-call + separate rebind ⇒ self-invalidation | **fixed** | A resolved Spark-read assignment is **one atomic `Bind` event** (no self-invalidation); rebind/invalidation events fire **only** for **non-Spark** RHS reassignments. Contract test: `df = spark.read("in"); df.write("out")` → one read→`df` bind + one write edge, no self-invalidation. Tasks `095.003-T` (U2) + `095.004-T` (U2b) |
+| AR-03 | Edge-driven-only stamping re-extracts zero-lineage notebooks every run | **fixed** | U4 calls `upsert_lineage_index_state(path, CURRENT_VERSION)` **unconditionally** per extracted notebook (incl. zero-lineage); corrected the false U4b "neither one-shot nor perpetual reindex" claim for the zero-lineage case. Zero-lineage skip test (2nd run hash-skips). Tasks `095.006-T` (U4) + `095.009-T` (U4b) |
+| AR-04 (G2) | U1 exceeds the 2-hour granularity rule | **fixed** | Split U1 → **U1a** (`095.002-T`: relations + bootstrap + value types) and **U1a′** (`095.012-T`: writers + 4-step delete cascade + tests). **No new "U1b"** (that label already belongs to `095.011-T` — the flagged collision). DAG rewired: U2/U2b/U3/U4/U8 now depend on **U1a′**. **+1 task ⇒ `090-S` 12→13**, DAG re-drawn. **G6 fold-in:** the U1b authority test **stubs** the U2/U3/U4 pipeline via a seam (verifies propagation in isolation) so **U1b depends on U1a only** (not U2/U3); the end-to-end lineage assertion lives in U4/U6 |
+| AR-05 (G5) | Missing canonical orientation for `lineage_derives_from` | **fixed** | Added the orientation sentence in U1/U7: `from_id` = **written target** → `to_id` = **read source**; data flows source→target, edge encodes derives-from. Replaced "read→write linking" → "derives-from linking" in U3. Task `095.005-T` |
+| AR-06 | Downstream-consumer discovery direction undocumented; reciprocal-edge temptation | **fixed** | Documented traversal **direction** in U8/U7: **outgoing**/`find_path` from a target reaches its **sources** (upstream); **incoming** neighborhood reaches **consumers** (downstream). Added a U8 incoming-direction test. **Refuted** the reciprocal `lineage_flows_to` edge as scope creep (A6). Task `095.010-T` (U8) — see note below on numbering |
+| AR-07 (+AR-29) | Fail-closed scope rule underspecified | **fixed** | Crisp rule: (a) new bindings **and** writes honored only for **direct children of the module/cell body**; (b) a rebind of a tracked name in **any** scope/form (branch, loop, nested, comprehension, with/except, del, augmented, walrus, import, def/class) **invalidates** (never silently dropped); (c) per-form rejection tests. `spark` itself is a **tracked name** so `spark = other` invalidates (**AR-29**). Tasks `095.003-T` (U2) + `095.004-T` (U2b) |
+| AR-08 | Unenforceable "permanent-view fails closed" assertion | **fixed** | Removed the assertion from `095.007-T`. v1 cannot distinguish a permanent view from a table (both 3-part + authority) ⇒ U2/U3 **will** emit a `kind = table` edge; documented as a **v1 limitation**. Only **temp-view** stays in the fail-closed fixtures. Reconciled `095.007-T` ↔ plan Decisions/A6/U5/U6/U7 |
+| AR-10 | Raw-parse-source carrier unspecified | **fixed** | Added a **non-persisted** `raw_parse_source: Option<String>` on the cell record (`src/models/notebook.rs`), populated as `trim()` with the leading magic line stripped and **no** "Language:" prefix; `None` ⇒ no lineage (fail-closed). Added `notebook.rs` to U4's file list. Task `095.006-T` (U4) |
+| AR-11 | `%sql` line-magic policy left as a build-time fork | **fixed** | **Decided now:** `%sql` **line**-magic cells are **excluded** from v1; only `%%sql` **cell**-magic routes to the U3 SQL extractor. Encoded in plan U4/U7. Task `095.006-T` (U4) |
+
+**Stale-text sweep (the convergence mechanism):**
+
+| AR | Correction | Disposition |
+|---|---|---|
+| AR-19 (G1) | Plan title reads "…data-lineage subgraph implementation plan" (no "retrieval-eval"); the sole "retrieval-eval" advisory reworded to "precision/recall metric" | **fixed** |
+| AR-20 | R5 evidence-key text now `{from_id, to_id, edge_type, notebook_path, chunk_index}` | **fixed** |
+| AR-21 | Stale `spark.sql` reference in `095-F` corrected to "deferred" | **fixed** (task) |
+| AR-23 | Relation count corrected to **four** (`dataset_node`, `lineage_edge`, `lineage_edge_evidence`, `lineage_index_state`) across the plan | **fixed** |
+| AR-24 | Stale "recall/prevalence" narrowed to **fixture recall**; prevalence **unmeasured** (future gate) | **fixed** |
+| AR-25 | Stale flat-`LineageEndpoints` references corrected to statement-grouped `LineageEdgeCandidate` | **fixed** |
+| AR-26 | `query_graph` advertisement enumeration corrected to **code/backlog/powerbi/lineage** (Power BI is traversable today) / marked non-exhaustive | **fixed** |
+
+**Cheap fold-ins:**
+
+| AR | Fold-in | Disposition |
+|---|---|---|
+| AR-09 | Added a literal `spark.sql("CREATE TABLE c.s.t AS SELECT … FROM c.s.src")` **zero-edge** fixture to U6; dropped-case list reworded to "`spark.sql(any arg)` — deferred (A6/D2)" | **fixed** |
+| AR-13 | Write receiver = **base simple-name at the chain root** (`df.write.mode("overwrite").saveAsTable(...)` → `df`); mode-chain receiver test in U2 | **fixed** |
+| AR-14 | Stripped-magic list corrected to the real constants (`%%sql`/`%sql`/`%%scala`/`%%sparkr`/`%%python`); covers `%%python`; **there is no `%%spark` magic** | **fixed** |
+| AR-15 | `first_ingested_at` → **`ingested_at`**, documented **replaced on re-index** | **fixed** |
+| AR-22 | `delete_lineage_by_scope` gains **step (4)** deleting the notebook's `lineage_index_state` row; asserted in the whole-file-deletion test | **fixed** |
+| AR-27 | Corrected the `INSERT` syntax in `095.005-T` to Spark's `INSERT OVERWRITE TABLE …` / `INSERT INTO …` (matches U0 + the test) | **fixed** (task) |
+
+**Documented as v1 limitations** (new "## v1 Limitations & Deferred Items" section — no new task files): **AR-12** (authority-config changes don't backfill unchanged notebooks) → **documented-v1**; **AR-16** (U8 needs a dedicated traversal loop + `dataset_node` resolver, not an allowlist append) → **documented-v1**; **AR-17** (malformed-JSON notebook leaves stale content+lineage via early `continue`) → **documented-v1 / deferred-095-F**; **AR-18** (U1b propagation may widen `index_notebook_source`'s signature + its `ingestion.rs` caller; ≤3-file list may need +1) → **documented-v1**; **AR-28** (three non-atomic upserts + 4-step delete cascade; single-threaded per notebook; evidence/nodes-before-edge ordering + full-re-extraction recovery) → **documented-v1**.
+
+**Numbering caveat (flagged):** the finding text for **AR-06** said "Touch the U8 task (`095.008-T`)", but **`095.008-T` is U7 (docs)**; **U8 is `095.010-T`**. AR-06's traversal-direction changes were applied to **`095.010-T` (U8)**; the U7 direction doc-note to `095.008-T`.
+
+**Backlog effects:** **+1 task `095.012-T` (U1a′)**; U1 split into U1a (`095.002-T`) + U1a′ (`095.012-T`); DAG rewired (`095.003-T`/`095.005-T`/`095.006-T`/`095.010-T`: dep `095.002-T` → `095.012-T`; `095.012-T` → `095.002-T`; `095.011-T` stays → `095.002-T`; `095.009-T` stays → `095.006-T`); added `095.012-T` to shipment **`090-S`** (now **13 items**); DAG remains **acyclic**. Tasks mirrored: `095-F` (AR-21), `095.002-T` (U1a: AR-01 key, AR-05/15 edge, drop writers→U1a′), `095.012-T` (U1a′: writers + 4-step cascade + version-state tests), `095.003-T` (AR-02/07/13/29), `095.004-T` (AR-02/07), `095.005-T` (AR-05/27), `095.006-T` (AR-03/10/11/14), `095.007-T` (AR-08/09/19), `095.008-T` (AR-05/06/08/11), `095.009-T` (AR-03/22), `095.010-T` (AR-06/16/26), `095.011-T` (AR-01).
