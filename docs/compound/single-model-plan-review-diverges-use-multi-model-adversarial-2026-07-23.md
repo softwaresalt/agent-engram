@@ -19,6 +19,8 @@ citations:
   - "docs/compound/copilot-review-merge-gate-wait-for-head-review-2026-07-11.md"
   - "docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md"
   - ".github/skills/plan-review/SKILL.md"
+  - ".github/instructions/circuit-breaker.instructions.md"
+  - ".github/instructions/github-pr-automation.instructions.md"
 tags:
   - "plan-review"
   - "adversarial-review"
@@ -121,6 +123,22 @@ then **cap** the single-model cycles with an explicit stop-and-merge rule.
      thread with a backlog-deferral rationale; do NOT edit the doc.** Editing to
      silence a nit only spawns fresh text for the next cycle to flag.
 
+   **Bound the whole loop with the mandatory review-fix cap — classification is
+   not a licence for unlimited "correctness" cycles.** Because every fix re-arms
+   the async review clock, even legitimate correctness findings can chain into an
+   unbounded loop (this very learning's PR did exactly that: 5 review rounds, each
+   fix surfacing the next). Apply the repository's hard limit: **at most 3
+   review-fix cycles per PR/task** (`circuit-breaker.instructions.md` Review-Fix
+   Cycle Definition, §67/§71-76; `github-pr-automation.instructions.md` §1.8,
+   §238-243). On reaching the cap:
+     - **defer residual P2/P3 findings** as new backlog items (do not fix in-loop),
+     - **escalate any unresolved gate-blocking (P0/P1) finding to the operator**
+       rather than continuing to push,
+     - then **stop editing** and let the operator gate the merge.
+   The stop rule and the 3-cycle cap are complementary: the classification decides
+   *whether* a finding is worth an edit; the cap decides *when to stop editing
+   regardless*.
+
 3. **Merge on the gate, not on "zero findings."** Once contracts are certified
    and real contradictions are fixed, run the 4-point merge gate
    (`commit_id == HEAD` review present, Copilot off `requested_reviewers`, 0
@@ -151,6 +169,13 @@ then **cap** the single-model cycles with an explicit stop-and-merge rule.
 - **Classify every residual finding before touching the doc.** Only
   correctness/contract contradictions warrant an edit. Granularity → split before
   harvest; limitations → document; nits/append-only-history → resolve as backlog.
+- **Enforce the hard 3-cycle review-fix cap even for correctness findings.**
+  Classification decides *whether* a finding is worth an edit; the repository cap
+  decides *when to stop regardless*. After 3 review-fix cycles, defer residual
+  P2/P3 as backlog, escalate unresolved P0/P1 to the operator, and stop editing —
+  do not let a chain of "just one more correctness fix" recreate the unbounded
+  loop (`circuit-breaker.instructions.md`; `github-pr-automation.instructions.md`
+  §1.8).
 - **Expect append-only disposition logs to look "stale" to bots.** They record
   superseded decisions *by design*. Resolve such flags as intended history; do
   **not** rewrite the log — rewriting destroys the audit trail and adds new text
