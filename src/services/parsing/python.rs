@@ -667,6 +667,11 @@ pub(super) mod spark_lineage {
         ReadBind {
             /// The assignment-target variable the read is bound to.
             variable: String,
+            /// The read chain-root session receiver (e.g. `spark`), or `None`
+            /// when the root is not a simple name. U2b drops the bind when this
+            /// session was invalidated by a prior rebind (`spark = other`,
+            /// AR-29).
+            session: Option<String>,
             /// The U2a-resolved read endpoint, or `None` (fail closed).
             endpoint: Option<LineageEndpoint>,
             /// Source-order key (statement start byte).
@@ -910,6 +915,7 @@ pub(super) mod spark_lineage {
                     if resolved.role == SparkCallRole::Read {
                         out.push(SparkLineageEvent::ReadBind {
                             variable: names[0].clone(),
+                            session: resolved.receiver.clone(),
                             endpoint: resolved.endpoint,
                             order: node.start_byte(),
                             scope: enclosing,
@@ -1075,6 +1081,89 @@ pub(super) mod spark_lineage {
         simple_identifier(alias, source)
     }
 
+    // ── U2b: single-cell DataFrame dataflow resolver (Fork E Option b) ─────────
+
+    /// Join a single notebook cell's [`SparkLineageEvent`] stream into directional
+    /// [`LineageEdgeCandidate`]s (Fork E Option b).
+    ///
+    /// Consumes U2c's event stream — read *Bind*, write call, and non-Spark
+    /// rebind/invalidation events — performing **no** second AST walk (U2c is the
+    /// single event-emission source of truth). It tracks `df_var → read dataset`
+    /// bindings established by atomic top-level read *Binds* (a read Bind does not
+    /// self-invalidate — AR-02) and, when a later top-level write call on the same
+    /// variable appears, emits
+    /// `LineageEdgeCandidate { target: write_dataset, sources: [read_dataset] }`
+    /// (the directional carrier U4 flattens to `lineage_derives_from` edges).
+    ///
+    /// Fail closed (no edge) on: any rebind/invalidation of the tracked variable
+    /// before the write (`df = other`, `spark = other` — AR-29 — an unresolvable
+    /// RHS, or any augmented/walrus/del/import/for/with/comprehension rebind, F2);
+    /// a bind or write whose event scope is not the top-level cell/module body
+    /// (branch, loop, comprehension, `with`/`except`, `def`/`class` — AR-07); an
+    /// unresolved receiver (`receiver = None`); or a read/write endpoint U2 left
+    /// unresolved. Cross-cell `df` propagation is out of v1 — callers invoke this
+    /// per cell, so a cell's events never mix with another's.
+    pub(crate) fn resolve_cell_candidates(
+        events: &[SparkLineageEvent],
+    ) -> Vec<crate::models::lineage::LineageEdgeCandidate> {
+        use std::collections::{HashMap, HashSet};
+
+        use crate::models::lineage::LineageEdgeCandidate;
+
+        let mut binding: HashMap<String, LineageEndpoint> = HashMap::new();
+        // Session names invalidated by a prior rebind (`spark = other`, AR-29).
+        // A read whose chain-root session is invalidated is untrusted.
+        let mut invalidated_sessions: HashSet<String> = HashSet::new();
+        let mut candidates = Vec::new();
+        for event in events {
+            match event {
+                // A resolved top-level read establishes the binding (AR-02) —
+                // unless its session receiver was invalidated (AR-29).
+                SparkLineageEvent::ReadBind {
+                    variable,
+                    session,
+                    endpoint: Some(endpoint),
+                    scope: EventScope::TopLevel,
+                    ..
+                } if !session
+                    .as_deref()
+                    .is_some_and(|s| invalidated_sessions.contains(s)) =>
+                {
+                    binding.insert(variable.clone(), endpoint.clone());
+                }
+                // A nested-scope, unresolved, or untrusted-session read rebinds
+                // the variable to something ineligible — invalidate the prior
+                // binding (AR-07 / AR-29).
+                SparkLineageEvent::ReadBind { variable, .. } => {
+                    binding.remove(variable);
+                }
+                // A resolved top-level write on a bound variable emits an edge.
+                SparkLineageEvent::WriteCall {
+                    receiver: Some(receiver),
+                    endpoint: Some(target),
+                    scope: EventScope::TopLevel,
+                    ..
+                } => {
+                    if let Some(source) = binding.get(receiver) {
+                        candidates.push(LineageEdgeCandidate {
+                            target: target.clone(),
+                            sources: vec![source.clone()],
+                        });
+                    }
+                }
+                // Unresolved receiver / endpoint / non-top-level write: no edge.
+                SparkLineageEvent::WriteCall { .. } => {}
+                // Any invalidation drops the tracked binding and marks the name
+                // as an untrusted session for later reads (F2 / AR-29).
+                SparkLineageEvent::Invalidate { variable, .. } => {
+                    binding.remove(variable);
+                    invalidated_sessions.insert(variable.clone());
+                }
+            }
+        }
+        candidates
+    }
+
     #[cfg(test)]
     mod tests {
         use std::collections::BTreeMap;
@@ -1210,6 +1299,144 @@ pub(super) mod spark_lineage {
                     .any(|e| matches!(e, SparkLineageEvent::WriteCall { .. })),
                 "spark.sql (deferred) and createOrReplaceTempView (content-only) emit no write"
             );
+        }
+
+        // ── U2b: single-cell dataflow resolver (6 scenarios) ─────────────────
+
+        fn candidates_for(source: &str) -> Vec<crate::models::lineage::LineageEdgeCandidate> {
+            let events = extract_python_lineage(source, &trusted_ctx()).expect("extract");
+            resolve_cell_candidates(&events)
+        }
+
+        #[test]
+        fn u2b_happy_path_single_cell_read_write_emits_candidate() {
+            let candidates = candidates_for(concat!(
+                "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                "df.write.saveAsTable(\"cat.sch.out\")\n",
+            ));
+            assert_eq!(candidates.len(), 1, "one read→write candidate");
+            let candidate = &candidates[0];
+            assert_eq!(candidate.target.name, "cat.sch.out");
+            assert_eq!(candidate.sources.len(), 1);
+            assert_eq!(candidate.sources[0].name, "s3://bucket/in");
+        }
+
+        #[test]
+        fn u2b_reassignment_invalidates_no_edge() {
+            // df = other before the write drops the binding (F2).
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df = other\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "non-Spark rebind invalidates the binding"
+            );
+            // spark = other invalidates the session (AR-29): a later read via
+            // the untrusted spark never establishes a resolved binding.
+            assert!(
+                candidates_for(concat!(
+                    "spark = other\n",
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "session rebind invalidates later reads via spark (AR-29)"
+            );
+        }
+
+        #[test]
+        fn u2b_non_top_level_rebind_invalidates_no_edge() {
+            let forms = [
+                "if c:\n    df = other\n",
+                "for x in items:\n    df = other\n",
+                "z = [x for df in items]\n",
+                "with open(f) as df:\n    pass\n",
+                "try:\n    pass\nexcept E as df:\n    pass\n",
+                "def df():\n    pass\n",
+                "class df:\n    pass\n",
+            ];
+            for form in forms {
+                let source = format!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n{form}df.write.saveAsTable(\"cat.sch.out\")\n"
+                );
+                assert!(
+                    candidates_for(&source).is_empty(),
+                    "nested rebind form `{form}` must invalidate (AR-07)"
+                );
+            }
+        }
+
+        #[test]
+        fn u2b_unresolved_receiver_no_edge() {
+            // Write on a df never bound to a resolved read.
+            assert!(
+                candidates_for("df.write.saveAsTable(\"cat.sch.out\")\n").is_empty(),
+                "write on an unbound receiver yields no edge"
+            );
+            // Non-simple-name chain root (receiver = None).
+            assert!(
+                candidates_for("get_session().write.save(\"s3://bucket/out\")\n").is_empty(),
+                "non-simple-name receiver yields no edge"
+            );
+        }
+
+        #[test]
+        fn u2b_cross_cell_read_write_rejected() {
+            // Cell A only reads; Cell B only writes. Resolving each cell's event
+            // stream independently (as U4 does) yields no cross-cell edge.
+            let cell_a = extract_python_lineage(
+                "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                &trusted_ctx(),
+            )
+            .expect("extract A");
+            let cell_b =
+                extract_python_lineage("df.write.saveAsTable(\"cat.sch.out\")\n", &trusted_ctx())
+                    .expect("extract B");
+            assert!(
+                resolve_cell_candidates(&cell_a).is_empty(),
+                "cell A: no write"
+            );
+            assert!(
+                resolve_cell_candidates(&cell_b).is_empty(),
+                "cell B: df not bound in this cell"
+            );
+        }
+
+        #[test]
+        fn u2b_contract_u2c_emits_all_three_event_kinds() {
+            // The U2c↔U2b contract: U2c emits atomic read Bind, write call, AND
+            // non-Spark rebind/invalidation events that U2b consumes.
+            let events = extract_python_lineage(
+                concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n", // ReadBind
+                    "other = compute()\n",                           // Invalidate(other)
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",       // WriteCall
+                ),
+                &trusted_ctx(),
+            )
+            .expect("extract");
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, SparkLineageEvent::ReadBind { .. })),
+                "emits a read Bind"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, SparkLineageEvent::WriteCall { .. })),
+                "emits a write call"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, SparkLineageEvent::Invalidate { .. })),
+                "emits an invalidation"
+            );
+            // And the stream still joins the happy-path read→write edge.
+            assert_eq!(resolve_cell_candidates(&events).len(), 1);
         }
 
         /// A trusted authority context: catalog `cat` → `prod-metastore`, and a
