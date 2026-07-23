@@ -50,7 +50,8 @@ pub use graph_query::TraversalDirection;
 pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
 pub use lineage::{
-    DatasetKind, LineageAuthorityContext, LineageEdgeCandidate, LineageEndpoint, LineageEvidence,
+    DatasetKind, LINEAGE_DERIVES_FROM, LineageAuthorityContext, LineageEdgeCandidate,
+    LineageEndpoint, LineageEvidence,
 };
 pub use metrics::MetricsConfig;
 pub use notebook::NotebookIndexResult;

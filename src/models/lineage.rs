@@ -21,6 +21,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The single v1 lineage edge type (AR-05).
+///
+/// Oriented `from_id` = the written target dataset → `to_id` = the read source
+/// dataset: data flows source→target, but the edge encodes derives-from (the
+/// target derives from the source).
+pub const LINEAGE_DERIVES_FROM: &str = "lineage_derives_from";
+
 /// The kind of a resolved lineage dataset endpoint.
 ///
 /// v1 recognizes tables and paths only. Permanent (catalog) views are recorded
