@@ -33,9 +33,9 @@ tags:
 ## Problem
 
 PR #281 carried a **docs + backlog only** implementation plan (a Spark
-notebook data-lineage design: one `*-plan.md` plus 17 backlog artifacts —
-shipment `090-S`, feature `095-F`, and 15 tasks, 18 files total, **no
-`.rs` code**). It was put through GitHub Copilot's incremental PR review. The
+notebook data-lineage design comprising one `*-plan.md` plus 17 backlog
+artifacts: shipment `090-S`, feature `095-F`, and 15 tasks, 18 files
+total, **no `.rs` code**). It was put through GitHub Copilot's incremental PR review. The
 findings-per-cycle sequence over ten cycles was:
 
 ```text
