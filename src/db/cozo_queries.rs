@@ -5725,6 +5725,58 @@ referenced[id] := *lineage_edge { to_id: id }
         Ok(rows.len())
     }
 
+    // ── 095-F: lineage version-state helpers (U1a") ───────────────────────
+
+    /// Upsert the durable freshness row for one notebook's lineage extraction.
+    ///
+    /// Stamps `extractor_version` (plus an `indexed_at` timestamp) into
+    /// `lineage_index_state`. This is the durable version slot that backs the U4
+    /// write-path's unconditional freshness stamp (AR-03) and U4b's
+    /// version-fingerprint skip predicate — `content_record` carries only a
+    /// `content_hash` with no version slot (cycle-5 F5), so the version must live
+    /// here.
+    pub async fn upsert_lineage_index_state(
+        &self,
+        notebook_path: &str,
+        extractor_version: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[notebook_path, extractor_version, indexed_at] <- [[$notebook_path, $extractor_version, $indexed_at]]
+:put lineage_index_state { notebook_path => extractor_version, indexed_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        p.insert(
+            "extractor_version".to_owned(),
+            DataValue::from(extractor_version),
+        );
+        p.insert(
+            "indexed_at".to_owned(),
+            DataValue::from(chrono::Utc::now().to_rfc3339().as_str()),
+        );
+        self.run_script_busy_retry_mutable(script, p).await?;
+        Ok(())
+    }
+
+    /// Read the durable `extractor_version` recorded for one notebook.
+    ///
+    /// Returns `None` when the notebook has never been indexed (no
+    /// `lineage_index_state` row), which U4b treats as "must (re)index".
+    pub async fn lineage_index_version(
+        &self,
+        notebook_path: &str,
+    ) -> Result<Option<String>, EngramError> {
+        let script = r#"
+?[extractor_version] :=
+    *lineage_index_state { notebook_path, extractor_version },
+    notebook_path = $notebook_path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        let rows = self.run_script_busy_retry_immutable(script, p).await?.rows;
+        Ok(rows.first().map(|row| extract_str(row, 0)))
+    }
+
     /// Return all Power BI nodes, optionally filtered by `source_path`.
     pub async fn select_powerbi_nodes(
         &self,
@@ -6603,6 +6655,62 @@ mod tests {
         assert!(
             state_rows.is_empty(),
             "the notebook's lineage_index_state row must be deleted (AR-22)"
+        );
+    }
+
+    // ── 095-F U1a": lineage version-state read/write helpers ──────────────
+
+    // U1a": upsert_lineage_index_state then lineage_index_version round-trips
+    // the extractor version, an unindexed notebook reads None, and re-stamping
+    // replaces the version in place.
+    #[tokio::test]
+    async fn lineage_index_state_round_trips_version() {
+        let (_tmp, q) = lineage_queries("lineage-version-rt").await;
+        assert_eq!(
+            q.lineage_index_version("n.ipynb").await.expect("read"),
+            None,
+            "an unindexed notebook has no recorded version"
+        );
+        q.upsert_lineage_index_state("n.ipynb", "v1")
+            .await
+            .expect("upsert v1");
+        assert_eq!(
+            q.lineage_index_version("n.ipynb").await.expect("read"),
+            Some("v1".to_owned())
+        );
+        q.upsert_lineage_index_state("n.ipynb", "v2")
+            .await
+            .expect("re-stamp v2");
+        assert_eq!(
+            q.lineage_index_version("n.ipynb").await.expect("read"),
+            Some("v2".to_owned()),
+            "re-stamping replaces the version in place"
+        );
+    }
+
+    // U1a": the durable version slot survives a full store re-open — it lives in
+    // lineage_index_state on disk, NOT in memory (cycle-5 F5).
+    #[tokio::test]
+    async fn lineage_index_version_survives_store_reopen() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        {
+            let db = crate::db::connect_db(tmp.path(), "lineage-durable")
+                .await
+                .expect("connect");
+            let q = CodeGraphQueries::new(db);
+            q.upsert_lineage_index_state("n.ipynb", "v7")
+                .await
+                .expect("upsert");
+        }
+        // Re-open the same on-disk store under the same branch.
+        let db2 = crate::db::connect_db(tmp.path(), "lineage-durable")
+            .await
+            .expect("reconnect");
+        let q2 = CodeGraphQueries::new(db2);
+        assert_eq!(
+            q2.lineage_index_version("n.ipynb").await.expect("read"),
+            Some("v7".to_owned()),
+            "the durable version slot must survive a store re-open (cycle-5 F5)"
         );
     }
 }
