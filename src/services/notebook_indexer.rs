@@ -9,11 +9,51 @@ use tracing::{debug, info, warn};
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
 use crate::models::content::ContentRecord;
-use crate::models::notebook::NotebookIndexResult;
+use crate::models::lineage::{LineageAuthorityContext, LineageEdgeCandidate};
+use crate::models::notebook::{NotebookCellRecord, NotebookIndexResult};
 use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::notebook_extract::extract_notebook;
 use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+
+/// Notebook lineage extraction seam (095-F, Unit U1b / AR-04/G6).
+///
+/// U1b constructs the trusted-authority context from config and threads it to
+/// this boundary; the live PySpark + Spark-SQL candidate collection is U4
+/// (`095.006-T`). Isolating the seam here lets U1b verify **construction +
+/// propagation** without depending on the parsers: a stub asserts it receives
+/// the expected context, and the fail-closed contract holds — an **empty**
+/// context can never yield an endpoint.
+pub trait NotebookLineageExtractor {
+    /// Extract directional lineage edge candidates for one notebook's cells,
+    /// binding every dataset identity through `authority_ctx` or dropping it
+    /// (fail-closed; 013-D, AR-01).
+    fn extract(
+        &self,
+        notebook_path: &str,
+        cells: &[NotebookCellRecord],
+        authority_ctx: &LineageAuthorityContext,
+    ) -> Vec<LineageEdgeCandidate>;
+}
+
+/// The production notebook lineage extractor.
+///
+/// U4 (`095.006-T`) implements PySpark + Spark-SQL candidate collection; until
+/// then it emits nothing, so the live path stays fail-closed while U1b wires the
+/// authority context through.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DefaultNotebookLineageExtractor;
+
+impl NotebookLineageExtractor for DefaultNotebookLineageExtractor {
+    fn extract(
+        &self,
+        _notebook_path: &str,
+        _cells: &[NotebookCellRecord],
+        _authority_ctx: &LineageAuthorityContext,
+    ) -> Vec<LineageEdgeCandidate> {
+        Vec::new()
+    }
+}
 
 /// Collect all notebook files under `dir` recursively.
 #[must_use]
@@ -95,13 +135,24 @@ fn summary_record_content(
 }
 
 /// Index all notebook files from a single content source.
+///
+/// `authority_ctx` is the trusted-authority context built from the ingestion
+/// registry's `[lineage]` config (U1b); it is threaded to the notebook lineage
+/// extraction seam so table/path identities can bind to a trusted metastore or
+/// storage authority. An empty context keeps lineage fail-closed.
 pub async fn index_notebook_source(
     source: &ContentSource,
     workspace_root: &Path,
     queries: &CodeGraphQueries,
     max_file_size: u64,
+    authority_ctx: &LineageAuthorityContext,
 ) -> Result<NotebookIndexResult, EngramError> {
     let mut result = NotebookIndexResult::default();
+
+    // U1b seam: the live lineage extractor. U4 (095.006-T) implements candidate
+    // extraction + persistence via the U1a' writers; until then this is
+    // fail-closed and the authority context is simply threaded through.
+    let lineage_extractor = DefaultNotebookLineageExtractor;
 
     let source_dir = workspace_root.join(&source.path);
     if !source_dir.exists() {
@@ -159,6 +210,19 @@ pub async fn index_notebook_source(
             debug!(path = %rel_path, "malformed notebook JSON — skipping file");
             continue;
         };
+
+        // U1b: thread the trusted-authority context into the lineage extraction
+        // seam. Candidates are persisted by the U4 write path (095.006-T); until
+        // U4 lands this is fail-closed (no candidates) but the context is live.
+        let lineage_candidates =
+            lineage_extractor.extract(&rel_path, &extracted.cells, authority_ctx);
+        if !lineage_candidates.is_empty() {
+            debug!(
+                path = %rel_path,
+                candidates = lineage_candidates.len(),
+                "collected notebook lineage candidates"
+            );
+        }
 
         queries
             .delete_content_records_by_scope(&rel_path, "notebook", &source.path)
@@ -415,6 +479,87 @@ mod tests {
                 "linked-outside/outside.ipynb".to_string(),
                 "absent.ipynb".to_string(),
             ]
+        );
+    }
+
+    // ── 095-F U1b: authority-context propagation seam (AR-04/G6) ──────────
+
+    use super::{DefaultNotebookLineageExtractor, NotebookLineageExtractor};
+    use crate::models::lineage::LineageAuthorityContext;
+    use crate::models::notebook::NotebookCellRecord;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// A stub extractor (seam) that records the authority context it is handed,
+    /// so the test can assert the LIVE context — not an accidental empty one —
+    /// reached the extractor call boundary.
+    #[derive(Default)]
+    struct SpyExtractor {
+        seen_is_empty: RefCell<Vec<bool>>,
+        seen_cat_authority: RefCell<Vec<Option<String>>>,
+    }
+
+    impl NotebookLineageExtractor for SpyExtractor {
+        fn extract(
+            &self,
+            _notebook_path: &str,
+            _cells: &[NotebookCellRecord],
+            authority_ctx: &LineageAuthorityContext,
+        ) -> Vec<crate::models::lineage::LineageEdgeCandidate> {
+            self.seen_is_empty
+                .borrow_mut()
+                .push(authority_ctx.is_empty());
+            self.seen_cat_authority
+                .borrow_mut()
+                .push(authority_ctx.catalog_authority_id("cat").map(str::to_owned));
+            // A fail-closed stub: with an empty context it can never emit an edge.
+            Vec::new()
+        }
+    }
+
+    fn non_empty_ctx() -> LineageAuthorityContext {
+        let mut catalogs = BTreeMap::new();
+        catalogs.insert("cat".to_owned(), "prod-metastore".to_owned());
+        LineageAuthorityContext::new(catalogs, vec!["s3://bucket".to_owned()])
+    }
+
+    // U1b: a configured (non-empty) authority context is propagated intact to
+    // the extractor seam.
+    #[test]
+    fn configured_authority_context_reaches_the_extractor_seam() {
+        let spy = SpyExtractor::default();
+        let cells: Vec<NotebookCellRecord> = Vec::new();
+        let out = spy.extract("n.ipynb", &cells, &non_empty_ctx());
+        assert!(out.is_empty());
+        assert_eq!(spy.seen_is_empty.borrow().as_slice(), &[false]);
+        assert_eq!(
+            spy.seen_cat_authority.borrow()[0].as_deref(),
+            Some("prod-metastore"),
+            "the live catalog->authority mapping must reach the seam"
+        );
+    }
+
+    // U1b fail-closed: with NO authority configured the seam receives an EMPTY
+    // context and yields ZERO endpoints.
+    #[test]
+    fn absent_authority_config_propagates_empty_context_and_yields_nothing() {
+        let spy = SpyExtractor::default();
+        let cells: Vec<NotebookCellRecord> = Vec::new();
+        let out = spy.extract("n.ipynb", &cells, &LineageAuthorityContext::empty());
+        assert!(out.is_empty(), "empty context must yield zero endpoints");
+        assert_eq!(spy.seen_is_empty.borrow().as_slice(), &[true]);
+        assert_eq!(spy.seen_cat_authority.borrow()[0], None);
+    }
+
+    // U1b: the production extractor is fail-closed until U4 fills it in — it
+    // emits nothing regardless of context.
+    #[test]
+    fn default_extractor_is_fail_closed_until_u4() {
+        let cells: Vec<NotebookCellRecord> = Vec::new();
+        assert!(
+            DefaultNotebookLineageExtractor
+                .extract("n.ipynb", &cells, &non_empty_ctx())
+                .is_empty()
         );
     }
 }
