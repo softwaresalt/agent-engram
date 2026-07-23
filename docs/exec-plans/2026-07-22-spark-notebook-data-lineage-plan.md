@@ -53,9 +53,14 @@ scope-lock v1:
 * **A5 = precision floor now** — v1 must emit **zero false edges** (fixture-based,
   013-D); empirical **recall / corpus prevalence** is NOT a pre-plan number — it
   is an explicit **Fork A GO/NO-GO checkpoint**.
-* **A6 = both deferrals ratified** — temp-view lineage OUT (unrepresentable,
-  Fork A) and permanent-view lineage OUT (scope-minimization). **v1 = table +
-  path datasets only.**
+* **A6 = deferral scope ratified + reconciled (H2)** — **temp-view** lineage is the
+  only fail-closed deferral (unrepresentable, Fork A). A **permanent (catalog) view
+  referenced by a 3-part name + resolved authority IS captured as a `kind = table`
+  lineage endpoint** (linked to the view *name*, not expanded through it): v1 has no
+  signal to tell it apart from a table. What is DEFERRED for permanent views is only
+  (a) the **view-vs-table object-kind distinction** (needs metastore object-kind
+  resolution) and (b) **view-definition expansion** — not the lineage capture itself.
+  **v1 datasets = table + path only.**
 
 ### Verified current-source baseline (re-confirmed on `main` 2026-07-22)
 
@@ -154,17 +159,22 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
   analyzer is required. This decision **sizes U3** before U3 is built.
 * **Milestone**: U3 sizing risk (R1) closed; recorded in the closure artifact.
 
-### Unit 1a + U1a′ — Lineage subgraph schema + value types (U1a) and db writers + scope-delete cascade (U1a′) (domain: schema, `src/db/`) — test-first
+### Unit 1a + U1a′ + U1a″ — Lineage subgraph schema + value types (U1a), db writers + scope-delete cascade (U1a′), and version-state helpers (U1a″) (domain: schema, `src/db/`) — test-first
 
 > **Split (AR-04 — the former single U1 exceeded the 2-hour granularity rule).**
 > **U1a** (task `095.002-T`) = the four relations + bootstrap registration + the
-> shared value types. **U1a′** (task `095.012-T`) = the db write helpers + the
-> scope-delete cascade + their round-trip/deletion/version-state tests; **U1a′
-> depends on U1a**. The extractors (U2/U2b/U3) and the router/read units (U4/U4b/U8)
-> depend on **U1a′** (a conservative acyclic ordering on the fully-established
-> schema+writer foundation); the shared value types they consume are defined in U1a
-> and available transitively. Elsewhere in this plan, "the U1 writers" = **U1a′** and
-> "U1's relations / types / schema" = **U1a**. **U1b** (authority context,
+> shared value types. **U1a′** (task `095.012-T`) = the core node/edge/evidence write helpers + the
+> scope-delete / GC cascade (the 4-step cascade incl. `lineage_index_state` row
+> deletion) + their round-trip/deletion tests. **U1a″** (task `095.014-T`, H3
+> cycle-7 granularity split) = the version-state (`lineage_index_state`) read/write
+> helpers (`upsert_lineage_index_state` / `lineage_index_version`) + the
+> durable-version test. **U1a′** and **U1a″** both depend on **U1a** and are
+> independent of each other. The extractors (U2a/U2c/U2b/U3) and the read unit (U8)
+> depend on **U1a′**; the **U4 write-path** (`095.015-T`) depends on **U1a′ + U1a″**;
+> **U4b** (freshness) depends on the write-path. The shared value types they consume
+> are defined in U1a and available transitively. Elsewhere in this plan, "the U1
+> writers" = **U1a′**, "the version-state helpers" = **U1a″**, and "U1's relations /
+> types / schema" = **U1a**. **U1b** (authority context,
 > `095.011-T`) depends only on **U1a** (it needs the `LineageAuthorityContext` type;
 > its test stubs the U2/U3/U4 pipeline via a seam, so it does **not** depend on
 > U2/U3 — AR-04/G6).
@@ -319,7 +329,18 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 * **Milestone**: positive table/path lineage is reachable in the live indexer, gated
   by trusted-authority config; absent config fails closed.
 
-### Unit 2 — PySpark read/write literal extraction (domain: python-parser) — test-first
+### Unit 2a + U2c — PySpark extraction/resolution (U2a) + assignment/scope event emission (U2c) (domain: python-parser) — test-first
+
+> **Split (H4 cycle-7 — the former single U2 exceeded the 2-hour granularity gate:
+> >4 test scenarios).** **U2a** (task `095.003-T`) = the Spark method-chain
+> extraction + endpoint resolution + authority resolution that produces the resolved
+> `LineageEndpoint` / `LineageEdgeCandidate` **IR**. **U2c** (task `095.013-T`) = the
+> assignment-and-scope **event emission** — the 3-kind `SparkLineageEvent` model (read
+> *Bind* / write call / non-Spark rebind-invalidation) + per-form scope analysis over
+> that IR — exposing `extract_python_lineage`. **The seam contract = the
+> `LineageEndpoint`/candidate IR.** **U2c depends on U2a**; **U2b** (`095.004-T`)
+> consumes U2c's event stream (**U2b now depends on U2c**). The prose below describes
+> both halves; each is sized under the gate (see the per-task granularity lines).
 
 * **Changes** in `src/services/parsing/python.rs` (a new `spark_lineage`
   submodule; distinct from `094-F` bare-call promotion): a **Spark method
@@ -478,7 +499,20 @@ domain (`schema` OR `python-parser` OR `dataflow` OR `sql-parser` OR
 * **Milestone**: authority-bound table-to-table SQL lineage resolves;
   ambiguous/unauthorized/unparseable SQL fails closed.
 
-### Unit 4 — Notebook cell routing + magic stripping (domain: notebook-path) — characterization-first
+### Unit 4a + U4 write-path — Notebook cell routing + magic stripping (U4a) + lineage write-path + freshness stamp (U4 write-path) (domain: notebook-path) — characterization-first
+
+> **Split (H1 cycle-7 — the former single U4 listed >4 test scenarios).** **U4a**
+> (task `095.006-T`) = notebook cell **routing** + magic stripping + the
+> `raw_parse_source` carrier field + the `%sql` line-magic policy; it hands the raw
+> parse-source to the U2b/U3 extractors (threading U1b's authority context) and
+> collects the returned `LineageEdgeCandidate`s. **U4 write-path** (task `095.015-T`)
+> = the **persistence + freshness** concern — flatten candidates to directional
+> `lineage_edge`s, **edge-driven** `dataset_node`/evidence upserts via the U1a′
+> writers, the `delete_lineage_by_scope` scope-replace on re-index, and the
+> **unconditional** `upsert_lineage_index_state` stamp via U1a″. **The seam = the
+> collected `Vec<LineageEdgeCandidate>` per notebook.** **U4 write-path depends on
+> U4a + U1a′ + U1a″**; **U4b** (freshness) depends on the write-path. The prose below
+> covers both halves; each is sized under the gate (see the per-task granularity lines).
 
 * **Changes** in `src/services/notebook_extract.rs` / `notebook_indexer.rs`:
   route `python` and `sql` code cells into the U2/U3 extractors while preserving
@@ -714,13 +748,15 @@ non-build unit, not a task.)*
 
 ```text
 U0 (grammar probe, gated task-1) ──▶ U3 (sql lineage, sized by U0)
-U1a (schema relations + bootstrap + shared value types) ──▶ U1a′ (db writers + scope-delete cascade)
-U1a ──▶ U1b (authority config + live propagation; test stubs the U2/U3/U4 pipeline via a seam — no U2/U3 dep, AR-04/G6)
-U1a′ ──▶ U2 (pyspark literals) ──▶ U2b (single-cell df resolver)
+U1a (schema relations + bootstrap + shared value types) ──▶ U1a′ (db writers + scope-delete/GC cascade)
+U1a ──▶ U1a″ (version-state lineage_index_state read/write helpers)
+U1a ──▶ U1b (authority config + live propagation; test stubs the pipeline via a seam — no U2/U3 dep, AR-04/G6)
+U1a′ ──▶ U2a (pyspark extraction/resolution → LineageEndpoint/candidate IR) ──▶ U2c (assignment/scope event emission) ──▶ U2b (single-cell df resolver)
 U1a′ ──▶ U3
-U1a′, U1b, U2, U2b, U3 ──▶ U4 (notebook routing + U1a′ write path) ──▶ U4b (freshness: version backfill + deletion sweep)
+U2b, U3, U1b ──▶ U4a (notebook routing + magic-strip + raw_parse_source + %sql policy → collects candidates)
+U4a, U1a′, U1a″ ──▶ U4 write-path (flatten+persist edges/evidence + unconditional index_state stamp) ──▶ U4b (freshness: version backfill + deletion sweep)
 U1a′ ──▶ U8 (query_graph lineage traversal + dataset_node resolution)
-U4, U4b ──▶ U6 (lineage fixtures + precision/recall metric)
+U4 write-path, U4b ──▶ U6 (lineage fixtures + precision/recall metric)
 U6, U8 ──▶ U7 (docs)
 U5 = DEFERRED (no build node; its fail-closed assertions live inside U6)
 ```
@@ -728,16 +764,21 @@ U5 = DEFERRED (no build node; its fail-closed assertions live inside U6)
 No cycles. **U0 must land before U3 is sized/built** (hard gate, A4). **U1a** (schema
 relations + bootstrap + the shared `LineageEndpoint`/`LineageEdgeCandidate`/
 `LineageAuthorityContext` value types) is the foundation; **U1a′** (db write helpers +
-scope-delete cascade) builds on U1a and precedes every emitter, the router, and the
-read surface. **U1b** (authority config surface + live propagation) builds on **U1a**
-(it needs only the `LineageAuthorityContext` type; its test stubs the U2/U3/U4 pipeline
-via a seam, so it does **not** depend on U2/U3 — AR-04/G6) and feeds U4. U2b builds on
-U2. U4 invokes the U2/U3 extractors, consumes their `LineageEdgeCandidate`s, threads
-U1b's authority context, **and** calls the U1a′ writers, so it depends on U1a′, U1b,
-U2, U2b, U3; U4b hardens the indexer lifecycle after U4 (and reads U1a's
-`lineage_index_state` via the U1a′ helper). U8 (read surface) needs the U1a′ writers
-(to seed its contract test) + U1a's relations. U6 exercises the full pipeline
-(U1a–U4b); U7 documents the measured behavior and the U8 read surface.
+scope-delete/GC cascade) and **U1a″** (version-state `lineage_index_state` helpers)
+both build on U1a and are independent of each other. **U1b** (authority config surface +
+live propagation) builds on **U1a** (it needs only the `LineageAuthorityContext` type;
+its test stubs the pipeline via a seam, so it does **not** depend on U2/U3 — AR-04/G6)
+and feeds U4a. The Python path is a chain: **U2a** (extraction/resolution → the IR) →
+**U2c** (event emission — the event stream U2b consumes) → **U2b** (single-cell df
+resolver); U2a builds on U1a′. **U4a** (routing) invokes the U2b/U3 extractors, threads
+U1b's authority context, and collects their `LineageEdgeCandidate`s (depends on U2b, U3,
+U1b). **U4 write-path** flattens+persists those candidates via the U1a′ writers and
+stamps freshness via U1a″ (depends on U4a, U1a′, U1a″). **U4b** hardens the indexer
+lifecycle after the write-path (version backfill + deletion sweep; reads U1a's
+`lineage_index_state` via the U1a″ helper). U8 (read surface) needs the U1a′ writers (to
+seed its contract test) + U1a's relations. U6 exercises the full pipeline (U1a–U4b); U7
+documents the measured behavior and the U8 read surface. **Recount: 20 dependency edges
+over 16 items** (feature + 15 tasks).
 
 ## Decisions and Rationale
 
@@ -1096,7 +1137,9 @@ surfaced by the cycle-6 adversarial review; future work may lift them):
    operator decides whether v1 lineage recall justifies the feature (product
    value validation the spike deliberately did not measure).
 3. Future extensions (out of v1): temp-view ephemeral-node lineage (Fork A),
-   permanent-view lineage (re-add `view` kind + `CREATE [OR REPLACE] VIEW` DDL),
+   permanent-view **object-kind distinction + view-definition expansion** (a `view`
+   kind + `CREATE [OR REPLACE] VIEW` DDL — v1 already captures permanent-view refs as
+   `kind = table` endpoints; this future work labels/expands them precisely),
    cross-cell `df`/temp-view lineage with trusted provenance, `execution_count`
    persistence (gated notebook-metadata unit).
 
@@ -1274,7 +1317,8 @@ Copilot's cycle-5 re-review raised **7 findings**. The count rose across cycles
 (10→2→2→2→7), so — per operator direction — this was a **single consolidated
 root-cause revision** rather than seven point-patches. All 7 triaged **valid**; the
 three clusters were fixed at their shared roots. Ratified v1 scope (table+path only;
-temp-view / permanent-view / `spark.sql` deferred; precision floor 0 false edges;
+temp-view + `spark.sql` fail-closed-deferred; permanent-view object-kind distinction
+deferred — refs captured as `kind = table` (H2); precision floor 0 false edges;
 recall = Fork-A checkpoint) and the absolute fail-closed invariant are **unchanged**;
 **Gate remains PASS**. One new prerequisite task (**U1b / `095.011-T`**) and one new
 schema relation (`lineage_index_state`, in U1) were added — completeness, not scope
@@ -1311,7 +1355,8 @@ architecture is **sound and source-grounded**; the 6-cycle Copilot divergence wa
 **contract ambiguity, not design**. Per operator direction this is **one consolidated
 revision (single commit)** applying the complete converged finding set (AR-01…AR-29)
 to both the plan doc **and** every affected backlog artifact. Ratified v1 scope
-(table/path only; temp-view + permanent-view + `spark.sql` deferred; precision floor
+(table/path only; temp-view + `spark.sql` fail-closed-deferred; permanent-view
+object-kind distinction deferred — refs captured as `kind = table` (H2); precision floor
 = 0 false edges; recall = Fork-A **fixture** checkpoint) and the absolute fail-closed
 invariant are **unchanged**; **Gate remains PASS**. The **only** intended scope
 additions are AR-01 (authority-in-key), AR-10 (`raw_parse_source` carrier), and AR-04
@@ -1361,3 +1406,34 @@ documented v1 limitation.
 **Numbering caveat (flagged):** the finding text for **AR-06** said "Touch the U8 task (`095.008-T`)", but **`095.008-T` is U7 (docs)**; **U8 is `095.010-T`**. AR-06's traversal-direction changes were applied to **`095.010-T` (U8)**; the U7 direction doc-note to `095.008-T`.
 
 **Backlog effects:** **+1 task `095.012-T` (U1a′)**; U1 split into U1a (`095.002-T`) + U1a′ (`095.012-T`); DAG rewired (`095.003-T`/`095.005-T`/`095.006-T`/`095.010-T`: dep `095.002-T` → `095.012-T`; `095.012-T` → `095.002-T`; `095.011-T` stays → `095.002-T`; `095.009-T` stays → `095.006-T`); added `095.012-T` to shipment **`090-S`** (now **13 items**); DAG remains **acyclic**. Tasks mirrored: `095-F` (AR-21), `095.002-T` (U1a: AR-01 key, AR-05/15 edge, drop writers→U1a′), `095.012-T` (U1a′: writers + 4-step cascade + version-state tests), `095.003-T` (AR-02/07/13/29), `095.004-T` (AR-02/07), `095.005-T` (AR-05/27), `095.006-T` (AR-03/10/11/14), `095.007-T` (AR-08/09/19), `095.008-T` (AR-05/06/08/11), `095.009-T` (AR-03/22), `095.010-T` (AR-06/16/26), `095.011-T` (AR-01).
+
+### Cycle-7 Granularity & Scope Reconciliation
+
+Copilot's re-review of the converged HEAD (`d79f1b16`) raised **exactly 4 valid
+findings** — 3 task-granularity splits + 1 permanent-view scope reconciliation. Per
+operator direction (Option A) this is **one consolidated commit**, docs + backlog only.
+The 2-hour granularity gate is **<5 functions AND <4 test scenarios per task** (i.e.
+≤4 functions AND ≤3 scenarios); every resulting task now carries an explicit
+`Granularity:` line so a reviewer can verify compliance at a glance. **No new scope** —
+the added contract detail from the cycle-6 convergence pass was **redistributed** across
+more tasks.
+
+| Finding | Cluster | Disposition |
+|---|---|---|
+| **H4** — `095.003-T` (U2) exceeded the gate (>4 scenarios once the AR-02/07/13 contract detail landed) | granularity | **fixed** — split into **U2a** (`095.003-T`, retained) = method-chain extraction + endpoint resolution + authority resolution → produces the `LineageEndpoint`/`LineageEdgeCandidate` **IR**; and **U2c** (`095.013-T`, NEW) = assignment-and-scope **event emission** (the 3-kind `SparkLineageEvent` model + per-form scope analysis) exposing `extract_python_lineage`. Seam = the IR. Rewired: **U2c → U2a**, **U2b (`095.004-T`) → U2c** (was → U2a). |
+| **H3** — `095.012-T` (U1a′) exceeded the gate (writers + cascade + version-state) | granularity | **fixed** — split into **U1a′** (`095.012-T`, retained) = core node/edge/evidence write helpers + the scope-delete/GC 4-step cascade; and **U1a″** (`095.014-T`, NEW) = version-state (`lineage_index_state`) read/write helpers (`upsert_lineage_index_state` / `lineage_index_version`). Both depend on **U1a** and are independent of each other. |
+| **H1** — `095.006-T` (U4) listed >4 test scenarios | granularity | **fixed** — split into **U4a** (`095.006-T`, retained) = notebook cell routing + magic stripping + `raw_parse_source` carrier + `%sql` policy → collects `LineageEdgeCandidate`s; and **U4 write-path** (`095.015-T`, NEW) = flatten+persist directional edges/evidence via the U1a′ writers + the **unconditional** `upsert_lineage_index_state` stamp via U1a″. Rewired: **U4 write-path → U4a + U1a′ + U1a″**; **U4b (`095.009-T`) → U4 write-path** (was → U4a); **U6 (`095.007-T`) → U4 write-path + U4b** (was → U4a + U4b). |
+| **H2** — plan/A6 still said "permanent-view lineage deferred," contradicting the AR-08 emit-as-`kind=table` behavior | scope | **fixed** — reconciled the **A6 statement**, the **A6 trace row**, **U5/U6/U7**, the **Decisions** bullet, the **v1 Limitations** entry, the **Future-extensions** list, and **`095.007-T`** to one honest wording: v1 treats **any 3-part name + resolved authority** as a dataset `kind = table`; a **permanent view referenced by name IS captured as a table-kind endpoint** (linked to the view *name*, not expanded through it). **DEFERRED = (a)** the view-vs-table **object-kind distinction** (needs metastore object-kind resolution) **and (b)** view-definition **expansion**. **Only temp-views fail closed.** |
+
+**Backlog effects (cycle-7):** **+3 tasks** — `095.013-T` (U2c — assignment/scope event
+emission), `095.014-T` (U1a″ — version-state helpers), `095.015-T` (U4 write-path —
+persistence + freshness stamp). Shipment **`090-S`** grows **13 → 16 items** (feature +
+15 tasks). **DAG recount: 20 dependency edges** over the 16 items; topo order verified
+**acyclic**: `001,002 → 011,012,014 → 003 → 013 → 004 → 005 → 006 → 015 → 009,010 →
+007 → 008`. Dependency rewires: `095.004-T`: `003 → 013`; `095.006-T`: now
+`[004,005,011]` (dropped `012`,`003`); `095.015-T`: `[006,012,014]`; `095.009-T`:
+`006 → 015`; `095.007-T`: `[006,009] → [015,009]`; `095.013-T`: `[003]`; `095.014-T`:
+`[002]`. Per-task granularity (functions / test scenarios, all within the gate):
+`095.003-T` U2a **4 / 3**; `095.013-T` U2c **4 / 3**; `095.012-T` U1a′ **4 / 3**;
+`095.014-T` U1a″ **2 / 2**; `095.006-T` U4a **4 / 3**; `095.015-T` U4 write-path
+**4 / 3**. **No cycles; Gate remains PASS; ratified v1 scope unchanged.**
