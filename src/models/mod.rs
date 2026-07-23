@@ -23,6 +23,7 @@ pub mod function;
 pub mod graph_query;
 pub mod health;
 pub mod interface;
+pub mod lineage;
 pub mod metrics;
 pub mod notebook;
 pub mod pbip;
@@ -48,6 +49,9 @@ pub use function::Function;
 pub use graph_query::TraversalDirection;
 pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
+pub use lineage::{
+    DatasetKind, LineageAuthorityContext, LineageEdgeCandidate, LineageEndpoint, LineageEvidence,
+};
 pub use metrics::MetricsConfig;
 pub use notebook::NotebookIndexResult;
 pub use pbip::PbipIndexResult;
