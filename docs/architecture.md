@@ -255,6 +255,16 @@ that asserts **0 edges** on every dropped case.
 * **Cross-cell DataFrame propagation — out of scope.** A single-cell dataflow
   resolver connects read → DataFrame → write **within one cell**. A DataFrame
   bound in one cell and written in another yields no edge in v1.
+* **Valid → malformed notebook transition — prior lineage retained until
+  re-parse.** When an already-indexed notebook is edited into an unparseable
+  state, the incremental indexer cannot extract it and skips the file *without*
+  touching its graph, so the notebook's prior `lineage_edge`s and evidence
+  persist until it parses again (a valid re-parse scope-replaces them) or the
+  notebook is deleted (the deletion sweep GCs them). The freshness token
+  (extractor version + authority-config fingerprint) forces re-extraction only
+  of *parseable* notebooks, so once the notebook is valid again any intervening
+  version or config change triggers a full re-extraction rather than a
+  hash-skip.
 
 ### `%sql` line-magic policy (AR-11)
 
@@ -290,10 +300,16 @@ vice versa.
   following the lineage subgraph's first release. Owner: the engram
   graph-indexing maintainer (the on-call feature owner for the merged shipment),
   who triages any reported false edge and executes the revert if confirmed.
-* **Forced re-index for existing notebooks.** Like other new extraction logic,
-  `engram sync` and a non-forced `index_workspace` skip unchanged files by
-  content hash. Notebooks indexed before this capability landed acquire lineage
-  only on a forced full reparse (`engram index` or `engram sync --full`).
+* **Automatic lineage backfill (no forced reparse).** `engram sync` and a
+  non-forced `index_workspace` skip unchanged files by content hash, but the
+  lineage skip is additionally gated by a persisted **freshness token** that
+  folds the extractor version and the trusted-authority config fingerprint. A
+  hash-unchanged notebook is re-extracted automatically whenever that token
+  differs — that is, when the extractor is upgraded **or** the Spark-authority
+  config changes — so notebooks indexed before this capability landed (or before
+  an authority remap) backfill their lineage on the next ordinary `engram sync`,
+  with no forced full reparse required. Once re-extracted the notebook is
+  re-stamped and durably skips again (not a perpetual reindex).
 
 ## Module boundaries
 
