@@ -75,6 +75,15 @@ catalog. It is useful for inspection, but it is not itself an MCP tool.
 That surface works on the combined workspace graph rather than raw database
 queries. Use it when you know the nodes or edge types you care about.
 
+The traversable graph spans multiple edge namespaces — `code`, `backlog`,
+`powerbi`, and `lineage`. The `lineage` namespace exposes the Spark
+data-lineage subgraph (`lineage_derives_from` edges over `dataset_node`s); there
+is no separate `query_sql` tool. Because the edge is oriented target → source, an
+**outgoing** traversal from a target reaches its upstream **sources**, while an
+**incoming** traversal from a source reaches its downstream **consumers**. See
+the *Data-lineage subgraph (v1)* section of `docs/architecture.md` for the full
+orientation and fail-closed boundaries.
+
 ## Feature-gated additions
 
 The tables above describe the default build. Optional features can expose
