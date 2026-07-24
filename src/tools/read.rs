@@ -1389,8 +1389,11 @@ fn build_find_path_json(from: &str, to: &str, result: FindPathResult) -> Value {
 /// - `transitive_closure`: All nodes reachable from a root via outgoing edges.
 ///
 /// Edge type namespace: code edges (`calls`, `imports`, `defines`, `inherits_from`,
-/// `concerns`, `references`) and backlog edges (`parent_of`, `depends_on`,
-/// `backlog_references`). Pass an empty `edge_types` array to traverse all types.
+/// `concerns`, `references`), backlog edges (`parent_of`, `depends_on`,
+/// `backlog_references`), Power BI edges (`pbi_contains`, `pbi_uses_field`,
+/// `pbi_depends_on_model`, `pbi_belongs_to_report`, `pbi_relates_to_table`), and
+/// lineage edges (`lineage_derives_from`). Pass an empty `edge_types` array to
+/// traverse all types.
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     let raw = params.unwrap_or_default();

@@ -4519,6 +4519,11 @@ has_def[id] := *function_meta { id }
             ("pbi_belongs_to_report", "pbi_belongs_to_report"),
             ("pbi_relates_to_table", "pbi_relates_to_table"),
         ];
+        // (api_label, db_edge_type_value) — routed through the `lineage_edge`
+        // table (095-F). The writer hardcodes the single `lineage_derives_from`
+        // edge type (AR-05).
+        const LINEAGE_EDGE_TYPES: &[(&str, &str)] =
+            &[("lineage_derives_from", "lineage_derives_from")];
 
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut nodes: Vec<QueryGraphNode> = Vec::new();
@@ -4837,6 +4842,101 @@ has_def[id] := *function_meta { id }
                         }
                     }
                 }
+
+                // ── Lineage edges (095-F U8) ─────────────────────────────────
+                // Direction (AR-06): `lineage_derives_from` is oriented
+                // target→source, so an OUTGOING neighborhood from a target
+                // reaches its upstream sources and an INCOMING neighborhood from
+                // a source reaches its downstream consumers.
+                for (api_label, db_et) in LINEAGE_EDGE_TYPES {
+                    if !allowed_edge_types.is_empty() && !allowed_edge_types.contains(api_label) {
+                        continue;
+                    }
+                    let out_script =
+                        "?[from, to] := *lineage_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let in_script =
+                        "?[from, to] := *lineage_edge { from_id, to_id, edge_type }, to_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+
+                    if traverse_out {
+                        let mut p = BTreeMap::new();
+                        p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r = self
+                            .db
+                            .run_script(&out_script, p, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r.rows {
+                            let target = extract_str(row, 1);
+                            if visited.contains(&target) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: node.clone(),
+                                to: target.clone(),
+                            });
+                            visited.insert(target.clone());
+                            let gn = self
+                                .resolve_dataset_node(&target)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: target.clone(),
+                                    kind: "dataset_node".to_owned(),
+                                    name: target.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(target);
+                        }
+                    }
+
+                    if traverse_in {
+                        let mut p2 = BTreeMap::new();
+                        p2.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p2.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r2 = self
+                            .db
+                            .run_script(&in_script, p2, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r2.rows {
+                            let source = extract_str(row, 0);
+                            if visited.contains(&source) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: source.clone(),
+                                to: node.clone(),
+                            });
+                            visited.insert(source.clone());
+                            let gn = self
+                                .resolve_dataset_node(&source)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: source.clone(),
+                                    kind: "dataset_node".to_owned(),
+                                    name: source.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(source);
+                        }
+                    }
+                }
             }
             frontier = next_frontier;
         }
@@ -4938,6 +5038,8 @@ has_def[id] := *function_meta { id }
             ("pbi_belongs_to_report", "pbi_belongs_to_report"),
             ("pbi_relates_to_table", "pbi_relates_to_table"),
         ];
+        const LINEAGE_EDGE_TYPES_FP: &[(&str, &str)] =
+            &[("lineage_derives_from", "lineage_derives_from")];
 
         if from_id == to_id {
             return Ok(FindPathResult {
@@ -5027,6 +5129,38 @@ has_def[id] := *function_meta { id }
                     }
                     let script =
                         "?[from, to] := *powerbi_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let mut p = BTreeMap::new();
+                    p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                    p.insert("et".to_owned(), DataValue::from(*db_et));
+                    let r = self
+                        .db
+                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r.rows {
+                        let target = extract_str(row, 1);
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        parent.insert(target.clone(), node.clone());
+                        visited.insert(target.clone());
+                        if target == to_id {
+                            found = true;
+                            break 'outer;
+                        }
+                        next_frontier.push(target);
+                    }
+                }
+
+                // Lineage edges (095-F U8, outgoing only): a path from a write
+                // target follows `lineage_derives_from` to its upstream sources
+                // (AR-06).
+                for (_api_label, db_et) in LINEAGE_EDGE_TYPES_FP {
+                    if !edge_types.is_empty() && !edge_types.contains(&"lineage_derives_from") {
+                        continue;
+                    }
+                    let script =
+                        "?[from, to] := *lineage_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
                             .to_owned();
                     let mut p = BTreeMap::new();
                     p.insert("node".to_owned(), DataValue::from(node.as_str()));
@@ -6039,6 +6173,40 @@ referenced[id] := *lineage_edge { to_id: id }
             } else {
                 Some(file_path_val)
             },
+        }))
+    }
+
+    /// Resolve a `dataset_node` id to a [`QueryGraphNode`] for lineage traversal
+    /// projection (095-F U8).
+    ///
+    /// `dataset_node` carries only `{ id, name, kind }` (no `file_path`), and
+    /// `kind` is `table` or `path`; the projected node kind is namespaced as
+    /// `dataset_{kind}` so a client can tell it apart from code/backlog/Power BI
+    /// nodes. Returns `None` when the id is not a persisted dataset.
+    async fn resolve_dataset_node(&self, id: &str) -> Result<Option<QueryGraphNode>, EngramError> {
+        let script = "?[id, name, kind] := *dataset_node { id, name, kind }, id = $id";
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(id));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &result.rows[0];
+        let node_id = extract_str(row, 0);
+        let name = extract_str(row, 1);
+        let kind = extract_str(row, 2);
+        Ok(Some(QueryGraphNode {
+            id: node_id,
+            kind: if kind.is_empty() {
+                "dataset_node".to_owned()
+            } else {
+                format!("dataset_{kind}")
+            },
+            name: if name.is_empty() { id.to_owned() } else { name },
+            file_path: None,
         }))
     }
 }

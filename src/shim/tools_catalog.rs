@@ -405,7 +405,7 @@ pub fn all_tools() -> Vec<Tool> {
         Tool::new(
             "query_graph",
             cli_desc!(
-                "Execute a structured graph query against the workspace code and backlog graph. Three operations are supported: `neighborhood` (BFS from a root node), `find_path` (shortest path between two nodes), and `transitive_closure` (all nodes reachable from a root). Edge types: code (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`) and backlog (`parent_of`, `depends_on`, `backlog_references`). Results are capped at 500 nodes.",
+                "Execute a structured graph query against the workspace code and backlog graph. Three operations are supported: `neighborhood` (BFS from a root node), `find_path` (shortest path between two nodes), and `transitive_closure` (all nodes reachable from a root). Edge types: code (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`), backlog (`parent_of`, `depends_on`, `backlog_references`), powerbi (`pbi_contains`, `pbi_uses_field`, `pbi_depends_on_model`, `pbi_belongs_to_report`, `pbi_relates_to_table`), and lineage (`lineage_derives_from`, oriented target→source: an outgoing traversal from a target reaches its upstream sources, an incoming traversal from a source reaches its downstream consumers). Results are capped at 500 nodes.",
                 "engram query-graph"
             ),
             schema(json!({
