@@ -179,6 +179,19 @@ impl LineageAuthorityContext {
         let catalog = parts[0];
         let authority = self.catalog_authority.get(catalog)?;
         let name = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+        // N3 (injective canonical key): the id joins `authority` and `name` with an
+        // unescaped `::` delimiter, so it is only injective when neither component
+        // embeds the delimiter — nor a boundary colon that could fake one across
+        // the join (e.g. authority ending `:` or name starting `:` yields `:::`).
+        // On ambiguity, fail closed: emit no edge rather than merge unrelated
+        // datasets into false lineage.
+        if authority.contains("::")
+            || name.contains("::")
+            || authority.ends_with(':')
+            || name.starts_with(':')
+        {
+            return None;
+        }
         let id = format!("table::{authority}::{name}");
         Some(LineageEndpoint {
             id,
@@ -333,5 +346,54 @@ mod tests {
         assert!(!c.is_empty());
         assert_eq!(c.catalog_authority_id("cat"), Some("prod-metastore"));
         assert_eq!(c.catalog_authority_id("other"), None);
+    }
+
+    #[test]
+    fn canonical_table_key_is_injective_n3() {
+        // N3: `table::{authority}::{name}` uses `::` as a delimiter, so it is only
+        // injective when neither component embeds the delimiter (nor a boundary
+        // colon that could fake one). Otherwise two unrelated datasets collapse to
+        // one id and merge into false lineage. The fix fails closed on ambiguity.
+
+        // The cited collision: authority `auth::x` + `cat.s.t` would produce the
+        // same id as authority `auth` + `x::cat.s.t` — both must be rejected.
+        let mut a = BTreeMap::new();
+        a.insert("cat".to_owned(), "auth::x".to_owned());
+        let ctx_a = LineageAuthorityContext::new(a, Vec::new());
+        assert!(
+            ctx_a.resolve_table("cat.s.t").is_none(),
+            "an authority embedding the `::` delimiter fails closed (N3)"
+        );
+
+        let mut b = BTreeMap::new();
+        b.insert("x::cat".to_owned(), "auth".to_owned());
+        let ctx_b = LineageAuthorityContext::new(b, Vec::new());
+        assert!(
+            ctx_b.resolve_table("x::cat.s.t").is_none(),
+            "a table component embedding the `::` delimiter fails closed (N3)"
+        );
+
+        // Boundary colons that could fake the delimiter also fail closed.
+        let mut c = BTreeMap::new();
+        c.insert("cat".to_owned(), "auth:".to_owned());
+        let ctx_c = LineageAuthorityContext::new(c, Vec::new());
+        assert!(
+            ctx_c.resolve_table("cat.s.t").is_none(),
+            "an authority ending in a boundary colon fails closed (N3)"
+        );
+
+        let mut d = BTreeMap::new();
+        d.insert(":c".to_owned(), "auth".to_owned());
+        let ctx_d = LineageAuthorityContext::new(d, Vec::new());
+        assert!(
+            ctx_d.resolve_table(":c.s.t").is_none(),
+            "a table name starting with a boundary colon fails closed (N3)"
+        );
+
+        // A normal authority+table pair still resolves to the canonical id.
+        let ok = ctx()
+            .resolve_table("cat.sch.t")
+            .expect("a normal pair resolves");
+        assert_eq!(ok.id, "table::prod-metastore::cat.sch.t");
     }
 }

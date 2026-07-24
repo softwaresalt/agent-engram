@@ -819,7 +819,9 @@ pub(super) mod spark_lineage {
     /// The scope a `block` child introduces, given its parent's kind.
     fn block_scope(parent_kind: &str, current: EventScope) -> EventScope {
         match parent_kind {
-            "if_statement" | "elif_clause" | "else_clause" => EventScope::Branch,
+            "if_statement" | "elif_clause" | "else_clause" | "match_statement" | "case_clause" => {
+                EventScope::Branch
+            }
             "for_statement" | "while_statement" => EventScope::Loop,
             "with_statement"
             | "try_statement"
@@ -1514,6 +1516,24 @@ pub(super) mod spark_lineage {
                 ))
                 .is_empty(),
                 "a lambda-body write is not TopLevel and must emit no edge (C2)"
+            );
+        }
+
+        #[test]
+        fn u2b_match_case_body_write_is_not_top_level_n2() {
+            // N2 (same class as the C2 lambda fix): a write inside a `match`/`case`
+            // suite must not be attributed TopLevel — a case body is a conditional
+            // branch, so a top-level read joined to a case-body write would emit a
+            // false conditional edge, violating the direct-child/fail-closed rule.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "match kind:\n",
+                    "    case 1:\n",
+                    "        df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "a match/case-body write is a branch scope and must emit no edge (N2)"
             );
         }
 

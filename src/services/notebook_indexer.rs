@@ -369,8 +369,13 @@ async fn persist_notebook_lineage(
     if !edges.is_empty() {
         let node_set: Vec<LineageEndpoint> = nodes.into_values().collect();
         queries.upsert_dataset_nodes(&node_set).await?;
-        queries.upsert_lineage_edges(&edges).await?;
+        // N1 (fail-closed write order): the lineage edge is the LAST write so a
+        // partial failure can never leave a queryable *unevidenced* edge. Nodes
+        // and evidence are written first; if either fails, `?` returns before the
+        // edge exists (and the freshness stamp below is likewise never reached, so
+        // the scope stays dirty and is re-extracted on the next pass).
         queries.upsert_lineage_edge_evidence(&evidence).await?;
+        queries.upsert_lineage_edges(&edges).await?;
     }
 
     // Final write (I1): stamp freshness only after every graph write succeeded.
