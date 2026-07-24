@@ -113,3 +113,41 @@ acyclic.**
 Files changed: plan doc + tasks `096.005-T`, `096.006-T`, `096.007-T` + feature `096-F`
 (rule/DoD/goals consistency). Verified again: DAG acyclic (T5b independent of T5c), 10 tasks,
 shipment 091-S = 11 items. Gate remains PASS.
+
+## Addendum — PR #285 plan-review CYCLE 5 (operator: Option A = fix Y1+Y2+Y3, then hard-stop)
+
+Cycle-5 review returned three P1 findings; **Y2 and Y3 are self-inflicted contradictions
+introduced by cycle-4's X4 and X1.** No scope change; **task count stays 10; DAG unchanged
+and acyclic** (Y3 placed in T5b, which already depends on T1 — **no new dependency edge**).
+
+* **Y1 — function-local import fail-closed ordering (`096.009-T`/T2b).** `def g(): f(); from
+  x import f` — `f` is function-local for the whole body, so the call before the import
+  raises `UnboundLocalError`; a scope-only lookup would wrongly emit `x.f`. T2b now tracks
+  binding AND call positions: calls before a function-local import fail closed; only calls
+  after resolve; uncertain control flow fails closed. Before/after + uncertain-order cases
+  added (consolidated to 4 scenarios).
+* **Y2 — order-aware rebind guard (`096.007-T`/T5c + plan T5c).** X4's blunt "re-bound
+  anywhere" set contradicted X2/X3 last-binding-wins (would drop `def parse; from bar import
+  parse; parse()`, which must resolve to `bar.parse`). T5c is now **order-aware**: only a
+  rebind AFTER the import invalidates it; a def/class/del/match-capture or any rebind BEFORE
+  the import does not. Added the import-after-def resolves case to scenario (a);
+  cross-referenced T5b<->T5c.
+* **Y3 — legacy fallback preserves recall (`096.006-T`/T5b + `096.005-T`/T5a + plan).** T5a's
+  `python_bare` stamp excludes bare calls from the legacy name-only matcher; when T1 rejects a
+  src/-root or namespace layout (no module context), T5b had no context -> the call dropped to
+  NO edge, regressing a unique bare call that resolves today via the legacy matcher. T5b now
+  falls back to the existing legacy name-only unique-match when there is no module path (recall
+  preserved, no false module edge); canonical resolution applies only when a module path
+  exists. Placed in T5b (already deps T1) -> **no new DAG edge**; legacy pass untouched. Added
+  the no-context recall test to T5b (consolidated fail-closed vectors to stay at 4); T5a gets a
+  cross-ref note only.
+
+Reconciliation principle (crisp, for the incoming multi-persona adversarial review):
+**last-binding-wins, order-aware; when ambiguous/uncertain, fail closed.** T5b resolves to the
+last effective binding and is guard-agnostic; T5c wraps T5b and fails closed only on a rebind
+AFTER the import; T2b supplies the order model incl. the function-local UnboundLocalError rule.
+T5a/T5b/T5c do not contradict each other.
+
+Files changed: plan doc + tasks `096.005-T`, `096.006-T`, `096.007-T`, `096.009-T` + feature
+`096-F` (Acceptance/goals consistency) + this memory. Verified: DAG acyclic (T5b independent of
+T5c; T5a deps unchanged = {096.004-T}), 10 tasks, shipment 091-S = 11 items. Gate remains PASS.
