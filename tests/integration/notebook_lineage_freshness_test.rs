@@ -16,8 +16,7 @@ use std::path::Path;
 use engram::db::{connect_db, queries::CodeGraphQueries};
 #[cfg(feature = "cozo-backend")]
 use engram::models::lineage::{
-    CURRENT_EXTRACTOR_VERSION, DatasetKind, LineageAuthorityContext, LineageEndpoint,
-    LineageEvidence,
+    DatasetKind, LineageAuthorityContext, LineageEndpoint, LineageEvidence, lineage_freshness_token,
 };
 #[cfg(feature = "cozo-backend")]
 use engram::models::registry::{ContentSource, ContentSourceStatus};
@@ -47,6 +46,15 @@ fn write_notebook(workspace: &Path, name: &str, json: &str) {
 fn trusted_ctx() -> LineageAuthorityContext {
     let mut catalogs = BTreeMap::new();
     catalogs.insert("main".to_owned(), "metastore-prod".to_owned());
+    LineageAuthorityContext::new(catalogs, vec!["s3://bucket".to_owned()])
+}
+
+/// A trusted context whose `main` catalog maps to a caller-chosen authority id.
+/// Used to prove an authority-config change invalidates the freshness skip.
+#[cfg(feature = "cozo-backend")]
+fn ctx_with_authority(authority: &str) -> LineageAuthorityContext {
+    let mut catalogs = BTreeMap::new();
+    catalogs.insert("main".to_owned(), authority.to_owned());
     LineageAuthorityContext::new(catalogs, vec!["s3://bucket".to_owned()])
 }
 
@@ -121,7 +129,7 @@ async fn stale_version_backfills_then_durably_skips_and_survives_reopen() {
                 .lineage_index_version("notebooks/nb.ipynb")
                 .await
                 .expect("version"),
-            Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+            Some(lineage_freshness_token(&trusted_ctx())),
             "backfill re-stamps the current version"
         );
         assert!(
@@ -151,7 +159,7 @@ async fn stale_version_backfills_then_durably_skips_and_survives_reopen() {
             .lineage_index_version("notebooks/nb.ipynb")
             .await
             .expect("version after reopen"),
-        Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+        Some(lineage_freshness_token(&trusted_ctx())),
         "the durable version slot survives a store re-open"
     );
 }
@@ -248,7 +256,7 @@ async fn missing_stamp_with_present_graph_rows_forces_reextract() {
             .lineage_index_version("notebooks/nb.ipynb")
             .await
             .expect("version after recovery"),
-        Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+        Some(lineage_freshness_token(&trusted_ctx())),
         "recovery re-stamps the current version"
     );
 }
@@ -342,7 +350,73 @@ async fn deleting_notebook_sweeps_its_lineage_but_spares_shared_datasets() {
             .lineage_index_version("notebooks/nb_b.ipynb")
             .await
             .expect("B version"),
-        Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+        Some(lineage_freshness_token(&trusted_ctx())),
         "B stays stamped"
     );
+}
+
+/// U4b / C4: the freshness token folds an authority-config fingerprint, so the
+/// SAME notebook content re-extracts when the trusted-authority config changes
+/// (otherwise a hash-unchanged notebook keeps stale or empty lineage forever),
+/// then durably skips again once the config is stable.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn changed_authority_config_invalidates_hash_skip_and_backfills() {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    write_notebook(root.path(), "nb.ipynb", CTAS_SUMMARY);
+    let source = notebook_source("notebooks");
+    let db = connect_db(&root.path().join("data"), "lineage-cfg")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    // Config A: catalog `main` → `metastore-A`.
+    let ctx_a = ctx_with_authority("metastore-A");
+    let first = index_notebook_source(&source, root.path(), &queries, 1_048_576, &ctx_a)
+        .await
+        .expect("index A");
+    assert_eq!(first.ingested, 1, "first index extracts the notebook");
+
+    // Re-index the SAME content under a CHANGED config (`main` → `metastore-B`).
+    let ctx_b = ctx_with_authority("metastore-B");
+    let changed = index_notebook_source(&source, root.path(), &queries, 1_048_576, &ctx_b)
+        .await
+        .expect("index B");
+    assert_eq!(
+        changed.ingested, 1,
+        "a changed authority config forces re-extraction of unchanged content (C4)"
+    );
+    assert_eq!(
+        changed.unchanged, 0,
+        "the notebook must NOT be hash-skipped after a config change"
+    );
+
+    // The refreshed lineage now binds to config B's authority-embedded ids.
+    let summary_b = ctx_b
+        .resolve_table("main.sales.summary")
+        .expect("resolve summary under B")
+        .id;
+    let orders_b = ctx_b
+        .resolve_table("main.sales.orders")
+        .expect("resolve orders under B")
+        .id;
+    assert!(
+        queries
+            .select_lineage_edges()
+            .await
+            .expect("edges B")
+            .contains(&(summary_b, orders_b)),
+        "re-extraction rebinds lineage to the new authority"
+    );
+
+    // Re-index AGAIN under the same config B: content AND config unchanged, so a
+    // durable hash+fingerprint skip (never a perpetual reindex).
+    let stable = index_notebook_source(&source, root.path(), &queries, 1_048_576, &ctx_b)
+        .await
+        .expect("index B again");
+    assert_eq!(
+        stable.unchanged, 1,
+        "unchanged content and config durably skip (no perpetual reindex)"
+    );
+    assert_eq!(stable.ingested, 0);
 }

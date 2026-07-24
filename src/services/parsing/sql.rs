@@ -295,6 +295,13 @@ pub(super) mod sql_lineage {
             if statement.kind() != "statement" {
                 continue; // ERROR / CREATE PROCEDURE are not `statement` nodes.
             }
+            // C3 (fail-closed): a nested parse ERROR folded into the statement
+            // (e.g. a dangling `GROUP BY`) leaves the top-level kind as
+            // `statement`, so a kind-only check would still emit lineage. Skip
+            // any statement whose subtree has a parse error (013-D).
+            if statement.has_error() {
+                continue;
+            }
             let mut stmt_cursor = statement.walk();
             for child in statement.children(&mut stmt_cursor) {
                 match child.kind() {
@@ -619,6 +626,27 @@ pub(super) mod sql_lineage {
                 view.len(),
                 0,
                 "CREATE VIEW is excluded (table lineage only)"
+            );
+        }
+
+        #[test]
+        fn nested_parse_error_statement_resolves_zero_edges_c3() {
+            let ctx = trusted_ctx();
+            // A CTAS whose target (`cat.sch.t`) and source (`cat.sch.src`) both
+            // resolve, but carrying a NESTED parse error (a dangling `GROUP BY`)
+            // that tree-sitter folds INTO the `statement` node. The top-level
+            // node is a `statement` (not ERROR), so a kind-only check would still
+            // emit lineage; `has_error()` must suppress it so a malformed
+            // statement fails closed (C3 / 013-D).
+            let candidates = extract_sql_lineage(
+                "CREATE TABLE cat.sch.t AS SELECT x FROM cat.sch.src GROUP BY",
+                &ctx,
+            )
+            .expect("malformed ctas");
+            assert_eq!(
+                candidates.len(),
+                0,
+                "a statement with a nested parse error emits no lineage (C3)"
             );
         }
     }

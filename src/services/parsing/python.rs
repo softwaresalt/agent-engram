@@ -457,6 +457,20 @@ pub(super) mod spark_lineage {
         &source[node.byte_range()]
     }
 
+    /// PySpark session identifiers trusted as lineage read roots.
+    ///
+    /// A lineage READ must originate from a genuine Spark session; any other
+    /// object exposing a read-shaped method (e.g. a REST `client.table(...)`)
+    /// fails closed so it can never mint a false read binding (C1, the
+    /// zero-false-edge invariant). `spark` is the conventional PySpark
+    /// entry-point name.
+    const TRUSTED_SPARK_SESSIONS: &[&str] = &["spark"];
+
+    /// Whether `root` is a trusted Spark-session identifier (C1).
+    fn is_trusted_spark_session(root: &str) -> bool {
+        TRUSTED_SPARK_SESSIONS.contains(&root)
+    }
+
     /// Resolve a single `call` node to a [`ResolvedSparkCall`], or `None` when it
     /// is not a whitelisted Spark read/write chain.
     fn resolve_one_call(
@@ -471,6 +485,13 @@ pub(super) mod spark_lineage {
         let terminal = node_text(function.child_by_field_name("attribute")?, source).to_owned();
         let (root, chain) = walk_chain(function, source);
         let (role, target) = classify_chain(&chain, &terminal)?;
+        // C1 (zero-false-edge): a lineage READ must originate from a trusted
+        // Spark session identifier. Any object exposing a read-shaped method
+        // (e.g. `client.table("c.s.t")`) would otherwise mint a false read
+        // binding that a downstream write could join into a spurious edge.
+        if role == SparkCallRole::Read && !root.as_deref().is_some_and(is_trusted_spark_session) {
+            return None;
+        }
         let endpoint = first_positional_string(call, source)
             .and_then(|literal| resolve_endpoint(&literal, target, authority_ctx));
         Some(ResolvedSparkCall {
@@ -655,6 +676,9 @@ pub(super) mod spark_lineage {
         ForTarget,
         /// A `with`-item `as` target binding.
         WithTarget,
+        /// Inside a `lambda` body — never top-level, so a read/write there is
+        /// not edge-eligible (AR-07 / C2).
+        Lambda,
     }
 
     /// A tagged assignment/scope lineage event — the shared U2 → U2b contract.
@@ -776,6 +800,15 @@ pub(super) mod spark_lineage {
                 block_scope(node.kind(), enclosing)
             } else if is_comprehension(node.kind()) {
                 EventScope::Comprehension
+            } else if node.kind() == "lambda" {
+                // C2: a lambda body is never top-level. Preserve an already
+                // non-top-level enclosing scope; otherwise mark it Lambda so a
+                // read/write inside the lambda is not treated as edge-eligible.
+                if enclosing == EventScope::TopLevel {
+                    EventScope::Lambda
+                } else {
+                    enclosing
+                }
             } else {
                 enclosing
             };
@@ -1440,6 +1473,48 @@ pub(super) mod spark_lineage {
             );
             // And the stream still joins the happy-path read→write edge.
             assert_eq!(resolve_cell_candidates(&events).len(), 1);
+        }
+
+        #[test]
+        fn u2b_non_spark_session_read_root_emits_no_edge_c1() {
+            // C1 (zero-false-edge): a read-shaped call on a NON-Spark object must
+            // not establish a lineage binding, so a downstream write on the same
+            // variable cannot mint a false edge. Any object exposing a `.table(…)`
+            // method would otherwise be treated as a trusted Spark session.
+            assert!(
+                candidates_for(concat!(
+                    "df = client.table(\"cat.sch.orders\")\n",
+                    "df.write.saveAsTable(\"cat.sch.summary\")\n",
+                ))
+                .is_empty(),
+                "a non-Spark `.table(...)` root must not mint a lineage read (C1)"
+            );
+            // Control: the identical shape rooted at the trusted `spark` session
+            // still emits its edge.
+            assert_eq!(
+                candidates_for(concat!(
+                    "df = spark.table(\"cat.sch.orders\")\n",
+                    "df.write.saveAsTable(\"cat.sch.summary\")\n",
+                ))
+                .len(),
+                1,
+                "a genuine spark-session read still emits its edge (C1 control)"
+            );
+        }
+
+        #[test]
+        fn u2b_lambda_body_write_is_not_top_level_c2() {
+            // C2: a write inside a lambda body must not be attributed TopLevel, so
+            // it cannot join a top-level read into a (false) edge — a lambda body
+            // is not a top-level statement, exactly like a plain function body.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "f = lambda: df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "a lambda-body write is not TopLevel and must emit no edge (C2)"
+            );
         }
 
         /// A trusted authority context: catalog `cat` → `prod-metastore`, and a

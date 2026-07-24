@@ -14,7 +14,7 @@ use std::path::Path;
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
 #[cfg(feature = "cozo-backend")]
-use engram::models::lineage::{CURRENT_EXTRACTOR_VERSION, LineageAuthorityContext};
+use engram::models::lineage::{LineageAuthorityContext, lineage_freshness_token};
 #[cfg(feature = "cozo-backend")]
 use engram::models::registry::{ContentSource, ContentSourceStatus};
 #[cfg(feature = "cozo-backend")]
@@ -104,7 +104,7 @@ async fn bare_read_produces_no_nodes_or_edges_but_stamps_version() {
             .lineage_index_version("notebooks/bare.ipynb")
             .await
             .expect("version"),
-        Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+        Some(lineage_freshness_token(&trusted_ctx())),
         "even a zero-lineage notebook is version-stamped (AR-03)"
     );
 }
@@ -262,7 +262,7 @@ async fn zero_lineage_notebook_stamps_and_hash_skips_on_reindex() {
             .lineage_index_version("notebooks/plain.ipynb")
             .await
             .expect("version"),
-        Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+        Some(lineage_freshness_token(&trusted_ctx())),
         "zero-lineage notebook is still stamped (AR-03)"
     );
 
@@ -283,6 +283,6 @@ async fn zero_lineage_notebook_stamps_and_hash_skips_on_reindex() {
             .lineage_index_version("notebooks/plain.ipynb")
             .await
             .expect("version after reindex"),
-        Some(CURRENT_EXTRACTOR_VERSION.to_owned()),
+        Some(lineage_freshness_token(&trusted_ctx())),
     );
 }

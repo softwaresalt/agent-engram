@@ -214,6 +214,59 @@ impl LineageAuthorityContext {
             kind: DatasetKind::Path,
         })
     }
+
+    /// A stable fingerprint of the trusted-authority configuration.
+    ///
+    /// Folds the catalog→authority map (iterated in sorted key order via the
+    /// backing [`BTreeMap`]) and the storage-authority allowlist into a single
+    /// FNV-1a 64-bit digest. Two contexts with identical trusted authorities
+    /// share a fingerprint; any add, remove, or remap changes it. The U4b
+    /// freshness token folds this in so a changed authority config invalidates
+    /// the content-hash skip and forces re-extraction (C4).
+    #[must_use]
+    pub fn config_fingerprint(&self) -> String {
+        // FNV-1a 64-bit over a canonical, order-stable seed. Distinct
+        // control-byte separators keep field and record boundaries unambiguous
+        // without escaping the authority strings.
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        let fold = |hash: &mut u64, bytes: &[u8]| {
+            for &byte in bytes {
+                *hash ^= u64::from(byte);
+                *hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        };
+
+        let mut hash = FNV_OFFSET;
+        for (catalog, authority) in &self.catalog_authority {
+            fold(&mut hash, catalog.as_bytes());
+            fold(&mut hash, &[0x01]);
+            fold(&mut hash, authority.as_bytes());
+            fold(&mut hash, &[0x02]);
+        }
+        fold(&mut hash, &[0x03]);
+        for prefix in &self.storage_authorities {
+            fold(&mut hash, prefix.as_bytes());
+            fold(&mut hash, &[0x02]);
+        }
+        format!("{hash:016x}")
+    }
+}
+
+/// The persisted freshness token for a notebook lineage index row (095-F, U4b).
+///
+/// Combines the current extractor version with the trusted-authority config
+/// fingerprint so the U4b skip predicate re-extracts an unchanged notebook when
+/// EITHER the extractor is upgraded OR the authority config changes (C4). A
+/// changed config would otherwise leave already-indexed notebooks stamped
+/// current, retaining stale or empty lineage forever.
+#[must_use]
+pub fn lineage_freshness_token(authority_ctx: &LineageAuthorityContext) -> String {
+    format!(
+        "{CURRENT_EXTRACTOR_VERSION}:{}",
+        authority_ctx.config_fingerprint()
+    )
 }
 
 /// Return `true` when `uri` sits under the trusted `prefix` authority.

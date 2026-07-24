@@ -10,8 +10,8 @@ use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
 use crate::models::content::ContentRecord;
 use crate::models::lineage::{
-    CURRENT_EXTRACTOR_VERSION, LineageAuthorityContext, LineageEdgeCandidate, LineageEndpoint,
-    LineageEvidence,
+    LineageAuthorityContext, LineageEdgeCandidate, LineageEndpoint, LineageEvidence,
+    lineage_freshness_token,
 };
 use crate::models::notebook::{NotebookCellRecord, NotebookIndexResult};
 use crate::models::registry::ContentSource;
@@ -204,14 +204,17 @@ pub async fn index_notebook_source(
 
         if existing_hashes.get(&rel_path).map(String::as_str) == Some(content_hash.as_str()) {
             // Freshness gate (U4b): a matching content hash only skips when the
-            // persisted lineage extractor version is also current. A stale
-            // version (an upgrade) or an absent one (a pre-stamp partial-write
-            // failure, cycle-7 I1) forces re-extraction, so an unchanged
-            // notebook is backfilled — then re-stamped, so it skips again next
-            // run (durable, not a perpetual reindex).
-            let version_current = queries.lineage_index_version(&rel_path).await?.as_deref()
-                == Some(CURRENT_EXTRACTOR_VERSION);
-            if version_current {
+            // persisted freshness token is also current. The token folds the
+            // extractor version AND the trusted-authority config fingerprint, so
+            // a stale version (an upgrade), a changed authority config (C4), or an
+            // absent stamp (a pre-stamp partial-write failure, cycle-7 I1) all
+            // force re-extraction — so an unchanged notebook is backfilled, then
+            // re-stamped, so it skips again next run (durable, not a perpetual
+            // reindex).
+            let expected_token = lineage_freshness_token(authority_ctx);
+            let token_current =
+                queries.lineage_index_version(&rel_path).await?.as_deref() == Some(&expected_token);
+            if token_current {
                 result.unchanged += 1;
                 continue;
             }
@@ -371,8 +374,10 @@ async fn persist_notebook_lineage(
     }
 
     // Final write (I1): stamp freshness only after every graph write succeeded.
+    // The token folds the extractor version and authority-config fingerprint so
+    // a later config change re-invalidates this notebook's hash skip (C4).
     queries
-        .upsert_lineage_index_state(notebook_path, CURRENT_EXTRACTOR_VERSION)
+        .upsert_lineage_index_state(notebook_path, &lineage_freshness_token(authority_ctx))
         .await?;
 
     Ok(())
