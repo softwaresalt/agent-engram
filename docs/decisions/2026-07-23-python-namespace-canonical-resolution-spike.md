@@ -91,6 +91,19 @@ emits `ExtractedEdge::Calls` via `extract_calls_from_body` +
 surface for canonical resolution is reused as-is. This materially de-risks the
 feature (the highest-blast-radius layer — the schema — is untouched).
 
+> **⚠️ SUPERSEDED (cycle-7, C7-4) — see the implementation plan's hardening.** This
+> "no changes to `cozo_queries.rs`" conclusion was an **initial spike finding** and is
+> **superseded by the implementation plan** (`docs/exec-plans/2026-07-23-python-namespace-canonical-resolution-plan.md`).
+> Plan-hardening (adversarial F9) found the pre-existing name→IDs singleton is
+> **inline-private CozoScript inside `reresolve_calls_edges`** (`cozo_queries.rs:2191-2205,2263-2270`)
+> that **filters out `python_bare` rows** (`2222-2227`), so it cannot serve T5b's
+> no-target legacy-recall fallback as-is. T5b therefore **exposes a small public,
+> read-only language-scoped name→IDs helper in `cozo_queries.rs`** — a **helper
+> exposure, NOT a schema change** (the canonical `function_meta` / `calls_edge` / staging
+> schema is still untouched). The spike's core claim (**zero canonical *schema* change**)
+> holds; only the "no *file* changes to `cozo_queries.rs`" phrasing is corrected. History
+> is preserved above — this note is additive.
+
 ### The cross-file resolver has exactly TWO Rust-specific seams; the singleton match is shared
 
 `reresolve_calls_edges_with_canonical_context` (code_graph.rs:264) is the
@@ -176,7 +189,7 @@ plan-harden item, not a feasibility blocker.
 | `python.rs` | import-binding capture; emit `module.func()` / bare calls with provenance (`raw_qualifier`, `qualifier_kind`) instead of dropping | parser-local |
 | `python_canonical/` (new) | `python_module_path_for_file`, import-binding graph, `canonical_target_for_python_call` | new module, isolated |
 | `code_graph.rs` | Python branch in populator (721/1446); Python `*_ctx_for_staged_file`; Python branch in `canonical_target_for_staged_call`; language dispatch | additive seams |
-| `cozo_queries.rs` | **none** | — |
+| `cozo_queries.rs` | **none** *(superseded — see C7-4 note: T5b later adds a read-only public name→IDs helper for the F3/F9 legacy-recall fallback; still no schema change)* | query-local, additive |
 | tests | unit (module-path, bindings, populator, fail-closed) + integration (cross-module same-name `.py` fixture resolves; ambiguous drops) | test-only |
 
 Roughly 4–6 tasks at the 2-hour granularity. Normal feature envelope.

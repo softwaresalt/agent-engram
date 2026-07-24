@@ -217,3 +217,47 @@ stays 11 items; acyclic (verify: T5a←{096.002-T,096.004-T}). Files changed: pl
 feature `096-F` + this memory (moved to `docs/memory/2026-07-23/` with YAML frontmatter, C6-2).
 This is plan-review-fix **cycle 6 (operator-directed; Option A — structural revision, hard-stop
 after push)**.
+
+## Addendum — plan-review-fix cycle 7 (FINAL consolidated pass; prove-or-fail-closed generalization)
+
+A focused 3-model adversarial re-check confirmed cycle-6's **F1/F2/F3/F9/F5 all PASS**, then
+triangulated **one remaining root defect** + bounded adjacent items. Root: cycle-6's F2 keyed
+T5a's routing predicate on **named module-level imports ONLY**, so it did not compose with the
+other shadow classes. Operator chose **Option A = fix substantively, then push and STOP** (LAST
+structural pass). All fixes fold into one **prove-or-fail-closed invariant**.
+
+* **Z1+Z2+C7-2 (unified — generalize T5a) — `096.005-T` + plan §Resolution-rule invariant +
+  §Design-decision + §T5a + Requirements-Trace + Risks.** T5a's `(Some,Some)` in-file predicate
+  now routes a same-file `def` to `python_bare` staging whenever its name is **shadow-contested at
+  ANY modeled scope** — named import, positioned star-after-def (Z1), non-import module rebind
+  (Z2), OR scoped function-local/enclosing import (C7-2). Expressed as an abstraction
+  ("shadow-contested at any modeled scope"), not axis-by-axis, so future axes are covered by
+  construction (also closes the F4 remainder).
+* **C7-1 (call-position / time axis) — `096-F` rule + `096.006-T`/T5b + `096.007-T`/T5c + plan
+  §Resolution-rule/Requirements-Trace/Risks.** "Last-binding-wins" is now **call-site-effective**:
+  resolve to the last provable binding PRECEDING the call in execution order (module source order);
+  a module-level call before a later import binds the earlier def (`def parse(); parse(); from bar
+  import parse` → M.parse); T5c's invalidation window is strictly between the winner and the call;
+  a function-body call contested by a later module rebind FAILS CLOSED.
+* **C7-3 (upgrade-gate partial-failure) — `096.010-T`/T7 + plan §T7 + Risks.** The
+  `PYTHON_CANONICAL_EXTRACTION_VERSION` marker persists ONLY on a fully-successful pass; any
+  per-file failure (`SyncResult.errors` non-empty, code_graph.rs:1215-1221) keeps the OLD marker so
+  migration retries next sync (no stale-forever hash-skip). Partial-failure regression test added.
+* **C7-4 (spike prose) — spike doc.** Added a labeled **SUPERSEDED** note to the "no changes to
+  cozo_queries.rs" conclusion + change-surface table row (T5b/F9 adds a public read-only name→IDs
+  helper; still zero schema change). History preserved.
+* **Z3 (096-F resolution-rule prose) — `096-F`.** Qualified the star/re-export/unbound "→ DROP" to
+  "DROP (no canonical module-qualified edge; a unique legacy name-only edge is preserved per F3)";
+  reconciled with the F3 recall goal.
+
+**Whole-contract composition re-verified** (plan §Resolution rule composition-trace table): def-only,
+import-only, def-before-import, import-before-def, def+star-after-def, def+non-import-rebind,
+def+function-local-import, provable-namespace-unbound, call-before-later-rebind — each yields exactly
+one unambiguous outcome owned by exactly one layer; everything unprovable fails closed. **DAG: exactly
+one new edge T2b→T5a** (T5a consults T2b's scoped-binding signals); acyclic (T2b←{T2} only, already
+upstream of T5b/T5c — no back-edge). New T5a deps: {096.002-T, 096.004-T, 096.009-T}. **Task count
+stays 10; shipment 091-S stays 11 items**; all new vectors consolidated into existing ≤4-scenario
+tasks — no new task, no scope creep. **No findings judged false positives.** Files changed: plan doc +
+spike doc + tasks `096.005-T`, `096.006-T`, `096.007-T`, `096.010-T` + feature `096-F` + this memory.
+This is plan-review-fix **cycle 7 (operator-directed; Option A — FINAL consolidated pass, hard-stop
+after push)**.
