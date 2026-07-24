@@ -841,6 +841,17 @@ pub(super) mod spark_lineage {
                 } else {
                     enclosing
                 }
+            } else if matches!(node.kind(), "boolean_operator" | "conditional_expression") {
+                // V3: a write guarded by a short-circuit boolean (`… and …` /
+                // `… or …`) or a ternary (`… if cond else …`) may never execute, so
+                // it is not a direct cell-body statement. Mark it a Branch exactly
+                // like if/match/case (fail-closed), preserving an already
+                // non-top-level enclosing scope.
+                if enclosing == EventScope::TopLevel {
+                    EventScope::Branch
+                } else {
+                    enclosing
+                }
             } else {
                 enclosing
             };
@@ -1684,6 +1695,53 @@ pub(super) mod spark_lineage {
                 .len(),
                 1,
                 "an unbroken chain still emits its edge (T4 control)"
+            );
+        }
+
+        #[test]
+        fn u2c_boolean_guarded_write_emits_no_edge_v3() {
+            // V3 (fail-closed): a write guarded by a short-circuit boolean may never
+            // execute, so it is not a direct cell-body statement and must not join
+            // the top-level read into an edge (same class as C1/N2).
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "enabled and df.write.saveAsTable(\"cat.sch.t\")\n",
+                ))
+                .is_empty(),
+                "an `and`-guarded write must emit no edge (V3)"
+            );
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "enabled or df.write.saveAsTable(\"cat.sch.t\")\n",
+                ))
+                .is_empty(),
+                "an `or`-guarded write must emit no edge (V3)"
+            );
+            // Control: a direct cell-body write still emits its edge.
+            assert_eq!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df.write.saveAsTable(\"cat.sch.t\")\n",
+                ))
+                .len(),
+                1,
+                "a direct cell-body write still emits its edge (V3 control)"
+            );
+        }
+
+        #[test]
+        fn u2c_ternary_write_emits_no_edge_v3() {
+            // V3 (fail-closed): a write inside a ternary (`conditional_expression`)
+            // may never execute, so it must not be attributed TopLevel.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "(df.write.saveAsTable(\"cat.sch.t\") if enabled else None)\n",
+                ))
+                .is_empty(),
+                "a ternary-guarded write must emit no edge (V3)"
             );
         }
 

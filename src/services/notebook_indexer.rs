@@ -340,7 +340,16 @@ async fn persist_notebook_lineage(
     content_hash: &str,
     authority_ctx: &LineageAuthorityContext,
 ) -> Result<(), EngramError> {
-    // Scope-replace prior lineage first (a no-op for a brand-new notebook).
+    // V1 (fail-closed crash-safety): invalidate the freshness stamp BEFORE the
+    // multi-step scope-delete cascade. The caller has already advanced this
+    // notebook's `content_record` to the new hash, so if the cascade dies partway
+    // with the OLD stamp still present the notebook would hash-skip forever and
+    // expose an unevidenced edge (or a missing graph). Clearing the stamp first
+    // makes any partial failure re-processable (re-index) rather than silently
+    // skipped; the final restamp (below) re-establishes freshness only after every
+    // graph write succeeds.
+    queries.delete_lineage_index_state(notebook_path).await?;
+    // Scope-replace prior lineage (a no-op for a brand-new notebook).
     queries.delete_lineage_by_scope(notebook_path).await?;
 
     let mut nodes: BTreeMap<String, LineageEndpoint> = BTreeMap::new();
@@ -416,6 +425,10 @@ pub async fn sweep_deleted_notebook_files(
         queries
             .delete_content_records_by_scope(path, "notebook", &source.path)
             .await?;
+        // V1 (fail-closed crash-safety): invalidate the freshness stamp before the
+        // scope-delete cascade so a partial failure re-processes rather than
+        // hash-skips (mirrors the write-path ordering above).
+        queries.delete_lineage_index_state(path).await?;
         queries.delete_lineage_by_scope(path).await?;
         removed += 1;
     }

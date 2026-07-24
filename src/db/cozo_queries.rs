@@ -5807,6 +5807,20 @@ referenced[id] := *lineage_edge { to_id: id }
             .await?;
 
         // Step 4 — delete the freshness-state row for this notebook (AR-22).
+        self.delete_lineage_index_state(notebook_path).await?;
+        Ok(())
+    }
+
+    /// Delete only the `lineage_index_state` freshness row for one notebook.
+    ///
+    /// This is the crash-safety primitive for V1: the write-path invalidates the
+    /// freshness stamp **before** the multi-step evidence cascade so that any
+    /// partial failure leaves the scope re-processable (`lineage_index_version`
+    /// returns `None` ⇒ "must re-index") rather than silently hash-skipped with a
+    /// stale stamp still present. Deleting an absent row is a no-op (idempotent),
+    /// so it is safe to call both as the pre-cascade invalidation and as the
+    /// cascade's final step.
+    pub async fn delete_lineage_index_state(&self, notebook_path: &str) -> Result<(), EngramError> {
         let rm_index_state = r#"
 ?[notebook_path] :=
     *lineage_index_state { notebook_path },
@@ -6823,6 +6837,61 @@ mod tests {
         assert!(
             state_rows.is_empty(),
             "the notebook's lineage_index_state row must be deleted (AR-22)"
+        );
+    }
+
+    // V1 (fail-closed crash-safety): the freshness stamp can be invalidated
+    // INDEPENDENTLY of (and before) the evidence cascade. Invalidating it first
+    // makes a scope re-processable (lineage_index_version -> None) WITHOUT
+    // destroying its evidence, so a crash mid-cascade never leaves a hash-skipped
+    // notebook exposing an unevidenced edge.
+    //
+    // A true mid-cascade fault-injection test would need a DB trait seam that does
+    // not exist over the concrete `CodeGraphQueries` (disproportionate scaffolding
+    // for one call). Instead this asserts the ordering primitive at the unit
+    // level: deleting index-state alone leaves a consistent, re-processable scope.
+    #[tokio::test]
+    async fn index_state_invalidation_is_independent_and_reprocessable_v1() {
+        let (_tmp, q) = lineage_queries("lineage-v1-order").await;
+        let t = endpoint("table::a::c.s.t", "c.s.t");
+        let s = endpoint("table::a::c.s.src", "c.s.src");
+        q.upsert_dataset_nodes(&[t.clone(), s.clone()])
+            .await
+            .expect("nodes");
+        q.upsert_lineage_edges(&[(t.id.clone(), s.id.clone())])
+            .await
+            .expect("edge");
+        q.upsert_lineage_edge_evidence(&[evidence(&t.id, &s.id, "n1.ipynb", 1)])
+            .await
+            .expect("evidence");
+        q.upsert_lineage_index_state("n1.ipynb", "v1")
+            .await
+            .expect("stamp");
+
+        // Invalidate the freshness stamp FIRST (the new pre-cascade step).
+        q.delete_lineage_index_state("n1.ipynb")
+            .await
+            .expect("invalidate stamp");
+
+        // The scope now re-processes on the next run rather than hash-skipping.
+        assert_eq!(
+            q.lineage_index_version("n1.ipynb").await.expect("version"),
+            None,
+            "invalidating the stamp first makes the scope re-processable (V1)"
+        );
+        // …and its evidence/edge are still intact, so there is no window where an
+        // unevidenced edge is exposed while the notebook is hash-skipped.
+        assert_eq!(
+            q.count_lineage_evidence_for("n1.ipynb")
+                .await
+                .expect("evidence count"),
+            1,
+            "stamp invalidation must not destroy evidence (V1)"
+        );
+        assert_eq!(
+            q.select_lineage_edges().await.expect("edges").len(),
+            1,
+            "the old edge stays evidenced until a clean re-index (V1)"
         );
     }
 
