@@ -326,3 +326,47 @@ cycle-8 @ `689da02a`):**
 Both fold into the same commit as the C6 closure (one push / one re-check). No new task, no new
 DAG edge, no new code behavior. Task count stays 10; shipment 091-S stays 11 items. Files added
 this fold: `096.002-T`, `096.006-T`, spike doc. **No findings judged false positives.**
+
+## Cycle 9 — final spec-polish (C9-1..C9-4 + nits A/B, planning-only)
+
+An independent 3-model adversarial re-check @ `1d4f9caf` returned **CONVERGED** (C6 genuinely
+closed, all 9 vectors compose, no P0/P1/P2, no false-edge hole). Four Copilot cycle-9 LOW/P3
+threads + two re-check nits folded into ONE commit atop `1d4f9caf`. **None create a false edge.**
+
+* **C9-1 (RFS self-contest / over-routing).** `def name` is in the RFS, so "any RFS form → stage"
+  would match the def's OWN binding for `def f; f()`, making the direct fast path unreachable dead
+  code (no false edge). Fix: T5a's scan **excludes the matched `def` under consideration** (candidate
+  target, not self-competitor) and counts only OTHER bindings applicable to the caller's lexical
+  scope; direct fast path taken iff the matched def is provably the sole applicable binding. Edited:
+  plan §Design-decision (RFS + F2 self-exclusion) + §T5a + `096.005-T`.
+* **C9-2 + nit A (the "T5a already holds the AST" claim was FALSE).** `parse_source` returns
+  `ParseResult{symbols,edges}` only (`parsing.rs:247-252`) — no tree-sitter `Tree` retained; the
+  file `source: String` IS in scope (cloned ~`code_graph.rs:609`/`1290`). Fix: T5a **re-parses the
+  in-scope source in-memory**, computing the Rebind-Form-Set map **once per file, cached** (not per
+  call). Load-bearing conclusion stays TRUE: no new producer/DB field/task/DAG edge. All "AST" seam
+  wording purged from §T5a / `096.005-T` / Risks / cycle-8 addendum.
+* **C9-3 (C7-1 module-level call ordering cannot run).** The extractor emits `Calls` only from
+  function bodies (`python.rs:44-79,233-277`); a module-level `parse()` is never staged. Fix:
+  C7-1 narrowed to **function-body calls only** — resolve to a stable module/enclosing binding, else
+  fail closed; **module-level (top-level) call ordering is a v1 non-goal** (neither regressed nor
+  handled). The extractable outcome (fail-closed / no false edge) is unchanged; only unreachable
+  prose corrected. Edited: §Resolution-rule (C7-1 blockquote + bare-name rule), §T5b, §T5c,
+  composition-trace C9, Requirements-Trace, Risks, Monitoring corpus, `096.006-T`.
+* **C9-4 (F3 fallback must not leak an edge for competing bindings).** Fix: T5b's outcome carries a
+  **typed no-target reason**; legacy name-only fallback allowed ONLY for
+  `{NoModuleContext, UnsupportedImportForm}`; NEVER for
+  `{CompetingBindings, Shadowed, DuplicateSameNameImport}` (fully fail-closed, no edge). C8-1
+  duplicate-import → `DuplicateSameNameImport` → no fallback (genuinely complete). Edited: §T5b,
+  Requirements-Trace, `096.006-T`.
+* **Nit B (annotated assignment).** RFS "assignment" now explicitly enumerates **annotated
+  assignment** (`name: T = …`) alongside plain/augmented. No behavior change. Edited: §Design-decision
+  RFS + `096.005-T`.
+
+**No DAG change, no new task:** C9-2's honest resolution is a self-serve in-memory re-parse.
+`096.005-T` deps stay {`096.002-T`,`096.004-T`,`096.009-T`}; `096.006-T` deps unchanged. Edge list
+unchanged (T5a←{T2,T2b,T4}; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T2b←{T2}; T3←{T1};
+T6←{T3,T5b,T5c,T7}; T7←{T3,T5b}; acyclic). **Task count stays 10; shipment 091-S stays 11 items.**
+All 9 composition vectors re-verified — C9-1/C9-4 tighten only HOW a vector is decided, not its
+result; C9-3 corrects unreachable prose. Files changed: plan doc + `096.005-T` + `096.006-T` + this
+memory. **No findings judged false positives.** This is plan-review-fix **cycle 9 (operator-directed;
+final spec-polish, hard-stop after push)**.
