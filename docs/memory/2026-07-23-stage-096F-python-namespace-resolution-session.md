@@ -60,3 +60,28 @@ T1, T2, T3, T4, T5a, T5b, T5c, T6 (T2/T2b/T7 numbering: 096.002-T=T2, 096.009-T=
 T3←T1; T5a←T4; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T6←{T3,T5b,T5c,T7}; T2b←T2;
 T7←{T3,T5b}. Scope unchanged: module-level namespace resolution, fail-closed;
 FF7DE872 independent; no 090-S/095-F dependency.
+
+## Addendum — PR #285 plan-review hardening (cycle 3, the cap)
+
+Cycle-3 review at `0279a823` surfaced three plan-consistency findings (R1–R3), all gaps
+in the cycle-2 hardening. **No new task — count stays 10; DAG unchanged and acyclic.**
+
+* **R1 — extraction version vs `content_hash` contract (`096.010-T`/T7).** T7's cycle-2
+  wording folded the version into the `.py` content hash, but `retrieval_eval::is_index_stale`
+  (`retrieval_eval.rs:717-718`) compares `file_node.content_hash` byte-for-byte against the
+  raw source SHA. Moved the version into a **dedicated `PYTHON_CANONICAL_EXTRACTION_VERSION`
+  index-state marker** (`TMDL_DAX_INDEX_VERSION` precedent, `powerbi_indexer.rs:60-81`);
+  `content_hash` stays the raw SHA; added a staleness-preservation regression.
+* **R2 — `ImportBindings` binding kind (`096.002-T`/T2, used by `096.006-T`/T5b).** T2 now
+  records `(canonical_path, kind∈{ModuleImport, FromImportSymbol})`; T5b resolves a module
+  receiver only from a `ModuleImport` and fails closed on a `FromImportSymbol` receiver
+  (`from pkg import parse; parse.tokenize()` → no edge, out of scope).
+* **R3 — T5b/T5c completability cycle (`096.006-T`/T5b, `096.007-T`/T5c).** Guard now lives
+  **entirely in T5c**, which wraps a **guard-agnostic** T5b (T5b no longer invokes the guard);
+  dependency stays one-directional T5c→T5b, so both are independently completable and the DAG
+  is acyclic. Guard coverage still includes bare imports (Q1).
+
+Verified after edits: `get_dependencies` shows T5b={001,003,005,009} (NOT 007) and
+T5c={006,009} → acyclic; 10 tasks; shipment **091-S** = 11 items (096-F + 10). Cycle 3 is
+the cap — if a cycle-4 review still surfaces NEW substantive gaps, accept the plan as-is
+(residual → Ship execution-time considerations).

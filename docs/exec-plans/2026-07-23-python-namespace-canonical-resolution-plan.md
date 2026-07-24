@@ -73,17 +73,17 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D).
 | Source requirement (spike / stash FE8B3B2D) | Implementation action |
 |---|---|
 | Module namespace `foo/bar.py` → `foo.bar` (only when every ancestor is a **provable regular package**) | T1: `python_module_path_for_file(rel_path, is_regular_package)` (predicate from the indexed `__init__.py` set — **no config source**, Q3); REJECT `src/`-roots / implicit PEP 420 namespace / `__init__.py`; **source-root-aware resolution = v1 non-goal** (M5, Q3) |
-| Symbol-level import bindings (Python analogue of Rust `UseGraph`) | T2: `extract_python_import_bindings` (fail closed on competing/duplicate bindings, M1) |
+| Symbol-level import bindings (Python analogue of Rust `UseGraph`) | T2: `extract_python_import_bindings` records `(canonical_path, kind∈{ModuleImport, FromImportSymbol})` (R2) and fails closed on competing/duplicate bindings (M1) |
 | Scope-correct bindings — function-local imports must not leak; module vs function scope | T2b: scoped binding model (M1) |
 | Register the `unit_python_canonical` test target so verification runs | T1: `Cargo.toml` `[[test]]` entry (M3) |
 | Populate `function_meta.canonical_path` for Python module-level defs | T3: Python branch in `canonical_path_for_function` (reuses `upsert_function_with_canonical`) |
 | Emit `module.func()` as a canonical-eligible staged call (stop dropping it); `self`/`cls` stay dropped | T4: `python.rs` emits `is_qualified:true, raw_qualifier=<receiver>, qualifier_kind="module"`; excludes `self`/`cls` (M2) |
 | Route Python cross-file bare + module-qualified calls into canonical staging | T5a: consumer Calls arm + `should_stage_provenance_call` (language-dispatched) |
-| Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call` |
+| Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call`, dispatched by the T2 binding **kind** (R2); **guard-agnostic — the T5c shadow guard wraps it downstream (R3)** |
 | Fail closed when any rebind shadows an imported **module receiver OR bare callee** name | T5c: drop `mod.func()` (receiver) **and** bare `parse()` (Q1) when the name is re-bound in the applicable scope — assignment/augmented/`for`/`with`/`except`/walrus/param/module-level (M1, Q1) |
-| Existing indexes must backfill Python canonical **edges** after upgrade, **in one operation** | T7: versioned extraction hash re-extraction that **also runs the canonical resolution pass in the same step** (escalate sync→full path or invoke the post-pass) / `index --force`; upgrade regression asserts the **resolved edge** (M4, Q2) |
+| Existing indexes must backfill Python canonical **edges** after upgrade, **in one operation** | T7: a **separate `PYTHON_CANONICAL_EXTRACTION_VERSION` marker** (NOT `content_hash`, R1) triggers re-extraction that **also runs the canonical resolution pass in the same step** (escalate sync→full path or invoke the post-pass) / `index --force`; upgrade regression asserts the **resolved edge** and that `content_hash` staleness detection is preserved (M4, Q2, R1) |
 | Fail closed on star / relative / package-root / re-export / dynamic / duplicate | T1–T2 return no module/binding; T3 returns `""`; T5b singleton check drops duplicates |
-| No schema change; reuse `function_ids_by_canonical_path` + staging queries | No `cozo_queries.rs` change (verified by T5b) |
+| No **canonical** schema change; reuse `function_ids_by_canonical_path` + staging queries | No `function_meta`/`calls_edge`/staging schema change (verified by T5b); T7's extraction-version marker is orthogonal index-state, not the canonical model (R1) |
 | Do NOT resolve instance-method dispatch; do NOT touch FF7DE872 | Out of scope; documented in T6 |
 | Document capability + v1 non-goals | T6 |
 
@@ -158,12 +158,13 @@ Every unit authors its failing test(s) first (RED), then the implementation
 
 * **New**: `src/services/parsing/python_canonical/bindings.rs`.
   `extract_python_import_bindings(source) -> ImportBindings` mapping a **local
-  name** to its **canonical origin**, built by walking tree-sitter
-  `import_statement` / `import_from_statement` nodes:
-  * `from N import name` → `name → "N.name"`; `from N import name as p` →
-    `p → "N.name"`.
-  * `import a.b as c` → `c → "a.b"` (module binding); `import a.b` → `a → "a"`
-    (root-name module binding).
+  name** to its **canonical origin _and binding kind_ (R2)** — a
+  `(canonical_path, kind)` where `kind ∈ {ModuleImport, FromImportSymbol}` — built by
+  walking tree-sitter `import_statement` / `import_from_statement` nodes:
+  * `from N import name` → `name → ("N.name", FromImportSymbol)`; `from N import name
+    as p` → `p → ("N.name", FromImportSymbol)`.
+  * `import a.b as c` → `c → ("a.b", ModuleImport)`; `import a.b` → `a → ("a",
+    ModuleImport)` (root-name module binding).
   * **No binding (fail closed)** for: `from N import *` (star), relative imports
     (`from . import x`, leading-dot module), `importlib`/`__import__`/dynamic.
   * **Competing / duplicate binding → fail closed (M1).** If the **same local
@@ -171,11 +172,16 @@ Every unit authors its failing test(s) first (RED), then the implementation
     (duplicate/re-import), mark it **ambiguous** → **no** binding. A flat
     last-writer-wins `HashMap` is **forbidden**. (Function-vs-module scope isolation
     is T2b.)
+  * **Why the kind (R2)**: T5b must tell a **module receiver** (`import pkg` →
+    `pkg.func()`) from an **imported symbol** (`from pkg import parse` → `parse()` or
+    the out-of-scope attribute `parse.tokenize()`). Without the kind, a from-import is
+    mis-resolved as a module and mints a wrong edge.
 * **Files**: `python_canonical/bindings.rs`, `python_canonical/mod.rs` (re-export),
   `tests/unit/python_canonical_test.rs`.
-* **Tests (RED→GREEN, 4)**: `from p import f`→`f=p.f` **and** `from p import f as g`
-  →`g=p.f`; `import a.b as c`→`c=a.b`; `from p import *` **and** `from . import x`
-  → **no** binding; competing `import p` + `from q import p` → **no** binding (M1).
+* **Tests (RED→GREEN, 4)**: `from p import f`→`(p.f, FromImportSymbol)` **and** `from p
+  import f as g`→`(p.f, FromImportSymbol)`; `import a.b as c`→`(a.b, ModuleImport)`
+  (kind asserted, R2); `from p import *` **and** `from . import x` → **no** binding;
+  competing `import p` + `from q import p` → **no** binding (M1).
 * **Verification**: `cargo test --test unit_python_canonical` (target registered in
   T1); clippy; fmt.
 * **Milestone**: symbol-level bindings; star/relative/dynamic **and** competing
@@ -274,29 +280,35 @@ Every unit authors its failing test(s) first (RED), then the implementation
   `reresolve_calls_edges_with_canonical_context` (264-368). Add
   `python_ctx_for_staged_file` (module path via T1 + **scope-aware bindings via
   T2b**, read from source like `rust_ctx_for_staged_file`) and a Python branch
-  dispatched by the **caller file's language**: compute the target canonical path —
-  * `qualifier_kind=="python_bare"`: `M.callee` if `callee` defined in `M`, else the
-    caller-scope binding for `callee` (`N.callee`), else fail closed — **then apply
-    the T5c shadow guard to the bare callee name (Q1): fail closed if `callee` is
-    re-bound in the applicable scope**;
-  * `qualifier_kind=="module"`: resolve `raw_qualifier` to a bound module, then
-    `<module>.callee`, else fail closed — **T5c shadow guard applies to the receiver**;
+  dispatched by the **caller file's language** that computes the target canonical path
+  **using the T2 binding _kind_ (R2)**. This stage is **shadow-guard-agnostic (R3): it
+  does NOT invoke the T5c guard** — shadow-rebind handling is added downstream by T5c,
+  which keeps T5b independently completable.
+  * `qualifier_kind=="python_bare"`: `M.callee` if `callee` defined in `M`, else a
+    **`FromImportSymbol`** binding for `callee` (→ `N.callee`), else fail closed. A
+    `ModuleImport`-kind name used as a bare callee is not a function → fail closed.
+  * `qualifier_kind=="module"`: the receiver must resolve to a **`ModuleImport`**
+    binding (`import pkg` / `import a.b as c`) → `<module>.callee`; a
+    **`FromImportSymbol`** receiver (`from pkg import parse; parse.tokenize()`) is an
+    attribute access on an object, **not** a module → fail closed (R2); else fail closed.
   then reuse the existing `canonical_index.get(&target)` **singleton** match
   (`ids.len()==1`) — dropping on zero, ambiguous, or **duplicate** canonical path.
   No `cozo_queries.rs` change.
 * **Files**: `code_graph.rs`, `tests/integration/calls_recall_acceptance_test.rs`
   (`integration_calls_recall_acceptance`).
-* **Tests (RED→GREEN, 4)**: two modules both define `parse`; caller does
-  `bar.parse()` → edge resolves to **bar's** exact `parse` id (target-identity,
-  not row-existence); caller does bare `parse()` with `from bar import parse` →
-  resolves to bar's `parse`; **star import** `from bar import *` then bare
-  `parse()` where 2+ `parse` exist → **no** edge; two same-file `parse` defs
-  (duplicate canonical path) → **no** canonical edge (fail closed, FF7DE872 stays
-  unfixed here).
+* **Tests (RED→GREEN, 4)** — **no shadowing here (R3; shadow cases live in T5c)**: two
+  modules both define `parse`; caller does `bar.parse()` with `import bar` → edge
+  resolves to **bar's** exact `parse` id (target-identity, not row-existence); caller
+  does bare `parse()` with `from bar import parse` → resolves to bar's `parse`; a
+  **`from pkg import parse`** receiver used as `parse.tokenize()` → **no** module edge
+  (R2 kind fail-closed); fail-closed ambiguity — **star** `from bar import *` then bare
+  `parse()` with 2+ `parse`, **and** two same-file `parse` defs (duplicate canonical
+  path) → **no** canonical edge (FF7DE872 stays unfixed here).
 * **Verification**: `cargo test --test integration_calls_recall_acceptance --test
   integration_code_graph`; clippy; fmt.
-* **Milestone**: cross-module same-name Python calls resolve to exact targets;
-  every ambiguity fails closed.
+* **Milestone**: cross-module same-name Python calls resolve to exact targets **via the
+  T2 binding kind**; every ambiguity fails closed. **Shadow-rebind handling is deferred
+  to T5c (R3).**
 
 ### T5c — Shadow guard: module receiver + bare import (domain: code)
 
@@ -306,14 +318,17 @@ Every unit authors its failing test(s) first (RED), then the implementation
   later binding. Static binding-only resolution would still bind the call to
   `bar.parse`, a false edge violating 013-D. The bare-callee vector was left open by
   cycle-1 (the guard covered only module receivers). (Plan-review P1; M1; **Q1**.)
-* **Changes**: `src/services/code_graph.rs` Python branch of
-  `canonical_target_for_staged_call` (from T5b). Before emitting a canonical edge,
-  **fail closed** when the resolved name is re-bound anywhere in the **applicable
-  scope** (caller function **and** module level), consuming the **T2b** scope model.
-  The guard applies to **both**:
+* **Changes (R3 — guard lives ENTIRELY here; T5b stays guard-agnostic)**:
+  `src/services/code_graph.rs` — **wrap** T5b's guard-agnostic resolution in the Python
+  branch of `canonical_target_for_staged_call` so that, **after** T5b computes a
+  candidate canonical target, T5c **fails closed** when the resolved name is re-bound
+  anywhere in the **applicable scope** (caller function **and** module level), consuming
+  the **T2b** scope model. This wrapping keeps the dependency one-directional (T5c
+  depends on T5b, never the reverse). The guard applies to **both**:
   * `qualifier_kind=="module"` — the **receiver** name (`bar` in `bar.parse()`);
   * `qualifier_kind=="python_bare"` — the **bare callee** name (`parse` in
-    `parse()`), when it resolved via an import binding or an in-module def (Q1).
+    `parse()`), when T5b resolved it via a `FromImportSymbol` binding or an in-module
+    def (Q1).
 
   The rebind scan covers the **full target set (M1)**: plain `assignment` **and
   augmented assignment** (`+=`, …); `for` targets; `with … as`; `except … as`;
@@ -331,7 +346,8 @@ Every unit authors its failing test(s) first (RED), then the implementation
 * **Verification**: `cargo test --test integration_calls_recall_acceptance`; clippy;
   fmt.
 * **Milestone**: shadowing of **either** a module receiver **or** a bare imported
-  callee, by any rebind form in any scope, cannot mint a false edge.
+  callee, by any rebind form in any scope, cannot mint a false edge — **enforced
+  downstream of T5b (R3), keeping T5b independently completable.**
 
 ### T7 — Rollout: versioned re-extraction + one-step resolution backfill (domain: code)
 
@@ -343,24 +359,41 @@ Every unit authors its failing test(s) first (RED), then the implementation
   auto-**sync**, but sync re-extracts + clears prior resolved edges/staging and then
   **exits without running the post-pass** — leaving staged calls **unresolved** until
   a later full index (a regression window). Re-extraction alone is not enough.
-* **Changes**: fold a **versioned extraction constant** into the Python file
-  content-hash comparison (the *versioned-extraction-hash* option — **no new schema
-  column**): a bump invalidates the cached hash for `.py` files so they are
-  re-extracted. **Crucially (Q2), when the extraction version changes the operation
-  must also run a full canonical resolution pass in the SAME step** — either
-  escalate that run to the full-index path (which runs the post-pass) or invoke the
-  canonical post-pass from the sync path for the affected files — so resolved edges
-  are **restored in one operation**, never left staged-but-unresolved. Documented
-  fallback: a one-shot forced `index --force`. Replace the "no migration" claim with
-  this real, single-step backfill trigger.
-* **Files**: `src/services/code_graph.rs`, `tests/integration/code_graph_test.rs`.
-* **Tests (RED→GREEN, 3)**: **upgrade regression** — after a version-bump **sync** of
-  an unchanged-hash `.py` file, the cross-module **resolved edge is present** (assert
-  the RESOLVED EDGE, not merely the def's `canonical_path`) (Q2); a file already at
-  the current version is still skipped (fast-path preserved); Rust files unaffected.
+* **R1 — do NOT mix the extraction version into `file_node.content_hash`.**
+  `retrieval_eval::is_index_stale` (`src/services/retrieval_eval.rs:717-718`) compares
+  `file_node.content_hash` **byte-for-byte** against the raw source SHA-256
+  (`source_content_hash`, 699-700), and the indexer writes `content_hash` as that raw
+  SHA (`file_node {…, content_hash, …}`, `cozo_queries.rs:609` / `schema.rs:573`).
+  Folding a version into it would break staleness detection — a hard repo invariant.
+* **Changes**: track a `PYTHON_CANONICAL_EXTRACTION_VERSION` constant in a **dedicated,
+  separate index-state marker** — **not** `content_hash` — following the existing
+  versioned-index precedent (`TMDL_DAX_INDEX_VERSION` + `compute_tmdl_dax_index_hash`,
+  `powerbi_indexer.rs:60-81`, which persists its versioned hash in a **separate** record,
+  never `file_node.content_hash`). On index/sync, when the stored extraction version
+  differs from the code constant, re-extract the affected `.py` files; `file_node.
+  content_hash` stays the raw source SHA (staleness detection intact). **Crucially (Q2),
+  the same operation must also run the full canonical resolution pass** — either escalate
+  the run to the full-index path (which runs the post-pass) or invoke the canonical
+  post-pass from the sync path — so resolved edges are **restored in one operation**,
+  never left staged-but-unresolved; then persist the new extraction version. Documented
+  fallback: a one-shot forced `index --force`. Replace the "no migration" claim with this
+  real, single-step backfill trigger. **No canonical-schema change** (`function_meta` /
+  `calls_edge` unchanged); the extraction-version marker is orthogonal index-state, not
+  the canonical data model, and does not alter the `content_hash` contract.
+* **Files** (≤3): `src/services/code_graph.rs` (extraction-version constant + marker
+  read/compare/persist + one-step resolution), the index-state seam that holds the
+  marker, `tests/integration/code_graph_test.rs`.
+* **Tests (RED→GREEN, 4)**: **upgrade regression** — after an extraction-version-bump
+  **sync** of an unchanged-hash `.py` file, the cross-module **resolved edge is present**
+  (assert the RESOLVED EDGE, not merely the def's `canonical_path`) (Q2); **content-hash
+  contract (R1)** — the same file's `file_node.content_hash` still equals the raw source
+  SHA and `is_index_stale` returns false for unchanged source (version tracked
+  separately, staleness intact); a file already at the current extraction version is
+  still skipped (fast-path preserved); Rust files unaffected.
 * **Verification**: `cargo test --test integration_code_graph`; clippy; fmt.
 * **Milestone**: an upgrade backfills Python canonical **edges** in one operation with
-  no unresolved-edge window; the fast-path is preserved for current-version files.
+  no unresolved-edge window; `content_hash` staleness detection is preserved (version in
+  a separate marker); the fast-path is preserved for current-version files.
 
 ### T6 — Documentation (domain: docs)
 
@@ -388,10 +421,12 @@ T2b ─────────────────────────�
 
 No cycles. T1 and T2 are independent primitives. T2b refines T2 (scope model). T3
 needs T1. T4 is parser-independent of T1–T3. T5a needs T4. T5b needs T1, T2b, T3,
-T5a. T5c refines T5b and consumes T2b's scope model. T7 (rollout/backfill) needs the
-populator (T3) and resolver (T5b) to be real. T6 needs the capability real (T3, T5b,
-T5c, T7). Edge list: T1→{T3,T5b}; T2→T2b; T2b→{T5b,T5c}; T4→T5a; T5a→T5b; T3→{T5b,T7};
-T5b→{T5c,T7}; {T5b,T5c,T7}→T6.
+T5a — and is **guard-agnostic (R3): it does not depend on T5c and is independently
+completable**. T5c **wraps** T5b's resolution with the shadow guard (downstream) and
+consumes T2b's scope model — the dependency is strictly **T5c → T5b**, never the
+reverse. T7 (rollout/backfill) needs the populator (T3) and resolver (T5b) to be real.
+T6 needs the capability real (T3, T5b, T5c, T7). Edge list (acyclic): T1→{T3,T5b};
+T2→T2b; T2b→{T5b,T5c}; T4→T5a; T5a→T5b; T3→{T5b,T7}; T5b→{T5c,T7}; {T5b,T5c,T7}→T6.
 
 ## Decisions and Rationale
 
@@ -420,13 +455,28 @@ T5b→{T5c,T7}; {T5b,T5c,T7}→T6.
   config/source-root field** (none exists, `config.rs:98-120`); `src/`-roots, implicit
   PEP 420 namespace packages, and `__init__.py` are REJECTED (fail closed).
   Source-root-aware resolution is an explicit **v1 non-goal**.
-* **Upgrades backfill edges in one operation (M4, Q2).** Existing indexes do
-  **not** gain Python canonical paths through content-hash-skipping incremental
-  indexing, and **sync re-extracts but never runs the post-pass**; folding a versioned
-  extraction constant into the `.py` content-hash (no schema column) triggers
-  re-extraction **and runs the canonical resolution pass in the same step** (escalate
-  sync→full path or invoke the post-pass) — or a documented forced `index --force`.
-  Resolved edges are restored in one operation (T7). No silent "no migration" claim.
+* **Binding kind disambiguates module vs symbol (R2).** `ImportBindings` records a
+  `kind ∈ {ModuleImport, FromImportSymbol}` beside the canonical path so T5b resolves a
+  **module receiver** (`import pkg; pkg.func()` → `pkg.func`) distinctly from an
+  **imported symbol** (`from pkg import parse` → bare `parse()` = `pkg.parse`; the
+  attribute `parse.tokenize()` = a call on an object → fail closed, out of scope).
+  Without the kind, a from-import would be mis-resolved as a module and mint a wrong edge.
+* **Shadow guard is downstream of resolution (R3).** T5b produces guard-agnostic
+  binding-kind resolution; T5c **wraps** it with the rebind shadow check. The dependency
+  is one-directional (T5c → T5b), so T5b is independently completable and the DAG stays
+  acyclic while the guard still covers both module receivers and bare imports (Q1).
+* **Upgrades backfill edges in one operation via a SEPARATE version marker (M4, Q2, R1).**
+  Existing indexes do **not** gain Python canonical paths through content-hash-skipping
+  incremental indexing, and **sync re-extracts but never runs the post-pass**. The
+  extraction version is tracked in a **dedicated index-state marker
+  (`PYTHON_CANONICAL_EXTRACTION_VERSION`), NOT mixed into `file_node.content_hash`** —
+  which `retrieval_eval::is_index_stale` compares byte-for-byte against the raw source
+  SHA (`retrieval_eval.rs:717-718`); mixing would break staleness detection. Following
+  the `TMDL_DAX_INDEX_VERSION` precedent (`powerbi_indexer.rs:60-81`, a separate
+  versioned record), a version mismatch triggers re-extraction **and runs the canonical
+  resolution pass in the same step** (escalate sync→full path or invoke the post-pass) —
+  or a documented forced `index --force`. Resolved edges are restored in one operation
+  (T7); `content_hash` stays the raw SHA. No silent "no migration" claim.
 * **Fail-closed everywhere.** Star/relative/package-root/re-export/dynamic produce
   no module or binding; ambiguous/duplicate canonical paths are dropped by the
   reused singleton check. The canonical path is exact, so the feature only *adds*
@@ -445,6 +495,7 @@ T5b→{T5c,T7}; {T5b,T5c,T7}→T6.
 | **Recall trade-off: `src/`-layout & namespace-package defs get no canonical path (Q3 narrowing)** | Deliberate fail-closed narrowing (Constitution VI — no speculative source-root config; none exists at `config.rs:98-120`): those calls fall back to the existing **name-only** matcher (no regression vs today), never a false edge; source-root-aware resolution is a documented **v1 non-goal** (T6) for a future iteration with a real config source |
 | **Any rebind shadows an imported module receiver OR bare callee** (`import bar; bar = f(); bar.parse()` **or** `from bar import parse; parse = f(); parse()`) → false edge | **T5c fails closed on the full rebind-target set in the applicable scope for BOTH the receiver AND the bare callee name (M1, Q1)**: assignment, augmented (`+=`), `for`/`with … as`/`except … as`/walrus/parameter, and module-level rebind; consumes T2b's scope model |
 | **Function-local import leaks / competing bindings overwrite** (flat file-wide map) → false edge from the wrong module | **T2 fails closed on competing/duplicate bindings; T2b scopes module-level vs per-function bindings so a local import never leaks (M1)** |
+| **From-import symbol mis-resolved as a module receiver** (`from pkg import parse; parse.tokenize()` treated as module `parse`) → wrong edge | **T2 records the binding kind (`ModuleImport` vs `FromImportSymbol`) (R2); T5b resolves a module receiver ONLY from a `ModuleImport` binding and fails closed on a `FromImportSymbol` receiver** (attribute-on-object, out of scope); T5b test pins `parse.tokenize()` → no edge |
 | **`self`/`cls` wrongly staged as a module candidate** | **T4 explicitly excludes `self`/`cls` receivers (M2)**; they stay dropped (empty qualifier); T4 test pins `self.foo()`/`cls.bar()` unstaged |
 | New `python_canonical` module trips `-D warnings` dead_code when landed before its consumers | T1/T2 ship with same-crate unit tests exercising each public fn (counts as use under `cargo test`/clippy `--all-targets`); T3/T5b add production call sites |
 | tree-sitter-python node/field names differ from assumptions (`import_from_statement`, `dotted_name`, `aliased_import`, `wildcard_import`, `relative_import`) | T2 grammar pre-check via a debug tree-walk on real `.py` before coding; tests assert positive presence so a mis-mapping fails loudly |
@@ -453,7 +504,8 @@ T5b→{T5c,T7}; {T5b,T5c,T7}→T6.
 | Re-export chains (`from a import b` re-exported) resolve wrong | v1 non-goal — not traced; fails closed (drop); documented (T6) |
 | Modifying shared consumer / post-pass regresses Rust resolution | Every new branch guarded on `Language::Python`; Rust-path regression assertions (T5a); full ordered gate suite before merge |
 | Low precision on dynamic Python | Measured via `run_retrieval_eval` / `get_retrieval_eval_report`, not asserted as a numeric target; v1 non-goals documented (T6) |
-| Existing indexes keep **empty** canonical paths **and staged-but-unresolved edges** after upgrade (content-hash skip at `code_graph.rs:590-599`/`1252-1263`; post-pass full-index-only at `985-992`; `force` defaults false; **sync re-extracts but never runs the post-pass, Q2**) | **T7 (M4, Q2): versioned re-extraction marker forces re-extraction AND runs the canonical resolution pass in the SAME operation (escalate the sync to the full-index path or invoke the post-pass from sync) so resolved edges are restored in one step — no unresolved-edge window; documented `index --force` fallback; upgrade regression asserts the RESOLVED cross-module edge, not merely canonical_path** |
+| Existing indexes keep **empty** canonical paths **and staged-but-unresolved edges** after upgrade (content-hash skip at `code_graph.rs:590-599`/`1252-1263`; post-pass full-index-only at `985-992`; `force` defaults false; **sync re-extracts but never runs the post-pass, Q2**) | **T7 (M4, Q2, R1): a SEPARATE `PYTHON_CANONICAL_EXTRACTION_VERSION` index-state marker (NOT `file_node.content_hash` — that stays the raw SHA `is_index_stale` reads byte-for-byte, `retrieval_eval.rs:717-718`; TMDL precedent `powerbi_indexer.rs:60-81`) forces re-extraction AND runs the canonical resolution pass in the SAME operation so resolved edges are restored in one step — no unresolved-edge window; documented `index --force` fallback; upgrade regression asserts the RESOLVED cross-module edge AND that content_hash staleness detection is preserved** |
+| **Mixing an extraction version into `content_hash` would break staleness detection** (R1) | **T7 keeps `file_node.content_hash` = raw source SHA; the extraction version lives in a dedicated marker; a T7 test asserts `is_index_stale` still returns false for unchanged source after a version bump** |
 
 ## Constitution Check
 
@@ -549,9 +601,11 @@ fail-closed; FF7DE872 stays independent; no 090-S/095-F dependency):
   registers the `[[test]]` entry in `Cargo.toml` and lists it in its file set;
   T1/T2 verification commands are correct. (Tasks 096.001-T, 096.002-T.)
 * **M4 — real backfill trigger.** "No migration" was unsafe (content-hash skip +
-  full-index-only post-pass). New rollout task **T7** folds a versioned extraction
-  hash into the `.py` content-hash (or documented `index --force`) with an upgrade
-  regression test. (New task 096.010-T; DAG updated.)
+  full-index-only post-pass). New rollout task **T7** re-extracts stale-version `.py`
+  files (or documented `index --force`) with an upgrade regression test. (New task
+  096.010-T; DAG updated.) *(Cycle-1 wording said "folds a versioned hash into the `.py`
+  content-hash"; **corrected by cycle-3 R1** — the version lives in a SEPARATE index-state
+  marker, never `file_node.content_hash`. See the cycle-3 addendum.)*
 * **M5 — provable package layout.** T1 takes package/source-root metadata and
   REJECTS (fail closed) `src/`-roots, implicit namespace packages, and `__init__.py`
   that cannot be proven a regular-package dotted path; tests pin those layouts.
@@ -575,7 +629,9 @@ expansion (module-level namespace only, fail-closed; FF7DE872 independent; no
   form (assignment/augmented/`for`/`with … as`/`except … as`/walrus/parameter/
   module-level) in the applicable scope, and **T5b**'s `python_bare` resolution
   invokes that guard on the callee name; T5c adds bare-import assignment + parameter
-  shadow tests. (Tasks 096.007-T, 096.006-T.)
+  shadow tests. (Tasks 096.007-T, 096.006-T.) *(Cycle-2 wording; **revised by cycle-3
+  R3**: the guard lives entirely in T5c, which wraps T5b's guard-agnostic resolution —
+  see the cycle-3 addendum. Guard coverage still includes bare imports per Q1.)*
 * **Q2 — sync backfill left edges unresolved (P1).** T7's versioned hash also fires
   on startup auto-**sync**, but sync re-extracts and clears prior resolved
   edges/staging without running the full-index-only post-pass — a regression window.
@@ -604,6 +660,44 @@ DAG unchanged (still 10 tasks, acyclic): T3←T1; T5a←T4; T5b←{T1,T3,T5a,T2b
 T5c←{T5b,T2b}; T6←{T3,T5b,T5c,T7}; T2b←T2; T7←{T3,T5b}. The DoD (Q4), the artifact
 count (Q5), the shipment 091-S manifest, and the DAG all agree on the same final
 ten-task list.
+
+### PR #285 plan-review hardening (cycle 3)
+
+Three cycle-3 review comments (R1–R3) — plan-consistency gaps in the cycle-2 hardening
+— were addressed. No scope change (module-level namespace only, fail-closed; FF7DE872
+independent; no 090-S/095-F dependency). **Task count stays 10; DAG unchanged & acyclic.**
+
+* **R1 — extraction version must not corrupt the `content_hash` contract (P1).** T7's
+  cycle-2 wording folded a versioned extraction constant into the `.py` **content hash**.
+  But `retrieval_eval::is_index_stale` (`retrieval_eval.rs:717-718`) compares
+  `file_node.content_hash` **byte-for-byte** against the raw source SHA
+  (`source_content_hash`, 699-700), and the indexer writes `content_hash` as that raw SHA
+  (`cozo_queries.rs:609` / `schema.rs:573`) — mixing a version in would break staleness
+  detection. **T7** now tracks a **dedicated `PYTHON_CANONICAL_EXTRACTION_VERSION` index-
+  state marker** (following the `TMDL_DAX_INDEX_VERSION` / `compute_tmdl_dax_index_hash`
+  separate-record precedent, `powerbi_indexer.rs:60-81`), leaves `content_hash` as the raw
+  SHA, and adds a regression asserting `is_index_stale` still holds after a version bump.
+  (Task 096.010-T; Risks + Requirements-Trace rows.)
+* **R2 — `ImportBindings` lacked a binding kind (P1).** A bare canonical string cannot tell
+  a **module receiver** (`import pkg` → `pkg.func()`) from an **imported symbol**
+  (`from pkg import parse` → `parse()` / `parse.tokenize()`), so a from-import would be
+  mis-resolved as a module. **T2** now records `(canonical_path, kind∈{ModuleImport,
+  FromImportSymbol})`; **T5b** dispatches on the kind — a module receiver resolves only from
+  a `ModuleImport` binding, and a `FromImportSymbol` receiver (`parse.tokenize()`) fails
+  closed (attribute-on-object, out of scope). T5b adds a `parse.tokenize()` → no-edge test.
+  (Tasks 096.002-T, 096.006-T; Risks + Requirements-Trace rows.)
+* **R3 — T5b/T5c circular completability (P1).** The cycle-2 Q1 edit made **T5b**'s
+  acceptance require invoking the **T5c** shadow guard, while T5c depends on T5b — a
+  completability cycle. **Fix:** the guard lives **entirely in T5c (downstream)**; **T5b**
+  is now **guard-agnostic** (its acceptance does not call the guard) and produces
+  binding-kind resolution; **T5c wraps** T5b's resolution with the shadow check. The
+  frontmatter dependency stays one-directional (T5c → T5b), so each task is independently
+  completable and the DAG is acyclic. Guard **coverage still includes bare imports** per
+  Q1. (Tasks 096.006-T, 096.007-T; Dependency Graph.)
+
+Final DAG (acyclic, unchanged): T3←T1; T5a←T4; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b};
+T6←{T3,T5b,T5c,T7}; T2b←T2; T7←{T3,T5b}. **T5b does not depend on T5c** (R3). Counts,
+DoD, shipment 091-S manifest, and the DAG all agree on the same 10-task list.
 
 ## Quality Gates (pre-merge, constitutional order)
 
@@ -780,3 +874,21 @@ namespace resolution only, fail-closed; FF7DE872 independent; no 090-S/095-F
 dependency. Gate remains **PASS** (Q1–Q6 are refinements/consistency fixes, not new
 P0/P1 vectors; still below the 3-P0/P1 multi-model threshold). **This is
 plan-review-fix cycle 2 of 3.**
+
+### PR #285 review addendum (plan-review-fix cycle 3)
+
+The cycle-3 review returned three substantive plan-consistency findings (R1–R3), all
+gaps in the cycle-2 hardening (see `## Plan Hardening → PR #285 plan-review hardening
+(cycle 3)` for the per-finding map). Summary: **R1** moves T7's extraction version out of
+`file_node.content_hash` (which `is_index_stale` reads byte-for-byte) into a dedicated
+index-state marker (TMDL-version precedent), preserving staleness detection; **R2** adds a
+binding **kind** to `ImportBindings` so T5b tells a module receiver from an imported symbol
+(no from-import mis-resolved as a module); **R3** removes the T5b/T5c completability cycle —
+the shadow guard lives entirely in T5c, which wraps a now-**guard-agnostic** T5b (dependency
+strictly T5c → T5b). **No new task — count stays 10;** DAG unchanged and acyclic (**T5b does
+not depend on T5c**). No scope expansion: module-level namespace resolution only, fail-closed;
+FF7DE872 independent; no 090-S/095-F dependency. Gate remains **PASS** (R1–R3 are consistency
+refinements, not new P0/P1 vectors; still below the 3-P0/P1 multi-model threshold). **This is
+plan-review-fix cycle 3 of 3 (the cap).** Per operator directive, if a cycle-4 review still
+surfaces NEW substantive gaps, the plan is accepted as-is and residual items become Ship
+execution-time considerations.
