@@ -85,3 +85,31 @@ Verified after edits: `get_dependencies` shows T5b={001,003,005,009} (NOT 007) a
 T5c={006,009} → acyclic; 10 tasks; shipment **091-S** = 11 items (096-F + 10). Cycle 3 is
 the cap — if a cycle-4 review still surfaces NEW substantive gaps, accept the plan as-is
 (residual → Ship execution-time considerations).
+
+## Addendum — PR #285 plan-review CYCLE 4 (operator: Option A = fix substantively)
+
+Cycle-4 review returned five plan/task-consistency findings (X1–X5); **X6 = PR body,
+Orchestrator-owned, untouched.** No scope change; **task count stays 10; DAG unchanged and
+acyclic.**
+
+* **X1 — sync-arm staging bypasses canonical resolution (`096.005-T`/T5a).** The Calls sync
+  consumer (`code_graph.rs:1573-1643`) name-only-stages bare Python calls via
+  `put_staged_call` (1639), so T7 re-extraction strands them — a **third** site after Q2/R1.
+  T5a now routes Python bare + module-qualified calls through provenance on **both** the
+  full-index (851-908) and sync (1573-1643) arms.
+* **X2/X3 — local-def-first false edge (`096.006-T`/T5b + plan resolution rule).** `def
+  parse; from bar import parse; parse()` binds to `bar.parse`; local-def-first mints
+  `M.parse`. Now **last-binding-wins**: a later `FromImportSymbol` rebind beats a local def
+  → `N.callee`; unclear order → fail closed. Counterexample pinned in T5b.
+* **X4 — shadow-guard rebind set (`096.007-T`/T5c).** Added `def`/`class`/`del`/`match`-case
+  capture as name-rebinding invalidators (`import bar; class bar: ...; bar.parse()` → no
+  edge).
+* **X5 — monitoring contract (plan).** Added a **Monitoring & Rollback** section mirroring
+  090-S A5 / 095-F Fork-A: SLI = Python module-qualified edge precision via
+  `get_retrieval_eval_report`; baseline 1.000 / 0 false edges; alert = precision < 1.0;
+  rollback = any confirmed false edge post-index; window = first release cycle (≈2 wks) +
+  first real-package cohort; owner = code-graph parsing/resolution area.
+
+Files changed: plan doc + tasks `096.005-T`, `096.006-T`, `096.007-T` + feature `096-F`
+(rule/DoD/goals consistency). Verified again: DAG acyclic (T5b independent of T5c), 10 tasks,
+shipment 091-S = 11 items. Gate remains PASS.
