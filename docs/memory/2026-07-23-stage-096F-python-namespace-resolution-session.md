@@ -37,3 +37,26 @@ Full staging pipeline executed: **spike [GO] → impl-plan → plan-harden → p
 ## Blockers
 
 None. Spike = GO; plan-review = PASS; shipment queued.
+
+## Addendum — PR #285 plan-review hardening (cycles 1–2)
+
+Post-harvest, PR #285 plan-review hardened the impl-plan + task files. Net result: the
+task set grew from the originally-harvested **8** to a final **10**.
+
+* **Cycle 1 (M1–M5):** split out **T2b** (`096.009-T`, scope-aware binding isolation,
+  from M1) and **T7** (`096.010-T`, versioned re-extraction/backfill, from M4); T1
+  package-layout fail-closed (M5), T4 `self`/`cls` exclusion (M2), M3 test-target
+  registration. Task count 8 → 10.
+* **Cycle 2 (Q1–Q6):** Q1 extended the T5c shadow guard to imported **bare callees**
+  (`096.007-T`/`096.006-T`); Q2 made T7 run the canonical resolution pass in the **same
+  operation** and assert the resolved edge (`096.010-T`); **Q3+Q6 = NARROW** — T1 fails
+  closed on `src/`-roots / PEP 420 namespace / `__init__.py`, source-root machinery
+  removed, source-root-aware resolution = documented v1 non-goal (`096.001-T`/
+  `096.003-T`); Q4/Q5 aligned the DoD + artifact count. **No new task — count stays 10.**
+
+**Final harvest (10 tasks):** feature **096-F** + **096.001-T .. 096.010-T** =
+T1, T2, T3, T4, T5a, T5b, T5c, T6 (T2/T2b/T7 numbering: 096.002-T=T2, 096.009-T=T2b,
+096.010-T=T7); queued shipment **091-S** (11 items: 096-F + 10 tasks). DAG (acyclic):
+T3←T1; T5a←T4; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T6←{T3,T5b,T5c,T7}; T2b←T2;
+T7←{T3,T5b}. Scope unchanged: module-level namespace resolution, fail-closed;
+FF7DE872 independent; no 090-S/095-F dependency.
