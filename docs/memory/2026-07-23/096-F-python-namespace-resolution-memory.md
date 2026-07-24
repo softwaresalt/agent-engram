@@ -261,3 +261,68 @@ tasks — no new task, no scope creep. **No findings judged false positives.** F
 spike doc + tasks `096.005-T`, `096.006-T`, `096.007-T`, `096.010-T` + feature `096-F` + this memory.
 This is plan-review-fix **cycle 7 (operator-directed; Option A — FINAL consolidated pass, hard-stop
 after push)**.
+
+## Cycle 8 addendum — narrow closure of the non-import-rebind axis (C6, Option B)
+
+The cycle-7 FINAL pass was validated (C7-1/C7-3/C7-4/Z3 PASS; **8 of 9 composition vectors** close);
+a targeted 3-model re-check @ `689da02a` found **one** remaining failing vector — **C6: `def` +
+non-import module/scope rebind** (`def parse(); parse = factory(); parse()`; also
+`class`/`del`/`match`-case/`for`/`with … as`/`except … as`/walrus/parameter targets). **Root cause:**
+cycle-7's "shadow-contested at any modeled **scope**" abstraction closed over SCOPES but **not over
+binding FORMS**, and the non-import-rebind axis has **no producer** (T2/`096.002-T` and T2b/`096.009-T`
+walk only import nodes), so that case still hit the in-file `(Some,Some)` arm
+(`code_graph.rs:900-902` full-index / ~1635-1636 sync) and minted a false direct `M.parse` edge that
+never reached T5c's (correct) rebind guard. Operator authorized **Option B** — minimal, no new
+producer/task/DAG edge — because **T5a already holds the caller file's tree-sitter AST** at the
+consumer site.
+
+* **Invariant reframed over FORMS *and* SCOPES — plan §Resolution-rule invariant.** Prove-the-negative
+  default: *keep a same-file `def` on the direct-edge path ONLY when it is provably the sole binding
+  across every modeled scope AND with no non-import rebind form present; otherwise route to
+  `python_bare` staging.* Closure is now over both the scope axis and the binding-form axis, so neither
+  a new scope nor a new syntactic rebind form can silently reopen a false-edge path. Repaired the
+  "future axes covered by construction" wording to mean form-closure too.
+* **Shared rebind-form set (RFS) — single source of truth — plan §Design decision.** Defined the
+  rebind-FORM set **once**; consumed **identically** by T5a's in-file routing scan (order-agnostic
+  "any RFS form present → stage") and T5c's order-aware invalidation scan (same forms, winner→call
+  window). The shared artifact is the syntactic form set, not the order logic — so `096.005-T`/T5a and
+  `096.007-T`/T5c can never diverge on which forms count.
+* **T5a runs the shared in-file rebind scan — `096.005-T` + plan §T5a + §Design-decision + Risks +
+  Requirements-Trace.** T5a's `(Some,Some)` routing now routes to staging whenever the callee name is
+  contested by EITHER a producer-backed import signal (T2/T2b) OR any RFS non-import rebind form it
+  detects with its OWN tree-sitter scan (the same one T5c runs), on **both** arms (896-908 +
+  1573-1643). Added routing vector `def f; f = factory(); f()` → **STAGED, no direct `M.f`** (also
+  covers `class`/`del`/`match`-case) and the def+non-import-rebind → DROP row to the Requirements-Trace.
+* **Composition-trace row C6 — plan.** Now **DROP** (owning layer = T5a routing (shared RFS scan) →
+  T5c invalidation). Re-verified C1–C5, C7, C8, C9 unchanged.
+* **T5c references the shared RFS — `096.007-T`.** No behavior change (T5c already scanned these
+  forms); it now names the shared RFS definition as its source so it cannot drift from T5a.
+
+**No DAG change, no new task:** the non-import rebind forms have no producer and T5a scans them itself,
+so **no new producer, task, or DAG edge** was required. Edge list unchanged (T5a←{T2,T2b,T4};
+T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T2b←{T2}; T3←{T1}; T6←{T3,T5b,T5c,T7}; T7←{T3,T5b}; acyclic).
+**Task count stays 10; shipment 091-S stays 11 items.** **C6 judged a genuine defect (3/3 unanimous,
+source-verified) — no false positives.** Files changed: plan doc + tasks `096.005-T`, `096.007-T` +
+this memory. This is plan-review-fix **cycle 8 (operator-directed; Option B — narrow closure,
+hard-stop after push)**.
+
+**Folded into the same cycle-8 commit — two adjacent internal-consistency threads (Copilot
+cycle-8 @ `689da02a`):**
+
+* **C8-1 (duplicate same-name imports) — Option B (narrowed rule).** The frozen C7-1 call-site
+  last-binding rule appeared to promise ordering across `from a import f; from b import f; f()`,
+  contradicting T2's fail-closed-on-duplicate (M1). Reconciled (cheapest, strictly fail-closed):
+  ordering disambiguates `def`-vs-**single**-import + rebinds only; **≥2 competing imports of a
+  name → T2 no binding (M1) → T5b no target → fail closed** (F3 legacy fallback also drops,
+  non-unique). No regression vs main; ordered-import-history is a v1 non-goal. Edited: plan
+  §Resolution-rule (new C8-1 blockquote) + §T5b (new fail-closed sub-bullet); `096.002-T` (M1
+  now cites the two-from-import example) + `096.006-T` (fail-closed vector folded, no 5th
+  scenario). **T2 + T5b + acceptance + plan now agree.**
+* **C8-2 (spike DROP rows vs F3 legacy edge) — spike doc.** Added two labeled "⚠️ Refined
+  (C7-4/F3)" notes (under the resolution-rule list and the Fail-closed matrix) qualifying every
+  `DROP` as "no canonical module-qualified edge; a unique legacy name-only edge may remain
+  (non-unique still fails closed)". Spike history preserved; now matches plan + `096-F`.
+
+Both fold into the same commit as the C6 closure (one push / one re-check). No new task, no new
+DAG edge, no new code behavior. Task count stays 10; shipment 091-S stays 11 items. Files added
+this fold: `096.002-T`, `096.006-T`, spike doc. **No findings judged false positives.**

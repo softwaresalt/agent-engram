@@ -36,6 +36,14 @@ Resolution rule under test (module namespace: `foo/bar.py` → `foo.bar`):
 * else **imported** via `from N import name` → canonical `N.name`
 * else (star import / relative / package-root / re-export / dynamic) → **DROP**
 
+> **⚠️ Refined (C7-4/F3) — "DROP" = no canonical edge, legacy edge may remain.** In the
+> final implementation contract (plan + `096-F`), **DROP** means **no canonical
+> module-qualified edge**; a **unique** cross-file bare call still keeps its **legacy
+> name-only edge** (T5b's F3 no-target fallback — recall preserved). Only the canonical
+> layer drops; a non-unique name still fails closed. This qualifies every "DROP" in this
+> spike, including the Fail-closed matrix below (see the matching note there). The spike's
+> initial "dropped outright" phrasing is superseded by the T5b/F3 legacy-edge contract.
+
 ## Scope boundary (FROZEN — do not let planning creep)
 
 * **IN** — module-level functions and `module.func()` disambiguation (the
@@ -205,6 +213,18 @@ Roughly 4–6 tasks at the 2-hour granularity. Normal feature envelope.
 | `importlib` / `__import__` / dynamic | DROP | not a static binding → unresolved |
 | duplicate canonical_path (2+ defs) | DROP | `function_ids_by_canonical_path` singleton check (ids.len()!=1) |
 | unknown / unbound qualifier `x.func()` where `x` not an imported module | DROP | no module binding → unresolved (never a false edge) |
+
+> **⚠️ Refined (C7-4/F3) — "DROP" here means no canonical (module-qualified) edge; a
+> unique legacy name-only edge may remain.** Every **DROP** in this matrix drops the
+> **canonical** module-qualified edge only. Per the final T5b/F3 contract (plan + `096-F`),
+> a **unique** cross-file bare call still keeps its **legacy name-only edge** — the
+> star-import, relative-import, re-export, and `__init__.py`/PEP-420 rows in particular fall
+> through to T5b's no-target legacy unique-match (recall preserved), while a **non-unique**
+> name (e.g. duplicate `canonical_path`, or two competing same-name imports) still fails
+> closed with **no** edge at all. This qualifies the "Behaviour" column above so the spike
+> matches the plan's fail-closed matrix + Requirements-Trace; the earlier "dropped outright"
+> reading is **superseded** by the T5b/F3 legacy-edge contract. (Spike history is preserved;
+> this note is additive.)
 
 ## Why FF7DE872 is NOT fixed here (scope guard)
 
