@@ -1,6 +1,6 @@
 //! Notebook content indexer for `.ipynb` sources.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 use chrono::Utc;
@@ -9,11 +9,14 @@ use tracing::{debug, info, warn};
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
 use crate::models::content::ContentRecord;
-use crate::models::lineage::{LineageAuthorityContext, LineageEdgeCandidate};
+use crate::models::lineage::{
+    CURRENT_EXTRACTOR_VERSION, LineageAuthorityContext, LineageEdgeCandidate, LineageEndpoint,
+    LineageEvidence,
+};
 use crate::models::notebook::{NotebookCellRecord, NotebookIndexResult};
 use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
-use crate::services::notebook_extract::extract_notebook;
+use crate::services::notebook_extract::{extract_notebook, route_notebook_lineage};
 use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
 
 /// Notebook lineage extraction seam (095-F, Unit U1b / AR-04/G6).
@@ -38,9 +41,12 @@ pub trait NotebookLineageExtractor {
 
 /// The production notebook lineage extractor.
 ///
-/// U4 (`095.006-T`) implements PySpark + Spark-SQL candidate collection; until
-/// then it emits nothing, so the live path stays fail-closed while U1b wires the
-/// authority context through.
+/// Delegates to [`route_notebook_lineage`](crate::services::notebook_extract::route_notebook_lineage),
+/// which routes each cell to the U2b (PySpark) / U3 (Spark-SQL) extractors and
+/// binds identities through `authority_ctx` — an empty context resolves nothing,
+/// so the flat aggregate stays fail-closed. The `index_notebook_source` write
+/// path routes per cell directly so it can carry each cell's `chunk_index` into
+/// evidence; this trait remains the flat authority-propagation seam (U1b).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultNotebookLineageExtractor;
 
@@ -48,10 +54,10 @@ impl NotebookLineageExtractor for DefaultNotebookLineageExtractor {
     fn extract(
         &self,
         _notebook_path: &str,
-        _cells: &[NotebookCellRecord],
-        _authority_ctx: &LineageAuthorityContext,
+        cells: &[NotebookCellRecord],
+        authority_ctx: &LineageAuthorityContext,
     ) -> Vec<LineageEdgeCandidate> {
-        Vec::new()
+        route_notebook_lineage(cells, authority_ctx)
     }
 }
 
@@ -149,11 +155,6 @@ pub async fn index_notebook_source(
 ) -> Result<NotebookIndexResult, EngramError> {
     let mut result = NotebookIndexResult::default();
 
-    // U1b seam: the live lineage extractor. U4 (095.006-T) implements candidate
-    // extraction + persistence via the U1a' writers; until then this is
-    // fail-closed and the authority context is simply threaded through.
-    let lineage_extractor = DefaultNotebookLineageExtractor;
-
     let source_dir = workspace_root.join(&source.path);
     if !source_dir.exists() {
         debug!(
@@ -210,19 +211,6 @@ pub async fn index_notebook_source(
             debug!(path = %rel_path, "malformed notebook JSON — skipping file");
             continue;
         };
-
-        // U1b: thread the trusted-authority context into the lineage extraction
-        // seam. Candidates are persisted by the U4 write path (095.006-T); until
-        // U4 lands this is fail-closed (no candidates) but the context is live.
-        let lineage_candidates =
-            lineage_extractor.extract(&rel_path, &extracted.cells, authority_ctx);
-        if !lineage_candidates.is_empty() {
-            debug!(
-                path = %rel_path,
-                candidates = lineage_candidates.len(),
-                "collected notebook lineage candidates"
-            );
-        }
 
         queries
             .delete_content_records_by_scope(&rel_path, "notebook", &source.path)
@@ -284,6 +272,16 @@ pub async fn index_notebook_source(
             queries.upsert_content_record(&record).await?;
         }
 
+        // ── 095-F U4 write-path: route cells → candidates, persist lineage ──
+        persist_notebook_lineage(
+            queries,
+            &rel_path,
+            &extracted.cells,
+            &content_hash,
+            authority_ctx,
+        )
+        .await?;
+
         result.ingested += 1;
     }
 
@@ -296,6 +294,78 @@ pub async fn index_notebook_source(
     );
 
     Ok(result)
+}
+
+/// Route a notebook's cells to the Spark-lineage extractors and persist the
+/// resulting lineage subgraph (095-F, Unit U4 write-path).
+///
+/// Flattens each per-cell [`LineageEdgeCandidate`] to one directional
+/// `lineage_derives_from` edge per `(target, source)` pair, then upserts **only**
+/// the `dataset_node`s incident to an emitted edge — node creation is
+/// edge-driven, never endpoint-driven, so a standalone read/write with no
+/// counterpart edge writes nothing (fail-closed; Review comment D1). One
+/// `lineage_edge_evidence` row is written per `(edge, cell)` keyed on
+/// `chunk_index`, so the same edge observed in two cells is preserved (E1).
+///
+/// On re-index the prior lineage scope is deleted first, GC'ing stale
+/// per-notebook evidence and now-unevidenced edges while a `dataset_node` still
+/// evidenced elsewhere survives (AR-28). As the **final** write — only after
+/// every node/edge/evidence upsert has succeeded — `lineage_index_state` is
+/// stamped unconditionally for every extracted notebook, including a
+/// zero-lineage one, so an unchanged notebook hash-skips next run instead of
+/// re-extracting (AR-03); a failure in any earlier write leaves the notebook
+/// un-stamped so it re-extracts (partial-graph recovery; cycle-7 I1).
+///
+/// # Errors
+///
+/// Returns [`EngramError`] if any lineage scope-delete, node/edge/evidence
+/// upsert, or the freshness stamp fails.
+async fn persist_notebook_lineage(
+    queries: &CodeGraphQueries,
+    notebook_path: &str,
+    cells: &[NotebookCellRecord],
+    content_hash: &str,
+    authority_ctx: &LineageAuthorityContext,
+) -> Result<(), EngramError> {
+    // Scope-replace prior lineage first (a no-op for a brand-new notebook).
+    queries.delete_lineage_by_scope(notebook_path).await?;
+
+    let mut nodes: BTreeMap<String, LineageEndpoint> = BTreeMap::new();
+    let mut edges: Vec<(String, String)> = Vec::new();
+    let mut evidence: Vec<LineageEvidence> = Vec::new();
+
+    // Route per cell so each candidate carries its originating `chunk_index`.
+    for cell in cells {
+        for candidate in route_notebook_lineage(std::slice::from_ref(cell), authority_ctx) {
+            for source in &candidate.sources {
+                edges.push((candidate.target.id.clone(), source.id.clone()));
+                evidence.push(LineageEvidence {
+                    from_id: candidate.target.id.clone(),
+                    to_id: source.id.clone(),
+                    notebook_path: notebook_path.to_owned(),
+                    chunk_index: cell.chunk_index,
+                    content_hash: content_hash.to_owned(),
+                });
+                // Edge-driven node set: only endpoints of an emitted edge.
+                nodes.insert(candidate.target.id.clone(), candidate.target.clone());
+                nodes.insert(source.id.clone(), source.clone());
+            }
+        }
+    }
+
+    if !edges.is_empty() {
+        let node_set: Vec<LineageEndpoint> = nodes.into_values().collect();
+        queries.upsert_dataset_nodes(&node_set).await?;
+        queries.upsert_lineage_edges(&edges).await?;
+        queries.upsert_lineage_edge_evidence(&evidence).await?;
+    }
+
+    // Final write (I1): stamp freshness only after every graph write succeeded.
+    queries
+        .upsert_lineage_index_state(notebook_path, CURRENT_EXTRACTOR_VERSION)
+        .await?;
+
+    Ok(())
 }
 
 /// Remove content records for notebook files that no longer exist on disk.
@@ -551,10 +621,11 @@ mod tests {
         assert_eq!(spy.seen_cat_authority.borrow()[0], None);
     }
 
-    // U1b: the production extractor is fail-closed until U4 fills it in — it
-    // emits nothing regardless of context.
+    // U1b/U4: the production extractor now delegates to the real per-cell
+    // router, but an empty cell set (or an empty authority context) still yields
+    // zero edges — the seam stays fail-closed.
     #[test]
-    fn default_extractor_is_fail_closed_until_u4() {
+    fn default_extractor_yields_nothing_for_empty_cells() {
         let cells: Vec<NotebookCellRecord> = Vec::new();
         assert!(
             DefaultNotebookLineageExtractor

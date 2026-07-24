@@ -28,6 +28,15 @@ use serde::{Deserialize, Serialize};
 /// target derives from the source).
 pub const LINEAGE_DERIVES_FROM: &str = "lineage_derives_from";
 
+/// The semantic version of the notebook lineage extractor (095-F, Unit U4).
+///
+/// Stamped into `lineage_index_state` by the write-path as its final write for
+/// every extracted notebook (AR-03). The U4b skip predicate re-extracts a
+/// notebook whose persisted version differs from this constant, so bumping it
+/// forces a lineage backfill of already-indexed notebooks. Bump on any change to
+/// the extraction/resolution behavior that alters emitted lineage.
+pub const CURRENT_EXTRACTOR_VERSION: &str = "1.0.0";
+
 /// The kind of a resolved lineage dataset endpoint.
 ///
 /// v1 recognizes tables and paths only. Permanent (catalog) views are recorded
