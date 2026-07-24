@@ -10,6 +10,8 @@ use tempfile::TempDir;
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
 #[cfg(feature = "cozo-backend")]
+use engram::models::lineage::LineageAuthorityContext;
+#[cfg(feature = "cozo-backend")]
 use engram::models::registry::{ContentSource, ContentSourceStatus};
 #[cfg(feature = "cozo-backend")]
 use engram::server::state::{AppState, WorkspaceSnapshot};
@@ -69,6 +71,7 @@ async fn index_notebook_source_emits_summary_and_cell_records() {
         root.path(),
         &queries,
         1_048_576,
+        &LineageAuthorityContext::empty(),
     )
     .await
     .expect("index notebook source");
@@ -219,14 +222,21 @@ async fn index_notebook_source_scopes_records_by_source_path() {
         .expect("connect_db");
     let queries = CodeGraphQueries::new(db);
 
-    index_notebook_source(&notebook_source("."), root.path(), &queries, 1_048_576)
-        .await
-        .expect("index root notebook source");
+    index_notebook_source(
+        &notebook_source("."),
+        root.path(),
+        &queries,
+        1_048_576,
+        &LineageAuthorityContext::empty(),
+    )
+    .await
+    .expect("index root notebook source");
     index_notebook_source(
         &notebook_source("notebooks"),
         root.path(),
         &queries,
         1_048_576,
+        &LineageAuthorityContext::empty(),
     )
     .await
     .expect("index nested notebook source");

@@ -804,6 +804,26 @@ name = "integration_notebook_search_ingestion"
 path = "tests/integration/notebook_search_ingestion_test.rs"
 required-features = ["cozo-backend"]
 
+[[test]]
+name = "integration_notebook_lineage_writepath"
+path = "tests/integration/notebook_lineage_writepath_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_notebook_lineage_freshness"
+path = "tests/integration/notebook_lineage_freshness_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_lineage_read_surface"
+path = "tests/integration/lineage_read_surface_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_lineage_precision_recall"
+path = "tests/integration/lineage_precision_recall_test.rs"
+required-features = ["cozo-backend"]
+
 # ── 062-F: Dedicated PBIP project-definition indexing ────────────────────────
 
 [[test]]

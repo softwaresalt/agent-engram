@@ -23,6 +23,7 @@ pub mod function;
 pub mod graph_query;
 pub mod health;
 pub mod interface;
+pub mod lineage;
 pub mod metrics;
 pub mod notebook;
 pub mod pbip;
@@ -41,13 +42,19 @@ pub use class::Class;
 pub use code_edge::CodeEdge;
 pub use code_file::CodeFile;
 pub use commit::{ChangeRecord, ChangeType, CommitNode};
-pub use config::{BatchConfig, CodeGraphConfig, EmbeddingConfig, PluginConfig, WorkspaceConfig};
+pub use config::{
+    BatchConfig, CodeGraphConfig, EmbeddingConfig, LineageConfig, PluginConfig, WorkspaceConfig,
+};
 pub use content::ContentRecord;
 pub use file_hash::FileHashRecord;
 pub use function::Function;
 pub use graph_query::TraversalDirection;
 pub use health::{HealthCheck, HealthReport, HealthStatus, ScanProgress, SmokeResult};
 pub use interface::Interface;
+pub use lineage::{
+    CURRENT_EXTRACTOR_VERSION, DatasetKind, LINEAGE_DERIVES_FROM, LineageAuthorityContext,
+    LineageEdgeCandidate, LineageEndpoint, LineageEvidence,
+};
 pub use metrics::MetricsConfig;
 pub use notebook::NotebookIndexResult;
 pub use pbip::PbipIndexResult;

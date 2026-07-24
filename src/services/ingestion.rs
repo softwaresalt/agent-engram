@@ -122,9 +122,18 @@ pub async fn ingest_all_sources(
                 index_notebook_source, sweep_deleted_notebook_files,
             };
 
-            let result =
-                index_notebook_source(source, workspace_root, queries, config.max_file_size_bytes)
-                    .await?;
+            // U1b: build the trusted-authority context from the registry's
+            // `[lineage]` config and thread it into the live indexer. Absent
+            // config yields an empty context ⇒ fail-closed (no lineage edges).
+            let authority_ctx = config.lineage.to_authority_context();
+            let result = index_notebook_source(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+                &authority_ctx,
+            )
+            .await?;
             let removed = sweep_deleted_notebook_files(source, workspace_root, queries).await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;

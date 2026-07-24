@@ -174,6 +174,179 @@ graph. Known limitations:
   normal sync. Pick them up with a forced full reparse (`engram index` or
   `engram sync --full`).
 
+## Data-lineage subgraph (v1)
+
+Engram indexes a **data-lineage subgraph** from Spark notebooks (`.ipynb`),
+recording dataset read → write lineage across PySpark and Spark-SQL cells. It
+mirrors the Power BI domain-subgraph pattern: a `dataset_node` relation, a
+directed `lineage_derives_from` edge, and a per-notebook `lineage_edge_evidence`
+relation that carries provenance. The subgraph is **feasibility-scoped**: v1
+proves the mechanism end-to-end and is intentionally narrow. Its value as a
+product surface is operator-asserted, not yet a shipped guarantee (see
+*Feasibility posture* below).
+
+### Enabling lineage (operator configuration)
+
+Lineage is **disabled by default**: with no trusted authorities configured the
+extractor resolves nothing and emits **zero edges** (fail-closed). To activate
+the production path, declare the trusted metastore and storage authorities in the
+`lineage:` section of `.engram/registry.yaml`:
+
+```yaml
+lineage:
+  # Stable id of the trusted metastore authority. Embedded in every canonical
+  # table dataset_node id so identically named tables under different metastores
+  # never collide (AR-01). Empty => the table side is disabled entirely.
+  metastore_authority_id: prod-metastore
+  # Catalog name -> trusted metastore authority id. A catalog absent from this
+  # map is unmapped and fails closed. An empty value inherits
+  # metastore_authority_id (the common single-metastore case).
+  catalog_authorities:
+    main: prod-metastore
+    sales: sales-metastore
+  # Trusted storage-authority prefixes (scheme://authority). A path whose
+  # authority matches none of these fails closed. Independent of the metastore —
+  # paths resolve on this allowlist alone.
+  storage_authorities:
+    - s3://prod-bucket
+    - abfss://container@account.dfs.core.windows.net
+```
+
+**Empty-config fail-closed behavior.** An absent `lineage:` section, an empty
+`metastore_authority_id`, or an empty `storage_authorities` list each disables
+its respective side: an unmapped catalog can never bind a `catalog.schema.table`
+and an untrusted storage prefix can never bind a path, so **no edge** is ever
+emitted from unconfigured authorities — never a bare-name guess. Changing this
+config re-stamps the authority-config fingerprint, so already-indexed notebooks
+backfill their lineage on the next ordinary `engram sync` (see *Feasibility
+posture and rollback*).
+
+### What v1 emits
+
+v1 emits a `lineage_derives_from` edge only between two fully qualified,
+authority-bound datasets. `dataset_node.kind` is one of exactly two kinds:
+
+* **`table`** — a 3-part `catalog.schema.table` name bound to a **trusted
+  metastore authority**. The resolved authority is embedded in the node's
+  canonical key so identically named tables under different metastores never
+  collide (**AR-01**).
+* **`path`** — an **absolute** storage URI (for example `s3://bucket/prefix`)
+  bound to a **trusted storage authority**.
+
+A `dataset_node` carries canonical identity fields only (`id`, `name`, `kind`);
+it has no per-notebook fields. All notebook-specific provenance — which notebook
+and which cell (`chunk_index`) produced an edge, plus a content hash — lives in
+`lineage_edge_evidence`. Cell/source order (`chunk_index`) is **metadata only
+and never an edge**.
+
+### Edge orientation (AR-05)
+
+The edge is oriented **from the written target to the read source**:
+
+| Field | Meaning |
+|---|---|
+| `from_id` | the **written** dataset (the target of the write) |
+| `to_id` | the **read** dataset (the source consumed) |
+
+Data flows source → target, but the edge encodes *derives-from* (target derives
+from source), so it points target → source. A `dataset_node` is created **only
+as an endpoint of an emitted edge** (edge-driven, never endpoint-driven): a
+standalone read or write that yields no edge produces no node (finding D1).
+
+### Fail-closed drops (0 false edges)
+
+Lineage extraction is **fail-closed** (013-D): anything that cannot be resolved
+to a fully qualified, authority-bound dataset produces **no edge** rather than a
+guessed one. The following all drop silently:
+
+* 1-part and 2-part table names (authority-ambiguous);
+* a 3-part literal whose catalog is **not** a trusted metastore authority, or a
+  path whose storage authority is not trusted;
+* relative path literals (only absolute URIs bind);
+* f-strings and other non-literal / variable arguments;
+* config- or widget-derived names (for example `dbutils.widgets.get(...)`).
+
+The zero-false-edge invariant is verified by a fixture-driven precision floor
+that asserts **0 edges** on every dropped case.
+
+### Deferrals and limitations (distinct rationale)
+
+* **Temp views — deferred, unrepresentable.** A temporary view is not a durable
+  dataset, so it has no stable node and v1 cannot represent lineage that flows
+  *through* one (within a cell or across cells). Temp views are the **only** view
+  form asserted fail-closed.
+* **Permanent (catalog) views — a documented limitation, not a drop.** v1 cannot
+  distinguish a permanent view from a table (both present as a 3-part name under
+  an authority), so a permanent-view reference is recorded as `kind = table`
+  (**AR-08**). This is a known imprecision, not a fail-closed case. Future
+  extension: a distinct `view` node kind plus `CREATE [OR REPLACE] VIEW` DDL to
+  label them precisely.
+* **`spark.sql(...)` string-embedded SQL — deferred (scope-minimization).** The
+  Python path does not parse SQL passed as a string to `spark.sql(...)`; it is
+  removed from the PySpark whitelist (finding D2). The equivalent CTAS / `INSERT`
+  lineage **is** captured when the same SQL is written in a `%%sql` cell (routed
+  to the SQL extractor). Future extension: delegate the literal to the SQL
+  extractor. As a consequence, a `spark.sql("CREATE TABLE … AS SELECT … ")`
+  call emits **no** edge even when its literal is fully resolvable.
+* **Cross-cell DataFrame propagation — out of scope.** A single-cell dataflow
+  resolver connects read → DataFrame → write **within one cell**. A DataFrame
+  bound in one cell and written in another yields no edge in v1.
+* **Valid → malformed notebook transition — prior lineage retained until
+  re-parse.** When an already-indexed notebook is edited into an unparseable
+  state, the incremental indexer cannot extract it and skips the file *without*
+  touching its graph, so the notebook's prior `lineage_edge`s and evidence
+  persist until it parses again (a valid re-parse scope-replaces them) or the
+  notebook is deleted (the deletion sweep GCs them). The freshness token
+  (extractor version + authority-config fingerprint) forces re-extraction only
+  of *parseable* notebooks, so once the notebook is valid again any intervening
+  version or config change triggers a full re-extraction rather than a
+  hash-skip.
+
+### `%sql` line-magic policy (AR-11)
+
+Only the **`%%sql` cell-magic** (a whole SQL cell) routes to the SQL extractor.
+A **`%sql` line-magic** cell is **excluded** from v1 lineage extraction. This is
+a decided policy, not an accident of parsing.
+
+### Querying lineage (read surface, AR-06)
+
+v1 adds **no new MCP tool**. Lineage is queryable through the existing
+`query_graph` tool, whose traversal and node resolution were extended to cover
+the `lineage` edge namespace and `dataset_node` resolution. There is **no**
+`query_sql` tool. Traversal direction follows the edge orientation:
+
+* an **outgoing** neighborhood or `find_path` from a **target** reaches its
+  **sources** (upstream lineage — what this dataset derives from);
+* an **incoming** neighborhood from a **source** reaches its downstream
+  **consumers** (what derives from this dataset).
+
+Lineage edges are namespaced, so a code-only traversal filter excludes them and
+vice versa.
+
+### Feasibility posture and rollback
+
+* **Feasibility-only verdict.** v1 establishes that the mechanism works and
+  holds the fail-closed invariant. Product value is operator-asserted. Empirical
+  **fixture** recall feeds the Fork A GO/NO-GO checkpoint; **real-corpus**
+  prevalence remains a separate, currently *unmeasured*, future gate — it is not
+  supplied by the v1 fixture suite.
+* **Zero-false-edge rollback trigger.** The zero-false-edge invariant is a
+  release gate: **any confirmed false lineage edge disables/reverts lineage
+  indexing**. Observation window: the first 30 days of dogfood indexing
+  following the lineage subgraph's first release. Owner: the engram
+  graph-indexing maintainer (the on-call feature owner for the merged shipment),
+  who triages any reported false edge and executes the revert if confirmed.
+* **Automatic lineage backfill (no forced reparse).** `engram sync` and a
+  non-forced `index_workspace` skip unchanged files by content hash, but the
+  lineage skip is additionally gated by a persisted **freshness token** that
+  folds the extractor version and the trusted-authority config fingerprint. A
+  hash-unchanged notebook is re-extracted automatically whenever that token
+  differs — that is, when the extractor is upgraded **or** the Spark-authority
+  config changes — so notebooks indexed before this capability landed (or before
+  an authority remap) backfill their lineage on the next ordinary `engram sync`,
+  with no forced full reparse required. Once re-extracted the notebook is
+  re-stamped and durably skips again (not a perpetual reindex).
+
 ## Module boundaries
 
 | Area | Responsibility |

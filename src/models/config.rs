@@ -6,7 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
+
 use crate::models::evaluation::EvaluationConfig;
+use crate::models::lineage::LineageAuthorityContext;
 use crate::models::metrics::MetricsConfig;
 use crate::models::policy::PolicyConfig;
 use crate::models::retrieval_eval::RetrievalEvalConfig;
@@ -308,4 +311,163 @@ fn default_log_level() -> String {
 
 fn default_log_format() -> String {
     "pretty".to_owned()
+}
+
+/// Trusted-authority configuration for notebook data-lineage extraction (095-F).
+///
+/// Read from the `lineage:` section of the ingestion registry
+/// (`.engram/registry.yaml`). This is the config surface that closes cycle-5 F1:
+/// without it the live indexer has no trusted metastore/storage authority, so no
+/// `catalog.schema.table` or path literal can ever bind and lineage is
+/// unreachable in production. See `docs/architecture.md` (*Enabling lineage
+/// (operator configuration)*) for a worked YAML example.
+///
+/// Fail-closed (013-D / AR-01): an absent or empty section yields an **empty**
+/// [`LineageAuthorityContext`] via [`LineageConfig::to_authority_context`], so
+/// every dataset identity stays unresolved and **no edge** is emitted — never a
+/// bare-name guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LineageConfig {
+    /// Stable id of the trusted metastore/catalog authority.
+    ///
+    /// Embedded in every canonical `dataset_node` id so two metastores that
+    /// share a `catalog.schema.table` never collide (AR-01). An **empty** id
+    /// disables the table side entirely (every catalog is unmapped).
+    pub metastore_authority_id: String,
+    /// Catalog name → trusted metastore authority id.
+    ///
+    /// A catalog absent from this map is **unmapped** and fails closed. An empty
+    /// mapping value inherits [`LineageConfig::metastore_authority_id`], which is
+    /// the common single-metastore case.
+    pub catalog_authorities: BTreeMap<String, String>,
+    /// Default catalog for the metastore, bound to `metastore_authority_id`.
+    ///
+    /// Carried for future 1-/2-part qualification; v1 still **drops** 1-/2-part
+    /// names, so this only adds the default catalog to the trusted set.
+    pub default_catalog: Option<String>,
+    /// Default schema for the metastore.
+    ///
+    /// Carried for future qualification; unused by v1 resolution (fail-closed on
+    /// 1-/2-part names regardless).
+    pub default_schema: Option<String>,
+    /// Trusted storage-authority prefixes (e.g. `s3://bucket`,
+    /// `abfss://c@a.dfs.core.windows.net`).
+    ///
+    /// A path whose `scheme://authority` matches none of these fails closed.
+    /// Independent of the metastore id — paths resolve on the storage allowlist
+    /// alone.
+    pub storage_authorities: Vec<String>,
+}
+
+impl LineageConfig {
+    /// Build the fail-closed [`LineageAuthorityContext`] this config authorizes.
+    ///
+    /// The table side is enabled only when `metastore_authority_id` is set: each
+    /// configured catalog binds to its mapped authority id (inheriting
+    /// `metastore_authority_id` when the mapping value is empty), and
+    /// `default_catalog` (if any) also binds to it. The storage allowlist is
+    /// always carried through and governs paths independently. An empty config
+    /// yields an empty context that resolves nothing.
+    #[must_use]
+    pub fn to_authority_context(&self) -> LineageAuthorityContext {
+        let mut catalog_authority = BTreeMap::new();
+        if !self.metastore_authority_id.is_empty() {
+            for (catalog, authority) in &self.catalog_authorities {
+                if catalog.is_empty() {
+                    continue;
+                }
+                let resolved = if authority.is_empty() {
+                    self.metastore_authority_id.clone()
+                } else {
+                    authority.clone()
+                };
+                catalog_authority.insert(catalog.clone(), resolved);
+            }
+            if let Some(default_catalog) = self.default_catalog.as_deref() {
+                if !default_catalog.is_empty() {
+                    catalog_authority
+                        .entry(default_catalog.to_owned())
+                        .or_insert_with(|| self.metastore_authority_id.clone());
+                }
+            }
+        }
+        LineageAuthorityContext::new(catalog_authority, self.storage_authorities.clone())
+    }
+}
+
+#[cfg(test)]
+mod lineage_config_tests {
+    use super::LineageConfig;
+    use std::collections::BTreeMap;
+
+    fn cfg_with(metastore: &str, catalogs: &[(&str, &str)], storage: &[&str]) -> LineageConfig {
+        let mut catalog_authorities = BTreeMap::new();
+        for (catalog, authority) in catalogs {
+            catalog_authorities.insert((*catalog).to_owned(), (*authority).to_owned());
+        }
+        LineageConfig {
+            metastore_authority_id: metastore.to_owned(),
+            catalog_authorities,
+            default_catalog: None,
+            default_schema: None,
+            storage_authorities: storage.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    // AR-01: the same catalog.schema.table under two DIFFERENT metastore
+    // authorities canonicalizes to DISTINCT dataset_node ids (never a merge).
+    #[test]
+    fn cross_authority_distinctness_yields_distinct_ids() {
+        let a = cfg_with("metastore-a", &[("cat", "")], &[]).to_authority_context();
+        let b = cfg_with("metastore-b", &[("cat", "")], &[]).to_authority_context();
+        let ra = a.resolve_table("cat.sch.t").expect("A resolves");
+        let rb = b.resolve_table("cat.sch.t").expect("B resolves");
+        assert_ne!(
+            ra.id, rb.id,
+            "the same 3-part name under two metastores must be distinct nodes"
+        );
+        assert!(ra.id.contains("metastore-a"));
+        assert!(rb.id.contains("metastore-b"));
+    }
+
+    // AR-01: a catalog with no authority mapping resolves to NO authority, so
+    // NO node/edge is produced (fail-closed).
+    #[test]
+    fn unmapped_catalog_fails_closed() {
+        let ctx = cfg_with("m", &[("known", "")], &[]).to_authority_context();
+        assert!(
+            ctx.resolve_table("known.sch.t").is_some(),
+            "a mapped catalog still resolves"
+        );
+        assert!(
+            ctx.resolve_table("unknown.sch.t").is_none(),
+            "an unmapped catalog must fail closed"
+        );
+    }
+
+    // Fail-closed parity: with NO authority configured (default/empty section)
+    // the same reference produces ZERO table/path resolutions.
+    #[test]
+    fn empty_config_resolves_nothing() {
+        let ctx = LineageConfig::default().to_authority_context();
+        assert!(ctx.is_empty());
+        assert!(ctx.resolve_table("cat.sch.t").is_none());
+        assert!(ctx.resolve_path("s3://bucket/p").is_none());
+    }
+
+    // An empty metastore id disables the table side entirely even when catalogs
+    // are listed, while the storage allowlist still governs paths independently.
+    #[test]
+    fn absent_metastore_disables_tables_but_storage_is_independent() {
+        let ctx = cfg_with("", &[("cat", "auth")], &["s3://bucket"]).to_authority_context();
+        assert!(
+            ctx.resolve_table("cat.sch.t").is_none(),
+            "no metastore id => no trusted table authority"
+        );
+        assert!(
+            ctx.resolve_path("s3://bucket/data").is_some(),
+            "the storage allowlist governs paths independently of the metastore id"
+        );
+    }
 }
