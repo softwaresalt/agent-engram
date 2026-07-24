@@ -203,8 +203,18 @@ pub async fn index_notebook_source(
         let content_hash = compute_hash(content_bytes.as_slice());
 
         if existing_hashes.get(&rel_path).map(String::as_str) == Some(content_hash.as_str()) {
-            result.unchanged += 1;
-            continue;
+            // Freshness gate (U4b): a matching content hash only skips when the
+            // persisted lineage extractor version is also current. A stale
+            // version (an upgrade) or an absent one (a pre-stamp partial-write
+            // failure, cycle-7 I1) forces re-extraction, so an unchanged
+            // notebook is backfilled — then re-stamped, so it skips again next
+            // run (durable, not a perpetual reindex).
+            let version_current = queries.lineage_index_version(&rel_path).await?.as_deref()
+                == Some(CURRENT_EXTRACTOR_VERSION);
+            if version_current {
+                result.unchanged += 1;
+                continue;
+            }
         }
 
         let Some(extracted) = extract_notebook(content_text, &rel_path) else {
@@ -369,6 +379,12 @@ async fn persist_notebook_lineage(
 }
 
 /// Remove content records for notebook files that no longer exist on disk.
+///
+/// Also sweeps each deleted notebook's lineage scope (095-F U4b): the U1a′
+/// cascade removes its `lineage_edge_evidence`, GC's now-unevidenced
+/// `lineage_edge`s and orphaned `dataset_node`s, and deletes its
+/// `lineage_index_state` freshness row (AR-22) — while a `dataset_node` still
+/// evidenced by another notebook survives.
 pub async fn sweep_deleted_notebook_files(
     source: &ContentSource,
     workspace_root: &Path,
@@ -390,6 +406,7 @@ pub async fn sweep_deleted_notebook_files(
         queries
             .delete_content_records_by_scope(path, "notebook", &source.path)
             .await?;
+        queries.delete_lineage_by_scope(path).await?;
         removed += 1;
     }
 
