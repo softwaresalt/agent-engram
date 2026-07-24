@@ -592,10 +592,14 @@ pub(super) mod spark_lineage {
         read_string_literal(first, source)
     }
 
-    /// Extract the content of a plain (non-f, non-concatenated) string literal.
+    /// Extract the content of a plain (non-f, non-bytes, non-escaped) string
+    /// literal.
     ///
     /// Fails closed for f-strings (an `f`/`F` prefix or any `interpolation`
-    /// child) and for any node that is not a bare `string`.
+    /// child), for bytes literals (a `b`/`B` prefix — T2), for any literal
+    /// containing an escape sequence or backslash (T3, where the source spelling
+    /// would differ from the runtime value), and for any node that is not a bare
+    /// `string`.
     fn read_string_literal(node: Node<'_>, source: &str) -> Option<String> {
         if node.kind() != "string" {
             return None;
@@ -606,12 +610,30 @@ pub(super) mod spark_lineage {
             match child.kind() {
                 "string_start" => {
                     let prefix = node_text(child, source);
-                    if prefix.contains('f') || prefix.contains('F') {
+                    // Fail closed for f-strings and bytes literals: neither names a
+                    // plain `str` table/path the runtime would resolve (T2).
+                    if prefix.contains('f')
+                        || prefix.contains('F')
+                        || prefix.contains('b')
+                        || prefix.contains('B')
+                    {
                         return None;
                     }
                 }
-                "interpolation" => return None,
-                "string_content" => content = Some(node_text(child, source).to_owned()),
+                // An `interpolation` is an f-string fragment; an `escape_sequence`
+                // means the source spelling differs from the runtime string value
+                // (a wrong dataset identity, T3). Both fail closed rather than mint
+                // a mislabeled/guessed edge.
+                "interpolation" | "escape_sequence" => return None,
+                "string_content" => {
+                    let text = node_text(child, source);
+                    // A raw string keeps backslashes literally in `string_content`;
+                    // fail closed on any backslash for the same identity reason (T3).
+                    if text.contains('\\') {
+                        return None;
+                    }
+                    content = Some(text.to_owned());
+                }
                 _ => {}
             }
         }
@@ -763,6 +785,16 @@ pub(super) mod spark_lineage {
                 reason: "tree-sitter returned no parse tree for Python source".to_owned(),
             })
         })?;
+
+        // T1 (fail-closed): reject a cell whose parse tree contains any ERROR or
+        // missing node before collecting events. tree-sitter recovers malformed
+        // constructs (e.g. a bad-args call) into partial nodes that would
+        // otherwise join a read into a false edge; once the cell fails to parse
+        // cleanly its dataflow cannot be trusted. Mirrors the SQL extractor's
+        // `has_error()` guard (013-D).
+        if tree.root_node().has_error() {
+            return Ok(Vec::new());
+        }
 
         let mut events = Vec::new();
         collect_events(
@@ -1004,18 +1036,23 @@ pub(super) mod spark_lineage {
 
     /// Collect the simple-name targets of an assignment/loop target node.
     ///
-    /// Handles a bare `identifier` and flat tuple/list patterns; subscript and
-    /// attribute targets bind no simple name and yield nothing.
+    /// Handles a bare `identifier` and (recursively) nested tuple/list/starred
+    /// destructuring patterns; subscript and attribute targets bind no simple
+    /// name and yield nothing.
     fn collect_target_names(target: Node<'_>, source: &str) -> Vec<String> {
         match target.kind() {
             "identifier" => vec![node_text(target, source).to_owned()],
-            "pattern_list" | "tuple_pattern" | "list_pattern" | "tuple" | "list" => {
+            "pattern_list" | "tuple_pattern" | "list_pattern" | "tuple" | "list"
+            | "list_splat_pattern" | "list_splat" => {
+                // T4 (fail-closed): descend recursively so a nested destructuring
+                // rebind — e.g. `(x, (df, y)) = …` or `[a, *rest] = …` — invalidates
+                // every inner name. A missed rebind would leave a stale read binding
+                // and mint false lineage on a later `df.write`. Over-collecting is
+                // the safe direction (it only drops edges Python actually rebinds).
                 let mut names = Vec::new();
                 let mut cursor = target.walk();
                 for child in target.children(&mut cursor) {
-                    if child.kind() == "identifier" {
-                        names.push(node_text(child, source).to_owned());
-                    }
+                    names.extend(collect_target_names(child, source));
                 }
                 names
             }
@@ -1534,6 +1571,119 @@ pub(super) mod spark_lineage {
                 ))
                 .is_empty(),
                 "a match/case-body write is a branch scope and must emit no edge (N2)"
+            );
+        }
+
+        #[test]
+        fn u2b_malformed_python_cell_emits_no_edge_t1() {
+            // T1 (fail-closed): a cell whose parse tree has any error must emit no
+            // lineage. tree-sitter recovers a malformed write call (here trailing
+            // `,,` in the args) that would otherwise join the earlier read into a
+            // false edge — mirror the SQL extractor's `has_error()` guard (013-D).
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\",,)\n",
+                ))
+                .is_empty(),
+                "a malformed (recoverable) write call must emit no edge (T1)"
+            );
+            // A syntax error ANYWHERE in the cell also drops the well-formed parts:
+            // we cannot trust the cell's dataflow once it fails to parse cleanly.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                    "def broken(\n",
+                ))
+                .is_empty(),
+                "a parse error elsewhere in the cell drops all lineage (T1)"
+            );
+            // Control: the well-formed equivalent still emits its edge.
+            assert_eq!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .len(),
+                1,
+                "the well-formed control still emits its edge (T1 control)"
+            );
+        }
+
+        #[test]
+        fn u2b_bytes_string_literal_emits_no_edge_t2() {
+            // T2 (fail-closed): a bytes literal (`b"…"`) cannot name a `str` table
+            // or path at runtime, so it must not resolve to a dataset identity.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.table(b\"cat.sch.orders\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "a bytes-literal table arg must emit no edge (T2)"
+            );
+            // Control: the plain str form still resolves.
+            assert_eq!(
+                candidates_for(concat!(
+                    "df = spark.table(\"cat.sch.orders\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .len(),
+                1,
+                "a plain str table arg still resolves (T2 control)"
+            );
+        }
+
+        #[test]
+        fn u2b_escaped_string_literal_emits_no_edge_t3() {
+            // T3 (fail-closed): the extractor reads the source spelling, not the
+            // runtime string value, so an escape sequence would persist a WRONG
+            // dataset identity (`…da\u0074a` is `…data` at runtime). Fail closed on
+            // any backslash/escape rather than mint a mislabeled edge.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/da\\u0074a\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "an escaped read literal must emit no edge (T3)"
+            );
+            // Control: the decoded literal spelled plainly still resolves.
+            assert_eq!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/data\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .len(),
+                1,
+                "a plain read literal still resolves (T3 control)"
+            );
+        }
+
+        #[test]
+        fn u2b_nested_destructuring_rebind_breaks_chain_t4() {
+            // T4 (fail-closed): a nested destructuring rebind of `df` invalidates
+            // the earlier read binding, so a later `df.write` must NOT join the
+            // stale read. Missing the nested target would mint false lineage.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "(x, (df, y)) = values\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "a nested rebind of df must break the read→write chain (T4)"
+            );
+            // Control: an unbroken read→write chain still emits its edge.
+            assert_eq!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .len(),
+                1,
+                "an unbroken chain still emits its edge (T4 control)"
             );
         }
 

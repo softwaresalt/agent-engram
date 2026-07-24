@@ -185,6 +185,42 @@ proves the mechanism end-to-end and is intentionally narrow. Its value as a
 product surface is operator-asserted, not yet a shipped guarantee (see
 *Feasibility posture* below).
 
+### Enabling lineage (operator configuration)
+
+Lineage is **disabled by default**: with no trusted authorities configured the
+extractor resolves nothing and emits **zero edges** (fail-closed). To activate
+the production path, declare the trusted metastore and storage authorities in the
+`lineage:` section of `.engram/registry.yaml`:
+
+```yaml
+lineage:
+  # Stable id of the trusted metastore authority. Embedded in every canonical
+  # table dataset_node id so identically named tables under different metastores
+  # never collide (AR-01). Empty => the table side is disabled entirely.
+  metastore_authority_id: prod-metastore
+  # Catalog name -> trusted metastore authority id. A catalog absent from this
+  # map is unmapped and fails closed. An empty value inherits
+  # metastore_authority_id (the common single-metastore case).
+  catalog_authorities:
+    main: prod-metastore
+    sales: sales-metastore
+  # Trusted storage-authority prefixes (scheme://authority). A path whose
+  # authority matches none of these fails closed. Independent of the metastore —
+  # paths resolve on this allowlist alone.
+  storage_authorities:
+    - s3://prod-bucket
+    - abfss://container@account.dfs.core.windows.net
+```
+
+**Empty-config fail-closed behavior.** An absent `lineage:` section, an empty
+`metastore_authority_id`, or an empty `storage_authorities` list each disables
+its respective side: an unmapped catalog can never bind a `catalog.schema.table`
+and an untrusted storage prefix can never bind a path, so **no edge** is ever
+emitted from unconfigured authorities — never a bare-name guess. Changing this
+config re-stamps the authority-config fingerprint, so already-indexed notebooks
+backfill their lineage on the next ordinary `engram sync` (see *Feasibility
+posture and rollback*).
+
 ### What v1 emits
 
 v1 emits a `lineage_derives_from` edge only between two fully qualified,

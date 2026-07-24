@@ -315,11 +315,12 @@ fn default_log_format() -> String {
 
 /// Trusted-authority configuration for notebook data-lineage extraction (095-F).
 ///
-/// Read from the `[lineage]` section of the ingestion registry
+/// Read from the `lineage:` section of the ingestion registry
 /// (`.engram/registry.yaml`). This is the config surface that closes cycle-5 F1:
 /// without it the live indexer has no trusted metastore/storage authority, so no
 /// `catalog.schema.table` or path literal can ever bind and lineage is
-/// unreachable in production.
+/// unreachable in production. See `docs/architecture.md` (*Enabling lineage
+/// (operator configuration)*) for a worked YAML example.
 ///
 /// Fail-closed (013-D / AR-01): an absent or empty section yields an **empty**
 /// [`LineageAuthorityContext`] via [`LineageConfig::to_authority_context`], so
