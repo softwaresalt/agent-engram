@@ -104,17 +104,17 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D).
 | Source requirement (spike / stash FE8B3B2D) | Implementation action |
 |---|---|
 | Module namespace `foo/bar.py` → `foo.bar` (only when every ancestor is a **provable regular package**) | T1: `python_module_path_for_file(rel_path, is_regular_package)` (predicate from the indexed `__init__.py` set — **no config source**, Q3); REJECT `src/`-roots / implicit PEP 420 namespace / `__init__.py`; **source-root-aware resolution = v1 non-goal** (M5, Q3) |
-| Symbol-level import bindings (Python analogue of Rust `UseGraph`) | T2: `extract_python_import_bindings` records `(canonical_path, kind∈{ModuleImport, FromImportSymbol})` (R2) and fails closed on competing/duplicate bindings (M1) |
-| Scope-correct bindings — function-local imports must not leak; module vs function scope; **function-local import ordering** | T2b: scoped binding model (M1) + **order-aware function-local imports — a name bound by a function-local import is local for the whole body, so calls *before* the import fail closed (Y1)** |
+| Symbol-level import bindings (Python analogue of Rust `UseGraph`) | T2: `extract_python_import_bindings` records `(canonical_path, kind∈{ModuleImport, FromImportSymbol}, source_position)` (R2 + **F14 positions**) and fails closed on competing/duplicate bindings (M1); a module-scope **`from N import *` is recorded as a positioned order-aware invalidator marker (F4)**, not a binding |
+| Scope-correct bindings — function-local imports must not leak; module vs function scope; **function-local import ordering**; **enclosing-function (closure) scope** | T2b: scoped binding model (M1) + **order-aware function-local imports — a name bound by a function-local import is local for the whole body, so calls *before* the import fail closed (Y1)** + **lexical closure chain: walk enclosing-function scopes (honoring `global`/`nonlocal`) before module scope, or fail closed when an enclosing function binds the name (F5)**; a pre-import function-local use is a **poison/tombstone that forces fail-closed (F8)**, never a fall-through to module scope |
 | Register the `unit_python_canonical` test target so verification runs | T1: `Cargo.toml` `[[test]]` entry (M3) |
-| Populate `function_meta.canonical_path` for Python module-level defs | T3: Python branch in `canonical_path_for_function` (reuses `upsert_function_with_canonical`) |
+| Populate `function_meta.canonical_path` for Python module-level defs | T3: Python branch in `canonical_path_for_function` (reuses `upsert_function_with_canonical`); **package-topology changes (add/remove `__init__.py`) reindex/invalidate affected descendants past the content-hash skip (C6-1)** |
 | Emit `module.func()` as a canonical-eligible staged call (stop dropping it); `self`/`cls` stay dropped | T4: `python.rs` emits `is_qualified:true, raw_qualifier=<receiver>, qualifier_kind="module"`; excludes `self`/`cls` (M2) |
-| Route Python cross-file bare + module-qualified calls into canonical staging — on **both** indexing arms | T5a: **both** Calls-consumer arms — full-index (851-908) **and sync (1573-1643)** — + `should_stage_provenance_call` (language-dispatched); the sync arm's name-only `put_staged_call` (1639) also routes through provenance for Python so T7 re-extraction never strands edges (X1, same class as Q2/R1); **no-module-context bare calls stay recall-preserving via the legacy matcher (Y3, resolved in T5b)** |
-| Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call`, dispatched by the T2 binding **kind** (R2); **guard-agnostic — the T5c shadow guard wraps it downstream (R3)**; when caller `M` has **no provable module namespace** (T1 `None`), a bare call falls back to the **legacy name-only unique-match** (recall preserved, Y3) |
-| Fail closed when any rebind shadows an imported **module receiver OR bare callee** name | T5c: drop `mod.func()` (receiver) **and** bare `parse()` (Q1) when the name is re-bound by a **later** binding (**after** the import in effective order — Y2) in the applicable scope — assignment/augmented/`for`/`with`/`except`/walrus/param/**`def`/`class`/`del`/`match`-case (X4)**/module-level (M1, Q1, X4); a rebind **before** the import does not invalidate it (Y2) |
+| Route Python cross-file bare + module-qualified calls into canonical staging — on **both** indexing arms; **in-file shadowed calls must not short-circuit to a direct edge** | T5a: **both** Calls-consumer arms — full-index (851-908) **and sync (1573-1643)** — + `should_stage_provenance_call` (language-dispatched); the sync arm's name-only `put_staged_call` (1639) also routes through provenance for Python so T7 re-extraction never strands edges (X1, same class as Q2/R1); **the in-file `(Some,Some)` direct-edge shortcut (900-902) is made import/shadow-aware — a same-file callee that is ALSO a module import is routed to `python_bare` staging so last-binding-wins is reachable (F2, root-defect); T5a OWNS this `code_graph.rs:896-908` change on both arms**; **no-target bare calls stay recall-preserving via the legacy matcher (Y3/F3, resolved in T5b)** |
+| Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call`, dispatched by the T2 binding **kind** (R2); **guard-agnostic — the T5c shadow guard wraps it downstream (R3)**; when T5b **derives no canonical target** (T1 `None` **or** provable-namespace-but-unbound: star/re-export/relative — **F3**), the bare call falls back to the **legacy name-only unique-match via a public language-scoped name→IDs helper exposed in `cozo_queries.rs` (F9)** (recall preserved, non-unique still fails closed) |
+| Fail closed when any rebind shadows an imported **module receiver OR bare callee** name | T5c: drop `mod.func()` (receiver) **and** bare `parse()` (Q1) when the name is re-bound by a **later** binding — **after the WINNING binding T5b resolved to (import OR def), order-aware anchor (F1)** — in the applicable scope — assignment/augmented/`for`/`with`/`except`/walrus/param/**`def`/`class`/`del`/`match`-case (X4)**/**later `from N import *` (F4)**/module-level (M1, Q1, X4); a rebind **before** the winner does not invalidate it, so **`from bar import parse; def parse(); parse()` → `M.parse` SURVIVES (def-after-import, F1)** just as `def parse(); from bar import parse; parse()` → `bar.parse` (Y2) |
 | Existing indexes must backfill Python canonical **edges** after upgrade, **in one operation** | T7: a **separate `PYTHON_CANONICAL_EXTRACTION_VERSION` marker** (NOT `content_hash`, R1) triggers re-extraction that **also runs the canonical resolution pass in the same step** (escalate sync→full path or invoke the post-pass) / `index --force`; upgrade regression asserts the **resolved edge** and that `content_hash` staleness detection is preserved (M4, Q2, R1) |
 | Fail closed on star / relative / package-root / re-export / dynamic / duplicate | T1–T2 return no module/binding; T3 returns `""`; T5b singleton check drops duplicates |
-| No **canonical** schema change; reuse `function_ids_by_canonical_path` + staging queries | No `function_meta`/`calls_edge`/staging schema change (verified by T5b); T7's extraction-version marker is orthogonal index-state, not the canonical model (R1) |
+| No **canonical** schema change; reuse `function_ids_by_canonical_path` + staging queries | No `function_meta`/`calls_edge`/staging schema change (verified by T5b); **T5b's F9 name→IDs helper is a read-only extraction of the resolver's inline singleton, not a schema change**; T7's extraction-version marker is orthogonal index-state, not the canonical model (R1) |
 | Do NOT resolve instance-method dispatch; do NOT touch FF7DE872 | Out of scope; documented in T6 |
 | Document capability + v1 non-goals | T6 |
 
@@ -122,25 +122,44 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D).
 
 **Chosen: Option A (mirror Rust).** Route *all* canonical-eligible Python calls
 through **provenance staging** and resolve them in the **existing canonical
-post-pass**, leaving the name-only `reresolve_calls_edges` bare-name pass as an
-**untouched conservative fallback** and keeping `cozo_queries.rs` change-free:
+post-pass**, keeping the name-only `reresolve_calls_edges` bare-name pass as the
+**conservative fallback** for empty-qualifier calls. T5b additionally invokes a
+**small public language-scoped name→IDs singleton helper** exposed in
+`cozo_queries.rs` (F9 — the pre-existing singleton is inline-private CozoScript
+inside `reresolve_calls_edges` at `cozo_queries.rs:2191-2205,2263-2270` and filters
+out `python_bare` rows at `2222-2227`, so it cannot be reused as-is; T5b extracts it
+into a shared method and calls it for its no-target fallback — a **helper exposure,
+not a schema change**):
 
-* In-file bare calls (caller+callee resolve in the same file) stay a **`direct`
-  edge** — unchanged (code_graph.rs:900-903).
+* In-file bare calls stay a **`direct` edge ONLY when the callee is NOT also shadowed
+  at module scope (F2).** The consumer at `code_graph.rs:896-908` resolves a bare
+  callee against the current file's symbols *before* any staging, so a same-file `def`
+  short-circuits to a **direct `M.callee` edge (`(Some,Some)`→`create_calls_edge`,
+  900-902)** — which for `def parse(); from bar import parse; parse()` mints a **false
+  `M.parse` edge** (the frozen rule requires `bar.parse`) *and* makes T5b's
+  last-binding-wins branches **unreachable** (a same-file def never reaches staging).
+  **T5a therefore makes this decision import/shadow-aware for Python (F2):** when a
+  same-file callee name is **also a module-level import binding** (predicate from T2),
+  the direct-edge shortcut is **skipped** and the call is routed through `python_bare`
+  staging so T5b/T5c adjudicate last-binding-wins. A same-file callee with **no**
+  competing module import keeps the direct-edge fast path. This change is on **both**
+  arms (`code_graph.rs:896-908` full-index and `1573-1643` sync) and **T5a owns it**.
 * Cross-file **bare** Python calls (callee unresolved in-file) are staged via
   `put_staged_call_with_provenance` with `qualifier_kind="python_bare"`,
   `raw_qualifier=""` — instead of the current name-only `put_staged_call`. Because
   the bare-name pass filters `qualifier_kind.is_empty()`, these are handled *only*
   by the canonical pass (no double-processing).
-* **No-module-context recall (Y3):** when the caller has **no provable module
-  namespace** (T1 rejects `src/`-root / PEP 420 namespace / `__init__.py`), the
-  bare call is **not** canonical-resolved — T5b falls back to the **legacy
-  name-only unique-match** (the same `function_ids_by_name` singleton the
-  `reresolve_calls_edges` fallback uses), preserving today's recall for exactly
-  those calls while never emitting a false module-qualified edge. Without this,
-  the `python_bare` stamp would exclude the call from the legacy pass *and* leave
-  T5b with no context → a dropped edge (a recall regression the `python_bare`
-  routing would otherwise introduce).
+* **No-target legacy fallback (Y3 + F3):** whenever T5b **derives no canonical
+  target** for a `python_bare` call — either because the caller has no provable module
+  namespace (T1 `None`) **or** because the module namespace is provable but the callee
+  has **no import binding and no in-module def** (star-imported / re-exported / relative
+  / otherwise resolvable today only by the global name-only singleton, **F3**) — T5b
+  falls back to the **legacy name-only unique-match** via the shared language-scoped
+  name→IDs helper (F9), preserving today's recall and never emitting a false
+  module-qualified edge; a non-unique name still fails closed. Gating the fallback on
+  `T1==None` alone would DROP the provable-namespace-but-unbound calls, because the
+  `python_bare` stamp excludes them from `reresolve_calls_edges`
+  (`qualifier_kind.is_empty()` filter, `cozo_queries.rs:2222-2227`) — the F3 regression.
 * `module.func()` calls are staged with `qualifier_kind="module"`,
   `raw_qualifier=<receiver>`.
 * The canonical post-pass computes the target canonical path from the caller's
@@ -148,8 +167,11 @@ post-pass**, leaving the name-only `reresolve_calls_edges` bare-name pass as an
   `function_ids_by_canonical_path` with the existing `ids.len()==1` fail-closed.
 
 Rejected Option B (canonical fallback inside `reresolve_calls_edges`): more
-surgical but edits the load-bearing, operator-gated bare-name resolver in
-`cozo_queries.rs`; higher blast radius; harder to keep byte-identical for Rust.
+surgical but rewrites the load-bearing, operator-gated bare-name resolver in
+`cozo_queries.rs`; higher blast radius; harder to keep byte-identical for Rust. (F9's
+helper exposure is a **minimal extraction** of that resolver's inline singleton into a
+shared read-only method — it does **not** alter the resolver's logic, distinct from
+Option B's rewrite.)
 
 ## Implementation Units
 
@@ -198,15 +220,23 @@ Every unit authors its failing test(s) first (RED), then the implementation
 
 * **New**: `src/services/parsing/python_canonical/bindings.rs`.
   `extract_python_import_bindings(source) -> ImportBindings` mapping a **local
-  name** to its **canonical origin _and binding kind_ (R2)** — a
-  `(canonical_path, kind)` where `kind ∈ {ModuleImport, FromImportSymbol}` — built by
-  walking tree-sitter `import_statement` / `import_from_statement` nodes:
-  * `from N import name` → `name → ("N.name", FromImportSymbol)`; `from N import name
-    as p` → `p → ("N.name", FromImportSymbol)`.
-  * `import a.b as c` → `c → ("a.b", ModuleImport)`; `import a.b` → `a → ("a",
-    ModuleImport)` (root-name module binding).
-  * **No binding (fail closed)** for: `from N import *` (star), relative imports
-    (`from . import x`, leading-dot module), `importlib`/`__import__`/dynamic.
+  name** to its **canonical origin, binding kind, _and source position_ (R2 + F14)** — a
+  `(canonical_path, kind, position)` where `kind ∈ {ModuleImport, FromImportSymbol}` —
+  built by walking tree-sitter `import_statement` / `import_from_statement` nodes. The
+  **position** (byte/line order) is required by T5c's order-aware winner anchor (F1) and
+  by the F4 star invalidator; every binding record carries it (F14).
+  * `from N import name` → `name → ("N.name", FromImportSymbol, pos)`; `from N import
+    name as p` → `p → ("N.name", FromImportSymbol, pos)`.
+  * `import a.b as c` → `c → ("a.b", ModuleImport, pos)`; `import a.b` → `a → ("a",
+    ModuleImport, pos)` (root-name module binding).
+  * **No binding (fail closed)** for: relative imports (`from . import x`, leading-dot
+    module), `importlib`/`__import__`/dynamic.
+  * **Module-scope `from N import *` (star) → a positioned _order-aware invalidator
+    marker_, not a binding (F4).** T2 records the star's module-scope position so T5c
+    can fail closed when a star occurs **after** the winning binding (`from bar import
+    parse; from n import *; parse()` → **no** edge — the later star may rebind `parse`).
+    A star **before** the winner does not invalidate it. The star itself never mints a
+    binding (it stays a fail-closed drop for its own name resolution).
   * **Competing / duplicate binding → fail closed (M1).** If the **same local
     name** is bound by 2+ import statements in the same scope
     (duplicate/re-import), mark it **ambiguous** → **no** binding. A flat
@@ -218,10 +248,13 @@ Every unit authors its failing test(s) first (RED), then the implementation
     mis-resolved as a module and mints a wrong edge.
 * **Files**: `python_canonical/bindings.rs`, `python_canonical/mod.rs` (re-export),
   `tests/unit/python_canonical_test.rs`.
-* **Tests (RED→GREEN, 4)**: `from p import f`→`(p.f, FromImportSymbol)` **and** `from p
-  import f as g`→`(p.f, FromImportSymbol)`; `import a.b as c`→`(a.b, ModuleImport)`
-  (kind asserted, R2); `from p import *` **and** `from . import x` → **no** binding;
-  competing `import p` + `from q import p` → **no** binding (M1).
+* **Tests (RED→GREEN, 4)**: `from p import f`→`(p.f, FromImportSymbol, pos)` **and**
+  `import a.b as c`→`(a.b, ModuleImport, pos)` (kind + position asserted, R2/F14);
+  `from . import x` → **no** binding, **and** a module-scope `from p import *` records a
+  positioned **invalidator marker** (F4 — not a binding); **F4 order-aware** — a star
+  **after** a `from bar import parse` marks `parse` invalidatable, a star **after** a
+  `def parse` likewise (star-after-def), while a star **before** does not; competing
+  `import p` + `from q import p` → **no** binding (M1).
 * **Verification**: `cargo test --test unit_python_canonical` (target registered in
   T1); clippy; fmt.
 * **Milestone**: symbol-level bindings; star/relative/dynamic **and** competing
@@ -229,33 +262,47 @@ Every unit authors its failing test(s) first (RED), then the implementation
 
 ### T2b — Scope-aware binding isolation (domain: code)
 
-* **Why (M1, Y1)**: a file-wide flat binding map **leaks a function-local import into
+* **Why (M1, Y1, F5)**: a file-wide flat binding map **leaks a function-local import into
   other callers** and cannot represent module-level rebinding. Bindings must be
   scoped: module-level imports apply to every function; a function-local import
   applies **only** within its own function and must never leak to a sibling. **And a
   function-local import binds its name for the *whole* function body (Python
   `UnboundLocalError` semantics), so a call *before* the import must fail closed (Y1).**
+  **A two-level (module/function) model is insufficient (F5): Python resolves names
+  through the *lexical closure chain* — the enclosing-function scopes between a nested
+  function and the module — so a name bound by an enclosing function must be seen by the
+  inner call, or the resolution is wrong (precision) / wrongly dropped (recall).**
 * **Changes**: extend `bindings` (T2) to a **scoped model** — module-level bindings
-  + per-function-scope bindings — so a resolver consults a caller function's local
-  bindings first, then module-level. A name whose applicable scope holds a competing
-  binding fails closed (reuses the M1 rule). Nested-function locals do not leak to
-  the enclosing scope. **Track each function-local import's position and each call
-  site's position: a name bound by a function-local import LATER in the function
-  emits NO binding for call sites BEFORE that import (fail closed — UnboundLocalError);
-  only calls AFTER the import resolve. When control flow makes the ordering uncertain,
-  fail closed (Y1).**
+  + a **lexical closure chain** of per-function scopes (innermost → enclosing →
+  module) — so a resolver consults a caller function's local bindings, then each
+  **enclosing function** scope, then module-level, **honoring `global` / `nonlocal`
+  declarations** (which redirect a name to the module / nearest-enclosing scope). A name
+  whose applicable scope holds a competing binding fails closed (reuses the M1 rule).
+  Nested-function locals do not leak to the enclosing scope. **When an enclosing function
+  binds the name in a way the chain cannot resolve unambiguously, fail closed (F5).**
+  **Track each function-local import's position and each call site's position: a name
+  bound by a function-local import LATER in the function emits NO binding for call sites
+  BEFORE that import (fail closed — UnboundLocalError). A pre-import function-local use is
+  a poison/tombstone that forces fail-closed — it must NOT fall through to the module
+  scope (F8). Only calls AFTER the import resolve. When control flow makes the ordering
+  uncertain, fail closed (Y1).**
 * **Files**: `python_canonical/bindings.rs`, `tests/unit/python_canonical_test.rs`.
 * **Tests (RED→GREEN, 4)**: **(1)** a function-local `from x import f` is visible for a
   call **after** it, but a call **before** the function-local import
-  (`def g(): f(); from x import f`) gets **no** binding (fail closed — Y1
-  UnboundLocalError); **(2)** the **same** call site in a sibling function that lacks
-  the import gets **no** binding (no leak, M1); **(3)** a module-level import is visible
-  in all functions **and** a nested-function local import does not leak to its enclosing
-  function; **(4)** when a call's position relative to a function-local binding can't be
-  established (branchy control flow) → **no** edge (fail closed, Y1).
+  (`def g(): f(); from x import f`) gets **no** binding — a poison/tombstone that does
+  **not** fall through to a module-level `f` (fail closed — Y1/F8); **(2)** the **same**
+  call site in a sibling function that lacks the import gets **no** binding (no leak, M1);
+  **(3) closure chain (F5)** — a nested function's bare call resolves against an
+  **enclosing function's** import binding (walk the chain), while a nested-function local
+  import does **not** leak to its enclosing function, and a `nonlocal`/`global`-declared
+  name is redirected to the correct scope; **(4)** when a call's position relative to a
+  function-local binding can't be established (branchy control flow) **or** an enclosing
+  scope binds the name ambiguously → **no** edge (fail closed, Y1/F5).
 * **Verification**: `cargo test --test unit_python_canonical`; clippy; fmt.
-* **Milestone**: bindings are scope-correct **and order-correct**; function-local imports
-  cannot leak, and a call preceding a function-local import fails closed.
+* **Milestone**: bindings are scope-correct (**module + full closure chain, F5**) **and
+  order-correct**; function-local imports cannot leak, a call preceding a function-local
+  import fails closed (poison, F8), and enclosing-function binds are honored or fail
+  closed.
 
 ### T3 — Python canonical_path populator (domain: code)
 
@@ -268,17 +315,29 @@ Every unit authors its failing test(s) first (RED), then the implementation
   derived once from the already-indexed file set (Q3: **no `CodeGraphConfig` change,
   no source-root config**). Reuse `upsert_function_with_canonical` unchanged (no DB
   change).
+  * **Package-topology invalidation (C6-1):** the regular-package predicate depends on
+    **other files** (`__init__.py` presence in every ancestor dir), but sync
+    **content-hash-skips unchanged descendants** (`code_graph.rs:1252-1263`), so adding
+    or removing a `p/__init__.py` would leave **stale** `canonical_path` values on
+    descendant defs (false/missing edges). T3 must **treat an add/remove of any
+    `__init__.py` as a package-topology change that reindexes/invalidates the affected
+    descendants** (recompute their canonical paths past the content-hash skip), for
+    **both** the add transition (namespace/`src` → regular package) and the delete
+    transition (regular package → namespace).
 * **Files**: `code_graph.rs`, `tests/integration/code_graph_test.rs`
   (`integration_code_graph`).
 * **Tests (RED→GREEN, 4)**: a `.py` def in a proven regular-package chain gets
-  `canonical_path="mod.f"`; an `__init__.py` def gets `""`; a def under a `src/`
+  `canonical_path="mod.f"`; an `__init__.py` def gets `""` while a def under a `src/`
   source-root or an implicit PEP 420 namespace package gets `""` (Q3 fail-closed);
   two same-file defs of `f` both persist their (identical) canonical path — proving
   the **duplicate** state the resolver later fails closed on (ties to FF7DE872
-  non-subsumption).
+  non-subsumption); **C6-1 topology transitions** — **adding** `p/__init__.py`
+  recomputes descendant canonical paths from `""`→`p.mod.f` and **removing** it
+  invalidates them back to `""`, both past the content-hash skip.
 * **Verification**: `cargo test --test integration_code_graph`; clippy; fmt.
 * **Milestone**: Python defs carry exact canonical identity only on a provable
-  regular-package chain; every other layout stays `""` (fail closed).
+  regular-package chain; every other layout stays `""` (fail closed); **package-topology
+  edits invalidate stale descendant canonical paths (C6-1).**
 
 ### T4 — Emit canonical-eligible Python calls with provenance (domain: code)
 
@@ -315,20 +374,40 @@ Every unit authors its failing test(s) first (RED), then the implementation
   * for Python **bare** calls whose callee is unresolved in-file, stage via
     `put_staged_call_with_provenance` with `qualifier_kind="python_bare"` instead
     of the name-only `put_staged_call` — **on both arms** (the sync arm's bare-call
-    `put_staged_call` at 1639 must also route through provenance for Python). In-file
-    bare calls remain `direct` edges.
+    `put_staged_call` at 1639 must also route through provenance for Python).
+  * **In-file bare calls are import/shadow-aware (F2, root-defect fix):** the
+    `(Some,Some)` branch at `code_graph.rs:900-902` currently mints a **direct
+    `M.callee` edge** whenever the callee resolves against the current file's symbols —
+    *before* any `python_bare` staging. For `def parse(); from bar import parse;
+    parse()` that emits a **false direct `M.parse` edge** (frozen rule requires
+    `bar.parse`) and renders T5b's last-binding-wins branches **unreachable**. **T5a
+    owns modifying `code_graph.rs:896-908` on BOTH arms** so that, for Python, a
+    same-file callee that is **also a module-level import binding** (predicate supplied
+    by T2's `ImportBindings`) is **NOT** short-circuited to a direct edge — it is routed
+    through `python_bare` staging so T5b/T5c adjudicate. A same-file callee with **no**
+    competing module import keeps the `direct`-edge fast path unchanged. The prior plan
+    claim that this path is "unchanged (code_graph.rs:900-903)" is **removed**.
   * **Rust behavior is untouched** on both arms (dispatch guards every new branch on
     `Language::Python`).
-  * **No-module-context recall (Y3):** T5a still stamps `python_bare` for cross-file
-    bare calls on both arms; recall for callers whose layout **T1 rejects** (`src/`-root
-    / PEP 420 namespace / `__init__.py`) is **preserved by T5b**, which routes such
-    no-context bare calls to the **legacy name-only unique-match** (no regression, no
-    false module edge). The recall is asserted in T5b's tests, not restaged here.
+  * **No-module-context / no-binding recall (Y3 + F3):** T5a still stamps
+    `python_bare` for cross-file bare calls on both arms; recall is **preserved by
+    T5b**, which routes any bare call for which it **derives no canonical target** — a
+    layout T1 rejects (`src/`-root / PEP 420 namespace / `__init__.py`) **or** a
+    provable-namespace module whose callee has no import binding and no in-module def
+    (star / re-export / relative, **F3**) — to the **legacy name-only unique-match** (no
+    regression, no false module edge). The recall is asserted in T5b's tests, not
+    restaged here.
 * **Files**: `code_graph.rs` (two consumer sites), `tests/integration/code_graph_test.rs`.
+* **Depends on T2** (needs `ImportBindings` to know whether a same-file callee is also
+  a module import for the F2 shadow-aware decision) in addition to T4 — the **one new
+  DAG edge** this cycle adds.
 * **Tests (RED→GREEN, 4)**: Python cross-file bare call produces a staged row with
   `qualifier_kind=="python_bare"` **on both the full-index and sync arms** (the sync
   arm no longer name-only-stages Python bare calls); Python `mod.func()` produces a
-  staged row with `qualifier_kind=="module"`; in-file bare Python call still yields a
+  staged row with `qualifier_kind=="module"`; **F2** — an in-file bare call whose callee
+  has a same-file `def` **and** a competing module import (`def parse; from bar import
+  parse; parse()`) is **routed to `python_bare` staging (no direct `M.parse` edge)** on
+  both arms, whereas an in-file callee with **no** competing import still yields a
   `direct` edge; a Rust cross-file bare call is **still** name-only staged on both arms
   (regression).
 * **Verification**: `cargo test --test integration_code_graph`; existing Rust
@@ -359,20 +438,30 @@ Every unit authors its failing test(s) first (RED), then the implementation
     binding (`import pkg` / `import a.b as c`) → `<module>.callee`; a
     **`FromImportSymbol`** receiver (`from pkg import parse; parse.tokenize()`) is an
     attribute access on an object, **not** a module → fail closed (R2); else fail closed.
-  * **No-module-context fallback (Y3):** if `python_ctx_for_staged_file` yields **no
-    module path** (T1 rejected the caller's `src/`-root / PEP 420 namespace /
-    `__init__.py` layout), T5b does **not** drop the bare call — it applies the
-    **existing legacy name-only unique-match** (the same `function_ids_by_name`
-    singleton the `reresolve_calls_edges` fallback uses), preserving today's recall
-    with **no** false module-qualified edge; a non-unique name still fails closed
-    (legacy parity). Canonical (binding-kind) resolution applies **only** when a module
-    path exists. The legacy name-only edge is a name-only edge (not binding-derived), so
-    it is **outside the T5c canonical shadow-guard scope** — unchanged legacy semantics.
+  * **No-target legacy fallback (Y3 + F3):** T5b applies the **legacy name-only
+    unique-match** whenever it **derives no canonical target** for the bare call — **not
+    only** when `python_ctx_for_staged_file` yields no module path (T1 rejected the
+    `src/`-root / PEP 420 / `__init__.py` layout), **but also** when a module path
+    exists yet the callee has **no import binding and no in-module def** (star-imported /
+    re-exported / relative — **F3**). Gating the fallback on `T1==None` alone would DROP
+    the provable-namespace-but-unbound calls: the `python_bare` stamp excludes them from
+    `reresolve_calls_edges` (`qualifier_kind.is_empty()` filter,
+    `cozo_queries.rs:2222-2227`), stranding a unique cross-file edge that resolves
+    **today** — the F3 recall regression. The fallback uses a **public language-scoped
+    name→IDs singleton helper (F9)** extracted from the inline-private CozoScript at
+    `cozo_queries.rs:2191-2205,2263-2270`; a non-unique name still fails closed (legacy
+    parity). The legacy name-only edge is a name-only edge (not binding-derived), so it
+    is **outside the T5c canonical shadow-guard scope** — unchanged legacy semantics.
   then reuse the existing `canonical_index.get(&target)` **singleton** match
   (`ids.len()==1`) — dropping on zero, ambiguous, or **duplicate** canonical path.
-  No `cozo_queries.rs` change.
-* **Files**: `code_graph.rs`, `tests/integration/calls_recall_acceptance_test.rs`
-  (`integration_calls_recall_acceptance`).
+  **F9: T5b adds a small public `function_ids_by_name`-style language-scoped helper in
+  `cozo_queries.rs`** (extraction of the resolver's inline singleton — a read-only
+  helper exposure, **not** a schema change); the earlier "No `cozo_queries.rs` change"
+  claim is **removed**.
+* **Files (3)**: `code_graph.rs`, `cozo_queries.rs` (the F9 helper exposure),
+  `tests/integration/calls_recall_acceptance_test.rs`
+  (`integration_calls_recall_acceptance`). (Three files, like T1's four — acceptable for
+  a single-domain code task; ≤4 scenarios preserved.)
 * **Tests (RED→GREEN, 4)** — **no shadowing here (R3; shadow cases live in T5c)**: two
   modules both define `parse`; caller does `bar.parse()` with `import bar` → edge
   resolves to **bar's** exact `parse` id (target-identity, not row-existence); caller
@@ -382,16 +471,18 @@ Every unit authors its failing test(s) first (RED), then the implementation
   vectors** — a **`from pkg import parse`** receiver used as `parse.tokenize()` → **no**
   module edge (R2 kind), **and** ambiguity (**star** `from bar import *` then bare
   `parse()` with 2+ `parse`, **and** two same-file `parse` defs / duplicate canonical
-  path) → **no** canonical edge (FF7DE872 stays unfixed here); **no-module-context recall
-  (Y3)** — a **unique** cross-file bare call in a T1-rejected layout (`src/`-root or PEP
-  420 namespace) still gets its **legacy name-only** edge (recall preserved), while a
-  non-unique one still fails closed (legacy parity).
+  path) → **no** canonical edge (FF7DE872 stays unfixed here); **no-target legacy
+  recall (Y3 + F3)** — a **unique** cross-file bare call still gets its **legacy
+  name-only** edge in **both** the T1-rejected-layout case (`src/`-root / PEP 420) **and
+  the provable-namespace-but-unbound case** (star / re-export / relative with no
+  binding), while a non-unique one still fails closed (legacy parity).
 * **Verification**: `cargo test --test integration_calls_recall_acceptance --test
   integration_code_graph`; clippy; fmt.
 * **Milestone**: cross-module same-name Python calls resolve to exact targets **via the
-  T2 binding kind**; every ambiguity fails closed; **no-module-context bare calls keep
-  their legacy name-only recall (Y3)**. **Shadow-rebind handling is deferred to T5c
-  (R3), which wraps this resolution with an order-aware guard (Y2).**
+  T2 binding kind**; every ambiguity fails closed; **every bare call for which T5b
+  derives no canonical target keeps its legacy name-only recall (Y3 + F3)**.
+  **Shadow-rebind handling is deferred to T5c (R3), which wraps this resolution with an
+  order-aware guard anchored on the winning binding (Y2 + F1).**
 
 ### T5c — Shadow guard: module receiver + bare import (domain: code)
 
@@ -405,10 +496,17 @@ Every unit authors its failing test(s) first (RED), then the implementation
   `src/services/code_graph.rs` — **wrap** T5b's guard-agnostic resolution in the Python
   branch of `canonical_target_for_staged_call` so that, **after** T5b computes a
   candidate canonical target, T5c **fails closed** when the resolved name is re-bound by
-  a **later** binding — one that occurs **after** the effective import binding in binding
-  order (**order-aware, Y2**) — in the **applicable scope** (caller function **and**
-  module level), consuming the **T2b** scope model. This wrapping keeps the dependency
-  one-directional (T5c depends on T5b, never the reverse). The guard applies to **both**:
+  a **later** binding — one that occurs **after the WINNING binding T5b actually
+  resolved to** (the import **or** the in-module `def` — **F1, order-aware anchor**) in
+  binding order — in the **applicable scope** (caller function **and** module level),
+  consuming the **T2b** scope model. **F1 re-anchor:** the guard is anchored on the
+  *winner*, **not** on "the import". For **def-after-import**
+  (`from bar import parse; def parse(): ...; parse()`) T5b's last-binding-wins resolves
+  to **`M.parse`** (the def is the later binding); since **no** rebind follows that
+  winning def, T5c must let the edge **SURVIVE** — anchoring on "the import" (cycle-5 Y2)
+  would wrongly treat the winning def as a post-import rebind and drop it. This wrapping
+  keeps the dependency one-directional (T5c depends on T5b, never the reverse). The
+  guard applies to **both**:
   * `qualifier_kind=="module"` — the **receiver** name (`bar` in `bar.parse()`);
   * `qualifier_kind=="python_bare"` — the **bare callee** name (`parse` in
     `parse()`), when T5b resolved it via a `FromImportSymbol` binding or an in-module
@@ -417,38 +515,43 @@ Every unit authors its failing test(s) first (RED), then the implementation
   The rebind scan covers the **full target set (M1, X4)**: plain `assignment` **and
   augmented assignment** (`+=`, …); `for` targets; `with … as`; `except … as`;
   **walrus** `(:=)`; function **parameters**; **`def` / `class` definitions**; **`del`
-  statements**; **`match` / `case` capture patterns**; and **module-level** rebinding.
-  **Order-aware (Y2): each of these invalidates the import binding ONLY when it occurs
-  AFTER the import in effective binding order (a *later* rebind). A `def`/`class`/`del`/
-  `match`-capture or any rebind BEFORE the import does NOT invalidate it — the import is
-  then the last binding and T5b's resolution stands (e.g. `def parse(); from bar import
-  parse; parse()` → `bar.parse`, consistent with T5b's last-binding-wins X2/X3).** A
-  *later* rebind still drops the edge (e.g. `import bar; class bar: ...; bar.parse()` →
-  **no** edge, X4). Effective binding order is module source order at module scope and,
-  within a function, Python's function-local-for-whole-body rule (T2b, Y1). Reuse the
-  already-loaded caller/module source (T5b/T2b context) — a cheap tree-sitter scan; no
-  new DB call.
+  statements**; **`match` / `case` capture patterns**; a later module-scope **`from N
+  import *` star import (F4)**; and **module-level** rebinding.
+  **Order-aware (Y2 + F1): each of these invalidates the resolved edge ONLY when it
+  occurs AFTER the WINNING binding (import or def) in effective binding order (a *later*
+  rebind).** A `def`/`class`/`del`/`match`-capture/star or any rebind **BEFORE** the
+  winner does NOT invalidate it — the winner is then the last binding and T5b's
+  resolution stands. Two symmetric cases both survive: `def parse(); from bar import
+  parse; parse()` → **`bar.parse`** (winner = import, no later rebind; Y2) **and**
+  `from bar import parse; def parse(): ...; parse()` → **`M.parse`** (winner = def, no
+  later rebind; **F1**). A *later* rebind still drops the edge (e.g. `import bar; class
+  bar: ...; bar.parse()` → **no** edge, X4; `from bar import parse; from n import *;
+  parse()` → **no** edge, **F4** star-after-import). Effective binding order is module
+  source order at module scope and, within a function, Python's function-local-for-whole-
+  body rule (T2b, Y1). Reuse the already-loaded caller/module source (T5b/T2b context) —
+  a cheap tree-sitter scan; no new DB call.
 * **Files**: `code_graph.rs`, `tests/integration/calls_recall_acceptance_test.rs`.
 * **Tests (RED→GREEN, 4)**: **(a)** clean & ordered cases resolve — `import bar;
-  bar.parse()` and `from bar import parse; parse()` (no rebind), **plus an EARLIER
-  rebind that does NOT invalidate the import**: `def parse(); from bar import parse;
-  parse()` → **`bar.parse`** (the def precedes the import; the import is the last
-  binding — order-aware, Y2; consistent with T5b X2/X3); **(b)** module-receiver rebind
-  table — **each rebind occurring AFTER the import** {assignment, module-level
+  bar.parse()` and `from bar import parse; parse()` (no rebind), **plus BOTH winner-
+  anchor survivals**: `def parse(); from bar import parse; parse()` → **`bar.parse`**
+  (winner = import, Y2) **and** `from bar import parse; def parse(): ...; parse()` →
+  **`M.parse`** (winner = def; **F1 def-after-import survives**); **(b)** module-receiver
+  rebind table — **each rebind occurring AFTER the winner** {assignment, module-level
   `import bar; bar = factory(); def g(): bar.parse()`,
   `for`/`with … as`/`except … as`/`:=`/augmented/parameter, **`def`/`class`/`del`/
-  `match`-case capture (X4)** e.g. `import bar; class bar: ...; bar.parse()`} →
-  **no** edge;
+  `match`-case capture (X4)** e.g. `import bar; class bar: ...; bar.parse()`, **and a
+  later `from n import *` (F4)** e.g. `from bar import parse; from n import *; parse()`}
+  → **no** edge;
   **(c) bare-import assignment shadow** `from bar import parse; parse = factory();
   parse()` → **no** edge (Q1); **(d) bare-import parameter shadow**
   `from bar import parse` with `def g(parse): parse()` → **no** edge (Q1).
 * **Verification**: `cargo test --test integration_calls_recall_acceptance`; clippy;
   fmt.
 * **Milestone**: shadowing of **either** a module receiver **or** a bare imported
-  callee, by any rebind form **that occurs after the import** in the applicable scope
-  (order-aware, Y2), cannot mint a false edge — while an **earlier** rebind leaves the
-  import's resolution intact — **enforced downstream of T5b (R3), keeping T5b
-  independently completable.**
+  callee, by any rebind form **that occurs after the WINNING binding** in the applicable
+  scope (order-aware, Y2 + F1), cannot mint a false edge — while an **earlier** rebind
+  (and a def-after-import that IS the winner) leaves the resolution intact — **enforced
+  downstream of T5b (R3), keeping T5b independently completable.**
 
 ### T7 — Rollout: versioned re-extraction + one-step resolution backfill (domain: code)
 
@@ -514,20 +617,27 @@ Every unit authors its failing test(s) first (RED), then the implementation
 
 ```text
 T1 (module-path) ─┬─▶ T3 (populator) ─┬─▶ T7 (rollout/backfill) ─┐
-                  └─▶ T5b (resolver)  │                          │
-T2 (bindings) ─▶ T2b (scope isolation)┤                          ├─▶ T6 (docs)
+                  └─▶ T5b (resolver)  ├─▶ T6 (docs)              │
+T2 (bindings) ─┬─▶ T2b (scope isolation)                        ├─▶ T6 (docs)
+               └─▶ T5a (staging, F2) ─┐                          │
 T4 (parser emit) ─▶ T5a (staging) ────┼─▶ T5b ─▶ T5c (shadow) ───┘
 T2b ──────────────────────────────────┘         (guard)
 ```
 
 No cycles. T1 and T2 are independent primitives. T2b refines T2 (scope model). T3
-needs T1. T4 is parser-independent of T1–T3. T5a needs T4. T5b needs T1, T2b, T3,
-T5a — and is **guard-agnostic (R3): it does not depend on T5c and is independently
-completable**. T5c **wraps** T5b's resolution with the shadow guard (downstream) and
-consumes T2b's scope model — the dependency is strictly **T5c → T5b**, never the
-reverse. T7 (rollout/backfill) needs the populator (T3) and resolver (T5b) to be real.
-T6 needs the capability real (T3, T5b, T5c, T7). Edge list (acyclic): T1→{T3,T5b};
-T2→T2b; T2b→{T5b,T5c}; T4→T5a; T5a→T5b; T3→{T5b,T7}; T5b→{T5c,T7}; {T5b,T5c,T7}→T6.
+needs T1. T4 is parser-independent of T1–T3. **T5a needs T4 AND T2** — the **one new
+DAG edge this cycle (T2→T5a, F2)**: T5a's import/shadow-aware in-file routing must
+consult T2's `ImportBindings` to decide whether a same-file callee is also a module
+import. T5b needs T1, T2b, T3, T5a — and is **guard-agnostic (R3): it does not depend
+on T5c and is independently completable**. T5c **wraps** T5b's resolution with the
+shadow guard (downstream) and consumes T2b's scope model — the dependency is strictly
+**T5c → T5b**, never the reverse. T7 (rollout/backfill) needs the populator (T3) and
+resolver (T5b) to be real. T6 needs the capability real (T3, T5b, T5c, T7). Edge list
+(acyclic): T1→{T3,T5b}; T2→{T2b,**T5a (F2)**}; T2b→{T5b,T5c}; T4→T5a; T5a→T5b;
+T3→{T5b,T7,**T6**}; T5b→{T5c,T7}; {T3,T5b,T5c,T7}→T6. **This cycle-6 revision adds
+exactly one edge — T2→T5a (F2) — and reconciles T3→T6 into the main edge list (F18);
+the task graph is otherwise unchanged and remains acyclic (T2 and T1 are source
+primitives; no back-edge into them).**
 
 ## Decisions and Rationale
 
@@ -536,8 +646,12 @@ T2→T2b; T2b→{T5b,T5c}; T4→T5a; T5a→T5b; T3→{T5b,T7}; T5b→{T5c,T7}; {
   staging queries are language-agnostic; reusing them removes the highest-blast
   layer from the change. Verified in the spike.
 * **Option A (provenance staging) over Option B (bare-name-pass edit).** Keeps the
-  operator-gated `reresolve_calls_edges` untouched and all canonical logic in one
-  place; keeps `cozo_queries.rs` change-free; keeps Rust output byte-identical.
+  operator-gated `reresolve_calls_edges` **resolver logic** untouched and all canonical
+  logic in one place; keeps Rust output byte-identical. **F9 nuance:** T5b exposes a
+  small **read-only language-scoped name→IDs helper** in `cozo_queries.rs` (a minimal
+  extraction of the resolver's inline-private singleton, used for the no-target legacy
+  fallback) — this is a **helper exposure, not a resolver rewrite or schema change**,
+  and is distinct from Option B's rewrite of the bare-name pass.
 * **Parser emits module-qualified candidates; the resolver disambiguates.** The
   parser cannot know whether an attribute receiver is a module or an object, so it
   emits a `qualifier_kind="module"` candidate with the receiver, and the
@@ -594,19 +708,22 @@ T2→T2b; T2b→{T5b,T5c}; T4→T5a; T5a→T5b; T3→{T5b,T7}; T5b→{T5c,T7}; {
 |---|---|
 | **Wrong module-path mints a false edge** (the one real correctness risk): `__init__.py`, PEP 420 namespace packages, `src/`-layout roots | **T1 resolves a dotted path only when every ancestor dir is a provable regular package (`__init__.py`), predicate derived from the indexed file set — no config source (M5, Q3)**: `__init__.py`, `src/`-style roots, and implicit PEP 420 namespace packages REJECT → `None`→`""` (never a match target, D4); T1 tests pin `src/`-layout + implicit-namespace + `__init__.py`; T3/T5b tests pin `__init__.py`→`""` |
 | **Recall trade-off: `src/`-layout & namespace-package defs get no canonical path (Q3 narrowing)** | Deliberate fail-closed narrowing (Constitution VI — no speculative source-root config; none exists at `config.rs:98-120`): those calls fall back to the existing **name-only** unique-match — **T5b routes no-module-context bare calls to the legacy matcher (Y3)** since T5a's `python_bare` stamp would otherwise exclude them — no regression vs today, never a false edge; source-root-aware resolution is a documented **v1 non-goal** (T6) for a future iteration with a real config source |
-| **Any rebind shadows an imported module receiver OR bare callee** (`import bar; bar = f(); bar.parse()` **or** `from bar import parse; parse = f(); parse()` **or** `import bar; class bar: ...; bar.parse()`) → false edge | **T5c fails closed on the full rebind-target set — but only for a rebind that occurs AFTER the import in effective order (order-aware, Y2; an earlier rebind leaves the import's resolution intact) — in the applicable scope for BOTH the receiver AND the bare callee name (M1, Q1, X4)**: assignment, augmented (`+=`), `for`/`with … as`/`except … as`/walrus/parameter, **`def`/`class`/`del`/`match`-case capture (X4)**, and module-level rebind; consumes T2b's scope model |
+| **Any rebind shadows an imported module receiver OR bare callee** (`import bar; bar = f(); bar.parse()` **or** `from bar import parse; parse = f(); parse()` **or** `import bar; class bar: ...; bar.parse()`) → false edge | **T5c fails closed on the full rebind-target set — but only for a rebind that occurs AFTER the WINNING binding T5b resolved to (import OR def) in effective order (order-aware anchor, Y2 + F1; an earlier rebind — and a `def`-after-import that IS the winner, e.g. `from bar import parse; def parse(); parse()` → `M.parse` — leaves the resolution intact) — in the applicable scope for BOTH the receiver AND the bare callee name (M1, Q1, X4)**: assignment, augmented (`+=`), `for`/`with … as`/`except … as`/walrus/parameter, **`def`/`class`/`del`/`match`-case capture (X4)**, a **later `from N import *` star (F4)**, and module-level rebind; consumes T2b's scope model |
+| **Root defect: in-file `(Some,Some)` direct-edge shortcut mints a false `M.callee` edge for a shadowed same-file def and hides last-binding-wins (F2)** (`def parse(); from bar import parse; parse()` → wrongly a direct `M.parse` edge at `code_graph.rs:900-902`, before any staging) | **T5a makes the in-file bare-call decision import/shadow-aware on BOTH arms (896-908 full-index + 1573-1643 sync): a same-file callee that is ALSO a module import (T2 predicate) is routed to `python_bare` staging instead of a direct edge, so T5b/T5c adjudicate last-binding-wins → `bar.parse`; a same-file callee with no competing import keeps the direct fast path. T5a OWNS this code change (F2 root-defect)** |
 | **Function-local import leaks / competing bindings overwrite** (flat file-wide map) → false edge from the wrong module | **T2 fails closed on competing/duplicate bindings; T2b scopes module-level vs per-function bindings so a local import never leaks (M1)** |
-| **Function-local import resolves a call that textually precedes it** (`def g(): f(); from x import f`) → false edge to `x.f`, though Python raises `UnboundLocalError` at that call | **T2b tracks binding AND call positions: a name bound by a function-local import is local for the whole body — calls BEFORE the import fail closed (no edge), only calls AFTER resolve; uncertain control-flow ordering fails closed (Y1)** |
+| **Function-local import resolves a call that textually precedes it** (`def g(): f(); from x import f`) → false edge to `x.f`, though Python raises `UnboundLocalError` at that call | **T2b tracks binding AND call positions: a name bound by a function-local import is local for the whole body — calls BEFORE the import fail closed (a poison/tombstone that does NOT fall through to module scope, F8), only calls AFTER resolve; uncertain control-flow ordering fails closed (Y1)** |
+| **Enclosing-function (closure) binding wrong-scoped by a two-level model** → wrong-module resolution or wrongly-dropped edge (F5) | **T2b models the lexical closure chain (innermost → enclosing → module), honoring `global`/`nonlocal`, or fails closed when an enclosing function binds the name ambiguously (F5); nested-function scenarios pinned** |
 | **From-import symbol mis-resolved as a module receiver** (`from pkg import parse; parse.tokenize()` treated as module `parse`) → wrong edge | **T2 records the binding kind (`ModuleImport` vs `FromImportSymbol`) (R2); T5b resolves a module receiver ONLY from a `ModuleImport` binding and fails closed on a `FromImportSymbol` receiver** (attribute-on-object, out of scope); T5b test pins `parse.tokenize()` → no edge |
-| **Local-def-first mints a false edge when a later import shadows the local def** (`def parse(): ...; from bar import parse; parse()` → wrongly `M.parse`) (X2/X3) | **T5b applies last-binding-wins: a `FromImportSymbol` binding that rebinds the name over a local `def` WINS → `N.callee`; the local def wins only when not shadowed by a later import; when source order can't establish a clear last binding, fail closed**; T5b test pins the counterexample → `bar.parse`, **not** `M.parse` |
+| **Local-def-first mints a false edge when a later import shadows the local def** (`def parse(): ...; from bar import parse; parse()` → wrongly `M.parse`) (X2/X3) | **T5b applies last-binding-wins: a `FromImportSymbol` binding that rebinds the name over a local `def` WINS → `N.callee`; the local def wins only when not shadowed by a later import; when source order can't establish a clear last binding, fail closed**; T5b test pins the counterexample → `bar.parse`, **not** `M.parse`. **(This branch is only reachable because T5a's F2 fix routes the shadowed same-file call to staging instead of a direct edge — see the F2 root-defect row.)** |
 | **`self`/`cls` wrongly staged as a module candidate** | **T4 explicitly excludes `self`/`cls` receivers (M2)**; they stay dropped (empty qualifier); T4 test pins `self.foo()`/`cls.bar()` unstaged |
 | New `python_canonical` module trips `-D warnings` dead_code when landed before its consumers | T1/T2 ship with same-crate unit tests exercising each public fn (counts as use under `cargo test`/clippy `--all-targets`); T3/T5b add production call sites |
 | tree-sitter-python node/field names differ from assumptions (`import_from_statement`, `dotted_name`, `aliased_import`, `wildcard_import`, `relative_import`) | T2 grammar pre-check via a debug tree-walk on real `.py` before coding; tests assert positive presence so a mis-mapping fails loudly |
 | Duplicate canonical path silently binds wrong target | Reused `ids.len()==1` singleton fail-closed; T5b duplicate-def test asserts **no** edge |
-| Bare Python cross-file call regresses (was name-only, now provenance) | T5a keeps in-file `direct` edges; T5b covers cross-file **when a module namespace exists**, and **falls back to the legacy name-only unique-match when it does not (Y3)** so no cross-file bare call regresses; name-only pass still runs for non-Python staged calls; T5a Rust regression assertion |
+| Bare Python cross-file call regresses (was name-only, now provenance) | T5a routes shadowed in-file calls to staging and keeps unshadowed in-file `direct` edges (F2); T5b covers cross-file **when a module namespace + binding resolve**, and **falls back to the legacy name-only unique-match whenever it derives NO canonical target — T1-rejected layout OR provable-namespace-but-unbound (star/re-export/relative), F3 — not only when no module namespace exists** so no unique cross-file bare call regresses (a non-unique one still fails closed); name-only pass still runs for non-Python staged calls; T5a Rust regression assertion |
 | Re-export chains (`from a import b` re-exported) resolve wrong | v1 non-goal — not traced; fails closed (drop); documented (T6) |
 | Modifying shared consumer / post-pass regresses Rust resolution | Every new branch guarded on `Language::Python`; Rust-path regression assertions (T5a); full ordered gate suite before merge |
-| Low precision on dynamic Python | Measured via `run_retrieval_eval` / `get_retrieval_eval_report`, not asserted as a numeric target; v1 non-goals documented (T6) |
+| Low precision on dynamic Python | **Precision is verified by a manifest-backed target-identity gate — integration fixtures assert the exact resolved callee id on an adversarial corpus (import-after-def, def-after-import, later-star, shadow rebinds, from-import receiver) with a non-zero module-qualified edge count (C6-4/5/F6/F7)** — plus `get_retrieval_eval_report` for the dangling-edge signal only; numeric floor not claimed from the report alone; v1 non-goals documented (T6) |
+| **Package-topology change leaves stale canonical paths** (adding/removing `__init__.py` while sync content-hash-skips unchanged descendants, `code_graph.rs:1252-1263`) → false/missing edges (C6-1) | **T3 treats an add/remove of any `__init__.py` as a package-topology change that reindexes/invalidates affected descendants past the content-hash skip; T3 tests pin BOTH the add transition (`""`→`p.mod.f`) and the delete transition (back to `""`)** |
 | Existing indexes keep **empty** canonical paths **and staged-but-unresolved edges** after upgrade (content-hash skip at `code_graph.rs:590-599`/`1252-1263`; post-pass full-index-only at `985-992`; `force` defaults false; **sync re-extracts but never runs the post-pass, Q2**) | **T7 (M4, Q2, R1): a SEPARATE `PYTHON_CANONICAL_EXTRACTION_VERSION` index-state marker (NOT `file_node.content_hash` — that stays the raw SHA `is_index_stale` reads byte-for-byte, `retrieval_eval.rs:717-718`; TMDL precedent `powerbi_indexer.rs:60-81`) forces re-extraction AND runs the canonical resolution pass in the SAME operation so resolved edges are restored in one step — no unresolved-edge window; documented `index --force` fallback; upgrade regression asserts the RESOLVED cross-module edge AND that content_hash staleness detection is preserved** |
 | **Mixing an extraction version into `content_hash` would break staleness detection** (R1) | **T7 keeps `file_node.content_hash` = raw source SHA; the extraction version lives in a dedicated marker; a T7 test asserts `is_index_stale` still returns false for unchanged source after a version bump** |
 
@@ -890,7 +1007,68 @@ of T5c**); DoD, artifact count, shipment 091-S manifest, and the DAG all agree o
 10-task list. **This is plan-review-fix cycle 5 (operator-directed; Option A — hard-stop
 after push).**
 
-## Quality Gates (pre-merge, constitutional order)
+### PR #285 adversarial reconciliation (cycle 6 — structural revision)
+
+A 3-model adversarial review (Opus 4.8 + GPT-5.6-Sol + Gemini 3.1 Pro, source-verified
+against merged main) returned **NOT CONVERGED** with two gate-blocking P0s plus verified
+P1s and Copilot cycle-6 threads. Operator chose **Option A = fix substantively, then push
+and STOP**. The root defect: **last-binding-wins was adjudicated in T5b/T5c, but the layer
+BELOW them — the in-file direct-edge path at `code_graph.rs:900-902` — mints a false
+`M.callee` edge and renders T5b's local-def branches unreachable.** All fixes are made
+mutually consistent as **one coherent resolution contract**: T5a routes shadowed in-file
+calls to staging; T5b adjudicates last-binding-wins and falls back on no-target; T5c fails
+closed only on rebinds after the winning binding.
+
+* **F2 (P0, root defect) — T5a (096.005-T) + §Design-decision + §T5a + Risks.** Removed the
+  "in-file bare calls stay direct — unchanged (code_graph.rs:900-903)" claim. The in-file
+  `(Some,Some)` decision is now **import/shadow-aware**: a same-file callee that is ALSO a
+  module import (T2 predicate) is routed to `python_bare` staging (not a direct edge) so
+  T5b/T5c adjudicate; an unshadowed callee keeps the direct fast path. **T5a OWNS the
+  `code_graph.rs:896-908` change on BOTH arms (full-index 851-908 + sync 1573-1643).**
+* **F1 (P0, contradiction) — T5c (096.007-T) + §T5c + Requirements-Trace.** Re-anchored the
+  order-aware guard on the **WINNING binding T5b resolved to (import OR def)**, failing
+  closed only on rebinds AFTER that winner. `from bar import parse; def parse(); parse()` →
+  `M.parse` now **SURVIVES** (def-after-import; cycle-5 Y2 only covered def-before-import).
+* **F3 (P1, recall) — T5b (096.006-T) + §T5b + Risks.** T5b fires the legacy name-only
+  fallback whenever it derives **NO canonical target** — not only when T1==None, but also
+  for a provable-namespace module whose callee is star/re-export/relative (unbound). Gating
+  on T1==None alone would DROP those (python_bare is filtered out of `reresolve_calls_edges`
+  at `cozo_queries.rs:2222-2227`).
+* **F9 (P1, impossible-as-written) — T5b (096.006-T).** Chose **option (a)**: expose a
+  public read-only language-scoped name→IDs singleton helper in `cozo_queries.rs` (the
+  inline-private CozoScript at 2191-2205 cannot be reused as-is) and add it to T5b's scope;
+  removed the "No cozo_queries.rs change" claim. (Option (b) rejected — it cannot serve the
+  F3 provable-namespace-no-binding case, discovered only at resolution time.)
+* **F4 (P1) — T2 (096.002-T) + §T5c.** A module-scope `from N import *` occurring AFTER the
+  winning binding is an order-aware invalidator (fail closed); T2 records the star with its
+  position; star-after-import and star-after-def fail-closed tests added.
+* **F5 (P1) — T2b (096.009-T).** Modeled the lexical closure chain (enclosing-function
+  scopes, honoring `global`/`nonlocal`) or fail closed when an enclosing function binds the
+  name; folded F8 (pre-import function-local use is a poison/tombstone, no fall-through) and
+  F14 (positions for all bindings). Nested-function scenarios added.
+* **C6-1 — T3 (096.003-T).** Package-topology changes (add/remove `__init__.py`) reindex/
+  invalidate affected descendants past the content-hash skip (`code_graph.rs:1252-1263`);
+  BOTH add- and delete-transition tests added.
+* **C6-4/5 (+F6/F7) — 096-F DoD + T6 (096.008-T) + §Monitoring + Risks.** Replaced the
+  report-only 1.000-precision claim with a **manifest-backed target-identity gate** (exact
+  callee id on an adversarial corpus, non-zero module-qualified edge count) + a manual
+  audit + an F7 recall-parity signal; `get_retrieval_eval_report` is kept only as a
+  dangling-edge tripwire.
+* **F18 / F19 (consistency).** Reconciled the DAG edge-list (T3→T6 added to the main list to
+  match the trace) and qualified the "Option B" naming collision at `096-F:21`.
+
+**DAG change (the ONLY one this cycle): T2→T5a (F2)** — T5a must consult T2's
+`ImportBindings` at staging time to decide the shadow-aware in-file route. New edge list
+(acyclic; T1/T2 remain source primitives, no back-edge): T5a←{T2,T4}; T5b←{T1,T3,T5a,T2b};
+T5c←{T5b,T2b}; T2b←{T2}; T3←{T1}; T6←{T3,T5b,T5c,T7}; T7←{T3,T5b}. **Task count stays 10;
+shipment 091-S stays 11 items** (096-F + 10 tasks). **F16 (split T5b) declined** — advisory/
+LOW, and the operator directed minimal DAG change; F3+F9 stay in T5b (3 files, ≤4 scenarios,
+mirroring T1's 4-file precedent). **F17 (`import a.b` root binding) treated as a
+defensive-test note** — the reviewer states it is likely already fail-closed. This is
+plan-review-fix **cycle 6 (operator-directed; Option A — structural revision, hard-stop
+after push)**.
+
+
 
 Run in order; do not skip:
 
@@ -921,46 +1099,72 @@ drive the red/green loop; the full ordered suite is the merge gate.
   same-name resolution) and the documented fail-closed non-goals. No feature flag or
   dashboard required for this additive change; the one upgrade action is a
   version-gated re-extraction / `index --force` backfill (T7). Precision is governed by
-  the **Monitoring & Rollback** contract below (`get_retrieval_eval_report` precision
-  floor). Ownership: code-graph parsing/resolution area.
+  the **Monitoring & Rollback** contract below (the **manifest-backed target-identity
+  gate** + manual audit; `get_retrieval_eval_report` is a secondary dangling-edge
+  tripwire only). Ownership: code-graph parsing/resolution area.
 
 ## Monitoring & Rollback
 
 This feature changes runtime edge output (013-D no-false-edge, 082-F
 target-correctness), so — mirroring 090-S's **A5 precision floor** and 095-F's **Fork-A**
 precision floor — it ships with an explicit precision-floor observability contract, not
-an "additive ⇒ no trigger" claim.
+an "additive ⇒ no trigger" claim. **Measurability caveat (C6-4/5 / adversarial F6/F7):
+`get_retrieval_eval_report` alone CANNOT certify the 1.000 precision floor — it reports
+a dangling-edge rate, cannot detect a canonical edge that points at the WRONG existing
+function, and does not isolate Python module-qualified edges. The precision floor is
+therefore certified by a manifest-backed target-identity gate + a specified manual
+audit; the report is retained only for its dangling-edge signal.**
 
-* **SLI** — **precision of Python module-qualified call edges** (`module.func()` plus
-  the canonical bare-call resolutions), observed via **`get_retrieval_eval_report`**
-  (over the `run_retrieval_eval` corpus). Precision = correct-target module-qualified
-  edges ÷ emitted module-qualified edges.
-* **Baseline (spike floor)** — **precision = 1.000 / zero false module-qualified edges**.
-  The spike set a hard zero-false-edge floor (013-D); v1 emits an edge only on an
-  unambiguous singleton canonical match and fails closed on every ambiguity.
-* **Alert threshold** — **any** false module-qualified edge, i.e. **precision < 1.0** on
-  the eval corpus. There is no soft band: a single false edge breaches the floor and
-  alerts.
-* **Rollback trigger** — precision **below the 1.0 floor** on the eval corpus after
-  indexing (any confirmed false Python module-qualified edge) → **disable/revert** the
-  Python canonical branches (revert T3/T4/T5a/T5b/T5c/T7 + the T2/T2b primitives; the
-  additive `calls_resolved_canonical` Python rows regenerate empty on the next index,
-  Rust resolution untouched). A **recall** shortfall is **not** a rollback trigger —
-  recall is a documented v1 non-goal envelope; only a **precision** breach reverts.
+* **Primary SLI — target-identity precision (measurable, C6-4/5/F6):** a
+  **manifest-backed integration gate** over a fixed Python eval corpus asserts, for each
+  emitted module-qualified / canonical bare-call edge, that it points at the **exact
+  expected callee id** (target-identity, not row-existence). The corpus MUST include the
+  adversarial vectors this plan turns on — import-after-def (`bar.parse`), def-after-import
+  (`M.parse`, F1), later-star (F4), receiver/bare shadow rebinds (T5c), from-import
+  receiver (`parse.tokenize()` → no edge), duplicate canonical path — **and** assert a
+  **non-zero count of module-qualified edges** (so a silently-empty result cannot pass).
+* **Secondary signal — dangling-edge rate** via `get_retrieval_eval_report` over the
+  `run_retrieval_eval` corpus (detects edges to non-existent targets only; used as a
+  cheap regression tripwire, NOT as the precision certificate).
+* **Recall-parity signal (F7):** the eval gate also asserts that every unique cross-file
+  bare call that resolved via the legacy name-only matcher **before** this feature still
+  resolves **after** it (Y3/F3 fallback), so the `python_bare` routing introduces no
+  recall regression.
+* **Baseline (spike floor)** — **precision = 1.000 / zero false module-qualified edges**
+  on the manifest gate. The spike set a hard zero-false-edge floor (013-D); v1 emits an
+  edge only on an unambiguous singleton canonical match and fails closed on every
+  ambiguity.
+* **Alert threshold** — **any** manifest-gate target-identity mismatch (a module-qualified
+  edge to the wrong callee id), any dangling module-qualified edge, or a module-qualified
+  edge count of **zero** on a corpus known to contain resolvable cases → **precision < 1.0
+  / measurement invalid** → alert. There is no soft band.
+* **Rollback trigger** — a confirmed target-identity mismatch (wrong-callee module-qualified
+  edge) **or** a confirmed dangling module-qualified edge on the eval corpus after
+  indexing → **disable/revert** the Python canonical branches (revert T3/T4/T5a/T5b/T5c/T7
+  + the T2/T2b primitives; the additive `calls_resolved_canonical` Python rows regenerate
+  empty on the next index, Rust resolution untouched). A **recall** shortfall is **not** a
+  rollback trigger — recall is a documented v1 non-goal envelope; only a **precision**
+  breach (a wrong or dangling edge, measured by the manifest gate) reverts.
 * **Observation window** — the **first release cycle (≈ the first two weeks post-merge)**
   **and** the **first cohort of indexed real Python packages**, whichever spans more
-  indexing activity; precision is re-checked via `get_retrieval_eval_report` after that
-  cohort indexes.
+  indexing activity; the manifest gate is re-run and a **manual audit** of a sampled set
+  of live module-qualified edges (via `map_code`/`impact_analysis`) is performed after
+  that cohort indexes.
 * **Owner** — **code-graph parsing/resolution area** (Stage-harvested; **Ship-executed
-  and Ship-owned at runtime**). The eval-corpus precision gate plus the zero-false-edge
-  rollback trigger are the operational guardrail; no dashboard or feature flag required
-  for the additive change.
+  and Ship-owned at runtime**). The manifest-backed target-identity gate plus the manual
+  audit are the operational guardrail; no dashboard or feature flag required for the
+  additive change.
 
 ## Following Steps (outside this plan)
 
-1. `plan-review` this plan (see `## Plan Review`), then `harvest` into a feature +
-   the **ten units** above (T1, T2, T2b, T3, T4, T5a, T5b, T5c, T6, T7; stash
-   `FE8B3B2D`), assembled into a **queued** shipment.
+1. **Ship handoff (this plan is reviewed and harvested):** the plan is `plan-review`-ed
+   (see `## Plan Review`) and already `harvest`-ed into feature `096-F` + the **ten
+   units** (T1, T2, T2b, T3, T4, T5a, T5b, T5c, T6, T7; stash `FE8B3B2D`) assembled into
+   the **queued** shipment `091-S`. **Ship** claims `091-S` and executes the tasks in DAG
+   order (T1/T2/T4 primitives first; T5a owns the F2 `code_graph.rs:896-908` change on
+   both arms; T5b owns the F9 `cozo_queries.rs` helper; T5c the F1 winner-anchored guard),
+   opens the PR, and runs the pre-merge gate + Monitoring contract. Stage's boundary ends
+   at the reviewed, harvested, queued backlog.
 2. FF7DE872 (same-file shadowing) remains an independent backlog item — not gated
    behind this feature.
 3. Optional future work (separate release unit): instance-method dispatch via type
@@ -1157,3 +1361,37 @@ fail-closed; FF7DE872 independent; no 090-S/095-F dependency. Gate remains **PAS
 are precision/recall/consistency refinements, not new P0/P1 vectors; still below the
 3-P0/P1 multi-model threshold). **This is plan-review-fix cycle 5 (operator-directed;
 Option A — hard-stop after push).**
+
+### PR #285 review addendum (adversarial reconciliation — cycle 6)
+
+A **3-model adversarial review** (Opus 4.8 + GPT-5.6-Sol + Gemini 3.1 Pro, source-verified
+against merged main) returned **🔴 NOT CONVERGED** with **two gate-blocking P0s (F1, F2)**
+plus verified P1s (F3, F9, F4, F5) and Copilot cycle-6 threads (C6-1..C6-5). The operator
+elected **Option A (fix substantively, then push and STOP)**. Unlike cycles 2–5 (consistency
+refinements), this cycle is a **structural revision**: the root defect (F2) is that the
+in-file direct-edge path at `code_graph.rs:900-902` mints a false `M.callee` edge for a
+shadowed same-file def **and** renders T5b's last-binding-wins branches unreachable — a
+precision-floor breach the single-model cycles never surfaced. See `## Plan Hardening → PR
+#285 adversarial reconciliation (cycle 6 — structural revision)` for the per-finding map.
+
+The fixes form **one coherent resolution contract**: **T5a** makes the in-file bare-call
+decision import/shadow-aware and routes shadowed same-file calls to `python_bare` staging on
+both arms (F2); **T5b** adjudicates last-binding-wins (now reachable) and falls back to the
+legacy name-only unique-match whenever it derives **no** canonical target, via a newly
+exposed public `cozo_queries.rs` helper (F3 + F9); **T5c** fails closed only on rebinds
+**after the winning binding** (import OR def), so `from bar import parse; def parse();
+parse()` → `M.parse` survives (F1). F4 (later-star invalidator), F5 (closure chain + poison
++ positions), C6-1 (package-topology invalidation), and C6-4/5 (manifest-backed
+target-identity precision gate + manual audit + recall parity) complete the set.
+
+**One DAG edge added — T2→T5a (F2)** — the only graph change this cycle; the task graph is
+otherwise unchanged and **acyclic** (T5a←{T2,T4}; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T2 and
+T1 remain source primitives). **Task count stays 10; shipment 091-S stays 11 items.** No
+scope expansion: module-level namespace resolution only, fail-closed; FF7DE872 independent;
+no 090-S/095-F dependency. **F16 (split T5b) declined** (advisory/LOW; minimal-DAG directive)
+and **F17 treated as a defensive-test note** (reviewer says likely already fail-closed) —
+both reported to the operator rather than silently skipped. Because this cycle addressed **≥2
+P0s from a multi-model adversarial pass**, the gate is recorded as **hardened to convergence
+pending re-review** (operator owns the re-review); the plan is internally consistent across
+plan + 10 task specs. **This is plan-review-fix cycle 6 (operator-directed; Option A —
+structural revision, hard-stop after push).**

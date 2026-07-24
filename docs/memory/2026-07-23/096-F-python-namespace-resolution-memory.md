@@ -1,3 +1,16 @@
+---
+title: 096-F Python module-namespace-qualified call resolution — Stage staging + plan-hardening
+type: staging-memory
+date: 2026-07-23
+feature: 096-F
+shipment: 091-S
+tasks: [096.001-T, 096.002-T, 096.003-T, 096.004-T, 096.005-T, 096.006-T, 096.007-T, 096.008-T, 096.009-T, 096.010-T]
+pr: 285
+status: queued
+harvest_source: FE8B3B2D
+follow_ups: [FF7DE872]
+---
+
 # Stage session — 096-F Python module-namespace-qualified call resolution
 
 **Date**: 2026-07-23 · **Agent**: Stage · **Branch**: `stage/py-namespace` (off `main` `6d6c9d9c`)
@@ -151,3 +164,56 @@ T5a/T5b/T5c do not contradict each other.
 Files changed: plan doc + tasks `096.005-T`, `096.006-T`, `096.007-T`, `096.009-T` + feature
 `096-F` (Acceptance/goals consistency) + this memory. Verified: DAG acyclic (T5b independent of
 T5c; T5a deps unchanged = {096.004-T}), 10 tasks, shipment 091-S = 11 items. Gate remains PASS.
+
+## Addendum — PR #285 cycle 6 (adversarial reconciliation / structural revision)
+
+A **3-model adversarial review** (Opus 4.8 + GPT-5.6-Sol + Gemini 3.1 Pro, source-verified
+against merged main) returned **🔴 NOT CONVERGED** with **2 gate-blocking P0s** plus verified
+P1s and Copilot cycle-6 threads that all 5 Copilot cycles + the X/Y fixes missed. Operator chose
+**Option A = fix substantively, then push and STOP**. This cycle is a **structural revision**
+(not a consistency refinement): the root defect is that last-binding-wins was adjudicated in
+T5b/T5c while the layer BELOW them — the in-file direct-edge path at `code_graph.rs:900-902` —
+mints a false `M.callee` edge and renders T5b's local-def branches unreachable.
+
+* **F2 (P0, root defect) — `096.005-T`/T5a + plan §Design-decision/§T5a/Risks.** Removed the
+  "in-file bare calls stay direct — unchanged (900-903)" claim; made the in-file `(Some,Some)`
+  decision import/shadow-aware (a same-file callee that is ALSO a module import routes to
+  `python_bare` staging, not a direct edge). **T5a owns the `code_graph.rs:896-908` change on
+  both arms.** **Added the ONE new DAG edge this cycle: T2→T5a** (T5a must consult T2's
+  `ImportBindings` at staging time). `096.005-T` frontmatter deps `{096.004-T}` → `{096.002-T,
+  096.004-T}`.
+* **F1 (P0, contradiction) — `096.007-T`/T5c + plan §T5c.** Re-anchored the order-aware guard on
+  the WINNING binding T5b resolved (import OR def), failing closed only on rebinds AFTER the
+  winner; `from bar import parse; def parse(); parse()` → `M.parse` now SURVIVES (def-after-import;
+  cycle-5 Y2 only covered def-before-import).
+* **F3 (P1) — `096.006-T`/T5b + plan §T5b/Risks.** Legacy name-only fallback fires whenever T5b
+  derives NO canonical target (not only T1==None) — covers provable-namespace-but-unbound
+  (star/re-export/relative), which `qualifier_kind.is_empty()` filtering (cozo 2222-2227) would
+  otherwise drop.
+* **F9 (P1) — `096.006-T`/T5b.** Chose option (a): expose a public read-only language-scoped
+  name→IDs helper in `cozo_queries.rs`; deleted the "No cozo_queries.rs change" claim (T5b now 3
+  files). Option (b) rejected (can't serve the F3 case).
+* **F4 (P1) — `096.002-T`/T2 + T5c.** Module-scope `from N import *` recorded as a positioned
+  order-aware invalidator; star-after-winner fails closed.
+* **F5 (P1) — `096.009-T`/T2b.** Modeled the lexical closure chain (honoring global/nonlocal) or
+  fail closed on ambiguous enclosing bind; folded F8 (pre-import poison/tombstone) + F14
+  (positions for all bindings).
+* **C6-1 — `096.003-T`/T3.** Package-topology changes (add/remove `__init__.py`) reindex/
+  invalidate descendants past the content-hash skip (1252-1263); both transitions tested.
+* **C6-4/5 (+F6/F7) — `096-F` DoD + `096.008-T`/T6 + plan §Monitoring/Risks.** Replaced the
+  report-only 1.000-precision claim with a manifest-backed target-identity gate + manual audit +
+  recall parity; `get_retrieval_eval_report` kept as a dangling-edge tripwire only.
+* **F18/F19.** Reconciled the DAG edge-list (added T3→T6 to the main list) and qualified the
+  feature/spike "Option B" vs plan "Option A" naming collision at `096-F:21`.
+* **Declined/flagged:** F16 (split T5b) declined — advisory/LOW + operator minimal-DAG directive
+  (F3+F9 stay in T5b, 3 files, ≤4 scenarios). F17 (`import a.b` root binding) treated as a
+  defensive-test note — reviewer states likely already fail-closed. Both reported to operator.
+
+**One coherent contract:** T5a routes shadowed in-file calls to staging (F2) → T5b adjudicates
+last-binding-wins and falls back on no-target (F3/F9) → T5c fails closed only on rebinds after the
+winning binding (F1). **DAG: exactly one new edge T2→T5a**; task count stays 10; shipment 091-S
+stays 11 items; acyclic (verify: T5a←{096.002-T,096.004-T}). Files changed: plan doc + tasks
+`096.002-T`, `096.003-T`, `096.005-T`, `096.006-T`, `096.007-T`, `096.008-T`, `096.009-T` +
+feature `096-F` + this memory (moved to `docs/memory/2026-07-23/` with YAML frontmatter, C6-2).
+This is plan-review-fix **cycle 6 (operator-directed; Option A — structural revision, hard-stop
+after push)**.
