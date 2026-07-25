@@ -106,6 +106,55 @@ the fail-closed `{CompetingBindings, Shadowed, DuplicateSameNameImport}` cases, 
 **"no canonical edge (fallback allowed)"** for a merely-unresolved-but-unambiguous
 `{NoModuleContext, UnsupportedImportForm}` case.
 
+### Anchor C — Binding-Execution Soundness (mandatory fail-closed triggers)
+
+**Unifying principle (normative):** a binding must be provably **static and
+unconditional at the call site** to emit a canonical edge. Any **function-local
+poisoning**, **conditional / dynamic execution**, or **unsupported import form** →
+**FAIL CLOSED** (no canonical edge to the module symbol). The winner-to-call
+**source-position ordering** rule is valid **only for module-level rebinds**; it is
+**never** applied to function-local binders. Every acceptance / DoD case that turns on
+binding execution MUST route through the applicable trigger below — T5a never mints a
+direct `M.f` edge while such a marker exists, and T5b assigns the typed no-target reason
+that selects Anchor B's *no edge* (fail-closed) vs *no canonical edge* (fallback-allowed)
+outcome. The trigger classes are:
+
+* **(T-a) Function-local poisoning (UnboundLocalError semantics).** ANY in-function
+  binder of a name — plain / augmented / **annotated** assignment, `for` / `with … as`
+  / `except … as` targets, walrus `:=`, comprehension targets, a nested `def` / `class`
+  of that name, or `del` — makes that name **function-local for the ENTIRE function body
+  regardless of source position**. A call to that name **anywhere** in the function
+  therefore MUST NOT resolve to a module-level import / binding of the same name (a use
+  **before** the binder raises `UnboundLocalError` at runtime; a use **after** it targets
+  the local, which is not a module symbol). The winner-to-call source-position ordering
+  rule is therefore valid **only for module-level rebinds, never for function-local
+  binders**. Callers are top-level function bodies only (Anchor A). Canonical fail-closed
+  regression: `from bar import parse; def g(): parse(); parse = factory()` → **no edge**
+  (the in-function `parse = …` poisons the whole body; the earlier `parse()` is
+  UnboundLocalError, not `bar.parse`).
+
+* **(T-b) Unsupported / relative / duplicate import forms (T2 emits NO binding).**
+  Relative imports (`from .other import f`), duplicate same-name imports, and any form
+  that yields **no T2 binding / RFS marker** MUST be preserved as **ambiguity markers**;
+  T5a's direct-edge guard MUST treat them as a **contest** (route to `python_bare`
+  staging) and MUST NOT fall through to a direct `M.f` edge — this is what makes T5b's
+  typed no-target reason reachable. Regression:
+  `def f(): ...; from .other import f; def caller(): f()` → **fail closed**, not `M.f`.
+
+* **(T-c) Control-flow-conditional / try imports.** An import guarded by
+  `if` / `else` / `try` / `except` / `while` (not unconditionally executed at module
+  scope) is **not proven to execute** → recorded as **ambiguous → fail closed** unless
+  execution is proven. Regression: `if enabled: from a import f; def caller(): f()` →
+  **fail closed**.
+
+* **(T-d) Dynamic `global` / `nonlocal` writes.** A `global f` (or `nonlocal f`) write
+  that rebinds a name in another scope makes sibling callers' targets
+  **run-order-dependent** → such dynamic writes MUST **invalidate (fail-close) sibling
+  callers** of that name. (A provably-ordered call inside the writing function itself may
+  still be permitted.) Regression:
+  `from a import f; def mutate(): global f; from b import f; def caller(): f()` →
+  `caller()` **fails closed**.
+
 ## Resolution rule (frozen)
 
 **Over-arching invariant — prove-or-fail-closed (cycle-7).** A Python bare or
@@ -156,10 +205,15 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D). A **DROP
 **no canonical module-qualified edge**; a *unique* cross-file bare call still keeps its
 **legacy name-only edge** (Y3/F3 recall preservation) — only the canonical layer drops.
 
-> **Function-local import ordering (Y1).** Inside a function, a function-local
-> import binds the name for the **whole** function body (Python `UnboundLocalError`
-> semantics): a call **before** the import fails closed (no edge); only calls
-> **after** the import resolve. Uncertain control-flow ordering → fail closed. (T2b.)
+> **Function-local poisoning / import ordering (Y1, Anchor C T-a).** Inside a function,
+> **any** function-local binder of a name — a function-local `import`, or a plain /
+> augmented / annotated assignment, `for` / `with … as` / `except … as` target, walrus
+> `:=`, comprehension target, nested `def` / `class`, or `del` — binds that name for the
+> **whole** function body (Python `UnboundLocalError` semantics): a call **before** the
+> binder fails closed (no edge — UnboundLocalError); a call **after** it targets the
+> local, not a module symbol. The winner-to-call source-position ordering rule applies to
+> **module-level rebinds only**, never to function-local binders. Uncertain control-flow
+> ordering → fail closed. (T2b; Anchor C.)
 
 > **No-module-context recall (Y3).** When caller `M` has **no provable module
 > namespace** (`src/`-root / PEP 420 namespace / `__init__.py` → T1 returns `None`),
@@ -181,7 +235,10 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D). A **DROP
 > the bare `parse()` resolves to `bar.parse`, **not** `M.parse`. A **local-def-first**
 > rule would mint the wrong edge to `M.parse` and breach the precision floor (013-D).
 > Symmetrically, a local `def` that appears **after** the import (and before the call)
-> wins. When source order cannot establish a clear last binding, **fail closed** (no edge).
+> wins. **This source-position ordering rule is defined over module-level rebinds only
+> (Anchor C T-a); a function-local binder poisons the whole function body irrespective of
+> its position and is never ordered against the call.** When source order cannot establish
+> a clear last binding, **fail closed** (no edge).
 
 > **Call-site-effective binding (C7-1) — function-body calls only.** "Last-binding-wins" is
 > scoped to the **call site**, not the whole module. The Python extractor emits `Calls`
@@ -205,7 +262,8 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D). A **DROP
 > `caller`'s `parse` could be `M.parse` (if `caller` runs before the import) or `bar.parse`
 > (if after), so T5b/T5c **fail closed** (no edge). T5b selects the last binding whose effect
 > is settled when the call runs and fails closed when a later rebind makes that order
-> undecidable. **v1 NON-GOAL:** module-level (top-level) call ordering is **out of scope** —
+> undecidable — this call-position ordering is over **module-level rebinds only**; a
+> function-local binder poisons the whole function body regardless of position (Anchor C T-a). **v1 NON-GOAL:** module-level (top-level) call ordering is **out of scope** —
 > top-level calls are **not extracted**, so such cases are **neither regressed nor newly
 > handled**. (Direct application of the prove-or-fail-closed invariant to the time axis.)
 
@@ -417,7 +475,16 @@ Every unit authors its failing test(s) first (RED), then the implementation
   * `import a.b as c` → `c → ("a.b", ModuleImport, pos)`; `import a.b` → `a → ("a",
     ModuleImport, pos)` (root-name module binding).
   * **No binding (fail closed)** for: relative imports (`from . import x`, leading-dot
-    module), `importlib`/`__import__`/dynamic.
+    module), `importlib`/`__import__`/dynamic. **Relative imports and any unsupported
+    import form are additionally recorded as _positioned ambiguity markers_ (Anchor C T-b)**
+    — like the F4 star marker — so T5a's direct-edge guard treats a same-file same-name
+    `def` as a **contest** (route to `python_bare` staging) instead of minting a direct
+    `M.f` edge; T5b then assigns the typed no-target reason (`UnsupportedImportForm`).
+  * **Control-flow-conditional / `try` imports → ambiguity marker → fail closed (Anchor C
+    T-c).** An import nested under `if` / `else` / `try` / `except` / `while` (not
+    unconditionally executed at module scope) is **not proven to execute** — recorded as a
+    positioned **ambiguity marker**, never a firm binding, so `if enabled: from a import f;
+    def caller(): f()` fails closed unless execution is proven.
   * **Module-scope `from N import *` (star) → a positioned _order-aware invalidator
     marker_, not a binding (F4).** T2 records the star's module-scope position so T5c
     can fail closed when a star occurs **after** the winning binding (`from bar import
@@ -426,9 +493,11 @@ Every unit authors its failing test(s) first (RED), then the implementation
     binding (it stays a fail-closed drop for its own name resolution).
   * **Competing / duplicate binding → fail closed (M1).** If the **same local
     name** is bound by 2+ import statements in the same scope
-    (duplicate/re-import), mark it **ambiguous** → **no** binding. A flat
-    last-writer-wins `HashMap` is **forbidden**. (Function-vs-module scope isolation
-    is T2b.)
+    (duplicate/re-import), mark it **ambiguous** → **no** binding, **and record a
+    positioned ambiguity marker (Anchor C T-b)** so T5a's direct-edge guard treats a
+    same-file same-name `def` as **contested** (route to staging, never a direct `M.f`
+    edge). A flat last-writer-wins `HashMap` is **forbidden**. (Function-vs-module scope
+    isolation is T2b.)
   * **Why the kind (R2)**: T5b must tell a **module receiver** (`import pkg` →
     `pkg.func()`) from an **imported symbol** (`from pkg import parse` → `parse()` or
     the out-of-scope attribute `parse.tokenize()`). Without the kind, a from-import is
@@ -437,15 +506,18 @@ Every unit authors its failing test(s) first (RED), then the implementation
   `tests/unit/python_canonical_test.rs`.
 * **Tests (RED→GREEN, 4)**: `from p import f`→`(p.f, FromImportSymbol, pos)` **and**
   `import a.b as c`→`(a.b, ModuleImport, pos)` (kind + position asserted, R2/F14);
-  `from . import x` → **no** binding, **and** a module-scope `from p import *` records a
-  positioned **invalidator marker** (F4 — not a binding); **F4 order-aware** — a star
-  **after** a `from bar import parse` marks `parse` invalidatable, a star **after** a
-  `def parse` likewise (star-after-def), while a star **before** does not; competing
-  `import p` + `from q import p` → **no** binding (M1).
+  `from . import x` → **no** binding **but a positioned ambiguity marker (T-b)**, **and**
+  a module-scope `from p import *` records a positioned **invalidator marker** (F4 — not a
+  binding); **F4 order-aware** — a star **after** a `from bar import parse` marks `parse`
+  invalidatable, a star **after** a `def parse` likewise (star-after-def), while a star
+  **before** does not; competing `import p` + `from q import p` → **no** binding **plus an
+  ambiguity marker (T-b)**, and a `try`/`if`-guarded import → **ambiguity marker (T-c)** —
+  both folded into the fail-closed table (M1) rather than adding scenarios.
 * **Verification**: `cargo test --test unit_python_canonical` (target registered in
   T1); clippy; fmt.
 * **Milestone**: symbol-level bindings; star/relative/dynamic **and** competing
-  bindings fail closed.
+  bindings fail closed; **relative / duplicate / conditional-`try` imports are recorded as
+  positioned ambiguity markers (Anchor C T-b/T-c) so T5a treats them as contests.**
 
 ### T2b — Scope-aware binding isolation (domain: code)
 
@@ -471,6 +543,12 @@ Every unit authors its failing test(s) first (RED), then the implementation
   enclosing top-level caller.** Resolving a nested caller against an enclosing scope /
   `nonlocal` is a v1 non-goal (Anchor A); the model still fails closed when the
   applicable (function-local or module) scope binds the name ambiguously (F5).
+  **Dynamic `global` / `nonlocal` writes (Anchor C T-d):** a `global f` (or `nonlocal f`)
+  write that **rebinds** `f` in another scope makes sibling callers of `f`
+  run-order-dependent → such a dynamic write **invalidates (fails closed) sibling callers**
+  of that name (a provably-ordered call inside the writing function itself may still
+  resolve). Example: `from a import f; def mutate(): global f; from b import f; def
+  caller(): f()` → `caller()` fails closed.
   **Track each function-local import's position and each call site's position: a name
   bound by a function-local import LATER in the function emits NO binding for call sites
   BEFORE that import (fail closed — UnboundLocalError). A pre-import function-local use is
@@ -586,9 +664,11 @@ Every unit authors its failing test(s) first (RED), then the implementation
     T2b/T5b/T5c. **T5a owns modifying `code_graph.rs:896-908` on BOTH arms** so that, for
     Python, a same-file `def` is routed through `python_bare` staging **whenever its name is
     contested by EITHER**: (i) a **producer-backed import signal** — a named module import,
-    a positioned **star-import invalidator** (T2), or a **scoped function-local /
-    enclosing-function import** (T2b); **OR** (ii) **any non-import rebind form in the
-    Shared rebind-form set (RFS, §Design decision)** that T5a detects with **its own in-file
+    a positioned **star-import invalidator** (T2), a **scoped function-local /
+    enclosing-function import** (T2b), or a positioned **ambiguity marker for a relative /
+    duplicate / conditional-`try` import** (Anchor C T-b/T-c, T2) — the guard must NOT fall
+    through to a direct `M.f` edge while any such marker exists; **OR** (ii) **any non-import
+    rebind form in the Shared rebind-form set (RFS, §Design decision)** that T5a detects with **its own in-file
     rebind-form scan — the SAME module/scope rebind-form scan T5c specifies (§T5c)**. Since
     `parse_source` retains no tree-sitter `Tree` (`ParseResult{symbols, edges}` only,
     `parsing.rs:247-252`), **T5a re-parses the in-scope file `source: String`** (already
@@ -877,7 +957,8 @@ Every unit authors its failing test(s) first (RED), then the implementation
   (R1); the marker is a SEPARATE key/value record, never a hash ingredient.** On index/sync,
   when the stored
   extraction version
-  differs from the code constant, re-extract the affected `.py` files; `file_node.
+  differs from the code constant **and the C12-5 opt-in gate is set** (below), re-extract
+  the affected `.py` files; `file_node.
   content_hash` stays the raw source SHA (staleness detection intact). **Crucially (Q2),
   the same operation must also run the full canonical resolution pass** — either escalate
   the run to the full-index path (which runs the post-pass) or invoke the canonical
@@ -898,6 +979,15 @@ Every unit authors its failing test(s) first (RED), then the implementation
   persisted **only** after every affected Python file AND the resolution pass succeed. When
   the pass outcome is uncertain, keep the old marker (fail closed toward retry, never
   toward stale-skip).
+* **C12-5 — enforceable rollout gate (opt-in, not auto-fired).** Routine startup
+  auto-**sync** MUST NOT run the version-mismatch backfill. The backfill is gated behind an
+  **explicit opt-in** — an `index --backfill-python-canonical` invocation or a
+  `PYTHON_CANONICAL_BACKFILL` activation flag (deferred activation) — so the
+  high-blast-radius re-extraction runs **only** when Ship invokes it **after operator
+  approval** (strict-safety, §Hardening Signals). When the gate is **absent** and a version
+  mismatch is detected, the run **defers**: it neither advances the marker, re-extracts, nor
+  churns edges (a no-op fast-path) and records that a gated backfill is pending. This makes
+  the operator-approval requirement **enforceable in code**, not merely documented.
 * **Files** (≤3): `src/services/code_graph.rs` (extraction-version constant + marker
   read/compare/persist + one-step resolution), `src/db/cozo_backend/schema.rs` (the
   version-valued `schema_meta` marker get/set seam), `tests/integration/code_graph_test.rs`.
@@ -915,8 +1005,9 @@ Every unit authors its failing test(s) first (RED), then the implementation
 * **Milestone**: an upgrade backfills Python canonical **edges** in one operation with
   no unresolved-edge window; `content_hash` staleness detection is preserved (version in
   a separate marker); **the new version persists only on a fully-successful pass so a
-  partial failure retries next sync (C7-3)**; the fast-path is preserved for
-  current-version files.
+  partial failure retries next sync (C7-3)**; **the backfill runs ONLY under the C12-5
+  opt-in gate (operator-approved, never auto-fired by routine startup sync)**; the
+  fast-path is preserved for current-version files.
 
 ### T6 — Documentation (domain: docs)
 
@@ -964,10 +1055,14 @@ already upstream of T5b/T5c and only depends on T2, so adding T5a←T2b introduc
 
 ## Decisions and Rationale
 
-* **Zero DB/schema change.** `function_meta.canonical_path`,
+* **Zero canonical-schema migration.** `function_meta.canonical_path`,
   `function_ids_by_canonical_path`, `canonical_paths_for_function_name`, and the
   staging queries are language-agnostic; reusing them removes the highest-blast
-  layer from the change. Verified in the spike.
+  layer from the change (verified in the spike). **Additive DB-layer changes are NOT
+  zero, but non-migrating:** T5b adds a **read-only, language-scoped `name→IDs` query
+  helper** in `cozo_queries.rs` (F9), and T7 reads/writes a **version marker in the
+  existing `schema_meta` relation** (R1) — no canonical-schema (`function_meta` /
+  `calls_edge`) migration and no `content_hash` contract change.
 * **Option A (provenance staging) over Option B (bare-name-pass edit).** Keeps the
   operator-gated `reresolve_calls_edges` **resolver logic** untouched and all canonical
   logic in one place; keeps Rust output byte-identical. **F9 nuance:** T5b exposes a
@@ -1100,9 +1195,13 @@ invariant. That elevates it above a parser-local change.
   via provenance on **both** the full-index and sync arms so re-extraction never strands
   a Python edge (X1); (h) full ordered quality-gate suite before merge.
 * **Rollback** — additive and reversible: revert the T3/T4/T5a/T5b/T5c/T7 (and
-  T2/T2b primitive) commits. No schema change, migration, or destructive step; edges
-  regenerate on the next index; the versioned-extraction-hash bump is inert until a
-  re-index. **Rollback triggers**: any false Python→X edge observed in
+  T2/T2b primitive) commits. **No canonical-schema migration and no destructive step; T7
+  IS a non-destructive, reversible version-gated backfill/migration** (it re-extracts and
+  re-resolves, adding only an additive `schema_meta` marker — `function_meta` / `calls_edge`
+  and the `content_hash` contract are unchanged); edges regenerate on the next index; the
+  **`PYTHON_CANONICAL_EXTRACTION_VERSION` marker in `schema_meta` (R1 — a SEPARATE key, NOT
+  the earlier versioned-extraction-hash bump)** is inert until an operator-gated backfill
+  re-index (C12-5). **Rollback triggers**: any false Python→X edge observed in
   `map_code`/`impact_analysis` acceptance; any Rust singleton/canonical regression;
   a `__init__.py`/namespace-package/`src/`-root def acquiring a non-empty
   `canonical_path`; a function-local import resolving in a sibling function.
@@ -1129,7 +1228,11 @@ invariant. That elevates it above a parser-local change.
   language-guarded dispatch, Rust regression assertions, the C7-3 partial-failure marker
   gate, and fail-closed acceptance tests above. **Operator approval path (strict-safety,
   high blast radius): Ship MUST obtain explicit operator approval before executing the T7
-  extraction-version backfill** — the migration is not auto-run as part of routine staging.
+  extraction-version backfill** — the migration is not auto-run as part of routine staging,
+  and this is **enforced in code** by the C12-5 opt-in gate (an explicit
+  `index --backfill-python-canonical` / `PYTHON_CANONICAL_BACKFILL` activation): routine
+  startup auto-sync **defers** the backfill (no marker advance, no re-extraction, no edge
+  churn) until the operator-approved opt-in is set.
 
 **Requires plan hardening: yes — satisfied inline (this section).**
 

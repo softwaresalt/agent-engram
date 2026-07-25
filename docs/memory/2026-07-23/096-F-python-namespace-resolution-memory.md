@@ -11,8 +11,6 @@ harvest_source: FE8B3B2D
 follow_ups: [FF7DE872]
 ---
 
-# Stage session — 096-F Python module-namespace-qualified call resolution
-
 **Date**: 2026-07-23 · **Agent**: Stage · **Branch**: `stage/py-namespace` (off `main` `6d6c9d9c`)
 **Stash**: FE8B3B2D · **Deliberation**: Option B ratified (product value operator-asserted → feasibility spike)
 
