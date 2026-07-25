@@ -128,7 +128,7 @@ outcome. The trigger classes are:
   **before** the binder raises `UnboundLocalError` at runtime; a use **after** it targets
   the local, which is not a module symbol). The winner-to-call source-position ordering
   rule is therefore valid **only for module-level rebinds, never for function-local
-  binders**. Callers are top-level function bodies only (Anchor A). **Carve-out (C13-1, global/nonlocal):** a name declared `global` / `nonlocal` in the SAME function is NOT function-local -- Python rebinds the outer / module (or enclosing) scope, not a function-local slot -- so such a name is EXCLUDED from T-a poisoning and delegated to T-d (dynamic write) / T2b; this makes T-a and T-d mutually exclusive AND jointly exhaustive over in-function binders of a name. Ordered-writer regression: `from a import f; def w(): global f; f = factory(); f()` -- the post-rebind `f()` INSIDE `w` may still resolve per T-d (a provably-ordered call inside the writing function), while a sibling `def caller(): f()` FAILS CLOSED. The whole-function-poison rule is retained for genuine function-local binders (no `global` / `nonlocal` declaration). Canonical fail-closed
+  binders**. Callers are top-level function bodies only (Anchor A). **Carve-out (C13-1, global/nonlocal):** a name declared `global` / `nonlocal` in the SAME function is NOT function-local -- Python rebinds the outer / module (or enclosing) scope, not a function-local slot -- so such a name is EXCLUDED from T-a poisoning and delegated to T-d (dynamic write) / T2b; this makes T-a and T-d mutually exclusive AND jointly exhaustive over in-function binders of a name. Dynamic-write fail-closed regression (C14-1): `from a import f; def w(): global f; f = factory(); f()` -- BOTH the post-rebind `f()` INSIDE `w` AND a sibling `def caller(): f()` FAIL CLOSED (the call observes the dynamic-assignment RESULT, not the import; source ordering cannot prove a canonical callee unless the RHS statically resolves to an exact function -- a v1 non-goal, so v1 always fails closed). The whole-function-poison rule is retained for genuine function-local binders (no `global` / `nonlocal` declaration). Canonical fail-closed
   regression: `from bar import parse; def g(): parse(); parse = factory()` → **no edge**
   (the in-function `parse = …` poisons the whole body; the earlier `parse()` is
   UnboundLocalError, not `bar.parse`).
@@ -150,8 +150,7 @@ outcome. The trigger classes are:
 * **(T-d) Dynamic `global` / `nonlocal` writes.** A `global f` (or `nonlocal f`) write
   that rebinds a name in another scope makes sibling callers' targets
   **run-order-dependent** → such dynamic writes MUST **invalidate (fail-close) sibling
-  callers** of that name. (A provably-ordered call inside the writing function itself may
-  still be permitted.) Regression:
+  callers** of that name. (The call inside the writing function itself ALSO fails closed: it observes the dynamic-write RESULT, not a statically provable function, unless the RHS statically resolves to an exact function -- a v1 non-goal.) Regression:
   `from a import f; def mutate(): global f; from b import f; def caller(): f()` →
   `caller()` **fails closed**.
 
@@ -308,11 +307,11 @@ owned by **exactly one** layer; everything unprovable fails closed.
 | Emit `module.func()` as a canonical-eligible staged call (stop dropping it); `self`/`cls` stay dropped | T4: `python.rs` emits `is_qualified:true, raw_qualifier=<receiver>, qualifier_kind="module"`; excludes `self`/`cls` (M2) |
 | Route Python cross-file bare + module-qualified calls into canonical staging — on **both** indexing arms; **in-file shadowed calls must not short-circuit to a direct edge** | T5a: **both** Calls-consumer arms — full-index (851-908) **and sync (1573-1643)** — + `should_stage_provenance_call` (language-dispatched); the sync arm's name-only `put_staged_call` (1639) also routes through provenance for Python so T7 re-extraction never strands edges (X1, same class as Q2/R1); **the in-file `(Some,Some)` direct-edge shortcut (900-902) is made SHADOW-AWARE over SCOPES *and* FORMS (F2 root-defect, generalized cycle-7 Z1/Z2/C7-2, non-import-rebind axis closed cycle-8 C6): a same-file `def` is routed to `python_bare` staging whenever its name is SHADOW-CONTESTED by EITHER a producer-backed import signal — a named module import (T2), a positioned star-import invalidator (T2/F4), OR a scoped function-local import (T2b) — OR any non-import rebind form in the Shared rebind-form set (RFS, §Design decision) that T5a detects with its OWN in-file tree-sitter scan (the same scan T5c runs; T2/T2b produce no non-import-rebind signal); expressed as the prove-the-negative default "keep the direct edge ONLY when provably the sole binding across every scope AND with no RFS form present" so future scopes AND forms are covered by construction; T5a OWNS this `code_graph.rs:896-908` change on both arms — no new producer, task, or DAG edge**; a callee with **no** competing binding keeps the direct fast path; **no-target bare calls stay recall-preserving via the legacy matcher (Y3/F3, resolved in T5b)** |
 | **Fail closed on `def` + non-import module/scope rebind (C6 — the non-import-rebind axis)** (`def parse(); parse = factory(); parse()`; also `class parse`/`del parse`/`match`-case/`for`/`with … as`/`except … as`/walrus/parameter targets) | **DROP** — T5a's in-file routing scan detects the RFS rebind form (no producer needed) and routes the same-file `def` to `python_bare` staging instead of a direct `M.parse` edge; T5c then fails closed on the same RFS (order-aware). Asserted by T5a's routing-table test (`def f; f = factory(); f()` → STAGED, **no** direct `M.f`) and T5c's rebind table; composition-trace row C6 = DROP |
-| Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call`, dispatched by the T2 binding **kind** (R2); resolves to the **binding effective at the call site** — for a **function-body call** (the only call form the extractor stages, C9-3), the module (or own function-local, T2b) binding that is **stable when the call runs**, and **fails closed when invocation order cannot statically establish the binding** (e.g. a function-body call contested by a later module rebind — **C7-1**); **module-level (top-level) call ordering is a v1 non-goal** (top-level calls not extracted); **guard-agnostic — the T5c shadow guard wraps it downstream (R3)**; when T5b **derives no canonical target** it returns a **typed no-target reason (C9-4)** and applies the **legacy name-only unique-match** fallback (**F3**) **only** for the recall-safe reasons {`NoModuleContext` (T1 rejected `src/`-root / PEP 420 / `__init__.py`), `UnsupportedImportForm` (provable-namespace-but-unbound: star / re-export / relative)} via a **public language-scoped name→IDs helper in `cozo_queries.rs` (F9)**; **never** for {`CompetingBindings`, `Shadowed`, `DuplicateSameNameImport`} — those stay fully fail-closed (NO edge); non-unique names still fail closed |
+| Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call`, dispatched by the T2 binding **kind** (R2); resolves to the **binding effective at the call site** — for a **function-body call** (the only call form the extractor stages, C9-3), the module (or own function-local, T2b) binding that is **stable when the call runs**, and **fails closed when invocation order cannot statically establish the binding** (e.g. a function-body call contested by a later module rebind — **C7-1**); **module-level (top-level) call ordering is a v1 non-goal** (top-level calls not extracted); **guard-agnostic — the T5c shadow guard wraps it downstream (R3)**; when T5b **derives no canonical target** it returns a **typed no-target reason (C9-4)** and applies the **legacy name-only unique-match** fallback (**F3**) **only** for the recall-safe reasons {`NoModuleContext` (T1 rejected `src/`-root / PEP 420 / `__init__.py`), `UnsupportedImportForm` (provable-namespace-but-unbound: star / re-export / relative)} via a **public language-scoped name→IDs helper in `cozo_queries.rs` (F9, provided by 096.011-T; T5b consumes it)**; **never** for {`CompetingBindings`, `Shadowed`, `DuplicateSameNameImport`} — those stay fully fail-closed (NO edge); non-unique names still fail closed |
 | Fail closed when any rebind shadows an imported **module receiver OR bare callee** name | T5c: drop `mod.func()` (receiver) **and** bare `parse()` (Q1) when the name is re-bound by a binding **later than the WINNING binding T5b resolved to** (import OR def, order-aware anchor — **F1**) — in the applicable scope — assignment/augmented/`for`/`with`/`except`/walrus/param/**`def`/`class`/`del`/`match`-case (X4)**/**later `from N import *` (F4)**/module-level (M1, Q1, X4); a rebind **before** the winner does not invalidate it, so **`from bar import parse; def parse(); def caller(): parse()` → `M.parse` SURVIVES (def-after-import, F1)** just as `def parse(); from bar import parse; def caller(): parse()` → `bar.parse` (Y2); and the winner is **call-site-effective, not whole-module** (**C7-1**, function-body calls only — top-level call ordering is a v1 non-goal, not extracted) |
 | Existing indexes must backfill Python canonical **edges** after upgrade, **in one operation** | T7: a **separate `PYTHON_CANONICAL_EXTRACTION_VERSION` marker** (NOT `content_hash`, R1) triggers re-extraction that **also runs the canonical resolution pass in the same step** (escalate sync→full path or invoke the post-pass) / `index --force`; upgrade regression asserts the **resolved edge** and that `content_hash` staleness detection is preserved (M4, Q2, R1) |
 | Fail closed on star / relative / package-root / re-export / dynamic / duplicate | T1–T2 return no module/binding; T3 returns `""`; T5b singleton check drops duplicates |
-| No **canonical** schema change; reuse `function_ids_by_canonical_path` + staging queries | No `function_meta`/`calls_edge`/staging schema change (verified by T5b); **T5b's F9 name→IDs helper is a read-only extraction of the resolver's inline singleton, not a schema change**; T7's extraction-version marker is orthogonal index-state, not the canonical model (R1) |
+| No **canonical** schema change; reuse `function_ids_by_canonical_path` + staging queries | No `function_meta`/`calls_edge`/staging schema change (verified by T5b); **096.011-T's F9 name→IDs helper (consumed by T5b) is a read-only extraction of the resolver's inline singleton, not a schema change**; T7's extraction-version marker is orthogonal index-state, not the canonical model (R1) |
 | Do NOT resolve instance-method dispatch; do NOT touch FF7DE872 | Out of scope; documented in T6 |
 | Document capability + v1 non-goals | T6 |
 
@@ -444,20 +443,23 @@ Every unit authors its failing test(s) first (RED), then the implementation
     (Constitution VI) v1 **fails closed** on `src/`-layouts and namespace packages —
     no `PackageLayout`/source-root machinery. A future iteration may add a
     `source_roots` config and wire it here.
-* **Cargo.toml (M3)**: register a `[[test]]` target
-  `name = "unit_python_canonical", path = "tests/unit/python_canonical_test.rs"`
-  (repo registers every nested `tests/unit/*.rs`; `unit_parsing` exists ~231-237,
-  this target did not). Two trivial config lines.
-* **Files**: `python_canonical/module_path.rs`, `python_canonical/mod.rs`,
-  `Cargo.toml` (2-line test registration), `tests/unit/python_canonical_test.rs`.
+* **Cargo.toml `[[test]]` registration + external harness (MOVED to T1-setup / 096.012-T, C14-3 split):** the `unit_python_canonical` target registration and the `tests/unit/python_canonical_test.rs` external harness are owned by 096.012-T (`depends_on` this task); T1 verifies `python_module_path_for_file` via inline `#[cfg(test)]` unit tests.
+* **Files (2)**: `python_canonical/module_path.rs`, `python_canonical/mod.rs` (compile-coupled `pub mod`; the `Cargo.toml` target + external harness are T1-setup / 096.012-T).
 * **Tests (RED→GREEN, 4)**: regular nested package `p/q/r.py` with a proven
   `__init__.py` chain → `p.q.r`; top-level `mod.py` → `mod`; **fail-closed table** →
   `None` (covers `__init__.py`, a `src/`-root where `src/` lacks `__init__.py`, an
   implicit PEP 420 namespace package, a non-identifier segment); non-`.py` → `None`.
-* **Verification**: `cargo test --test unit_python_canonical`; `cargo clippy
-  --all-targets -- -D warnings -D clippy::pedantic`; `cargo fmt --all -- --check`.
+* **Verification**: `cargo test` (inline `#[cfg(test)]` unit tests in `module_path.rs`; the external `unit_python_canonical` target is registered by T1-setup / 096.012-T); `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`; `cargo fmt --all -- --check`.
 * **Milestone**: a dotted path **only** for a provable regular-package chain; every
   unprovable layout (namespace / `src/`-root / `__init__.py`) fails closed.
+
+### T1-setup -- python_canonical test-target registration + external acceptance harness (096.012-T; domain: test/build-config)
+
+* **Why (C14-3 split, honoring the 2-hour rule):** T1 (096.001-T) previously bundled the pure module-path algorithm + its compile-coupled module scaffold + a NEW Cargo `[[test]]` target + a NEW external harness = 4 files across 2 domains, exceeding the 2-hour heuristic. This unit carves out the **test-target / build-config** concern so T1 stays a single-domain code task.
+* **Changes**: `Cargo.toml` -- register the `[[test]] name="unit_python_canonical" path="tests/unit/python_canonical_test.rs"` target (repo registers every nested `tests/unit/*.rs`; `unit_parsing` exists ~231-237, this target did not); `tests/unit/python_canonical_test.rs` -- the external acceptance harness exercising the public `python_module_path_for_file` over the fail-closed/resolve table.
+* **Depends on**: T1 (096.012-T `depends_on` 096.001-T; the harness compiles against T1's public fn). The compile-coupled module + pure fn (`mod.rs` + `module_path.rs`) stay in T1.
+* **Verification**: `cargo test --test unit_python_canonical`; clippy; fmt.
+* **Files (2)**: `Cargo.toml`, `tests/unit/python_canonical_test.rs`.
 
 ### T2 — Python import-binding capture (domain: code)
 
@@ -544,8 +546,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
   **Dynamic `global` / `nonlocal` writes (Anchor C T-d):** a `global f` (or `nonlocal f`)
   write that **rebinds** `f` in another scope makes sibling callers of `f`
   run-order-dependent → such a dynamic write **invalidates (fails closed) sibling callers**
-  of that name (a provably-ordered call inside the writing function itself may still
-  resolve). Example: `from a import f; def mutate(): global f; from b import f; def
+  of that name (the call inside the writing function itself ALSO fails closed -- it observes the dynamic-write result, not a statically provable function; resolving the RHS is a v1 non-goal). Example: `from a import f; def mutate(): global f; from b import f; def
   caller(): f()` → `caller()` fails closed.
   **Track each function-local import's position and each call site's position: a name
   bound by a function-local import LATER in the function emits NO binding for call sites
@@ -800,14 +801,8 @@ Every unit authors its failing test(s) first (RED), then the implementation
     scope** — unchanged legacy semantics.
   then reuse the existing `canonical_index.get(&target)` **singleton** match
   (`ids.len()==1`) — dropping on zero, ambiguous, or **duplicate** canonical path.
-  **F9: T5b adds a small public `function_ids_by_name`-style language-scoped helper in
-  `cozo_queries.rs`** (extraction of the resolver's inline singleton — a read-only
-  helper exposure, **not** a schema change); the earlier "No `cozo_queries.rs` change"
-  claim is **removed**.
-* **Files (3)**: `code_graph.rs`, `cozo_queries.rs` (the F9 helper exposure),
-  `tests/integration/calls_recall_acceptance_test.rs`
-  (`integration_calls_recall_acceptance`). (Three files, like T1's four — acceptable for
-  a single-domain code task; ≤4 scenarios preserved.)
+  **F9 (owned by 096.011-T, the T5b-seam split -- C13-4/C14-2):** the small public `function_ids_by_name`-style language-scoped helper in `cozo_queries.rs` (extraction of the resolver's inline singleton, a read-only helper exposure, **not** a schema change) plus the **typed no-target reason set + fallback POLICY** are implemented by **096.011-T**; T5b **consumes** them for the Y3+F3 no-target fallback and does **not** modify `cozo_queries.rs`. The earlier "No `cozo_queries.rs` change" claim is **removed** (that change now lives in 096.011-T).
+* **Files (2)**: `code_graph.rs`, `tests/integration/calls_recall_acceptance_test.rs` (`integration_calls_recall_acceptance`). (T5b is the **integration half**; it CONSUMES the F9 helper + typed-fallback policy owned by **096.011-T** (C13-4/C14-2), so `cozo_queries.rs` is NOT in T5b's file set; single-domain code task, <=4 scenarios preserved.)
 * **Tests (RED→GREEN, 4)** — **no shadowing here (R3; shadow cases live in T5c)**: two
   modules both define `parse`; caller does `bar.parse()` with `import bar` → edge
   resolves to **bar's** exact `parse` id (target-identity, not row-existence); **call-site
@@ -836,6 +831,17 @@ Every unit authors its failing test(s) first (RED), then the implementation
   edge**.
   **Shadow-rebind handling is deferred to T5c (R3), which wraps this resolution with an
   order-aware guard anchored on the winning binding (Y2 + F1).**
+
+### T5b-seam -- public language-scoped name->IDs helper + typed no-target fallback policy (096.011-T; domain: db/query)
+
+* **Why (C13-4 split, honoring the 2-hour rule):** T5b (096.006-T) previously bundled canonical target selection + a NEW public DB query helper (`cozo_queries.rs`, F9) + the typed fallback POLICY + integration coverage across >=3 files, exceeding the 2-hour heuristic. This unit carves out the **DB/query seam** so T5b stays a single-domain integration task.
+* **Changes**: `src/db/cozo_queries.rs` -- expose the pre-existing inline-private singleton as a small **public read-only language-scoped `function_ids_by_name`-style helper (F9)** (name -> IDs, filtered by language), and **define** the **typed no-target reason set** {`NoModuleContext`, `UnsupportedImportForm`, `CompetingBindings`, `Shadowed`, `DuplicateSameNameImport`} + the **fallback POLICY** (legacy name-only unique-match fires ONLY for the two recall-safe reasons {`NoModuleContext`, `UnsupportedImportForm`}; the other three emit NO edge -- Anchor B). No canonical-schema migration (additive helper + policy only).
+* **Depends on**: nothing (foundational DB/query seam; no dependency on binding-analysis tasks).
+* **Consumed by**: T5b (096.006-T `depends_on` 096.011-T) for its Y3+F3 no-target fallback; T5b wires canonical target selection to this policy.
+* **Verification**: `cargo test` unit coverage for the helper (unique / zero / ambiguous name -> correct ID set) + a compiling-but-failing harness consistent with the sibling tasks; clippy; fmt.
+* **Files (2)**: `src/db/cozo_queries.rs`, `tests/unit/python_canonical_test.rs` (helper unit coverage).
+
+**Current task DAG (post C14-3 split -- 13 tasks, acyclic):** `T3<-T1`; `T1-setup(096.012-T)<-{T1}`; `T5a<-{T2,T4,T2b}`; `T5b<-{T1,T3,T5a,T2b,T5b-seam(096.011-T)}`; `T5c<-{T5b,T2b}`; `T6<-{T3,T5b,T5c,T7}`; `T7<-{T3,T5b,T7-seam(096.013-T)}`; `T2b<-{T2}`; `T5b-seam(096.011-T)<-{}`; `T7-seam(096.013-T)<-{}`. Two structural changes vs the prior 11-task DAG: `096.012-T depends_on 096.001-T` (T1-setup consumes T1) and `096.010-T depends_on 096.013-T` (T7 consumes the T7-seam); 096.013-T is a source node and 096.012-T's only edge is into T1, so the graph stays acyclic.
 
 ### T5c — Shadow guard: module receiver + bare import (domain: code)
 
@@ -948,7 +954,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
   `calls_resolution_rolled_back` marker uses (`schema_meta_flag_set` /
   `set_schema_meta_flag`, `schema.rs:275`/`307`, generalized to store and compare a version
   value instead of a boolean `"true"`; relation created by `CREATE_SCHEMA_META`,
-  `schema.rs:876`). **NB — do NOT fold the extraction version into any content hash: a
+  `schema.rs:876`). **(C14-3 reconciliation: this `schema_meta` version-marker get/set SEAM is OWNED by T7-seam / 096.013-T; T7 CONSUMES the seam and retains only the `code_graph.rs` re-extraction / one-step resolution / partial-failure / rollout-gate logic.)** **NB — do NOT fold the extraction version into any content hash: a
   version-fingerprinted hash would break the byte-for-byte `content_hash` staleness contract
   (R1); the marker is a SEPARATE key/value record, never a hash ingredient.** On index/sync,
   when the stored
@@ -984,9 +990,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
   mismatch is detected, the run **defers**: it neither advances the marker, re-extracts, nor
   churns edges (a no-op fast-path) and records that a gated backfill is pending. This makes
   the operator-approval requirement **enforceable in code**, not merely documented.
-* **Files** (≤3): `src/services/code_graph.rs` (extraction-version constant + marker
-  read/compare/persist + one-step resolution), `src/db/cozo_backend/schema.rs` (the
-  version-valued `schema_meta` marker get/set seam), `tests/integration/code_graph_test.rs`.
+* **Files (2)**: `src/services/code_graph.rs` (extraction-version constant + marker read/compare/persist + one-step resolution + C7-3 partial-failure gate + C12-5 rollout opt-in gate), `tests/integration/code_graph_test.rs`. The `src/db/cozo_backend/schema.rs` version-valued `schema_meta` marker get/set seam is MOVED to T7-seam (096.013-T), which this task `depends_on` and CONSUMES.
 * **Tests (RED→GREEN, 4)**: **upgrade regression** — after an extraction-version-bump
   **sync** of an unchanged-hash `.py` file, the cross-module **resolved edge is present**
   (assert the RESOLVED EDGE, not merely the def's `canonical_path`) (Q2); **content-hash
@@ -1004,6 +1008,15 @@ Every unit authors its failing test(s) first (RED), then the implementation
   partial failure retries next sync (C7-3)**; **the backfill runs ONLY under the C12-5
   opt-in gate (operator-approved, never auto-fired by routine startup sync)**; the
   fast-path is preserved for current-version files.
+
+### T7-seam -- version-valued schema_meta extraction-version marker get/set seam (096.013-T; domain: db/schema)
+
+* **Why (C14-3 split, honoring the 2-hour rule + single skill domain):** T7 (096.010-T) previously bundled the DB schema-meta version-marker seam (`schema.rs`) with the indexing/rollout backfill logic (`code_graph.rs`) across 3 files / 2 domains. This unit carves out the **DB/schema seam** so T7 stays a single-domain indexing task.
+* **Changes**: `src/db/cozo_backend/schema.rs` -- generalize the durable `schema_meta` get/set (`schema_meta_flag_set` / `set_schema_meta_flag`, `schema.rs:275`/`307`; relation from `CREATE_SCHEMA_META`, `schema.rs:876`) to persist and compare a version value under `PYTHON_CANONICAL_EXTRACTION_VERSION` -- the analogue of the `calls_resolution_rolled_back` marker, but version-valued. No canonical-schema migration; the `content_hash` contract is untouched (R1).
+* **Depends on**: nothing (foundational DB/schema seam; a read/write over the existing durable `schema_meta` relation).
+* **Consumed by**: T7 (096.010-T `depends_on` 096.013-T) for its versioned re-extraction + one-step resolution backfill + partial-failure gate + rollout opt-in gate.
+* **Verification**: `cargo test` marker round-trip + compare unit coverage; clippy; fmt.
+* **Files (2)**: `src/db/cozo_backend/schema.rs`, `tests/unit/schema_meta_test.rs`.
 
 ### T6 — Documentation (domain: docs)
 
@@ -1055,13 +1068,13 @@ already upstream of T5b/T5c and only depends on T2, so adding T5a←T2b introduc
   `function_ids_by_canonical_path`, `canonical_paths_for_function_name`, and the
   staging queries are language-agnostic; reusing them removes the highest-blast
   layer from the change (verified in the spike). **Additive DB-layer changes are NOT
-  zero, but non-migrating:** T5b adds a **read-only, language-scoped `name→IDs` query
-  helper** in `cozo_queries.rs` (F9), and T7 reads/writes a **version marker in the
+  zero, but non-migrating:** 096.011-T (the T5b-seam) adds a **read-only, language-scoped `name→IDs` query
+  helper** in `cozo_queries.rs` (F9, consumed by T5b), and T7 reads/writes a **version marker in the
   existing `schema_meta` relation** (R1) — no canonical-schema (`function_meta` /
   `calls_edge`) migration and no `content_hash` contract change.
 * **Option A (provenance staging) over Option B (bare-name-pass edit).** Keeps the
   operator-gated `reresolve_calls_edges` **resolver logic** untouched and all canonical
-  logic in one place; keeps Rust output byte-identical. **F9 nuance:** T5b exposes a
+  logic in one place; keeps Rust output byte-identical. **F9 nuance:** the T5b-seam task 096.011-T exposes a
   small **read-only language-scoped name→IDs helper** in `cozo_queries.rs` (a minimal
   extraction of the resolver's inline-private singleton, used for the no-target legacy
   fallback) — this is a **helper exposure, not a resolver rewrite or schema change**,
@@ -1466,7 +1479,7 @@ for the two recall-safe no-target reasons {`NoModuleContext`, `UnsupportedImport
   {CompetingBindings, Shadowed, DuplicateSameNameImport}. Gating on T1==None alone would DROP
   the UnsupportedImportForm cases (python_bare is filtered out of `reresolve_calls_edges` at
   `cozo_queries.rs:2222-2227`).
-* **F9 (P1, impossible-as-written) — T5b (096.006-T).** Chose **option (a)**: expose a
+* **F9 (P1, impossible-as-written) — T5b (096.006-T); helper later relocated to 096.011-T (C13-4).** Chose **option (a)**: expose a
   public read-only language-scoped name→IDs singleton helper in `cozo_queries.rs` (the
   inline-private CozoScript at 2191-2205 cannot be reused as-is) and add it to T5b's scope;
   removed the "No cozo_queries.rs change" claim. (Option (b) rejected — it cannot serve the
@@ -1499,7 +1512,7 @@ for the two recall-safe no-target reasons {`NoModuleContext`, `UnsupportedImport
 T5c←{T5b,T2b}; T2b←{T2}; T3←{T1}; T6←{T3,T5b,T5c,T7}; T7←{T3,T5b}. **Task count stays 10;
 shipment 091-S stays 11 items** (096-F + 10 tasks). **F16 (split T5b) declined** — advisory/
 LOW, and the operator directed minimal DAG change; F3+F9 stay in T5b (3 files, ≤4 scenarios,
-mirroring T1's 4-file precedent). **F17 (`import a.b` root binding) treated as a
+mirroring T1's 4-file precedent). **[SUPERSEDED cycle-13 C13-4: T5b WAS later split -- F9 helper + typed-fallback policy moved to new task 096.011-T; task/manifest counts updated below; see the T5b-seam unit and current DAG.]** **F17 (`import a.b` root binding) treated as a
 defensive-test note** — the reviewer states it is likely already fail-closed. This is
 plan-review-fix **cycle 6 (operator-directed; Option A — structural revision, hard-stop
 after push)**.
@@ -1543,7 +1556,7 @@ invariant**.
   added.
 * **C7-4 (spike prose) — spike doc.** Added a clearly-labeled **SUPERSEDED** note to the
   spike's "no changes to `cozo_queries.rs`" conclusion + change-surface table row (T5b/F9
-  adds a public name→IDs helper); spike history preserved, not rewritten.
+  adds a public name→IDs helper); spike history preserved, not rewritten. (Per C13-4, the F9 helper was later relocated from T5b to 096.011-T.)
 * **Z3 (096-F resolution-rule prose) — 096-F.** Qualified the star/re-export/unbound
   "→ DROP" to "DROP (no canonical module-qualified edge; a unique legacy name-only edge is
   preserved per F3)", reconciled with the F3 recall goal.
@@ -1787,7 +1800,7 @@ audit; the report is retained only for its dangling-edge signal.**
    units** (T1, T2, T2b, T3, T4, T5a, T5b, T5c, T6, T7; stash `FE8B3B2D`) assembled into
    the **queued** shipment `091-S`. **Ship** claims `091-S` and executes the tasks in DAG
    order (T1/T2/T4 primitives first; T5a owns the F2 `code_graph.rs:896-908` change on
-   both arms; T5b owns the F9 `cozo_queries.rs` helper; T5c the F1 winner-anchored guard),
+   both arms; 096.011-T (the T5b-seam) owns the F9 `cozo_queries.rs` helper that T5b consumes; T5c the F1 winner-anchored guard),
    opens the PR, and runs the pre-merge gate + Monitoring contract. Stage's boundary ends
    at the reviewed, harvested, queued backlog.
 2. FF7DE872 (same-file shadowing) remains an independent backlog item — not gated
@@ -2014,7 +2027,7 @@ target-identity precision gate + manual audit + recall parity on the recall-safe
 otherwise unchanged and **acyclic** (T5a←{T2,T4}; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T2 and
 T1 remain source primitives). **Task count stays 10; shipment 091-S stays 11 items.** No
 scope expansion: module-level namespace resolution only, fail-closed; FF7DE872 independent;
-no 090-S/095-F dependency. **F16 (split T5b) declined** (advisory/LOW; minimal-DAG directive)
+no 090-S/095-F dependency. **F16 (split T5b) declined** (advisory/LOW; minimal-DAG directive) **[SUPERSEDED cycle-13 C13-4: split later performed; F9 helper + fallback policy -> 096.011-T.]**
 and **F17 treated as a defensive-test note** (reviewer says likely already fail-closed) —
 both reported to the operator rather than silently skipped. Because this cycle addressed **≥2
 P0s from a multi-model adversarial pass**, the gate is recorded as **hardened to convergence
