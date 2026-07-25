@@ -128,7 +128,7 @@ outcome. The trigger classes are:
   **before** the binder raises `UnboundLocalError` at runtime; a use **after** it targets
   the local, which is not a module symbol). The winner-to-call source-position ordering
   rule is therefore valid **only for module-level rebinds, never for function-local
-  binders**. Callers are top-level function bodies only (Anchor A). Canonical fail-closed
+  binders**. Callers are top-level function bodies only (Anchor A). **Carve-out (C13-1, global/nonlocal):** a name declared `global` / `nonlocal` in the SAME function is NOT function-local -- Python rebinds the outer / module (or enclosing) scope, not a function-local slot -- so such a name is EXCLUDED from T-a poisoning and delegated to T-d (dynamic write) / T2b; this makes T-a and T-d mutually exclusive AND jointly exhaustive over in-function binders of a name. Ordered-writer regression: `from a import f; def w(): global f; f = factory(); f()` -- the post-rebind `f()` INSIDE `w` may still resolve per T-d (a provably-ordered call inside the writing function), while a sibling `def caller(): f()` FAILS CLOSED. The whole-function-poison rule is retained for genuine function-local binders (no `global` / `nonlocal` declaration). Canonical fail-closed
   regression: `from bar import parse; def g(): parse(); parse = factory()` → **no edge**
   (the in-function `parse = …` poisons the whole body; the earlier `parse()` is
   UnboundLocalError, not `bar.parse`).
@@ -163,11 +163,11 @@ call-site-effective binding of the callee name is STATICALLY PROVABLE**; in ever
 case it **fails closed** — routed to `python_bare` staging so a downstream layer (T5b/T5c)
 adjudicates or drops it, never a guessed edge (013-D). "Statically provable" requires
 BOTH: (a) the winning binding is **unambiguous across every scope the resolver models**
-(module, enclosing-function, function-local) and is **not shadow-contested** by any
+(module, function-local; reachable caller scope only per Anchor A) and is **not shadow-contested** by any
 competing binding form — a named module import, a positioned **star-import invalidator**,
 a **non-import module / scope rebind** (assignment / augmented / `class` / `del` /
 `match`-case / `for` / `with … as` / `except … as` / walrus / parameter target), or a
-**scoped (function-local / enclosing-function) import**; **and** (b) it is the
+**scoped function-local import**; **and** (b) it is the
 binding effective **at the call site in execution order** (the time axis, C7-1). Any axis
 the resolver cannot prove — **scope OR binding form** — forces the fail-closed route.
 Expressed as a **prove-the-negative default**: *route a same-file `def` to `python_bare`
@@ -175,8 +175,7 @@ staging **unless** the name is PROVABLY the sole binding across every modeled sc
 import, no star, no scoped import, **and no non-import module/scope rebind form the
 resolver models** (the **Shared rebind-form set (RFS)**, defined once in §Design decision);
 if any competing binding — of any form, at any scope — cannot be proven absent, **stage,
-never a direct edge**.* Closure is therefore over **both** the scope axis (module /
-enclosing / function-local) **and** the binding-form axis (RFS), so neither a new scope nor
+never a direct edge**.* Closure is therefore over **both** the scope axis (module / function-local) **and** the binding-form axis (RFS), so neither a new scope nor
 a new syntactic rebind form can silently reopen a false-edge path.
 
 For a Python call in caller module `M` (module namespace `foo/bar.py` → `foo.bar`):
@@ -212,7 +211,7 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D). A **DROP
 > **whole** function body (Python `UnboundLocalError` semantics): a call **before** the
 > binder fails closed (no edge — UnboundLocalError); a call **after** it targets the
 > local, not a module symbol. The winner-to-call source-position ordering rule applies to
-> **module-level rebinds only**, never to function-local binders. Uncertain control-flow
+> **module-level rebinds only**, never to function-local binders (a `global` / `nonlocal`-declared name is not function-local; it is a module-scope rebind governed by T-d, C13-1). Uncertain control-flow
 > ordering → fail closed. (T2b; Anchor C.)
 
 > **No-module-context recall (Y3).** When caller `M` has **no provable module
@@ -237,7 +236,7 @@ Every drop path is a fail-closed no-edge, never a guessed edge (013-D). A **DROP
 > Symmetrically, a local `def` that appears **after** the import (and before the call)
 > wins. **This source-position ordering rule is defined over module-level rebinds only
 > (Anchor C T-a); a function-local binder poisons the whole function body irrespective of
-> its position and is never ordered against the call.** When source order cannot establish
+> its position and is never ordered against the call (genuine function-local binders only; a `global` / `nonlocal`-declared name is a module-scope rebind ordered per T-d, C13-1).** When source order cannot establish
 > a clear last binding, **fail closed** (no edge).
 
 > **Call-site-effective binding (C7-1) — function-body calls only.** "Last-binding-wins" is
@@ -307,7 +306,7 @@ owned by **exactly one** layer; everything unprovable fails closed.
 | Register the `unit_python_canonical` test target so verification runs | T1: `Cargo.toml` `[[test]]` entry (M3) |
 | Populate `function_meta.canonical_path` for Python module-level defs | T3: Python branch in `canonical_path_for_function` (reuses `upsert_function_with_canonical`); **package-topology changes (add/remove `__init__.py`) reindex/invalidate affected descendants past the content-hash skip (C6-1)** |
 | Emit `module.func()` as a canonical-eligible staged call (stop dropping it); `self`/`cls` stay dropped | T4: `python.rs` emits `is_qualified:true, raw_qualifier=<receiver>, qualifier_kind="module"`; excludes `self`/`cls` (M2) |
-| Route Python cross-file bare + module-qualified calls into canonical staging — on **both** indexing arms; **in-file shadowed calls must not short-circuit to a direct edge** | T5a: **both** Calls-consumer arms — full-index (851-908) **and sync (1573-1643)** — + `should_stage_provenance_call` (language-dispatched); the sync arm's name-only `put_staged_call` (1639) also routes through provenance for Python so T7 re-extraction never strands edges (X1, same class as Q2/R1); **the in-file `(Some,Some)` direct-edge shortcut (900-902) is made SHADOW-AWARE over SCOPES *and* FORMS (F2 root-defect, generalized cycle-7 Z1/Z2/C7-2, non-import-rebind axis closed cycle-8 C6): a same-file `def` is routed to `python_bare` staging whenever its name is SHADOW-CONTESTED by EITHER a producer-backed import signal — a named module import (T2), a positioned star-import invalidator (T2/F4), OR a scoped function-local/enclosing-function import (T2b) — OR any non-import rebind form in the Shared rebind-form set (RFS, §Design decision) that T5a detects with its OWN in-file tree-sitter scan (the same scan T5c runs; T2/T2b produce no non-import-rebind signal); expressed as the prove-the-negative default "keep the direct edge ONLY when provably the sole binding across every scope AND with no RFS form present" so future scopes AND forms are covered by construction; T5a OWNS this `code_graph.rs:896-908` change on both arms — no new producer, task, or DAG edge**; a callee with **no** competing binding keeps the direct fast path; **no-target bare calls stay recall-preserving via the legacy matcher (Y3/F3, resolved in T5b)** |
+| Route Python cross-file bare + module-qualified calls into canonical staging — on **both** indexing arms; **in-file shadowed calls must not short-circuit to a direct edge** | T5a: **both** Calls-consumer arms — full-index (851-908) **and sync (1573-1643)** — + `should_stage_provenance_call` (language-dispatched); the sync arm's name-only `put_staged_call` (1639) also routes through provenance for Python so T7 re-extraction never strands edges (X1, same class as Q2/R1); **the in-file `(Some,Some)` direct-edge shortcut (900-902) is made SHADOW-AWARE over SCOPES *and* FORMS (F2 root-defect, generalized cycle-7 Z1/Z2/C7-2, non-import-rebind axis closed cycle-8 C6): a same-file `def` is routed to `python_bare` staging whenever its name is SHADOW-CONTESTED by EITHER a producer-backed import signal — a named module import (T2), a positioned star-import invalidator (T2/F4), OR a scoped function-local import (T2b) — OR any non-import rebind form in the Shared rebind-form set (RFS, §Design decision) that T5a detects with its OWN in-file tree-sitter scan (the same scan T5c runs; T2/T2b produce no non-import-rebind signal); expressed as the prove-the-negative default "keep the direct edge ONLY when provably the sole binding across every scope AND with no RFS form present" so future scopes AND forms are covered by construction; T5a OWNS this `code_graph.rs:896-908` change on both arms — no new producer, task, or DAG edge**; a callee with **no** competing binding keeps the direct fast path; **no-target bare calls stay recall-preserving via the legacy matcher (Y3/F3, resolved in T5b)** |
 | **Fail closed on `def` + non-import module/scope rebind (C6 — the non-import-rebind axis)** (`def parse(); parse = factory(); parse()`; also `class parse`/`del parse`/`match`-case/`for`/`with … as`/`except … as`/walrus/parameter targets) | **DROP** — T5a's in-file routing scan detects the RFS rebind form (no producer needed) and routes the same-file `def` to `python_bare` staging instead of a direct `M.parse` edge; T5c then fails closed on the same RFS (order-aware). Asserted by T5a's routing-table test (`def f; f = factory(); f()` → STAGED, **no** direct `M.f`) and T5c's rebind table; composition-trace row C6 = DROP |
 | Python-aware canonical target resolution reusing the singleton fail-closed core | T5b: `python_ctx_for_staged_file` + Python branch in `canonical_target_for_staged_call`, dispatched by the T2 binding **kind** (R2); resolves to the **binding effective at the call site** — for a **function-body call** (the only call form the extractor stages, C9-3), the module (or own function-local, T2b) binding that is **stable when the call runs**, and **fails closed when invocation order cannot statically establish the binding** (e.g. a function-body call contested by a later module rebind — **C7-1**); **module-level (top-level) call ordering is a v1 non-goal** (top-level calls not extracted); **guard-agnostic — the T5c shadow guard wraps it downstream (R3)**; when T5b **derives no canonical target** it returns a **typed no-target reason (C9-4)** and applies the **legacy name-only unique-match** fallback (**F3**) **only** for the recall-safe reasons {`NoModuleContext` (T1 rejected `src/`-root / PEP 420 / `__init__.py`), `UnsupportedImportForm` (provable-namespace-but-unbound: star / re-export / relative)} via a **public language-scoped name→IDs helper in `cozo_queries.rs` (F9)**; **never** for {`CompetingBindings`, `Shadowed`, `DuplicateSameNameImport`} — those stay fully fail-closed (NO edge); non-unique names still fail closed |
 | Fail closed when any rebind shadows an imported **module receiver OR bare callee** name | T5c: drop `mod.func()` (receiver) **and** bare `parse()` (Q1) when the name is re-bound by a binding **later than the WINNING binding T5b resolved to** (import OR def, order-aware anchor — **F1**) — in the applicable scope — assignment/augmented/`for`/`with`/`except`/walrus/param/**`def`/`class`/`del`/`match`-case (X4)**/**later `from N import *` (F4)**/module-level (M1, Q1, X4); a rebind **before** the winner does not invalidate it, so **`from bar import parse; def parse(); def caller(): parse()` → `M.parse` SURVIVES (def-after-import, F1)** just as `def parse(); from bar import parse; def caller(): parse()` → `bar.parse` (Y2); and the winner is **call-site-effective, not whole-module** (**C7-1**, function-body calls only — top-level call ordering is a v1 non-goal, not extracted) |
@@ -338,14 +337,13 @@ not a schema change**):
   `M.callee` edge (`(Some,Some)`→`create_calls_edge`, 900-902)**. The cycle-6 F2 fix keyed
   the skip on **named module-level imports only**, which does **not** compose: a
   `from n import *` (a non-binding invalidator marker, Z1), a non-import module rebind
-  (`parse = factory()` / `class` / `del` / `match`-case, Z2/C6), or a **function-local /
-  enclosing-function import** (C7-2) all leave the predicate false, so the arm still mints
+  (`parse = factory()` / `class` / `del` / `match`-case, Z2/C6), or a **function-local import** (C7-2) all leave the predicate false, so the arm still mints
   a false direct edge and bypasses T2b/T5b/T5c. **T5a therefore makes this decision
   SHADOW-CONTEST-aware for Python via the prove-or-fail-closed invariant**, closing over
   **both scopes and binding forms**: a same-file `def` is routed to `python_bare` staging
   whenever its name is contested by **either** (i) a **producer-backed import signal** —
   a named module import, a positioned star-import invalidator (T2), or a scoped
-  function-local / enclosing-function import (T2b) — **or** (ii) **any non-import
+  function-local import (T2b) — **or** (ii) **any non-import
   module/scope rebind form in the Shared rebind-form set (RFS)**, which T2/T2b do **not**
   produce (they walk only import nodes), so **T5a detects these forms with its own in-file
   rebind-form scan — the SAME module/scope rebind-form scan T5c specifies (§T5c)**. Because
@@ -358,7 +356,7 @@ not a schema change**):
   scan **excludes the `def` currently under consideration** (the definition
   `find_function_id` matched is the **candidate target**, never a self-competitor) and counts
   only **OTHER** competing bindings **applicable to the caller's lexical scope** (module +
-  enclosing functions + the caller's own function — **not** unrelated sibling-scope
+  the caller's own function-local scope (enclosing / nested-function scopes are unreachable per Anchor A) — **not** unrelated sibling-scope
   locals/parameters). A same-file callee is kept on the **direct-edge fast path only when its
   matched def is PROVABLY the sole applicable binding** — no OTHER import/star/scoped-import
   signal **and** no OTHER RFS form in the caller's scope; if any competing binding cannot be
@@ -664,8 +662,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
     T2b/T5b/T5c. **T5a owns modifying `code_graph.rs:896-908` on BOTH arms** so that, for
     Python, a same-file `def` is routed through `python_bare` staging **whenever its name is
     contested by EITHER**: (i) a **producer-backed import signal** — a named module import,
-    a positioned **star-import invalidator** (T2), a **scoped function-local /
-    enclosing-function import** (T2b), or a positioned **ambiguity marker for a relative /
+    a positioned **star-import invalidator** (T2), a **scoped function-local import** (T2b), or a positioned **ambiguity marker for a relative /
     duplicate / conditional-`try` import** (Anchor C T-b/T-c, T2) — the guard must NOT fall
     through to a direct `M.f` edge while any such marker exists; **OR** (ii) **any non-import
     rebind form in the Shared rebind-form set (RFS, §Design decision)** that T5a detects with **its own in-file
@@ -678,7 +675,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
     **Self-exclusion + lexical scope (C9-1):** the scan **excludes the matched `def` under
     consideration** (that def is the candidate target, not a self-competitor) and counts only
     **OTHER** bindings of the name **applicable to the caller's lexical scope** (module +
-    enclosing functions + the caller's own function — not unrelated sibling-scope
+    the caller's own function-local scope (enclosing / nested-function scopes are unreachable per Anchor A) — not unrelated sibling-scope
     locals/parameters). A same-file callee keeps the `direct`-edge fast path **only when its
     matched def is PROVABLY the sole applicable binding** — no OTHER import/star/scoped signal
     **and** no OTHER RFS form in the caller's scope; else it is staged. (Without self-exclusion
@@ -699,7 +696,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
 * **Files**: `code_graph.rs` (two consumer sites), `tests/integration/code_graph_test.rs`.
 * **Depends on T2 and T2b** (in addition to T4): T5a consults **T2's `ImportBindings`**
   (named module imports + positioned star markers) **and T2b's scoped-binding model**
-  (function-local / enclosing-function imports) to decide whether a same-file callee is
+  (function-local imports) to decide whether a same-file callee is
   shadow-contested by an **import** at any modeled scope. Cycle-6 added the **T2→T5a**
   edge (F2); cycle-7 added the **T2b→T5a** edge (Z1/Z2/C7-2 generalization). The
   **non-import rebind forms (RFS, C6) have no producer** — T2/T2b walk only import nodes —
@@ -716,8 +713,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
   C6)** — a same-file `def parse` whose name is contested by **any** of {a later named
   import; a `from n import *` after the def; a **non-import module rebind
   `parse = factory()`** (and `class parse` / `del parse` / `match`-case capture); a
-  function-local import `def g(): from bar import parse; parse()`; an enclosing-function
-  import} is **routed to `python_bare` staging (assert NO direct `M.parse` edge)** on both
+  function-local import `def g(): from bar import parse; parse()`} is **routed to `python_bare` staging (assert NO direct `M.parse` edge)** on both
   arms — the `def f; f = factory(); f()` case in particular MUST NOT mint a direct `M.f`
   edge — whereas an in-file callee **provably the sole binding** (no import/star/scoped
   signal and no RFS form) still yields a `direct` edge; (4) a Rust cross-file bare call is
@@ -1038,7 +1034,7 @@ No cycles. T1 and T2 are independent primitives. T2b refines T2 (scope model). T
 needs T1. T4 is parser-independent of T1–T3. **T5a needs T4, T2 AND T2b** — T5a's
 shadow-aware in-file routing consults **T2's `ImportBindings`** (named module imports +
 positioned star markers, the **T2→T5a** edge added cycle-6 for F2) **and T2b's
-scoped-binding model** (function-local / enclosing-function imports, the **T2b→T5a** edge
+scoped-binding model** (function-local imports, the **T2b→T5a** edge
 added **cycle-7** for the Z1/Z2/C7-2 generalization) to decide whether a same-file callee
 is shadow-contested at any modeled scope. T5b needs T1, T2b, T3, T5a — and is
 **guard-agnostic (R3): it does not depend on T5c and is independently completable**. T5c
@@ -1128,7 +1124,7 @@ already upstream of T5b/T5c and only depends on T2, so adding T5a←T2b introduc
 | **Wrong module-path mints a false edge** (the one real correctness risk): `__init__.py`, PEP 420 namespace packages, `src/`-layout roots | **T1 resolves a dotted path only when every ancestor dir is a provable regular package (`__init__.py`), predicate derived from the indexed file set — no config source (M5, Q3)**: `__init__.py`, `src/`-style roots, and implicit PEP 420 namespace packages REJECT → `None`→`""` (never a match target, D4); T1 tests pin `src/`-layout + implicit-namespace + `__init__.py`; T3/T5b tests pin `__init__.py`→`""` |
 | **Recall trade-off: `src/`-layout & namespace-package defs get no canonical path (Q3 narrowing)** | Deliberate fail-closed narrowing (Constitution VI — no speculative source-root config; none exists at `config.rs:98-120`): those calls fall back to the existing **name-only** unique-match — **T5b routes no-module-context bare calls to the legacy matcher (Y3)** since T5a's `python_bare` stamp would otherwise exclude them — no regression vs today, never a false edge; source-root-aware resolution is a documented **v1 non-goal** (T6) for a future iteration with a real config source |
 | **Any rebind shadows an imported module receiver OR bare callee** (`import bar; bar = f(); def g(): bar.parse()` **or** `from bar import parse; parse = f(); def caller(): parse()` **or** `import bar; class bar: ...; def g(): bar.parse()`) → false edge | **T5c fails closed on the full rebind-target set — but only for a rebind that occurs AFTER the WINNING binding T5b resolved to (import OR def) in effective order (order-aware anchor, Y2 + F1; an earlier rebind — and a `def`-after-import that IS the winner, e.g. `from bar import parse; def parse(); def caller(): parse()` → `M.parse` — leaves the resolution intact) — in the applicable scope for BOTH the receiver AND the bare callee name (M1, Q1, X4)**: assignment, augmented (`+=`), `for`/`with … as`/`except … as`/walrus/parameter, **`def`/`class`/`del`/`match`-case capture (X4)**, a **later `from N import *` star (F4)**, and module-level rebind; consumes T2b's scope model |
-| **Root defect: in-file `(Some,Some)` direct-edge shortcut mints a false `M.callee` edge for a shadow-contested same-file def and hides last-binding-wins (F2; generalized cycle-7 Z1/Z2/C7-2; non-import-rebind axis closed cycle-8 C6)** (`def parse(); from bar import parse; def caller(): parse()` → wrongly a direct `M.parse` edge at `code_graph.rs:900-902`; cycle-6's named-import-only predicate also missed `from n import *` after a def (Z1), non-import rebinds (Z2/C6 — `parse = factory()`/`class`/`del`/`match`-case), and function-local/enclosing imports (C7-2)) | **T5a makes the in-file bare-call decision SHADOW-CONTEST-aware over SCOPES *and* FORMS on BOTH arms (896-908 full-index + 1573-1643 sync) via the prove-or-fail-closed invariant: a same-file `def` is routed to `python_bare` staging whenever its name is contested by EITHER a producer-backed import signal — a named module import (T2), a positioned star-import invalidator (T2/F4), OR a scoped function-local/enclosing-function import (T2b) — OR any non-import rebind form in the Shared rebind-form set (RFS) that T5a detects with its OWN in-file tree-sitter scan (the same scan T5c runs; T2/T2b produce no non-import-rebind signal). Expressed as the prove-the-negative default "keep the direct edge ONLY when provably the sole binding across every scope AND with no RFS form present", so future scopes AND forms are covered by construction; a callee with no competing binding keeps the direct fast path. T5a OWNS this code change; the C6 closure needs no new producer, task, or DAG edge (T5a self-serves via an in-memory re-parse of the in-scope file source, cached once per file; the matched def is self-excluded from the contest — C9-1/C9-2).** |
+| **Root defect: in-file `(Some,Some)` direct-edge shortcut mints a false `M.callee` edge for a shadow-contested same-file def and hides last-binding-wins (F2; generalized cycle-7 Z1/Z2/C7-2; non-import-rebind axis closed cycle-8 C6)** (`def parse(); from bar import parse; def caller(): parse()` → wrongly a direct `M.parse` edge at `code_graph.rs:900-902`; cycle-6's named-import-only predicate also missed `from n import *` after a def (Z1), non-import rebinds (Z2/C6 — `parse = factory()`/`class`/`del`/`match`-case), and function-local imports (C7-2)) | **T5a makes the in-file bare-call decision SHADOW-CONTEST-aware over SCOPES *and* FORMS on BOTH arms (896-908 full-index + 1573-1643 sync) via the prove-or-fail-closed invariant: a same-file `def` is routed to `python_bare` staging whenever its name is contested by EITHER a producer-backed import signal — a named module import (T2), a positioned star-import invalidator (T2/F4), OR a scoped function-local import (T2b) — OR any non-import rebind form in the Shared rebind-form set (RFS) that T5a detects with its OWN in-file tree-sitter scan (the same scan T5c runs; T2/T2b produce no non-import-rebind signal). Expressed as the prove-the-negative default "keep the direct edge ONLY when provably the sole binding across every scope AND with no RFS form present", so future scopes AND forms are covered by construction; a callee with no competing binding keeps the direct fast path. T5a OWNS this code change; the C6 closure needs no new producer, task, or DAG edge (T5a self-serves via an in-memory re-parse of the in-scope file source, cached once per file; the matched def is self-excluded from the contest — C9-1/C9-2).** |
 | **Call-position ignored — a function-body call whose module binding is contested by a later module-level rebind is invocation-order-ambiguous (C7-1)** (`def parse(): ...; def g(): parse(); from bar import parse` — `g` may run before or after the import) | **T5b resolves to the binding EFFECTIVE AT THE CALL SITE, defined over function-body calls only (the extractor stages calls only from function bodies — top-level calls are not extracted, C9-3): a function-body call resolves to its module (or own function-local, T2b) binding ONLY when that binding is stable (no later module-level rebind of the name); a function-body call contested by a later module-level rebind FAILS CLOSED (prove-or-fail-closed on the time axis). Module-level (top-level) call ordering is a documented v1 non-goal — such cases are neither regressed nor newly handled. Stable-binding and fail-closed cases pinned in T5b/T5c.** |
 | **Stale-forever migration: persisting the extraction-version marker after a PARTIAL upgrade run hash-skips the failed unchanged files indefinitely (C7-3)** (sync records per-file failures in `SyncResult.errors` and continues, `code_graph.rs:1215-1221`) | **T7 keeps the OLD `PYTHON_CANONICAL_EXTRACTION_VERSION` marker whenever the pass had ANY per-file failure (non-empty `errors` for the affected `.py` set), so migration retries on the next sync; the new version persists ONLY after every affected file AND the resolution pass succeed. A partial-failure regression test asserts the marker is not advanced and the failed file is re-attempted next sync.** |
 | **Function-local import leaks / competing bindings overwrite** (flat file-wide map) → false edge from the wrong module | **T2 fails closed on competing/duplicate bindings; T2b scopes module-level vs per-function bindings so a local import never leaks (M1)** |
@@ -1492,7 +1488,7 @@ for the two recall-safe no-target reasons {`NoModuleContext`, `UnsupportedImport
 * **C6-4/5 (+F6/F7) — 096-F DoD + T6 (096.008-T) + §Monitoring + Risks.** Replaced the
   report-only 1.000-precision claim with a **manifest-backed target-identity gate** (exact
   callee id on an adversarial corpus, non-zero module-qualified edge count) + a manual
-  audit + an F7 recall-parity signal; `get_retrieval_eval_report` is kept only as a
+  audit + an F7 recall-parity signal (recall-safe subset, Anchor B); `get_retrieval_eval_report` is kept only as a
   dangling-edge tripwire.
 * **F18 / F19 (consistency).** Reconciled the DAG edge-list (T3→T6 added to the main list to
   match the trace) and qualified the "Option B" naming collision at `096-F:21`.
@@ -1524,8 +1520,7 @@ invariant**.
   binding is statically provable; otherwise fail closed."* Rewrote T5a's `(Some,Some)`
   routing predicate to skip the direct-edge shortcut whenever the same-file `def`'s name is
   **shadow-contested at ANY scope the resolver models** — named import (Z-none), positioned
-  star-import invalidator (Z1), non-import module rebind (Z2), OR scoped function-local /
-  enclosing-function import (C7-2). Expressed as an abstraction (*"shadow-contested at any
+  star-import invalidator (Z1), non-import module rebind (Z2), OR scoped function-local import (C7-2). Expressed as an abstraction (*"shadow-contested at any
   modeled scope"*), **not** axis-by-axis, so future axes are covered by construction. This
   closes the F4 remainder (star-after-def now routes to staging, so T5c's star guard is
   reachable) in the same abstraction.
@@ -1554,7 +1549,7 @@ invariant**.
   preserved per F3)", reconciled with the F3 recall goal.
 
 **DAG change (the ONLY one this cycle): T2b→T5a** — T5a's generalized predicate must
-consult T2b's scoped-binding signals (function-local / enclosing imports), not just T2's
+consult T2b's scoped-binding signals (function-local imports), not just T2's
 module-level `ImportBindings`. New edge list (acyclic): T5a←{T2,T2b,T4}; T5b←{T1,T3,T5a,T2b};
 T5c←{T5b,T2b}; T2b←{T2}; T3←{T1}; T6←{T3,T5b,T5c,T7}; T7←{T3,T5b}. **Acyclicity:** T2b only
 depends on T2 and is already upstream of T5b/T5c, so adding T5a←T2b introduces no back-edge
@@ -1643,8 +1638,7 @@ atop `1d4f9caf`. **None create a false edge** — C9-1/C9-4 only tighten HOW a v
   OWN binding for every `def f; f()`, defeating the promised direct fast path (dead code — **no
   false edge**). Fix: T5a's in-file scan **excludes the matched `def` under consideration** (that
   def is the candidate target, not a self-competitor) and counts only bindings of the name
-  **OTHER** than that def, **applicable to the caller's lexical scope** (module + enclosing
-  functions + the caller's own function — not unrelated sibling-scope locals/params).
+  **OTHER** than that def, **applicable to the caller's lexical scope** (module + the caller's own function-local scope — not unrelated sibling-scope locals/params).
   "Shadow-contested" now means "contested by a binding OTHER than the def under consideration,
   within the caller's applicable lexical scope"; the direct fast path is taken **iff** the matched
   def is provably the sole applicable binding.
@@ -1760,10 +1754,7 @@ audit; the report is retained only for its dangling-edge signal.**
 * **Secondary signal — dangling-edge rate** via `get_retrieval_eval_report` over the
   `run_retrieval_eval` corpus (detects edges to non-existent targets only; used as a
   cheap regression tripwire, NOT as the precision certificate).
-* **Recall-parity signal (F7):** the eval gate also asserts that every unique cross-file
-  bare call that resolved via the legacy name-only matcher **before** this feature still
-  resolves **after** it (Y3/F3 fallback), so the `python_bare` routing introduces no
-  recall regression.
+* **Recall-parity signal (F7), scoped to the recall-safe subset (Anchor B):** the eval gate asserts that every unique cross-file bare call that resolved via the legacy name-only matcher **before** this feature AND is NOT intentionally suppressed by a typed fail-closed reason still resolves **after** it (Y3/F3 fallback for the recall-safe reasons {`NoModuleContext`, `UnsupportedImportForm`} -- *no canonical edge, fallback allowed*, Anchor B), so `python_bare` routing introduces no recall regression on that subset. Intentional fail-closed drops ({`CompetingBindings`, `Shadowed`, `DuplicateSameNameImport`} -- *no edge*, Anchor B) are EXPECTED recall changes, NOT regressions, and are excluded from the parity denominator.
 * **Baseline (spike floor)** — **precision = 1.000 / zero false module-qualified edges**
   on the manifest gate. The spike set a hard zero-false-edge floor (013-D); v1 emits an
   edge only on an unambiguous singleton canonical match and fails closed on every
@@ -2017,7 +2008,7 @@ legacy name-only unique-match for the two recall-safe no-target reasons {`NoModu
 binding** (import OR def), so `from bar import parse; def parse(); def caller(): parse()` →
 `M.parse` survives (F1). F4 (later-star invalidator), F5 (nested-scope isolation + poison
 + positions), C6-1 (package-topology invalidation), and C6-4/5 (manifest-backed
-target-identity precision gate + manual audit + recall parity) complete the set.
+target-identity precision gate + manual audit + recall parity on the recall-safe subset) complete the set.
 
 **One DAG edge added — T2→T5a (F2)** — the only graph change this cycle; the task graph is
 otherwise unchanged and **acyclic** (T5a←{T2,T4}; T5b←{T1,T3,T5a,T2b}; T5c←{T5b,T2b}; T2 and
@@ -2037,7 +2028,7 @@ A focused **3-model adversarial re-check** confirmed cycle-6's **F1/F2/F3/F9/F5 
 (every original P0/P1 genuinely resolved), then triangulated **one remaining root defect**
 plus bounded adjacent items. Root: cycle-6's F2 predicate was keyed on **named module-level
 imports only**, so three findings are the **same class** — Z1 (star-after-def, P0, 3/3),
-Z2 (non-import module rebind, P1), C7-2 (function-local / enclosing import, P1) — each
+Z2 (non-import module rebind, P1), C7-2 (function-local import, P1) — each
 leaving the `(Some,Some)` arm to mint a false direct edge that bypasses T2b/T5b/T5c. The
 operator elected **Option A (fix substantively, then push and STOP)**; this is the **LAST
 structural pass**.
