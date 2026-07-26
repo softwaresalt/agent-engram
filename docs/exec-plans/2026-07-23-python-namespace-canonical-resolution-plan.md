@@ -302,7 +302,7 @@ owned by **exactly one** layer; everything unprovable fails closed.
 | Module namespace `foo/bar.py` → `foo.bar` (only when every ancestor is a **provable regular package**) | T1: `python_module_path_for_file(rel_path, is_regular_package)` (predicate from the indexed `__init__.py` set — **no config source**, Q3); REJECT `src/`-roots / implicit PEP 420 namespace / `__init__.py`; **source-root-aware resolution = v1 non-goal** (M5, Q3) |
 | Symbol-level import bindings (Python analogue of Rust `UseGraph`) | T2: `extract_python_import_bindings` records `(canonical_path, kind∈{ModuleImport, FromImportSymbol}, source_position)` (R2 + **F14 positions**) and fails closed on competing/duplicate bindings (M1); a module-scope **`from N import *` is recorded as a positioned order-aware invalidator marker (F4)**, not a binding |
 | Scope-correct bindings — function-local imports must not leak; module vs function scope; **function-local import ordering**; **nested-scope isolation (Anchor A)** | T2b: scoped binding model (M1) + **order-aware function-local imports — a name bound by a function-local import is local for the whole body, so calls *before* the import fail closed (Y1)** + **nested-scope isolation: nested / enclosing scopes are represented only to keep a nested local from leaking UP to its enclosing top-level caller (honoring `global` at module scope), or fail closed when the applicable scope binds the name ambiguously (F5); resolving a nested / closure function AS A CALLER is a v1 non-goal (Anchor A)**; a pre-import function-local use is a **poison/tombstone that forces fail-closed (F8)**, never a fall-through to module scope |
-| Register the `unit_python_canonical` test target so verification runs | T1: `Cargo.toml` `[[test]]` entry (M3) |
+| Register the `unit_python_canonical` test target so verification runs | T1-setup (096.012-T): `Cargo.toml` `[[test]]` entry (M3), consumed by T1/T2/T2b verification (C14-3 split; T2 and T2b `depend_on` 096.012-T per C15-1) |
 | Populate `function_meta.canonical_path` for Python module-level defs | T3: Python branch in `canonical_path_for_function` (reuses `upsert_function_with_canonical`); **package-topology changes (add/remove `__init__.py`) reindex/invalidate affected descendants past the content-hash skip (C6-1)** |
 | Emit `module.func()` as a canonical-eligible staged call (stop dropping it); `self`/`cls` stay dropped | T4: `python.rs` emits `is_qualified:true, raw_qualifier=<receiver>, qualifier_kind="module"`; excludes `self`/`cls` (M2) |
 | Route Python cross-file bare + module-qualified calls into canonical staging — on **both** indexing arms; **in-file shadowed calls must not short-circuit to a direct edge** | T5a: **both** Calls-consumer arms — full-index (851-908) **and sync (1573-1643)** — + `should_stage_provenance_call` (language-dispatched); the sync arm's name-only `put_staged_call` (1639) also routes through provenance for Python so T7 re-extraction never strands edges (X1, same class as Q2/R1); **the in-file `(Some,Some)` direct-edge shortcut (900-902) is made SHADOW-AWARE over SCOPES *and* FORMS (F2 root-defect, generalized cycle-7 Z1/Z2/C7-2, non-import-rebind axis closed cycle-8 C6): a same-file `def` is routed to `python_bare` staging whenever its name is SHADOW-CONTESTED by EITHER a producer-backed import signal — a named module import (T2), a positioned star-import invalidator (T2/F4), OR a scoped function-local import (T2b) — OR any non-import rebind form in the Shared rebind-form set (RFS, §Design decision) that T5a detects with its OWN in-file tree-sitter scan (the same scan T5c runs; T2/T2b produce no non-import-rebind signal); expressed as the prove-the-negative default "keep the direct edge ONLY when provably the sole binding across every scope AND with no RFS form present" so future scopes AND forms are covered by construction; T5a OWNS this `code_graph.rs:896-908` change on both arms — no new producer, task, or DAG edge**; a callee with **no** competing binding keeps the direct fast path; **no-target bare calls stay recall-preserving via the legacy matcher (Y3/F3, resolved in T5b)** |
@@ -513,8 +513,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
   **before** does not; competing `import p` + `from q import p` → **no** binding **plus an
   ambiguity marker (T-b)**, and a `try`/`if`-guarded import → **ambiguity marker (T-c)** —
   both folded into the fail-closed table (M1) rather than adding scenarios.
-* **Verification**: `cargo test --test unit_python_canonical` (target registered in
-  T1); clippy; fmt.
+* **Verification**: `cargo test --test unit_python_canonical` (target registered by T1-setup / 096.012-T); clippy; fmt.
 * **Milestone**: symbol-level bindings; star/relative/dynamic **and** competing
   bindings fail closed; **relative / duplicate / conditional-`try` imports are recorded as
   positioned ambiguity markers (Anchor C T-b/T-c) so T5a treats them as contests.**
@@ -569,7 +568,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
   scope**; **(4)** when a call's position relative to a
   function-local binding can't be established (branchy control flow) **or** the applicable
   (function-local or module) scope binds the name ambiguously → **no** edge (fail closed, Y1/F5).
-* **Verification**: `cargo test --test unit_python_canonical`; clippy; fmt.
+* **Verification**: `cargo test --test unit_python_canonical` (target from T1-setup / 096.012-T); clippy; fmt.
 * **Milestone**: bindings are scope-correct (**module + top-level-function-local; nested
   scopes represented for isolation only, F5**) **and order-correct**; function-local
   imports cannot leak to siblings, a nested local cannot leak up to its enclosing top-level
@@ -841,7 +840,7 @@ Every unit authors its failing test(s) first (RED), then the implementation
 * **Verification**: `cargo test` unit coverage for the helper (unique / zero / ambiguous name -> correct ID set) + a compiling-but-failing harness consistent with the sibling tasks; clippy; fmt.
 * **Files (2)**: `src/db/cozo_queries.rs`, `tests/unit/python_canonical_test.rs` (helper unit coverage).
 
-**Current task DAG (post C14-3 split -- 13 tasks, acyclic):** `T3<-T1`; `T1-setup(096.012-T)<-{T1}`; `T5a<-{T2,T4,T2b}`; `T5b<-{T1,T3,T5a,T2b,T5b-seam(096.011-T)}`; `T5c<-{T5b,T2b}`; `T6<-{T3,T5b,T5c,T7}`; `T7<-{T3,T5b,T7-seam(096.013-T)}`; `T2b<-{T2}`; `T5b-seam(096.011-T)<-{}`; `T7-seam(096.013-T)<-{}`. Two structural changes vs the prior 11-task DAG: `096.012-T depends_on 096.001-T` (T1-setup consumes T1) and `096.010-T depends_on 096.013-T` (T7 consumes the T7-seam); 096.013-T is a source node and 096.012-T's only edge is into T1, so the graph stays acyclic.
+**Current task DAG (post C15-1 harness-dep wiring -- 13 tasks, acyclic):** `T3<-T1`; `T1-setup(096.012-T)<-{T1}`; `T2<-{T1-setup(096.012-T)}`; `T5a<-{T2,T4,T2b}`; `T5b<-{T1,T3,T5a,T2b,T5b-seam(096.011-T)}`; `T5c<-{T5b,T2b}`; `T6<-{T3,T5b,T5c,T7}`; `T7<-{T3,T5b,T7-seam(096.013-T)}`; `T2b<-{T2,T1-setup(096.012-T)}`; `T5b-seam(096.011-T)<-{}`; `T7-seam(096.013-T)<-{}`. C15-1 adds `096.002-T depends_on 096.012-T` and `096.009-T depends_on 096.012-T` (T2 and T2b consume the `unit_python_canonical` harness target that 096.012-T registers); with the C14-3 edges `096.012-T depends_on 096.001-T` and `096.010-T depends_on 096.013-T`, 096.013-T stays a source node and every 096.012-T edge points only into the leaf 096.001-T, so the graph stays acyclic.
 
 ### T5c — Shadow guard: module receiver + bare import (domain: code)
 
@@ -983,14 +982,13 @@ Every unit authors its failing test(s) first (RED), then the implementation
   toward stale-skip).
 * **C12-5 — enforceable rollout gate (opt-in, not auto-fired).** Routine startup
   auto-**sync** MUST NOT run the version-mismatch backfill. The backfill is gated behind an
-  **explicit opt-in** — an `index --backfill-python-canonical` invocation or a
-  `PYTHON_CANONICAL_BACKFILL` activation flag (deferred activation) — so the
+  **explicit opt-in** — the boolean CLI flag `engram index --backfill-python-canonical` (equivalently `engram sync --backfill-python-canonical`), matching engram's established `--force`/`--full`/`--direct` index/sync convention -- a `bool` plumbed via `run_index`/`run_sync` and translated by a `force_params`-style helper into a JSON param carried across the `index_workspace`/`sync_workspace` service boundary (`src/cli/commands/indexing.rs:10-101`; `src/cli/flags.rs:9-44`). **Decision (C15-4):** environment/activation-variable toggles are **not** used anywhere in engram's CLI/service/config layers (only `env::current_dir()` for workspace resolution) and a compile-time cargo feature is rejected (a runtime behavior toggle must not require a recompile), so the CLI flag is adopted and the `PYTHON_CANONICAL_BACKFILL` activation-flag alternative is **dropped** — so the
   high-blast-radius re-extraction runs **only** when Ship invokes it **after operator
   approval** (strict-safety, §Hardening Signals). When the gate is **absent** and a version
   mismatch is detected, the run **defers**: it neither advances the marker, re-extracts, nor
   churns edges (a no-op fast-path) and records that a gated backfill is pending. This makes
   the operator-approval requirement **enforceable in code**, not merely documented.
-* **Files (2)**: `src/services/code_graph.rs` (extraction-version constant + marker read/compare/persist + one-step resolution + C7-3 partial-failure gate + C12-5 rollout opt-in gate), `tests/integration/code_graph_test.rs`. The `src/db/cozo_backend/schema.rs` version-valued `schema_meta` marker get/set seam is MOVED to T7-seam (096.013-T), which this task `depends_on` and CONSUMES.
+* **Files (2)**: `src/services/code_graph.rs` (extraction-version constant + marker read/compare/persist + one-step resolution + C7-3 partial-failure gate + C12-5 rollout opt-in gate), `tests/integration/code_graph_test.rs`. The `src/db/cozo_backend/schema.rs` version-valued `schema_meta` marker get/set seam is MOVED to T7-seam (096.013-T), which this task `depends_on` and CONSUMES. The `--backfill-python-canonical` CLI arg (C15-4) is a trivial mechanical mirror of the existing `--force` flag -- a ~2-line addition in `src/cli/commands/indexing.rs` plus a `force_params`-style helper, riding the established plumbing -- so T7's operative gate reads the resulting `backfill_python_canonical` param from the `index_workspace`/`sync_workspace` params exactly as it reads `force`; the <=2-substantive-file, single-indexing-domain 2-hour envelope holds.
 * **Tests (RED→GREEN, 4)**: **upgrade regression** — after an extraction-version-bump
   **sync** of an unchanged-hash `.py` file, the cross-module **resolved edge is present**
   (assert the RESOLVED EDGE, not merely the def's `canonical_path`) (Q2); **content-hash
@@ -1238,8 +1236,7 @@ invariant. That elevates it above a parser-local change.
   gate, and fail-closed acceptance tests above. **Operator approval path (strict-safety,
   high blast radius): Ship MUST obtain explicit operator approval before executing the T7
   extraction-version backfill** — the migration is not auto-run as part of routine staging,
-  and this is **enforced in code** by the C12-5 opt-in gate (an explicit
-  `index --backfill-python-canonical` / `PYTHON_CANONICAL_BACKFILL` activation): routine
+  and this is **enforced in code** by the C12-5 opt-in gate (the `engram index --backfill-python-canonical` CLI flag -- C15-4, matching the established `--force` convention): routine
   startup auto-sync **defers** the backfill (no marker advance, no re-extraction, no edge
   churn) until the operator-approved opt-in is set.
 
@@ -1264,7 +1261,7 @@ fail-closed; FF7DE872 stays independent; no 090-S/095-F dependency):
   (Task 096.004-T.)
 * **M3 — test target registered.** `unit_python_canonical` did not exist; T1 now
   registers the `[[test]]` entry in `Cargo.toml` and lists it in its file set;
-  T1/T2 verification commands are correct. (Tasks 096.001-T, 096.002-T.)
+  T1/T2 verification commands are correct. (Tasks 096.001-T, 096.002-T.) **[SUPERSEDED C14-3/C15-1: the `[[test]]` registration + harness were split into T1-setup (096.012-T); T2 and T2b now `depend_on` 096.012-T so the target exists before their verification runs.]**
 * **M4 — real backfill trigger.** "No migration" was unsafe (content-hash skip +
   full-index-only post-pass). New rollout task **T7** re-extracts stale-version `.py`
   files (or documented `index --force`) with an upgrade regression test. (New task
