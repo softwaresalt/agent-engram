@@ -18,6 +18,7 @@ use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
 use crate::services::parsing::canonical;
+use crate::services::parsing::python_canonical::python_module_path_for_file;
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
@@ -142,7 +143,32 @@ pub(crate) fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSe
 
 /// Resolve a parsed function/method's additive `canonical_path`, or `""` when it
 /// cannot be resolved (never a canonical match target — D4).
+///
+/// Dispatches on `language`: Rust uses the module/use-graph canonical resolver;
+/// Python (096-F/T3) uses its module-namespace path `"<module>.<name>"` when the
+/// file sits on a provable regular-package chain (`python_module` is `Some`),
+/// else `""` (fail closed). Other languages carry no canonical identity yet.
 fn canonical_path_for_function(
+    language: Language,
+    crates: &canonical::WorkspaceCrates,
+    rust_ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
+    python_module: Option<&str>,
+    unsafe_prefixes: &HashSet<String>,
+    name: &str,
+) -> String {
+    match language {
+        Language::Rust => rust_canonical_path_for_function(crates, rust_ctx, unsafe_prefixes, name),
+        Language::Python => python_module
+            .map(|module| format!("{module}.{name}"))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Rust canonical-path resolution via the module + use-graph resolver, or `""`
+/// when the layout is not deterministically resolvable or resolves under an
+/// unsafe module prefix (fail-closed — never a canonical match target, D4).
+fn rust_canonical_path_for_function(
     crates: &canonical::WorkspaceCrates,
     ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
     unsafe_prefixes: &HashSet<String>,
@@ -168,6 +194,48 @@ fn canonical_path_for_function(
     }
 }
 
+/// Derive the workspace-relative directories that are provable Python **regular
+/// packages** — i.e. contain an `__init__.py` — from the discovered file list.
+/// Returned as forward-slash `/`-joined paths (root package → `""`), matching
+/// the ancestor-dir spelling `python_module_path_for_file` queries.
+fn python_package_dirs(files: &[std::path::PathBuf], ws_path: &Path) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for f in files {
+        let Ok(rel) = f.strip_prefix(ws_path) else {
+            continue;
+        };
+        let norm = rel.to_string_lossy().replace('\\', "/");
+        if let Some(dir) = norm.strip_suffix("/__init__.py") {
+            set.insert(dir.to_owned());
+        } else if norm == "__init__.py" {
+            set.insert(String::new());
+        }
+    }
+    set
+}
+
+/// Whether `rel` names a Python source file by extension (case-insensitive).
+fn is_py_path(rel: &str) -> bool {
+    std::path::Path::new(rel)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+}
+
+/// Whether the workspace-relative path `rel` is a `.py` file nested under the
+/// package directory `dir`. Used to force-recompute descendant canonical paths
+/// when `dir`'s regular-package status flips (C6-1). A root package (`dir ==
+/// ""`) contains every top-level `.py` file.
+fn is_python_descendant(rel: &str, dir: &str) -> bool {
+    if !is_py_path(rel) {
+        return false;
+    }
+    if dir.is_empty() {
+        return true;
+    }
+    rel.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Resolve the canonical enclosing type for an impl-method caller.
 fn enclosing_canonical_type_for_function(
     crates: &canonical::WorkspaceCrates,
@@ -178,7 +246,7 @@ fn enclosing_canonical_type_for_function(
     if !name.contains("::") {
         return String::new();
     }
-    canonical_path_for_function(crates, ctx, unsafe_prefixes, name)
+    rust_canonical_path_for_function(crates, ctx, unsafe_prefixes, name)
         .rsplit_once("::")
         .map(|(ty, _)| ty.to_owned())
         .unwrap_or_default()
@@ -495,9 +563,15 @@ async fn index_workspace_impl(
     let files = discover_files(ws_path, config);
     let prepass = unsafe_module_prepass(ws_path, &crates, &files).await;
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+    // 096-F/T3: provable Python regular-package directories, computed once and
+    // persisted in the snapshot so a later sync can detect topology drift.
+    let python_packages = python_package_dirs(&files, ws_path);
+    let is_regular_package =
+        |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
+        python_packages: python_packages.clone(),
     };
     info!(
         files_found = files.len(),
@@ -689,6 +763,14 @@ async fn index_workspace_impl(
                 || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
             );
 
+            // 096-F/T3: per-file Python module namespace (Some only on a provable
+            // regular-package chain; None → fail-closed empty canonical_path).
+            let python_module = if matches!(lang_enum, Language::Python) {
+                python_module_path_for_file(&rel_path, &is_regular_package)
+            } else {
+                None
+            };
+
             for symbol in &parse_result.symbols {
                 match symbol {
                     ExtractedSymbol::Function(f) => {
@@ -719,8 +801,10 @@ async fn index_workspace_impl(
                             summary,
                         };
                         let canonical_path = canonical_path_for_function(
+                            lang_enum,
                             &crates,
                             rust_ctx.as_ref(),
+                            python_module.as_deref(),
                             &unsafe_prefixes,
                             &f.name,
                         );
@@ -1114,9 +1198,14 @@ pub async fn sync_workspace_with_progress(
     let current_files = discover_files(ws_path, config);
     let prepass = unsafe_module_prepass(ws_path, &crates, &current_files).await;
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+    // 096-F/T3: current provable Python regular-package directories.
+    let python_packages = python_package_dirs(&current_files, ws_path);
+    let is_regular_package =
+        |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
+        python_packages: python_packages.clone(),
     };
 
     // Load all indexed code files from DB.
@@ -1125,6 +1214,37 @@ pub async fn sync_workspace_with_progress(
         .into_iter()
         .map(|f| (f.path.clone(), f))
         .collect();
+
+    // 096-F/C6-1: force per-file canonical recompute for Python files whose
+    // package ancestry changed since the last index/sync. The content-hash skip
+    // below would otherwise leave a descendant's `canonical_path` stale when an
+    // `__init__.py` is added or removed without the descendant's bytes changing
+    // (an empty `__init__.py` never persists as a code file, so its add/remove is
+    // invisible to `indexed_map` — the persisted snapshot is the only witness).
+    let force_python_recompute: std::collections::HashSet<String> =
+        match previous_canonical_workspace.as_ref() {
+            Some(previous) => {
+                let changed: Vec<&String> = python_packages
+                    .symmetric_difference(&previous.python_packages)
+                    .collect();
+                if changed.is_empty() {
+                    std::collections::HashSet::new()
+                } else {
+                    indexed_map
+                        .keys()
+                        .filter(|rel| changed.iter().any(|dir| is_python_descendant(rel, dir)))
+                        .cloned()
+                        .collect()
+                }
+            }
+            // No snapshot (legacy DB, or the snapshot self-erased on prior drift):
+            // fail closed — recompute every indexed `.py` file this sync.
+            None => indexed_map
+                .keys()
+                .filter(|rel| is_py_path(rel))
+                .cloned()
+                .collect(),
+        };
 
     // Build a set of current relative paths for deletion detection.
     let current_rel_paths: std::collections::HashSet<String> = current_files
@@ -1255,7 +1375,12 @@ pub async fn sync_workspace_with_progress(
 
             if !is_new {
                 let existing = &indexed_map[&rel_path];
-                if existing.content_hash == content_hash {
+                // C6-1: a package-topology change forces recompute even when the
+                // file bytes are unchanged, so a descendant's canonical_path is not
+                // left stale after an `__init__.py` add/remove.
+                if existing.content_hash == content_hash
+                    && !force_python_recompute.contains(&rel_path)
+                {
                     // File unchanged — skip entirely.
                     result.files_unchanged += 1;
                     break 'file;
@@ -1398,6 +1523,14 @@ pub async fn sync_workspace_with_progress(
                 .as_ref()
                 .is_some_and(|(_, ug)| ug.has_non_default_mod_mapping());
 
+            // 096-F/T3: per-file Python module namespace (Some only on a provable
+            // regular-package chain; None → fail-closed empty canonical_path).
+            let python_module = if matches!(lang_enum, Language::Python) {
+                python_module_path_for_file(&rel_path, &is_regular_package)
+            } else {
+                None
+            };
+
             for symbol in &parse_result.symbols {
                 match symbol {
                     ExtractedSymbol::Function(f) => {
@@ -1444,8 +1577,10 @@ pub async fn sync_workspace_with_progress(
                             summary,
                         };
                         let canonical_path = canonical_path_for_function(
+                            lang_enum,
                             &crates,
                             rust_ctx.as_ref(),
+                            python_module.as_deref(),
                             &unsafe_prefixes,
                             &f.name,
                         );

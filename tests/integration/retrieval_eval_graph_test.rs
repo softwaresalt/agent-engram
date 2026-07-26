@@ -434,6 +434,7 @@ async fn resolution_aware_denominator_preserves_skipped_remap_miss() {
     let canonical_workspace = CanonicalWorkspace {
         crates: canonical::discover_workspace_crates(ws),
         unsafe_prefixes,
+        python_packages: HashSet::new(),
     };
     let context = CallSiteResolutionContext::new(
         vec![
@@ -609,6 +610,7 @@ async fn resolution_aware_denominator_uses_persisted_prefixes_after_remap_remove
         Some(CanonicalWorkspace {
             crates: canonical::discover_workspace_crates(ws),
             unsafe_prefixes: HashSet::new(),
+            python_packages: HashSet::new(),
         }),
     );
     let collapsed_inventory = scan_call_site_inventory_with_resolution(
@@ -707,6 +709,7 @@ async fn canonical_snapshot_removed_after_incremental_context_drift() {
         Some(CanonicalWorkspace {
             crates: canonical::discover_workspace_crates(ws),
             unsafe_prefixes: HashSet::new(),
+            python_packages: HashSet::new(),
         }),
     );
     let collapsed = scan_call_site_inventory_with_resolution(
@@ -803,6 +806,7 @@ async fn canonical_snapshot_uses_persisted_dependency_renames() {
         Some(CanonicalWorkspace {
             crates: canonical::discover_workspace_crates(ws),
             unsafe_prefixes: HashSet::new(),
+            python_packages: HashSet::new(),
         }),
     );
     let collapsed = scan_call_site_inventory_with_resolution(

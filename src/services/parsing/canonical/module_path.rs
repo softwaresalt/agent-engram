@@ -79,6 +79,16 @@ pub struct CanonicalWorkspace {
     pub crates: WorkspaceCrates,
     /// Module prefixes whose canonical resolution is unsafe.
     pub unsafe_prefixes: HashSet<String>,
+    /// 096-F/C6-1: workspace-relative directories that are provable Python
+    /// regular packages (each contains an `__init__.py`). Persisted so an
+    /// incremental sync can detect a package-topology change (an `__init__.py`
+    /// added or removed) and recompute affected descendant `canonical_path`
+    /// values the content-hash skip would otherwise leave stale — even for an
+    /// empty `__init__.py`, which sync never persists as a code file.
+    /// `#[serde(default)]` keeps snapshots written before this field loadable
+    /// (fail-closed empty, forcing a conservative recompute).
+    #[serde(default)]
+    pub python_packages: HashSet<String>,
 }
 
 impl WorkspaceCrates {

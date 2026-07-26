@@ -824,3 +824,170 @@ async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_de
         );
     }
 }
+
+// ── 096-F (T3): Python canonical_path populator ──────────────────────────────
+
+/// T3.1 (096-F) — Python module-level defs get `canonical_path = "<module>.<name>"`:
+/// a top-level module resolves to `mod.f`, and a def on a proven regular-package
+/// chain (`pkg/__init__.py` present) resolves to `pkg.mod.g`.
+#[test]
+async fn python_module_level_def_gets_module_qualified_canonical_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // Top-level module: no ancestor dirs, resolves regardless of packages.
+    write_sample_file(ws, "mod.py", "def f():\n    return 1\n");
+    // Nested regular-package chain: `pkg` is a provable package (has __init__.py).
+    write_sample_file(ws, "pkg/__init__.py", "# package marker\n");
+    write_sample_file(ws, "pkg/mod.py", "def g():\n    return 2\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    assert_eq!(
+        q.canonical_paths_for_function_name("f")
+            .await
+            .expect("query f"),
+        vec!["mod.f".to_owned()],
+        "top-level module def must canonicalise to `mod.f`"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("g")
+            .await
+            .expect("query g"),
+        vec!["pkg.mod.g".to_owned()],
+        "def on a proven regular-package chain must canonicalise to `pkg.mod.g`"
+    );
+}
+
+/// T3.2 (096-F, Q3/M5 fail-closed) — a def in `__init__.py`, a def under a
+/// `src/` source-root, and a def in an implicit PEP 420 namespace package all
+/// get `canonical_path == ""` (T1 rejects any chain with an ancestor dir lacking
+/// `__init__.py`).
+#[test]
+async fn python_unprovable_layouts_fail_closed_to_empty_canonical() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // `__init__.py` itself is the package marker, never a resolvable module.
+    write_sample_file(ws, "pkg/__init__.py", "def init_fn():\n    return 0\n");
+    // `src/` source-root: `src` has no __init__.py, so `src/pkg/app.py` fails
+    // closed even though `src/pkg` would otherwise be a package.
+    write_sample_file(ws, "src/pkg/__init__.py", "# marker\n");
+    write_sample_file(ws, "src/pkg/app.py", "def src_fn():\n    return 0\n");
+    // Implicit PEP 420 namespace package: `ns` has no __init__.py.
+    write_sample_file(ws, "ns/mod.py", "def ns_fn():\n    return 0\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    for name in ["init_fn", "src_fn", "ns_fn"] {
+        assert_eq!(
+            q.canonical_paths_for_function_name(name)
+                .await
+                .expect("query"),
+            vec![String::new()],
+            "{name} must fail closed to an empty canonical_path"
+        );
+    }
+}
+
+/// T3.3 (096-F, FF7DE872 non-subsumption) — two same-file defs of `f` both
+/// persist their identical canonical path, preserving the duplicate multiplicity
+/// the resolver later fails closed on.
+#[test]
+async fn python_duplicate_same_file_defs_persist_identical_canonical_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "dup.py",
+        "def f():\n    return 1\n\n\ndef f():\n    return 2\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let paths = q
+        .canonical_paths_for_function_name("f")
+        .await
+        .expect("query f");
+    assert_eq!(
+        paths,
+        vec!["dup.f".to_owned(), "dup.f".to_owned()],
+        "two same-file defs of f must both persist the identical canonical path (fail-closed multiplicity)"
+    );
+}
+
+/// T3.4 (096-F, C6-1) — a Python package-topology change (an `__init__.py` added
+/// or removed) recomputes descendant canonical paths PAST the sync content-hash
+/// skip: adding `p/__init__.py` promotes `p/mod.py`'s def from `""` to `p.mod.cf`,
+/// and removing it invalidates back to `""` — both with the descendant content
+/// unchanged.
+#[test]
+async fn python_package_topology_change_invalidates_descendant_canonical_paths() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // Initially `p` is an implicit namespace package (no __init__.py): fail closed.
+    write_sample_file(ws, "p/mod.py", "def cf():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf pre"),
+        vec![String::new()],
+        "before __init__.py, p is a namespace package: cf must be empty (fail closed)"
+    );
+
+    // ADD p/__init__.py: `p` becomes a provable regular package. cf's content is
+    // unchanged, so only C6-1 topology invalidation can refresh its canonical.
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync after add should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf added"),
+        vec!["p.mod.cf".to_owned()],
+        "adding p/__init__.py must recompute the unchanged descendant to `p.mod.cf` (C6-1 add)"
+    );
+
+    // REMOVE p/__init__.py: `p` reverts to a namespace package. cf must invalidate
+    // back to empty, again past the content-hash skip.
+    std::fs::remove_file(ws.join("p/__init__.py")).expect("remove __init__.py");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync after remove should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf removed"),
+        vec![String::new()],
+        "removing p/__init__.py must invalidate the unchanged descendant back to empty (C6-1 remove)"
+    );
+}
