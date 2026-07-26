@@ -6,8 +6,13 @@
 //! algorithm under test is owned by 096.001-T (T1) and consumed here.
 
 use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
+use engram::db::connect_db;
+use engram::db::queries::{CodeGraphQueries, NoCanonicalTargetReason};
+use engram::models::config::CodeGraphConfig;
+use engram::services::code_graph;
 use engram::services::parsing::python_canonical::extract_python_import_bindings;
 use engram::services::parsing::python_canonical::{
     BindingKind, CallResolution, python_module_path_for_file,
@@ -269,5 +274,122 @@ fn t2b_branchy_function_local_import_fails_closed() {
         b.resolve_call(call, "f"),
         CallResolution::Poisoned,
         "conditional function-local import fails closed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T5b-seam — public language-scoped name->IDs helper + typed no-target policy
+// (096.011-T)
+// ---------------------------------------------------------------------------
+
+fn write_sample_file(dir: &Path, rel_path: &str, content: &str) {
+    let full = dir.join(rel_path);
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).expect("create dirs");
+    }
+    fs::write(full, content).expect("write file");
+}
+
+fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
+    use sha2::{Digest, Sha256};
+    let canon = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase();
+    let branch = format!("{:x}", Sha256::digest(canon.as_bytes()));
+    (std::env::temp_dir().join("engram-test"), branch)
+}
+
+async fn queries_for(data_dir: &Path, branch: &str) -> CodeGraphQueries {
+    let db = connect_db(data_dir, branch).await.expect("connect_db");
+    CodeGraphQueries::new(db)
+}
+
+// F9: the helper is language-scoped and honest — it returns the FULL candidate
+// ID set for a name (unique -> 1, ambiguous -> N, absent -> 0). The singleton
+// decision belongs to the consumer (T5b), not this seam. A same-named Rust
+// definition must never leak into a Python lookup (013-D language scoping).
+#[tokio::test]
+async fn t5b_seam_function_ids_by_name_is_language_scoped() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "def solo():\n    pass\n");
+    write_sample_file(ws, "b.py", "def dup():\n    pass\n");
+    write_sample_file(ws, "c.py", "def dup():\n    pass\n");
+    // A same-named Rust definition proves the language filter excludes it.
+    write_sample_file(ws, "r.rs", "pub fn solo() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index");
+    let q = queries_for(&data_dir, &branch).await;
+
+    // Unique Python name -> exactly one id (the Rust `solo` is excluded).
+    let solo = q
+        .function_ids_by_name("solo", "python")
+        .await
+        .expect("function_ids_by_name solo");
+    assert_eq!(solo.len(), 1, "unique python name yields one id, {solo:?}");
+
+    // Ambiguous Python name -> the full candidate set (both defs).
+    let dup = q
+        .function_ids_by_name("dup", "python")
+        .await
+        .expect("function_ids_by_name dup");
+    assert_eq!(
+        dup.len(),
+        2,
+        "ambiguous python name yields both ids, {dup:?}"
+    );
+
+    // Zero match -> empty set.
+    let absent = q
+        .function_ids_by_name("absent", "python")
+        .await
+        .expect("function_ids_by_name absent");
+    assert!(absent.is_empty(), "absent name yields no ids, {absent:?}");
+
+    // The Rust `solo` is reachable only under its own language scope.
+    let rust_solo = q
+        .function_ids_by_name("solo", "rust")
+        .await
+        .expect("function_ids_by_name rust solo");
+    assert_eq!(
+        rust_solo.len(),
+        1,
+        "rust scope sees its own solo, {rust_solo:?}"
+    );
+    assert_ne!(
+        solo, rust_solo,
+        "python and rust `solo` are distinct definitions"
+    );
+}
+
+// Anchor B: the legacy name-only unique-match fallback fires ONLY for the two
+// recall-safe no-target reasons; the three ambiguity reasons emit NO edge.
+#[test]
+fn t5b_seam_fallback_policy_allows_only_recall_safe_reasons() {
+    assert!(
+        NoCanonicalTargetReason::NoModuleContext.allows_name_only_fallback(),
+        "no module context is recall-safe"
+    );
+    assert!(
+        NoCanonicalTargetReason::UnsupportedImportForm.allows_name_only_fallback(),
+        "unsupported import form is recall-safe"
+    );
+    assert!(
+        !NoCanonicalTargetReason::CompetingBindings.allows_name_only_fallback(),
+        "competing bindings must fail closed"
+    );
+    assert!(
+        !NoCanonicalTargetReason::Shadowed.allows_name_only_fallback(),
+        "shadowed binding must fail closed"
+    );
+    assert!(
+        !NoCanonicalTargetReason::DuplicateSameNameImport.allows_name_only_fallback(),
+        "duplicate same-name import must fail closed"
     );
 }

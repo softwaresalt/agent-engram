@@ -203,6 +203,43 @@ impl CallsResolutionRollback {
     }
 }
 
+/// Why a staged Python call could not be bound to an exact canonical target
+/// (096-F, T5b-seam). The variant drives the no-target fallback POLICY: only
+/// the two recall-safe reasons permit the legacy name-only unique-match
+/// fallback; the three ambiguity reasons fail closed to honor the 013-D
+/// zero-false-edge invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoCanonicalTargetReason {
+    /// The caller file has no derivable module context (e.g. a PEP 420
+    /// namespace package or a `src/` root without `__init__.py`). Recall-safe:
+    /// there is no binding to contradict, so name-only fallback may fire.
+    NoModuleContext,
+    /// The callee name resolves through an import form the analyzer does not
+    /// model precisely (e.g. an aliased re-export). Recall-safe: no competing
+    /// binding was observed, so name-only fallback may fire.
+    UnsupportedImportForm,
+    /// Two or more bindings compete for the name at the applicable scope (M1).
+    /// Fail closed — resolution is ambiguous.
+    CompetingBindings,
+    /// The resolved name is re-bound by a later binding that the call cannot be
+    /// proven to precede (T5c order-aware shadow). Fail closed.
+    Shadowed,
+    /// The same name is imported more than once (duplicate same-name import).
+    /// Fail closed — the intended target is undecidable.
+    DuplicateSameNameImport,
+}
+
+impl NoCanonicalTargetReason {
+    /// Whether this no-target reason permits the legacy name-only unique-match
+    /// fallback (Anchor B). Only [`Self::NoModuleContext`] and
+    /// [`Self::UnsupportedImportForm`] are recall-safe; every ambiguity reason
+    /// fails closed so a wrong-callee edge can never be minted.
+    #[must_use]
+    pub fn allows_name_only_fallback(self) -> bool {
+        matches!(self, Self::NoModuleContext | Self::UnsupportedImportForm)
+    }
+}
+
 /// A call site whose callee could not be resolved within the caller's own
 /// file, staged for the deferred cross-file post-pass (082.002-T).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1063,6 +1100,38 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
                 .push(extract_str(row, 1));
         }
         Ok(index)
+    }
+
+    /// Return the language-scoped candidate function IDs for a name (096-F,
+    /// T5b-seam, F9).
+    ///
+    /// Joins `function_meta` to its owning file's `language` so only
+    /// SAME-LANGUAGE definitions of `name` are returned. This is a read-only
+    /// seam: it exposes the full candidate set (unique -> one id, ambiguous ->
+    /// many, absent -> none) and leaves the singleton decision to the caller,
+    /// mirroring [`Self::function_ids_by_canonical_path`]. Language scoping
+    /// upholds the 013-D no-false-edge invariant — a bare call can never bind to
+    /// a lone same-named definition in another language.
+    pub async fn function_ids_by_name(
+        &self,
+        name: &str,
+        language: &str,
+    ) -> Result<Vec<String>, EngramError> {
+        let script = r#"
+?[id] :=
+    *function_meta { id, name, file_path },
+    *file_node { path: file_path, language },
+    name = $name,
+    language = $language
+"#;
+        let mut params = BTreeMap::new();
+        params.insert("name".to_owned(), DataValue::from(name));
+        params.insert("language".to_owned(), DataValue::from(language));
+        let r = self
+            .db
+            .run_script(script, params, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(r.rows.iter().map(|row| extract_str(row, 0)).collect())
     }
 
     async fn ensure_index_canonical_workspace_snapshot_relation(&self) -> Result<(), EngramError> {
