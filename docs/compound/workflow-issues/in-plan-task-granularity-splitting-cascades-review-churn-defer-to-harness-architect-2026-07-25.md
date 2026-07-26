@@ -1,6 +1,6 @@
 ---
 title: "Reactive task-granularity splitting inside a plan during review cascades into one-nit-per-cycle churn; settle decomposition once at harvest and keep build-implementation detail out of the plan"
-description: "PR #285 (a docs+backlog-only implementation plan) closed its correctness core at review cycle 14, then burned four more single-model review cycles (C15..C17) on split-ripple nits after a mid-review Path A pass split two tasks inside the PLANNING artifact. Each split forced the plan to carry build-implementation detail (dependency-edge wiring, nested Cargo test-target registration, per-task file-count claims, TDD RED-phase ordering) that a plan should not encode; the next single-model cycle read the new prose and flagged one fresh consistency hole per cycle. The fix is to settle task decomposition ONCE at harvest (the harvest skill owns the 2-hour gate and single-skill-domain rule) and to keep build-implementation detail out of the plan entirely: RED harnesses are established later by Ship's harness-architect and real per-task file counts by build-feature, neither of which the plan should try to pre-encode."
+description: "PR #285 (a docs+backlog-only implementation plan) closed its correctness core at review cycle 14, then burned three more single-model review cycles (C15..C17) on split-ripple nits after a mid-review Path A pass split two tasks inside the PLANNING artifact. Each split forced the plan to carry build-implementation detail (dependency-edge wiring, nested Cargo test-target registration, per-task file-count claims, TDD RED-phase ordering) that a plan should not encode; the next single-model cycle read the new prose and flagged one fresh consistency hole per cycle. The fix is to settle task decomposition ONCE at harvest (the harvest skill owns the 2-hour gate and single-skill-domain rule) and to keep build-implementation detail out of the plan entirely: RED harnesses are established later by Ship's harness-architect and real per-task file counts by build-feature, neither of which the plan should try to pre-encode."
 problem_type: "review_convergence + process_hazard + planning_vs_build_boundary"
 category: "workflow-issues"
 component: ".Stage impl-plan/harvest; Ship harness-architect; .github/skills/plan-review; ship/stage Copilot review-fix loop; docs/exec-plans/*-plan.md under review"
@@ -39,7 +39,7 @@ namespace-qualified call resolution: one `*-plan.md` plus feature `096-F`,
 shipment `091-S`, and its tasks; no `.rs` code). Its architectural correctness
 core -- the binding-execution soundness anchor (fail-closed triggers on
 competing bindings) -- closed at Copilot review cycle 14 (finding C14-1). The PR
-did not merge for four more single-model review cycles.
+did not merge for three more single-model review cycles.
 
 The findings-per-cycle trajectory across the later cycles was:
 
