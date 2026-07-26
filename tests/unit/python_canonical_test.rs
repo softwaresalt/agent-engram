@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use engram::services::parsing::python_canonical::extract_python_import_bindings;
-use engram::services::parsing::python_canonical::{BindingKind, python_module_path_for_file};
+use engram::services::parsing::python_canonical::{
+    BindingKind, CallResolution, python_module_path_for_file,
+};
 
 /// Build a regular-package predicate from a set of `/`-joined directory paths
 /// known to contain an `__init__.py` (mirrors T3's derived predicate contract).
@@ -150,5 +152,122 @@ fn t2_competing_and_conditional_fail_closed() {
     assert!(
         cond.is_ambiguous("g"),
         "conditional import is an ambiguity marker"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T2b — Scope-aware binding isolation (096.009-T)
+// ---------------------------------------------------------------------------
+
+/// Byte offsets of every `f()` call-expression occurrence, in source order.
+fn call_offsets(src: &str, call: &str) -> Vec<usize> {
+    src.match_indices(call).map(|(i, _)| i).collect()
+}
+
+#[test]
+fn t2b_function_local_import_is_order_aware() {
+    // A function-local `from x import f` is visible for a call AFTER it, but a
+    // call BEFORE the local import is a poison/tombstone that does NOT fall
+    // through to the module-level `f` (Y1/F8 — UnboundLocalError semantics).
+    let src = "from mod import f\n\ndef after():\n    from x import f\n    f()\n\ndef before():\n    f()\n    from x import f\n";
+    let b = extract_python_import_bindings(src);
+
+    let calls = call_offsets(src, "f()");
+    let (after_call, before_call) = (calls[0], calls[1]);
+
+    match b.resolve_call(after_call, "f") {
+        CallResolution::LocalImport(binding) => {
+            assert_eq!(binding.canonical_path, "x.f");
+            assert_eq!(binding.kind, BindingKind::FromImportSymbol);
+        }
+        other => panic!("expected LocalImport(x.f) for post-import call, got {other:?}"),
+    }
+
+    assert_eq!(
+        b.resolve_call(before_call, "f"),
+        CallResolution::Poisoned,
+        "call before the function-local import fails closed (no module fall-through)"
+    );
+}
+
+#[test]
+fn t2b_function_local_import_does_not_leak_to_sibling() {
+    // The SAME call site in a sibling function that lacks the import gets no
+    // local binding — it defers to module scope (no leak, M1).
+    let src = "def owner():\n    from x import f\n    f()\n\ndef user():\n    f()\n";
+    let b = extract_python_import_bindings(src);
+
+    let user_call = call_offsets(src, "f()")[1];
+    assert_eq!(
+        b.resolve_call(user_call, "f"),
+        CallResolution::ModuleScope,
+        "sibling without the import defers to module scope"
+    );
+    assert!(
+        b.module_binding("f").is_none(),
+        "module scope binds no f, so nothing is minted"
+    );
+}
+
+#[test]
+fn t2b_nested_isolation_and_global_redirect() {
+    // (a) A nested/closure function's local import does NOT leak UP into its
+    //     enclosing top-level caller's calls (F5).
+    let nested = "def outer():\n    def inner():\n        from x import f\n    f()\n";
+    let nb = extract_python_import_bindings(nested);
+    let outer_call = call_offsets(nested, "f()")[0];
+    assert_eq!(
+        nb.resolve_call(outer_call, "f"),
+        CallResolution::ModuleScope,
+        "enclosing caller resolves against module scope, not the nested local"
+    );
+
+    // (b) A `global`-declared name in a top-level caller redirects to module
+    //     scope (resolves against the module binding, not a local).
+    let global_src = "import g\n\ndef caller():\n    global g\n    g()\n";
+    let gb = extract_python_import_bindings(global_src);
+    let gcall = global_src.find("g()").expect("g() present");
+    assert_eq!(
+        gb.resolve_call(gcall, "g"),
+        CallResolution::ModuleScope,
+        "global-declared name redirects to module scope"
+    );
+    assert!(
+        gb.module_binding("g").is_some(),
+        "module g remains resolvable at module scope"
+    );
+}
+
+#[test]
+fn t2b_dynamic_global_rebind_fails_closed() {
+    // A `global f; from b import f` write rebinds module `f`, making sibling
+    // callers of `f` run-order-dependent -> fail closed for ALL callers (T-d).
+    let src = "from a import f\n\ndef mutate():\n    global f\n    from b import f\n\ndef caller():\n    f()\n";
+    let b = extract_python_import_bindings(src);
+
+    assert!(
+        b.is_dynamically_rebound("f"),
+        "a global rebind of f poisons the name module-wide"
+    );
+    let call = src.find("f()").expect("f() present");
+    assert_eq!(
+        b.resolve_call(call, "f"),
+        CallResolution::Poisoned,
+        "sibling caller of a dynamically rebound name fails closed"
+    );
+}
+
+#[test]
+fn t2b_branchy_function_local_import_fails_closed() {
+    // A function-local import guarded by control flow is not proven to execute
+    // in order -> fail closed (poison), even for a call textually after it (Y1).
+    let src = "def caller():\n    if flag:\n        from x import f\n    f()\n";
+    let b = extract_python_import_bindings(src);
+
+    let call = src.find("f()").expect("f() present");
+    assert_eq!(
+        b.resolve_call(call, "f"),
+        CallResolution::Poisoned,
+        "conditional function-local import fails closed"
     );
 }

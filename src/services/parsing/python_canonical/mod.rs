@@ -15,5 +15,7 @@
 pub mod bindings;
 pub mod module_path;
 
-pub use bindings::{BindingKind, ImportBinding, ImportBindings, extract_python_import_bindings};
+pub use bindings::{
+    BindingKind, CallResolution, ImportBinding, ImportBindings, extract_python_import_bindings,
+};
 pub use module_path::python_module_path_for_file;
