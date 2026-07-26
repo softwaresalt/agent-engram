@@ -1,6 +1,6 @@
 ---
-title: "Reactive in-plan task-granularity splitting during plan review cascades into one-nit-per-cycle churn; defer build-implementation granularity and RED-phase harness ordering to Ship's harness-architect"
-description: "PR #285 (a docs+backlog-only implementation plan) closed its correctness core at review cycle 14, then burned four more single-model review cycles (C15..C17) on split-ripple nits after a mid-review Path A pass split two tasks inside the PLANNING artifact. Each split forced the plan to carry build-implementation detail (dependency-edge wiring, nested Cargo test-target registration, per-task file-count claims, TDD RED-phase ordering) that a plan should not encode; the next single-model cycle read the new prose and flagged one fresh consistency hole per cycle. The fix is to keep planning artifacts at natural task granularity and defer exact granularity + RED-harness establishment to Ship's harness-architect at build time."
+title: "Reactive task-granularity splitting inside a plan during review cascades into one-nit-per-cycle churn; settle decomposition once at harvest and keep build-implementation detail out of the plan"
+description: "PR #285 (a docs+backlog-only implementation plan) closed its correctness core at review cycle 14, then burned four more single-model review cycles (C15..C17) on split-ripple nits after a mid-review Path A pass split two tasks inside the PLANNING artifact. Each split forced the plan to carry build-implementation detail (dependency-edge wiring, nested Cargo test-target registration, per-task file-count claims, TDD RED-phase ordering) that a plan should not encode; the next single-model cycle read the new prose and flagged one fresh consistency hole per cycle. The fix is to settle task decomposition ONCE at harvest (the harvest skill owns the 2-hour gate and single-skill-domain rule) and to keep build-implementation detail out of the plan entirely: RED harnesses are established later by Ship's harness-architect and real per-task file counts by build-feature, neither of which the plan should try to pre-encode."
 problem_type: "review_convergence + process_hazard + planning_vs_build_boundary"
 category: "workflow-issues"
 component: ".Stage impl-plan/harvest; Ship harness-architect; .github/skills/plan-review; ship/stage Copilot review-fix loop; docs/exec-plans/*-plan.md under review"
@@ -43,7 +43,7 @@ did not merge for four more single-model review cycles.
 
 The findings-per-cycle trajectory across the later cycles was:
 
-```
+```text
 8 -> 4 -> 3 -> 5 -> 1 -> 1 -> 0
 ```
 
@@ -94,22 +94,32 @@ plumbing that had leaked into the plan.
 
 The four trailing findings (C15-2, C15-3, C16-1, C17-1) were **not fixed in the
 plan**. They were resolved-as-deferral: replied with an explicit
-"defer to Ship's harness-architect" rationale and the thread resolved, with no
-further plan edit. Only the one genuine planning-level gap (C15-1, the missing
+"defer to build" rationale (RED harness ordering to harness-architect, real file
+counts to build-feature) and the thread resolved, with no further plan edit. Only the one genuine planning-level gap (C15-1, the missing
 dependency edge) was wired. The PR then reached a clean 4-point gate and merged
 at `784603e1`.
 
-The harness-architect skill re-harvests task granularity and establishes the
-RED-phase failing harnesses at build time. Cargo target registration, exact file
-counts, and RED/GREEN ordering are all naturally settled there against real
-code, so deferring them removes the churn instead of relocating it.
+Task decomposition and the 2-hour granularity gate belong to the **harvest**
+skill (a Stage-phase step that owns the 2-hour rule and single-skill-domain rule,
+`.github/skills/harvest/SKILL.md:86-91`) and were already settled once when
+`096-F` was harvested; re-splitting them inside the plan during review was the
+error. The build-implementation details the splits dragged in -- Cargo target
+registration, exact per-task file counts, and RED/GREEN harness ordering -- are
+established at **build**: Ship's harness-architect prepares the RED-phase failing
+harnesses for the already-ready tasks (it loads ready tasks and does not
+decompose, `.github/skills/harness-architect/SKILL.md:20-27,54-62`) and
+build-feature discovers real file counts against live code. Keeping those out of
+the plan removes the churn instead of relocating it into the plan.
 
 ## Prevention
 
 * **Keep planning artifacts at natural task granularity.** Do not split tasks
   inside a `*-plan.md` or backlog set to chase build-implementation concerns
   (Cargo target wiring, precise per-task file counts, RED-phase harness ordering
-  between split halves). Those are Ship harness-architect concerns.
+  between split halves). Those are build concerns: harness-architect prepares the
+  RED harnesses for ready tasks and build-feature implements against live code.
+  Task decomposition itself stays with the harvest skill in Stage -- do not push
+  it onto harness-architect, which loads ready tasks and does not decompose.
 * **Reconcile with the existing rule, do not contradict it.** The companion
   learning says "split over-granular tasks before harvest (never defer a
   2-hour-gate violation to Ship)." That still holds for a task that is plainly

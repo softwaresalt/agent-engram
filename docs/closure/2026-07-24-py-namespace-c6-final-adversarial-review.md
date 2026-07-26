@@ -7,10 +7,10 @@ head: 1d4f9caf5149a5136743441707fe146990abaf40
 commit_subject: "docs(091-S): close non-import-rebind axis (C6) + reconcile cycle-8 consistency threads"
 scope: docs/backlog-only planning artifact (no compilable code)
 verdict: CONVERGED
-reviewers: 3 (self-run adversarial synthesis; Tier 1/2/3 lenses over one artifact set)
+reviewers: 1 (single-reviewer self-run synthesis applying Tier 1/2/3 lenses over one artifact set; NOT independent reviewer instances per adversarial-review.instructions.md)
 ---
 
-# Verdict: **CONVERGED**
+## Verdict: **CONVERGED**
 
 All four scoped items verify, the 9-vector composition table composes with exactly one
 precision-floor-safe outcome per vector, and **C6 (def + non-import module/scope rebind) is
