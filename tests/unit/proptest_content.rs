@@ -55,6 +55,7 @@ fn arb_registry_config() -> impl Strategy<Value = RegistryConfig> {
                 sources,
                 max_file_size_bytes,
                 batch_size,
+                ..RegistryConfig::default()
             },
         )
 }

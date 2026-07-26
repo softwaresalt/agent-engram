@@ -219,6 +219,7 @@ fn s009_registry_path_traversal_rejected_by_validate_sources() {
         ],
         max_file_size_bytes: 1_048_576,
         batch_size: 50,
+        ..RegistryConfig::default()
     };
 
     let _ = validate_sources(&mut config, workspace.path());
@@ -261,6 +262,7 @@ fn s009_registry_multiple_traversal_variants_all_rejected() {
             }],
             max_file_size_bytes: 1_048_576,
             batch_size: 50,
+            ..RegistryConfig::default()
         };
 
         let _ = validate_sources(&mut config, workspace.path());
@@ -303,6 +305,7 @@ fn s010_symlink_escape_rejected_by_validate_sources() {
         }],
         max_file_size_bytes: 1_048_576,
         batch_size: 50,
+        ..RegistryConfig::default()
     };
 
     let _ = validate_sources(&mut config, workspace.path());
@@ -338,6 +341,7 @@ fn workspace_isolation_registry_paths_confined_to_root() {
         }],
         max_file_size_bytes: 1_048_576,
         batch_size: 50,
+        ..RegistryConfig::default()
     };
 
     validate_sources(&mut config, workspace.path()).expect("validate_sources must succeed");

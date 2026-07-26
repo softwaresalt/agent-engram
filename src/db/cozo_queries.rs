@@ -4519,6 +4519,11 @@ has_def[id] := *function_meta { id }
             ("pbi_belongs_to_report", "pbi_belongs_to_report"),
             ("pbi_relates_to_table", "pbi_relates_to_table"),
         ];
+        // (api_label, db_edge_type_value) — routed through the `lineage_edge`
+        // table (095-F). The writer hardcodes the single `lineage_derives_from`
+        // edge type (AR-05).
+        const LINEAGE_EDGE_TYPES: &[(&str, &str)] =
+            &[("lineage_derives_from", "lineage_derives_from")];
 
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut nodes: Vec<QueryGraphNode> = Vec::new();
@@ -4837,6 +4842,101 @@ has_def[id] := *function_meta { id }
                         }
                     }
                 }
+
+                // ── Lineage edges (095-F U8) ─────────────────────────────────
+                // Direction (AR-06): `lineage_derives_from` is oriented
+                // target→source, so an OUTGOING neighborhood from a target
+                // reaches its upstream sources and an INCOMING neighborhood from
+                // a source reaches its downstream consumers.
+                for (api_label, db_et) in LINEAGE_EDGE_TYPES {
+                    if !allowed_edge_types.is_empty() && !allowed_edge_types.contains(api_label) {
+                        continue;
+                    }
+                    let out_script =
+                        "?[from, to] := *lineage_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let in_script =
+                        "?[from, to] := *lineage_edge { from_id, to_id, edge_type }, to_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+
+                    if traverse_out {
+                        let mut p = BTreeMap::new();
+                        p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r = self
+                            .db
+                            .run_script(&out_script, p, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r.rows {
+                            let target = extract_str(row, 1);
+                            if visited.contains(&target) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: node.clone(),
+                                to: target.clone(),
+                            });
+                            visited.insert(target.clone());
+                            let gn = self
+                                .resolve_dataset_node(&target)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: target.clone(),
+                                    kind: "dataset_node".to_owned(),
+                                    name: target.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(target);
+                        }
+                    }
+
+                    if traverse_in {
+                        let mut p2 = BTreeMap::new();
+                        p2.insert("node".to_owned(), DataValue::from(node.as_str()));
+                        p2.insert("et".to_owned(), DataValue::from(*db_et));
+                        let r2 = self
+                            .db
+                            .run_script(&in_script, p2, ScriptMutability::Immutable)
+                            .map_err(|e| map_db_err(e.to_string()))?;
+                        for row in &r2.rows {
+                            let source = extract_str(row, 0);
+                            if visited.contains(&source) {
+                                continue;
+                            }
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break 'outer;
+                            }
+                            edges.push(BfsEdge {
+                                edge_type: (*api_label).to_owned(),
+                                from: source.clone(),
+                                to: node.clone(),
+                            });
+                            visited.insert(source.clone());
+                            let gn = self
+                                .resolve_dataset_node(&source)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| QueryGraphNode {
+                                    id: source.clone(),
+                                    kind: "dataset_node".to_owned(),
+                                    name: source.clone(),
+                                    file_path: None,
+                                });
+                            nodes.push(gn);
+                            next_frontier.push(source);
+                        }
+                    }
+                }
             }
             frontier = next_frontier;
         }
@@ -4938,6 +5038,8 @@ has_def[id] := *function_meta { id }
             ("pbi_belongs_to_report", "pbi_belongs_to_report"),
             ("pbi_relates_to_table", "pbi_relates_to_table"),
         ];
+        const LINEAGE_EDGE_TYPES_FP: &[(&str, &str)] =
+            &[("lineage_derives_from", "lineage_derives_from")];
 
         if from_id == to_id {
             return Ok(FindPathResult {
@@ -5027,6 +5129,38 @@ has_def[id] := *function_meta { id }
                     }
                     let script =
                         "?[from, to] := *powerbi_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
+                            .to_owned();
+                    let mut p = BTreeMap::new();
+                    p.insert("node".to_owned(), DataValue::from(node.as_str()));
+                    p.insert("et".to_owned(), DataValue::from(*db_et));
+                    let r = self
+                        .db
+                        .run_script(&script, p, ScriptMutability::Immutable)
+                        .map_err(|e| map_db_err(e.to_string()))?;
+                    for row in &r.rows {
+                        let target = extract_str(row, 1);
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        parent.insert(target.clone(), node.clone());
+                        visited.insert(target.clone());
+                        if target == to_id {
+                            found = true;
+                            break 'outer;
+                        }
+                        next_frontier.push(target);
+                    }
+                }
+
+                // Lineage edges (095-F U8, outgoing only): a path from a write
+                // target follows `lineage_derives_from` to its upstream sources
+                // (AR-06).
+                for (_api_label, db_et) in LINEAGE_EDGE_TYPES_FP {
+                    if !edge_types.is_empty() && !edge_types.contains(&"lineage_derives_from") {
+                        continue;
+                    }
+                    let script =
+                        "?[from, to] := *lineage_edge { from_id, to_id, edge_type }, from_id = $node, from = from_id, to = to_id, edge_type = $et"
                             .to_owned();
                     let mut p = BTreeMap::new();
                     p.insert("node".to_owned(), DataValue::from(node.as_str()));
@@ -5538,6 +5672,259 @@ has_def[id] := *function_meta { id }
         Ok(())
     }
 
+    // ── 095-F: lineage subgraph writers (U1a') ────────────────────────────
+
+    /// Batch upsert canonical `dataset_node` rows (`id => name, kind`).
+    ///
+    /// Canonical fields only — no per-notebook provenance touches the node, so a
+    /// second notebook re-asserting the same dataset never clobbers it (AR-01 /
+    /// Review comment 1).
+    pub async fn upsert_dataset_nodes(
+        &self,
+        nodes: &[crate::models::LineageEndpoint],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[id, name, kind] <- [[$id, $name, $kind]]
+:put dataset_node { id => name, kind }
+"#;
+        for node in nodes {
+            let mut p = BTreeMap::new();
+            p.insert("id".to_owned(), DataValue::from(node.id.as_str()));
+            p.insert("name".to_owned(), DataValue::from(node.name.as_str()));
+            p.insert("kind".to_owned(), DataValue::from(node.kind.as_str()));
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch upsert directional `lineage_derives_from` edges.
+    ///
+    /// Each pair is `(from_id, to_id)` = `(written target, read source)` (AR-05).
+    /// `edge_type` is fixed to [`LINEAGE_DERIVES_FROM`](crate::models::LINEAGE_DERIVES_FROM)
+    /// and `ingested_at` is replaced on every re-index (AR-15).
+    pub async fn upsert_lineage_edges(
+        &self,
+        edges: &[(String, String)],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[from_id, to_id, edge_type, ingested_at] <- [[$from_id, $to_id, $edge_type, $ingested_at]]
+:put lineage_edge { from_id, to_id, edge_type => ingested_at }
+"#;
+        let now = chrono::Utc::now().to_rfc3339();
+        for (from_id, to_id) in edges {
+            let mut p = BTreeMap::new();
+            p.insert("from_id".to_owned(), DataValue::from(from_id.as_str()));
+            p.insert("to_id".to_owned(), DataValue::from(to_id.as_str()));
+            p.insert(
+                "edge_type".to_owned(),
+                DataValue::from(crate::models::LINEAGE_DERIVES_FROM),
+            );
+            p.insert("ingested_at".to_owned(), DataValue::from(now.as_str()));
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Batch upsert per-(edge, notebook, cell) `lineage_edge_evidence` rows.
+    ///
+    /// `chunk_index` is part of the key, so the same edge observed in two cells
+    /// of one notebook yields two rows (Review comment E1).
+    pub async fn upsert_lineage_edge_evidence(
+        &self,
+        evidence: &[crate::models::LineageEvidence],
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[from_id, to_id, edge_type, notebook_path, chunk_index, content_hash, ingested_at] <-
+    [[$from_id, $to_id, $edge_type, $notebook_path, $chunk_index, $content_hash, $ingested_at]]
+:put lineage_edge_evidence {
+    from_id, to_id, edge_type, notebook_path, chunk_index => content_hash, ingested_at
+}
+"#;
+        let now = chrono::Utc::now().to_rfc3339();
+        for ev in evidence {
+            let mut p = BTreeMap::new();
+            p.insert("from_id".to_owned(), DataValue::from(ev.from_id.as_str()));
+            p.insert("to_id".to_owned(), DataValue::from(ev.to_id.as_str()));
+            p.insert(
+                "edge_type".to_owned(),
+                DataValue::from(crate::models::LINEAGE_DERIVES_FROM),
+            );
+            p.insert(
+                "notebook_path".to_owned(),
+                DataValue::from(ev.notebook_path.as_str()),
+            );
+            p.insert(
+                "chunk_index".to_owned(),
+                DataValue::Num(Num::Int(i64::from(ev.chunk_index))),
+            );
+            p.insert(
+                "content_hash".to_owned(),
+                DataValue::from(ev.content_hash.as_str()),
+            );
+            p.insert("ingested_at".to_owned(), DataValue::from(now.as_str()));
+            self.run_script_busy_retry_mutable(script, p).await?;
+        }
+        Ok(())
+    }
+
+    /// Fail-closed 4-step scope-delete cascade for one notebook's lineage.
+    ///
+    /// (1) delete every `lineage_edge_evidence` row for `notebook_path`; (2) GC
+    /// any `lineage_edge` left with zero remaining evidence; (3) GC any
+    /// `dataset_node` no longer incident to a surviving edge; (4) delete the
+    /// notebook's `lineage_index_state` freshness row (AR-22). Never a
+    /// first-match delete (FF7DE872) — every matching row is removed.
+    pub async fn delete_lineage_by_scope(&self, notebook_path: &str) -> Result<(), EngramError> {
+        // Step 1 — remove all per-cell evidence for this notebook.
+        let rm_evidence = r#"
+?[from_id, to_id, edge_type, notebook_path, chunk_index] :=
+    *lineage_edge_evidence { from_id, to_id, edge_type, notebook_path, chunk_index },
+    notebook_path = $notebook_path
+:rm lineage_edge_evidence { from_id, to_id, edge_type, notebook_path, chunk_index }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        self.run_script_busy_retry_mutable(rm_evidence, p).await?;
+
+        // Step 2 — GC edges that now have no evidence from any notebook.
+        let rm_orphan_edges = r#"
+?[from_id, to_id, edge_type] :=
+    *lineage_edge { from_id, to_id, edge_type },
+    not *lineage_edge_evidence { from_id, to_id, edge_type }
+:rm lineage_edge { from_id, to_id, edge_type }
+"#;
+        self.run_script_busy_retry_mutable(rm_orphan_edges, BTreeMap::new())
+            .await?;
+
+        // Step 3 — GC dataset nodes no longer referenced by any surviving edge.
+        let rm_orphan_nodes = r#"
+referenced[id] := *lineage_edge { from_id: id }
+referenced[id] := *lineage_edge { to_id: id }
+?[id] := *dataset_node { id }, not referenced[id]
+:rm dataset_node { id }
+"#;
+        self.run_script_busy_retry_mutable(rm_orphan_nodes, BTreeMap::new())
+            .await?;
+
+        // Step 4 — delete the freshness-state row for this notebook (AR-22).
+        self.delete_lineage_index_state(notebook_path).await?;
+        Ok(())
+    }
+
+    /// Delete only the `lineage_index_state` freshness row for one notebook.
+    ///
+    /// This is the crash-safety primitive for V1: the write-path invalidates the
+    /// freshness stamp **before** the multi-step evidence cascade so that any
+    /// partial failure leaves the scope re-processable (`lineage_index_version`
+    /// returns `None` ⇒ "must re-index") rather than silently hash-skipped with a
+    /// stale stamp still present. Deleting an absent row is a no-op (idempotent),
+    /// so it is safe to call both as the pre-cascade invalidation and as the
+    /// cascade's final step.
+    pub async fn delete_lineage_index_state(&self, notebook_path: &str) -> Result<(), EngramError> {
+        let rm_index_state = r#"
+?[notebook_path] :=
+    *lineage_index_state { notebook_path },
+    notebook_path = $notebook_path
+:rm lineage_index_state { notebook_path }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        self.run_script_busy_retry_mutable(rm_index_state, p)
+            .await?;
+        Ok(())
+    }
+
+    /// Return every `lineage_derives_from` edge as `(from_id, to_id)` pairs.
+    pub async fn select_lineage_edges(&self) -> Result<Vec<(String, String)>, EngramError> {
+        let script = r#"?[from_id, to_id] := *lineage_edge { from_id, to_id }"#;
+        let rows = self
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await?
+            .rows;
+        Ok(rows
+            .iter()
+            .map(|row| (extract_str(row, 0), extract_str(row, 1)))
+            .collect())
+    }
+
+    /// Return every persisted `dataset_node` id.
+    pub async fn select_dataset_node_ids(&self) -> Result<Vec<String>, EngramError> {
+        let script = r#"?[id] := *dataset_node { id }"#;
+        let rows = self
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await?
+            .rows;
+        Ok(rows.iter().map(|row| extract_str(row, 0)).collect())
+    }
+
+    /// Count `lineage_edge_evidence` rows recorded for one notebook.
+    pub async fn count_lineage_evidence_for(
+        &self,
+        notebook_path: &str,
+    ) -> Result<usize, EngramError> {
+        let script = r#"
+?[from_id, to_id, edge_type, chunk_index] :=
+    *lineage_edge_evidence { from_id, to_id, edge_type, notebook_path, chunk_index },
+    notebook_path = $notebook_path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        let rows = self.run_script_busy_retry_immutable(script, p).await?.rows;
+        Ok(rows.len())
+    }
+
+    // ── 095-F: lineage version-state helpers (U1a") ───────────────────────
+
+    /// Upsert the durable freshness row for one notebook's lineage extraction.
+    ///
+    /// Stamps `extractor_version` (plus an `indexed_at` timestamp) into
+    /// `lineage_index_state`. This is the durable version slot that backs the U4
+    /// write-path's unconditional freshness stamp (AR-03) and U4b's
+    /// version-fingerprint skip predicate — `content_record` carries only a
+    /// `content_hash` with no version slot (cycle-5 F5), so the version must live
+    /// here.
+    pub async fn upsert_lineage_index_state(
+        &self,
+        notebook_path: &str,
+        extractor_version: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[notebook_path, extractor_version, indexed_at] <- [[$notebook_path, $extractor_version, $indexed_at]]
+:put lineage_index_state { notebook_path => extractor_version, indexed_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        p.insert(
+            "extractor_version".to_owned(),
+            DataValue::from(extractor_version),
+        );
+        p.insert(
+            "indexed_at".to_owned(),
+            DataValue::from(chrono::Utc::now().to_rfc3339().as_str()),
+        );
+        self.run_script_busy_retry_mutable(script, p).await?;
+        Ok(())
+    }
+
+    /// Read the durable `extractor_version` recorded for one notebook.
+    ///
+    /// Returns `None` when the notebook has never been indexed (no
+    /// `lineage_index_state` row), which U4b treats as "must (re)index".
+    pub async fn lineage_index_version(
+        &self,
+        notebook_path: &str,
+    ) -> Result<Option<String>, EngramError> {
+        let script = r#"
+?[extractor_version] :=
+    *lineage_index_state { notebook_path, extractor_version },
+    notebook_path = $notebook_path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("notebook_path".to_owned(), DataValue::from(notebook_path));
+        let rows = self.run_script_busy_retry_immutable(script, p).await?.rows;
+        Ok(rows.first().map(|row| extract_str(row, 0)))
+    }
+
     /// Return all Power BI nodes, optionally filtered by `source_path`.
     pub async fn select_powerbi_nodes(
         &self,
@@ -5800,6 +6187,40 @@ has_def[id] := *function_meta { id }
             } else {
                 Some(file_path_val)
             },
+        }))
+    }
+
+    /// Resolve a `dataset_node` id to a [`QueryGraphNode`] for lineage traversal
+    /// projection (095-F U8).
+    ///
+    /// `dataset_node` carries only `{ id, name, kind }` (no `file_path`), and
+    /// `kind` is `table` or `path`; the projected node kind is namespaced as
+    /// `dataset_{kind}` so a client can tell it apart from code/backlog/Power BI
+    /// nodes. Returns `None` when the id is not a persisted dataset.
+    async fn resolve_dataset_node(&self, id: &str) -> Result<Option<QueryGraphNode>, EngramError> {
+        let script = "?[id, name, kind] := *dataset_node { id, name, kind }, id = $id";
+        let mut p = BTreeMap::new();
+        p.insert("id".to_owned(), DataValue::from(id));
+        let result = self
+            .db
+            .run_script(script, p, ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        if result.rows.is_empty() {
+            return Ok(None);
+        }
+        let row = &result.rows[0];
+        let node_id = extract_str(row, 0);
+        let name = extract_str(row, 1);
+        let kind = extract_str(row, 2);
+        Ok(Some(QueryGraphNode {
+            id: node_id,
+            kind: if kind.is_empty() {
+                "dataset_node".to_owned()
+            } else {
+                format!("dataset_{kind}")
+            },
+            name: if name.is_empty() { id.to_owned() } else { name },
+            file_path: None,
         }))
     }
 }
@@ -6231,5 +6652,302 @@ mod tests {
             "a materialized function keeps its embedding (counts unchanged)"
         );
         assert_eq!(full_out.body, "fn full() {}", "materialized body preserved");
+    }
+
+    // ── 095-F U1a': lineage writers + fail-closed scope-delete cascade ────
+
+    fn endpoint(id: &str, name: &str) -> crate::models::LineageEndpoint {
+        crate::models::LineageEndpoint {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind: crate::models::DatasetKind::Table,
+        }
+    }
+
+    fn evidence(
+        from_id: &str,
+        to_id: &str,
+        notebook_path: &str,
+        chunk_index: u32,
+    ) -> crate::models::LineageEvidence {
+        crate::models::LineageEvidence {
+            from_id: from_id.to_owned(),
+            to_id: to_id.to_owned(),
+            notebook_path: notebook_path.to_owned(),
+            chunk_index,
+            content_hash: "h".to_owned(),
+        }
+    }
+
+    async fn lineage_queries(name: &str) -> (tempfile::TempDir, CodeGraphQueries) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), name)
+            .await
+            .expect("connect_db");
+        (tmp, CodeGraphQueries::new(db))
+    }
+
+    // U1a': writers round-trip a node/edge/evidence, and re-asserting the same
+    // dataset from a second notebook keeps ONE node (canonical identity, no
+    // provenance clobber — Review comment 1).
+    #[tokio::test]
+    async fn lineage_writers_round_trip_and_canonical_identity() {
+        let (_tmp, q) = lineage_queries("lineage-roundtrip").await;
+        let t = endpoint("table::a::c.s.t", "c.s.t");
+        let s = endpoint("table::a::c.s.src", "c.s.src");
+        q.upsert_dataset_nodes(&[t.clone(), s.clone()])
+            .await
+            .expect("upsert nodes");
+        q.upsert_lineage_edges(&[(t.id.clone(), s.id.clone())])
+            .await
+            .expect("upsert edge");
+        q.upsert_lineage_edge_evidence(&[evidence(&t.id, &s.id, "n1.ipynb", 1)])
+            .await
+            .expect("upsert evidence");
+
+        // A second notebook re-asserts the identical canonical nodes.
+        q.upsert_dataset_nodes(&[t.clone(), s.clone()])
+            .await
+            .expect("re-upsert nodes");
+        q.upsert_lineage_edge_evidence(&[evidence(&t.id, &s.id, "n2.ipynb", 1)])
+            .await
+            .expect("upsert n2 evidence");
+
+        let mut node_ids = q.select_dataset_node_ids().await.expect("node ids");
+        node_ids.sort();
+        assert_eq!(
+            node_ids,
+            vec!["table::a::c.s.src".to_owned(), "table::a::c.s.t".to_owned()],
+            "re-asserting the same dataset must keep exactly one node per id"
+        );
+        let edges = q.select_lineage_edges().await.expect("edges");
+        assert_eq!(edges, vec![(t.id.clone(), s.id.clone())]);
+    }
+
+    // U1a': the same edge evidenced by two notebooks (and, within one notebook,
+    // two cells) is independently scope-deletable — deleting one notebook leaves
+    // the edge (still evidenced) and its nodes; deleting the last removes both
+    // (Review comment 2 + E1).
+    #[tokio::test]
+    async fn shared_edge_and_two_cell_scope_delete() {
+        let (_tmp, q) = lineage_queries("lineage-shared").await;
+        let t = endpoint("table::a::c.s.t", "c.s.t");
+        let s = endpoint("table::a::c.s.src", "c.s.src");
+        q.upsert_dataset_nodes(&[t.clone(), s.clone()])
+            .await
+            .expect("nodes");
+        q.upsert_lineage_edges(&[(t.id.clone(), s.id.clone())])
+            .await
+            .expect("edge");
+        // N1 emits the SAME edge from two cells; N2 emits it from one cell.
+        q.upsert_lineage_edge_evidence(&[
+            evidence(&t.id, &s.id, "n1.ipynb", 1),
+            evidence(&t.id, &s.id, "n1.ipynb", 2),
+            evidence(&t.id, &s.id, "n2.ipynb", 1),
+        ])
+        .await
+        .expect("evidence");
+        assert_eq!(
+            q.count_lineage_evidence_for("n1.ipynb").await.expect("c"),
+            2,
+            "two cells of n1 must yield two evidence rows (no :put overwrite)"
+        );
+
+        // Delete N1: edge survives (n2 still evidences it); nodes survive.
+        q.delete_lineage_by_scope("n1.ipynb").await.expect("del n1");
+        assert_eq!(
+            q.count_lineage_evidence_for("n1.ipynb").await.expect("c"),
+            0
+        );
+        assert_eq!(
+            q.count_lineage_evidence_for("n2.ipynb").await.expect("c"),
+            1
+        );
+        assert_eq!(
+            q.select_lineage_edges().await.expect("edges").len(),
+            1,
+            "edge must survive while still evidenced by n2"
+        );
+
+        // Delete N2 (the last): edge GC'd, orphan nodes GC'd.
+        q.delete_lineage_by_scope("n2.ipynb").await.expect("del n2");
+        assert!(q.select_lineage_edges().await.expect("edges").is_empty());
+        assert!(
+            q.select_dataset_node_ids().await.expect("ids").is_empty(),
+            "nodes with no surviving incident edge must be GC'd"
+        );
+    }
+
+    // U1a': whole-file scope-delete GCs orphaned edges/nodes while a dataset
+    // still evidenced by another notebook survives, and clears the notebook's
+    // lineage_index_state row (AR-22).
+    #[tokio::test]
+    async fn whole_file_gc_survives_shared_dataset_and_clears_index_state() {
+        let (_tmp, q) = lineage_queries("lineage-gc").await;
+        let t1 = endpoint("table::a::c.s.t1", "c.s.t1");
+        let s1 = endpoint("table::a::c.s.s1", "c.s.s1");
+        let s2 = endpoint("table::a::c.s.s2", "c.s.s2");
+        // E1: t1 <- s1 (only in n1); E2: t1 <- s2 (only in n2). t1 is shared.
+        q.upsert_dataset_nodes(&[t1.clone(), s1.clone(), s2.clone()])
+            .await
+            .expect("nodes");
+        q.upsert_lineage_edges(&[
+            (t1.id.clone(), s1.id.clone()),
+            (t1.id.clone(), s2.id.clone()),
+        ])
+        .await
+        .expect("edges");
+        q.upsert_lineage_edge_evidence(&[
+            evidence(&t1.id, &s1.id, "n1.ipynb", 1),
+            evidence(&t1.id, &s2.id, "n2.ipynb", 1),
+        ])
+        .await
+        .expect("evidence");
+
+        // Seed an index-state row for n1 (mirrors the U4 write-path stamp).
+        let seed = r#"?[notebook_path, extractor_version, indexed_at] <-
+    [["n1.ipynb", "v1", "2026-07-23T00:00:00Z"]]
+:put lineage_index_state { notebook_path => extractor_version, indexed_at }"#;
+        q.run_script_busy_retry_mutable(seed, BTreeMap::new())
+            .await
+            .expect("seed index-state");
+
+        q.delete_lineage_by_scope("n1.ipynb").await.expect("del n1");
+
+        // E1 gone; E2 survives.
+        let edges = q.select_lineage_edges().await.expect("edges");
+        assert_eq!(edges, vec![(t1.id.clone(), s2.id.clone())]);
+        // s1 GC'd; t1 + s2 survive (t1 shared, s2 in E2).
+        let mut ids = q.select_dataset_node_ids().await.expect("ids");
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["table::a::c.s.s2".to_owned(), "table::a::c.s.t1".to_owned(),],
+            "s1 must be GC'd while the shared t1 and s2 survive"
+        );
+        // index_state(n1) removed (AR-22).
+        let state_rows = q
+            .run_script_busy_retry_immutable(
+                r#"?[extractor_version] := *lineage_index_state { notebook_path, extractor_version }, notebook_path = "n1.ipynb""#,
+                BTreeMap::new(),
+            )
+            .await
+            .expect("query index-state")
+            .rows;
+        assert!(
+            state_rows.is_empty(),
+            "the notebook's lineage_index_state row must be deleted (AR-22)"
+        );
+    }
+
+    // V1 (fail-closed crash-safety): the freshness stamp can be invalidated
+    // INDEPENDENTLY of (and before) the evidence cascade. Invalidating it first
+    // makes a scope re-processable (lineage_index_version -> None) WITHOUT
+    // destroying its evidence, so a crash mid-cascade never leaves a hash-skipped
+    // notebook exposing an unevidenced edge.
+    //
+    // A true mid-cascade fault-injection test would need a DB trait seam that does
+    // not exist over the concrete `CodeGraphQueries` (disproportionate scaffolding
+    // for one call). Instead this asserts the ordering primitive at the unit
+    // level: deleting index-state alone leaves a consistent, re-processable scope.
+    #[tokio::test]
+    async fn index_state_invalidation_is_independent_and_reprocessable_v1() {
+        let (_tmp, q) = lineage_queries("lineage-v1-order").await;
+        let t = endpoint("table::a::c.s.t", "c.s.t");
+        let s = endpoint("table::a::c.s.src", "c.s.src");
+        q.upsert_dataset_nodes(&[t.clone(), s.clone()])
+            .await
+            .expect("nodes");
+        q.upsert_lineage_edges(&[(t.id.clone(), s.id.clone())])
+            .await
+            .expect("edge");
+        q.upsert_lineage_edge_evidence(&[evidence(&t.id, &s.id, "n1.ipynb", 1)])
+            .await
+            .expect("evidence");
+        q.upsert_lineage_index_state("n1.ipynb", "v1")
+            .await
+            .expect("stamp");
+
+        // Invalidate the freshness stamp FIRST (the new pre-cascade step).
+        q.delete_lineage_index_state("n1.ipynb")
+            .await
+            .expect("invalidate stamp");
+
+        // The scope now re-processes on the next run rather than hash-skipping.
+        assert_eq!(
+            q.lineage_index_version("n1.ipynb").await.expect("version"),
+            None,
+            "invalidating the stamp first makes the scope re-processable (V1)"
+        );
+        // …and its evidence/edge are still intact, so there is no window where an
+        // unevidenced edge is exposed while the notebook is hash-skipped.
+        assert_eq!(
+            q.count_lineage_evidence_for("n1.ipynb")
+                .await
+                .expect("evidence count"),
+            1,
+            "stamp invalidation must not destroy evidence (V1)"
+        );
+        assert_eq!(
+            q.select_lineage_edges().await.expect("edges").len(),
+            1,
+            "the old edge stays evidenced until a clean re-index (V1)"
+        );
+    }
+
+    // ── 095-F U1a": lineage version-state read/write helpers ──────────────
+
+    // U1a": upsert_lineage_index_state then lineage_index_version round-trips
+    // the extractor version, an unindexed notebook reads None, and re-stamping
+    // replaces the version in place.
+    #[tokio::test]
+    async fn lineage_index_state_round_trips_version() {
+        let (_tmp, q) = lineage_queries("lineage-version-rt").await;
+        assert_eq!(
+            q.lineage_index_version("n.ipynb").await.expect("read"),
+            None,
+            "an unindexed notebook has no recorded version"
+        );
+        q.upsert_lineage_index_state("n.ipynb", "v1")
+            .await
+            .expect("upsert v1");
+        assert_eq!(
+            q.lineage_index_version("n.ipynb").await.expect("read"),
+            Some("v1".to_owned())
+        );
+        q.upsert_lineage_index_state("n.ipynb", "v2")
+            .await
+            .expect("re-stamp v2");
+        assert_eq!(
+            q.lineage_index_version("n.ipynb").await.expect("read"),
+            Some("v2".to_owned()),
+            "re-stamping replaces the version in place"
+        );
+    }
+
+    // U1a": the durable version slot survives a full store re-open — it lives in
+    // lineage_index_state on disk, NOT in memory (cycle-5 F5).
+    #[tokio::test]
+    async fn lineage_index_version_survives_store_reopen() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        {
+            let db = crate::db::connect_db(tmp.path(), "lineage-durable")
+                .await
+                .expect("connect");
+            let q = CodeGraphQueries::new(db);
+            q.upsert_lineage_index_state("n.ipynb", "v7")
+                .await
+                .expect("upsert");
+        }
+        // Re-open the same on-disk store under the same branch.
+        let db2 = crate::db::connect_db(tmp.path(), "lineage-durable")
+            .await
+            .expect("reconnect");
+        let q2 = CodeGraphQueries::new(db2);
+        assert_eq!(
+            q2.lineage_index_version("n.ipynb").await.expect("read"),
+            Some("v7".to_owned()),
+            "the durable version slot must survive a store re-open (cycle-5 F5)"
+        );
     }
 }

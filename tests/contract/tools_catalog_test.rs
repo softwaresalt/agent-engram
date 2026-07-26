@@ -156,3 +156,28 @@ fn impact_analysis_params_document_powerbi_selector_and_depth() {
         "powerbi_node_id description must document the selector: {powerbi_node_id}"
     );
 }
+
+/// 095-F U8 (cycle-5 F6 / AR-26): the `query_graph` tool description must
+/// advertise the `lineage_derives_from` edge type and enumerate the full
+/// traversable namespace (code / backlog / powerbi / lineage) so agents can
+/// discover the notebook data-lineage subgraph.
+#[test]
+fn query_graph_advertises_lineage_and_full_edge_namespace() {
+    let tools = tools_catalog::all_tools();
+    let query_graph = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "query_graph")
+        .expect("query_graph must be present in catalog");
+    let desc = query_graph.description.as_deref().unwrap_or_default();
+
+    assert!(
+        desc.contains("lineage_derives_from"),
+        "description must advertise the lineage_derives_from edge type: {desc}"
+    );
+    for namespace in ["code", "backlog", "powerbi", "lineage"] {
+        assert!(
+            desc.contains(namespace),
+            "description must enumerate the '{namespace}' edge namespace: {desc}"
+        );
+    }
+}

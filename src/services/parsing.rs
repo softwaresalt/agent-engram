@@ -26,7 +26,9 @@ use crate::errors::{CodeGraphError, EngramError};
 
 pub(crate) use markdown::chunk_markdown_document_with_title_hint;
 pub use markdown::{MarkdownChunk, chunk_markdown_document};
+pub(crate) use python::{extract_python_lineage, resolve_cell_candidates};
 pub use rust::classify_call_qualifier;
+pub(crate) use sql::extract_sql_lineage;
 
 /// Supported source-language identifiers for Tier-1 code graph parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

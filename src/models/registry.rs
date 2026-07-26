@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::config::LineageConfig;
+
 /// Validation status of a [`ContentSource`] after hydration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -109,6 +111,15 @@ pub struct RegistryConfig {
     /// Files per ingestion batch (default: 50).
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+
+    /// Trusted-authority configuration for notebook data-lineage extraction.
+    ///
+    /// Absent/empty ⇒ an empty [`LineageAuthorityContext`] and no lineage edges
+    /// (fail-closed; 095-F, AR-01).
+    ///
+    /// [`LineageAuthorityContext`]: crate::models::lineage::LineageAuthorityContext
+    #[serde(default)]
+    pub lineage: LineageConfig,
 }
 
 fn default_max_file_size() -> u64 {
@@ -125,6 +136,7 @@ impl Default for RegistryConfig {
             sources: Vec::new(),
             max_file_size_bytes: DEFAULT_MAX_FILE_SIZE,
             batch_size: DEFAULT_BATCH_SIZE,
+            lineage: LineageConfig::default(),
         }
     }
 }

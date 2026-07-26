@@ -85,6 +85,11 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         // 061-F: Power BI graph relations
         CREATE_POWERBI_NODE,
         CREATE_POWERBI_EDGE,
+        // 095-F: Spark notebook data-lineage subgraph relations
+        CREATE_DATASET_NODE,
+        CREATE_LINEAGE_EDGE,
+        CREATE_LINEAGE_EDGE_EVIDENCE,
+        CREATE_LINEAGE_INDEX_STATE,
     ];
 
     for script in &scripts {
@@ -1056,6 +1061,84 @@ pub const CREATE_POWERBI_EDGE: &str = r#"
 }
 "#;
 
+// ── 095-F: Spark notebook data-lineage subgraph relations ────────────────
+
+/// CozoScript `:create` for `dataset_node` — a canonical, authority-bound
+/// lineage dataset endpoint.
+///
+/// Key: `id` — the authority-embedded canonical key (a 3-part
+/// `catalog.schema.table` plus a stable metastore-authority id, or an absolute
+/// URI plus a storage-authority id), so two distinct metastores sharing the
+/// same `catalog.schema.table` resolve to distinct nodes and never collide
+/// (AR-01). **Canonical fields only** — no `notebook_path` / `source_path` /
+/// `content_hash` / `ingested_at`; per-notebook provenance lives in
+/// `lineage_edge_evidence` so a second source never clobbers the node.
+/// `kind ∈ {table, path}` (no `view`).
+pub const CREATE_DATASET_NODE: &str = r#"
+:create dataset_node {
+    id: String
+    =>
+    name: String,
+    kind: String,
+}
+"#;
+
+/// CozoScript `:create` for `lineage_edge` — a directed dataset derives-from
+/// edge.
+///
+/// Key: `(from_id, to_id, edge_type)`. v1 emits exactly one edge type,
+/// `lineage_derives_from`, oriented `from_id` = the written target dataset →
+/// `to_id` = the read source dataset: data flows source→target, but the edge
+/// encodes derives-from (AR-05). `ingested_at` is **replaced** on every
+/// re-index (`:put` overwrite, not a first-seen minimum; AR-15); per-observation
+/// timing and per-notebook provenance live in `lineage_edge_evidence`.
+pub const CREATE_LINEAGE_EDGE: &str = r#"
+:create lineage_edge {
+    from_id: String,
+    to_id: String,
+    edge_type: String
+    =>
+    ingested_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `lineage_edge_evidence` — one per-cell observation
+/// of a `lineage_edge`.
+///
+/// Key: `(from_id, to_id, edge_type, notebook_path, chunk_index)`. `chunk_index`
+/// is part of the key so the same edge observed in two cells of one notebook
+/// yields two rows — a notebook-level key would let `:put` overwrite the cell
+/// provenance the plan must preserve (Review comment E1). Notebook-scope
+/// deletion removes every row matching `notebook_path`.
+pub const CREATE_LINEAGE_EDGE_EVIDENCE: &str = r#"
+:create lineage_edge_evidence {
+    from_id: String,
+    to_id: String,
+    edge_type: String,
+    notebook_path: String,
+    chunk_index: Int
+    =>
+    content_hash: String,
+    ingested_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `lineage_index_state` — per-notebook freshness
+/// state.
+///
+/// Key: `notebook_path`. Durably persists the lineage-extractor semantic
+/// version per notebook so the U4b version-fingerprint skip check survives
+/// process restarts (`content_record` carries only `content_hash`, with no
+/// version slot; cycle-5 F5). This is freshness state, not identity/provenance.
+pub const CREATE_LINEAGE_INDEX_STATE: &str = r#"
+:create lineage_index_state {
+    notebook_path: String
+    =>
+    extractor_version: String,
+    indexed_at: String,
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1446,5 +1529,80 @@ mod tests {
             !calls_edge_has_resolution(&db).expect("column probe must run"),
             "rollback must survive a reopen bootstrap: the resolution column must stay absent"
         );
+    }
+
+    // ── 095-F U1a: lineage subgraph relations ─────────────────────────────
+
+    // U1a: a second full bootstrap is a no-op for the four lineage relations
+    // (idempotent `:create`), matching the existing additive-bootstrap contract.
+    #[test]
+    fn lineage_bootstrap_is_idempotent() {
+        let db = cozo::DbInstance::new("mem", "", Default::default())
+            .expect("in-memory cozo instance must open");
+        run_scripts(&db).expect("initial bootstrap must create the lineage relations");
+        run_scripts(&db).expect("second bootstrap must be a no-op for existing lineage relations");
+    }
+
+    // U1a: the four lineage relations bootstrap with exactly the specified
+    // key/value shape — `dataset_node { id => name, kind }`, the edge oriented
+    // `from_id`(target)→`to_id`(source), `chunk_index` inside the evidence KEY,
+    // and the freshness `lineage_index_state { notebook_path => version, at }`.
+    #[test]
+    fn lineage_relations_have_expected_shape() {
+        let db = cozo::DbInstance::new("mem", "", Default::default())
+            .expect("in-memory cozo instance must open");
+        run_scripts(&db).expect("bootstrap must succeed");
+
+        db.run_script(
+            r#"?[id, name, kind] <- [["table::a::c.s.t", "c.s.t", "table"]]
+:put dataset_node { id => name, kind }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("dataset_node must accept the canonical-only shape");
+
+        db.run_script(
+            r#"?[from_id, to_id, edge_type, ingested_at] <-
+    [["table::a::c.s.t", "table::a::c.s.src", "lineage_derives_from", "2026-07-23T00:00:00Z"]]
+:put lineage_edge { from_id, to_id, edge_type => ingested_at }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("lineage_edge must accept (from_id, to_id, edge_type) => ingested_at");
+
+        // Two evidence rows for the SAME edge with distinct chunk_index must both
+        // persist (chunk_index is part of the KEY, so :put does not overwrite).
+        db.run_script(
+            r#"?[from_id, to_id, edge_type, notebook_path, chunk_index, content_hash, ingested_at] <-
+    [["table::a::c.s.t", "table::a::c.s.src", "lineage_derives_from", "nb.ipynb", 1, "h1", "2026-07-23T00:00:00Z"],
+     ["table::a::c.s.t", "table::a::c.s.src", "lineage_derives_from", "nb.ipynb", 2, "h2", "2026-07-23T00:00:00Z"]]
+:put lineage_edge_evidence { from_id, to_id, edge_type, notebook_path, chunk_index => content_hash, ingested_at }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("lineage_edge_evidence must key on chunk_index");
+
+        let evidence_rows = db
+            .run_script(
+                r#"?[chunk_index] := *lineage_edge_evidence{ notebook_path, chunk_index }, notebook_path = "nb.ipynb""#,
+                BTreeMap::new(),
+                cozo::ScriptMutability::Immutable,
+            )
+            .expect("evidence query must run")
+            .rows;
+        assert_eq!(
+            evidence_rows.len(),
+            2,
+            "chunk_index in the key must preserve two per-cell evidence rows"
+        );
+
+        db.run_script(
+            r#"?[notebook_path, extractor_version, indexed_at] <-
+    [["nb.ipynb", "v1", "2026-07-23T00:00:00Z"]]
+:put lineage_index_state { notebook_path => extractor_version, indexed_at }"#,
+            BTreeMap::new(),
+            cozo::ScriptMutability::Mutable,
+        )
+        .expect("lineage_index_state must accept notebook_path => version, indexed_at");
     }
 }

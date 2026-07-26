@@ -350,6 +350,7 @@ mod tests {
             sources,
             max_file_size_bytes: 1_048_576,
             batch_size: 50,
+            ..RegistryConfig::default()
         }
     }
 
@@ -716,6 +717,7 @@ mod tests {
             sources: vec![docs_source()],
             max_file_size_bytes: 8, // tiny limit; the document below exceeds it
             batch_size: 50,
+            ..RegistryConfig::default()
         };
 
         let file = write_markdown(
