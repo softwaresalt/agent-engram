@@ -1604,6 +1604,34 @@ fn python_call_edges(source: &str) -> Vec<(String, String, bool, bool, String)> 
         .collect()
 }
 
+/// Like [`python_call_edges`] but also carries `qualifier_kind` (096-F/T4), so a
+/// module-qualified candidate `mod.func()` can be asserted end to end.
+fn python_call_edges_with_kind(source: &str) -> Vec<(String, String, bool, bool, String, String)> {
+    let result = parse_source(source, Language::Python).expect("Python parse must succeed");
+    result
+        .edges
+        .iter()
+        .filter_map(|e| match e {
+            ExtractedEdge::Calls {
+                caller,
+                callee,
+                is_method,
+                is_qualified,
+                raw_qualifier,
+                qualifier_kind,
+            } => Some((
+                caller.clone(),
+                callee.clone(),
+                *is_method,
+                *is_qualified,
+                raw_qualifier.clone(),
+                qualifier_kind.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Scenario 1 — positive bare calls are promoted (`is_method:false`).
 #[test]
 fn python_extracts_bare_call_edges() {
@@ -1629,21 +1657,26 @@ fn python_extracts_bare_call_edges() {
     );
 }
 
-/// Scenario 2 — attribute / method calls are marked (`is_method:true`) but never
-/// promoted to a bare edge and never staged (empty `raw_qualifier` so
-/// `should_stage_provenance_call(true, false, "")` fails closed). The positive
-/// `is_method:true` assertion makes the negative non-vacuous: a silent-drop
-/// mapping error (wrong `attribute`/`object` field names) fails loudly.
+/// Scenario 2 (096-F/T4) — receiver-kind decides staging. A simple-identifier
+/// receiver `obj` that is not `self`/`cls` makes `obj.save()` a **module
+/// candidate** (`is_method:false, is_qualified:true, raw_qualifier:"obj",
+/// qualifier_kind:"module"`) — the resolver fails closed later if `obj` is not a
+/// bound module. `self.foo()`/`cls.bar()` stay dropped at the parser
+/// (`is_method:true`, EMPTY qualifier), so `should_stage_provenance_call` fails
+/// closed. Neither is ever promoted to a bare edge.
 #[test]
 fn python_attribute_calls_marked_not_promoted_not_staged() {
-    let source = "def f():\n    obj.save()\n\ndef g():\n    self.foo()\n";
-    let calls = python_call_edges(source);
+    let source =
+        "def f():\n    obj.save()\n\ndef g():\n    self.foo()\n\ndef h():\n    cls.bar()\n";
+    let calls = python_call_edges_with_kind(source);
 
-    // Strong count: ZERO promotable (bare) edges for the attribute callees.
+    // Strong count: ZERO promotable (bare) edges for any attribute callee.
     let promotable = calls
         .iter()
-        .filter(|(_, callee, is_method, is_qualified, _)| {
-            (callee == "save" || callee == "foo") && !*is_method && !*is_qualified
+        .filter(|(_, callee, is_method, is_qualified, _, _)| {
+            (callee == "save" || callee == "foo" || callee == "bar")
+                && !*is_method
+                && !*is_qualified
         })
         .count();
     assert_eq!(
@@ -1651,31 +1684,63 @@ fn python_attribute_calls_marked_not_promoted_not_staged() {
         "attribute calls must NOT be promoted to bare Calls edges; got {calls:?}"
     );
 
-    // Non-vacuous positive: the attribute call IS captured, is_method:true, with
-    // an EMPTY raw_qualifier (fails closed at should_stage_provenance_call).
+    // obj.save(): identifier receiver != self/cls → module candidate.
     let save = calls
         .iter()
         .find(|(_, callee, ..)| callee == "save")
-        .expect("obj.save() must be captured as an is_method attribute call");
-    assert!(
-        save.2,
-        "obj.save() must be marked is_method:true; got {save:?}"
+        .expect("obj.save() must be captured");
+    assert_eq!(
+        (save.2, save.3, save.4.as_str(), save.5.as_str()),
+        (false, true, "obj", "module"),
+        "obj.save() must be a module-qualified candidate; got {save:?}"
     );
-    assert!(
-        save.4.is_empty(),
-        "obj.save() raw_qualifier must be EMPTY so it fails closed; got {save:?}"
+
+    // self.foo() / cls.bar(): instance/class receivers → dropped, empty qualifier.
+    for (recv, callee) in [("self", "foo"), ("cls", "bar")] {
+        let hit = calls
+            .iter()
+            .find(|(_, c, ..)| c == callee)
+            .unwrap_or_else(|| panic!("{recv}.{callee}() must be captured"));
+        assert!(
+            hit.2 && !hit.3 && hit.4.is_empty(),
+            "{recv}.{callee}() must be is_method:true, unqualified, empty qualifier so it fails closed; got {hit:?}"
+        );
+    }
+}
+
+/// Scenario 2b (096-F/T4) — `mod.func()` is emitted as exactly one canonical-
+/// eligible module-qualified staged candidate.
+#[test]
+fn python_module_qualified_attribute_call_is_module_candidate() {
+    let source = "def f():\n    mod.func()\n";
+    let calls = python_call_edges_with_kind(source);
+    let func: Vec<_> = calls.iter().filter(|(_, c, ..)| c == "func").collect();
+    assert_eq!(
+        func.len(),
+        1,
+        "mod.func() must emit exactly one Calls edge; got {calls:?}"
     );
-    let foo = calls
+    let e = func[0];
+    assert_eq!(
+        (e.0.as_str(), e.2, e.3, e.4.as_str(), e.5.as_str()),
+        ("f", false, true, "mod", "module"),
+        "mod.func() must be is_qualified module candidate raw_qualifier=mod; got {e:?}"
+    );
+}
+
+/// Scenario 2c (096-F/T4) — a non-simple-identifier receiver (`obj.attr.bar()`)
+/// is dropped at the parser (empty qualifier), never a module candidate.
+#[test]
+fn python_nested_receiver_attribute_call_dropped() {
+    let source = "def f():\n    obj.attr.bar()\n";
+    let calls = python_call_edges_with_kind(source);
+    let bar = calls
         .iter()
-        .find(|(_, callee, ..)| callee == "foo")
-        .expect("self.foo() must be captured as an is_method attribute call");
+        .find(|(_, c, ..)| c == "bar")
+        .expect("obj.attr.bar() must be captured");
     assert!(
-        foo.2,
-        "self.foo() must be marked is_method:true; got {foo:?}"
-    );
-    assert!(
-        foo.4.is_empty(),
-        "self.foo() raw_qualifier must be EMPTY so it fails closed; got {foo:?}"
+        bar.2 && !bar.3 && bar.4.is_empty(),
+        "obj.attr.bar() must be dropped (is_method, unqualified, empty qualifier); got {bar:?}"
     );
 }
 

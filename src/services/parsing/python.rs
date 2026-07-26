@@ -220,8 +220,11 @@ const PYTHON_CALL_BLOCKLIST: &[&str] = &[
     "dir",
 ];
 
-/// A resolved Python call site. `is_qualified` is never set for Python (no `::`
-/// path form), so no Rust-style `scoped_*` helpers are needed.
+/// A resolved Python call site. `is_qualified` is set only for a
+/// module-qualified call `mod.func()` whose receiver `mod` is a simple
+/// identifier that is not `self`/`cls` (096-F/T4); the resolver later fails
+/// closed if `mod` is not a bound module. Python has no Rust-style `::` path
+/// form, so no `scoped_*` helpers are needed.
 struct ResolvedCallName {
     callee: String,
     is_method: bool,
@@ -286,12 +289,18 @@ fn extract_calls_from_body(
 /// Classify a Python `call` node's `function` child.
 ///
 /// * `identifier` (`foo()`) → bare call, promoted (`is_method:false`).
-/// * `attribute` (`obj.foo()`, `self.bar()`) → marked `is_method:true` with an
-///   EMPTY `raw_qualifier`, so `should_stage_provenance_call(true, false, "")`
-///   returns `false` and the consumer drops it (never promoted, never staged —
-///   fails closed, closing the `self`-receiver leak). The callee is the
-///   `attribute` field text (NOT Rust's `field`); the receiver `object` is
-///   intentionally not copied.
+/// * `attribute` (`mod.foo()`, `self.bar()`, `obj.attr.y()`) → the callee is the
+///   `attribute` field text (NOT Rust's `field`). Its `object` (receiver)
+///   decides staging (096-F/T4, M2):
+///   * a **simple identifier** `r` that is **not** `self`/`cls` → a candidate
+///     module-qualified call: `is_method:false, is_qualified:true,
+///     raw_qualifier:r, qualifier_kind:"module"` (the resolver fails closed if
+///     `r` is not a bound module).
+///   * `self`/`cls` (instance/class receivers, need type inference) → dropped
+///     (`is_method:true`, EMPTY `raw_qualifier`, so
+///     `should_stage_provenance_call(true, false, "")` returns `false`).
+///   * a **non-simple-identifier** receiver (`obj.attr.y()`, `a().b()`) → also
+///     dropped with an empty qualifier (fails closed).
 /// * any other kind (`subscript` `d[k]()`, chained `a().b()` whose function is a
 ///   call) → skipped in v1 (`None`), forward-compatible and panic-free.
 ///
@@ -310,13 +319,30 @@ fn resolve_call_name(node: Node<'_>, source: &str) -> Option<ResolvedCallName> {
             let callee = function_node
                 .child_by_field_name("attribute")
                 .map(|n| super::node_text(n, source))?;
-            ResolvedCallName {
-                callee,
-                is_method: true,
-                is_qualified: false,
-                // Empty on purpose: fails closed at should_stage_provenance_call.
-                raw_qualifier: String::new(),
-                qualifier_kind: "method".to_owned(),
+            // M2: a simple-identifier receiver that is not self/cls is a candidate
+            // module-qualified call; every other receiver (self/cls, obj.attr.y(),
+            // a().b()) stays dropped with an empty qualifier (fails closed).
+            let module_receiver = function_node
+                .child_by_field_name("object")
+                .filter(|o| o.kind() == "identifier")
+                .map(|o| super::node_text(o, source))
+                .filter(|r| r.as_str() != "self" && r.as_str() != "cls");
+            match module_receiver {
+                Some(receiver) => ResolvedCallName {
+                    callee,
+                    is_method: false,
+                    is_qualified: true,
+                    raw_qualifier: receiver,
+                    qualifier_kind: "module".to_owned(),
+                },
+                None => ResolvedCallName {
+                    callee,
+                    is_method: true,
+                    is_qualified: false,
+                    // Empty on purpose: fails closed at should_stage_provenance_call.
+                    raw_qualifier: String::new(),
+                    qualifier_kind: "method".to_owned(),
+                },
             }
         }
         _ => return None,
