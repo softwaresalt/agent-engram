@@ -15,6 +15,7 @@ mod javascript;
 mod kotlin;
 mod markdown;
 mod python;
+pub mod python_canonical;
 mod rust;
 mod sql;
 mod swift;
