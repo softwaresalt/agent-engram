@@ -660,8 +660,8 @@ async fn python_intra_file_bare_call_direct_edge_and_traversal() {
     );
 }
 
-/// U4.2 — a cross-file Python bare call resolves to the callee's EXACT id
-/// (target-identity per the 082-F acceptance gate, not mere row-existence).
+/// U4.2 / T5a — a cross-file Python bare call is staged with `python_bare`
+/// provenance. T5b (096.006-T) restores exact-target cross-file resolution.
 #[test]
 async fn python_cross_file_call_resolves_to_exact_target() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -680,32 +680,20 @@ async fn python_cross_file_call_resolves_to_exact_target() {
         .find_symbols_by_name("orchestrate")
         .await
         .expect("find orchestrate");
-    let helper = q.find_symbols_by_name("helper").await.expect("find helper");
     assert_eq!(orchestrate.len(), 1, "orchestrate must be indexed once");
-    assert_eq!(
-        helper.len(),
-        1,
-        "helper must be defined exactly once (in b.py)"
-    );
     let orchestrate_id = orchestrate[0].id.clone();
-    let helper_id = helper[0].id.clone();
-
-    let singletons = q
-        .list_calls_edges_by_resolution("calls_resolved_singleton")
+    let staged = q
+        .list_staged_calls_with_provenance()
         .await
-        .expect("singleton edges");
-    // Target-identity: the resolved edge must point to B's EXACT helper id.
+        .expect("staged calls");
     assert!(
-        singletons.contains(&(orchestrate_id.clone(), helper_id.clone())),
-        "cross-file call must resolve to B's EXACT helper id (target-identity); got {singletons:?}"
-    );
-    // No mis-binding: every singleton originating from orchestrate targets helper.
-    assert!(
-        singletons
-            .iter()
-            .filter(|(from, _)| from == &orchestrate_id)
-            .all(|(_, to)| to == &helper_id),
-        "orchestrate must not resolve to any target other than B's helper; got {singletons:?}"
+        staged.iter().any(|row| row.caller_id == orchestrate_id
+            && row.callee_name == "helper"
+            && row.source_file == "a.py"
+            && row.raw_qualifier.is_empty()
+            && row.qualifier_kind == "python_bare"
+            && row.enclosing_canonical_type.is_empty()),
+        "cross-file call must remain staged with python_bare provenance until T5b; got {staged:?}"
     );
 }
 
@@ -756,11 +744,9 @@ async fn python_bare_call_does_not_bind_to_rust_definition() {
     }
 }
 
-/// U4.4 (ordering proof) — when a Python callee name is defined in BOTH Python
-/// and Rust, a Python caller must resolve to the PYTHON target. This is the
-/// mixed-language positive case: it fails unless language filtering happens
-/// BEFORE the singleton unambiguity check (a global-singleton-first ordering
-/// would see two `helper` candidates, deem them ambiguous, and create NO edge).
+/// U4.4 / T5a — when a Python callee name is defined in BOTH Python and Rust,
+/// the Python call remains staged as `python_bare` and never binds to Rust.
+/// T5b restores the positive exact-Python-target assertion.
 #[test]
 async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_def() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -797,14 +783,16 @@ async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_de
         "the two same-name helpers must be distinct symbols"
     );
 
-    let singletons = q
-        .list_calls_edges_by_resolution("calls_resolved_singleton")
+    let staged = q
+        .list_staged_calls_with_provenance()
         .await
-        .expect("singleton edges");
-    // Positive: resolves to the PYTHON helper (proves filter-before-singleton).
+        .expect("staged calls");
     assert!(
-        singletons.contains(&(orchestrate_id.clone(), py_helper.id.clone())),
-        "Python caller must resolve to the Python helper in b.py; got {singletons:?}"
+        staged.iter().any(|row| row.caller_id == orchestrate_id
+            && row.callee_name == "helper"
+            && row.source_file == "a.py"
+            && row.qualifier_kind == "python_bare"),
+        "Python caller must remain staged for T5b canonical resolution; got {staged:?}"
     );
     // Negative: must never bind to the same-named Rust helper via any resolution.
     for resolution in [
@@ -990,4 +978,244 @@ async fn python_package_topology_change_invalidates_descendant_canonical_paths()
         vec![String::new()],
         "removing p/__init__.py must invalidate the unchanged descendant back to empty (C6-1 remove)"
     );
+}
+
+// ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
+
+/// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during
+/// full indexing rather than entering the legacy name-only singleton pass.
+#[test]
+async fn python_cross_file_bare_call_staged_python_bare_full_index() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "def orchestrate():\n    helper()\n");
+    write_sample_file(ws, "b.py", "def helper():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.callee_name == "helper"
+            && row.qualifier_kind == "python_bare"
+            && row.source_file == "a.py"),
+        "cross-file Python bare call must be staged as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.2 — incremental sync applies the same `python_bare` staging contract as
+/// full indexing for newly added Python files.
+#[test]
+async fn python_cross_file_bare_call_staged_python_bare_sync() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "keep.py", "def keep():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index should succeed");
+    write_sample_file(ws, "a.py", "def orchestrate():\n    helper()\n");
+    write_sample_file(ws, "b.py", "def helper():\n    return 1\n");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.callee_name == "helper"
+            && row.qualifier_kind == "python_bare"
+            && row.source_file == "a.py"),
+        "sync must stage cross-file Python bare calls as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.3 — the existing module-qualified Python path remains staged as
+/// `qualifier_kind == "module"`.
+#[test]
+async fn python_module_qualified_call_staged_as_module() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "import mod\n\n\ndef run():\n    mod.func()\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged
+            .iter()
+            .any(|row| row.callee_name == "func" && row.qualifier_kind == "module"),
+        "module-qualified Python call must keep module provenance; got {staged:?}"
+    );
+}
+
+/// Assert that a same-file `parse()` call is staged rather than directly bound
+/// when the supplied source contains a competing lexical binding.
+async fn assert_python_shadow_contest(source: &str) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "case.py", source);
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let callers = q.find_symbols_by_name("caller").await.expect("find caller");
+    let parses = q.find_symbols_by_name("parse").await.expect("find parse");
+    let caller_id = callers
+        .iter()
+        .find(|symbol| symbol.table == "function")
+        .expect("caller function must be indexed")
+        .id
+        .clone();
+    let parse_id = parses
+        .iter()
+        .find(|symbol| symbol.table == "function")
+        .expect("parse function must be indexed")
+        .id
+        .clone();
+
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        !direct.contains(&(caller_id.clone(), parse_id)),
+        "contested parse must not receive a direct edge; got {direct:?}"
+    );
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.caller_id == caller_id
+            && row.callee_name == "parse"
+            && row.qualifier_kind == "python_bare"),
+        "contested parse must be staged as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.4 — every coarse shadow-contest vector suppresses the same-file direct
+/// edge and routes the bare call into `python_bare` provenance staging.
+#[test]
+async fn python_bare_shadow_contest_routing_table() {
+    for source in [
+        "def parse():\n    return 0\nfrom bar import parse\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\nfrom n import *\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\nparse = factory()\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\nclass parse:\n    pass\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\ndel parse\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\ndef caller():\n    from bar import parse\n    parse()\n",
+        "def parse():\n    return 0\nfrom .other import parse\ndef caller():\n    parse()\n",
+    ] {
+        assert_python_shadow_contest(source).await;
+    }
+}
+
+/// T5a.5 / C9-1 — the matched definition is not its own competitor: a sole
+/// same-file binding retains the direct-edge fast path.
+#[test]
+async fn python_sole_binding_bare_call_keeps_direct_edge() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "sole.py",
+        "def helper():\n    return 1\ndef caller():\n    helper()\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let caller_id = q.find_symbols_by_name("caller").await.expect("find caller")[0]
+        .id
+        .clone();
+    let helper_id = q.find_symbols_by_name("helper").await.expect("find helper")[0]
+        .id
+        .clone();
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        direct.contains(&(caller_id.clone(), helper_id)),
+        "sole binding must keep its direct edge; got {direct:?}"
+    );
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        !staged.iter().any(|row| row.caller_id == caller_id
+            && row.callee_name == "helper"
+            && row.qualifier_kind == "python_bare"),
+        "sole binding must not be staged as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.6 regression — non-Python cross-file bare calls retain the legacy
+/// name-only staging marker.
+#[test]
+async fn rust_cross_file_bare_call_still_name_only_staged() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub mod a;\npub mod b;\n");
+    write_sample_file(ws, "src/a.rs", "pub fn orchestrate() {\n    helper();\n}\n");
+    write_sample_file(ws, "src/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    let helper = staged
+        .iter()
+        .find(|row| row.callee_name == "helper")
+        .unwrap_or_else(|| panic!("Rust helper call must remain staged: {staged:?}"));
+    assert_eq!(helper.qualifier_kind, "");
+    assert_ne!(helper.qualifier_kind, "python_bare");
 }

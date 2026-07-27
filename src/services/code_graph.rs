@@ -9,6 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
+use tree_sitter::{Node, Parser};
 use uuid::Uuid;
 
 use crate::db::connect_db;
@@ -18,7 +19,9 @@ use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
 use crate::services::parsing::canonical;
-use crate::services::parsing::python_canonical::python_module_path_for_file;
+use crate::services::parsing::python_canonical::{
+    ImportBindings, extract_python_import_bindings, python_module_path_for_file,
+};
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
@@ -259,6 +262,299 @@ fn should_stage_provenance_call(is_method: bool, is_qualified: bool, raw_qualifi
     } else {
         is_qualified
     }
+}
+
+/// Shared per-file Python lexical-shadow scan used by T5a's coarse contest
+/// gate and reusable by T5c's future order-aware winner selection.
+struct PythonShadowIndex {
+    imports: ImportBindings,
+    module_binding_counts: HashMap<String, usize>,
+    function_locals: HashMap<String, HashSet<String>>,
+}
+
+impl PythonShadowIndex {
+    /// Build import signals, module binding counts, and top-level function-local
+    /// binding sets with one amortized Python parse for the file.
+    fn build(source: &str) -> Self {
+        let mut index = Self {
+            imports: extract_python_import_bindings(source),
+            module_binding_counts: HashMap::new(),
+            function_locals: HashMap::new(),
+        };
+        let mut parser = Parser::new();
+        if parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .is_err()
+        {
+            return index;
+        }
+        let Some(tree) = parser.parse(source, None) else {
+            return index;
+        };
+        scan_python_module_scope(tree.root_node(), source, &mut index);
+        index
+    }
+
+    /// Return whether any import, module rebind, or caller-local binding contests
+    /// the matched same-file definition for `callee_name`.
+    fn is_contested(&self, callee_name: &str, caller_fn_name: &str) -> bool {
+        self.imports.module_binding(callee_name).is_some()
+            || self.imports.is_ambiguous(callee_name)
+            || !self.imports.star_invalidators().is_empty()
+            || self.imports.is_dynamically_rebound(callee_name)
+            || self
+                .module_binding_counts
+                .get(callee_name)
+                .is_some_and(|count| *count > 1)
+            || self
+                .function_locals
+                .get(caller_fn_name)
+                .is_some_and(|locals| locals.contains(callee_name))
+    }
+}
+
+/// Walk module lexical scope through compound statements while stopping at
+/// function, class, and lambda bodies.
+fn scan_python_module_scope(root: Node<'_>, source: &str, index: &mut PythonShadowIndex) {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        scan_python_module_node(child, source, index);
+    }
+}
+
+/// Record one module-scope node's bindings and recurse only where Python scope
+/// rules keep the descendants in module scope.
+fn scan_python_module_node(node: Node<'_>, source: &str, index: &mut PythonShadowIndex) {
+    match node.kind() {
+        "function_definition" => {
+            if let Some(name) = python_definition_name(node, source) {
+                increment_python_binding(&mut index.module_binding_counts, &name);
+                let locals = collect_python_function_locals(node, source);
+                index
+                    .function_locals
+                    .entry(name)
+                    .or_default()
+                    .extend(locals);
+            }
+            return;
+        }
+        "class_definition" => {
+            if let Some(name) = python_definition_name(node, source) {
+                increment_python_binding(&mut index.module_binding_counts, &name);
+            }
+            return;
+        }
+        "decorated_definition" => {
+            if let Some(definition) = node.child_by_field_name("definition") {
+                scan_python_module_node(definition, source, index);
+            }
+            return;
+        }
+        "lambda" | "import_statement" | "import_from_statement" => return,
+        _ => collect_python_node_bindings(node, source, &mut index.module_binding_counts),
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        scan_python_module_node(child, source, index);
+    }
+}
+
+/// Collect every local name bound by a top-level function's parameters or body,
+/// stopping at nested callable and class bodies after recording their names.
+fn collect_python_function_locals(function: Node<'_>, source: &str) -> HashSet<String> {
+    let mut locals = HashSet::new();
+    if let Some(parameters) = function.child_by_field_name("parameters") {
+        collect_python_parameter_names(parameters, source, &mut locals);
+    }
+    if let Some(body) = function.child_by_field_name("body") {
+        scan_python_function_scope(body, source, &mut locals);
+    }
+    locals
+}
+
+/// Walk one function body scope, including local imports and rebind forms but
+/// excluding nested function, class, and lambda bodies.
+fn scan_python_function_scope(node: Node<'_>, source: &str, locals: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" | "class_definition" => {
+                if let Some(name) = python_definition_name(child, source) {
+                    locals.insert(name);
+                }
+            }
+            "decorated_definition" => {
+                if let Some(definition) = child.child_by_field_name("definition") {
+                    if let Some(name) = python_definition_name(definition, source) {
+                        locals.insert(name);
+                    }
+                }
+            }
+            "lambda" => {}
+            "import_statement" | "import_from_statement" => {
+                collect_python_import_names(child, source, locals);
+            }
+            _ => {
+                collect_python_node_bindings_into_set(child, source, locals);
+                scan_python_function_scope(child, source, locals);
+            }
+        }
+    }
+}
+
+/// Add the binding targets introduced directly by `node` to module counts.
+fn collect_python_node_bindings(node: Node<'_>, source: &str, counts: &mut HashMap<String, usize>) {
+    let mut names = HashSet::new();
+    collect_python_node_bindings_into_set(node, source, &mut names);
+    for name in names {
+        increment_python_binding(counts, &name);
+    }
+}
+
+/// Add the binding targets introduced directly by `node` to a lexical scope.
+fn collect_python_node_bindings_into_set(
+    node: Node<'_>,
+    source: &str,
+    names: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_python_target_names(left, source, names);
+            }
+        }
+        "with_statement" | "except_clause" | "except_group_clause" => {
+            collect_python_as_aliases(node, source, names);
+        }
+        "delete_statement" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_python_target_names(child, source, names);
+            }
+        }
+        "named_expression" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                collect_python_target_names(name, source, names);
+            }
+        }
+        "case_clause" => collect_python_case_captures(node, source, names),
+        _ => {}
+    }
+}
+
+/// Increment a module-scope binding count for one name.
+fn increment_python_binding(counts: &mut HashMap<String, usize>, name: &str) {
+    *counts.entry(name.to_owned()).or_default() += 1;
+}
+
+/// Return a function or class definition's simple name.
+fn python_definition_name(node: Node<'_>, source: &str) -> Option<String> {
+    node.child_by_field_name("name")
+        .filter(|name| name.kind() == "identifier")
+        .map(|name| python_node_text(name, source).to_owned())
+}
+
+/// Collect parameter names without treating annotation identifiers as binders.
+fn collect_python_parameter_names(parameters: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    let mut cursor = parameters.walk();
+    for child in parameters.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                names.insert(python_node_text(child, source).to_owned());
+            }
+            "typed_parameter" | "list_splat_pattern" | "dictionary_splat_pattern" => {
+                if let Some(identifier) = child.named_child(0) {
+                    if identifier.kind() == "identifier" {
+                        names.insert(python_node_text(identifier, source).to_owned());
+                    }
+                }
+            }
+            "default_parameter" | "typed_default_parameter" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    collect_python_target_names(name, source, names);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect names bound by a function-local import statement.
+fn collect_python_import_names(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for imported in node.children_by_field_name("name", &mut cursor) {
+        match imported.kind() {
+            "aliased_import" => {
+                if let Some(alias) = imported.child_by_field_name("alias") {
+                    collect_python_target_names(alias, source, names);
+                }
+            }
+            "dotted_name" => {
+                if let Some(root) = imported.named_child(0) {
+                    collect_python_target_names(root, source, names);
+                }
+            }
+            "identifier" => {
+                names.insert(python_node_text(imported, source).to_owned());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect alias identifiers from `as_pattern` descendants of `with`/`except`.
+fn collect_python_as_aliases(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    if node.kind() == "as_pattern" {
+        if let Some(alias) = node.child_by_field_name("alias") {
+            collect_python_target_names(alias, source, names);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "block" {
+            collect_python_as_aliases(child, source, names);
+        }
+    }
+}
+
+/// Conservatively collect identifiers in a match-case pattern before its body.
+fn collect_python_case_captures(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "block" {
+            break;
+        }
+        collect_python_target_names(child, source, names);
+    }
+}
+
+/// Collect simple-name binding targets while excluding attribute, subscript,
+/// and call expressions that do not bind a local name.
+fn collect_python_target_names(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    match node.kind() {
+        "identifier" => {
+            names.insert(python_node_text(node, source).to_owned());
+        }
+        "attribute" | "subscript" | "call" => {}
+        "as_pattern" => {
+            if let Some(alias) = node.child_by_field_name("alias") {
+                collect_python_target_names(alias, source, names);
+            }
+        }
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_python_target_names(child, source, names);
+            }
+        }
+    }
+}
+
+/// Return a node's UTF-8 source slice, or an empty string for an invalid range.
+fn python_node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
+    source.get(node.byte_range()).unwrap_or_default()
 }
 
 /// Resolve a staged Unit-B call to a canonical target string, or fail closed.
@@ -770,6 +1066,11 @@ async fn index_workspace_impl(
             } else {
                 None
             };
+            let py_shadow = if matches!(lang_enum, Language::Python) {
+                Some(PythonShadowIndex::build(&source))
+            } else {
+                None
+            };
 
             for symbol in &parse_result.symbols {
                 match symbol {
@@ -982,11 +1283,41 @@ async fn index_workspace_impl(
                             find_function_id(&function_ids, callee),
                         ) {
                             (Some(from_id), Some(to_id)) => {
-                                queries.create_calls_edge(&from_id, &to_id).await?;
-                                result.edges_created += 1;
+                                if matches!(lang_enum, Language::Python)
+                                    && py_shadow
+                                        .as_ref()
+                                        .is_some_and(|shadow| shadow.is_contested(callee, caller))
+                                {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.create_calls_edge(&from_id, &to_id).await?;
+                                    result.edges_created += 1;
+                                }
                             }
                             (Some(from_id), None) => {
-                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                if matches!(lang_enum, Language::Python) {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                }
                             }
                             _ => {}
                         }
@@ -1530,6 +1861,11 @@ pub async fn sync_workspace_with_progress(
             } else {
                 None
             };
+            let py_shadow = if matches!(lang_enum, Language::Python) {
+                Some(PythonShadowIndex::build(&source))
+            } else {
+                None
+            };
 
             for symbol in &parse_result.symbols {
                 match symbol {
@@ -1768,10 +2104,40 @@ pub async fn sync_workspace_with_progress(
                             find_function_id(&new_function_ids, callee),
                         ) {
                             (Some(from_id), Some(to_id)) => {
-                                queries.create_calls_edge(&from_id, &to_id).await?;
+                                if matches!(lang_enum, Language::Python)
+                                    && py_shadow
+                                        .as_ref()
+                                        .is_some_and(|shadow| shadow.is_contested(callee, caller))
+                                {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.create_calls_edge(&from_id, &to_id).await?;
+                                }
                             }
                             (Some(from_id), None) => {
-                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                if matches!(lang_enum, Language::Python) {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                }
                             }
                             _ => {}
                         }
