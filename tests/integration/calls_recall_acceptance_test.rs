@@ -737,6 +737,40 @@ async fn python_module_receiver_rebind_after_import_fails_closed() {
     );
 }
 
+/// T5c.2b (096-F, P0-860) — a module receiver dynamically rebound through a
+/// `global` write in a *sibling* function is not provably that module at call
+/// time, so `receiver.callee()` must fail closed. The module-scope shadow scan
+/// stops at function bodies, so the positioned receiver-rebind check never sees
+/// this form; only the dynamic-rebind signal catches it. The module-qualifier
+/// guard must consult that signal just as the bare-call path already does.
+#[test]
+async fn python_module_receiver_dynamic_global_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "m.py",
+            "import bar\n\ndef mutate():\n    global bar\n    bar = factory()\n\ndef g():\n    bar.parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "m.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a module receiver dynamically rebound via `global` in a sibling must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
 /// T5c.3 — a from-imported symbol reassigned at module scope after the import is
 /// undecidable at the caller: the bare call fails closed.
 #[test]

@@ -860,6 +860,7 @@ fn python_target_for_staged_call(
             if binding.kind != BindingKind::ModuleImport
                 || python_name_is_function_local(shadow, caller_name, &call.raw_qualifier)
                 || python_receiver_rebound_after(shadow, &call.raw_qualifier, binding.position)
+                || shadow.imports.is_dynamically_rebound(&call.raw_qualifier)
             {
                 return Err(NoCanonicalTargetReason::CompetingBindings);
             }
