@@ -13,14 +13,16 @@ use tree_sitter::{Node, Parser};
 use uuid::Uuid;
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, ReresolveResult, StagedCallProvenanceRecord};
+use crate::db::queries::{
+    CodeGraphQueries, NoCanonicalTargetReason, ReresolveResult, StagedCallProvenanceRecord,
+};
 use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
 use crate::services::parsing::canonical;
 use crate::services::parsing::python_canonical::{
-    ImportBindings, extract_python_import_bindings, python_module_path_for_file,
+    BindingKind, ImportBindings, extract_python_import_bindings, python_module_path_for_file,
 };
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
@@ -270,6 +272,10 @@ struct PythonShadowIndex {
     imports: ImportBindings,
     module_binding_counts: HashMap<String, usize>,
     function_locals: HashMap<String, HashSet<String>>,
+    /// Module-scope function-definition byte positions grouped by name.
+    module_defs: HashMap<String, Vec<usize>>,
+    /// Module-scope opaque rebind byte positions grouped by name.
+    module_rebinds: HashMap<String, Vec<usize>>,
 }
 
 impl PythonShadowIndex {
@@ -280,6 +286,8 @@ impl PythonShadowIndex {
             imports: extract_python_import_bindings(source),
             module_binding_counts: HashMap::new(),
             function_locals: HashMap::new(),
+            module_defs: HashMap::new(),
+            module_rebinds: HashMap::new(),
         };
         let mut parser = Parser::new();
         if parser
@@ -329,6 +337,11 @@ fn scan_python_module_node(node: Node<'_>, source: &str, index: &mut PythonShado
         "function_definition" => {
             if let Some(name) = python_definition_name(node, source) {
                 increment_python_binding(&mut index.module_binding_counts, &name);
+                index
+                    .module_defs
+                    .entry(name.clone())
+                    .or_default()
+                    .push(node.start_byte());
                 let locals = collect_python_function_locals(node, source);
                 index
                     .function_locals
@@ -341,6 +354,11 @@ fn scan_python_module_node(node: Node<'_>, source: &str, index: &mut PythonShado
         "class_definition" => {
             if let Some(name) = python_definition_name(node, source) {
                 increment_python_binding(&mut index.module_binding_counts, &name);
+                index
+                    .module_rebinds
+                    .entry(name)
+                    .or_default()
+                    .push(node.start_byte());
             }
             return;
         }
@@ -351,7 +369,16 @@ fn scan_python_module_node(node: Node<'_>, source: &str, index: &mut PythonShado
             return;
         }
         "lambda" | "import_statement" | "import_from_statement" => return,
-        _ => collect_python_node_bindings(node, source, &mut index.module_binding_counts),
+        _ => {
+            for name in collect_python_node_rebinds(node, source) {
+                increment_python_binding(&mut index.module_binding_counts, &name);
+                index
+                    .module_rebinds
+                    .entry(name)
+                    .or_default()
+                    .push(node.start_byte());
+            }
+        }
     }
 
     let mut cursor = node.walk();
@@ -403,13 +430,11 @@ fn scan_python_function_scope(node: Node<'_>, source: &str, locals: &mut HashSet
     }
 }
 
-/// Add the binding targets introduced directly by `node` to module counts.
-fn collect_python_node_bindings(node: Node<'_>, source: &str, counts: &mut HashMap<String, usize>) {
+/// Return the opaque module rebind targets introduced directly by `node`.
+fn collect_python_node_rebinds(node: Node<'_>, source: &str) -> HashSet<String> {
     let mut names = HashSet::new();
     collect_python_node_bindings_into_set(node, source, &mut names);
-    for name in names {
-        increment_python_binding(counts, &name);
-    }
+    names
 }
 
 /// Add the binding targets introduced directly by `node` to a lexical scope.
@@ -623,6 +648,98 @@ async fn rust_ctx_for_staged_file(
     rust_canonical_ctx(crates, Language::Rust, rel_path, &source)
 }
 
+/// Build Python module and shadow context for one staged-call source file.
+async fn python_ctx_for_staged_file(
+    ws_path: &Path,
+    python_packages: &HashSet<String>,
+    rel_path: &str,
+) -> Option<(Option<String>, PythonShadowIndex)> {
+    let full = ws_path.join(rel_path);
+    let source = tokio::fs::read_to_string(full).await.ok()?;
+    let is_regular_package =
+        |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
+    let module_path = python_module_path_for_file(rel_path, &is_regular_package);
+    Some((module_path, PythonShadowIndex::build(&source)))
+}
+
+/// Resolve one staged Python call to an exact canonical target, or return the
+/// typed reason that controls whether name-only fallback is recall-safe.
+fn python_target_for_staged_call(
+    module_path: Option<&str>,
+    shadow: &PythonShadowIndex,
+    call: &StagedCallProvenanceRecord,
+) -> Result<String, NoCanonicalTargetReason> {
+    let callee = call.callee_name.as_str();
+    let imports = &shadow.imports;
+
+    match call.qualifier_kind.as_str() {
+        "module" => match imports.module_binding(&call.raw_qualifier) {
+            Some(binding) if binding.kind == BindingKind::ModuleImport => {
+                Ok(format!("{}.{}", binding.canonical_path, callee))
+            }
+            Some(_) | None => Err(NoCanonicalTargetReason::CompetingBindings),
+        },
+        "python_bare" => {
+            let Some(module) = module_path else {
+                return Err(NoCanonicalTargetReason::NoModuleContext);
+            };
+            if imports.is_dynamically_rebound(callee) {
+                return Err(NoCanonicalTargetReason::Shadowed);
+            }
+
+            let mut resolvable = Vec::new();
+            match imports.module_binding(callee) {
+                Some(binding) if binding.kind == BindingKind::FromImportSymbol => {
+                    resolvable.push((binding.position, binding.canonical_path.clone()));
+                }
+                Some(_) => return Err(NoCanonicalTargetReason::CompetingBindings),
+                None => {}
+            }
+            for position in shadow.module_defs.get(callee).into_iter().flatten() {
+                resolvable.push((*position, format!("{module}.{callee}")));
+            }
+
+            let mut poison = Vec::new();
+            poison.extend(
+                shadow
+                    .module_rebinds
+                    .get(callee)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+            poison.extend(imports.star_invalidators().iter().copied());
+            if imports.is_ambiguous(callee) {
+                if let Some(position) = imports.ambiguity_position(callee) {
+                    poison.push(position);
+                }
+            }
+
+            if let Some((winner_position, winner_target)) =
+                resolvable.iter().max_by_key(|(position, _)| *position)
+            {
+                if poison.iter().any(|position| position > winner_position) {
+                    return Err(NoCanonicalTargetReason::Shadowed);
+                }
+                return Ok(winner_target.clone());
+            }
+
+            if shadow
+                .module_rebinds
+                .get(callee)
+                .is_some_and(|positions| !positions.is_empty())
+            {
+                return Err(NoCanonicalTargetReason::Shadowed);
+            }
+            if imports.is_ambiguous(callee) {
+                return Err(NoCanonicalTargetReason::UnsupportedImportForm);
+            }
+            Err(NoCanonicalTargetReason::UnsupportedImportForm)
+        }
+        _ => Err(NoCanonicalTargetReason::CompetingBindings),
+    }
+}
+
 /// Full-index post-pass for both legacy bare-name staging and Unit-B canonical
 /// qualified / known-receiver staging.
 async fn reresolve_calls_edges_with_canonical_context(
@@ -630,6 +747,7 @@ async fn reresolve_calls_edges_with_canonical_context(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     unsafe_prefixes: &HashSet<String>,
+    python_packages: &HashSet<String>,
 ) -> Result<ReresolveResult, EngramError> {
     let mut result = queries.reresolve_calls_edges().await?;
     let staged: Vec<_> = queries
@@ -692,9 +810,68 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
+    let mut python_context_cache: HashMap<String, Option<(Option<String>, PythonShadowIndex)>> =
+        HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
+        if is_py_path(&call.source_file) {
+            if !python_context_cache.contains_key(&call.source_file) {
+                let ctx =
+                    python_ctx_for_staged_file(ws_path, python_packages, &call.source_file).await;
+                python_context_cache.insert(call.source_file.clone(), ctx);
+            }
+            let Some(Some((module_path, shadow))) = python_context_cache.get(&call.source_file)
+            else {
+                continue;
+            };
+            match python_target_for_staged_call(module_path.as_deref(), shadow, call) {
+                Ok(target) => {
+                    let target_id = match canonical_index.get(&target) {
+                        Some(ids) if ids.len() == 1 => ids[0].clone(),
+                        _ => continue,
+                    };
+                    let pair = (call.caller_id.clone(), target_id);
+                    if direct_pairs.contains(&pair) {
+                        continue;
+                    }
+                    queries
+                        .create_calls_edge_with_resolution(
+                            &pair.0,
+                            &pair.1,
+                            "calls_resolved_canonical",
+                        )
+                        .await?;
+                    if created.insert(pair) {
+                        result.resolved += 1;
+                    }
+                }
+                Err(reason) if reason.allows_name_only_fallback() => {
+                    let ids = queries
+                        .function_ids_by_name(&call.callee_name, "python")
+                        .await?;
+                    if ids.len() != 1 {
+                        continue;
+                    }
+                    let pair = (call.caller_id.clone(), ids[0].clone());
+                    if direct_pairs.contains(&pair) {
+                        continue;
+                    }
+                    queries
+                        .create_calls_edge_with_resolution(
+                            &pair.0,
+                            &pair.1,
+                            "calls_resolved_singleton",
+                        )
+                        .await?;
+                    if created.insert(pair) {
+                        result.resolved += 1;
+                    }
+                }
+                Err(_) => {}
+            }
+            continue;
+        }
         if !context_cache.contains_key(&call.source_file) {
             let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await;
             context_cache.insert(call.source_file.clone(), ctx);
@@ -1402,9 +1579,14 @@ async fn index_workspace_impl(
     // gate). Staged calls (082.002-T) whose callee name is unambiguous
     // (exactly one workspace-global definition) become calls_resolved_singleton
     // edges; ambiguous / unmatched names are skipped to bound false edges.
-    let resolved_calls =
-        reresolve_calls_edges_with_canonical_context(&queries, ws_path, &crates, &unsafe_prefixes)
-            .await?;
+    let resolved_calls = reresolve_calls_edges_with_canonical_context(
+        &queries,
+        ws_path,
+        &crates,
+        &unsafe_prefixes,
+        &python_packages,
+    )
+    .await?;
     // Post-pass singletons are real edge records: include them in the reported
     // edges_created so full-index CLI/API responses do not underreport (082.008-T).
     result.edges_created += resolved_calls.resolved;
