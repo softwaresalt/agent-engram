@@ -149,6 +149,13 @@ pub async fn run_direct_sync(
         None
     };
 
+    // `--backfill-python-canonical` on the full-scan path implies `--force`
+    // (parity with `engram index` and the IPC `run_sync` path): a
+    // `sync --full --backfill-python-canonical` request must re-extract rather
+    // than silently hash-skip and drop the flag. The bare incremental
+    // `sync --backfill-python-canonical` (no `--full`) keeps its gated sync path.
+    let force = force || (full && backfill_python_canonical);
+
     // `--force` (or `--full --force`) takes the full-scan index path and
     // re-parses all discovered files; plain `--full` scans all files but
     // hash-skips unchanged ones; otherwise perform an incremental sync.

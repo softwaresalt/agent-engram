@@ -48,6 +48,12 @@ pub async fn run_sync(
         )
         .await;
     }
+    // `--backfill-python-canonical` on the full-scan path implies `--force`
+    // (parity with `engram index`): the T7 migration is a forced re-extraction,
+    // so `sync --full --backfill-python-canonical` must re-extract rather than
+    // silently hash-skip and drop the flag. The bare incremental `sync
+    // --backfill-python-canonical` (no `--full`) keeps its gated path below.
+    let force = force || (full && backfill_python_canonical);
     if full || force {
         // Full re-index can take minutes on large workspaces — use extended timeout.
         run_tool_timed(

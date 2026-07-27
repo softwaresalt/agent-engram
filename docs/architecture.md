@@ -238,13 +238,18 @@ graph. Known limitations:
 * **Dynamism lowers precision.** Python's runtime dispatch and rebinding mean
   edges are heuristic and lower-precision than Rust.
 * **Forced re-index for existing files.** `engram sync` and a non-forced
-  `index_workspace` skip unchanged files by content hash, so files already
-  indexed before this capability landed will not acquire Python call edges on a
-  normal sync. Pick them up with a forced full reparse (`engram index` or
-  `engram sync --full`), or run the version-gated targeted backfill
-  `engram index --backfill-python-canonical`, which re-extracts only when the
-  stored Python-canonical extraction-version marker is behind the current
-  version and then backfills `calls_resolved_canonical` edges in one pass.
+  `index_workspace` skip unchanged files by content hash. A plain `engram index`
+  and `engram sync --full` both default to `force=false`, so they scan every
+  file but still hash-skip unchanged ones — they do **not** re-extract files
+  already indexed before this capability landed. Pick those files up with an
+  explicit re-extraction: force a full reparse (`engram index --force` or
+  `engram sync --force`), or run the version-gated targeted backfill
+  `engram index --backfill-python-canonical` (which implies `--force`) or the
+  incremental `engram sync --backfill-python-canonical`. The backfill re-extracts
+  only when the stored Python-canonical extraction-version marker is behind the
+  current version, then backfills `calls_resolved_canonical` edges in one pass.
+  `engram sync --full --backfill-python-canonical` also forces re-extraction —
+  the backfill flag implies `--force` on the full-scan path.
 
 ## Data-lineage subgraph (v1)
 
