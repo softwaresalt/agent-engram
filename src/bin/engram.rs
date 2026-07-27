@@ -98,6 +98,12 @@ enum Command {
         /// content-hash skip. Implies the full-scan path (`--full`).
         #[arg(long)]
         force: bool,
+        /// Migrate already-indexed Python files to the current namespace-canonical
+        /// extraction version: force re-extraction of every indexed `.py` file and
+        /// re-run the canonical post-pass. Without this gate a stale extraction
+        /// version is a no-op on incremental sync (routine sync never re-extracts).
+        #[arg(long = "backfill-python-canonical")]
+        backfill_python_canonical: bool,
         /// Run without spawning a daemon: acquire the lock and call service
         /// functions directly. The process exits when indexing completes.
         /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
@@ -112,6 +118,11 @@ enum Command {
         /// content-hash skip.
         #[arg(long)]
         force: bool,
+        /// Migrate already-indexed Python files to the current namespace-canonical
+        /// extraction version. On the full-scan index path this is implied by a
+        /// forced re-extraction; the flag is accepted for parity with `sync`.
+        #[arg(long = "backfill-python-canonical")]
+        backfill_python_canonical: bool,
         /// Run without spawning a daemon: acquire the lock and call service
         /// functions directly. The process exits when indexing completes.
         /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
@@ -393,15 +404,23 @@ async fn main() -> Result<()> {
         Command::Sync {
             full,
             force,
+            backfill_python_canonical,
             direct,
         } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = indexing::run_sync(full, force, direct, &flags, &fmt).await;
+            let code =
+                indexing::run_sync(full, force, backfill_python_canonical, direct, &flags, &fmt)
+                    .await;
             std::process::exit(code);
         }
-        Command::Index { force, direct } => {
+        Command::Index {
+            force,
+            backfill_python_canonical,
+            direct,
+        } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code = indexing::run_index(force, direct, &flags, &fmt).await;
+            let code =
+                indexing::run_index(force, backfill_python_canonical, direct, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::Manifest => {

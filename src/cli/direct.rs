@@ -45,6 +45,7 @@ pub async fn run_direct_sync(
     workspace: &Path,
     full: bool,
     force: bool,
+    backfill_python_canonical: bool,
     id: Option<serde_json::Value>,
     correlation_id: Option<String>,
     formatter: &OutputFormatter,
@@ -148,6 +149,13 @@ pub async fn run_direct_sync(
         None
     };
 
+    // `--backfill-python-canonical` on the full-scan path implies `--force`
+    // (parity with `engram index` and the IPC `run_sync` path): a
+    // `sync --full --backfill-python-canonical` request must re-extract rather
+    // than silently hash-skip and drop the flag. The bare incremental
+    // `sync --backfill-python-canonical` (no `--full`) keeps its gated sync path.
+    let force = force || (full && backfill_python_canonical);
+
     // `--force` (or `--full --force`) takes the full-scan index path and
     // re-parses all discovered files; plain `--full` scans all files but
     // hash-skips unchanged ones; otherwise perform an incremental sync.
@@ -164,9 +172,16 @@ pub async fn run_direct_sync(
         .await
         .map(|result| index_result_to_json(&result))
     } else {
-        sync_workspace_with_progress(&ws_path, &data_dir, &branch, &config.code_graph, progress)
-            .await
-            .map(|result| sync_result_to_json(&result))
+        sync_workspace_with_progress(
+            &ws_path,
+            &data_dir,
+            &branch,
+            &config.code_graph,
+            backfill_python_canonical,
+            progress,
+        )
+        .await
+        .map(|result| sync_result_to_json(&result))
     };
 
     // Emit a usage-telemetry record for the direct (daemonless) path, mirroring

@@ -233,6 +233,10 @@ name = "unit_parsing"
 path = "tests/unit/parsing_test.rs"
 
 [[test]]
+name = "unit_python_canonical"
+path = "tests/unit/python_canonical_test.rs"
+
+[[test]]
 name = "integration_code_graph"
 path = "tests/integration/code_graph_test.rs"
 

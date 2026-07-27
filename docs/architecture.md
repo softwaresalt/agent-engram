@@ -142,6 +142,75 @@ so a Python `parse()` will not mis-bind to a Rust `fn parse`. The filter is a
 no-op for the existing Rust-only staged population, and Rust singleton
 resolution is unchanged.
 
+### Python namespace-qualified call resolution (v1)
+
+Python modules are namespaces (`foo/bar.py` is the `foo.bar` namespace), so a
+cross-file Python call resolves to a **module-namespace-qualified canonical
+target** when its call-site binding is statically provable. A call to `compute()`
+in an `app.py` that imports `from helper import compute` resolves to the exact
+`helper.compute` definition as a `calls_resolved_canonical` edge — not merely to a
+same-named singleton. Module-qualified calls (`mod.name()`, where `mod` is a bound
+imported module) resolve the same way.
+
+Resolution is **prove-or-fail-closed** (013-D no-false-edge, 082-F
+target-correctness): a canonical edge is emitted only when the winning binding is
+unambiguous across every modeled scope (module and top-level function-local) and
+is the binding effective at the call site in execution order. Any ambiguity — a
+competing import, a positioned star-import, a non-import rebind, a scoped
+function-local import, or uncertain ordering — fails closed. Failure has two
+distinct outcomes (the plan's *Anchor B* terminology):
+
+* **No canonical edge (fallback allowed).** The canonical layer produced no
+  module-qualified target, but a fallback is permitted, so a unique cross-file
+  bare call keeps its legacy name-only edge. This covers the two recall-safe
+  reasons: `NoModuleContext` (the caller has no provable namespace — `src/`-root,
+  PEP 420, or `__init__.py` layout) and `UnsupportedImportForm` (a provable
+  namespace but an unbound star, re-export, or relative import).
+* **No edge (fail closed).** Resolution refuses and suppresses any fallback
+  because the situation is ambiguous or shadowed — the reasons `CompetingBindings`,
+  `Shadowed`, and `DuplicateSameNameImport`. No legacy edge survives.
+
+#### Namespace-resolution v1 non-goals
+
+These cases never produce a canonical module-qualified edge:
+
+* **Instance- and attribute-method dispatch.** `self.method()`, `obj.method()`,
+  and multi-segment receivers (`a.b.func()`) need type inference and fail closed.
+* **Unsupported import forms.** Re-exports, relative and package-root imports
+  (`from .x import f`, `__init__.py`, PEP 420 namespace packages), star imports,
+  and dynamic imports do not yield a canonical target.
+* **Source-root (`src/`-layout) packages (Q3).** Definitions under an unprovable
+  source-root layout fail closed to no canonical path and fall back to the legacy
+  name-only edge via `NoModuleContext`.
+* **Shadowed module or callee names.** A module receiver — or a bare imported
+  callee — shadowed by a local, a parameter, or any rebind is not resolved (T5c).
+* **Same-file shadowing (`FF7DE872`).** First-match same-file name shadowing is a
+  separate, independent bug, not addressed by this capability.
+
+#### Precision and recall gates
+
+The 1.000 precision floor (zero false module-qualified edges) is certified by a
+**manifest-backed target-identity gate** — integration fixtures over an
+adversarial corpus that assert the exact resolved callee id and require a non-zero
+module-qualified edge count — plus a specified **manual audit** of sampled live
+edges. `get_retrieval_eval_report` alone cannot certify precision: it reports only
+a dangling-edge rate, cannot detect a canonical edge pointing at the *wrong*
+existing function, and does not isolate Python module-qualified edges. It is
+retained only as a secondary dangling-edge tripwire.
+
+Recall parity (scoped to the recall-safe subset) is a release gate: every unique
+cross-file bare call that resolved via the legacy name-only matcher before this
+feature — and is not intentionally suppressed by a typed fail-closed reason —
+still resolves after it. The intentional fail-closed drops (`CompetingBindings`,
+`Shadowed`, `DuplicateSameNameImport`) are expected recall changes, not
+regressions, and are excluded from the parity denominator.
+
+See the design spike
+(`docs/decisions/2026-07-23-python-namespace-canonical-resolution-spike.md`) and
+the implementation plan
+(`docs/exec-plans/2026-07-23-python-namespace-canonical-resolution-plan.md`) for
+the frozen resolution rule and the full adversarial corpus.
+
 ### Python call-graph v1 limitations
 
 The Python pilot is intentionally narrow and best-effort; it is not a sound call
@@ -169,10 +238,18 @@ graph. Known limitations:
 * **Dynamism lowers precision.** Python's runtime dispatch and rebinding mean
   edges are heuristic and lower-precision than Rust.
 * **Forced re-index for existing files.** `engram sync` and a non-forced
-  `index_workspace` skip unchanged files by content hash, so files already
-  indexed before this capability landed will not acquire Python call edges on a
-  normal sync. Pick them up with a forced full reparse (`engram index` or
-  `engram sync --full`).
+  `index_workspace` skip unchanged files by content hash. A plain `engram index`
+  and `engram sync --full` both default to `force=false`, so they scan every
+  file but still hash-skip unchanged ones — they do **not** re-extract files
+  already indexed before this capability landed. Pick those files up with an
+  explicit re-extraction: force a full reparse (`engram index --force` or
+  `engram sync --force`), or run the version-gated targeted backfill
+  `engram index --backfill-python-canonical` (which implies `--force`) or the
+  incremental `engram sync --backfill-python-canonical`. The backfill re-extracts
+  only when the stored Python-canonical extraction-version marker is behind the
+  current version, then backfills `calls_resolved_canonical` edges in one pass.
+  `engram sync --full --backfill-python-canonical` also forces re-extraction —
+  the backfill flag implies `--force` on the full-scan path.
 
 ## Data-lineage subgraph (v1)
 

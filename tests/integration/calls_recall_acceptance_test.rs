@@ -132,6 +132,54 @@ async fn name_to_ids(q: &CodeGraphQueries) -> HashMap<String, Vec<String>> {
     map
 }
 
+/// Index an arbitrary Python fixture through the full-index call post-pass.
+async fn index_python_fixture(files: &[(&str, &str)]) -> (tempfile::TempDir, CodeGraphQueries) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    for (rel, source) in files {
+        let full = ws.join(rel);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).expect("create fixture directory");
+        }
+        fs::write(full, source).expect("write Python fixture");
+    }
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index Python fixture");
+    let q = queries_for(&data_dir, &branch).await;
+    (tmp, q)
+}
+
+/// Resolve one indexed function by its simple name and workspace-relative file.
+async fn function_id_in(q: &CodeGraphQueries, name: &str, file_path: &str) -> String {
+    let matches: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("all_functions")
+        .into_iter()
+        .filter(|function| function.name == name && function.file_path == file_path)
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "{name} in {file_path} must identify exactly one function; got {matches:?}"
+    );
+    matches[0].id.clone()
+}
+
+/// Return all indexed function IDs carrying `name`.
+async fn function_ids_named(q: &CodeGraphQueries, name: &str) -> Vec<String> {
+    q.all_functions()
+        .await
+        .expect("all_functions")
+        .into_iter()
+        .filter(|function| function.name == name)
+        .map(|function| function.id)
+        .collect()
+}
+
 // Scenario 1: the cross-file post-pass lifts resolution_recall above the
 // pre-change (sync-only) baseline.
 #[test]
@@ -290,5 +338,690 @@ async fn rust_singleton_resolution_unchanged_under_language_scope() {
     assert_eq!(
         actual, expected,
         "Rust singleton resolution must be unchanged under same-language scoping"
+    );
+}
+
+/// T5b.1 — module-qualified and from-import calls bind to the exact canonical
+/// target even when another module defines the same simple function name.
+#[test]
+async fn python_module_and_from_import_resolve_to_exact_target() {
+    let (_tmp, q) = index_python_fixture(&[
+        ("bar.py", "def parse():\n    return 1\n"),
+        ("baz.py", "def parse():\n    return 2\n"),
+        ("caller.py", "import bar\n\ndef run():\n    bar.parse()\n"),
+        (
+            "user.py",
+            "from bar import parse\n\ndef caller():\n    parse()\n",
+        ),
+    ])
+    .await;
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let caller_id = function_id_in(&q, "caller", "user.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let decoy_parse_id = function_id_in(&q, "parse", "baz.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+
+    assert!(
+        canonical.contains(&(run_id.clone(), bar_parse_id.clone())),
+        "module-qualified call must resolve to bar.parse; got {canonical:?}"
+    );
+    assert!(
+        canonical.contains(&(caller_id.clone(), bar_parse_id)),
+        "from-import call must resolve to bar.parse; got {canonical:?}"
+    );
+    assert!(
+        canonical.iter().all(|(_, to)| to != &decoy_parse_id),
+        "no canonical edge may resolve to decoy baz.parse; got {canonical:?}"
+    );
+}
+
+/// T5b.2 — the latest resolvable module binding wins unless a later opaque
+/// rebind poisons it, in which case resolution emits no edge.
+#[test]
+async fn python_bare_call_site_ordering_resolves_or_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "a.py",
+            "def parse():\n    return 0\n\nfrom bar import parse\n\ndef caller():\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 9\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "a.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    assert!(
+        canonical.contains(&(caller_id, bar_parse_id)),
+        "later from-import must win over the earlier module definition; got {canonical:?}"
+    );
+
+    let (_tmp, q) = index_python_fixture(&[(
+        "m.py",
+        "parse = None\n\ndef parse():\n    return 3\n\ndef caller():\n    parse()\n",
+    )])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "m.py").await;
+    let parse_id = function_id_in(&q, "parse", "m.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    assert!(
+        canonical.contains(&(caller_id, parse_id)),
+        "later definition must overwrite earlier opaque assignment; got {canonical:?}"
+    );
+
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "n.py",
+            "from bar import parse\n\ndef caller():\n    parse()\n\nparse = None\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "n.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(caller_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(caller_id, bar_parse_id)),
+        "later assignment must fail closed without canonical or fallback edge"
+    );
+}
+
+/// T5b.3 — receiver ambiguity, star imports, and duplicate same-name imports
+/// never mint a candidate edge.
+#[test]
+async fn python_fail_closed_vectors_emit_no_edge() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "p.py",
+            "from pkg import parse\n\ndef caller():\n    parse.tokenize()\n",
+        ),
+        ("pkg.py", "def tokenize():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "p.py").await;
+    let tokenize_id = function_id_in(&q, "tokenize", "pkg.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(caller_id.clone(), tokenize_id.clone()))
+            && !singleton.contains(&(caller_id, tokenize_id)),
+        "attribute call on a from-imported symbol must fail closed"
+    );
+
+    let (_tmp, q) = index_python_fixture(&[
+        ("s.py", "from n import *\n\ndef caller():\n    parse()\n"),
+        ("b.py", "def parse():\n    return 1\n"),
+        ("c.py", "def parse():\n    return 2\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "s.py").await;
+    let parse_ids = function_ids_named(&q, "parse").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        parse_ids.iter().all(|parse_id| {
+            !canonical.contains(&(caller_id.clone(), parse_id.clone()))
+                && !singleton.contains(&(caller_id.clone(), parse_id.clone()))
+        }),
+        "star-import ambiguity must not resolve to either parse candidate"
+    );
+
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "d.py",
+            "from b import parse\nfrom c import parse\n\ndef caller():\n    parse()\n",
+        ),
+        ("b.py", "def parse():\n    return 1\n"),
+        ("c.py", "def parse():\n    return 2\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "d.py").await;
+    let parse_ids = function_ids_named(&q, "parse").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        parse_ids.iter().all(|parse_id| {
+            !canonical.contains(&(caller_id.clone(), parse_id.clone()))
+                && !singleton.contains(&(caller_id.clone(), parse_id.clone()))
+        }),
+        "duplicate same-name imports must not resolve to either parse candidate"
+    );
+}
+
+/// T5b.3b — a duplicate same-name import where one origin is an unindexed
+/// external module must still fail closed. Only the in-workspace `b.parse` is
+/// indexed, so the name is *unique* in the graph; the legacy name-only fallback
+/// would otherwise mint a false edge to it even though the effective (last-wins)
+/// binding is the external `external.parse`. Observed competition (two firm
+/// `from ... import parse` bindings) must suppress the fallback (013-D, M1).
+#[test]
+async fn python_duplicate_import_with_external_shadow_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "d2.py",
+            "from b import parse\nfrom external import parse\n\ndef caller():\n    parse()\n",
+        ),
+        ("b.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "d2.py").await;
+    let parse_ids = function_ids_named(&q, "parse").await;
+    assert_eq!(
+        parse_ids.len(),
+        1,
+        "only in-workspace b.parse is indexed (external.parse is not), so the name is unique"
+    );
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        parse_ids.iter().all(|parse_id| {
+            !canonical.contains(&(caller_id.clone(), parse_id.clone()))
+                && !singleton.contains(&(caller_id.clone(), parse_id.clone()))
+        }),
+        "duplicate import with an external shadow must fail closed, not fall back to the unique in-workspace parse"
+    );
+}
+
+/// T5b.4 — recall-safe no-target reasons retain the legacy unique-name fallback,
+/// while a non-unique candidate set still fails closed.
+#[test]
+async fn python_no_target_falls_back_to_unique_name_only() {
+    let (_tmp, q) = index_python_fixture(&[
+        ("src/app.py", "def caller():\n    helper()\n"),
+        ("src/lib.py", "def helper():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "src/app.py").await;
+    let helper_id = function_id_in(&q, "helper", "src/lib.py").await;
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        singleton.contains(&(caller_id, helper_id)),
+        "missing module context must fall back to a unique Python name"
+    );
+
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "r.py",
+            "from .other import parse\n\ndef caller():\n    parse()\n",
+        ),
+        ("other.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "r.py").await;
+    let parse_id = function_id_in(&q, "parse", "other.py").await;
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        singleton.contains(&(caller_id, parse_id)),
+        "relative import must fall back to a unique Python name"
+    );
+
+    let (_tmp, q) = index_python_fixture(&[
+        ("src/app2.py", "def caller():\n    helper()\n"),
+        ("src/lib1.py", "def helper():\n    return 1\n"),
+        ("src/lib2.py", "def helper():\n    return 2\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "src/app2.py").await;
+    let helper_ids = function_ids_named(&q, "helper").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        helper_ids.iter().all(|helper_id| {
+            !canonical.contains(&(caller_id.clone(), helper_id.clone()))
+                && !singleton.contains(&(caller_id.clone(), helper_id.clone()))
+        }),
+        "non-unique fallback candidates must emit no edge"
+    );
+}
+
+/// T5c.1 — bare-callee winner selection is anchored on the caller's definition
+/// position: bindings after the caller cannot be proven effective, and a
+/// binding after the winning binding poisons the call (time-axis, C7-1).
+#[test]
+async fn python_bare_winner_is_anchored_on_caller_position() {
+    // Import after an earlier def, caller after both: the later import wins.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "w1.py",
+            "def parse():\n    return 0\n\nfrom bar import parse\n\ndef caller():\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 9\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "w1.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let local_parse_id = function_id_in(&q, "parse", "w1.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    assert!(
+        canonical.contains(&(caller_id.clone(), bar_parse_id)),
+        "import after the earlier def must win for a later caller; got {canonical:?}"
+    );
+    assert!(
+        canonical.iter().all(|(_, to)| to != &local_parse_id),
+        "the shadowed earlier def must not receive an edge; got {canonical:?}"
+    );
+
+    // Def after import, caller after both: the later local def wins.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "w2.py",
+            "from bar import parse\n\ndef parse():\n    return 0\n\ndef caller():\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 9\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "w2.py").await;
+    let local_parse_id = function_id_in(&q, "parse", "w2.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    assert!(
+        canonical.contains(&(caller_id.clone(), local_parse_id)),
+        "def after the import must win for a later caller; got {canonical:?}"
+    );
+    assert!(
+        canonical.iter().all(|(_, to)| to != &bar_parse_id),
+        "the shadowed earlier import must not receive an edge; got {canonical:?}"
+    );
+
+    // C7-1: an import after the caller poisons the pre-caller def — fail closed.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "w3.py",
+            "def parse():\n    return 0\n\ndef g():\n    parse()\n\nfrom bar import parse\n",
+        ),
+        ("bar.py", "def parse():\n    return 9\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "w3.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        canonical
+            .iter()
+            .chain(singleton.iter())
+            .all(|(from, _)| from != &g_id),
+        "a rebind after the caller must fail closed with no edge; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// T5c.2 — a module receiver reassigned anywhere after its import is no longer
+/// provably that module: `receiver.callee()` fails closed for every rebind form.
+#[test]
+async fn python_module_receiver_rebind_after_import_fails_closed() {
+    let rebinds = [
+        "bar = factory()",
+        "bar += other()",
+        "for bar in items():\n    pass",
+        "with ctx() as bar:\n    pass",
+        "try:\n    pass\nexcept Err() as bar:\n    pass",
+        "(bar := factory())",
+        "def bar():\n    return 0",
+        "class bar:\n    pass",
+        "del bar",
+        "match value():\n    case bar:\n        pass",
+        "from other import *",
+    ];
+    for rebind in rebinds {
+        let source = format!("import bar\n\n{rebind}\n\ndef g():\n    bar.parse()\n");
+        let (_tmp, q) = index_python_fixture(&[
+            ("m.py", source.as_str()),
+            ("bar.py", "def parse():\n    return 1\n"),
+        ])
+        .await;
+        let g_id = function_id_in(&q, "g", "m.py").await;
+        let canonical = q
+            .list_calls_edges_by_resolution("calls_resolved_canonical")
+            .await
+            .expect("list canonical edges");
+        let singleton = q
+            .list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await
+            .expect("list singleton edges");
+        assert!(
+            canonical
+                .iter()
+                .chain(singleton.iter())
+                .all(|(from, _)| from != &g_id),
+            "receiver rebind `{rebind}` after import must fail closed; \
+             canonical={canonical:?} singleton={singleton:?}"
+        );
+    }
+
+    // A parameter that shadows the receiver name is function-local — fail closed.
+    let (_tmp, q) = index_python_fixture(&[
+        ("p.py", "import bar\n\ndef g(bar):\n    bar.parse()\n"),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "p.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        canonical
+            .iter()
+            .chain(singleton.iter())
+            .all(|(from, _)| from != &g_id),
+        "a parameter shadowing the receiver must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// T5c.2b (096-F, P0-860) — a module receiver dynamically rebound through a
+/// `global` write in a *sibling* function is not provably that module at call
+/// time, so `receiver.callee()` must fail closed. The module-scope shadow scan
+/// stops at function bodies, so the positioned receiver-rebind check never sees
+/// this form; only the dynamic-rebind signal catches it. The module-qualifier
+/// guard must consult that signal just as the bare-call path already does.
+#[test]
+async fn python_module_receiver_dynamic_global_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "m.py",
+            "import bar\n\ndef mutate():\n    global bar\n    bar = factory()\n\ndef g():\n    bar.parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "m.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a module receiver dynamically rebound via `global` in a sibling must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// 096-F (second review, B) — a module receiver dynamically rebound through a
+/// `global` write in a *nested* function is missed by the scope scan that stops
+/// at the outer function body (F5 isolation records only the nested name). The
+/// nested `global bar; bar = ...` still rebinds the module name, so the receiver
+/// `bar.parse()` must fail closed.
+#[test]
+async fn python_module_receiver_nested_global_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "m.py",
+            "import bar\n\ndef outer():\n    def mutate():\n        global bar\n        bar = factory()\n\ndef g():\n    bar.parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "m.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a receiver rebound via `global` in a nested function must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// 096-F (second review, C) — a module receiver dynamically rebound through a
+/// `global` write in a *class body* is missed by the module walk that skips
+/// class bodies. The class-body `global bar; bar = ...` still rebinds the module
+/// name, so the receiver `bar.parse()` must fail closed.
+#[test]
+async fn python_module_receiver_class_body_global_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "m.py",
+            "import bar\n\nclass C:\n    global bar\n    bar = factory()\n\ndef g():\n    bar.parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "m.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a receiver rebound via `global` in a class body must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// 096-F (second review, A) — the *defining* module rebinds its own exported
+/// name at module scope after the def (`def parse(): ...` then `parse = ...`), so
+/// the exported `parse` is no longer provably that def. A caller `import bar;
+/// bar.parse()` must fail closed: the stale def's canonical identity is
+/// suppressed, so the module-qualified target does not resolve and no name-only
+/// fallback fires on the Ok path.
+#[test]
+async fn python_callee_module_export_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "bar.py",
+            "def parse():\n    return 1\n\nparse = factory()\n",
+        ),
+        ("caller.py", "import bar\n\ndef run():\n    bar.parse()\n"),
+    ])
+    .await;
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(run_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(run_id, bar_parse_id)),
+        "a callee-module export rebind must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// T5c.3 — a from-imported symbol reassigned at module scope after the import is
+/// undecidable at the caller: the bare call fails closed.
+#[test]
+async fn python_bare_import_assignment_shadow_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "c.py",
+            "from bar import parse\n\nparse = factory()\n\ndef caller():\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "c.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(caller_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(caller_id, bar_parse_id)),
+        "a module-scope reassignment after the import must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// T5c.4 — a bare callee that is bound anywhere in the caller's own body
+/// (parameter, in-body assignment, or dynamic global rebind) is function-local
+/// and can never resolve to a module-scope import — fail closed.
+#[test]
+async fn python_bare_callee_function_local_poison_fails_closed() {
+    // Parameter shadow.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "a.py",
+            "from bar import parse\n\ndef g(parse):\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "a.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a parameter-shadowed callee must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+
+    // C12-1: an in-body assignment makes the whole body treat the name as local
+    // (UnboundLocalError), so the call before it cannot bind to the import.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "b.py",
+            "from bar import parse\n\ndef g():\n    parse()\n    parse = factory()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "b.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "an in-body assignment must poison the callee for the whole body; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+
+    // T-d: a `global` write dynamically rebinds the module name — every caller
+    // of the bare name fails closed.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "d.py",
+            "from bar import f\n\ndef w():\n    global f\n    f = factory()\n    f()\n\ndef sibling():\n    f()\n",
+        ),
+        ("bar.py", "def f():\n    return 1\n"),
+    ])
+    .await;
+    let sibling_id = function_id_in(&q, "sibling", "d.py").await;
+    let bar_f_id = function_id_in(&q, "f", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(sibling_id.clone(), bar_f_id.clone()))
+            && !singleton.contains(&(sibling_id, bar_f_id)),
+        "a dynamically rebound module name must fail closed for every caller; \
+         canonical={canonical:?} singleton={singleton:?}"
     );
 }

@@ -35,6 +35,17 @@ fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
     (std::env::temp_dir().join("engram-test"), branch)
 }
 
+/// Helper: resolve a function's node ID by name within a specific file.
+async fn function_id_in(q: &CodeGraphQueries, name: &str, file_path: &str) -> String {
+    q.all_functions()
+        .await
+        .expect("all_functions")
+        .into_iter()
+        .find(|function| function.name == name && function.file_path == file_path)
+        .unwrap_or_else(|| panic!("no `{name}` function in `{file_path}`"))
+        .id
+}
+
 #[test]
 async fn index_workspace_parses_rust_files() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -660,8 +671,8 @@ async fn python_intra_file_bare_call_direct_edge_and_traversal() {
     );
 }
 
-/// U4.2 — a cross-file Python bare call resolves to the callee's EXACT id
-/// (target-identity per the 082-F acceptance gate, not mere row-existence).
+/// U4.2 / T5a — a cross-file Python bare call is staged with `python_bare`
+/// provenance. T5b (096.006-T) restores exact-target cross-file resolution.
 #[test]
 async fn python_cross_file_call_resolves_to_exact_target() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -680,32 +691,20 @@ async fn python_cross_file_call_resolves_to_exact_target() {
         .find_symbols_by_name("orchestrate")
         .await
         .expect("find orchestrate");
-    let helper = q.find_symbols_by_name("helper").await.expect("find helper");
     assert_eq!(orchestrate.len(), 1, "orchestrate must be indexed once");
-    assert_eq!(
-        helper.len(),
-        1,
-        "helper must be defined exactly once (in b.py)"
-    );
     let orchestrate_id = orchestrate[0].id.clone();
-    let helper_id = helper[0].id.clone();
-
-    let singletons = q
-        .list_calls_edges_by_resolution("calls_resolved_singleton")
+    let staged = q
+        .list_staged_calls_with_provenance()
         .await
-        .expect("singleton edges");
-    // Target-identity: the resolved edge must point to B's EXACT helper id.
+        .expect("staged calls");
     assert!(
-        singletons.contains(&(orchestrate_id.clone(), helper_id.clone())),
-        "cross-file call must resolve to B's EXACT helper id (target-identity); got {singletons:?}"
-    );
-    // No mis-binding: every singleton originating from orchestrate targets helper.
-    assert!(
-        singletons
-            .iter()
-            .filter(|(from, _)| from == &orchestrate_id)
-            .all(|(_, to)| to == &helper_id),
-        "orchestrate must not resolve to any target other than B's helper; got {singletons:?}"
+        staged.iter().any(|row| row.caller_id == orchestrate_id
+            && row.callee_name == "helper"
+            && row.source_file == "a.py"
+            && row.raw_qualifier.is_empty()
+            && row.qualifier_kind == "python_bare"
+            && row.enclosing_canonical_type.is_empty()),
+        "cross-file call must remain staged with python_bare provenance until T5b; got {staged:?}"
     );
 }
 
@@ -756,11 +755,9 @@ async fn python_bare_call_does_not_bind_to_rust_definition() {
     }
 }
 
-/// U4.4 (ordering proof) — when a Python callee name is defined in BOTH Python
-/// and Rust, a Python caller must resolve to the PYTHON target. This is the
-/// mixed-language positive case: it fails unless language filtering happens
-/// BEFORE the singleton unambiguity check (a global-singleton-first ordering
-/// would see two `helper` candidates, deem them ambiguous, and create NO edge).
+/// U4.4 / T5a — when a Python callee name is defined in BOTH Python and Rust,
+/// the Python call remains staged as `python_bare` and never binds to Rust.
+/// T5b restores the positive exact-Python-target assertion.
 #[test]
 async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_def() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -797,14 +794,16 @@ async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_de
         "the two same-name helpers must be distinct symbols"
     );
 
-    let singletons = q
-        .list_calls_edges_by_resolution("calls_resolved_singleton")
+    let staged = q
+        .list_staged_calls_with_provenance()
         .await
-        .expect("singleton edges");
-    // Positive: resolves to the PYTHON helper (proves filter-before-singleton).
+        .expect("staged calls");
     assert!(
-        singletons.contains(&(orchestrate_id.clone(), py_helper.id.clone())),
-        "Python caller must resolve to the Python helper in b.py; got {singletons:?}"
+        staged.iter().any(|row| row.caller_id == orchestrate_id
+            && row.callee_name == "helper"
+            && row.source_file == "a.py"
+            && row.qualifier_kind == "python_bare"),
+        "Python caller must remain staged for T5b canonical resolution; got {staged:?}"
     );
     // Negative: must never bind to the same-named Rust helper via any resolution.
     for resolution in [
@@ -823,4 +822,681 @@ async fn python_cross_file_call_resolves_to_python_target_amid_same_name_rust_de
             "Python caller must NOT bind to the Rust helper via {resolution}; got {edges:?}"
         );
     }
+}
+
+// ── 096-F (T3): Python canonical_path populator ──────────────────────────────
+
+/// T3.1 (096-F) — Python module-level defs get `canonical_path = "<module>.<name>"`:
+/// a top-level module resolves to `mod.f`, and a def on a proven regular-package
+/// chain (`pkg/__init__.py` present) resolves to `pkg.mod.g`.
+#[test]
+async fn python_module_level_def_gets_module_qualified_canonical_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // Top-level module: no ancestor dirs, resolves regardless of packages.
+    write_sample_file(ws, "mod.py", "def f():\n    return 1\n");
+    // Nested regular-package chain: `pkg` is a provable package (has __init__.py).
+    write_sample_file(ws, "pkg/__init__.py", "# package marker\n");
+    write_sample_file(ws, "pkg/mod.py", "def g():\n    return 2\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    assert_eq!(
+        q.canonical_paths_for_function_name("f")
+            .await
+            .expect("query f"),
+        vec!["mod.f".to_owned()],
+        "top-level module def must canonicalise to `mod.f`"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("g")
+            .await
+            .expect("query g"),
+        vec!["pkg.mod.g".to_owned()],
+        "def on a proven regular-package chain must canonicalise to `pkg.mod.g`"
+    );
+}
+
+/// T3.2 (096-F, Q3/M5 fail-closed) — a def in `__init__.py`, a def under a
+/// `src/` source-root, and a def in an implicit PEP 420 namespace package all
+/// get `canonical_path == ""` (T1 rejects any chain with an ancestor dir lacking
+/// `__init__.py`).
+#[test]
+async fn python_unprovable_layouts_fail_closed_to_empty_canonical() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // `__init__.py` itself is the package marker, never a resolvable module.
+    write_sample_file(ws, "pkg/__init__.py", "def init_fn():\n    return 0\n");
+    // `src/` source-root: `src` has no __init__.py, so `src/pkg/app.py` fails
+    // closed even though `src/pkg` would otherwise be a package.
+    write_sample_file(ws, "src/pkg/__init__.py", "# marker\n");
+    write_sample_file(ws, "src/pkg/app.py", "def src_fn():\n    return 0\n");
+    // Implicit PEP 420 namespace package: `ns` has no __init__.py.
+    write_sample_file(ws, "ns/mod.py", "def ns_fn():\n    return 0\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    for name in ["init_fn", "src_fn", "ns_fn"] {
+        assert_eq!(
+            q.canonical_paths_for_function_name(name)
+                .await
+                .expect("query"),
+            vec![String::new()],
+            "{name} must fail closed to an empty canonical_path"
+        );
+    }
+}
+
+/// T3.3 (096-F, FF7DE872 non-subsumption) — two same-file defs of `f` both
+/// persist their identical canonical path, preserving the duplicate multiplicity
+/// the resolver later fails closed on.
+#[test]
+async fn python_duplicate_same_file_defs_persist_identical_canonical_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "dup.py",
+        "def f():\n    return 1\n\n\ndef f():\n    return 2\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let paths = q
+        .canonical_paths_for_function_name("f")
+        .await
+        .expect("query f");
+    assert_eq!(
+        paths,
+        vec!["dup.f".to_owned(), "dup.f".to_owned()],
+        "two same-file defs of f must both persist the identical canonical path (fail-closed multiplicity)"
+    );
+}
+
+/// T3.4 (096-F, C6-1) — a Python package-topology change (an `__init__.py` added
+/// or removed) recomputes descendant canonical paths PAST the sync content-hash
+/// skip: adding `p/__init__.py` promotes `p/mod.py`'s def from `""` to `p.mod.cf`,
+/// and removing it invalidates back to `""` — both with the descendant content
+/// unchanged.
+#[test]
+async fn python_package_topology_change_invalidates_descendant_canonical_paths() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // Initially `p` is an implicit namespace package (no __init__.py): fail closed.
+    write_sample_file(ws, "p/mod.py", "def cf():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf pre"),
+        vec![String::new()],
+        "before __init__.py, p is a namespace package: cf must be empty (fail closed)"
+    );
+
+    // ADD p/__init__.py: `p` becomes a provable regular package. cf's content is
+    // unchanged, so only C6-1 topology invalidation can refresh its canonical.
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync after add should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf added"),
+        vec!["p.mod.cf".to_owned()],
+        "adding p/__init__.py must recompute the unchanged descendant to `p.mod.cf` (C6-1 add)"
+    );
+
+    // REMOVE p/__init__.py: `p` reverts to a namespace package. cf must invalidate
+    // back to empty, again past the content-hash skip.
+    std::fs::remove_file(ws.join("p/__init__.py")).expect("remove __init__.py");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync after remove should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf removed"),
+        vec![String::new()],
+        "removing p/__init__.py must invalidate the unchanged descendant back to empty (C6-1 remove)"
+    );
+}
+
+// ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
+
+/// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during
+/// full indexing rather than entering the legacy name-only singleton pass.
+#[test]
+async fn python_cross_file_bare_call_staged_python_bare_full_index() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "def orchestrate():\n    helper()\n");
+    write_sample_file(ws, "b.py", "def helper():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.callee_name == "helper"
+            && row.qualifier_kind == "python_bare"
+            && row.source_file == "a.py"),
+        "cross-file Python bare call must be staged as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.2 — incremental sync applies the same `python_bare` staging contract as
+/// full indexing for newly added Python files.
+#[test]
+async fn python_cross_file_bare_call_staged_python_bare_sync() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "keep.py", "def keep():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index should succeed");
+    write_sample_file(ws, "a.py", "def orchestrate():\n    helper()\n");
+    write_sample_file(ws, "b.py", "def helper():\n    return 1\n");
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.callee_name == "helper"
+            && row.qualifier_kind == "python_bare"
+            && row.source_file == "a.py"),
+        "sync must stage cross-file Python bare calls as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.3 — the existing module-qualified Python path remains staged as
+/// `qualifier_kind == "module"`.
+#[test]
+async fn python_module_qualified_call_staged_as_module() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "a.py", "import mod\n\n\ndef run():\n    mod.func()\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged
+            .iter()
+            .any(|row| row.callee_name == "func" && row.qualifier_kind == "module"),
+        "module-qualified Python call must keep module provenance; got {staged:?}"
+    );
+}
+
+/// Assert that a same-file `parse()` call is staged rather than directly bound
+/// when the supplied source contains a competing lexical binding.
+async fn assert_python_shadow_contest(source: &str) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(ws, "case.py", source);
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let callers = q.find_symbols_by_name("caller").await.expect("find caller");
+    let parses = q.find_symbols_by_name("parse").await.expect("find parse");
+    let caller_id = callers
+        .iter()
+        .find(|symbol| symbol.table == "function")
+        .expect("caller function must be indexed")
+        .id
+        .clone();
+    let parse_id = parses
+        .iter()
+        .find(|symbol| symbol.table == "function")
+        .expect("parse function must be indexed")
+        .id
+        .clone();
+
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        !direct.contains(&(caller_id.clone(), parse_id)),
+        "contested parse must not receive a direct edge; got {direct:?}"
+    );
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.caller_id == caller_id
+            && row.callee_name == "parse"
+            && row.qualifier_kind == "python_bare"),
+        "contested parse must be staged as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.4 — every coarse shadow-contest vector suppresses the same-file direct
+/// edge and routes the bare call into `python_bare` provenance staging.
+#[test]
+async fn python_bare_shadow_contest_routing_table() {
+    for source in [
+        "def parse():\n    return 0\nfrom bar import parse\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\nfrom n import *\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\nparse = factory()\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\nclass parse:\n    pass\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\ndel parse\ndef caller():\n    parse()\n",
+        "def parse():\n    return 0\ndef caller():\n    from bar import parse\n    parse()\n",
+        "def parse():\n    return 0\nfrom .other import parse\ndef caller():\n    parse()\n",
+    ] {
+        assert_python_shadow_contest(source).await;
+    }
+}
+
+/// T5a.5 / C9-1 — the matched definition is not its own competitor: a sole
+/// same-file binding retains the direct-edge fast path.
+#[test]
+async fn python_sole_binding_bare_call_keeps_direct_edge() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "sole.py",
+        "def helper():\n    return 1\ndef caller():\n    helper()\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let caller_id = q.find_symbols_by_name("caller").await.expect("find caller")[0]
+        .id
+        .clone();
+    let helper_id = q.find_symbols_by_name("helper").await.expect("find helper")[0]
+        .id
+        .clone();
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        direct.contains(&(caller_id.clone(), helper_id)),
+        "sole binding must keep its direct edge; got {direct:?}"
+    );
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        !staged.iter().any(|row| row.caller_id == caller_id
+            && row.callee_name == "helper"
+            && row.qualifier_kind == "python_bare"),
+        "sole binding must not be staged as python_bare; got {staged:?}"
+    );
+}
+
+/// T5a.6 regression — non-Python cross-file bare calls retain the legacy
+/// name-only staging marker.
+#[test]
+async fn rust_cross_file_bare_call_still_name_only_staged() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub mod a;\npub mod b;\n");
+    write_sample_file(ws, "src/a.rs", "pub fn orchestrate() {\n    helper();\n}\n");
+    write_sample_file(ws, "src/b.rs", "pub fn helper() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    let helper = staged
+        .iter()
+        .find(|row| row.callee_name == "helper")
+        .unwrap_or_else(|| panic!("Rust helper call must remain staged: {staged:?}"));
+    assert_eq!(helper.qualifier_kind, "");
+    assert_ne!(helper.qualifier_kind, "python_bare");
+}
+
+// ── 096-F (T7): versioned re-extraction + gated canonical backfill ───────────
+
+/// T7.1 (Q2) — a gated backfill sync after an extraction-version bump restores
+/// the resolved cross-module canonical edge on unchanged-hash `.py` files and
+/// advances the durable marker to the current version.
+#[test]
+async fn python_extraction_version_gated_backfill_restores_canonical_edge() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "app.py",
+        "from helper import compute\n\n\ndef run():\n    compute()\n",
+    );
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    // Fresh full index: resolves the canonical edge and advances the marker.
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let run_id = function_id_in(&q, "run", "app.py").await;
+    let compute_id = function_id_in(&q, "compute", "helper.py").await;
+    let fresh = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        fresh.contains(&(run_id.clone(), compute_id.clone())),
+        "fresh index must resolve the cross-module canonical edge; got {fresh:?}"
+    );
+    assert_eq!(
+        q.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "fresh index advances the extraction-version marker"
+    );
+
+    // Simulate a pre-upgrade index: older extraction produced no canonical edge
+    // and the marker sits at an earlier version.
+    q.retract_all_calls_resolved_canonical_edges()
+        .await
+        .expect("retract canonical edges");
+    q.set_python_extraction_version("0").expect("stale marker");
+    let before = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        !before.contains(&(run_id.clone(), compute_id.clone())),
+        "precondition: canonical edge retracted before backfill; got {before:?}"
+    );
+
+    // Gated backfill sync over unchanged `.py` bytes re-extracts and re-resolves.
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+        .await
+        .expect("gated backfill sync should succeed");
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    // Force re-extraction assigns fresh node IDs, so re-resolve by name/file.
+    let run_id = function_id_in(&q2, "run", "app.py").await;
+    let compute_id = function_id_in(&q2, "compute", "helper.py").await;
+    let after = q2
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        after.contains(&(run_id, compute_id)),
+        "gated backfill must restore the canonical edge on unchanged files; got {after:?}"
+    );
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "successful backfill advances the marker to the current version"
+    );
+}
+
+/// T7.2 (C12-5) — without the `--backfill-python-canonical` gate, a stale marker
+/// is a no-op deferral: routine sync must not re-extract or churn canonical edges.
+#[test]
+async fn python_extraction_version_ungated_sync_defers_without_churn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "app.py",
+        "from helper import compute\n\n\ndef run():\n    compute()\n",
+    );
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let run_id = function_id_in(&q, "run", "app.py").await;
+    let compute_id = function_id_in(&q, "compute", "helper.py").await;
+
+    // Stale pre-upgrade state: no canonical edge, older marker.
+    q.retract_all_calls_resolved_canonical_edges()
+        .await
+        .expect("retract canonical edges");
+    q.set_python_extraction_version("0").expect("stale marker");
+
+    // Plain sync (backfill gate OFF): must defer — no re-extraction, no churn.
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("ungated sync should succeed");
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    let after = q2
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        !after.contains(&(run_id, compute_id)),
+        "ungated sync must not backfill the canonical edge; got {after:?}"
+    );
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("0".to_owned()),
+        "ungated sync leaves the stale marker untouched (deferral)"
+    );
+}
+
+/// T7.3 (C7-3) — a gated backfill that hits a `.py` read error still resolves the
+/// healthy edges this run but keeps the prior marker so the next sync retries the
+/// migration (fail-closed toward retry).
+#[test]
+async fn python_extraction_version_backfill_keeps_marker_on_py_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "app.py",
+        "from helper import compute\n\n\ndef run():\n    compute()\n",
+    );
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Pre-upgrade state.
+    q.retract_all_calls_resolved_canonical_edges()
+        .await
+        .expect("retract canonical edges");
+    q.set_python_extraction_version("0").expect("stale marker");
+
+    // A `.py` file with invalid UTF-8 fails `read_to_string` during the sync,
+    // landing a per-file error in `SyncResult.errors` (has_python_file_errors).
+    fs::write(ws.join("broken.py"), [0xff_u8, 0xfe, 0x00, b'x']).expect("write broken.py");
+
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+        .await
+        .expect("gated backfill sync should succeed despite a .py error");
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    // Force re-extraction assigns fresh node IDs, so re-resolve by name/file.
+    let run_id = function_id_in(&q2, "run", "app.py").await;
+    let compute_id = function_id_in(&q2, "compute", "helper.py").await;
+    let after = q2
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        after.contains(&(run_id, compute_id)),
+        "backfill still resolves the healthy edge on this run; got {after:?}"
+    );
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("0".to_owned()),
+        "a `.py` error keeps the prior marker so the migration retries (C7-3)"
+    );
+
+    // Remove the broken file: the next gated backfill completes and advances.
+    fs::remove_file(ws.join("broken.py")).expect("remove broken.py");
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+        .await
+        .expect("retry backfill sync should succeed");
+    let db3 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q3 = CodeGraphQueries::new(db3);
+    assert_eq!(
+        q3.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "a clean retry sync advances the marker to the current version"
+    );
+    let restored = q3
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    let run_id = function_id_in(&q3, "run", "app.py").await;
+    let compute_id = function_id_in(&q3, "compute", "helper.py").await;
+    assert!(
+        restored.contains(&(run_id, compute_id)),
+        "retry keeps the canonical edge resolved; got {restored:?}"
+    );
+}
+
+/// T7.4 (R1) — the extraction-version marker lives in schema metadata, never in a
+/// file's `content_hash`, so the raw-SHA content hash and unchanged-file fast path
+/// are unaffected; a current-version file is skipped and Rust is untouched.
+#[test]
+async fn python_extraction_version_marker_preserves_content_hash_fast_path() {
+    use sha2::{Digest, Sha256};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let app_src = "from helper import compute\n\n\ndef run():\n    compute()\n";
+    write_sample_file(ws, "app.py", app_src);
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub fn only() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // R1: content_hash is the raw source SHA-256, uncontaminated by the marker.
+    let files = q.list_code_files().await.expect("list code files");
+    let app = files
+        .iter()
+        .find(|f| f.path == "app.py")
+        .expect("app.py indexed");
+    let expected = format!("{:x}", Sha256::digest(app_src.as_bytes()));
+    assert_eq!(
+        app.content_hash, expected,
+        "content_hash must stay the raw source SHA, not encode the extraction-version marker"
+    );
+    assert_eq!(
+        q.python_extraction_version().expect("read marker"),
+        Some("1".to_owned())
+    );
+
+    // Fast path: a plain sync with unchanged bytes skips the .py (hash match) and
+    // never re-runs backfill — the marker is already current.
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("no-op sync should succeed");
+    assert!(
+        result.files_unchanged >= 2,
+        "unchanged files must hit the content-hash fast path; got {} unchanged",
+        result.files_unchanged
+    );
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "a current-version no-op sync leaves the marker at the current version"
+    );
 }

@@ -335,6 +335,121 @@ fn set_schema_meta_flag(cozo_db: &cozo::DbInstance, key: &str) -> Result<(), Eng
     Ok(())
 }
 
+/// Durable `schema_meta` key recording the Python namespace-canonical
+/// extraction version last written to the index (096-F, T7-seam).
+///
+/// T7 (096.010-T) compares the stored value against the current extraction
+/// version to decide whether a versioned re-extraction + one-step resolution
+/// backfill is required. The version lives in `schema_meta`, NOT in
+/// `file_node.content_hash` (R1: `content_hash` stays the raw source SHA,
+/// compared byte-for-byte by staleness detection).
+///
+/// The marker seam (this const + the three functions below) is intentionally
+/// ahead of its consumer: 096.010-T (T7) wires it into the rollout backfill.
+#[allow(dead_code)]
+pub(crate) const PYTHON_CANONICAL_EXTRACTION_VERSION_KEY: &str =
+    "python_canonical_extraction_version";
+
+/// Return the durable `schema_meta` version value stored under `key`, or `None`
+/// when the key — or the `schema_meta` relation itself — is absent.
+///
+/// A missing `schema_meta` relation is reported as `None`: a legacy database
+/// predating the marker relation has, by definition, no recorded version. This
+/// generalizes [`schema_meta_flag_set`] from the fixed `"true"` boolean flag to
+/// an arbitrary version value, mirroring its graceful missing-relation handling.
+///
+/// # Errors
+/// Returns [`EngramError`] when the query fails for a reason other than the
+/// relation not existing.
+#[allow(dead_code)] // consumed by 096.010-T (T7 rollout backfill)
+pub(crate) fn schema_meta_version(
+    cozo_db: &cozo::DbInstance,
+    key: &str,
+) -> Result<Option<String>, EngramError> {
+    let mut params = BTreeMap::new();
+    params.insert("key".to_string(), cozo::DataValue::from(key));
+    match cozo_db.run_script(
+        "?[value] := *schema_meta{key, value}, key = $key",
+        params,
+        cozo::ScriptMutability::Immutable,
+    ) {
+        Ok(rows) => Ok(rows.rows.first().and_then(|row| match row.first() {
+            Some(cozo::DataValue::Str(v)) => Some(v.as_str().to_owned()),
+            _ => None,
+        })),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("cannot find")
+            {
+                Ok(None)
+            } else {
+                Err(map_db_err(format!(
+                    "schema_meta version introspection: {e}"
+                )))
+            }
+        }
+    }
+}
+
+/// Persist `version` under the durable `schema_meta` key `key`.
+///
+/// Idempotent: the `schema_meta` relation is created if absent (safe when the
+/// caller bypassed full bootstrap), then the key/value pair is upserted — a
+/// later set overwrites the prior version. Generalizes [`set_schema_meta_flag`]
+/// to an arbitrary value rather than the fixed `"true"` boolean marker; the
+/// upsert is routed through the same busy-tolerant retry path so a transient
+/// `SQLITE_BUSY` cannot fail the durable version write.
+///
+/// # Errors
+/// Returns [`EngramError`] when the relation create or upsert fails.
+#[allow(dead_code)] // consumed by 096.010-T (T7 rollout backfill)
+pub(crate) fn set_schema_meta_version(
+    cozo_db: &cozo::DbInstance,
+    key: &str,
+    version: &str,
+) -> Result<(), EngramError> {
+    run_script_retrying(cozo_db, CREATE_SCHEMA_META, "schema_meta bootstrap", true)?;
+    let mut params = BTreeMap::new();
+    params.insert("key".to_string(), cozo::DataValue::from(key));
+    params.insert("value".to_string(), cozo::DataValue::from(version));
+    let put = r#"
+?[key, value] <- [[$key, $value]]
+
+:put schema_meta { key => value }
+"#;
+    retry_cozo_script(
+        "schema_meta version upsert",
+        false,
+        || {
+            cozo_db
+                .run_script(put, params.clone(), cozo::ScriptMutability::Mutable)
+                .map(|_| ())
+        },
+        |attempt| std::thread::sleep(busy_backoff(attempt)),
+    )?;
+    Ok(())
+}
+
+/// Return `true` when the durable `schema_meta` version stored under `key`
+/// equals `expected`.
+///
+/// An absent marker — or a missing `schema_meta` relation — never matches, so a
+/// legacy database is always treated as needing a version backfill.
+///
+/// # Errors
+/// Returns [`EngramError`] when the underlying [`schema_meta_version`] query
+/// fails for a reason other than the relation not existing.
+#[allow(dead_code)] // consumed by 096.010-T (T7 rollout backfill)
+pub(crate) fn schema_meta_version_matches(
+    cozo_db: &cozo::DbInstance,
+    key: &str,
+    expected: &str,
+) -> Result<bool, EngramError> {
+    Ok(schema_meta_version(cozo_db, key)?.as_deref() == Some(expected))
+}
+
 /// Return `true` when the `calls_edge` relation carries the `resolution`
 /// column (082.003-T provenance attribute).
 ///
@@ -1147,6 +1262,10 @@ mod tests {
         MAX_SCRIPT_ATTEMPTS, ScriptOutcome, busy_backoff, classify_script_error, retry_cozo_script,
     };
     use super::{
+        PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, schema_meta_version, schema_meta_version_matches,
+        set_schema_meta_version,
+    };
+    use super::{
         calls_edge_has_resolution, function_meta_has_canonical_path, migrate_calls_edge_resolution,
         migrate_function_meta_canonical_path, rollback_calls_edge_resolution, run_scripts,
     };
@@ -1192,6 +1311,67 @@ mod tests {
         )
         .expect("legacy function_meta row must insert");
         db
+    }
+
+    /// Build a bare in-memory CozoDB with no relations (096.013-T T7-seam).
+    fn fresh_mem_db() -> cozo::DbInstance {
+        cozo::DbInstance::new("mem", "", Default::default())
+            .expect("in-memory cozo instance must open")
+    }
+
+    // 096.013-T (T7-seam): a legacy database with no `schema_meta` relation
+    // reports NO recorded version (graceful missing-relation handling), so the
+    // rollout gate treats it as needing a backfill.
+    #[test]
+    fn schema_meta_version_absent_reads_none() {
+        let db = fresh_mem_db();
+        assert_eq!(
+            schema_meta_version(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY).expect("get version"),
+            None
+        );
+    }
+
+    // 096.013-T: set-then-get round-trips the version VALUE (not just "true"),
+    // and a later set overwrites the prior value (idempotent upsert).
+    #[test]
+    fn schema_meta_version_set_then_get_round_trips() {
+        let db = fresh_mem_db();
+        set_schema_meta_version(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, "1")
+            .expect("set version 1");
+        assert_eq!(
+            schema_meta_version(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY).expect("get version"),
+            Some("1".to_owned())
+        );
+        set_schema_meta_version(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, "2")
+            .expect("set version 2");
+        assert_eq!(
+            schema_meta_version(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY).expect("get version"),
+            Some("2".to_owned())
+        );
+    }
+
+    // 096.013-T: compare detects match vs mismatch, and an absent marker never
+    // matches a concrete expected version.
+    #[test]
+    fn schema_meta_version_matches_detects_match_and_mismatch() {
+        let db = fresh_mem_db();
+        assert!(
+            !schema_meta_version_matches(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, "1")
+                .expect("compare absent"),
+            "absent marker must not match a concrete version"
+        );
+        set_schema_meta_version(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, "1")
+            .expect("set version 1");
+        assert!(
+            schema_meta_version_matches(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, "1")
+                .expect("compare match"),
+            "stored version must match the same expected value"
+        );
+        assert!(
+            !schema_meta_version_matches(&db, PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, "2")
+                .expect("compare mismatch"),
+            "stored version must not match a different expected value"
+        );
     }
 
     // 091.008-T: migrating a legacy `function_meta` adds the additive

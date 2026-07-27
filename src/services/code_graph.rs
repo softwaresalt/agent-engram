@@ -9,18 +9,34 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
+use tree_sitter::{Node, Parser};
 use uuid::Uuid;
 
 use crate::db::connect_db;
-use crate::db::queries::{CodeGraphQueries, ReresolveResult, StagedCallProvenanceRecord};
+use crate::db::queries::{
+    CodeGraphQueries, NoCanonicalTargetReason, ReresolveResult, StagedCallProvenanceRecord,
+};
 use crate::errors::EngramError;
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
 use crate::services::parsing::canonical;
+use crate::services::parsing::python_canonical::{
+    BindingKind, ImportBindings, extract_python_import_bindings, python_module_path_for_file,
+};
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
+
+/// Current Python namespace-canonical extraction version (096.010-T / T7).
+///
+/// Bumped whenever the Python call-extraction or canonical-staging logic changes
+/// in a way that requires re-extracting already-indexed `.py` files to acquire
+/// new edges. Persisted in a dedicated `schema_meta` marker (T7-seam), NEVER
+/// folded into `file_node.content_hash` — that must stay a raw source SHA so
+/// staleness detection compares bytes (R1). A sync whose stored marker differs
+/// from this value triggers the gated rollout backfill.
+const PYTHON_CANONICAL_EXTRACTION_VERSION: &str = "1";
 
 /// Cached Rust canonical context produced by the global unsafe-module pre-pass.
 #[derive(Debug, Clone)]
@@ -142,7 +158,37 @@ pub(crate) fn is_under_unsafe_module_prefix(path: &str, unsafe_prefixes: &HashSe
 
 /// Resolve a parsed function/method's additive `canonical_path`, or `""` when it
 /// cannot be resolved (never a canonical match target — D4).
+///
+/// Dispatches on `language`: Rust uses the module/use-graph canonical resolver;
+/// Python (096-F/T3) uses its module-namespace path `"<module>.<name>"` when the
+/// file sits on a provable regular-package chain (`python_module` is `Some`),
+/// else `""` (fail closed). Other languages carry no canonical identity yet.
 fn canonical_path_for_function(
+    language: Language,
+    crates: &canonical::WorkspaceCrates,
+    rust_ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
+    python_module: Option<&str>,
+    unsafe_prefixes: &HashSet<String>,
+    name: &str,
+    python_rebound: bool,
+) -> String {
+    match language {
+        Language::Rust => rust_canonical_path_for_function(crates, rust_ctx, unsafe_prefixes, name),
+        // A def whose exported name is rebound at module scope after it is no
+        // longer provably that def — suppress its canonical identity so a
+        // cross-module qualified caller fails closed (096-F second review A).
+        Language::Python if python_rebound => String::new(),
+        Language::Python => python_module
+            .map(|module| format!("{module}.{name}"))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Rust canonical-path resolution via the module + use-graph resolver, or `""`
+/// when the layout is not deterministically resolvable or resolves under an
+/// unsafe module prefix (fail-closed — never a canonical match target, D4).
+fn rust_canonical_path_for_function(
     crates: &canonical::WorkspaceCrates,
     ctx: Option<&(canonical::ModulePath, canonical::UseGraph)>,
     unsafe_prefixes: &HashSet<String>,
@@ -168,6 +214,57 @@ fn canonical_path_for_function(
     }
 }
 
+/// Derive the workspace-relative directories that are provable Python **regular
+/// packages** — i.e. contain an `__init__.py` — from the discovered file list.
+/// Returned as forward-slash `/`-joined paths (root package → `""`), matching
+/// the ancestor-dir spelling `python_module_path_for_file` queries.
+fn python_package_dirs(files: &[std::path::PathBuf], ws_path: &Path) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for f in files {
+        let Ok(rel) = f.strip_prefix(ws_path) else {
+            continue;
+        };
+        let norm = rel.to_string_lossy().replace('\\', "/");
+        if let Some(dir) = norm.strip_suffix("/__init__.py") {
+            set.insert(dir.to_owned());
+        } else if norm == "__init__.py" {
+            set.insert(String::new());
+        }
+    }
+    set
+}
+
+/// Whether `rel` names a Python source file by extension (case-insensitive).
+fn is_py_path(rel: &str) -> bool {
+    std::path::Path::new(rel)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+}
+
+/// Whether any per-file error in a sync/index run touched a Python source file.
+///
+/// The T7 rollout backfill (096.010-T) advances the durable extraction-version
+/// marker only when NO `.py` file failed, so a partial failure keeps the old
+/// version and the migration retries on the next sync (C7-3, fail-closed).
+fn has_python_file_errors(errors: &[FileError]) -> bool {
+    errors.iter().any(|e| is_py_path(&e.file))
+}
+
+/// Whether the workspace-relative path `rel` is a `.py` file nested under the
+/// package directory `dir`. Used to force-recompute descendant canonical paths
+/// when `dir`'s regular-package status flips (C6-1). A root package (`dir ==
+/// ""`) contains every top-level `.py` file.
+fn is_python_descendant(rel: &str, dir: &str) -> bool {
+    if !is_py_path(rel) {
+        return false;
+    }
+    if dir.is_empty() {
+        return true;
+    }
+    rel.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Resolve the canonical enclosing type for an impl-method caller.
 fn enclosing_canonical_type_for_function(
     crates: &canonical::WorkspaceCrates,
@@ -178,7 +275,7 @@ fn enclosing_canonical_type_for_function(
     if !name.contains("::") {
         return String::new();
     }
-    canonical_path_for_function(crates, ctx, unsafe_prefixes, name)
+    rust_canonical_path_for_function(crates, ctx, unsafe_prefixes, name)
         .rsplit_once("::")
         .map(|(ty, _)| ty.to_owned())
         .unwrap_or_default()
@@ -191,6 +288,343 @@ fn should_stage_provenance_call(is_method: bool, is_qualified: bool, raw_qualifi
     } else {
         is_qualified
     }
+}
+
+/// Shared per-file Python lexical-shadow scan used by T5a's coarse contest
+/// gate and reusable by T5c's future order-aware winner selection.
+struct PythonShadowIndex {
+    imports: ImportBindings,
+    module_binding_counts: HashMap<String, usize>,
+    function_locals: HashMap<String, HashSet<String>>,
+    /// Module-scope function-definition byte positions grouped by name.
+    module_defs: HashMap<String, Vec<usize>>,
+    /// Module-scope opaque rebind byte positions grouped by name.
+    module_rebinds: HashMap<String, Vec<usize>>,
+}
+
+impl PythonShadowIndex {
+    /// Build import signals, module binding counts, and top-level function-local
+    /// binding sets with one amortized Python parse for the file.
+    fn build(source: &str) -> Self {
+        let mut index = Self {
+            imports: extract_python_import_bindings(source),
+            module_binding_counts: HashMap::new(),
+            function_locals: HashMap::new(),
+            module_defs: HashMap::new(),
+            module_rebinds: HashMap::new(),
+        };
+        let mut parser = Parser::new();
+        if parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .is_err()
+        {
+            return index;
+        }
+        let Some(tree) = parser.parse(source, None) else {
+            return index;
+        };
+        scan_python_module_scope(tree.root_node(), source, &mut index);
+        index
+    }
+
+    /// Return whether any import, module rebind, or caller-local binding contests
+    /// the matched same-file definition for `callee_name`.
+    fn is_contested(&self, callee_name: &str, caller_fn_name: &str) -> bool {
+        self.imports.module_binding(callee_name).is_some()
+            || self.imports.is_ambiguous(callee_name)
+            || !self.imports.star_invalidators().is_empty()
+            || self.imports.is_dynamically_rebound(callee_name)
+            || self
+                .module_binding_counts
+                .get(callee_name)
+                .is_some_and(|count| *count > 1)
+            || self
+                .function_locals
+                .get(caller_fn_name)
+                .is_some_and(|locals| locals.contains(callee_name))
+    }
+
+    /// Whether the *defining* module rebinds its exported `name` at module scope
+    /// after the name's last same-name definition (096-F second review A). Such
+    /// an export is no longer provably that def, so its canonical identity must
+    /// be suppressed: a cross-module `pkg.name()` caller then fails closed (the
+    /// module-qualified target finds no canonical index entry and the Ok path
+    /// mints no name-only fallback). Order-aware — a rebind before the last def
+    /// is superseded by the def and does not suppress it (fail closed, and never
+    /// mints an edge).
+    fn module_export_rebound(&self, name: &str) -> bool {
+        let Some(last_def) = self
+            .module_defs
+            .get(name)
+            .and_then(|positions| positions.iter().max().copied())
+        else {
+            return false;
+        };
+        self.module_rebinds
+            .get(name)
+            .is_some_and(|positions| positions.iter().any(|position| *position > last_def))
+    }
+}
+
+/// Walk module lexical scope through compound statements while stopping at
+/// function, class, and lambda bodies.
+fn scan_python_module_scope(root: Node<'_>, source: &str, index: &mut PythonShadowIndex) {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        scan_python_module_node(child, source, index);
+    }
+}
+
+/// Record one module-scope node's bindings and recurse only where Python scope
+/// rules keep the descendants in module scope.
+fn scan_python_module_node(node: Node<'_>, source: &str, index: &mut PythonShadowIndex) {
+    match node.kind() {
+        "function_definition" => {
+            if let Some(name) = python_definition_name(node, source) {
+                increment_python_binding(&mut index.module_binding_counts, &name);
+                index
+                    .module_defs
+                    .entry(name.clone())
+                    .or_default()
+                    .push(node.start_byte());
+                let locals = collect_python_function_locals(node, source);
+                index
+                    .function_locals
+                    .entry(name)
+                    .or_default()
+                    .extend(locals);
+            }
+            return;
+        }
+        "class_definition" => {
+            if let Some(name) = python_definition_name(node, source) {
+                increment_python_binding(&mut index.module_binding_counts, &name);
+                index
+                    .module_rebinds
+                    .entry(name)
+                    .or_default()
+                    .push(node.start_byte());
+            }
+            return;
+        }
+        "decorated_definition" => {
+            if let Some(definition) = node.child_by_field_name("definition") {
+                scan_python_module_node(definition, source, index);
+            }
+            return;
+        }
+        "lambda" | "import_statement" | "import_from_statement" => return,
+        _ => {
+            for name in collect_python_node_rebinds(node, source) {
+                increment_python_binding(&mut index.module_binding_counts, &name);
+                index
+                    .module_rebinds
+                    .entry(name)
+                    .or_default()
+                    .push(node.start_byte());
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        scan_python_module_node(child, source, index);
+    }
+}
+
+/// Collect every local name bound by a top-level function's parameters or body,
+/// stopping at nested callable and class bodies after recording their names.
+fn collect_python_function_locals(function: Node<'_>, source: &str) -> HashSet<String> {
+    let mut locals = HashSet::new();
+    if let Some(parameters) = function.child_by_field_name("parameters") {
+        collect_python_parameter_names(parameters, source, &mut locals);
+    }
+    if let Some(body) = function.child_by_field_name("body") {
+        scan_python_function_scope(body, source, &mut locals);
+    }
+    locals
+}
+
+/// Walk one function body scope, including local imports and rebind forms but
+/// excluding nested function, class, and lambda bodies.
+fn scan_python_function_scope(node: Node<'_>, source: &str, locals: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" | "class_definition" => {
+                if let Some(name) = python_definition_name(child, source) {
+                    locals.insert(name);
+                }
+            }
+            "decorated_definition" => {
+                if let Some(definition) = child.child_by_field_name("definition") {
+                    if let Some(name) = python_definition_name(definition, source) {
+                        locals.insert(name);
+                    }
+                }
+            }
+            "lambda" => {}
+            "import_statement" | "import_from_statement" => {
+                collect_python_import_names(child, source, locals);
+            }
+            _ => {
+                collect_python_node_bindings_into_set(child, source, locals);
+                scan_python_function_scope(child, source, locals);
+            }
+        }
+    }
+}
+
+/// Return the opaque module rebind targets introduced directly by `node`.
+fn collect_python_node_rebinds(node: Node<'_>, source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_python_node_bindings_into_set(node, source, &mut names);
+    names
+}
+
+/// Add the binding targets introduced directly by `node` to a lexical scope.
+fn collect_python_node_bindings_into_set(
+    node: Node<'_>,
+    source: &str,
+    names: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_python_target_names(left, source, names);
+            }
+        }
+        "with_statement" | "except_clause" | "except_group_clause" => {
+            collect_python_as_aliases(node, source, names);
+        }
+        "delete_statement" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_python_target_names(child, source, names);
+            }
+        }
+        "named_expression" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                collect_python_target_names(name, source, names);
+            }
+        }
+        "case_clause" => collect_python_case_captures(node, source, names),
+        _ => {}
+    }
+}
+
+/// Increment a module-scope binding count for one name.
+fn increment_python_binding(counts: &mut HashMap<String, usize>, name: &str) {
+    *counts.entry(name.to_owned()).or_default() += 1;
+}
+
+/// Return a function or class definition's simple name.
+fn python_definition_name(node: Node<'_>, source: &str) -> Option<String> {
+    node.child_by_field_name("name")
+        .filter(|name| name.kind() == "identifier")
+        .map(|name| python_node_text(name, source).to_owned())
+}
+
+/// Collect parameter names without treating annotation identifiers as binders.
+fn collect_python_parameter_names(parameters: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    let mut cursor = parameters.walk();
+    for child in parameters.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                names.insert(python_node_text(child, source).to_owned());
+            }
+            "typed_parameter" | "list_splat_pattern" | "dictionary_splat_pattern" => {
+                if let Some(identifier) = child.named_child(0) {
+                    if identifier.kind() == "identifier" {
+                        names.insert(python_node_text(identifier, source).to_owned());
+                    }
+                }
+            }
+            "default_parameter" | "typed_default_parameter" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    collect_python_target_names(name, source, names);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect names bound by a function-local import statement.
+fn collect_python_import_names(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for imported in node.children_by_field_name("name", &mut cursor) {
+        match imported.kind() {
+            "aliased_import" => {
+                if let Some(alias) = imported.child_by_field_name("alias") {
+                    collect_python_target_names(alias, source, names);
+                }
+            }
+            "dotted_name" => {
+                if let Some(root) = imported.named_child(0) {
+                    collect_python_target_names(root, source, names);
+                }
+            }
+            "identifier" => {
+                names.insert(python_node_text(imported, source).to_owned());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect alias identifiers from `as_pattern` descendants of `with`/`except`.
+fn collect_python_as_aliases(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    if node.kind() == "as_pattern" {
+        if let Some(alias) = node.child_by_field_name("alias") {
+            collect_python_target_names(alias, source, names);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "block" {
+            collect_python_as_aliases(child, source, names);
+        }
+    }
+}
+
+/// Conservatively collect identifiers in a match-case pattern before its body.
+fn collect_python_case_captures(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "block" {
+            break;
+        }
+        collect_python_target_names(child, source, names);
+    }
+}
+
+/// Collect simple-name binding targets while excluding attribute, subscript,
+/// and call expressions that do not bind a local name.
+fn collect_python_target_names(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    match node.kind() {
+        "identifier" => {
+            names.insert(python_node_text(node, source).to_owned());
+        }
+        "attribute" | "subscript" | "call" => {}
+        "as_pattern" => {
+            if let Some(alias) = node.child_by_field_name("alias") {
+                collect_python_target_names(alias, source, names);
+            }
+        }
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_python_target_names(child, source, names);
+            }
+        }
+    }
+}
+
+/// Return a node's UTF-8 source slice, or an empty string for an invalid range.
+fn python_node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
+    source.get(node.byte_range()).unwrap_or_default()
 }
 
 /// Resolve a staged Unit-B call to a canonical target string, or fail closed.
@@ -259,6 +693,220 @@ async fn rust_ctx_for_staged_file(
     rust_canonical_ctx(crates, Language::Rust, rel_path, &source)
 }
 
+/// Per-file Python staged-call context: the caller module path (if derivable),
+/// the lexical-shadow index, and the caller function-id → simple-name map used
+/// by the T5c shadow guard.
+type PythonStagedContext = (Option<String>, PythonShadowIndex, HashMap<String, String>);
+
+/// Build Python module, shadow, and caller-name context for one staged-call
+/// source file. The caller-name map (function id → simple name) lets the
+/// resolver consult the calling function's lexical scope and definition
+/// position (T5c shadow guard) without a per-call database query.
+async fn python_ctx_for_staged_file(
+    ws_path: &Path,
+    python_packages: &HashSet<String>,
+    queries: &CodeGraphQueries,
+    rel_path: &str,
+) -> Option<PythonStagedContext> {
+    let full = ws_path.join(rel_path);
+    let source = tokio::fs::read_to_string(full).await.ok()?;
+    let is_regular_package =
+        |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
+    let module_path = python_module_path_for_file(rel_path, &is_regular_package);
+    let caller_names = queries
+        .get_functions_by_file(rel_path)
+        .await
+        .ok()?
+        .into_iter()
+        .map(|function| (function.id, function.name))
+        .collect();
+    Some((module_path, PythonShadowIndex::build(&source), caller_names))
+}
+
+/// The smallest module-scope definition position of `caller_name`, or
+/// `usize::MAX` when it is not a top-level definition (nested / method callers
+/// are a v1 non-goal, so their module-order winner is left unconstrained).
+fn python_caller_position(shadow: &PythonShadowIndex, caller_name: Option<&str>) -> usize {
+    caller_name
+        .and_then(|name| shadow.module_defs.get(name))
+        .and_then(|positions| positions.iter().min().copied())
+        .unwrap_or(usize::MAX)
+}
+
+/// Whether `name` is bound anywhere in the calling function's body (T-a): any
+/// in-function binder makes the name function-local for the whole body, so a
+/// call to it can never resolve to a module-scope import or def (fail closed).
+fn python_name_is_function_local(
+    shadow: &PythonShadowIndex,
+    caller_name: Option<&str>,
+    name: &str,
+) -> bool {
+    caller_name
+        .and_then(|caller| shadow.function_locals.get(caller))
+        .is_some_and(|locals| locals.contains(name))
+}
+
+/// Whether the module receiver `name` is rebound by any later module-scope def,
+/// opaque rebind, star import, or ambiguous import (order-aware: a rebind after
+/// the import proves the receiver is no longer that module → fail closed).
+fn python_receiver_rebound_after(
+    shadow: &PythonShadowIndex,
+    name: &str,
+    import_position: usize,
+) -> bool {
+    let mut positions: Vec<usize> = Vec::new();
+    positions.extend(shadow.module_defs.get(name).into_iter().flatten().copied());
+    positions.extend(
+        shadow
+            .module_rebinds
+            .get(name)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    positions.extend(shadow.imports.star_invalidators().iter().copied());
+    if shadow.imports.is_ambiguous(name) {
+        if let Some(position) = shadow.imports.ambiguity_position(name) {
+            positions.push(position);
+        }
+    }
+    positions.iter().any(|position| *position > import_position)
+}
+
+/// Resolve a bare `callee()` call to its exact canonical target, order-aware
+/// over module source positions and anchored on the caller's definition point.
+fn python_bare_target(
+    module: &str,
+    shadow: &PythonShadowIndex,
+    caller_name: Option<&str>,
+    callee: &str,
+) -> Result<String, NoCanonicalTargetReason> {
+    let imports = &shadow.imports;
+    // T-d dynamic write and T-a function-local binder both fail closed.
+    if imports.is_dynamically_rebound(callee)
+        || python_name_is_function_local(shadow, caller_name, callee)
+    {
+        return Err(NoCanonicalTargetReason::Shadowed);
+    }
+    // A module receiver used as a bare callee is not a function.
+    if let Some(binding) = imports.module_binding(callee) {
+        if binding.kind == BindingKind::ModuleImport {
+            return Err(NoCanonicalTargetReason::CompetingBindings);
+        }
+    }
+
+    let caller_position = python_caller_position(shadow, caller_name);
+
+    // Resolvable bindings in effect at the caller's definition point (strictly
+    // before it in module source order): the from-import symbol and each
+    // in-module def. A binding after the caller cannot be proven effective.
+    let mut resolvable: Vec<(usize, String)> = Vec::new();
+    if let Some(binding) = imports.module_binding(callee) {
+        if binding.kind == BindingKind::FromImportSymbol && binding.position < caller_position {
+            resolvable.push((binding.position, binding.canonical_path.clone()));
+        }
+    }
+    for position in shadow.module_defs.get(callee).into_iter().flatten() {
+        if *position < caller_position {
+            resolvable.push((*position, format!("{module}.{callee}")));
+        }
+    }
+
+    // Every module-scope binding position of the name (contest candidates): a
+    // binding after the winner makes the call-time value undecidable (C7-1).
+    let mut all_positions: Vec<usize> = Vec::new();
+    if let Some(binding) = imports.module_binding(callee) {
+        if binding.kind == BindingKind::FromImportSymbol {
+            all_positions.push(binding.position);
+        }
+    }
+    all_positions.extend(
+        shadow
+            .module_defs
+            .get(callee)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    all_positions.extend(
+        shadow
+            .module_rebinds
+            .get(callee)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    all_positions.extend(imports.star_invalidators().iter().copied());
+    if imports.is_ambiguous(callee) {
+        if let Some(position) = imports.ambiguity_position(callee) {
+            all_positions.push(position);
+        }
+    }
+
+    if let Some((winner_position, winner_target)) =
+        resolvable.iter().max_by_key(|(position, _)| *position)
+    {
+        if all_positions
+            .iter()
+            .any(|position| position > winner_position)
+        {
+            return Err(NoCanonicalTargetReason::Shadowed);
+        }
+        return Ok(winner_target.clone());
+    }
+
+    // No resolvable binding before the caller: an opaque rebind fails closed;
+    // star / relative / unbound names keep the recall-safe name-only fallback.
+    if shadow
+        .module_rebinds
+        .get(callee)
+        .is_some_and(|positions| !positions.is_empty())
+    {
+        return Err(NoCanonicalTargetReason::Shadowed);
+    }
+    // Observed competing firm bindings (e.g. duplicate `from X import f`, one of
+    // which may resolve to an unindexed external module) must not fall through
+    // to the recall-safe name-only fallback: the sole indexed same-name symbol
+    // is not provably the effective binding, so fail closed (M1, 013-D).
+    if imports.is_competing(callee) {
+        return Err(NoCanonicalTargetReason::DuplicateSameNameImport);
+    }
+    Err(NoCanonicalTargetReason::UnsupportedImportForm)
+}
+
+/// Resolve one staged Python call to an exact canonical target, or return the
+/// typed reason that controls whether name-only fallback is recall-safe. The
+/// T5c shadow guard (function-local poison and order-aware receiver / bare-name
+/// rebinds) is applied here, downstream of and around T5b's target selection.
+fn python_target_for_staged_call(
+    module_path: Option<&str>,
+    shadow: &PythonShadowIndex,
+    caller_name: Option<&str>,
+    call: &StagedCallProvenanceRecord,
+) -> Result<String, NoCanonicalTargetReason> {
+    let callee = call.callee_name.as_str();
+    match call.qualifier_kind.as_str() {
+        "module" => {
+            let Some(binding) = shadow.imports.module_binding(&call.raw_qualifier) else {
+                return Err(NoCanonicalTargetReason::CompetingBindings);
+            };
+            if binding.kind != BindingKind::ModuleImport
+                || python_name_is_function_local(shadow, caller_name, &call.raw_qualifier)
+                || python_receiver_rebound_after(shadow, &call.raw_qualifier, binding.position)
+                || shadow.imports.is_dynamically_rebound(&call.raw_qualifier)
+            {
+                return Err(NoCanonicalTargetReason::CompetingBindings);
+            }
+            Ok(format!("{}.{}", binding.canonical_path, callee))
+        }
+        "python_bare" => match module_path {
+            Some(module) => python_bare_target(module, shadow, caller_name, callee),
+            None => Err(NoCanonicalTargetReason::NoModuleContext),
+        },
+        _ => Err(NoCanonicalTargetReason::CompetingBindings),
+    }
+}
+
 /// Full-index post-pass for both legacy bare-name staging and Unit-B canonical
 /// qualified / known-receiver staging.
 async fn reresolve_calls_edges_with_canonical_context(
@@ -266,6 +914,7 @@ async fn reresolve_calls_edges_with_canonical_context(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     unsafe_prefixes: &HashSet<String>,
+    python_packages: &HashSet<String>,
 ) -> Result<ReresolveResult, EngramError> {
     let mut result = queries.reresolve_calls_edges().await?;
     let staged: Vec<_> = queries
@@ -328,9 +977,74 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
+    let mut python_context_cache: HashMap<String, Option<PythonStagedContext>> = HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
+        if is_py_path(&call.source_file) {
+            if !python_context_cache.contains_key(&call.source_file) {
+                let ctx = python_ctx_for_staged_file(
+                    ws_path,
+                    python_packages,
+                    queries,
+                    &call.source_file,
+                )
+                .await;
+                python_context_cache.insert(call.source_file.clone(), ctx);
+            }
+            let Some(Some((module_path, shadow, caller_names))) =
+                python_context_cache.get(&call.source_file)
+            else {
+                continue;
+            };
+            let caller_name = caller_names.get(&call.caller_id).map(String::as_str);
+            match python_target_for_staged_call(module_path.as_deref(), shadow, caller_name, call) {
+                Ok(target) => {
+                    let target_id = match canonical_index.get(&target) {
+                        Some(ids) if ids.len() == 1 => ids[0].clone(),
+                        _ => continue,
+                    };
+                    let pair = (call.caller_id.clone(), target_id);
+                    if direct_pairs.contains(&pair) {
+                        continue;
+                    }
+                    queries
+                        .create_calls_edge_with_resolution(
+                            &pair.0,
+                            &pair.1,
+                            "calls_resolved_canonical",
+                        )
+                        .await?;
+                    if created.insert(pair) {
+                        result.resolved += 1;
+                    }
+                }
+                Err(reason) if reason.allows_name_only_fallback() => {
+                    let ids = queries
+                        .function_ids_by_name(&call.callee_name, "python")
+                        .await?;
+                    if ids.len() != 1 {
+                        continue;
+                    }
+                    let pair = (call.caller_id.clone(), ids[0].clone());
+                    if direct_pairs.contains(&pair) {
+                        continue;
+                    }
+                    queries
+                        .create_calls_edge_with_resolution(
+                            &pair.0,
+                            &pair.1,
+                            "calls_resolved_singleton",
+                        )
+                        .await?;
+                    if created.insert(pair) {
+                        result.resolved += 1;
+                    }
+                }
+                Err(_) => {}
+            }
+            continue;
+        }
         if !context_cache.contains_key(&call.source_file) {
             let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await;
             context_cache.insert(call.source_file.clone(), ctx);
@@ -495,9 +1209,15 @@ async fn index_workspace_impl(
     let files = discover_files(ws_path, config);
     let prepass = unsafe_module_prepass(ws_path, &crates, &files).await;
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+    // 096-F/T3: provable Python regular-package directories, computed once and
+    // persisted in the snapshot so a later sync can detect topology drift.
+    let python_packages = python_package_dirs(&files, ws_path);
+    let is_regular_package =
+        |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
+        python_packages: python_packages.clone(),
     };
     info!(
         files_found = files.len(),
@@ -524,6 +1244,13 @@ async fn index_workspace_impl(
     };
 
     // ── Step 2: Process each file ───────────────────────────────────
+    // T7 (096.010-T): track whether any `.py` file was hash-skipped as unchanged.
+    // The extraction-version marker may only advance when every indexed `.py` was
+    // freshly (re-)extracted this run — i.e. `force` (all re-extracted) OR no `.py`
+    // was skipped (fresh index). A non-force re-index that skips unchanged `.py`
+    // leaves their staged calls at whatever prior version produced them, so the
+    // marker must NOT advance then (fail-closed toward the gated backfill).
+    let mut python_hash_skipped = false;
     for file_path in &files {
         'file: {
             let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
@@ -592,6 +1319,7 @@ async fn index_workspace_impl(
                 if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
+                        python_hash_skipped |= is_py_path(&rel_path);
                         result.files_skipped += 1;
                         break 'file;
                     }
@@ -689,6 +1417,19 @@ async fn index_workspace_impl(
                 || rust_canonical_ctx(&crates, lang_enum, &rel_path, &source),
             );
 
+            // 096-F/T3: per-file Python module namespace (Some only on a provable
+            // regular-package chain; None → fail-closed empty canonical_path).
+            let python_module = if matches!(lang_enum, Language::Python) {
+                python_module_path_for_file(&rel_path, &is_regular_package)
+            } else {
+                None
+            };
+            let py_shadow = if matches!(lang_enum, Language::Python) {
+                Some(PythonShadowIndex::build(&source))
+            } else {
+                None
+            };
+
             for symbol in &parse_result.symbols {
                 match symbol {
                     ExtractedSymbol::Function(f) => {
@@ -718,11 +1459,17 @@ async fn index_workspace_impl(
                             embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                             summary,
                         };
+                        let python_rebound = py_shadow
+                            .as_ref()
+                            .is_some_and(|shadow| shadow.module_export_rebound(&f.name));
                         let canonical_path = canonical_path_for_function(
+                            lang_enum,
                             &crates,
                             rust_ctx.as_ref(),
+                            python_module.as_deref(),
                             &unsafe_prefixes,
                             &f.name,
+                            python_rebound,
                         );
                         queries
                             .upsert_function_with_canonical(&func, &canonical_path)
@@ -898,11 +1645,41 @@ async fn index_workspace_impl(
                             find_function_id(&function_ids, callee),
                         ) {
                             (Some(from_id), Some(to_id)) => {
-                                queries.create_calls_edge(&from_id, &to_id).await?;
-                                result.edges_created += 1;
+                                if matches!(lang_enum, Language::Python)
+                                    && py_shadow
+                                        .as_ref()
+                                        .is_some_and(|shadow| shadow.is_contested(callee, caller))
+                                {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.create_calls_edge(&from_id, &to_id).await?;
+                                    result.edges_created += 1;
+                                }
                             }
                             (Some(from_id), None) => {
-                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                if matches!(lang_enum, Language::Python) {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                }
                             }
                             _ => {}
                         }
@@ -987,9 +1764,14 @@ async fn index_workspace_impl(
     // gate). Staged calls (082.002-T) whose callee name is unambiguous
     // (exactly one workspace-global definition) become calls_resolved_singleton
     // edges; ambiguous / unmatched names are skipped to bound false edges.
-    let resolved_calls =
-        reresolve_calls_edges_with_canonical_context(&queries, ws_path, &crates, &unsafe_prefixes)
-            .await?;
+    let resolved_calls = reresolve_calls_edges_with_canonical_context(
+        &queries,
+        ws_path,
+        &crates,
+        &unsafe_prefixes,
+        &python_packages,
+    )
+    .await?;
     // Post-pass singletons are real edge records: include them in the reported
     // edges_created so full-index CLI/API responses do not underreport (082.008-T).
     result.edges_created += resolved_calls.resolved;
@@ -1003,6 +1785,23 @@ async fn index_workspace_impl(
     queries
         .replace_index_canonical_workspace_snapshot(&canonical_workspace)
         .await?;
+
+    // ── T7 (096.010-T): advance the Python extraction-version marker ──
+    // A full index re-runs the workspace-global canonical post-pass over every
+    // file, so the index now reflects the current Python extraction logic — but
+    // only advance when every indexed `.py` was freshly extracted this run
+    // (`force`, or no `.py` hash-skipped as unchanged) AND no `.py` file errored.
+    // Otherwise a skipped/failed `.py` may retain stale staging, so keep the old
+    // marker and let the gated backfill migrate it (C7-3, fail-closed).
+    if !has_python_file_errors(&result.errors) && (force || !python_hash_skipped) {
+        queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+    } else {
+        debug!(
+            force,
+            python_hash_skipped,
+            "code graph: keeping prior Python extraction-version marker — not all .py freshly extracted this index"
+        );
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
@@ -1087,16 +1886,24 @@ pub async fn sync_workspace(
     branch: &str,
     config: &CodeGraphConfig,
 ) -> Result<SyncResult, EngramError> {
-    sync_workspace_with_progress(ws_path, data_dir, branch, config, None).await
+    sync_workspace_with_progress(ws_path, data_dir, branch, config, false, None).await
 }
 
 /// Incrementally sync the code graph while reporting `(completed, total)` file
 /// progress to callers that want streamed startup visibility.
+///
+/// `backfill_python_canonical` gates the T7 rollout backfill (096.010-T): when
+/// `true` and the durable Python extraction-version marker is stale, every
+/// indexed `.py` file is force re-extracted and the workspace-global canonical
+/// post-pass runs to materialize the upgraded cross-module edges. When `false`,
+/// a stale marker is a no-op deferral (C12-5) — routine startup auto-sync never
+/// silently re-extracts or churns canonical edges.
 pub async fn sync_workspace_with_progress(
     ws_path: &Path,
     data_dir: &Path,
     branch: &str,
     config: &CodeGraphConfig,
+    backfill_python_canonical: bool,
     mut progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<SyncResult, EngramError> {
     let start = std::time::Instant::now();
@@ -1114,9 +1921,14 @@ pub async fn sync_workspace_with_progress(
     let current_files = discover_files(ws_path, config);
     let prepass = unsafe_module_prepass(ws_path, &crates, &current_files).await;
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+    // 096-F/T3: current provable Python regular-package directories.
+    let python_packages = python_package_dirs(&current_files, ws_path);
+    let is_regular_package =
+        |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let canonical_workspace = canonical::CanonicalWorkspace {
         crates: crates.clone(),
         unsafe_prefixes: unsafe_prefixes.clone(),
+        python_packages: python_packages.clone(),
     };
 
     // Load all indexed code files from DB.
@@ -1125,6 +1937,60 @@ pub async fn sync_workspace_with_progress(
         .into_iter()
         .map(|f| (f.path.clone(), f))
         .collect();
+
+    // 096-F/C6-1: force per-file canonical recompute for Python files whose
+    // package ancestry changed since the last index/sync. The content-hash skip
+    // below would otherwise leave a descendant's `canonical_path` stale when an
+    // `__init__.py` is added or removed without the descendant's bytes changing
+    // (an empty `__init__.py` never persists as a code file, so its add/remove is
+    // invisible to `indexed_map` — the persisted snapshot is the only witness).
+    let force_python_recompute: std::collections::HashSet<String> =
+        match previous_canonical_workspace.as_ref() {
+            Some(previous) => {
+                let changed: Vec<&String> = python_packages
+                    .symmetric_difference(&previous.python_packages)
+                    .collect();
+                if changed.is_empty() {
+                    std::collections::HashSet::new()
+                } else {
+                    indexed_map
+                        .keys()
+                        .filter(|rel| changed.iter().any(|dir| is_python_descendant(rel, dir)))
+                        .cloned()
+                        .collect()
+                }
+            }
+            // No snapshot (legacy DB, or the snapshot self-erased on prior drift):
+            // fail closed — recompute every indexed `.py` file this sync.
+            None => indexed_map
+                .keys()
+                .filter(|rel| is_py_path(rel))
+                .cloned()
+                .collect(),
+        };
+
+    // ── T7 (096.010-T): gated Python extraction-version rollout backfill ─
+    // The durable marker (T7-seam) records the extraction logic the indexed
+    // `.py` files were last processed with. When it is stale AND the caller
+    // supplied the `--backfill-python-canonical` gate, force re-extraction of
+    // every indexed `.py` file so unchanged-hash files re-stage module-qualified
+    // calls under the current logic; the canonical post-pass after the loop then
+    // materializes the upgraded edges (Q2). Without the gate a stale marker is a
+    // no-op deferral (C12-5): routine sync must not silently re-extract or churn.
+    let stored_python_version = queries.python_extraction_version()?;
+    let python_version_current =
+        stored_python_version.as_deref() == Some(PYTHON_CANONICAL_EXTRACTION_VERSION);
+    let run_python_backfill = !python_version_current && backfill_python_canonical;
+    let mut force_python_recompute = force_python_recompute;
+    if run_python_backfill {
+        force_python_recompute.extend(indexed_map.keys().filter(|rel| is_py_path(rel)).cloned());
+    } else if !python_version_current {
+        debug!(
+            stored = ?stored_python_version,
+            expected = PYTHON_CANONICAL_EXTRACTION_VERSION,
+            "code graph sync: Python extraction version mismatch — gated backfill pending (re-run with --backfill-python-canonical)"
+        );
+    }
 
     // Build a set of current relative paths for deletion detection.
     let current_rel_paths: std::collections::HashSet<String> = current_files
@@ -1255,7 +2121,12 @@ pub async fn sync_workspace_with_progress(
 
             if !is_new {
                 let existing = &indexed_map[&rel_path];
-                if existing.content_hash == content_hash {
+                // C6-1: a package-topology change forces recompute even when the
+                // file bytes are unchanged, so a descendant's canonical_path is not
+                // left stale after an `__init__.py` add/remove.
+                if existing.content_hash == content_hash
+                    && !force_python_recompute.contains(&rel_path)
+                {
                     // File unchanged — skip entirely.
                     result.files_unchanged += 1;
                     break 'file;
@@ -1398,6 +2269,19 @@ pub async fn sync_workspace_with_progress(
                 .as_ref()
                 .is_some_and(|(_, ug)| ug.has_non_default_mod_mapping());
 
+            // 096-F/T3: per-file Python module namespace (Some only on a provable
+            // regular-package chain; None → fail-closed empty canonical_path).
+            let python_module = if matches!(lang_enum, Language::Python) {
+                python_module_path_for_file(&rel_path, &is_regular_package)
+            } else {
+                None
+            };
+            let py_shadow = if matches!(lang_enum, Language::Python) {
+                Some(PythonShadowIndex::build(&source))
+            } else {
+                None
+            };
+
             for symbol in &parse_result.symbols {
                 match symbol {
                     ExtractedSymbol::Function(f) => {
@@ -1443,11 +2327,17 @@ pub async fn sync_workspace_with_progress(
                                 .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                             summary,
                         };
+                        let python_rebound = py_shadow
+                            .as_ref()
+                            .is_some_and(|shadow| shadow.module_export_rebound(&f.name));
                         let canonical_path = canonical_path_for_function(
+                            lang_enum,
                             &crates,
                             rust_ctx.as_ref(),
+                            python_module.as_deref(),
                             &unsafe_prefixes,
                             &f.name,
+                            python_rebound,
                         );
                         queries
                             .upsert_function_with_canonical(&func, &canonical_path)
@@ -1633,10 +2523,40 @@ pub async fn sync_workspace_with_progress(
                             find_function_id(&new_function_ids, callee),
                         ) {
                             (Some(from_id), Some(to_id)) => {
-                                queries.create_calls_edge(&from_id, &to_id).await?;
+                                if matches!(lang_enum, Language::Python)
+                                    && py_shadow
+                                        .as_ref()
+                                        .is_some_and(|shadow| shadow.is_contested(callee, caller))
+                                {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.create_calls_edge(&from_id, &to_id).await?;
+                                }
                             }
                             (Some(from_id), None) => {
-                                queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                if matches!(lang_enum, Language::Python) {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                }
                             }
                             _ => {}
                         }
@@ -1728,6 +2648,37 @@ pub async fn sync_workspace_with_progress(
             debug!(
                 count = retracted,
                 "code graph sync: swept canonical edges after a mod-mapping change (fail-closed; re-derived on next full index)"
+            );
+        }
+    }
+
+    // ── T7 (096.010-T): Python extraction-version rollout backfill ──────
+    // When the gated backfill ran, every `.py` file was force re-extracted
+    // above, re-staging module-qualified calls under the current logic. Sync
+    // normally defers the workspace-global canonical post-pass (perf gate), so
+    // run it now to materialize the upgraded cross-module edges (Q2), then
+    // advance the durable marker — but ONLY when no `.py` file errored, so a
+    // partial failure keeps the old version and the migration retries on the
+    // next sync (C7-3, fail-closed toward retry).
+    if run_python_backfill {
+        let resolved = reresolve_calls_edges_with_canonical_context(
+            &queries,
+            ws_path,
+            &crates,
+            &unsafe_prefixes,
+            &python_packages,
+        )
+        .await?;
+        result.edges_created += resolved.resolved;
+        if has_python_file_errors(&result.errors) {
+            warn!(
+                "code graph sync: Python backfill hit a .py file error — keeping prior extraction-version marker so the next sync retries the migration"
+            );
+        } else {
+            queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+            debug!(
+                resolved = resolved.resolved,
+                "code graph sync: Python extraction-version backfill complete; marker advanced"
             );
         }
     }
