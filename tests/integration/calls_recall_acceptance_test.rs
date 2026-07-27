@@ -811,6 +811,105 @@ async fn python_module_receiver_dynamic_global_rebind_fails_closed() {
     );
 }
 
+/// 096-F (second review, B) — a module receiver dynamically rebound through a
+/// `global` write in a *nested* function is missed by the scope scan that stops
+/// at the outer function body (F5 isolation records only the nested name). The
+/// nested `global bar; bar = ...` still rebinds the module name, so the receiver
+/// `bar.parse()` must fail closed.
+#[test]
+async fn python_module_receiver_nested_global_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "m.py",
+            "import bar\n\ndef outer():\n    def mutate():\n        global bar\n        bar = factory()\n\ndef g():\n    bar.parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "m.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a receiver rebound via `global` in a nested function must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// 096-F (second review, C) — a module receiver dynamically rebound through a
+/// `global` write in a *class body* is missed by the module walk that skips
+/// class bodies. The class-body `global bar; bar = ...` still rebinds the module
+/// name, so the receiver `bar.parse()` must fail closed.
+#[test]
+async fn python_module_receiver_class_body_global_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "m.py",
+            "import bar\n\nclass C:\n    global bar\n    bar = factory()\n\ndef g():\n    bar.parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let g_id = function_id_in(&q, "g", "m.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(g_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(g_id, bar_parse_id)),
+        "a receiver rebound via `global` in a class body must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
+/// 096-F (second review, A) — the *defining* module rebinds its own exported
+/// name at module scope after the def (`def parse(): ...` then `parse = ...`), so
+/// the exported `parse` is no longer provably that def. A caller `import bar;
+/// bar.parse()` must fail closed: the stale def's canonical identity is
+/// suppressed, so the module-qualified target does not resolve and no name-only
+/// fallback fires on the Ok path.
+#[test]
+async fn python_callee_module_export_rebind_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "bar.py",
+            "def parse():\n    return 1\n\nparse = factory()\n",
+        ),
+        ("caller.py", "import bar\n\ndef run():\n    bar.parse()\n"),
+    ])
+    .await;
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(run_id.clone(), bar_parse_id.clone()))
+            && !singleton.contains(&(run_id, bar_parse_id)),
+        "a callee-module export rebind must fail closed; \
+         canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
 /// T5c.3 — a from-imported symbol reassigned at module scope after the import is
 /// undecidable at the caller: the bare call fails closed.
 #[test]

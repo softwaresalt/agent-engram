@@ -170,9 +170,14 @@ fn canonical_path_for_function(
     python_module: Option<&str>,
     unsafe_prefixes: &HashSet<String>,
     name: &str,
+    python_rebound: bool,
 ) -> String {
     match language {
         Language::Rust => rust_canonical_path_for_function(crates, rust_ctx, unsafe_prefixes, name),
+        // A def whose exported name is rebound at module scope after it is no
+        // longer provably that def — suppress its canonical identity so a
+        // cross-module qualified caller fails closed (096-F second review A).
+        Language::Python if python_rebound => String::new(),
         Language::Python => python_module
             .map(|module| format!("{module}.{name}"))
             .unwrap_or_default(),
@@ -337,6 +342,27 @@ impl PythonShadowIndex {
                 .function_locals
                 .get(caller_fn_name)
                 .is_some_and(|locals| locals.contains(callee_name))
+    }
+
+    /// Whether the *defining* module rebinds its exported `name` at module scope
+    /// after the name's last same-name definition (096-F second review A). Such
+    /// an export is no longer provably that def, so its canonical identity must
+    /// be suppressed: a cross-module `pkg.name()` caller then fails closed (the
+    /// module-qualified target finds no canonical index entry and the Ok path
+    /// mints no name-only fallback). Order-aware — a rebind before the last def
+    /// is superseded by the def and does not suppress it (fail closed, and never
+    /// mints an edge).
+    fn module_export_rebound(&self, name: &str) -> bool {
+        let Some(last_def) = self
+            .module_defs
+            .get(name)
+            .and_then(|positions| positions.iter().max().copied())
+        else {
+            return false;
+        };
+        self.module_rebinds
+            .get(name)
+            .is_some_and(|positions| positions.iter().any(|position| *position > last_def))
     }
 }
 
@@ -1433,6 +1459,9 @@ async fn index_workspace_impl(
                             embedding: vec![0.0_f32; embedding::EMBEDDING_DIM],
                             summary,
                         };
+                        let python_rebound = py_shadow
+                            .as_ref()
+                            .is_some_and(|shadow| shadow.module_export_rebound(&f.name));
                         let canonical_path = canonical_path_for_function(
                             lang_enum,
                             &crates,
@@ -1440,6 +1469,7 @@ async fn index_workspace_impl(
                             python_module.as_deref(),
                             &unsafe_prefixes,
                             &f.name,
+                            python_rebound,
                         );
                         queries
                             .upsert_function_with_canonical(&func, &canonical_path)
@@ -2297,6 +2327,9 @@ pub async fn sync_workspace_with_progress(
                                 .unwrap_or_else(|| vec![0.0_f32; embedding::EMBEDDING_DIM]),
                             summary,
                         };
+                        let python_rebound = py_shadow
+                            .as_ref()
+                            .is_some_and(|shadow| shadow.module_export_rebound(&f.name));
                         let canonical_path = canonical_path_for_function(
                             lang_enum,
                             &crates,
@@ -2304,6 +2337,7 @@ pub async fn sync_workspace_with_progress(
                             python_module.as_deref(),
                             &unsafe_prefixes,
                             &f.name,
+                            python_rebound,
                         );
                         queries
                             .upsert_function_with_canonical(&func, &canonical_path)

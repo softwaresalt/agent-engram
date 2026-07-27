@@ -224,10 +224,49 @@ pub fn extract_python_import_bindings(source: &str) -> ImportBindings {
         }
     }
 
+    // Nested-function and class-body `global NAME; NAME = ...` writes also
+    // rebind module names but are skipped by the top-level scan above (F5
+    // isolation records only the nested name, and class bodies are not walked
+    // for callers). Collect them across every nested scope so a module receiver
+    // rebound deep in the file is still poisoned (096-F second review B/C). This
+    // is fail-closed over-approximation — it can only suppress a wrong edge,
+    // never mint one.
+    collect_nested_dynamic_rebinds(root, source, &mut dynamic_rebinds);
+
     let mut bindings = collector.finalize();
     bindings.functions = functions;
     bindings.dynamic_rebinds = dynamic_rebinds;
     bindings
+}
+
+/// Recursively collect `global`/`nonlocal`-declared names that are also written
+/// in the same scope across **every** nested function and class body. The
+/// top-level function pass already covers module-level functions; this pass adds
+/// nested-function and class-body rebinds (096-F second review B/C). Only
+/// `global` targets a module name — including `nonlocal` targets is a harmless
+/// fail-closed over-approximation consistent with [`ScopeBuilder::finalize`].
+fn collect_nested_dynamic_rebinds(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let scope = match child.kind() {
+            "function_definition" | "class_definition" => Some(child),
+            "decorated_definition" => child
+                .child_by_field_name("definition")
+                .filter(|defn| matches!(defn.kind(), "function_definition" | "class_definition")),
+            _ => None,
+        };
+        if let Some(scope) = scope {
+            if let Some(body) = scope.child_by_field_name("body") {
+                let mut builder = ScopeBuilder::default();
+                scan_scope(body, source, false, &mut builder);
+                let (_scope, dynamic) = builder.finalize(scope.start_byte(), scope.end_byte());
+                out.extend(dynamic);
+                collect_nested_dynamic_rebinds(body, source, out);
+            }
+        } else {
+            collect_nested_dynamic_rebinds(child, source, out);
+        }
+    }
 }
 
 /// Accumulates raw binding candidates, positioned poison markers, and star
