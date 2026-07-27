@@ -16,9 +16,14 @@ use crate::cli::runner::{INDEXING_TIMEOUT_SECS, run_tool, run_tool_timed};
 ///
 /// `--force` re-parses and re-embeds all discovered files (bypassing the
 /// content-hash skip) and implies the full-scan path.
+// This is a thin CLI-forwarding shim: each bool maps 1:1 to a documented sync
+// flag (`--full`, `--force`, `--backfill-python-canonical`, `--direct`), so a
+// two-variant enum would add indirection without improving call-site clarity.
+#[allow(clippy::fn_params_excessive_bools)]
 pub async fn run_sync(
     full: bool,
     force: bool,
+    backfill_python_canonical: bool,
     direct: bool,
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
@@ -36,6 +41,7 @@ pub async fn run_sync(
             &workspace,
             full,
             force,
+            backfill_python_canonical,
             flags.id_value(),
             correlation_id,
             formatter,
@@ -53,17 +59,32 @@ pub async fn run_sync(
         )
         .await
     } else {
-        run_tool("sync_workspace", None, flags, formatter).await
+        // Incremental sync: the gated T7 backfill (096.010-T) is the only path on
+        // which a stale Python extraction version re-extracts already-indexed `.py`
+        // files. Without the flag, a stale version is a no-op (routine sync never
+        // silently re-extracts or churns canonical edges — C12-5).
+        run_tool(
+            "sync_workspace",
+            backfill_params(backfill_python_canonical),
+            flags,
+            formatter,
+        )
+        .await
     }
 }
 
-/// `engram index [--force] [--direct]` — full scan; alias for `engram sync --full`.
+/// `engram index [--force] [--backfill-python-canonical] [--direct]` — full scan;
+/// alias for `engram sync --full`.
 pub async fn run_index(
     force: bool,
+    backfill_python_canonical: bool,
     direct: bool,
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
 ) -> i32 {
+    // On the full-scan index path the T7 migration is a forced re-extraction, so
+    // `--backfill-python-canonical` implies `--force` here (parity with `sync`).
+    let force = force || backfill_python_canonical;
     if direct {
         let workspace = match flags.resolve_workspace() {
             Ok(p) => p,
@@ -77,6 +98,7 @@ pub async fn run_index(
             &workspace,
             true,
             force,
+            backfill_python_canonical,
             flags.id_value(),
             correlation_id,
             formatter,
@@ -99,6 +121,17 @@ pub async fn run_index(
 fn force_params(force: bool) -> Option<serde_json::Value> {
     if force {
         Some(json!({ "force": true }))
+    } else {
+        None
+    }
+}
+
+/// Build `sync_workspace` params for the `--backfill-python-canonical` gate:
+/// `Some({"backfill_python_canonical": true})` when the gated T7 rollout backfill
+/// is requested, `None` otherwise (preserving the default incremental fast path).
+fn backfill_params(backfill_python_canonical: bool) -> Option<serde_json::Value> {
+    if backfill_python_canonical {
+        Some(json!({ "backfill_python_canonical": true }))
     } else {
         None
     }

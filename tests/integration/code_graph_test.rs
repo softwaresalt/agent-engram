@@ -35,6 +35,17 @@ fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
     (std::env::temp_dir().join("engram-test"), branch)
 }
 
+/// Helper: resolve a function's node ID by name within a specific file.
+async fn function_id_in(q: &CodeGraphQueries, name: &str, file_path: &str) -> String {
+    q.all_functions()
+        .await
+        .expect("all_functions")
+        .into_iter()
+        .find(|function| function.name == name && function.file_path == file_path)
+        .unwrap_or_else(|| panic!("no `{name}` function in `{file_path}`"))
+        .id
+}
+
 #[test]
 async fn index_workspace_parses_rust_files() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1218,4 +1229,274 @@ async fn rust_cross_file_bare_call_still_name_only_staged() {
         .unwrap_or_else(|| panic!("Rust helper call must remain staged: {staged:?}"));
     assert_eq!(helper.qualifier_kind, "");
     assert_ne!(helper.qualifier_kind, "python_bare");
+}
+
+// ── 096-F (T7): versioned re-extraction + gated canonical backfill ───────────
+
+/// T7.1 (Q2) — a gated backfill sync after an extraction-version bump restores
+/// the resolved cross-module canonical edge on unchanged-hash `.py` files and
+/// advances the durable marker to the current version.
+#[test]
+async fn python_extraction_version_gated_backfill_restores_canonical_edge() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "app.py",
+        "from helper import compute\n\n\ndef run():\n    compute()\n",
+    );
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    // Fresh full index: resolves the canonical edge and advances the marker.
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let run_id = function_id_in(&q, "run", "app.py").await;
+    let compute_id = function_id_in(&q, "compute", "helper.py").await;
+    let fresh = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        fresh.contains(&(run_id.clone(), compute_id.clone())),
+        "fresh index must resolve the cross-module canonical edge; got {fresh:?}"
+    );
+    assert_eq!(
+        q.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "fresh index advances the extraction-version marker"
+    );
+
+    // Simulate a pre-upgrade index: older extraction produced no canonical edge
+    // and the marker sits at an earlier version.
+    q.retract_all_calls_resolved_canonical_edges()
+        .await
+        .expect("retract canonical edges");
+    q.set_python_extraction_version("0").expect("stale marker");
+    let before = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        !before.contains(&(run_id.clone(), compute_id.clone())),
+        "precondition: canonical edge retracted before backfill; got {before:?}"
+    );
+
+    // Gated backfill sync over unchanged `.py` bytes re-extracts and re-resolves.
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+        .await
+        .expect("gated backfill sync should succeed");
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    // Force re-extraction assigns fresh node IDs, so re-resolve by name/file.
+    let run_id = function_id_in(&q2, "run", "app.py").await;
+    let compute_id = function_id_in(&q2, "compute", "helper.py").await;
+    let after = q2
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        after.contains(&(run_id, compute_id)),
+        "gated backfill must restore the canonical edge on unchanged files; got {after:?}"
+    );
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "successful backfill advances the marker to the current version"
+    );
+}
+
+/// T7.2 (C12-5) — without the `--backfill-python-canonical` gate, a stale marker
+/// is a no-op deferral: routine sync must not re-extract or churn canonical edges.
+#[test]
+async fn python_extraction_version_ungated_sync_defers_without_churn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "app.py",
+        "from helper import compute\n\n\ndef run():\n    compute()\n",
+    );
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let run_id = function_id_in(&q, "run", "app.py").await;
+    let compute_id = function_id_in(&q, "compute", "helper.py").await;
+
+    // Stale pre-upgrade state: no canonical edge, older marker.
+    q.retract_all_calls_resolved_canonical_edges()
+        .await
+        .expect("retract canonical edges");
+    q.set_python_extraction_version("0").expect("stale marker");
+
+    // Plain sync (backfill gate OFF): must defer — no re-extraction, no churn.
+    code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("ungated sync should succeed");
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    let after = q2
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        !after.contains(&(run_id, compute_id)),
+        "ungated sync must not backfill the canonical edge; got {after:?}"
+    );
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("0".to_owned()),
+        "ungated sync leaves the stale marker untouched (deferral)"
+    );
+}
+
+/// T7.3 (C7-3) — a gated backfill that hits a `.py` read error still resolves the
+/// healthy edges this run but keeps the prior marker so the next sync retries the
+/// migration (fail-closed toward retry).
+#[test]
+async fn python_extraction_version_backfill_keeps_marker_on_py_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_sample_file(
+        ws,
+        "app.py",
+        "from helper import compute\n\n\ndef run():\n    compute()\n",
+    );
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Pre-upgrade state.
+    q.retract_all_calls_resolved_canonical_edges()
+        .await
+        .expect("retract canonical edges");
+    q.set_python_extraction_version("0").expect("stale marker");
+
+    // A `.py` file with invalid UTF-8 fails `read_to_string` during the sync,
+    // landing a per-file error in `SyncResult.errors` (has_python_file_errors).
+    fs::write(ws.join("broken.py"), [0xff_u8, 0xfe, 0x00, b'x']).expect("write broken.py");
+
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+        .await
+        .expect("gated backfill sync should succeed despite a .py error");
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    // Force re-extraction assigns fresh node IDs, so re-resolve by name/file.
+    let run_id = function_id_in(&q2, "run", "app.py").await;
+    let compute_id = function_id_in(&q2, "compute", "helper.py").await;
+    let after = q2
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        after.contains(&(run_id, compute_id)),
+        "backfill still resolves the healthy edge on this run; got {after:?}"
+    );
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("0".to_owned()),
+        "a `.py` error keeps the prior marker so the migration retries (C7-3)"
+    );
+
+    // Remove the broken file: the next gated backfill completes and advances.
+    fs::remove_file(ws.join("broken.py")).expect("remove broken.py");
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+        .await
+        .expect("retry backfill sync should succeed");
+    let db3 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q3 = CodeGraphQueries::new(db3);
+    assert_eq!(
+        q3.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "a clean retry sync advances the marker to the current version"
+    );
+    let restored = q3
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    let run_id = function_id_in(&q3, "run", "app.py").await;
+    let compute_id = function_id_in(&q3, "compute", "helper.py").await;
+    assert!(
+        restored.contains(&(run_id, compute_id)),
+        "retry keeps the canonical edge resolved; got {restored:?}"
+    );
+}
+
+/// T7.4 (R1) — the extraction-version marker lives in schema metadata, never in a
+/// file's `content_hash`, so the raw-SHA content hash and unchanged-file fast path
+/// are unaffected; a current-version file is skipped and Rust is untouched.
+#[test]
+async fn python_extraction_version_marker_preserves_content_hash_fast_path() {
+    use sha2::{Digest, Sha256};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let app_src = "from helper import compute\n\n\ndef run():\n    compute()\n";
+    write_sample_file(ws, "app.py", app_src);
+    write_sample_file(ws, "helper.py", "def compute():\n    return 1\n");
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub fn only() {}\n");
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // R1: content_hash is the raw source SHA-256, uncontaminated by the marker.
+    let files = q.list_code_files().await.expect("list code files");
+    let app = files
+        .iter()
+        .find(|f| f.path == "app.py")
+        .expect("app.py indexed");
+    let expected = format!("{:x}", Sha256::digest(app_src.as_bytes()));
+    assert_eq!(
+        app.content_hash, expected,
+        "content_hash must stay the raw source SHA, not encode the extraction-version marker"
+    );
+    assert_eq!(
+        q.python_extraction_version().expect("read marker"),
+        Some("1".to_owned())
+    );
+
+    // Fast path: a plain sync with unchanged bytes skips the .py (hash match) and
+    // never re-runs backfill — the marker is already current.
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("no-op sync should succeed");
+    assert!(
+        result.files_unchanged >= 2,
+        "unchanged files must hit the content-hash fast path; got {} unchanged",
+        result.files_unchanged
+    );
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    assert_eq!(
+        q2.python_extraction_version().expect("read marker"),
+        Some("1".to_owned()),
+        "a current-version no-op sync leaves the marker at the current version"
+    );
 }

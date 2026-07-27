@@ -116,6 +116,7 @@ async fn sync_workspace_with_progress_counts_deleted_current_and_completed_work(
         &data_dir,
         &branch,
         &config,
+        false,
         Some(&mut on_progress),
     )
     .await

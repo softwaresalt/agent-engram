@@ -173,7 +173,12 @@ pub fn all_tools() -> Vec<Tool> {
             ),
             schema(json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "backfill_python_canonical": {
+                        "type": "boolean",
+                        "description": "Migrate already-indexed Python files to the current namespace-canonical extraction version by force re-extracting every .py file and re-running the canonical post-pass. Without this gate a stale extraction version is a no-op on incremental sync."
+                    }
+                }
             })),
         ),
         Tool::new(

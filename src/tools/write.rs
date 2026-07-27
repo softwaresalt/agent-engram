@@ -118,6 +118,19 @@ struct IndexWorkspaceParams {
     force: bool,
 }
 
+/// Parameters for the `sync_workspace` MCP tool.
+///
+/// `backfill_python_canonical` gates the T7 rollout backfill (096.010-T): when
+/// `true` and the durable Python extraction-version marker is stale, every
+/// indexed `.py` file is force re-extracted and the canonical post-pass runs to
+/// materialize the upgraded cross-module edges. Defaults to `false` so routine
+/// auto-sync never silently re-extracts or churns canonical edges (C12-5).
+#[derive(Deserialize, Default)]
+struct SyncWorkspaceParams {
+    #[serde(default)]
+    backfill_python_canonical: bool,
+}
+
 /// Parse all supported source files and populate the code knowledge graph.
 ///
 /// Returns a structured summary of files parsed, symbols indexed, edges
@@ -272,7 +285,12 @@ async fn sync_workspace_inner(
     config: CodeGraphConfig,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let _ = params; // no params for sync_workspace currently
+    let parsed: SyncWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|e| {
+        EngramError::System(SystemError::InvalidParams {
+            reason: e.to_string(),
+        })
+    })?;
 
     let last_completed_at = state
         .scan_progress_snapshot()
@@ -292,6 +310,7 @@ async fn sync_workspace_inner(
             data_dir,
             branch,
             &config,
+            parsed.backfill_python_canonical,
             Some(&mut progress_callback),
         )
         .await

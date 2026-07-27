@@ -45,6 +45,7 @@ pub async fn run_direct_sync(
     workspace: &Path,
     full: bool,
     force: bool,
+    backfill_python_canonical: bool,
     id: Option<serde_json::Value>,
     correlation_id: Option<String>,
     formatter: &OutputFormatter,
@@ -164,9 +165,16 @@ pub async fn run_direct_sync(
         .await
         .map(|result| index_result_to_json(&result))
     } else {
-        sync_workspace_with_progress(&ws_path, &data_dir, &branch, &config.code_graph, progress)
-            .await
-            .map(|result| sync_result_to_json(&result))
+        sync_workspace_with_progress(
+            &ws_path,
+            &data_dir,
+            &branch,
+            &config.code_graph,
+            backfill_python_canonical,
+            progress,
+        )
+        .await
+        .map(|result| sync_result_to_json(&result))
     };
 
     // Emit a usage-telemetry record for the direct (daemonless) path, mirroring

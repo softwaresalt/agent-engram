@@ -1760,6 +1760,42 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         })
     }
 
+    /// Read the durable Python namespace-canonical extraction-version marker
+    /// (T7-seam, 096.013-T) from `schema_meta`, or `None` when unset.
+    ///
+    /// The marker is stored in a dedicated `schema_meta` key, never folded into
+    /// `file_node.content_hash` (which must stay a raw source SHA so staleness
+    /// detection compares bytes). A `None` result — a legacy database predating
+    /// the marker — is always treated by the caller as needing a backfill.
+    ///
+    /// # Errors
+    /// Returns [`EngramError`] when the `schema_meta` query fails for a reason
+    /// other than the relation not existing.
+    pub fn python_extraction_version(&self) -> Result<Option<String>, EngramError> {
+        crate::db::cozo_backend::schema::schema_meta_version(
+            &self.db,
+            crate::db::cozo_backend::schema::PYTHON_CANONICAL_EXTRACTION_VERSION_KEY,
+        )
+    }
+
+    /// Persist the durable Python namespace-canonical extraction-version marker
+    /// (T7 rollout backfill, 096.010-T).
+    ///
+    /// Idempotent upsert routed through the busy-tolerant schema helper. Callers
+    /// must only advance the marker after a fully successful re-extraction pass
+    /// (no per-`.py` errors) so a partial failure keeps the old version and the
+    /// migration retries on the next sync (C7-3, fail-closed toward retry).
+    ///
+    /// # Errors
+    /// Returns [`EngramError`] when the `schema_meta` upsert fails.
+    pub fn set_python_extraction_version(&self, version: &str) -> Result<(), EngramError> {
+        crate::db::cozo_backend::schema::set_schema_meta_version(
+            &self.db,
+            crate::db::cozo_backend::schema::PYTHON_CANONICAL_EXTRACTION_VERSION_KEY,
+            version,
+        )
+    }
+
     /// Record a call site whose callee could not be resolved within the
     /// caller's own file, for the deferred cross-file post-pass (082.002-T).
     ///

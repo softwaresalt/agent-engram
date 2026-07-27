@@ -28,6 +28,16 @@ use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_s
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
 
+/// Current Python namespace-canonical extraction version (096.010-T / T7).
+///
+/// Bumped whenever the Python call-extraction or canonical-staging logic changes
+/// in a way that requires re-extracting already-indexed `.py` files to acquire
+/// new edges. Persisted in a dedicated `schema_meta` marker (T7-seam), NEVER
+/// folded into `file_node.content_hash` — that must stay a raw source SHA so
+/// staleness detection compares bytes (R1). A sync whose stored marker differs
+/// from this value triggers the gated rollout backfill.
+const PYTHON_CANONICAL_EXTRACTION_VERSION: &str = "1";
+
 /// Cached Rust canonical context produced by the global unsafe-module pre-pass.
 #[derive(Debug, Clone)]
 struct CachedRustCanonicalContext {
@@ -224,6 +234,15 @@ fn is_py_path(rel: &str) -> bool {
     std::path::Path::new(rel)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+}
+
+/// Whether any per-file error in a sync/index run touched a Python source file.
+///
+/// The T7 rollout backfill (096.010-T) advances the durable extraction-version
+/// marker only when NO `.py` file failed, so a partial failure keeps the old
+/// version and the migration retries on the next sync (C7-3, fail-closed).
+fn has_python_file_errors(errors: &[FileError]) -> bool {
+    errors.iter().any(|e| is_py_path(&e.file))
 }
 
 /// Whether the workspace-relative path `rel` is a `.py` file nested under the
@@ -1191,6 +1210,13 @@ async fn index_workspace_impl(
     };
 
     // ── Step 2: Process each file ───────────────────────────────────
+    // T7 (096.010-T): track whether any `.py` file was hash-skipped as unchanged.
+    // The extraction-version marker may only advance when every indexed `.py` was
+    // freshly (re-)extracted this run — i.e. `force` (all re-extracted) OR no `.py`
+    // was skipped (fresh index). A non-force re-index that skips unchanged `.py`
+    // leaves their staged calls at whatever prior version produced them, so the
+    // marker must NOT advance then (fail-closed toward the gated backfill).
+    let mut python_hash_skipped = false;
     for file_path in &files {
         'file: {
             let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
@@ -1259,6 +1285,7 @@ async fn index_workspace_impl(
                 if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
+                        python_hash_skipped |= is_py_path(&rel_path);
                         result.files_skipped += 1;
                         break 'file;
                     }
@@ -1721,6 +1748,23 @@ async fn index_workspace_impl(
         .replace_index_canonical_workspace_snapshot(&canonical_workspace)
         .await?;
 
+    // ── T7 (096.010-T): advance the Python extraction-version marker ──
+    // A full index re-runs the workspace-global canonical post-pass over every
+    // file, so the index now reflects the current Python extraction logic — but
+    // only advance when every indexed `.py` was freshly extracted this run
+    // (`force`, or no `.py` hash-skipped as unchanged) AND no `.py` file errored.
+    // Otherwise a skipped/failed `.py` may retain stale staging, so keep the old
+    // marker and let the gated backfill migrate it (C7-3, fail-closed).
+    if !has_python_file_errors(&result.errors) && (force || !python_hash_skipped) {
+        queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+    } else {
+        debug!(
+            force,
+            python_hash_skipped,
+            "code graph: keeping prior Python extraction-version marker — not all .py freshly extracted this index"
+        );
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
     result.duration_ms = elapsed;
@@ -1804,16 +1848,24 @@ pub async fn sync_workspace(
     branch: &str,
     config: &CodeGraphConfig,
 ) -> Result<SyncResult, EngramError> {
-    sync_workspace_with_progress(ws_path, data_dir, branch, config, None).await
+    sync_workspace_with_progress(ws_path, data_dir, branch, config, false, None).await
 }
 
 /// Incrementally sync the code graph while reporting `(completed, total)` file
 /// progress to callers that want streamed startup visibility.
+///
+/// `backfill_python_canonical` gates the T7 rollout backfill (096.010-T): when
+/// `true` and the durable Python extraction-version marker is stale, every
+/// indexed `.py` file is force re-extracted and the workspace-global canonical
+/// post-pass runs to materialize the upgraded cross-module edges. When `false`,
+/// a stale marker is a no-op deferral (C12-5) — routine startup auto-sync never
+/// silently re-extracts or churns canonical edges.
 pub async fn sync_workspace_with_progress(
     ws_path: &Path,
     data_dir: &Path,
     branch: &str,
     config: &CodeGraphConfig,
+    backfill_python_canonical: bool,
     mut progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<SyncResult, EngramError> {
     let start = std::time::Instant::now();
@@ -1878,6 +1930,29 @@ pub async fn sync_workspace_with_progress(
                 .cloned()
                 .collect(),
         };
+
+    // ── T7 (096.010-T): gated Python extraction-version rollout backfill ─
+    // The durable marker (T7-seam) records the extraction logic the indexed
+    // `.py` files were last processed with. When it is stale AND the caller
+    // supplied the `--backfill-python-canonical` gate, force re-extraction of
+    // every indexed `.py` file so unchanged-hash files re-stage module-qualified
+    // calls under the current logic; the canonical post-pass after the loop then
+    // materializes the upgraded edges (Q2). Without the gate a stale marker is a
+    // no-op deferral (C12-5): routine sync must not silently re-extract or churn.
+    let stored_python_version = queries.python_extraction_version()?;
+    let python_version_current =
+        stored_python_version.as_deref() == Some(PYTHON_CANONICAL_EXTRACTION_VERSION);
+    let run_python_backfill = !python_version_current && backfill_python_canonical;
+    let mut force_python_recompute = force_python_recompute;
+    if run_python_backfill {
+        force_python_recompute.extend(indexed_map.keys().filter(|rel| is_py_path(rel)).cloned());
+    } else if !python_version_current {
+        debug!(
+            stored = ?stored_python_version,
+            expected = PYTHON_CANONICAL_EXTRACTION_VERSION,
+            "code graph sync: Python extraction version mismatch — gated backfill pending (re-run with --backfill-python-canonical)"
+        );
+    }
 
     // Build a set of current relative paths for deletion detection.
     let current_rel_paths: std::collections::HashSet<String> = current_files
@@ -2531,6 +2606,37 @@ pub async fn sync_workspace_with_progress(
             debug!(
                 count = retracted,
                 "code graph sync: swept canonical edges after a mod-mapping change (fail-closed; re-derived on next full index)"
+            );
+        }
+    }
+
+    // ── T7 (096.010-T): Python extraction-version rollout backfill ──────
+    // When the gated backfill ran, every `.py` file was force re-extracted
+    // above, re-staging module-qualified calls under the current logic. Sync
+    // normally defers the workspace-global canonical post-pass (perf gate), so
+    // run it now to materialize the upgraded cross-module edges (Q2), then
+    // advance the durable marker — but ONLY when no `.py` file errored, so a
+    // partial failure keeps the old version and the migration retries on the
+    // next sync (C7-3, fail-closed toward retry).
+    if run_python_backfill {
+        let resolved = reresolve_calls_edges_with_canonical_context(
+            &queries,
+            ws_path,
+            &crates,
+            &unsafe_prefixes,
+            &python_packages,
+        )
+        .await?;
+        result.edges_created += resolved.resolved;
+        if has_python_file_errors(&result.errors) {
+            warn!(
+                "code graph sync: Python backfill hit a .py file error — keeping prior extraction-version marker so the next sync retries the migration"
+            );
+        } else {
+            queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+            debug!(
+                resolved = resolved.resolved,
+                "code graph sync: Python extraction-version backfill complete; marker advanced"
             );
         }
     }
