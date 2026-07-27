@@ -838,6 +838,13 @@ fn python_bare_target(
     {
         return Err(NoCanonicalTargetReason::Shadowed);
     }
+    // Observed competing firm bindings (e.g. duplicate `from X import f`, one of
+    // which may resolve to an unindexed external module) must not fall through
+    // to the recall-safe name-only fallback: the sole indexed same-name symbol
+    // is not provably the effective binding, so fail closed (M1, 013-D).
+    if imports.is_competing(callee) {
+        return Err(NoCanonicalTargetReason::DuplicateSameNameImport);
+    }
     Err(NoCanonicalTargetReason::UnsupportedImportForm)
 }
 

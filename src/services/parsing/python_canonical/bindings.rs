@@ -78,6 +78,7 @@ pub enum CallResolution<'a> {
 pub struct ImportBindings {
     module: HashMap<String, ImportBinding>,
     ambiguous: HashMap<String, usize>,
+    competing: HashSet<String>,
     stars: Vec<usize>,
     functions: Vec<FunctionScope>,
     dynamic_rebinds: HashSet<String>,
@@ -96,6 +97,17 @@ impl ImportBindings {
     #[must_use]
     pub fn is_ambiguous(&self, name: &str) -> bool {
         self.ambiguous.contains_key(name)
+    }
+
+    /// Whether `name` has *observed* competing firm bindings: two or more firm
+    /// module-scope imports of the same local name, or a firm import plus a
+    /// conditional/relative marker. Unlike a lone relative/conditional marker —
+    /// which stays recall-safe (T5b.4) — observed competition must fail closed
+    /// with no name-only fallback, since the sole indexed same-name symbol is
+    /// not provably the effective (last-wins) binding (M1, 013-D).
+    #[must_use]
+    pub fn is_competing(&self, name: &str) -> bool {
+        self.competing.contains(name)
     }
 
     /// The recorded position of `name`'s ambiguity marker, if any (Anchor C).
@@ -255,6 +267,7 @@ impl Collector {
 
         let mut module = HashMap::new();
         let mut ambiguous: HashMap<String, usize> = HashMap::new();
+        let mut competing: HashSet<String> = HashSet::new();
 
         for (name, mut candidates) in firm {
             let min_pos = candidates
@@ -268,8 +281,13 @@ impl Collector {
                     module.insert(name, binding);
                 }
             } else {
+                // Observed competition: 2+ firm candidates, or a firm binding
+                // plus a conditional/relative marker of the same name. The
+                // effective target is undecidable, so suppress the name-only
+                // fallback in addition to the module-scope binding (M1, 013-D).
                 let pos = marker_pos.map_or(min_pos, |mp| mp.min(min_pos));
-                ambiguous.insert(name, pos);
+                ambiguous.insert(name.clone(), pos);
+                competing.insert(name);
             }
         }
 
@@ -282,6 +300,7 @@ impl Collector {
         ImportBindings {
             module,
             ambiguous,
+            competing,
             stars,
             ..Default::default()
         }

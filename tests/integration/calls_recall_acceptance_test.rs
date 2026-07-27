@@ -522,6 +522,46 @@ async fn python_fail_closed_vectors_emit_no_edge() {
     );
 }
 
+/// T5b.3b — a duplicate same-name import where one origin is an unindexed
+/// external module must still fail closed. Only the in-workspace `b.parse` is
+/// indexed, so the name is *unique* in the graph; the legacy name-only fallback
+/// would otherwise mint a false edge to it even though the effective (last-wins)
+/// binding is the external `external.parse`. Observed competition (two firm
+/// `from ... import parse` bindings) must suppress the fallback (013-D, M1).
+#[test]
+async fn python_duplicate_import_with_external_shadow_fails_closed() {
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "d2.py",
+            "from b import parse\nfrom external import parse\n\ndef caller():\n    parse()\n",
+        ),
+        ("b.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    let caller_id = function_id_in(&q, "caller", "d2.py").await;
+    let parse_ids = function_ids_named(&q, "parse").await;
+    assert_eq!(
+        parse_ids.len(),
+        1,
+        "only in-workspace b.parse is indexed (external.parse is not), so the name is unique"
+    );
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        parse_ids.iter().all(|parse_id| {
+            !canonical.contains(&(caller_id.clone(), parse_id.clone()))
+                && !singleton.contains(&(caller_id.clone(), parse_id.clone()))
+        }),
+        "duplicate import with an external shadow must fail closed, not fall back to the unique in-workspace parse"
+    );
+}
+
 /// T5b.4 — recall-safe no-target reasons retain the legacy unique-name fallback,
 /// while a non-unique candidate set still fails closed.
 #[test]
