@@ -648,94 +648,208 @@ async fn rust_ctx_for_staged_file(
     rust_canonical_ctx(crates, Language::Rust, rel_path, &source)
 }
 
-/// Build Python module and shadow context for one staged-call source file.
+/// Per-file Python staged-call context: the caller module path (if derivable),
+/// the lexical-shadow index, and the caller function-id → simple-name map used
+/// by the T5c shadow guard.
+type PythonStagedContext = (Option<String>, PythonShadowIndex, HashMap<String, String>);
+
+/// Build Python module, shadow, and caller-name context for one staged-call
+/// source file. The caller-name map (function id → simple name) lets the
+/// resolver consult the calling function's lexical scope and definition
+/// position (T5c shadow guard) without a per-call database query.
 async fn python_ctx_for_staged_file(
     ws_path: &Path,
     python_packages: &HashSet<String>,
+    queries: &CodeGraphQueries,
     rel_path: &str,
-) -> Option<(Option<String>, PythonShadowIndex)> {
+) -> Option<PythonStagedContext> {
     let full = ws_path.join(rel_path);
     let source = tokio::fs::read_to_string(full).await.ok()?;
     let is_regular_package =
         |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let module_path = python_module_path_for_file(rel_path, &is_regular_package);
-    Some((module_path, PythonShadowIndex::build(&source)))
+    let caller_names = queries
+        .get_functions_by_file(rel_path)
+        .await
+        .ok()?
+        .into_iter()
+        .map(|function| (function.id, function.name))
+        .collect();
+    Some((module_path, PythonShadowIndex::build(&source), caller_names))
+}
+
+/// The smallest module-scope definition position of `caller_name`, or
+/// `usize::MAX` when it is not a top-level definition (nested / method callers
+/// are a v1 non-goal, so their module-order winner is left unconstrained).
+fn python_caller_position(shadow: &PythonShadowIndex, caller_name: Option<&str>) -> usize {
+    caller_name
+        .and_then(|name| shadow.module_defs.get(name))
+        .and_then(|positions| positions.iter().min().copied())
+        .unwrap_or(usize::MAX)
+}
+
+/// Whether `name` is bound anywhere in the calling function's body (T-a): any
+/// in-function binder makes the name function-local for the whole body, so a
+/// call to it can never resolve to a module-scope import or def (fail closed).
+fn python_name_is_function_local(
+    shadow: &PythonShadowIndex,
+    caller_name: Option<&str>,
+    name: &str,
+) -> bool {
+    caller_name
+        .and_then(|caller| shadow.function_locals.get(caller))
+        .is_some_and(|locals| locals.contains(name))
+}
+
+/// Whether the module receiver `name` is rebound by any later module-scope def,
+/// opaque rebind, star import, or ambiguous import (order-aware: a rebind after
+/// the import proves the receiver is no longer that module → fail closed).
+fn python_receiver_rebound_after(
+    shadow: &PythonShadowIndex,
+    name: &str,
+    import_position: usize,
+) -> bool {
+    let mut positions: Vec<usize> = Vec::new();
+    positions.extend(shadow.module_defs.get(name).into_iter().flatten().copied());
+    positions.extend(
+        shadow
+            .module_rebinds
+            .get(name)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    positions.extend(shadow.imports.star_invalidators().iter().copied());
+    if shadow.imports.is_ambiguous(name) {
+        if let Some(position) = shadow.imports.ambiguity_position(name) {
+            positions.push(position);
+        }
+    }
+    positions.iter().any(|position| *position > import_position)
+}
+
+/// Resolve a bare `callee()` call to its exact canonical target, order-aware
+/// over module source positions and anchored on the caller's definition point.
+fn python_bare_target(
+    module: &str,
+    shadow: &PythonShadowIndex,
+    caller_name: Option<&str>,
+    callee: &str,
+) -> Result<String, NoCanonicalTargetReason> {
+    let imports = &shadow.imports;
+    // T-d dynamic write and T-a function-local binder both fail closed.
+    if imports.is_dynamically_rebound(callee)
+        || python_name_is_function_local(shadow, caller_name, callee)
+    {
+        return Err(NoCanonicalTargetReason::Shadowed);
+    }
+    // A module receiver used as a bare callee is not a function.
+    if let Some(binding) = imports.module_binding(callee) {
+        if binding.kind == BindingKind::ModuleImport {
+            return Err(NoCanonicalTargetReason::CompetingBindings);
+        }
+    }
+
+    let caller_position = python_caller_position(shadow, caller_name);
+
+    // Resolvable bindings in effect at the caller's definition point (strictly
+    // before it in module source order): the from-import symbol and each
+    // in-module def. A binding after the caller cannot be proven effective.
+    let mut resolvable: Vec<(usize, String)> = Vec::new();
+    if let Some(binding) = imports.module_binding(callee) {
+        if binding.kind == BindingKind::FromImportSymbol && binding.position < caller_position {
+            resolvable.push((binding.position, binding.canonical_path.clone()));
+        }
+    }
+    for position in shadow.module_defs.get(callee).into_iter().flatten() {
+        if *position < caller_position {
+            resolvable.push((*position, format!("{module}.{callee}")));
+        }
+    }
+
+    // Every module-scope binding position of the name (contest candidates): a
+    // binding after the winner makes the call-time value undecidable (C7-1).
+    let mut all_positions: Vec<usize> = Vec::new();
+    if let Some(binding) = imports.module_binding(callee) {
+        if binding.kind == BindingKind::FromImportSymbol {
+            all_positions.push(binding.position);
+        }
+    }
+    all_positions.extend(
+        shadow
+            .module_defs
+            .get(callee)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    all_positions.extend(
+        shadow
+            .module_rebinds
+            .get(callee)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    all_positions.extend(imports.star_invalidators().iter().copied());
+    if imports.is_ambiguous(callee) {
+        if let Some(position) = imports.ambiguity_position(callee) {
+            all_positions.push(position);
+        }
+    }
+
+    if let Some((winner_position, winner_target)) =
+        resolvable.iter().max_by_key(|(position, _)| *position)
+    {
+        if all_positions
+            .iter()
+            .any(|position| position > winner_position)
+        {
+            return Err(NoCanonicalTargetReason::Shadowed);
+        }
+        return Ok(winner_target.clone());
+    }
+
+    // No resolvable binding before the caller: an opaque rebind fails closed;
+    // star / relative / unbound names keep the recall-safe name-only fallback.
+    if shadow
+        .module_rebinds
+        .get(callee)
+        .is_some_and(|positions| !positions.is_empty())
+    {
+        return Err(NoCanonicalTargetReason::Shadowed);
+    }
+    Err(NoCanonicalTargetReason::UnsupportedImportForm)
 }
 
 /// Resolve one staged Python call to an exact canonical target, or return the
-/// typed reason that controls whether name-only fallback is recall-safe.
+/// typed reason that controls whether name-only fallback is recall-safe. The
+/// T5c shadow guard (function-local poison and order-aware receiver / bare-name
+/// rebinds) is applied here, downstream of and around T5b's target selection.
 fn python_target_for_staged_call(
     module_path: Option<&str>,
     shadow: &PythonShadowIndex,
+    caller_name: Option<&str>,
     call: &StagedCallProvenanceRecord,
 ) -> Result<String, NoCanonicalTargetReason> {
     let callee = call.callee_name.as_str();
-    let imports = &shadow.imports;
-
     match call.qualifier_kind.as_str() {
-        "module" => match imports.module_binding(&call.raw_qualifier) {
-            Some(binding) if binding.kind == BindingKind::ModuleImport => {
-                Ok(format!("{}.{}", binding.canonical_path, callee))
-            }
-            Some(_) | None => Err(NoCanonicalTargetReason::CompetingBindings),
-        },
-        "python_bare" => {
-            let Some(module) = module_path else {
-                return Err(NoCanonicalTargetReason::NoModuleContext);
+        "module" => {
+            let Some(binding) = shadow.imports.module_binding(&call.raw_qualifier) else {
+                return Err(NoCanonicalTargetReason::CompetingBindings);
             };
-            if imports.is_dynamically_rebound(callee) {
-                return Err(NoCanonicalTargetReason::Shadowed);
-            }
-
-            let mut resolvable = Vec::new();
-            match imports.module_binding(callee) {
-                Some(binding) if binding.kind == BindingKind::FromImportSymbol => {
-                    resolvable.push((binding.position, binding.canonical_path.clone()));
-                }
-                Some(_) => return Err(NoCanonicalTargetReason::CompetingBindings),
-                None => {}
-            }
-            for position in shadow.module_defs.get(callee).into_iter().flatten() {
-                resolvable.push((*position, format!("{module}.{callee}")));
-            }
-
-            let mut poison = Vec::new();
-            poison.extend(
-                shadow
-                    .module_rebinds
-                    .get(callee)
-                    .into_iter()
-                    .flatten()
-                    .copied(),
-            );
-            poison.extend(imports.star_invalidators().iter().copied());
-            if imports.is_ambiguous(callee) {
-                if let Some(position) = imports.ambiguity_position(callee) {
-                    poison.push(position);
-                }
-            }
-
-            if let Some((winner_position, winner_target)) =
-                resolvable.iter().max_by_key(|(position, _)| *position)
+            if binding.kind != BindingKind::ModuleImport
+                || python_name_is_function_local(shadow, caller_name, &call.raw_qualifier)
+                || python_receiver_rebound_after(shadow, &call.raw_qualifier, binding.position)
             {
-                if poison.iter().any(|position| position > winner_position) {
-                    return Err(NoCanonicalTargetReason::Shadowed);
-                }
-                return Ok(winner_target.clone());
+                return Err(NoCanonicalTargetReason::CompetingBindings);
             }
-
-            if shadow
-                .module_rebinds
-                .get(callee)
-                .is_some_and(|positions| !positions.is_empty())
-            {
-                return Err(NoCanonicalTargetReason::Shadowed);
-            }
-            if imports.is_ambiguous(callee) {
-                return Err(NoCanonicalTargetReason::UnsupportedImportForm);
-            }
-            Err(NoCanonicalTargetReason::UnsupportedImportForm)
+            Ok(format!("{}.{}", binding.canonical_path, callee))
         }
+        "python_bare" => match module_path {
+            Some(module) => python_bare_target(module, shadow, caller_name, callee),
+            None => Err(NoCanonicalTargetReason::NoModuleContext),
+        },
         _ => Err(NoCanonicalTargetReason::CompetingBindings),
     }
 }
@@ -810,22 +924,28 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
-    let mut python_context_cache: HashMap<String, Option<(Option<String>, PythonShadowIndex)>> =
-        HashMap::new();
+    let mut python_context_cache: HashMap<String, Option<PythonStagedContext>> = HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
         if is_py_path(&call.source_file) {
             if !python_context_cache.contains_key(&call.source_file) {
-                let ctx =
-                    python_ctx_for_staged_file(ws_path, python_packages, &call.source_file).await;
+                let ctx = python_ctx_for_staged_file(
+                    ws_path,
+                    python_packages,
+                    queries,
+                    &call.source_file,
+                )
+                .await;
                 python_context_cache.insert(call.source_file.clone(), ctx);
             }
-            let Some(Some((module_path, shadow))) = python_context_cache.get(&call.source_file)
+            let Some(Some((module_path, shadow, caller_names))) =
+                python_context_cache.get(&call.source_file)
             else {
                 continue;
             };
-            match python_target_for_staged_call(module_path.as_deref(), shadow, call) {
+            let caller_name = caller_names.get(&call.caller_id).map(String::as_str);
+            match python_target_for_staged_call(module_path.as_deref(), shadow, caller_name, call) {
                 Ok(target) => {
                     let target_id = match canonical_index.get(&target) {
                         Some(ids) if ids.len() == 1 => ids[0].clone(),
