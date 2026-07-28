@@ -267,6 +267,19 @@ pub async fn sync_workspace(
     // rather than returning an error — callers get a "queued" status (044.004-T).
     if !state.try_start_indexing() {
         state.set_pending_sync();
+        // 101.002-T: preserve the revalidation intent across coalescing. The
+        // queue decision happens BEFORE params are parsed, and the coalesced
+        // drain runs a parameterless sync — so without this a queued
+        // `--revalidate-code-graph` request is silently downgraded to a routine
+        // no-op sync and the migration never runs.
+        if params
+            .as_ref()
+            .and_then(|p| p.get("revalidate_code_graph"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            state.set_pending_sync_revalidate();
+        }
         return Ok(
             json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
         );
