@@ -104,6 +104,14 @@ enum Command {
         /// version is a no-op on incremental sync (routine sync never re-extracts).
         #[arg(long = "backfill-python-canonical")]
         backfill_python_canonical: bool,
+        /// Revalidate already-indexed files against the current code-graph
+        /// extraction generation: on a generation bump, force re-extraction of
+        /// every indexed file so the same-file fail-closed guard re-runs and
+        /// drops stale wrong same-file direct edges persisted before the fix,
+        /// then re-materialize cross-file singletons. Without this gate a stale
+        /// generation is a no-op on incremental sync.
+        #[arg(long = "revalidate-code-graph")]
+        revalidate_code_graph: bool,
         /// Run without spawning a daemon: acquire the lock and call service
         /// functions directly. The process exits when indexing completes.
         /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
@@ -123,6 +131,11 @@ enum Command {
         /// forced re-extraction; the flag is accepted for parity with `sync`.
         #[arg(long = "backfill-python-canonical")]
         backfill_python_canonical: bool,
+        /// Revalidate already-indexed files against the current code-graph
+        /// extraction generation. On the full-scan index path this is implied by
+        /// a forced re-extraction; the flag is accepted for parity with `sync`.
+        #[arg(long = "revalidate-code-graph")]
+        revalidate_code_graph: bool,
         /// Run without spawning a daemon: acquire the lock and call service
         /// functions directly. The process exits when indexing completes.
         /// Set `ENGRAM_DIRECT=1` as an alternative to passing the flag.
@@ -405,22 +418,38 @@ async fn main() -> Result<()> {
             full,
             force,
             backfill_python_canonical,
+            revalidate_code_graph,
             direct,
         } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code =
-                indexing::run_sync(full, force, backfill_python_canonical, direct, &flags, &fmt)
-                    .await;
+            let code = indexing::run_sync(
+                full,
+                force,
+                backfill_python_canonical,
+                revalidate_code_graph,
+                direct,
+                &flags,
+                &fmt,
+            )
+            .await;
             std::process::exit(code);
         }
         Command::Index {
             force,
             backfill_python_canonical,
+            revalidate_code_graph,
             direct,
         } => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
-            let code =
-                indexing::run_index(force, backfill_python_canonical, direct, &flags, &fmt).await;
+            let code = indexing::run_index(
+                force,
+                backfill_python_canonical,
+                revalidate_code_graph,
+                direct,
+                &flags,
+                &fmt,
+            )
+            .await;
             std::process::exit(code);
         }
         Command::Manifest => {

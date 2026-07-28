@@ -30,6 +30,26 @@ tags:
 
 # New edge-extraction logic needs a forced reindex — hash-skip leaves unchanged files stale
 
+> **Update — superseded for the manual-`--force` step (101-F, 2026-07-28).** The
+> "future enhancement" in Prevention below is now shipped. A durable
+> `code_graph_extraction_generation` marker (a `schema_meta` record) plus an
+> opt-in `engram sync --revalidate-code-graph` (incremental, generation-gated) /
+> `engram index --revalidate-code-graph` (full forced reparse) gate revalidate
+> stale
+> **code-graph** edges automatically on a generation bump — you no longer need to
+> hand-run a blanket `--force` after an edge-extraction upgrade to pick up the
+> 100-F/`FF7DE872` same-file fail-closed correction. The prior 096-F rollout
+> shipped the parallel `--backfill-python-canonical` gate for Python-canonical
+> edges. The manual `--force` recipe remains valid as a hammer. The incremental
+> `sync --revalidate-code-graph` route is idempotent and churn-free — it is a
+> generation-gated no-op once the marker matches. The `index
+> --revalidate-code-graph` route (and `sync --full --revalidate-code-graph`)
+> always forces a full reparse of every file even when the marker matches, so it
+> is a hammer too — not churn-free. See
+> `docs/exec-plans/2026-07-28-versioned-codegraph-revalidation-backfill-plan.md`
+> and the "Same-file duplicate-name resolution" + "Forced re-index for existing
+> files" sections of `docs/architecture.md`.
+
 ## Problem
 
 After shipping new edge-extraction logic (094-F added Python bare-call `Calls`
@@ -81,9 +101,22 @@ sends `{"force": true}` and re-parses unchanged files.
 
 - Ship a release note / migration hint whenever extraction output changes,
   instructing operators to run a forced reindex.
-- Consider stamping an extractor/schema version into the file-hash record so a
-  version bump invalidates the skip automatically (future enhancement). Until
-  then, treat "new edges require forced reindex" as expected behavior.
+- **Implemented (096-F, 101-F).** The "stamp an extractor/schema version into the
+  record so a version bump invalidates the skip" enhancement now exists as two
+  opt-in, version-gated backfills that supersede the blanket-`--force` step:
+  `engram sync --backfill-python-canonical` (Python-canonical
+  `extraction-version` marker, 096-F) and   `engram sync --revalidate-code-graph` (code-graph
+  `code_graph_extraction_generation` marker, 101-F). On the incremental `engram
+  sync` path each re-extracts only when its marker is behind the current value,
+  advances the marker only on a fully clean pass (partial failure retries), and is
+  a strict no-op on a matching marker — so an upgrade picks up the new edges
+  without a churny blanket reparse. The full-scan forms (`engram index
+  --revalidate-code-graph`, `engram sync --full --revalidate-code-graph`) imply
+  `--force` and re-extract every file regardless of the marker; only the
+  generation-gated marker *advance* is skipped when the marker already matches.
+  (Plain `engram sync --full` is a non-forced full scan that still hash-skips
+  unchanged files, so it does not itself trigger the revalidation.) A stale marker
+  logs a `debug` hint prompting the operator to opt in.
 - Related freshness landmines: `sync-workspace-record-file-hash-required`
   (hash-table upkeep) and `hydrate-code-graph-fast-path-already-indexed`
   (startup fast-path).

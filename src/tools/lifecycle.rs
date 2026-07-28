@@ -394,17 +394,29 @@ pub async fn drain_pending_sync(state: &AppState) {
     if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
         if state.try_start_indexing() {
             let ws_path = PathBuf::from(&snapshot.path);
-            match sync_code_graph(
+            // 101.002-T: drain the pending gate flags AFTER acquiring the
+            // indexing lock so that, if the lock grab below had failed and the
+            // sync were re-queued, the flags would survive for the next drain.
+            // A coalesced revalidation/backfill must not be downgraded to a
+            // routine sync that silently drops the requested migration.
+            let revalidate = state.take_pending_sync_revalidate();
+            let backfill_python = state.take_pending_sync_backfill_python();
+            match crate::services::code_graph::sync_workspace_with_progress(
                 &ws_path,
                 &snapshot.data_dir,
                 &snapshot.branch,
                 &ws_config.code_graph,
+                backfill_python,
+                revalidate,
+                None,
             )
             .await
             {
                 Ok(result) => tracing::info!(
                     files_added = result.files_added,
                     files_modified = result.files_modified,
+                    revalidate,
+                    backfill_python,
                     "drain_pending_sync: coalesced sync complete"
                 ),
                 Err(e) => tracing::warn!(
@@ -415,7 +427,9 @@ pub async fn drain_pending_sync(state: &AppState) {
             state.finish_indexing().await;
         } else {
             // Another indexer grabbed the lock before we could; re-queue so
-            // the next finish_indexing caller can drain it.
+            // the next finish_indexing caller can drain it. The
+            // pending-revalidate flag was intentionally NOT taken above, so it
+            // remains set for the next drain.
             state.set_pending_sync();
         }
     }

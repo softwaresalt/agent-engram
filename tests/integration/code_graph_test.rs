@@ -1288,7 +1288,7 @@ async fn python_extraction_version_gated_backfill_restores_canonical_edge() {
     );
 
     // Gated backfill sync over unchanged `.py` bytes re-extracts and re-resolves.
-    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, false, None)
         .await
         .expect("gated backfill sync should succeed");
     let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
@@ -1393,7 +1393,7 @@ async fn python_extraction_version_backfill_keeps_marker_on_py_error() {
     // landing a per-file error in `SyncResult.errors` (has_python_file_errors).
     fs::write(ws.join("broken.py"), [0xff_u8, 0xfe, 0x00, b'x']).expect("write broken.py");
 
-    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, false, None)
         .await
         .expect("gated backfill sync should succeed despite a .py error");
     let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
@@ -1417,7 +1417,7 @@ async fn python_extraction_version_backfill_keeps_marker_on_py_error() {
 
     // Remove the broken file: the next gated backfill completes and advances.
     fs::remove_file(ws.join("broken.py")).expect("remove broken.py");
-    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, None)
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, true, false, None)
         .await
         .expect("retry backfill sync should succeed");
     let db3 = connect_db(&data_dir, &branch).await.expect("db reconnect");

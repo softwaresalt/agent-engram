@@ -41,11 +41,14 @@ use crate::services::config::parse_config;
 /// - `0` — success
 /// - `1` — tool error (DB, parse failure, or invalid config)
 /// - `2` — invocation failure (bad workspace, lock held by daemon)
+#[allow(clippy::fn_params_excessive_bools)]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_direct_sync(
     workspace: &Path,
     full: bool,
     force: bool,
     backfill_python_canonical: bool,
+    revalidate_code_graph: bool,
     id: Option<serde_json::Value>,
     correlation_id: Option<String>,
     formatter: &OutputFormatter,
@@ -149,12 +152,12 @@ pub async fn run_direct_sync(
         None
     };
 
-    // `--backfill-python-canonical` on the full-scan path implies `--force`
-    // (parity with `engram index` and the IPC `run_sync` path): a
-    // `sync --full --backfill-python-canonical` request must re-extract rather
-    // than silently hash-skip and drop the flag. The bare incremental
-    // `sync --backfill-python-canonical` (no `--full`) keeps its gated sync path.
-    let force = force || (full && backfill_python_canonical);
+    // `--backfill-python-canonical` / `--revalidate-code-graph` on the full-scan
+    // path imply `--force` (parity with `engram index` and the IPC `run_sync`
+    // path): a `sync --full --<gate>` request must re-extract rather than
+    // silently hash-skip and drop the flag. The bare incremental
+    // `sync --<gate>` (no `--full`) keeps its gated sync path.
+    let force = force || (full && (backfill_python_canonical || revalidate_code_graph));
 
     // `--force` (or `--full --force`) takes the full-scan index path and
     // re-parses all discovered files; plain `--full` scans all files but
@@ -178,6 +181,7 @@ pub async fn run_direct_sync(
             &branch,
             &config.code_graph,
             backfill_python_canonical,
+            revalidate_code_graph,
             progress,
         )
         .await

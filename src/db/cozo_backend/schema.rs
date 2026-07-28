@@ -350,6 +350,21 @@ fn set_schema_meta_flag(cozo_db: &cozo::DbInstance, key: &str) -> Result<(), Eng
 pub(crate) const PYTHON_CANONICAL_EXTRACTION_VERSION_KEY: &str =
     "python_canonical_extraction_version";
 
+/// Durable `schema_meta` key recording the code-graph extraction *generation*
+/// the persisted direct/`calls` edges were last materialized under (101-F).
+///
+/// Bumped when the same-file target-precision logic changes in a way that
+/// requires re-extracting already-indexed files to correct stale WRONG
+/// same-file direct edges: the 100-F fail-closed guard only withholds the
+/// ambiguous first-match edge for FRESHLY extracted files, so an edge persisted
+/// before the fix survives an unchanged-bytes hash-skip. Like the Python marker
+/// it lives in `schema_meta`, NEVER in `file_node.content_hash` (A4:
+/// `content_hash` stays the raw source SHA compared byte-for-byte by staleness
+/// detection). The marker seam (this const + the shared version helpers) is
+/// consumed by the gated revalidation backfill (101.002-T / U2).
+#[allow(dead_code)]
+pub(crate) const CODE_GRAPH_EXTRACTION_GENERATION_KEY: &str = "code_graph_extraction_generation";
+
 /// Return the durable `schema_meta` version value stored under `key`, or `None`
 /// when the key — or the `schema_meta` relation itself — is absent.
 ///

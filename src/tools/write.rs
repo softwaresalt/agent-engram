@@ -125,10 +125,18 @@ struct IndexWorkspaceParams {
 /// indexed `.py` file is force re-extracted and the canonical post-pass runs to
 /// materialize the upgraded cross-module edges. Defaults to `false` so routine
 /// auto-sync never silently re-extracts or churns canonical edges (C12-5).
+///
+/// `revalidate_code_graph` gates the 101-F code-graph extraction-generation
+/// backfill: when `true` and the durable generation marker is stale, every
+/// indexed file is force re-extracted so the 100-F fail-closed same-file guard
+/// re-runs over stale wrong same-file direct edges persisted before the fix.
+/// Defaults to `false` (a stale generation is a no-op deferral on routine sync).
 #[derive(Deserialize, Default)]
 struct SyncWorkspaceParams {
     #[serde(default)]
     backfill_python_canonical: bool,
+    #[serde(default)]
+    revalidate_code_graph: bool,
 }
 
 /// Parse all supported source files and populate the code knowledge graph.
@@ -258,6 +266,26 @@ pub async fn sync_workspace(
     // If indexing is already running, queue a sync to run after it finishes
     // rather than returning an error — callers get a "queued" status (044.004-T).
     if !state.try_start_indexing() {
+        // 101.002-T: preserve the queued sync's gate flags across coalescing,
+        // and publish them BEFORE set_pending_sync() so a concurrent drain can
+        // never observe pending_sync == true alongside a stale companion bit
+        // (which would downgrade the request to a routine no-op and strand the
+        // sticky bit). The queue decision runs before params are parsed, and the
+        // coalesced drain would otherwise pass both gates as false — silently
+        // dropping a queued --revalidate-code-graph or --backfill-python-canonical.
+        let params_ref = params.as_ref();
+        let queued_flag = |name: &str| -> bool {
+            params_ref
+                .and_then(|p| p.get(name))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        if queued_flag("revalidate_code_graph") {
+            state.set_pending_sync_revalidate();
+        }
+        if queued_flag("backfill_python_canonical") {
+            state.set_pending_sync_backfill_python();
+        }
         state.set_pending_sync();
         return Ok(
             json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
@@ -311,6 +339,7 @@ async fn sync_workspace_inner(
             branch,
             &config,
             parsed.backfill_python_canonical,
+            parsed.revalidate_code_graph,
             Some(&mut progress_callback),
         )
         .await

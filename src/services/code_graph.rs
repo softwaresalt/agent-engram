@@ -38,6 +38,18 @@ type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
 /// from this value triggers the gated rollout backfill.
 const PYTHON_CANONICAL_EXTRACTION_VERSION: &str = "1";
 
+/// Current code-graph extraction *generation* (101-F).
+///
+/// Incremented whenever the same-file target-precision logic changes such that
+/// already-indexed files must be re-extracted to correct stale WRONG same-file
+/// direct edges. Generation `"1"` marks the 100-F fail-closed same-file guard.
+/// A sync whose stored marker differs from this value triggers the gated
+/// `--revalidate-code-graph` backfill. Like [`PYTHON_CANONICAL_EXTRACTION_VERSION`]
+/// it is persisted in a dedicated `schema_meta` marker, NEVER folded into
+/// `file_node.content_hash` — that must stay a raw source SHA so staleness
+/// detection compares bytes (A4).
+const CODE_GRAPH_EXTRACTION_GENERATION: &str = "1";
+
 /// Cached Rust canonical context produced by the global unsafe-module pre-pass.
 #[derive(Debug, Clone)]
 struct CachedRustCanonicalContext {
@@ -1260,6 +1272,13 @@ async fn index_workspace_impl(
     // leaves their staged calls at whatever prior version produced them, so the
     // marker must NOT advance then (fail-closed toward the gated backfill).
     let mut python_hash_skipped = false;
+    // 101-F (U2): track whether ANY indexed file was hash-skipped as unchanged.
+    // The code-graph generation marker (language-agnostic) may only advance when
+    // every indexed file was freshly (re-)extracted this run — `force`, or a
+    // fresh index that skipped nothing — so a non-force re-index that hash-skips
+    // an unchanged file cannot advance past a stale wrong same-file edge it still
+    // carries (fail-closed toward the gated revalidation).
+    let mut any_hash_skipped = false;
     for file_path in &files {
         'file: {
             let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
@@ -1329,6 +1348,7 @@ async fn index_workspace_impl(
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
                         python_hash_skipped |= is_py_path(&rel_path);
+                        any_hash_skipped = true;
                         result.files_skipped += 1;
                         break 'file;
                     }
@@ -1398,6 +1418,23 @@ async fn index_workspace_impl(
             queries
                 .retract_resolved_calls_edges_for_file(&rel_path)
                 .await?;
+            // 101.002-T: on a FORCED full index (which is how `engram index
+            // --revalidate-code-graph` and `engram sync --full
+            // --revalidate-code-graph` route here), also retract this file's
+            // `direct` edges before its function metadata is deleted. Re-
+            // extraction re-mints function IDs, so a same-file WRONG direct edge
+            // persisted before the 100-F guard would otherwise survive as a
+            // dangling row keyed on a retired caller ID while the marker still
+            // advances — violating H4 on the full-scan revalidation path.
+            // Gated on `force` so the non-forced fast path is untouched;
+            // legitimate same-file edges are re-created by in-file resolution
+            // under the guard, and `direct` edges are same-file by construction
+            // so no cross-file edge can be removed (094-F invariants preserved).
+            if force {
+                queries
+                    .retract_direct_calls_edges_for_file(&rel_path)
+                    .await?;
+            }
             queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
@@ -1851,6 +1888,24 @@ async fn index_workspace_impl(
         );
     }
 
+    // ── 101-F (U2): advance the code-graph extraction-generation marker ──
+    // A full index freshly extracts every non-hash-skipped file under the
+    // current logic (incl. the 100-F fail-closed same-file guard), so the
+    // persisted direct edges reflect this generation. Advance only when every
+    // indexed file was freshly extracted this run (`force`, or nothing
+    // hash-skipped) AND no file errored — otherwise a skipped/failed file may
+    // still carry a stale wrong same-file edge, so keep the old generation for
+    // the gated revalidation to migrate (A3/C7-3, fail-closed).
+    if result.errors.is_empty() && (force || !any_hash_skipped) {
+        queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+    } else {
+        debug!(
+            force,
+            any_hash_skipped,
+            "code graph: keeping prior code-graph generation marker — not all files freshly extracted this index"
+        );
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
     result.duration_ms = elapsed;
@@ -1940,7 +1995,7 @@ pub async fn sync_workspace(
     branch: &str,
     config: &CodeGraphConfig,
 ) -> Result<SyncResult, EngramError> {
-    sync_workspace_with_progress(ws_path, data_dir, branch, config, false, None).await
+    sync_workspace_with_progress(ws_path, data_dir, branch, config, false, false, None).await
 }
 
 /// Incrementally sync the code graph while reporting `(completed, total)` file
@@ -1952,12 +2007,21 @@ pub async fn sync_workspace(
 /// post-pass runs to materialize the upgraded cross-module edges. When `false`,
 /// a stale marker is a no-op deferral (C12-5) — routine startup auto-sync never
 /// silently re-extracts or churns canonical edges.
+///
+/// `revalidate_code_graph` gates the 101-F code-graph extraction-generation
+/// backfill: when `true` and the durable generation marker is stale, every
+/// indexed file (language-agnostic) is force re-extracted so the 100-F
+/// fail-closed same-file guard re-runs over stale WRONG same-file direct edges
+/// persisted before the fix, then the canonical post-pass re-materializes
+/// cross-file singletons and the marker advances. When `false`, a stale
+/// generation is a no-op deferral (A5/C12-5).
 pub async fn sync_workspace_with_progress(
     ws_path: &Path,
     data_dir: &Path,
     branch: &str,
     config: &CodeGraphConfig,
     backfill_python_canonical: bool,
+    revalidate_code_graph: bool,
     mut progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<SyncResult, EngramError> {
     let start = std::time::Instant::now();
@@ -2046,6 +2110,40 @@ pub async fn sync_workspace_with_progress(
         );
     }
 
+    // ── 101-F (U2): gated code-graph extraction-generation revalidation ─
+    // The durable generation marker records the same-file target-precision logic
+    // the persisted direct edges were last materialized under. When it is stale
+    // AND the caller supplied `--revalidate-code-graph`, force re-extraction of
+    // EVERY indexed file (below, via `run_codegraph_revalidation` in the skip
+    // check) — language-agnostic, because the 100-F fail-closed guard covers
+    // Rust `cfg`-gated dups AND Python last-def shadowing — so the guard re-runs
+    // over stale WRONG same-file direct edges persisted before the fix; the
+    // canonical post-pass after the loop then re-materializes cross-file
+    // singletons and the marker advances. Without the gate a stale generation is
+    // a no-op deferral (A5/C12-5): routine sync never silently re-extracts.
+    let stored_codegraph_generation = queries.code_graph_extraction_generation()?;
+    let codegraph_generation_current =
+        stored_codegraph_generation.as_deref() == Some(CODE_GRAPH_EXTRACTION_GENERATION);
+    let run_codegraph_revalidation = !codegraph_generation_current && revalidate_code_graph;
+    // 101.002-T (H2/A3 fail-closed): tracks whether any previously-indexed
+    // source file was BYPASSED (skipped without re-extraction AND without
+    // cleanup) during a revalidation pass — e.g. a file truncated to zero bytes
+    // after it was indexed. Such a file's pre-fix stale edges are neither
+    // re-derived under the 100-F guard nor retracted, so the extraction-
+    // generation marker must NOT advance this pass (it would falsely certify
+    // the stale edges as migrated). Mirrors the index path's `any_hash_skipped`
+    // gate. Oversized files are NOT counted here: they run `handle_deleted_file`,
+    // which retracts BOTH resolved and same-file direct edges (101.002-T), so no
+    // stale edge survives and bypassing extraction is safe.
+    let mut revalidation_incomplete = false;
+    if !codegraph_generation_current && !run_codegraph_revalidation {
+        debug!(
+            stored = ?stored_codegraph_generation,
+            expected = CODE_GRAPH_EXTRACTION_GENERATION,
+            "code graph sync: extraction-generation mismatch — gated revalidation pending (re-run with --revalidate-code-graph)"
+        );
+    }
+
     // Build a set of current relative paths for deletion detection.
     let current_rel_paths: std::collections::HashSet<String> = current_files
         .iter()
@@ -2113,6 +2211,13 @@ pub async fn sync_workspace_with_progress(
             if let Ok(meta) = tokio::fs::metadata(file_path).await {
                 let meta_size = meta.len();
                 if meta_size == 0 {
+                    // 101.002-T: a file that was indexed with edges but is now
+                    // zero bytes is bypassed WITHOUT cleanup, so its pre-fix
+                    // stale edges survive. Refuse to advance the revalidation
+                    // marker this pass (fail-closed).
+                    if run_codegraph_revalidation && indexed_map.contains_key(&rel_path) {
+                        revalidation_incomplete = true;
+                    }
                     result.files_unchanged += 1;
                     break 'file;
                 }
@@ -2146,6 +2251,12 @@ pub async fn sync_workspace_with_progress(
             let size_bytes = source.len() as u64;
             if size_bytes == 0 {
                 // Skip empty files (handles TOCTOU race between metadata and read).
+                // 101.002-T: same fail-closed guard as the metadata zero-byte
+                // branch — a previously-indexed file now empty leaves stale
+                // edges, so the revalidation marker must not advance this pass.
+                if run_codegraph_revalidation && indexed_map.contains_key(&rel_path) {
+                    revalidation_incomplete = true;
+                }
                 result.files_unchanged += 1;
                 break 'file;
             }
@@ -2181,6 +2292,7 @@ pub async fn sync_workspace_with_progress(
                 // left stale after an `__init__.py` add/remove.
                 if existing.content_hash == content_hash
                     && !force_python_recompute.contains(&rel_path)
+                    && !run_codegraph_revalidation
                 {
                     // File unchanged — skip entirely.
                     result.files_unchanged += 1;
@@ -2285,6 +2397,21 @@ pub async fn sync_workspace_with_progress(
             queries
                 .retract_resolved_calls_edges_for_file(&rel_path)
                 .await?;
+            // 101.002-T: during opt-in code-graph revalidation, also retract
+            // this file's `direct` (in-file) edges before its function metadata
+            // is deleted. Re-extraction re-mints function IDs, so a same-file
+            // WRONG direct edge persisted before the 100-F fail-closed guard
+            // would otherwise survive as a dangling row keyed on the retired
+            // caller ID (query-invisible but violating H4 "zero stale wrong
+            // same-file edges remain"). Legitimate same-file edges are
+            // re-created by in-file resolution under the guard, so recall is
+            // preserved. Gated on revalidation to leave normal-sync width
+            // untouched (`retract_resolved_*` intentionally preserves `direct`).
+            if run_codegraph_revalidation {
+                queries
+                    .retract_direct_calls_edges_for_file(&rel_path)
+                    .await?;
+            }
             queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;
@@ -2771,6 +2898,44 @@ pub async fn sync_workspace_with_progress(
         }
     }
 
+    // ── 101-F (U2): code-graph extraction-generation revalidation ───────
+    // Every indexed file was force re-extracted above (the 100-F fail-closed
+    // guard dropped/withheld stale same-file wrong direct edges); run the
+    // workspace-global canonical post-pass to re-materialize cross-file
+    // singletons, then advance the durable generation marker — but ONLY when no
+    // file errored, so a partial failure keeps the old generation and the
+    // revalidation retries on the next run (A3/C7-3, fail-closed toward retry).
+    if run_codegraph_revalidation {
+        // The Python backfill above already ran the canonical post-pass; avoid a
+        // redundant second pass when both gates fired this sync.
+        if !run_python_backfill {
+            let resolved = reresolve_calls_edges_with_canonical_context(
+                &queries,
+                ws_path,
+                &crates,
+                &unsafe_prefixes,
+                &python_packages,
+            )
+            .await?;
+            result.edges_created += resolved.resolved;
+        }
+        if result.errors.is_empty() && !revalidation_incomplete {
+            queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+            debug!("code graph sync: code-graph revalidation complete; generation marker advanced");
+        } else if revalidation_incomplete {
+            // 101.002-T (H2/A3): a previously-indexed source file was bypassed
+            // (e.g. truncated to zero bytes) so its pre-fix stale edges were not
+            // revalidated. Keep the prior marker; the next revalidation retries.
+            warn!(
+                "code graph sync: code-graph revalidation bypassed a previously-indexed file (now empty) — keeping prior generation marker so the next sync retries the migration"
+            );
+        } else {
+            warn!(
+                "code graph sync: code-graph revalidation hit a file error — keeping prior generation marker so the next sync retries the migration"
+            );
+        }
+    }
+
     // ── Post-pass: re-resolve unresolved references edges ───────────
     // Same ordering issue as index_workspace: a reference may be processed
     // before its target class exists. Re-resolve self-loops now all symbols exist.
@@ -2834,6 +2999,20 @@ async fn handle_deleted_file(
     // function metadata they are keyed against.
     queries
         .retract_resolved_calls_edges_for_file(file_path)
+        .await?;
+    // 101.002-T: also retract this file's same-file `direct` calls edges. When a
+    // file is deleted or evicted (oversized), `delete_functions_by_file` below
+    // removes the function metadata but NOT the raw `calls_edge` rows, so a
+    // same-file direct edge (which references only in-file symbols by
+    // construction) would otherwise survive as a dangling row keyed on retired
+    // ids — and during a `--revalidate-code-graph` pass be falsely certified as
+    // migrated when the generation marker advances (H4). Direct edges are
+    // same-file by construction, so this never removes a cross-file edge
+    // (094-F invariants preserved). The edge is already dangling once the
+    // function metadata is deleted below, so this is a strict clean-up with no
+    // recall downside.
+    queries
+        .retract_direct_calls_edges_for_file(file_path)
         .await?;
     queries.clear_staged_calls_for_file(file_path).await?;
     queries.delete_functions_by_file(file_path).await?;

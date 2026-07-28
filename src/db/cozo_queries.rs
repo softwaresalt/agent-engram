@@ -1796,6 +1796,45 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
         )
     }
 
+    /// Read the durable code-graph extraction-generation marker (101-F) from
+    /// `schema_meta`, or `None` when unset.
+    ///
+    /// Mirrors [`Self::python_extraction_version`]: the generation lives in a
+    /// dedicated `schema_meta` key, never folded into `file_node.content_hash`
+    /// (A4). A `None` result — a legacy database predating the marker — is
+    /// treated by the caller as needing a gated revalidation backfill.
+    ///
+    /// # Errors
+    /// Returns [`EngramError`] when the `schema_meta` query fails for a reason
+    /// other than the relation not existing.
+    pub fn code_graph_extraction_generation(&self) -> Result<Option<String>, EngramError> {
+        crate::db::cozo_backend::schema::schema_meta_version(
+            &self.db,
+            crate::db::cozo_backend::schema::CODE_GRAPH_EXTRACTION_GENERATION_KEY,
+        )
+    }
+
+    /// Persist the durable code-graph extraction-generation marker (101-F).
+    ///
+    /// Idempotent upsert routed through the busy-tolerant schema helper. Callers
+    /// must only advance the generation after a fully successful re-extraction
+    /// pass (no affected-file errors) so a partial failure keeps the old
+    /// generation and the revalidation retries on the next run (A3/C7-3,
+    /// fail-closed toward retry).
+    ///
+    /// # Errors
+    /// Returns [`EngramError`] when the `schema_meta` upsert fails.
+    pub fn set_code_graph_extraction_generation(
+        &self,
+        generation: &str,
+    ) -> Result<(), EngramError> {
+        crate::db::cozo_backend::schema::set_schema_meta_version(
+            &self.db,
+            crate::db::cozo_backend::schema::CODE_GRAPH_EXTRACTION_GENERATION_KEY,
+            generation,
+        )
+    }
+
     /// Record a call site whose callee could not be resolved within the
     /// caller's own file, for the deferred cross-file post-pass (082.002-T).
     ///
@@ -2038,6 +2077,45 @@ stale[from, to] :=
     *calls_edge { from, to, resolution },
     resolution = "calls_resolved_canonical",
     *function_meta { id: to, file_path },
+    file_path = $file_path
+?[from, to] := stale[from, to]
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retract `direct` (in-file) `calls_edge` rows whose caller (`from`) is a
+    /// function defined in `file_path` (101.002-T revalidation hardening).
+    ///
+    /// Must be invoked BEFORE the file's function metadata is deleted, because
+    /// it maps file → function IDs via `function_meta.file_path`. Unlike
+    /// [`Self::retract_resolved_calls_edges_for_file`] (which deliberately
+    /// preserves `direct` edges), this retracts them — but ONLY on the opt-in
+    /// code-graph *revalidation* teardown. Re-extraction re-mints function IDs
+    /// with fresh `Uuid`s, so a same-file WRONG `direct` edge persisted before
+    /// the 100-F fail-closed guard would otherwise survive as a dangling row
+    /// keyed on the retired caller ID. Retracting it here makes the revalidation
+    /// actually REMOVE the stale edge (H4: zero stale wrong same-file edges
+    /// remain). Legitimate same-file direct edges are re-created by in-file
+    /// resolution under the 100-F guard on re-extraction, so recall is
+    /// preserved. `direct` edges are same-file by construction, so filtering on
+    /// the caller alone is sufficient and cannot remove a cross-file edge
+    /// (preserving the 094-F cross-file/cross-language invariants). A no-op when
+    /// the `resolution` column is absent.
+    pub async fn retract_direct_calls_edges_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "direct",
+    *function_meta { id: from, file_path },
     file_path = $file_path
 ?[from, to] := stale[from, to]
 :rm calls_edge { from, to }
