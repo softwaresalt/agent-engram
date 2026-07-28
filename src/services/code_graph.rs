@@ -3234,4 +3234,179 @@ mod tests {
         );
         Ok(())
     }
+
+    // ── U1 (100.001-T): same-file duplicate-name shadowing RED harness ───────
+    //
+    // FF7DE872 / deliberation 014-D. `find_function_id` returns the FIRST name
+    // match, so when one file declares more than one top-level def of the same
+    // name, a bare call binds to the earlier/shadowed target — a wrong-target
+    // direct edge (013-D no-false-edge / 082-F target-correctness). These tests
+    // assert TARGET-IDENTITY on the `direct` edges the real indexer mints:
+    //   * an ambiguous same-file callee must mint NO direct edge (fail-closed);
+    //   * a legitimate UNIQUE-name same-file call must still resolve (recall).
+    //
+    // Rust reproduces via `#[cfg(...)]`-gated duplicate definitions: tree-sitter
+    // does not evaluate `cfg`, so BOTH `platform` fns are extracted into this
+    // file's `function_ids`, and a bare `platform()` call first-matches an
+    // arbitrary (wrong) cfg variant. Inline `mod` bodies are not descended by
+    // the extractor and two bare same-scope free fns are invalid Rust, so the
+    // cfg-gated pair is the real same-file duplicate-name vector.
+
+    /// A Rust file whose `platform` is defined twice under mutually exclusive
+    /// `cfg` gates (a real, valid same-file duplicate-name shape), plus a
+    /// unique-name control (`helper`) proving recall is preserved.
+    const RUST_SHADOW_FIXTURE: &str = "\
+#[cfg(unix)]
+pub fn platform() -> u8 { 1 }
+
+#[cfg(windows)]
+pub fn platform() -> u8 { 2 }
+
+pub fn describe() {
+    let _ = platform();
+}
+
+pub fn helper() -> u8 { 7 }
+
+pub fn caller_unique() {
+    let _ = helper();
+}
+";
+
+    /// A Python file with two top-level `def parse` (Python last-def-wins
+    /// shadowing) plus a unique-name control (`helper_py`).
+    const PYTHON_SHADOW_FIXTURE: &str = "\
+def parse():
+    return 1
+
+
+def parse():
+    return 2
+
+
+def run():
+    parse()
+
+
+def helper_py():
+    return 3
+
+
+def caller_py():
+    helper_py()
+";
+
+    /// Index a same-file-shadowing fixture and return the live queries handle.
+    /// The returned `TempDir` must be kept alive for the DB to stay readable.
+    async fn index_shadow_fixture(
+        files: &[(&str, &str)],
+        with_manifest: bool,
+    ) -> anyhow::Result<(tempfile::TempDir, CodeGraphQueries)> {
+        let temp_root = repo_local_temp_root()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("same-file-shadow-")
+            .tempdir_in(temp_root)?;
+        let ws = tmp.path();
+        if with_manifest {
+            write_manifest_result(ws)?;
+        }
+        for (rel, content) in files {
+            write_file_result(ws, rel, content)?;
+        }
+        let config = CodeGraphConfig::default();
+        let (data_dir, branch) = test_db_params(ws);
+        index_workspace_impl(ws, &data_dir, &branch, &config, true, None, false).await?;
+        let db = connect_db(&data_dir, &branch).await?;
+        Ok((tmp, CodeGraphQueries::new(db)))
+    }
+
+    /// Materialize the file's `direct` calls edges as (caller_name, callee_name)
+    /// pairs, resolving each endpoint id back to its function name.
+    async fn direct_edge_name_pairs(
+        q: &CodeGraphQueries,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let name_by_id: HashMap<String, String> = q
+            .all_functions()
+            .await?
+            .into_iter()
+            .map(|f| (f.id, f.name))
+            .collect();
+        Ok(q
+            .list_calls_edges_by_resolution("direct")
+            .await?
+            .into_iter()
+            .map(|(from, to)| {
+                (
+                    name_by_id.get(&from).cloned().unwrap_or_default(),
+                    name_by_id.get(&to).cloned().unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
+    /// Count indexed functions sharing `name` (the same-file ambiguity degree).
+    async fn function_name_count(q: &CodeGraphQueries, name: &str) -> anyhow::Result<usize> {
+        Ok(q
+            .all_functions()
+            .await?
+            .into_iter()
+            .filter(|f| f.name == name)
+            .count())
+    }
+
+    /// RED (Rust): an ambiguous same-file duplicate-name callee must NOT mint a
+    /// first-match direct edge; the unique-name control still resolves.
+    #[tokio::test]
+    async fn same_file_duplicate_name_rust_is_fail_closed() -> anyhow::Result<()> {
+        let (_tmp, q) = index_shadow_fixture(&[("src/lib.rs", RUST_SHADOW_FIXTURE)], true).await?;
+
+        assert_eq!(
+            function_name_count(&q, "platform").await?,
+            2,
+            "fixture must declare the duplicate `platform` twice to be ambiguous"
+        );
+
+        let direct = direct_edge_name_pairs(&q).await?;
+
+        // Recall control (GREEN throughout): the unique-name same-file call
+        // resolves to its exact direct-edge target.
+        assert!(
+            direct.contains(&("caller_unique".to_owned(), "helper".to_owned())),
+            "unique-name same-file call must resolve to a direct edge; direct edges: {direct:?}"
+        );
+
+        // Fail-closed target-identity gate (RED until U2): the ambiguous callee
+        // must mint NO direct edge to any `platform` definition.
+        assert!(
+            !direct.contains(&("describe".to_owned(), "platform".to_owned())),
+            "same-file ambiguous callee must not mint a first-match direct edge (013-D/082-F); direct edges: {direct:?}"
+        );
+        Ok(())
+    }
+
+    /// RED (Python): two top-level `def parse` must NOT mint a first-match
+    /// direct edge; the unique-name control still resolves.
+    #[tokio::test]
+    async fn same_file_duplicate_name_python_is_fail_closed() -> anyhow::Result<()> {
+        let (_tmp, q) = index_shadow_fixture(&[("app.py", PYTHON_SHADOW_FIXTURE)], false).await?;
+
+        assert_eq!(
+            function_name_count(&q, "parse").await?,
+            2,
+            "fixture must declare the duplicate `parse` twice to be ambiguous"
+        );
+
+        let direct = direct_edge_name_pairs(&q).await?;
+
+        assert!(
+            direct.contains(&("caller_py".to_owned(), "helper_py".to_owned())),
+            "unique-name same-file Python call must resolve to a direct edge; direct edges: {direct:?}"
+        );
+
+        assert!(
+            !direct.contains(&("run".to_owned(), "parse".to_owned())),
+            "same-file ambiguous Python callee must not mint a first-match direct edge (013-D/082-F); direct edges: {direct:?}"
+        );
+        Ok(())
+    }
 }
