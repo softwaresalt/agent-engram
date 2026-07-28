@@ -186,6 +186,30 @@ agnostic fail-closed behavior is the certified v1 contract. See
 and
 `docs/exec-plans/2026-07-27-ff7de872-same-file-shadowing-fail-closed-plan.md`.
 
+**Repairing edges persisted before the guard (`101-F`).** The fail-closed guard
+above only withholds an ambiguous same-file edge on a *freshly extracted* file,
+so a WRONG same-file direct edge persisted **before** the guard landed survives
+an unchanged-bytes hash-skip on a routine `engram sync` (the content-hash skip is
+keyed on file content, not on extractor generation). A durable
+`code_graph_extraction_generation` marker — a dedicated `schema_meta` record,
+never folded into `file_node.content_hash` — records the target-precision
+generation the persisted direct edges were last materialized under. When that
+marker is behind the current generation, the opt-in
+`engram sync --revalidate-code-graph` (or `engram index --revalidate-code-graph`,
+which implies `--force`) force re-extracts **every** indexed file so the guard
+re-runs and drops the stale wrong edge, then the cross-file singleton/canonical
+post-pass re-materializes unaffected edges and the marker advances — but **only
+on a fully clean pass**, so any per-file error keeps the old marker and the next
+run retries (fail-closed toward retry). The revalidation is opt-in (a stale
+generation is a strict no-op deferral on routine sync — no churn) and surfaces a
+`debug`-level hint (`extraction-generation mismatch — gated revalidation
+pending`) prompting the operator to run it. This mirrors the 096-F Python
+extraction-version rollout (see below) and supersedes the manual-`--force`
+guidance in
+`docs/compound/workflow-issues/new-extraction-logic-needs-forced-reindex-2026-07-20.md`.
+See
+`docs/exec-plans/2026-07-28-versioned-codegraph-revalidation-backfill-plan.md`.
+
 ### Python namespace-qualified call resolution (v1)
 
 Python modules are namespaces (`foo/bar.py` is the `foo.bar` namespace), so a
@@ -296,6 +320,18 @@ graph. Known limitations:
   current version, then backfills `calls_resolved_canonical` edges in one pass.
   `engram sync --full --backfill-python-canonical` also forces re-extraction —
   the backfill flag implies `--force` on the full-scan path.
+* **Version-gated code-graph revalidation for stale wrong edges.** Independently,
+  `engram sync --revalidate-code-graph` (or `engram index --revalidate-code-graph`,
+  which implies `--force`) force re-extracts every indexed file **only when** the
+  durable `code_graph_extraction_generation` marker is behind the current
+  generation, so the same-file fail-closed guard (`FF7DE872`/`101-F`, above)
+  re-runs over WRONG same-file direct edges persisted **before** that guard landed
+  and drops them, re-materializing unaffected cross-file edges in one post-pass.
+  The marker advances only on a fully clean pass (a per-file error keeps the old
+  marker so the next run retries); a matching generation is a strict no-op, and a
+  stale generation logs a `debug` hint prompting the operator to opt in. Unlike a
+  bare `--force`, the gate makes the revalidation idempotent and churn-free on
+  routine sync.
 
 ## Data-lineage subgraph (v1)
 
