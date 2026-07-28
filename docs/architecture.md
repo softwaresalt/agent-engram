@@ -144,13 +144,17 @@ resolution is unchanged.
 
 ### Same-file duplicate-name resolution (`FF7DE872`)
 
-A **direct** edge is minted when the caller and callee share a file. Historically
-the callee (and caller) were located by first-name-match, so when a file held more
-than one top-level definition of the same name — legal Python (the last `def`
-shadows earlier ones at runtime) and legal Rust (for example mutually-exclusive
-`#[cfg(...)]`-gated duplicates) — a bare call bound to the **first, wrong**
-definition instead of the effective one. This is a same-file *target-precision*
-gap only.
+A **direct** edge is minted when the caller and callee share a file. The callee
+(and caller) were located by first-name-match, so when a file held more than one
+top-level definition of the same name a bare call could bind to the **first,
+wrong** definition instead of the effective one — a same-file *target-precision*
+gap. The live defect was **Rust-only** (for example mutually-exclusive
+`#[cfg(...)]`-gated duplicate definitions); Python's equivalent shape — two
+same-name top-level `def`s, where the last shadows earlier ones at runtime — was
+already failing closed through the 096-F module-binding contest check
+(`is_contested`, `module_binding_counts > 1`). The guard below is therefore
+language-agnostic: it fixes the Rust defect and hardens Python as
+defense-in-depth.
 
 Resolution is now **fail-closed and language-agnostic** (deliberation `014-D`,
 Option A; 013-D no-false-edge, 082-F target-correctness). At the two direct-edge
@@ -227,7 +231,7 @@ These cases never produce a canonical module-qualified edge:
 * **Same-file shadowing (`FF7DE872`).** First-match same-file name shadowing was
   a separate, independent bug outside this capability; it is now handled
   language-agnostically by the same-file duplicate-name fail-closed guard (see
-  *Same-file duplicate-name resolution* below).
+  *Same-file duplicate-name resolution* above).
 
 #### Precision and recall gates
 

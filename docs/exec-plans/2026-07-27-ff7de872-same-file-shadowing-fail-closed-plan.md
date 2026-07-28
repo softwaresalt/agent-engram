@@ -20,6 +20,20 @@ tags:
 
 ## Problem Frame
 
+> **Execution correction (100-F ship, 2026-07-28).** Two premises below were
+> disproven during implementation; the authoritative behavior is recorded in the
+> durable code-graph capability notes (`docs/architecture.md`).
+> 1. **Rust vector.** Same-name defs in different inline `mod` blocks are *not*
+>    reachable — the Rust extractor does not descend `mod_item` bodies. The
+>    verified same-file duplicate-name shape is mutually-exclusive
+>    `#[cfg(...)]`-gated top-level definitions (tree-sitter does not evaluate
+>    `cfg`, so both are extracted). The RED harness and acceptance tests use it.
+> 2. **Python was already fail-closed.** Two same-name top-level `def`s were
+>    *already* caught by the 096-F module-binding contest check (`is_contested`,
+>    `module_binding_counts > 1`), so the live wrong-edge defect was **Rust-only**.
+>    The chosen guard stays language-agnostic and still hardens Python as
+>    defense-in-depth; the Python RED test is retained as a green regression guard.
+
 engram mints a **direct** `calls` edge whenever both caller and callee resolve
 within the file being indexed. Resolution goes through `find_function_id`
 (`src/services/code_graph.rs:2988`), which returns the **first** name match. When

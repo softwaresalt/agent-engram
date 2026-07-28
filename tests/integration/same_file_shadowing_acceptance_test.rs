@@ -98,12 +98,16 @@ const FIXTURE: &[(&str, &str)] = &[
 
 fn write_fixture(ws: &Path) {
     for (rel, content) in FIXTURE {
-        let full = ws.join(rel);
-        if let Some(parent) = full.parent() {
-            fs::create_dir_all(parent).expect("create dirs");
-        }
-        fs::write(full, content).expect("write file");
+        write_one(ws, rel, content);
     }
+}
+
+fn write_one(ws: &Path, rel: &str, content: &str) {
+    let full = ws.join(rel);
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).expect("create dirs");
+    }
+    fs::write(full, content).expect("write file");
 }
 
 fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
@@ -263,5 +267,72 @@ async fn cross_file_singleton_resolution_unchanged() {
     assert!(
         singletons.contains(&("alpha".to_owned(), "beta".to_owned())),
         "cross-file unique-name singleton resolution must be unchanged (H1); singletons: {singletons:?}"
+    );
+}
+
+/// Index/sync symmetry: the SECOND guarded minting site — incremental
+/// `sync_workspace` — must fail closed too. A same-file duplicate-name callee
+/// reached through sync (a) mints no wrong-target direct edge, (b) increments the
+/// `same_file_ambiguous_dropped` counter on `SyncResult`, and (c) still mints the
+/// unique-name control's direct edge (recall preserved under sync).
+#[test]
+async fn sync_path_fails_closed_on_same_file_duplicate_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_one(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_one(ws, "src/dup.rs", RUST_DUP);
+    write_one(ws, "src/unique.rs", RUST_UNIQUE);
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync");
+
+    assert!(
+        result.same_file_ambiguous_dropped >= 1,
+        "sync must count the dropped same-file ambiguous endpoint; got {}",
+        result.same_file_ambiguous_dropped
+    );
+
+    let q = CodeGraphQueries::new(connect_db(&data_dir, &branch).await.expect("connect_db"));
+    let (id_to_name, counts) = function_name_maps(&q).await;
+    assert_eq!(
+        counts.get("plat"),
+        Some(&2),
+        "cfg-gated `plat` must be extracted twice to be ambiguous under sync"
+    );
+
+    let ambiguous_ids: HashSet<&String> = id_to_name
+        .iter()
+        .filter(|(_, name)| counts.get(*name).copied().unwrap_or(0) > 1)
+        .map(|(id, _)| id)
+        .collect();
+
+    let direct: Vec<(String, String)> = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        !direct.iter().any(|(_, to)| ambiguous_ids.contains(to)),
+        "sync must not mint a direct edge to a same-file duplicate-name def; direct: {direct:?}"
+    );
+
+    let pairs: HashSet<(String, String)> = direct
+        .into_iter()
+        .map(|(from, to)| {
+            (
+                id_to_name.get(&from).cloned().unwrap_or_default(),
+                id_to_name.get(&to).cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert!(
+        pairs.contains(&("caller_unique".to_owned(), "helper".to_owned())),
+        "sync must preserve unique-name same-file recall; pairs: {pairs:?}"
     );
 }
