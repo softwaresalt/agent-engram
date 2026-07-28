@@ -532,3 +532,83 @@ async fn forced_index_revalidation_drops_wrong_edge_and_preserves_recall() {
         "a clean forced full index advances the generation marker"
     );
 }
+
+/// Deletion-path H4 hygiene (Copilot review, 101.002-T). When a file carrying a
+/// stale WRONG same-file direct edge is DELETED (or evicted as oversized), the
+/// shared `handle_deleted_file` teardown must retract its `direct` edges too —
+/// not only the resolved/singleton edges. `delete_functions_by_file` drops the
+/// function metadata but NOT the raw `calls_edge` row, so before the fix the
+/// direct edge survived as a dangling row keyed on a retired id. This runs on a
+/// plain (ungated) incremental sync because deletion cleanup is
+/// generation-independent — it must not require `--revalidate-code-graph`.
+#[test]
+async fn deleted_file_retracts_stale_direct_edge_no_dangling_row() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_fixture(ws);
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Inject a persisted WRONG same-file direct edge inside `src/dup.rs`
+    // (`describe -> shadowed first cfg-gated plat`).
+    let describe_id = ids_named(&q, "describe").await.remove(0);
+    let plat_ids = ids_named(&q, "plat").await;
+    assert_eq!(
+        plat_ids.len(),
+        2,
+        "cfg-gated `plat` must be extracted twice to be ambiguous"
+    );
+    q.create_calls_edge(&describe_id, &plat_ids[0])
+        .await
+        .expect("inject wrong same-file edge");
+
+    let before_direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        before_direct.contains(&(describe_id.clone(), plat_ids[0].clone())),
+        "precondition: injected wrong same-file edge is persisted; got {before_direct:?}"
+    );
+
+    // Delete the file that owns the wrong edge, then run a PLAIN sync (no
+    // revalidation gate). The deletion phase must call `handle_deleted_file`,
+    // which now retracts the file's direct edges alongside its resolved ones.
+    fs::remove_file(ws.join("src/dup.rs")).expect("remove src/dup.rs");
+    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, false, false, None)
+        .await
+        .expect("plain sync should succeed");
+
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    let after = edge_name_pairs(&q2).await;
+
+    // (0) H4 raw-row hygiene: NO dangling `calls_edge` row survives the deletion.
+    assert_no_dangling_edges(&after);
+
+    // (1) The deleted file's functions and its wrong edge are gone entirely.
+    assert!(
+        after
+            .iter()
+            .all(|(from, to)| from != "describe" && to != "plat"),
+        "deletion must retract the deleted file's direct edges; after {after:?}"
+    );
+
+    // (2) Recall on surviving files is untouched (deletion is file-scoped): the
+    //     cross-file singleton and the unrelated same-file unique edge remain.
+    assert!(
+        after.contains(&("caller_unique".to_owned(), "helper".to_owned())),
+        "deletion must not disturb a surviving file's same-file edge; after {after:?}"
+    );
+    let singletons = singleton_pairs(&q2).await;
+    assert!(
+        singletons.contains(&("alpha".to_owned(), "beta".to_owned())),
+        "deletion must not disturb the cross-file singleton; singletons {singletons:?}"
+    );
+}

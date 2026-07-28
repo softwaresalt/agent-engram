@@ -2132,8 +2132,9 @@ pub async fn sync_workspace_with_progress(
     // re-derived under the 100-F guard nor retracted, so the extraction-
     // generation marker must NOT advance this pass (it would falsely certify
     // the stale edges as migrated). Mirrors the index path's `any_hash_skipped`
-    // gate. Oversized files are NOT counted here: they run `handle_deleted_file`
-    // (their stale edges are cleaned), so bypassing extraction is safe.
+    // gate. Oversized files are NOT counted here: they run `handle_deleted_file`,
+    // which retracts BOTH resolved and same-file direct edges (101.002-T), so no
+    // stale edge survives and bypassing extraction is safe.
     let mut revalidation_incomplete = false;
     if !codegraph_generation_current && !run_codegraph_revalidation {
         debug!(
@@ -2998,6 +2999,20 @@ async fn handle_deleted_file(
     // function metadata they are keyed against.
     queries
         .retract_resolved_calls_edges_for_file(file_path)
+        .await?;
+    // 101.002-T: also retract this file's same-file `direct` calls edges. When a
+    // file is deleted or evicted (oversized), `delete_functions_by_file` below
+    // removes the function metadata but NOT the raw `calls_edge` rows, so a
+    // same-file direct edge (which references only in-file symbols by
+    // construction) would otherwise survive as a dangling row keyed on retired
+    // ids — and during a `--revalidate-code-graph` pass be falsely certified as
+    // migrated when the generation marker advances (H4). Direct edges are
+    // same-file by construction, so this never removes a cross-file edge
+    // (094-F invariants preserved). The edge is already dangling once the
+    // function metadata is deleted below, so this is a strict clean-up with no
+    // recall downside.
+    queries
+        .retract_direct_calls_edges_for_file(file_path)
         .await?;
     queries.clear_staged_calls_for_file(file_path).await?;
     queries.delete_functions_by_file(file_path).await?;
