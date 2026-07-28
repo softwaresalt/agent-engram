@@ -311,6 +311,7 @@ async fn sync_workspace_inner(
             branch,
             &config,
             parsed.backfill_python_canonical,
+            false,
             Some(&mut progress_callback),
         )
         .await

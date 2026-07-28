@@ -178,6 +178,7 @@ pub async fn run_direct_sync(
             &branch,
             &config.code_graph,
             backfill_python_canonical,
+            false,
             progress,
         )
         .await

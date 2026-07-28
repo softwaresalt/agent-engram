@@ -38,6 +38,19 @@ type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
 /// from this value triggers the gated rollout backfill.
 const PYTHON_CANONICAL_EXTRACTION_VERSION: &str = "1";
 
+/// Current code-graph extraction *generation* (101-F).
+///
+/// Incremented whenever the same-file target-precision logic changes such that
+/// already-indexed files must be re-extracted to correct stale WRONG same-file
+/// direct edges. Generation `"1"` marks the 100-F fail-closed same-file guard.
+/// A sync whose stored marker differs from this value triggers the gated
+/// `--revalidate-code-graph` backfill. Like [`PYTHON_CANONICAL_EXTRACTION_VERSION`]
+/// it is persisted in a dedicated `schema_meta` marker, NEVER folded into
+/// `file_node.content_hash` — that must stay a raw source SHA so staleness
+/// detection compares bytes (A4).
+#[allow(dead_code)] // consumed by 101.002-T (U2 gated revalidation + marker advance)
+const CODE_GRAPH_EXTRACTION_GENERATION: &str = "1";
+
 /// Cached Rust canonical context produced by the global unsafe-module pre-pass.
 #[derive(Debug, Clone)]
 struct CachedRustCanonicalContext {
@@ -1940,7 +1953,7 @@ pub async fn sync_workspace(
     branch: &str,
     config: &CodeGraphConfig,
 ) -> Result<SyncResult, EngramError> {
-    sync_workspace_with_progress(ws_path, data_dir, branch, config, false, None).await
+    sync_workspace_with_progress(ws_path, data_dir, branch, config, false, false, None).await
 }
 
 /// Incrementally sync the code graph while reporting `(completed, total)` file
@@ -1952,12 +1965,21 @@ pub async fn sync_workspace(
 /// post-pass runs to materialize the upgraded cross-module edges. When `false`,
 /// a stale marker is a no-op deferral (C12-5) — routine startup auto-sync never
 /// silently re-extracts or churns canonical edges.
+///
+/// `revalidate_code_graph` gates the 101-F code-graph extraction-generation
+/// backfill: when `true` and the durable generation marker is stale, every
+/// indexed file (language-agnostic) is force re-extracted so the 100-F
+/// fail-closed same-file guard re-runs over stale WRONG same-file direct edges
+/// persisted before the fix, then the canonical post-pass re-materializes
+/// cross-file singletons and the marker advances. When `false`, a stale
+/// generation is a no-op deferral (A5/C12-5).
 pub async fn sync_workspace_with_progress(
     ws_path: &Path,
     data_dir: &Path,
     branch: &str,
     config: &CodeGraphConfig,
     backfill_python_canonical: bool,
+    revalidate_code_graph: bool,
     mut progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<SyncResult, EngramError> {
     let start = std::time::Instant::now();
@@ -2045,6 +2067,13 @@ pub async fn sync_workspace_with_progress(
             "code graph sync: Python extraction version mismatch — gated backfill pending (re-run with --backfill-python-canonical)"
         );
     }
+
+    // ── 101-F (U1 seam): code-graph extraction-generation revalidation ──
+    // The `--revalidate-code-graph` gate is threaded here but kept INERT in U1
+    // so the RED harness fails on the un-dropped stale same-file direct edge.
+    // U2 (101.002-T) wires the generation-marker gating + force re-extraction of
+    // every indexed file + marker-advance-on-clean-pass in its place.
+    let _ = revalidate_code_graph;
 
     // Build a set of current relative paths for deletion detection.
     let current_rel_paths: std::collections::HashSet<String> = current_files
