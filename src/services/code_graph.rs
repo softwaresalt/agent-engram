@@ -1418,6 +1418,23 @@ async fn index_workspace_impl(
             queries
                 .retract_resolved_calls_edges_for_file(&rel_path)
                 .await?;
+            // 101.002-T: on a FORCED full index (which is how `engram index
+            // --revalidate-code-graph` and `engram sync --full
+            // --revalidate-code-graph` route here), also retract this file's
+            // `direct` edges before its function metadata is deleted. Re-
+            // extraction re-mints function IDs, so a same-file WRONG direct edge
+            // persisted before the 100-F guard would otherwise survive as a
+            // dangling row keyed on a retired caller ID while the marker still
+            // advances — violating H4 on the full-scan revalidation path.
+            // Gated on `force` so the non-forced fast path is untouched;
+            // legitimate same-file edges are re-created by in-file resolution
+            // under the guard, and `direct` edges are same-file by construction
+            // so no cross-file edge can be removed (094-F invariants preserved).
+            if force {
+                queries
+                    .retract_direct_calls_edges_for_file(&rel_path)
+                    .await?;
+            }
             queries.clear_staged_calls_for_file(&rel_path).await?;
             queries.delete_functions_by_file(&rel_path).await?;
             queries.delete_classes_by_file(&rel_path).await?;

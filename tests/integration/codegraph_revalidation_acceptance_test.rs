@@ -438,3 +438,97 @@ async fn plain_sync_without_flag_is_noop_on_stale_generation() {
         "ungated sync leaves the stale generation marker for the operator to act on (H3/A5)"
     );
 }
+
+/// Full-scan revalidation H4 (Copilot review, 101.002-T). `engram index
+/// --revalidate-code-graph` and `engram sync --full --revalidate-code-graph`
+/// both route to a FORCED `index_workspace`, not the incremental sync path. A
+/// forced full index must ALSO remove the stale WRONG same-file direct edge (not
+/// leave it dangling under a re-minted id) before advancing the marker, so the
+/// advertised H4 cleanup holds on the full-scan path too.
+#[test]
+async fn forced_index_revalidation_drops_wrong_edge_and_preserves_recall() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_fixture(ws);
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Ground-truth recall from a correct fresh extraction.
+    let baseline = edge_name_pairs(&q).await;
+    assert!(
+        baseline.contains(&("caller_unique".to_owned(), "helper".to_owned())),
+        "fresh index resolves the unique-name same-file edge; baseline {baseline:?}"
+    );
+    assert!(
+        baseline.contains(&("alpha".to_owned(), "beta".to_owned())),
+        "fresh index resolves the cross-file singleton; baseline {baseline:?}"
+    );
+
+    // Simulate a pre-100-F database: stale generation + a persisted WRONG
+    // same-file direct edge targeting the shadowed first cfg-gated `plat`.
+    let describe_id = ids_named(&q, "describe").await.remove(0);
+    let plat_ids = ids_named(&q, "plat").await;
+    assert_eq!(
+        plat_ids.len(),
+        2,
+        "cfg-gated `plat` must be extracted twice to be ambiguous"
+    );
+    q.create_calls_edge(&describe_id, &plat_ids[0])
+        .await
+        .expect("inject wrong same-file edge");
+    q.set_code_graph_extraction_generation("0")
+        .expect("stale generation marker");
+
+    let before_direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        before_direct.contains(&(describe_id.clone(), plat_ids[0].clone())),
+        "precondition: injected wrong same-file edge is persisted; got {before_direct:?}"
+    );
+
+    // Forced full re-index — the exact route `engram index --revalidate-code-graph`
+    // and `engram sync --full --revalidate-code-graph` take (force = true).
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, true)
+        .await
+        .expect("forced re-index should succeed");
+
+    let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
+    let q2 = CodeGraphQueries::new(db2);
+    let after = edge_name_pairs(&q2).await;
+
+    // H4 raw-row hygiene: the forced index must REMOVE the stale direct edge, not
+    // orphan it under a retired id (the gap Copilot flagged for the full-scan
+    // path — force teardown previously retracted only resolved edges).
+    assert_no_dangling_edges(&after);
+
+    // Target-identity: no edge, in any resolution class, targets a same-file
+    // duplicate-name def after the forced revalidation.
+    assert!(
+        after.iter().all(|(_, to)| to != "plat"),
+        "forced index revalidation must drop the stale wrong same-file edge; after {after:?}"
+    );
+
+    // Recall floor (H4): every legitimately-resolved baseline edge survives.
+    for legit in &baseline {
+        assert!(
+            after.contains(legit),
+            "forced index must not regress recall on unaffected edge {legit:?}; after {after:?}"
+        );
+    }
+
+    // Marker advanced: a clean forced full index freshly extracts every file.
+    assert_eq!(
+        q2.code_graph_extraction_generation()
+            .expect("read generation marker"),
+        Some("1".to_owned()),
+        "a clean forced full index advances the generation marker"
+    );
+}
