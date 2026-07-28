@@ -321,17 +321,21 @@ graph. Known limitations:
   `engram sync --full --backfill-python-canonical` also forces re-extraction —
   the backfill flag implies `--force` on the full-scan path.
 * **Version-gated code-graph revalidation for stale wrong edges.** Independently,
-  `engram sync --revalidate-code-graph` (or `engram index --revalidate-code-graph`,
-  which implies `--force`) force re-extracts every indexed file **only when** the
-  durable `code_graph_extraction_generation` marker is behind the current
-  generation, so the same-file fail-closed guard (`FF7DE872`/`101-F`, above)
-  re-runs over WRONG same-file direct edges persisted **before** that guard landed
-  and drops them, re-materializing unaffected cross-file edges in one post-pass.
-  The marker advances only on a fully clean pass (a per-file error keeps the old
-  marker so the next run retries); a matching generation is a strict no-op, and a
-  stale generation logs a `debug` hint prompting the operator to opt in. Unlike a
-  bare `--force`, the gate makes the revalidation idempotent and churn-free on
-  routine sync.
+  the incremental `engram sync --revalidate-code-graph` force re-extracts every
+  indexed file **only when** the durable `code_graph_extraction_generation` marker
+  is behind the current generation, so the same-file fail-closed guard
+  (`FF7DE872`/`101-F`, above) re-runs over WRONG same-file direct edges persisted
+  **before** that guard landed and drops them, re-materializing unaffected
+  cross-file edges in one post-pass. The marker advances only on a fully clean
+  pass — a per-file error, or a previously-indexed file bypassed because it is now
+  empty, keeps the old marker so the next run retries. On this incremental `sync`
+  path a matching generation is a strict no-op, and a stale generation logs a
+  `debug` hint prompting the operator to opt in, so the gate makes the incremental
+  revalidation idempotent and churn-free on routine sync. The full-scan forms —
+  `engram index --revalidate-code-graph` and `engram sync --full
+  --revalidate-code-graph` — imply `--force`, so they re-extract every file
+  regardless of the marker (the generation-gated marker *advance* still fires only
+  when the stored marker is stale).
 
 ## Data-lineage subgraph (v1)
 

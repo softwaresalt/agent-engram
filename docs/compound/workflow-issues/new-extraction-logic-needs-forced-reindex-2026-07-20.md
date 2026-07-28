@@ -100,12 +100,15 @@ sends `{"force": true}` and re-parses unchanged files.
   record so a version bump invalidates the skip" enhancement now exists as two
   opt-in, version-gated backfills that supersede the blanket-`--force` step:
   `engram sync --backfill-python-canonical` (Python-canonical
-  `extraction-version` marker, 096-F) and `engram sync --revalidate-code-graph`
-  (code-graph `code_graph_extraction_generation` marker, 101-F). Both imply
-  `--force` on the full-scan path, re-extract only when their marker is behind the
-  current value, advance the marker only on a fully clean pass (partial failure
-  retries), and are strict no-ops on a matching marker — so an upgrade picks up
-  the new edges without a churny blanket reparse. A stale marker logs a `debug`
+  `extraction-version` marker, 096-F) and   `engram sync --revalidate-code-graph` (code-graph
+  `code_graph_extraction_generation` marker, 101-F). On the incremental `engram
+  sync` path each re-extracts only when its marker is behind the current value,
+  advances the marker only on a fully clean pass (partial failure retries), and is
+  a strict no-op on a matching marker — so an upgrade picks up the new edges
+  without a churny blanket reparse. The full-scan forms (`engram index
+  --revalidate-code-graph`, `engram sync --full`) imply `--force` and re-extract
+  every file regardless of the marker; only the generation-gated marker *advance*
+  is skipped when the marker already matches. A stale marker logs a `debug`
   hint prompting the operator to opt in.
 - Related freshness landmines: `sync-workspace-record-file-hash-required`
   (hash-table upkeep) and `hydrate-code-graph-fast-path-already-indexed`
