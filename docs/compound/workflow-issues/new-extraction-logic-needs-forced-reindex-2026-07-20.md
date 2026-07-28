@@ -33,14 +33,19 @@ tags:
 > **Update — superseded for the manual-`--force` step (101-F, 2026-07-28).** The
 > "future enhancement" in Prevention below is now shipped. A durable
 > `code_graph_extraction_generation` marker (a `schema_meta` record) plus an
-> opt-in `engram sync --revalidate-code-graph` / `engram index
-> --revalidate-code-graph` gate (which implies `--force`) revalidate stale
+> opt-in `engram sync --revalidate-code-graph` (incremental, generation-gated) /
+> `engram index --revalidate-code-graph` (full forced reparse) gate revalidate
+> stale
 > **code-graph** edges automatically on a generation bump — you no longer need to
 > hand-run a blanket `--force` after an edge-extraction upgrade to pick up the
 > 100-F/`FF7DE872` same-file fail-closed correction. The prior 096-F rollout
 > shipped the parallel `--backfill-python-canonical` gate for Python-canonical
-> edges. The manual `--force` recipe remains valid as a hammer, but the gated
-> flags are idempotent and churn-free. See
+> edges. The manual `--force` recipe remains valid as a hammer. The incremental
+> `sync --revalidate-code-graph` route is idempotent and churn-free — it is a
+> generation-gated no-op once the marker matches. The `index
+> --revalidate-code-graph` route (and `sync --full --revalidate-code-graph`)
+> always forces a full reparse of every file even when the marker matches, so it
+> is a hammer too — not churn-free. See
 > `docs/exec-plans/2026-07-28-versioned-codegraph-revalidation-backfill-plan.md`
 > and the "Same-file duplicate-name resolution" + "Forced re-index for existing
 > files" sections of `docs/architecture.md`.
