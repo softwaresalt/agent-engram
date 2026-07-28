@@ -26,7 +26,7 @@ Deliberately split across two shipments: Phase 1a (052-S, shipped) provides the 
 Hard landmine discovered and resolved: backlogit permitted reuse of `064-*` IDs across archive and queue. PR #169 shipped TMDL parser as `064-F`, then PR #185 reused `064-F` for verify CLI. Fix: re-IDed terminal archived TMDL family to `066-*` (064.005–008-T became 066.005–008-T; 064-S became 066-S). Verify family kept at `064-*` to preserve merged-history references.
 
 ### 053-S: PR #187 Post-Merge Closure (July 2)
-Quick daemonless docs PR (Phase 1a only; Phase 1b deferred as 065.004-T). Split-brain risk when calling `backlogit get 064-F` — cache returned archived TMDL, markdown returned verify. Resolved by not syncing (cache-union landmine) and using direct markdown edits + CLI mutations.
+Quick daemonless docs PR (Phase 1a only; Phase 1b deferred as 064.004-T). Split-brain risk when calling `backlogit get 064-F` — cache returned archived TMDL, markdown returned verify. Resolved by not syncing (cache-union landmine) and using direct markdown edits + CLI mutations.
 
 ### PR #186 & #188: Copilot Review Fixes & Hardening (July 2)
 PR #186 (chore): removed spurious verify→TMDL link from 064-F, resolved via sync-cache expertise. PR #188 (verify hardening): folded in 5 Copilot findings from PR #185 (docs frontmatter, body.empty test, Windows path containment, CRLF guard). Created compound learning on workspace-path canonicalization (resolve both sides).
@@ -55,14 +55,14 @@ Operator directive reversed scope: CLI-direct IS in scope. Amendment added `--co
 | File | Summary |
 |---|---|
 | 2026-05-20-ship-047-S-session.md | Power BI entity extraction (PBIP reports, pages, visuals, tables, measures) indexed as content_records; synthetic IDs. |
-| 2026-06-30-stage-0E042A84-session.md | Stash triage: CLI-only index already shipped in 030-S (045-F), not duplicate; marked duplicate. |
-| 2026-06-30-stage-B87680AB-session.md | Stash triage: engram-evals-gates deliberation; scoped Phase 1a verify CLI into 052-S; deferred 1b/2c/2d. |
+| 2026-06-30-stage-0E042A84-session.md | Stash triage: CLI-only daemonless index already shipped as 045-F/030-S; determined a duplicate — marked duplicate, no shipment assembled (deliberation 010-D). |
+| 2026-06-30-stage-B87680AB-session.md | Stash triage: engram-evals-gates deliberation; scoped Phase 1a verify CLI into 052-S; deferred Phase 1b + later telemetry phases. |
 | 2026-07-01-ship-052-S-session.md | Post-merge closure PR #185: verify CLI shipped; backlog ID collision found; all closure artifact stored. |
 | 2026-07-01-stage-064-namespace-collision-reconcile-session.md | ID collision fix executed: 064 TMDL → 066; verify 064 retained; manual markdown surgery + doctor verification. |
 | 2026-07-02-ship-053-S-pr187-postmerge-closure-session.md | Post-merge closure PR #187: daemonless docs; 053-S archived; 065-F reopened; backlogit-sync landmine documented. |
 | 2026-07-02-ship-pr186-064F-copilot-fix-session.md | Copilot finding: spurious 064-F → 062.003-T link removed; cache-union landmine required PID cleanup + DB rebuild. |
 | 2026-07-02-ship-pr186-postmerge-pr187-refresh-session.md | PR #186 merged; #187 reopened + merged; local main synced; strict one-PR-at-a-time honored; 0 open PRs final. |
-| 2026-07-02-ship-pr188-064.004-T-postmerge-closure-session.md | Post-merge closure PR #188: verify hardening 5 findings fixed; 064.004-T kept queued (Phase 1b); multi-PR feature tracking. |
-| 2026-07-02-ship-pr188-verify-hardening-session.md | PR #188 hardens PR #185: docs, body.empty coverage, Windows path containment (both sides), CRLF guard; 5 Copilot cycles. |
-| 2026-07-02-stage-067F-usage-telemetry-emit-064F-cancel-session.md | Stash triage: telemetry-EMIT feature 067-F harvested; 064.005-T/006-T cancelled (superseded); shipment 067-S queued. |
+| 2026-07-02-ship-pr188-064.004-T-postmerge-closure-session.md | Post-merge closure PR #188: 5 carried-over PR #185 threads resolved (3 fixed: frontmatter, empty-body coverage, Windows containment; 2 false positives: emit_summary compile, CRLF — kept as guard); 064.004-T kept queued (Phase 1b). |
+| 2026-07-02-ship-pr188-verify-hardening-session.md | PR #188 hardens PR #185: docs frontmatter, body.empty coverage, Windows path containment (both sides), CRLF guard; 5 carried-over #185 threads + 1 #188 re-review cycle. |
+| 2026-07-02-stage-067F-usage-telemetry-emit-064F-cancel-session.md | Stash triage: telemetry-EMIT feature 067-F harvested; 064.005/006-T reserved slots dropped before creation (never materialized; Phase 2c/2d superseded by 067-F); shipment 067-S queued. |
 | 2026-07-03-ship-067S-usage-telemetry-emit-resume-flush-fix-session.md | 067-S resumed after restart: rotation flush bug fixed (tokio fs write_all + flush); PR #190 merged; 067-S archived. |

@@ -39,7 +39,7 @@ Copilot review of 082-F queue artifacts blocked 078-S: three over-limit tasks (0
 
 ## Traceability & decisions
 
-- **Adversarial gate efficacy** (071-S/072-S): caught 3 genuine P1s (blanket glob under-run, DB divergence, NotReady hint scope). Design: only after Ship + review caught issues, open-loop fixing before merge.
+- **Adversarial gate efficacy** (071-S/072-S): caught 2 genuine P1s (blanket-glob under-run, reactive-`.md` DB divergence). The shared-`NotReady` scope bug was a post-merge Copilot find shipped as 074-S; 074-S's own adversarial review flagged a narrower startup-hydration-hang sub-case that was overridden as out-of-scope and captured as follow-up E0659C5C (not fixed pre-merge). Design: adversarial gate runs only after Ship + review, open-loop fixing before merge.
 - **Copilot review-fix circuit breaker** (077-S, 078-S, 082-F): 3 cycles limit holds; de-scope own violations, security fixes, and backlog defects override limit. 078-S cycle 4 deferred concurrency edge-cases (separate hardening shipment).
 - **Workspace isolation security** (077-S cycle 6): symlink resolution before containment check (both sides canonicalized); escaping paths skipped. Added to Constitution Check invariant III.
 - **Rollback-marker durability** (082-F remediation): schema_meta relation flag prevents re-migration on next daemon start; durable across restarts.
@@ -48,25 +48,25 @@ Copilot review of 082-F queue artifacts blocked 078-S: three over-limit tasks (0
 ## Cross-domain dependencies
 
 - 081-F eval subsystem gates 082.004-T acceptance (082-F cross-feature dep).
-- 077-S CI skip live; downstream doc-only PRs cascade the skip (end-to-end validated).
+- 071-S CI skip live; downstream doc-only PRs cascade the skip (end-to-end validated).
 - 078-S depends_on 081-F core tasks (eval metrics already archived when 078-S ships).
 - 084-F absorbs 12 Copilot post-077-S stash findings (resolution_recall, false-edge, TSX gate, threshold, fidelity, corpus, perf, regression). Deferred: reliability (30CE5DD6) + lifecycle-concurrency (2C420C96).
 - 085-F DAX references consumer to be determined (currently embedded in TMDL measures only; no symbolic DAX consumer in-repo yet).
 
 ## Orchestrator autonomous run summary (July 5)
 
-Single comprehensive run: 4 shipments (071-S/072-S/073-S/074-S) end-to-end, all merged, 0 open PRs final. Adversarial review blocked 3 times with P1 findings; each fix-cycle completed before merge. Hard rules honored: sound judgment on circuit breaker, wait for Copilot + resolve all comments, respect circuit breakers. Pipeline drained (0 queued shipments at close). Main `70760b3`; index rebuilt (572 artifacts).
+Single comprehensive run: 4 shipments (071-S/072-S/073-S/074-S) end-to-end, all merged, 0 open PRs final. Adversarial review returned APPROVE-WITH-FIXES on 071-S and 072-S (both P1 fixes completed before merge); 073-S was clean and 074-S was approved with one block overridden as out-of-scope (follow-up E0659C5C). Hard rules honored: sound judgment on circuit breaker, wait for Copilot + resolve all comments, respect circuit breakers. Pipeline drained (0 queued shipments at close). Main `70760b3`; index rebuilt (572 artifacts).
 
 ## Archived originals (traceability)
 
 | File | Summary |
 |---|---|
-| 2026-07-05-orchestrator-autonomous-run-071-074.md | Autonomous pipeline execution: 4 shipments merged with adversarial gate catching 3 P1s; CI skip live; 072-S DB-divergence guard; 074-S NotReady scope. |
+| 2026-07-05-orchestrator-autonomous-run-071-074.md | Autonomous pipeline: 4 shipments merged; adversarial gate caught 2 P1s (blanket-glob under-run, reactive-`.md` DB divergence); 074-S fixed the post-merge shared-NotReady scope bug (its own hydration-hang sub-case overridden → follow-up E0659C5C). |
 | 2026-07-05-stage-074S-notready-scope-fix.md | Bug-fix planning for 074-S: NotReady shared across startup + respawn; new ShutdownTimeout variant (8010) drops --direct hint on respawn-wait path. |
 | 2026-07-10-stage-081F-082F-eval-and-rec1-harvest-session.md | Harvest 2 decided deliberations → exec-plans → plan-review PASS → shipments 077-S (eval subsystem) + 078-S (rec1 calls). |
 | 2026-07-11-ship-077S-retrieval-eval-subsystem.md | 077-S shipped eval subsystem: 7 tasks, 29 tests, retrieval + graph metrics, config/MCP/CLI, persistence. Copilot 7-cycle review (cycles 1-3 logic, 4 de-scope, 6 security, 7 deferred). |
 | 2026-07-11-ship-078S-rec1-calledges.md | 078-S shipped call-edge resolution: 10 tasks test-first, dual-domain (parsing/staging/storage/export/rehydrate/post-pass/lifecycle/rollback/trigger/acceptance). Copilot 4 cycles. |
 | 2026-07-11-ship-rec1-remediation.md | Follow-up remediation: durable rollback marker + active-daemon refusal test; doc corrections on target-correctness gate + peer-language follow-on. |
-| 2026-07-11-stage-082-reharvest-rec1.md | Re-harvest after Copilot #239 block: split over-limit tasks into 8 single-width items; propagate full contract; rewire deps; 078-S re-queued. |
+| 2026-07-11-stage-082-reharvest-rec1.md | Re-harvest after Copilot #239 block: rescoped 3 over-limit tasks (002/003/004) and created 6 new single-width items (008–013); propagated full contract; rewired deps; 078-S re-queued. |
 | 2026-07-11-stage-084F-retrieval-eval-correctness.md | Consolidate 077-S Copilot post-findings into 084-F: 14 tasks (resolution_recall, false-edge manifest, TSX gate, threshold, fidelity, perf, regression). |
 | 2026-07-13-stage-dax-intelligence.md | DAX intelligence (B0E2B374) harvested: 085-F 7 tasks, extractor/carry-column/references/impact-analysis/lint-tier1/lint-tier2/CLI-with-bounded-parity. |

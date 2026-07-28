@@ -17,7 +17,7 @@ Intensive two-day sprint delivering four shipments — telemetry completion (067
 Landed accumulated post-merge bookkeeping from prior sessions (053-S/065-F/064-F transitions, 067-F plan artifacts, compound learning) as `chore(backlog)` PR #189. Backlogit cache-union risk mitigated by staging markdown-only (source of truth). MCP transport down — used CLI fallback.
 
 ### 068-S: TMDL Extractor Depth — Partitions, Datasource Properties, Lineage (July 3–4)
-Harvested three Stage-prepared tasks from orphaned 066-F (re-IDed TMDL). Tasks: (1) partitions + fenced-M source capture, (2) richer datasource props + `powerbi_data_source` summary, (3) refs/annotations/lineage metadata. All shipped test-first; Copilot review caught 1 P2 (hierarchy/level nested-metadata skip window) and 2 security findings (partition M bodies + connection strings scraped from summaries, only size hints retained). Landed in PR #192; all regression tests green.
+Harvested three Stage-prepared tasks from orphaned 066-F (re-IDed TMDL). Tasks: (1) partitions + fenced-M source capture, (2) richer datasource props + `powerbi_data_source` summary, (3) refs/annotations/lineage metadata. All shipped test-first; the internal code-review agent caught 1 P2 (hierarchy/level nested-metadata skip window), and Copilot review caught 2 security findings (partition M bodies + connection strings scraped from summaries, only size hints retained). Landed in PR #192; all regression tests green.
 
 ### 069-S: TMDL Tree-Sitter Eval Gate (July 4)
 Decision-gate, not grammar build. Measured safe line/indent parser against a differential harness: 3 constructs pass, 6 miss (4 model-richness gaps requiring new `TmdlModel` types; 2 incrementally-fixable heuristic bugs). Finding: grammar ROI-negative; recommend DECLINE. Boundary hard: no tree-sitter, no unsafe, no new dependency, no promotion decision (that's a future Stage call). Shipped as PR #196 with 11-test harness (S-PTM-20..29).
@@ -47,7 +47,7 @@ Harvested two long-pending DEFERRED tasks: 064.004-T (daemon reactive-markdown r
 ## Cross-domain dependencies
 
 - 069-S eval gate enabled 070-S (decision data), but both are standalone PRs (no data dependency).
-- 071-S CI skip live immediately: every subsequent backlog-only closure PR (#203, #206, #208, #209, #211) correctly skipped CI — validated end-to-end.
+- 071-S CI skip (live July 5): every subsequent backlog-only closure PR (#203, #206, #208, #209, #211) correctly skipped CI — validated end-to-end.
 - 072-S/073-S assembly unblocks Orchestrator autonomous pipeline (both queued).
 
 ## Archived originals (traceability)
@@ -62,7 +62,7 @@ Harvested two long-pending DEFERRED tasks: 064.004-T (daemon reactive-markdown r
 | 2026-07-04-ship-069S-tmdl-tree-sitter-eval-gate-session.md | 069-S evaluated safe TMDL parser: 3 PASS / 6 MISS (4 model-richness, 2 heuristic); recommended DECLINE grammar; PR #196 with harness. |
 | 2026-07-04-ship-070S-tmdl-parser-fixes-session.md | 070-S fixed 2 heuristic bugs: calc-column expression capture, measure-DAX colon truncation; aggregate `heuristic_bugs: 0`; PR #199. |
 | 2026-07-04-stage-066008-unblock-tmdl-tree-sitter-spike.md | Unblock + re-scope 066.008-T: safety blocker FALSE (forbid(unsafe_code) forbids own source, not deps); ROI shifted (safe parser delivered coverage). |
-| 2026-07-04-stage-069S-tmdl-tree-sitter-eval-and-dax-correction.md | Refined 066.008-T → eval harness + `069-F` umbrella; closed DAX stash (F7E89921) with unsafe-myth correction; created shipment 069-S. |
+| 2026-07-04-stage-069S-tmdl-tree-sitter-eval-and-dax-correction.md | Refined 066.008-T → eval harness + `069-F` umbrella; parked DAX stash (F7E89921) with unsafe-myth correction (not shipped); created shipment 069-S. |
 | 2026-07-04-stage-070S-tmdl-parser-fixes.md | Assembled 070-S from the 2 heuristic bugs 069-S found: fix calc-column (070.001-T), fix colon-in-DAX (070.002-T); both test-first. |
 | 2026-07-04-stage-071S-ci-build-skip.md | Grounding spike: `build` NOT required; `paths-ignore` mechanism safest; future guardrail documented; 071-S queued for Ship. |
 | 2026-07-04-stage-072S-073S-deferred-harvest.md | Harvested 2 DEFERRED tasks into 2 shipments (width isolation): 072-S=064.004-T (daemon reactive-sync gate), 073-S=065.004-T (NotReady hint). |
