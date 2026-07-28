@@ -352,6 +352,7 @@ mod tests {
             tier1_count: 40,
             tier2_count: 15,
             cross_file_edges_dropped: 0,
+            same_file_ambiguous_dropped: 0,
             errors: vec![],
             duration_ms: 123,
         }
@@ -369,6 +370,7 @@ mod tests {
             concerns_orphaned: 0,
             edges_created: 5,
             cross_file_edges_dropped: 0,
+            same_file_ambiguous_dropped: 0,
             oversized_files_skipped: 0,
             errors: vec![],
             duration_ms: 45,
@@ -387,6 +389,7 @@ mod tests {
         assert_eq!(v["tier1_count"], json!(40_usize));
         assert_eq!(v["tier2_count"], json!(15_usize));
         assert_eq!(v["cross_file_edges_dropped"], json!(0_usize));
+        assert_eq!(v["same_file_ambiguous_dropped"], json!(0_usize));
         // errors is the full list, not just a count
         assert_eq!(v["errors"], json!([]));
     }
