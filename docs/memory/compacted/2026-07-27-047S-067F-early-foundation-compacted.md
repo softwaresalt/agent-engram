@@ -1,7 +1,7 @@
 ---
 type: compacted-memory
 date: 2026-07-27
-period: "2026-05-20 .. 2026-07-02"
+period: "2026-05-20 .. 2026-07-04"
 source_count: 12
 archive_path: docs/archive/memory/
 ---
@@ -9,7 +9,7 @@ archive_path: docs/archive/memory/
 # Phase 1: Early Foundation & Verification CLI (Shipments 047-S through 067-F)
 
 ## Overview
-This period consolidated three major foundation phases: Power BI project support (047-S), the `engram verify` CLI and its hardening (052-S with 064-F Phase 1a + 1b), and telemetry infrastructure setup (067-F family). Significant backlog reconciliation work addressed ID-namespace collisions and coordinated parallel post-merge closures.
+This period consolidated three major foundation phases: Power BI project support (047-S), the `engram verify` CLI and its hardening (052-S with 064-F Phase 1a shipped; Phase 1b reactive-sync deferred), and telemetry infrastructure setup (067-F family). Significant backlog reconciliation work addressed ID-namespace collisions and coordinated parallel post-merge closures.
 
 ## Key shipments and outcomes
 
@@ -17,13 +17,13 @@ This period consolidated three major foundation phases: Power BI project support
 Shipped `src/models/powerbi.rs`, `src/services/powerbi_extract.rs`, and `src/services/powerbi_indexer.rs`. Architecture reused existing `content_record` table for Power BI entities; all PBIP objects (page, visual, table, measure) get synthetic IDs (SHA-256 truncated) and fine-grained indexing. Added 3 test modules (28 tests). Established precedent: no new CozoDB methods, no schema migration.
 
 ### 052-S: engram verify CLI Phase 1a (June 30 – July 1)
-Delivered the local, no-daemon `engram verify <path>` CLI command for structural conformance linting. Created `src/cli/commands/verify.rs` and `src/services/verify.rs` with exit-code contract (0 pass / 1 non-conformant / 2 error), crucial for the autoharness pre-task-completion gate. Deferred Phase 1b (reactive sync gated on verify) and Phase 2 (ExecutionEpoch telemetry) as dependency-linked tasks 064.004-T and 064.005/006-T under active feature 064-F.
+Delivered the local, no-daemon `engram verify <path>` CLI command for structural conformance linting. Created `src/cli/commands/verify.rs` and `src/services/verify.rs` with exit-code contract (0 pass / 1 non-conformant / 2 error), crucial for the autoharness pre-task-completion gate. Deferred Phase 1b (reactive sync gated on verify) as dependency-linked task 064.004-T under active feature 064-F. Phase 2c/2d (ExecutionEpoch telemetry) were later DROPPED (superseded by 067-F); the 064.005/006-T slots were never materialized.
 
 ### 064-F: Deterministic gates & telemetry (June 30, feature active)
-Deliberately split across two shipments: Phase 1a (052-S, shipped) provides the verify CLI; Phases 1b/2c/2d remain queued. Operator chose Phase 1a first as it was self-contained, unblocker for autoharness, and no schema/daemon changes required. Phase 1b (reactive sync gate in daemon watcher) deferred to 064.004-T.
+Deliberately split across two shipments: Phase 1a (052-S, shipped) provides the verify CLI. Operator chose Phase 1a first as it was self-contained, unblocker for autoharness, and no schema/daemon changes required. Phase 1b (reactive-sync gate in daemon watcher, 064.004-T) remained queued; Phases 2c/2d were later DROPPED (superseded by 067-F), not queued — the 064.005/006-T slots were never created.
 
 ### 064-F → 066-F ID reconciliation (July 1)
-Hard landmine discovered and resolved: backlogit permitted reuse of `064-*` IDs across archive and queue. PR #169 shipped TMDL parser as `064-F`, then PR #185 reused `064-F` for verify CLI. Fix: re-IDed terminal archived TMDL family to `066-*` (065.005–008-T became 066.005–008-T; 064-S became 066-S). Verify family kept at `064-*` to preserve merged-history references.
+Hard landmine discovered and resolved: backlogit permitted reuse of `064-*` IDs across archive and queue. PR #169 shipped TMDL parser as `064-F`, then PR #185 reused `064-F` for verify CLI. Fix: re-IDed terminal archived TMDL family to `066-*` (064.005–008-T became 066.005–008-T; 064-S became 066-S). Verify family kept at `064-*` to preserve merged-history references.
 
 ### 053-S: PR #187 Post-Merge Closure (July 2)
 Quick daemonless docs PR (Phase 1a only; Phase 1b deferred as 065.004-T). Split-brain risk when calling `backlogit get 064-F` — cache returned archived TMDL, markdown returned verify. Resolved by not syncing (cache-union landmine) and using direct markdown edits + CLI mutations.
@@ -39,7 +39,7 @@ Operator directive reversed scope: CLI-direct IS in scope. Amendment added `--co
 
 ## Traceability & decisions
 
-- **Backlogit cache-union landmine**: `sync` unions stale SQLite cache back into markdown. Workaround: markdown is authoritative; never sync; use CLI mutations + direct edits.
+- **Backlogit cache-union landmine**: a blind `sync` can re-union stale SQLite cache back into markdown. Workaround: markdown is authoritative — avoid blind `sync` mid-conflict; routine edits use CLI mutations + direct markdown edits. Durable repair: stop stale MCP holders, delete the disposable `backlogit.db{,-wal,-shm}`, then `backlogit sync` to rebuild the index from authoritative markdown.
 - **Path containment security (064.003-T)**: canonicalize both workspace root AND resolved path before containment check (resolves symlinks + `..`).
 - **Merge-policy precedent**: merge-commit only, no squash/rebase (P-009/P-011).
 - **Verification contract**: exit-code pinned in contracts (not requirements docs); test gate ensures immutability.

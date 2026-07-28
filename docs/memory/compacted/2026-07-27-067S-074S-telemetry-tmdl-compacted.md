@@ -2,14 +2,14 @@
 type: compacted-memory
 date: 2026-07-27
 period: "2026-07-03 .. 2026-07-04"
-source_count: 13
+source_count: 12
 archive_path: docs/archive/memory/
 ---
 
 # Phase 2: TMDL Pipeline & CI Infrastructure (Shipments 067-S through 071-S)
 
 ## Overview
-Intensive two-day sprint delivering four shipments across telemetry completion (067-S), TMDL extractor depth (068-S), decision-gate evaluation harness (069-S), safe-parser correctness fixes (070-S), and CI build-skip optimization (071-S). Established a repeatable pattern: differential evaluation → decline grammar investment, incrementally fix safe parser.
+Intensive two-day sprint delivering four shipments — telemetry completion (067-S), TMDL extractor depth (068-S), decision-gate evaluation harness (069-S), safe-parser correctness fixes (070-S) — plus Stage planning for the queued 071-S CI build-skip (which actually shipped July 5 in the orchestrator run; see the 074S-084F summary). Established a repeatable pattern: differential evaluation → decline grammar investment, incrementally fix safe parser.
 
 ## Key shipments and outcomes
 
@@ -25,8 +25,8 @@ Decision-gate, not grammar build. Measured safe line/indent parser against a dif
 ### 070-S: TMDL Safe-Parser Correctness Fixes (July 4)
 Executed optional bounded follow-on from 069-S finding: fix the 2 heuristic bugs. (1) Calculated-column expression capture (mis-scope due to `parse_identifier(rest)` swallowing `= DAX`); added `TmdlColumn.expression` field + generalized multiline-body machinery. (2) Measure-DAX colon truncation (`looks_like_tmdl_property` bare `contains(':')` broke on `FORMAT("HH:mm:ss")`); refined to require property-shaped bare-identifier key. Differential harness flipped assertions buggy→correct; test-first. Shipped as PR #199; aggregate `heuristic_bugs: 0`.
 
-### 071-S: CI Build-Skip on Doc/Backlog-Only PRs (July 4)
-Grounding spike resolved: `build` is NOT a required status check on `main` (only 1 approval + code-owner + thread-resolution). Safe mechanism: `paths-ignore` on `.backlogit/**`, `docs/**`, `**/*.md`, `.autoharness/**` for both `push` and `pull_request`. Code re-arms full suite (Rust/Cargo/workflow changes). Rejected PR-title `if:` guard (fragile). Documented future-coupling guardrail (if `build` promoted to required, switch to companion always-passing job). Shipped as PR #201 (plan), #202 (code), #203 (closure).
+### 071-S: CI Build-Skip on Doc/Backlog-Only PRs — Stage planning (July 4)
+Grounding spike resolved: `build` is NOT a required status check on `main` (only 1 approval + code-owner + thread-resolution). Proposed mechanism: `paths-ignore` on `.backlogit/**`, `docs/**`, Markdown, and `.autoharness/**` for both `push` and `pull_request`; code re-arms full suite (Rust/Cargo/workflow changes). Rejected PR-title `if:` guard (fragile). Documented future-coupling guardrail (if `build` promoted to required, switch to companion always-passing job). NOTE: the plan's blanket `**/*.md` glob was later SCOPED to specific paths (so `tests/**/*.md` still triggers CI) during the July-5 shipping after adversarial review. 071-S actually shipped July 5 as PR #201 (plan), #202 (code), #203 (closure) — see the 074S-084F summary.
 
 ### 072-S & 073-S: Deferred Task Assembly (July 4)
 Harvested two long-pending DEFERRED tasks: 064.004-T (daemon reactive-markdown reingest gate, Phase 1b) and 065.004-T (DaemonError::NotReady hint for `--direct` escape). Wide-isolated into separate shipments (width-per-feature, state-of-the-art). 064.004-T scoped to produce + gate `ReingestContent` without perturbing daemon startup (pure helper + source resolution + freeze-scope). 065.004-T tiny CLI-facing task (error string + optional hint).
