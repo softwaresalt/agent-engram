@@ -266,20 +266,27 @@ pub async fn sync_workspace(
     // If indexing is already running, queue a sync to run after it finishes
     // rather than returning an error — callers get a "queued" status (044.004-T).
     if !state.try_start_indexing() {
-        state.set_pending_sync();
-        // 101.002-T: preserve the revalidation intent across coalescing. The
-        // queue decision happens BEFORE params are parsed, and the coalesced
-        // drain runs a parameterless sync — so without this a queued
-        // `--revalidate-code-graph` request is silently downgraded to a routine
-        // no-op sync and the migration never runs.
-        if params
-            .as_ref()
-            .and_then(|p| p.get("revalidate_code_graph"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+        // 101.002-T: preserve the queued sync's gate flags across coalescing,
+        // and publish them BEFORE set_pending_sync() so a concurrent drain can
+        // never observe pending_sync == true alongside a stale companion bit
+        // (which would downgrade the request to a routine no-op and strand the
+        // sticky bit). The queue decision runs before params are parsed, and the
+        // coalesced drain would otherwise pass both gates as false — silently
+        // dropping a queued --revalidate-code-graph or --backfill-python-canonical.
+        let params_ref = params.as_ref();
+        let queued_flag = |name: &str| -> bool {
+            params_ref
+                .and_then(|p| p.get(name))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        if queued_flag("revalidate_code_graph") {
             state.set_pending_sync_revalidate();
         }
+        if queued_flag("backfill_python_canonical") {
+            state.set_pending_sync_backfill_python();
+        }
+        state.set_pending_sync();
         return Ok(
             json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
         );

@@ -394,17 +394,19 @@ pub async fn drain_pending_sync(state: &AppState) {
     if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
         if state.try_start_indexing() {
             let ws_path = PathBuf::from(&snapshot.path);
-            // 101.002-T: drain the pending-revalidate flag AFTER acquiring the
+            // 101.002-T: drain the pending gate flags AFTER acquiring the
             // indexing lock so that, if the lock grab below had failed and the
-            // sync were re-queued, the flag would survive for the next drain.
-            // A coalesced revalidation must not be downgraded to a routine sync.
+            // sync were re-queued, the flags would survive for the next drain.
+            // A coalesced revalidation/backfill must not be downgraded to a
+            // routine sync that silently drops the requested migration.
             let revalidate = state.take_pending_sync_revalidate();
+            let backfill_python = state.take_pending_sync_backfill_python();
             match crate::services::code_graph::sync_workspace_with_progress(
                 &ws_path,
                 &snapshot.data_dir,
                 &snapshot.branch,
                 &ws_config.code_graph,
-                false,
+                backfill_python,
                 revalidate,
                 None,
             )
@@ -414,6 +416,7 @@ pub async fn drain_pending_sync(state: &AppState) {
                     files_added = result.files_added,
                     files_modified = result.files_modified,
                     revalidate,
+                    backfill_python,
                     "drain_pending_sync: coalesced sync complete"
                 ),
                 Err(e) => tracing::warn!(

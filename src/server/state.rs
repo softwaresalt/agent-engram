@@ -166,6 +166,13 @@ pub struct AppState {
     /// (101.002-T). OR-semantics: any queued revalidation upgrades the coalesced
     /// drain, which is safe because revalidation is a superset of a routine sync.
     pending_sync_revalidate: AtomicBool,
+    /// Sticky companion to `pending_sync`: set when a Python-canonical backfill
+    /// sync (`--backfill-python-canonical`) is coalesced into the pending sync
+    /// while indexing is active. Read by `drain_pending_sync` so a queued
+    /// backfill is not silently dropped (101.002-T; mirrors the 096-F flag). Both
+    /// companion flags are published BEFORE `pending_sync` so a concurrent drain
+    /// can never observe `pending_sync == true` with a stale companion bit.
+    pending_sync_backfill_python: AtomicBool,
     last_indexed_at: RwLock<Option<DateTime<Utc>>>,
     /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
     query_latencies: RwLock<VecDeque<u64>>,
@@ -218,6 +225,7 @@ impl AppState {
             indexing_in_progress: AtomicBool::new(false),
             pending_sync: AtomicBool::new(false),
             pending_sync_revalidate: AtomicBool::new(false),
+            pending_sync_backfill_python: AtomicBool::new(false),
             last_indexed_at: RwLock::new(None),
             query_latencies: RwLock::new(VecDeque::new()),
             tool_call_count: AtomicU64::new(0),
@@ -476,11 +484,12 @@ impl AppState {
 
     /// Mark the pending coalesced sync as a *revalidation* sync (101.002-T).
     ///
-    /// Called alongside [`set_pending_sync`] when a `--revalidate-code-graph`
-    /// request is queued because indexing is active. Sticky OR-semantics: once
-    /// set it stays set until drained, so any queued revalidation upgrades the
-    /// coalesced drain. Draining a revalidation as a routine sync would silently
-    /// no-op the migration.
+    /// Published BEFORE [`set_pending_sync`] when a `--revalidate-code-graph`
+    /// request is queued because indexing is active, so a concurrent drain
+    /// cannot observe `pending_sync == true` while this companion bit is still
+    /// false. Sticky OR-semantics: once set it stays set until drained, so any
+    /// queued revalidation upgrades the coalesced drain. Draining a revalidation
+    /// as a routine sync would silently no-op the migration.
     pub fn set_pending_sync_revalidate(&self) {
         self.pending_sync_revalidate.store(true, Ordering::SeqCst);
     }
@@ -492,6 +501,26 @@ impl AppState {
     /// set for the next drain.
     pub fn take_pending_sync_revalidate(&self) -> bool {
         self.pending_sync_revalidate
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Mark the pending coalesced sync as a Python-canonical *backfill* sync
+    /// (101.002-T; mirrors [`set_pending_sync_revalidate`]).
+    ///
+    /// Published BEFORE `set_pending_sync` so a concurrent drain cannot observe
+    /// `pending_sync == true` while this companion bit is still false.
+    pub fn set_pending_sync_backfill_python(&self) {
+        self.pending_sync_backfill_python
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// Atomically clear and return the pending-sync-backfill-python flag.
+    ///
+    /// Read AFTER acquiring the indexing lock (same re-queue safety as
+    /// [`take_pending_sync_revalidate`]).
+    pub fn take_pending_sync_backfill_python(&self) -> bool {
+        self.pending_sync_backfill_python
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
