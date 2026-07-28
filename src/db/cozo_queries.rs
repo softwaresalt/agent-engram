@@ -2089,6 +2089,45 @@ stale[from, to] :=
         Ok(())
     }
 
+    /// Retract `direct` (in-file) `calls_edge` rows whose caller (`from`) is a
+    /// function defined in `file_path` (101.002-T revalidation hardening).
+    ///
+    /// Must be invoked BEFORE the file's function metadata is deleted, because
+    /// it maps file → function IDs via `function_meta.file_path`. Unlike
+    /// [`Self::retract_resolved_calls_edges_for_file`] (which deliberately
+    /// preserves `direct` edges), this retracts them — but ONLY on the opt-in
+    /// code-graph *revalidation* teardown. Re-extraction re-mints function IDs
+    /// with fresh `Uuid`s, so a same-file WRONG `direct` edge persisted before
+    /// the 100-F fail-closed guard would otherwise survive as a dangling row
+    /// keyed on the retired caller ID. Retracting it here makes the revalidation
+    /// actually REMOVE the stale edge (H4: zero stale wrong same-file edges
+    /// remain). Legitimate same-file direct edges are re-created by in-file
+    /// resolution under the 100-F guard on re-extraction, so recall is
+    /// preserved. `direct` edges are same-file by construction, so filtering on
+    /// the caller alone is sufficient and cannot remove a cross-file edge
+    /// (preserving the 094-F cross-file/cross-language invariants). A no-op when
+    /// the `resolution` column is absent.
+    pub async fn retract_direct_calls_edges_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+stale[from, to] :=
+    *calls_edge { from, to, resolution },
+    resolution = "direct",
+    *function_meta { id: from, file_path },
+    file_path = $file_path
+?[from, to] := stale[from, to]
+:rm calls_edge { from, to }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        self.db
+            .run_script(script, p, ScriptMutability::Mutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// Retract any `calls_resolved_singleton` edge from `caller_id` whose callee
     /// is a function named `callee_name` (082.008-T targeted revalidation).
     ///

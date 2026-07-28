@@ -118,8 +118,39 @@ async fn ids_named(q: &CodeGraphQueries, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Sentinel prefix for a `calls_edge` endpoint whose function id has NO live
+/// `function_meta` row — a DANGLING edge left by a re-extraction that re-minted
+/// ids. `edge_name_pairs`/`singleton_pairs` surface these (instead of
+/// `unwrap_or_default()`'s silent `""`) so a stale row is DETECTED rather than
+/// masked as `("","")` (Copilot review, 101.002-T).
+const DANGLING_PREFIX: &str = "<dangling:";
+
+/// Map an endpoint id to its function name, or to a visible dangling sentinel
+/// when the id has no live `function_meta` row.
+fn resolve_endpoint(names: &HashMap<String, String>, id: &str) -> String {
+    names
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| format!("{DANGLING_PREFIX}{id}>"))
+}
+
+/// Assert no edge pair references a dangling (retired) function id — i.e. no
+/// stale `calls_edge` row survived a revalidation re-extraction (plan H4: zero
+/// stale wrong same-file edges remain).
+fn assert_no_dangling_edges(pairs: &[(String, String)]) {
+    let dangling: Vec<&(String, String)> = pairs
+        .iter()
+        .filter(|(from, to)| from.starts_with(DANGLING_PREFIX) || to.starts_with(DANGLING_PREFIX))
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "H4 violated: dangling calls_edge rows remain after revalidation (endpoints have no live function_meta): {dangling:?}"
+    );
+}
+
 /// Every `calls` edge across all resolution classes, mapped to `(from, to)`
-/// function-name pairs (ids are re-minted by a force re-extraction).
+/// function-name pairs (ids are re-minted by a force re-extraction). A missing
+/// endpoint id surfaces as a `<dangling:...>` sentinel, never a silent `""`.
 async fn edge_name_pairs(q: &CodeGraphQueries) -> Vec<(String, String)> {
     let names = id_to_name(q).await;
     let mut pairs = Vec::new();
@@ -134,15 +165,16 @@ async fn edge_name_pairs(q: &CodeGraphQueries) -> Vec<(String, String)> {
             .expect("list edges")
         {
             pairs.push((
-                names.get(&from).cloned().unwrap_or_default(),
-                names.get(&to).cloned().unwrap_or_default(),
+                resolve_endpoint(&names, &from),
+                resolve_endpoint(&names, &to),
             ));
         }
     }
     pairs
 }
 
-/// `calls_resolved_singleton` edges mapped to `(from, to)` name pairs.
+/// `calls_resolved_singleton` edges mapped to `(from, to)` name pairs. A missing
+/// endpoint id surfaces as a `<dangling:...>` sentinel, never a silent `""`.
 async fn singleton_pairs(q: &CodeGraphQueries) -> Vec<(String, String)> {
     let names = id_to_name(q).await;
     q.list_calls_edges_by_resolution("calls_resolved_singleton")
@@ -151,8 +183,8 @@ async fn singleton_pairs(q: &CodeGraphQueries) -> Vec<(String, String)> {
         .into_iter()
         .map(|(from, to)| {
             (
-                names.get(&from).cloned().unwrap_or_default(),
-                names.get(&to).cloned().unwrap_or_default(),
+                resolve_endpoint(&names, &from),
+                resolve_endpoint(&names, &to),
             )
         })
         .collect()
@@ -231,6 +263,13 @@ async fn upgrade_revalidation_drops_wrong_edge_and_preserves_recall() {
     let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
     let q2 = CodeGraphQueries::new(db2);
     let after = edge_name_pairs(&q2).await;
+
+    // (0) Raw-row hygiene (H4): the revalidation must REMOVE the stale direct
+    //     edge, not leave it dangling under a retired function id. Without this
+    //     the `to == "plat"` filter in (1) passes even when the raw stale row
+    //     survives (it maps to a `<dangling:...>` endpoint) — the masking
+    //     Copilot flagged (101.002-T).
+    assert_no_dangling_edges(&after);
 
     // (1) Target-identity: NO calls edge, in any resolution class, targets a
     //     same-file duplicate-name def after revalidation.
