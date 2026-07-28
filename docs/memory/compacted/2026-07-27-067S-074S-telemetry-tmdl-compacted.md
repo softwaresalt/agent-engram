@@ -36,7 +36,7 @@ Harvested two long-pending DEFERRED tasks: 064.004-T (daemon reactive-markdown r
 - **Differential evaluation pattern** (069-S): measure against live parser output, derive verdict from harness assertions (not hard-coded arrays), gate-line re-derives counts to ensure any parser change fails the anchor and forces re-evaluation.
 - **Safe-parser vs. grammar ROI** (070-S decision): 1404-line indent-aware parser now handles partitions, datasources, refs, annotations, lineage — the exact constructs the spike attributed to tree-sitter. Robustness/maintainability a gain, but coverage already delivered by safe parser.
 - **CI paths-ignore semantics** (071-S): all-match → single code file re-arms full build. Guarantees code-PR coverage cannot be weakened.
-- **Plan-harden deferred** (072-S): reactive-sync module is new (not yet written); test strategy defers to dry-run-free injection (test harness calls sync gate function, daemon unperturbed). Blast radius ELEVATED but scope FROZEN.
+- **Plan-harden applied** (072-S / 064.004-T): elevated blast radius triggered plan-harden → freeze-scope + pure injectable sync-gate helper (test harness calls the gate function; daemon unperturbed, avoiding the Windows `run_with_shutdown` SQLite flake). The reactive-sync module was new (not yet written); the earlier DEFERRED status/label was dropped once the risk-hardening gate was satisfied.
 
 ## Key engineering notes
 
