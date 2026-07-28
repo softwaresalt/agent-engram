@@ -177,6 +177,10 @@ pub fn all_tools() -> Vec<Tool> {
                     "backfill_python_canonical": {
                         "type": "boolean",
                         "description": "Migrate already-indexed Python files to the current namespace-canonical extraction version by force re-extracting every .py file and re-running the canonical post-pass. Without this gate a stale extraction version is a no-op on incremental sync."
+                    },
+                    "revalidate_code_graph": {
+                        "type": "boolean",
+                        "description": "Revalidate already-indexed files against the current code-graph extraction generation: on a generation bump, force re-extraction of every indexed file so the same-file fail-closed guard re-runs and drops stale wrong same-file direct edges persisted before the fix. Without this gate a stale generation is a no-op on incremental sync."
                     }
                 }
             })),

@@ -125,10 +125,18 @@ struct IndexWorkspaceParams {
 /// indexed `.py` file is force re-extracted and the canonical post-pass runs to
 /// materialize the upgraded cross-module edges. Defaults to `false` so routine
 /// auto-sync never silently re-extracts or churns canonical edges (C12-5).
+///
+/// `revalidate_code_graph` gates the 101-F code-graph extraction-generation
+/// backfill: when `true` and the durable generation marker is stale, every
+/// indexed file is force re-extracted so the 100-F fail-closed same-file guard
+/// re-runs over stale wrong same-file direct edges persisted before the fix.
+/// Defaults to `false` (a stale generation is a no-op deferral on routine sync).
 #[derive(Deserialize, Default)]
 struct SyncWorkspaceParams {
     #[serde(default)]
     backfill_python_canonical: bool,
+    #[serde(default)]
+    revalidate_code_graph: bool,
 }
 
 /// Parse all supported source files and populate the code knowledge graph.
@@ -311,7 +319,7 @@ async fn sync_workspace_inner(
             branch,
             &config,
             parsed.backfill_python_canonical,
-            false,
+            parsed.revalidate_code_graph,
             Some(&mut progress_callback),
         )
         .await

@@ -24,6 +24,7 @@ pub async fn run_sync(
     full: bool,
     force: bool,
     backfill_python_canonical: bool,
+    revalidate_code_graph: bool,
     direct: bool,
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
@@ -42,18 +43,19 @@ pub async fn run_sync(
             full,
             force,
             backfill_python_canonical,
+            revalidate_code_graph,
             flags.id_value(),
             correlation_id,
             formatter,
         )
         .await;
     }
-    // `--backfill-python-canonical` on the full-scan path implies `--force`
-    // (parity with `engram index`): the T7 migration is a forced re-extraction,
-    // so `sync --full --backfill-python-canonical` must re-extract rather than
-    // silently hash-skip and drop the flag. The bare incremental `sync
-    // --backfill-python-canonical` (no `--full`) keeps its gated path below.
-    let force = force || (full && backfill_python_canonical);
+    // `--backfill-python-canonical` / `--revalidate-code-graph` on the full-scan
+    // path imply `--force` (parity with `engram index`): both migrations are a
+    // forced re-extraction, so `sync --full --<gate>` must re-extract rather than
+    // silently hash-skip and drop the flag. The bare incremental `sync --<gate>`
+    // (no `--full`) keeps its gated path below.
+    let force = force || (full && (backfill_python_canonical || revalidate_code_graph));
     if full || force {
         // Full re-index can take minutes on large workspaces — use extended timeout.
         run_tool_timed(
@@ -65,13 +67,13 @@ pub async fn run_sync(
         )
         .await
     } else {
-        // Incremental sync: the gated T7 backfill (096.010-T) is the only path on
-        // which a stale Python extraction version re-extracts already-indexed `.py`
-        // files. Without the flag, a stale version is a no-op (routine sync never
-        // silently re-extracts or churns canonical edges — C12-5).
+        // Incremental sync: the gated T7 backfill (096.010-T) and the 101-F
+        // code-graph revalidation are the only paths on which a stale marker
+        // re-extracts already-indexed files. Without a flag, a stale marker is a
+        // no-op (routine sync never silently re-extracts or churns — C12-5).
         run_tool(
             "sync_workspace",
-            backfill_params(backfill_python_canonical),
+            sync_params(backfill_python_canonical, revalidate_code_graph),
             flags,
             formatter,
         )
@@ -79,18 +81,21 @@ pub async fn run_sync(
     }
 }
 
-/// `engram index [--force] [--backfill-python-canonical] [--direct]` — full scan;
-/// alias for `engram sync --full`.
+/// `engram index [--force] [--backfill-python-canonical] [--revalidate-code-graph] [--direct]`
+/// — full scan; alias for `engram sync --full`.
+#[allow(clippy::fn_params_excessive_bools)]
 pub async fn run_index(
     force: bool,
     backfill_python_canonical: bool,
+    revalidate_code_graph: bool,
     direct: bool,
     flags: &GlobalFlags,
     formatter: &OutputFormatter,
 ) -> i32 {
-    // On the full-scan index path the T7 migration is a forced re-extraction, so
-    // `--backfill-python-canonical` implies `--force` here (parity with `sync`).
-    let force = force || backfill_python_canonical;
+    // On the full-scan index path both migrations are a forced re-extraction, so
+    // `--backfill-python-canonical` and `--revalidate-code-graph` imply `--force`
+    // here (parity with `sync`).
+    let force = force || backfill_python_canonical || revalidate_code_graph;
     if direct {
         let workspace = match flags.resolve_workspace() {
             Ok(p) => p,
@@ -105,6 +110,7 @@ pub async fn run_index(
             true,
             force,
             backfill_python_canonical,
+            revalidate_code_graph,
             flags.id_value(),
             correlation_id,
             formatter,
@@ -132,14 +138,25 @@ fn force_params(force: bool) -> Option<serde_json::Value> {
     }
 }
 
-/// Build `sync_workspace` params for the `--backfill-python-canonical` gate:
-/// `Some({"backfill_python_canonical": true})` when the gated T7 rollout backfill
-/// is requested, `None` otherwise (preserving the default incremental fast path).
-fn backfill_params(backfill_python_canonical: bool) -> Option<serde_json::Value> {
+/// Build `sync_workspace` params for the incremental-sync gates
+/// (`--backfill-python-canonical`, `--revalidate-code-graph`): an object
+/// carrying whichever gates were requested, or `None` when neither is set
+/// (preserving the default incremental fast path).
+fn sync_params(
+    backfill_python_canonical: bool,
+    revalidate_code_graph: bool,
+) -> Option<serde_json::Value> {
+    let mut map = serde_json::Map::new();
     if backfill_python_canonical {
-        Some(json!({ "backfill_python_canonical": true }))
-    } else {
+        map.insert("backfill_python_canonical".to_owned(), json!(true));
+    }
+    if revalidate_code_graph {
+        map.insert("revalidate_code_graph".to_owned(), json!(true));
+    }
+    if map.is_empty() {
         None
+    } else {
+        Some(serde_json::Value::Object(map))
     }
 }
 

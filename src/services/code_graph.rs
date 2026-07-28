@@ -48,7 +48,6 @@ const PYTHON_CANONICAL_EXTRACTION_VERSION: &str = "1";
 /// it is persisted in a dedicated `schema_meta` marker, NEVER folded into
 /// `file_node.content_hash` — that must stay a raw source SHA so staleness
 /// detection compares bytes (A4).
-#[allow(dead_code)] // consumed by 101.002-T (U2 gated revalidation + marker advance)
 const CODE_GRAPH_EXTRACTION_GENERATION: &str = "1";
 
 /// Cached Rust canonical context produced by the global unsafe-module pre-pass.
@@ -1273,6 +1272,13 @@ async fn index_workspace_impl(
     // leaves their staged calls at whatever prior version produced them, so the
     // marker must NOT advance then (fail-closed toward the gated backfill).
     let mut python_hash_skipped = false;
+    // 101-F (U2): track whether ANY indexed file was hash-skipped as unchanged.
+    // The code-graph generation marker (language-agnostic) may only advance when
+    // every indexed file was freshly (re-)extracted this run — `force`, or a
+    // fresh index that skipped nothing — so a non-force re-index that hash-skips
+    // an unchanged file cannot advance past a stale wrong same-file edge it still
+    // carries (fail-closed toward the gated revalidation).
+    let mut any_hash_skipped = false;
     for file_path in &files {
         'file: {
             let rel_path = if let Ok(p) = file_path.strip_prefix(ws_path) {
@@ -1342,6 +1348,7 @@ async fn index_workspace_impl(
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
                         python_hash_skipped |= is_py_path(&rel_path);
+                        any_hash_skipped = true;
                         result.files_skipped += 1;
                         break 'file;
                     }
@@ -1864,6 +1871,24 @@ async fn index_workspace_impl(
         );
     }
 
+    // ── 101-F (U2): advance the code-graph extraction-generation marker ──
+    // A full index freshly extracts every non-hash-skipped file under the
+    // current logic (incl. the 100-F fail-closed same-file guard), so the
+    // persisted direct edges reflect this generation. Advance only when every
+    // indexed file was freshly extracted this run (`force`, or nothing
+    // hash-skipped) AND no file errored — otherwise a skipped/failed file may
+    // still carry a stale wrong same-file edge, so keep the old generation for
+    // the gated revalidation to migrate (A3/C7-3, fail-closed).
+    if result.errors.is_empty() && (force || !any_hash_skipped) {
+        queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+    } else {
+        debug!(
+            force,
+            any_hash_skipped,
+            "code graph: keeping prior code-graph generation marker — not all files freshly extracted this index"
+        );
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     let elapsed = start.elapsed().as_millis() as u64;
     result.duration_ms = elapsed;
@@ -2068,12 +2093,28 @@ pub async fn sync_workspace_with_progress(
         );
     }
 
-    // ── 101-F (U1 seam): code-graph extraction-generation revalidation ──
-    // The `--revalidate-code-graph` gate is threaded here but kept INERT in U1
-    // so the RED harness fails on the un-dropped stale same-file direct edge.
-    // U2 (101.002-T) wires the generation-marker gating + force re-extraction of
-    // every indexed file + marker-advance-on-clean-pass in its place.
-    let _ = revalidate_code_graph;
+    // ── 101-F (U2): gated code-graph extraction-generation revalidation ─
+    // The durable generation marker records the same-file target-precision logic
+    // the persisted direct edges were last materialized under. When it is stale
+    // AND the caller supplied `--revalidate-code-graph`, force re-extraction of
+    // EVERY indexed file (below, via `run_codegraph_revalidation` in the skip
+    // check) — language-agnostic, because the 100-F fail-closed guard covers
+    // Rust `cfg`-gated dups AND Python last-def shadowing — so the guard re-runs
+    // over stale WRONG same-file direct edges persisted before the fix; the
+    // canonical post-pass after the loop then re-materializes cross-file
+    // singletons and the marker advances. Without the gate a stale generation is
+    // a no-op deferral (A5/C12-5): routine sync never silently re-extracts.
+    let stored_codegraph_generation = queries.code_graph_extraction_generation()?;
+    let codegraph_generation_current =
+        stored_codegraph_generation.as_deref() == Some(CODE_GRAPH_EXTRACTION_GENERATION);
+    let run_codegraph_revalidation = !codegraph_generation_current && revalidate_code_graph;
+    if !codegraph_generation_current && !run_codegraph_revalidation {
+        debug!(
+            stored = ?stored_codegraph_generation,
+            expected = CODE_GRAPH_EXTRACTION_GENERATION,
+            "code graph sync: extraction-generation mismatch — gated revalidation pending (re-run with --revalidate-code-graph)"
+        );
+    }
 
     // Build a set of current relative paths for deletion detection.
     let current_rel_paths: std::collections::HashSet<String> = current_files
@@ -2210,6 +2251,7 @@ pub async fn sync_workspace_with_progress(
                 // left stale after an `__init__.py` add/remove.
                 if existing.content_hash == content_hash
                     && !force_python_recompute.contains(&rel_path)
+                    && !run_codegraph_revalidation
                 {
                     // File unchanged — skip entirely.
                     result.files_unchanged += 1;
@@ -2796,6 +2838,37 @@ pub async fn sync_workspace_with_progress(
             debug!(
                 resolved = resolved.resolved,
                 "code graph sync: Python extraction-version backfill complete; marker advanced"
+            );
+        }
+    }
+
+    // ── 101-F (U2): code-graph extraction-generation revalidation ───────
+    // Every indexed file was force re-extracted above (the 100-F fail-closed
+    // guard dropped/withheld stale same-file wrong direct edges); run the
+    // workspace-global canonical post-pass to re-materialize cross-file
+    // singletons, then advance the durable generation marker — but ONLY when no
+    // file errored, so a partial failure keeps the old generation and the
+    // revalidation retries on the next run (A3/C7-3, fail-closed toward retry).
+    if run_codegraph_revalidation {
+        // The Python backfill above already ran the canonical post-pass; avoid a
+        // redundant second pass when both gates fired this sync.
+        if !run_python_backfill {
+            let resolved = reresolve_calls_edges_with_canonical_context(
+                &queries,
+                ws_path,
+                &crates,
+                &unsafe_prefixes,
+                &python_packages,
+            )
+            .await?;
+            result.edges_created += resolved.resolved;
+        }
+        if result.errors.is_empty() {
+            queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+            debug!("code graph sync: code-graph revalidation complete; generation marker advanced");
+        } else {
+            warn!(
+                "code graph sync: code-graph revalidation hit a file error — keeping prior generation marker so the next sync retries the migration"
             );
         }
     }
