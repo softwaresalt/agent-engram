@@ -51,7 +51,7 @@ Copilot review of 082-F queue artifacts blocked 078-S: three over-limit tasks (0
 - 071-S CI skip live; downstream doc-only PRs cascade the skip (end-to-end validated).
 - 078-S depends_on 081-F core tasks (eval metrics already archived when 078-S ships).
 - 084-F absorbs 12 Copilot post-077-S stash findings (resolution_recall, false-edge, TSX gate, threshold, fidelity, corpus, perf, regression). Deferred: reliability (30CE5DD6) + lifecycle-concurrency (2C420C96).
-- 085-F DAX references consumer to be determined (currently embedded in TMDL measures only; no symbolic DAX consumer in-repo yet).
+- 085-F defines the symbolic-DAX consumers: reference-edge indexing, Power BI impact analysis, and Tier-1/Tier-2 DAX linting. (Before 085-F, DAX existed only embedded in TMDL measures with no symbolic consumer in-repo; 085-F introduces them.)
 
 ## Orchestrator autonomous run summary (July 5)
 
