@@ -142,6 +142,50 @@ so a Python `parse()` will not mis-bind to a Rust `fn parse`. The filter is a
 no-op for the existing Rust-only staged population, and Rust singleton
 resolution is unchanged.
 
+### Same-file duplicate-name resolution (`FF7DE872`)
+
+A **direct** edge is minted when the caller and callee share a file. The callee
+(and caller) were located by first-name-match, so when a file held more than one
+top-level definition of the same name a bare call could bind to the **first,
+wrong** definition instead of the effective one — a same-file *target-precision*
+gap. The live defect was **Rust-only** (for example mutually-exclusive
+`#[cfg(...)]`-gated duplicate definitions); Python's equivalent shape — two
+same-name top-level `def`s, where the last shadows earlier ones at runtime — was
+already failing closed through the 096-F module-binding contest check
+(`is_contested`, `module_binding_counts > 1`). The guard below is therefore
+language-agnostic: it fixes the Rust defect and hardens Python as
+defense-in-depth.
+
+Resolution is now **fail-closed and language-agnostic** (deliberation `014-D`,
+Option A; 013-D no-false-edge, 082-F target-correctness). At the two direct-edge
+minting sites (full index and incremental sync) an additive ambiguity-aware
+resolver classifies each bare-call endpoint as *unique*, *not-found*, or
+*ambiguous* (more than one same-file same-name definition):
+
+* **Ambiguous callee.** The direct edge is withheld. If the caller is unique the
+  call is staged, but because a name defined more than once in a file is never a
+  workspace-global singleton, the cross-file singleton/canonical post-pass also
+  skips it — so no edge is ever minted (fail closed).
+* **Ambiguous caller.** The call cannot be attributed to a single origin, so it is
+  dropped outright.
+* **Unique / unique.** Unchanged — the existing direct-edge behavior (including
+  the Python module-binding contest check) applies.
+
+This mirrors the cross-file singleton ambiguity handling and preserves the 094-F
+cross-file and cross-language invariants: the guard only *withholds* an ambiguous
+same-file edge and never introduces a new cross-file or cross-language edge. Every
+dropped ambiguous endpoint is tallied in the `same_file_ambiguous_dropped` counter
+on `IndexResult` and `SyncResult`.
+
+**v1 behavior — fail-closed, not last-wins.** The same-file duplicate-name
+*effective* call produces **no edge**, not an edge to the last (Python-effective)
+definition. A precise last-def-wins resolver that recovers the shadowed Python
+recall while staying sound for Rust is a deferred follow-up; the sound, language-
+agnostic fail-closed behavior is the certified v1 contract. See
+`docs/decisions/2026-07-27-ff7de872-same-file-shadowing-fail-closed-deliberation.md`
+and
+`docs/exec-plans/2026-07-27-ff7de872-same-file-shadowing-fail-closed-plan.md`.
+
 ### Python namespace-qualified call resolution (v1)
 
 Python modules are namespaces (`foo/bar.py` is the `foo.bar` namespace), so a
@@ -184,8 +228,10 @@ These cases never produce a canonical module-qualified edge:
   name-only edge via `NoModuleContext`.
 * **Shadowed module or callee names.** A module receiver — or a bare imported
   callee — shadowed by a local, a parameter, or any rebind is not resolved (T5c).
-* **Same-file shadowing (`FF7DE872`).** First-match same-file name shadowing is a
-  separate, independent bug, not addressed by this capability.
+* **Same-file shadowing (`FF7DE872`).** First-match same-file name shadowing was
+  a separate, independent bug outside this capability; it is now handled
+  language-agnostically by the same-file duplicate-name fail-closed guard (see
+  *Same-file duplicate-name resolution* above).
 
 #### Precision and recall gates
 

@@ -1114,6 +1114,14 @@ pub struct IndexResult {
     pub tier2_count: usize,
     /// Number of cross-file import/call edges dropped (deferred to future phase).
     pub cross_file_edges_dropped: usize,
+    /// Number of same-file duplicate-name bare calls for which a first-match
+    /// direct edge was withheld (staged for the fail-closed post-pass or
+    /// dropped) rather than bound to a shadowed target (deliberation 014-D /
+    /// 013-D / 082-F). A nonzero-but-bounded value on an adversarial corpus is
+    /// the positive signal; an unexpected spike on real repos is the
+    /// investigation trigger.
+    #[serde(default)]
+    pub same_file_ambiguous_dropped: usize,
     /// Per-file errors encountered (non-fatal).
     pub errors: Vec<FileError>,
     /// Total indexing duration in milliseconds.
@@ -1239,6 +1247,7 @@ async fn index_workspace_impl(
         tier1_count: 0,
         tier2_count: 0,
         cross_file_edges_dropped: 0,
+        same_file_ambiguous_dropped: 0,
         errors: Vec::new(),
         duration_ms: 0,
     };
@@ -1640,11 +1649,49 @@ async fn index_workspace_impl(
                         // caller-resolved but callee-unresolved (cross-file)
                         // call is staged for the deferred post-pass (082.002-T)
                         // instead of being silently dropped.
+                        // Resolve caller/callee with the ambiguity-aware
+                        // resolver so a same-file duplicate-name shadow fails
+                        // closed instead of minting a first-match (wrong-target)
+                        // direct edge (deliberation 014-D / 013-D / 082-F). The
+                        // shared `find_function_id` stays byte-identical for its
+                        // other consumers (caller attribution, resolve path).
                         match (
-                            find_function_id(&function_ids, caller),
-                            find_function_id(&function_ids, callee),
+                            find_unique_function_id(&function_ids, caller),
+                            find_unique_function_id(&function_ids, callee),
                         ) {
-                            (Some(from_id), Some(to_id)) => {
+                            // Ambiguous caller: the edge ORIGIN is uncertain and
+                            // cannot be staged (staging is keyed by one caller
+                            // id), so drop fail-closed and count it.
+                            (UniqueFunctionId::Ambiguous, _) => {
+                                result.same_file_ambiguous_dropped += 1;
+                            }
+                            // Unique caller, ambiguous callee: do NOT mint a
+                            // first-match direct edge. Route into the existing
+                            // staging path so the cross-file post-pass handles it
+                            // under its own fail-closed singleton rules — a
+                            // same-file duplicate name is never a workspace-global
+                            // singleton, so the post-pass skips it too (A5).
+                            (UniqueFunctionId::Unique(from_id), UniqueFunctionId::Ambiguous) => {
+                                result.same_file_ambiguous_dropped += 1;
+                                if matches!(lang_enum, Language::Python) {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                }
+                            }
+                            (
+                                UniqueFunctionId::Unique(from_id),
+                                UniqueFunctionId::Unique(to_id),
+                            ) => {
                                 if matches!(lang_enum, Language::Python)
                                     && py_shadow
                                         .as_ref()
@@ -1665,7 +1712,7 @@ async fn index_workspace_impl(
                                     result.edges_created += 1;
                                 }
                             }
-                            (Some(from_id), None) => {
+                            (UniqueFunctionId::Unique(from_id), UniqueFunctionId::NotFound) => {
                                 if matches!(lang_enum, Language::Python) {
                                     queries
                                         .put_staged_call_with_provenance(
@@ -1681,7 +1728,8 @@ async fn index_workspace_impl(
                                     queries.put_staged_call(&from_id, callee, &rel_path).await?;
                                 }
                             }
-                            _ => {}
+                            // Caller not resolvable in-file: nothing to attribute.
+                            (UniqueFunctionId::NotFound, _) => {}
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -1847,6 +1895,12 @@ pub struct SyncResult {
     pub edges_created: usize,
     /// Number of cross-file import/call edges dropped (deferred to future phase).
     pub cross_file_edges_dropped: usize,
+    /// Number of same-file duplicate-name bare calls for which a first-match
+    /// direct edge was withheld (staged for the fail-closed post-pass or
+    /// dropped) rather than bound to a shadowed target (deliberation 014-D /
+    /// 013-D / 082-F).
+    #[serde(default)]
+    pub same_file_ambiguous_dropped: usize,
     /// Number of files skipped specifically because they exceeded
     /// [`CodeGraphConfig::max_file_size_bytes`].
     ///
@@ -2020,6 +2074,7 @@ pub async fn sync_workspace_with_progress(
         concerns_orphaned: 0,
         edges_created: 0,
         cross_file_edges_dropped: 0,
+        same_file_ambiguous_dropped: 0,
         oversized_files_skipped: 0,
         errors: Vec::new(),
         duration_ms: 0,
@@ -2518,11 +2573,43 @@ pub async fn sync_workspace_with_progress(
                         // Mirror the index-path behavior: resolve locally for a
                         // direct edge, else stage the cross-file call for the
                         // deferred post-pass (082.002-T).
+                        // Mirror the index-path fail-closed guard (A4): resolve
+                        // with the ambiguity-aware resolver so a same-file
+                        // duplicate-name shadow is staged/dropped identically on
+                        // the incremental-sync path (deliberation 014-D).
                         match (
-                            find_function_id(&new_function_ids, caller),
-                            find_function_id(&new_function_ids, callee),
+                            find_unique_function_id(&new_function_ids, caller),
+                            find_unique_function_id(&new_function_ids, callee),
                         ) {
-                            (Some(from_id), Some(to_id)) => {
+                            // Ambiguous caller: uncertain origin, cannot stage —
+                            // drop fail-closed and count it.
+                            (UniqueFunctionId::Ambiguous, _) => {
+                                result.same_file_ambiguous_dropped += 1;
+                            }
+                            // Unique caller, ambiguous callee: withhold the
+                            // first-match direct edge; stage for the fail-closed
+                            // post-pass (never a global singleton, so skipped).
+                            (UniqueFunctionId::Unique(from_id), UniqueFunctionId::Ambiguous) => {
+                                result.same_file_ambiguous_dropped += 1;
+                                if matches!(lang_enum, Language::Python) {
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            "",
+                                            "python_bare",
+                                            "",
+                                        )
+                                        .await?;
+                                } else {
+                                    queries.put_staged_call(&from_id, callee, &rel_path).await?;
+                                }
+                            }
+                            (
+                                UniqueFunctionId::Unique(from_id),
+                                UniqueFunctionId::Unique(to_id),
+                            ) => {
                                 if matches!(lang_enum, Language::Python)
                                     && py_shadow
                                         .as_ref()
@@ -2542,7 +2629,7 @@ pub async fn sync_workspace_with_progress(
                                     queries.create_calls_edge(&from_id, &to_id).await?;
                                 }
                             }
-                            (Some(from_id), None) => {
+                            (UniqueFunctionId::Unique(from_id), UniqueFunctionId::NotFound) => {
                                 if matches!(lang_enum, Language::Python) {
                                     queries
                                         .put_staged_call_with_provenance(
@@ -2558,7 +2645,8 @@ pub async fn sync_workspace_with_progress(
                                     queries.put_staged_call(&from_id, callee, &rel_path).await?;
                                 }
                             }
-                            _ => {}
+                            // Caller not resolvable in-file: nothing to attribute.
+                            (UniqueFunctionId::NotFound, _) => {}
                         }
                     }
                     ExtractedEdge::InheritsFrom {
@@ -2991,6 +3079,39 @@ fn find_function_id(ids: &[(String, String)], name: &str) -> Option<String> {
         .map(|(_, id)| id.clone())
 }
 
+/// Outcome of an ambiguity-aware same-file function-id lookup, used ONLY at the
+/// two direct-edge minting sites (deliberation 014-D / 013-D no-false-edge /
+/// 082-F target-correctness). Unlike [`find_function_id`] — which first-matches
+/// and is intentionally left byte-identical for its caller-attribution and
+/// resolve-path consumers — this distinguishes a same-file duplicate-name shadow
+/// so the minting sites can fail closed instead of binding a bare call to the
+/// earlier (shadowed) definition.
+enum UniqueFunctionId {
+    /// Exactly one same-file candidate matched the name.
+    Unique(String),
+    /// No same-file candidate matched (cross-file / unresolved).
+    NotFound,
+    /// More than one same-file candidate matched the name — a same-file
+    /// duplicate-name shadow (Python last-def-wins; Rust `cfg`-gated duplicate
+    /// defs). Fail closed: never mint a first-match direct edge.
+    Ambiguous,
+}
+
+/// Resolve `name` to a function id ONLY when it is unambiguous within this
+/// file's `ids`. Returns [`UniqueFunctionId::Ambiguous`] when more than one
+/// candidate shares the name so the direct-edge minting sites can fail closed
+/// (deliberation 014-D). Language-agnostic: it never applies last-wins, which
+/// would be unsound for Rust. `find_function_id` is unchanged for every other
+/// consumer.
+fn find_unique_function_id(ids: &[(String, String)], name: &str) -> UniqueFunctionId {
+    let mut matches = ids.iter().filter(|(n, _)| n == name);
+    match (matches.next(), matches.next()) {
+        (Some((_, id)), None) => UniqueFunctionId::Unique(id.clone()),
+        (Some(_), Some(_)) => UniqueFunctionId::Ambiguous,
+        (None, _) => UniqueFunctionId::NotFound,
+    }
+}
+
 /// Find a class ID by name.
 fn find_class_id(ids: &[(String, String)], name: &str) -> Option<String> {
     ids.iter()
@@ -3231,6 +3352,177 @@ mod tests {
         assert_eq!(
             cache_reuse, recompute_fallback,
             "cache reuse and forced recompute fallback must index identical unsafe prefixes and canonical edges"
+        );
+        Ok(())
+    }
+
+    // ── U1 (100.001-T): same-file duplicate-name shadowing RED harness ───────
+    //
+    // FF7DE872 / deliberation 014-D. `find_function_id` returns the FIRST name
+    // match, so when one file declares more than one top-level def of the same
+    // name, a bare call binds to the earlier/shadowed target — a wrong-target
+    // direct edge (013-D no-false-edge / 082-F target-correctness). These tests
+    // assert TARGET-IDENTITY on the `direct` edges the real indexer mints:
+    //   * an ambiguous same-file callee must mint NO direct edge (fail-closed);
+    //   * a legitimate UNIQUE-name same-file call must still resolve (recall).
+    //
+    // Rust reproduces via `#[cfg(...)]`-gated duplicate definitions: tree-sitter
+    // does not evaluate `cfg`, so BOTH `platform` fns are extracted into this
+    // file's `function_ids`, and a bare `platform()` call first-matches an
+    // arbitrary (wrong) cfg variant. Inline `mod` bodies are not descended by
+    // the extractor and two bare same-scope free fns are invalid Rust, so the
+    // cfg-gated pair is the real same-file duplicate-name vector.
+
+    /// A Rust file whose `platform` is defined twice under mutually exclusive
+    /// `cfg` gates (a real, valid same-file duplicate-name shape), plus a
+    /// unique-name control (`helper`) proving recall is preserved.
+    const RUST_SHADOW_FIXTURE: &str = "\
+#[cfg(unix)]
+pub fn platform() -> u8 { 1 }
+
+#[cfg(windows)]
+pub fn platform() -> u8 { 2 }
+
+pub fn describe() {
+    let _ = platform();
+}
+
+pub fn helper() -> u8 { 7 }
+
+pub fn caller_unique() {
+    let _ = helper();
+}
+";
+
+    /// A Python file with two top-level `def parse` (Python last-def-wins
+    /// shadowing) plus a unique-name control (`helper_py`).
+    const PYTHON_SHADOW_FIXTURE: &str = "\
+def parse():
+    return 1
+
+
+def parse():
+    return 2
+
+
+def run():
+    parse()
+
+
+def helper_py():
+    return 3
+
+
+def caller_py():
+    helper_py()
+";
+
+    /// Index a same-file-shadowing fixture and return the live queries handle.
+    /// The returned `TempDir` must be kept alive for the DB to stay readable.
+    async fn index_shadow_fixture(
+        files: &[(&str, &str)],
+        with_manifest: bool,
+    ) -> anyhow::Result<(tempfile::TempDir, CodeGraphQueries)> {
+        let temp_root = repo_local_temp_root()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("same-file-shadow-")
+            .tempdir_in(temp_root)?;
+        let ws = tmp.path();
+        if with_manifest {
+            write_manifest_result(ws)?;
+        }
+        for (rel, content) in files {
+            write_file_result(ws, rel, content)?;
+        }
+        let config = CodeGraphConfig::default();
+        let (data_dir, branch) = test_db_params(ws);
+        index_workspace_impl(ws, &data_dir, &branch, &config, true, None, false).await?;
+        let db = connect_db(&data_dir, &branch).await?;
+        Ok((tmp, CodeGraphQueries::new(db)))
+    }
+
+    /// Materialize the file's `direct` calls edges as (caller_name, callee_name)
+    /// pairs, resolving each endpoint id back to its function name.
+    async fn direct_edge_name_pairs(q: &CodeGraphQueries) -> anyhow::Result<Vec<(String, String)>> {
+        let name_by_id: HashMap<String, String> = q
+            .all_functions()
+            .await?
+            .into_iter()
+            .map(|f| (f.id, f.name))
+            .collect();
+        Ok(q.list_calls_edges_by_resolution("direct")
+            .await?
+            .into_iter()
+            .map(|(from, to)| {
+                (
+                    name_by_id.get(&from).cloned().unwrap_or_default(),
+                    name_by_id.get(&to).cloned().unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
+    /// Count indexed functions sharing `name` (the same-file ambiguity degree).
+    async fn function_name_count(q: &CodeGraphQueries, name: &str) -> anyhow::Result<usize> {
+        Ok(q.all_functions()
+            .await?
+            .into_iter()
+            .filter(|f| f.name == name)
+            .count())
+    }
+
+    /// RED (Rust): an ambiguous same-file duplicate-name callee must NOT mint a
+    /// first-match direct edge; the unique-name control still resolves.
+    #[tokio::test]
+    async fn same_file_duplicate_name_rust_is_fail_closed() -> anyhow::Result<()> {
+        let (_tmp, q) = index_shadow_fixture(&[("src/lib.rs", RUST_SHADOW_FIXTURE)], true).await?;
+
+        assert_eq!(
+            function_name_count(&q, "platform").await?,
+            2,
+            "fixture must declare the duplicate `platform` twice to be ambiguous"
+        );
+
+        let direct = direct_edge_name_pairs(&q).await?;
+
+        // Recall control (GREEN throughout): the unique-name same-file call
+        // resolves to its exact direct-edge target.
+        assert!(
+            direct.contains(&("caller_unique".to_owned(), "helper".to_owned())),
+            "unique-name same-file call must resolve to a direct edge; direct edges: {direct:?}"
+        );
+
+        // Fail-closed target-identity gate (RED until U2): the ambiguous callee
+        // must mint NO direct edge to any `platform` definition.
+        assert!(
+            !direct.contains(&("describe".to_owned(), "platform".to_owned())),
+            "same-file ambiguous callee must not mint a first-match direct edge (013-D/082-F); direct edges: {direct:?}"
+        );
+        Ok(())
+    }
+
+    /// RED (Python): two top-level `def parse` must NOT mint a first-match
+    /// direct edge; the unique-name control still resolves.
+    #[tokio::test]
+    async fn same_file_duplicate_name_python_is_fail_closed() -> anyhow::Result<()> {
+        let (_tmp, q) = index_shadow_fixture(&[("app.py", PYTHON_SHADOW_FIXTURE)], false).await?;
+
+        assert_eq!(
+            function_name_count(&q, "parse").await?,
+            2,
+            "fixture must declare the duplicate `parse` twice to be ambiguous"
+        );
+
+        let direct = direct_edge_name_pairs(&q).await?;
+
+        assert!(
+            direct.contains(&("caller_py".to_owned(), "helper_py".to_owned())),
+            "unique-name same-file Python call must resolve to a direct edge; direct edges: {direct:?}"
+        );
+
+        assert!(
+            !direct.contains(&("run".to_owned(), "parse".to_owned())),
+            "same-file ambiguous Python callee must not mint a first-match direct edge (013-D/082-F); direct edges: {direct:?}"
         );
         Ok(())
     }
