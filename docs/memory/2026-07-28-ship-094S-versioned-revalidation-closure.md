@@ -40,7 +40,11 @@ cycle-2 planning commit `11a69318` (planning artifacts for BOTH 101-F and
 - **101.002-T (U2 GREEN)** `18cb5155` — `CODE_GRAPH_EXTRACTION_GENERATION`
   const + marker read/advance, `run_codegraph_revalidation` gating, force
   re-extraction over unchanged bytes on a generation bump, fail-closed marker
-  advance (only on a fully-clean pass). U1 → GREEN.
+  advance (only on a pass clean over the files discovered this run — NOT a
+  whole-workspace guarantee: the forced-index route advances the marker on
+  `force` alone and revisits only currently-discovered files, so a
+  previously-indexed path now excluded from discovery can stay unreconciled;
+  tracked as follow-up `92EE75BB`). U1 → GREEN.
 - **101.003-T (U3)** `34b6cc4f` — upgrade/backfill acceptance suite (mirrors
   096-F T7 acceptance shape) + docs (architecture.md, compound landmine
   update).

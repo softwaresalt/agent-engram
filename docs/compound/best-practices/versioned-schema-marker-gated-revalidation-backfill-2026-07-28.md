@@ -56,12 +56,24 @@ risks re-introducing regressions on partial failure.
    with `--revalidate-code-graph` (incremental, generation-gated) or the
    forced-index route; routine sync stays churn-free.
 
-3. **Fail-closed marker advance.** Advance the marker **only** when EVERY
+3. **Fail-closed marker advance — and reconcile prior-indexed paths before
+   advancing.** Advance the marker **only** when EVERY
    indexed file was freshly (re-)extracted this pass with no errors and no
    bypass (`force || !any_hash_skipped`, and no zero-byte/oversized bypass of an
    indexed file). If any file was skipped/failed/bypassed, keep the OLD marker so
    the next run retries — a half-migrated graph must never be certified as
-   current (plan invariants A3/C7-3/H2).
+   current (plan invariants A3/C7-3/H2). **The durable pattern also requires
+   reconciling files indexed under the OLD marker that are no longer discovered
+   this pass** (renamed/deleted/newly-excluded) before advancing; otherwise
+   `force` alone advances the marker while their stale artifacts survive.
+   **KNOWN GAP (as shipped in 101-F):** the forced-index route
+   (`index_workspace_impl`) advances the marker on `force` alone
+   (`code_graph.rs` ~1899-1900) but discovers only currently-present files
+   (`code_graph.rs` ~1229), so it does NOT yet reconcile
+   previously-indexed-now-excluded paths — for that route the "EVERY indexed
+   file" invariant is scoped to files visited this pass, and full prior-path
+   reconciliation awaits follow-up `92EE75BB`. The incremental
+   `sync --revalidate-code-graph` route is likewise scoped to discovered files.
 
 4. **Retract stale raw edges in EVERY teardown path, before deleting keying
    metadata.** `delete_functions_by_file` removes `function_meta` but NOT the raw
@@ -92,13 +104,20 @@ still holds.
   (a no-op once the marker matches; idempotent and churn-free).
 - `engram index --revalidate-code-graph` and `engram sync --full
   --revalidate-code-graph` → **forced full reparse** (always re-extracts every
-  file, even when the marker matches — a hammer, NOT churn-free).
+  currently-discovered file, even when the marker matches — a hammer, NOT
+  churn-free). Caveat: it re-extracts only files present at index time and still
+  advances the marker on `force`, so previously-indexed-now-excluded paths are
+  NOT reconciled by this route (forced-index reconciliation gap, follow-up
+  `92EE75BB`).
 - Plain `engram sync --full` does **not** imply `--force`; it still hash-skips.
 
 ## Why it matters
 
 This lets a shipped correctness fix reach existing workspaces on the operator's
 schedule, without churning routine syncs and without auto-running a risky
-migration. The fail-closed marker guarantees a partially-migrated graph is never
-mistaken for a fully-migrated one, so a later `--revalidate` run always finishes
-the job.
+migration. The fail-closed marker keeps a graph that is only partially migrated
+*over the files a pass actually visited* from being mistaken for a fully-migrated
+one, so a later `--revalidate` run finishes the job for those files. It does
+**not** yet cover previously-indexed paths that a later exclusion removes from
+discovery: the forced-index route can advance the marker without revisiting
+them, so whole-workspace reconciliation awaits follow-up `92EE75BB`.
