@@ -24,8 +24,9 @@ squash/rebase disabled at repo level). Feature 096-F and shipment 091-S moved to
   = real P0 false-edge, FIXED `aeb97697`; C2/C3 deferred to backlog (099.007-T,
   099.002-T) with rationale.
 - **Cycle 2** — second Copilot review (4 comments A/B/C/D): A/B/C = real
-  fail-closed false-edge gaps, FIXED with TDD `d3742fa6`; D (CLI backfill intent)
-  = liveness, deferred to 099.007-T.
+  fail-closed false-edge gaps, FIXED with TDD `d3742fa6`; D (backfill intent)
+  = liveness, deferred to 099.007-T (MCP `sync_workspace` path; the CLI path
+  was already fixed in 82488eae).
 - **Cycle 3** — Copilot review at HEAD `d3742fa6` (COMMENTED, non-blocking):
   **no new actionable threads** → did NOT spiral; 4-point merge gate clean → merged.
 
@@ -59,8 +60,11 @@ acceptance tests + 18 unit_python_canonical GREEN. CI `build` green at HEAD.
 
 ## Deferred (backlog follow-ups, NOT false edges)
 
-- **099.007-T** (high) — MCP + CLI backfill-intent liveness (write.rs, indexing.rs
-  :56/:91): `sync --full` / `index` drop one-step resolution-backfill intent.
+- **099.007-T** (high) — MCP `sync_workspace` backfill-intent liveness
+  (write.rs pending_sync coalescing): a backfill request queued during active
+  indexing drains as an ungated sync, so the canonical re-extraction never runs.
+  The CLI path (indexing.rs:56/93, `sync --full` / `index`) was already fixed in
+  82488eae and is NOT deferred.
 - **099.002-T** — extraction-version marker advance semantics.
 
 ## Memories stored
