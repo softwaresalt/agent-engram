@@ -106,10 +106,12 @@ sends `{"force": true}` and re-parses unchanged files.
   advances the marker only on a fully clean pass (partial failure retries), and is
   a strict no-op on a matching marker — so an upgrade picks up the new edges
   without a churny blanket reparse. The full-scan forms (`engram index
-  --revalidate-code-graph`, `engram sync --full`) imply `--force` and re-extract
-  every file regardless of the marker; only the generation-gated marker *advance*
-  is skipped when the marker already matches. A stale marker logs a `debug`
-  hint prompting the operator to opt in.
+  --revalidate-code-graph`, `engram sync --full --revalidate-code-graph`) imply
+  `--force` and re-extract every file regardless of the marker; only the
+  generation-gated marker *advance* is skipped when the marker already matches.
+  (Plain `engram sync --full` is a non-forced full scan that still hash-skips
+  unchanged files, so it does not itself trigger the revalidation.) A stale marker
+  logs a `debug` hint prompting the operator to opt in.
 - Related freshness landmines: `sync-workspace-record-file-hash-required`
   (hash-table upkeep) and `hydrate-code-graph-fast-path-already-indexed`
   (startup fast-path).
