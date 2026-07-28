@@ -683,6 +683,11 @@ path = "tests/integration/calls_target_correctness_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_same_file_shadowing_acceptance"
+path = "tests/integration/same_file_shadowing_acceptance_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"
 
