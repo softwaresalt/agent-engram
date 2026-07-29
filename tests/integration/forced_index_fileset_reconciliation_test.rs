@@ -156,7 +156,9 @@ async fn forced_index_evicts_excluded_still_on_disk_file() {
 
     // The excluded file's stale same-file edge must be evicted.
     assert!(
-        !after.iter().any(|(f, t)| f == "a_caller" || t == "a_helper"),
+        !after
+            .iter()
+            .any(|(f, t)| f == "a_caller" || t == "a_helper"),
         "forced-index reconciliation must evict the excluded file's stale edge; remaining: {after:?}"
     );
     // Its code_file / function_meta must be gone too (full eviction).
@@ -243,7 +245,9 @@ async fn second_forced_index_reconciles_zero() {
     let q = CodeGraphQueries::new(db);
     let after = direct_edge_names(&q).await;
     assert!(
-        !after.iter().any(|(f, t)| f == "a_caller" || t == "a_helper"),
+        !after
+            .iter()
+            .any(|(f, t)| f == "a_caller" || t == "a_helper"),
         "a.rs stays evicted across repeated forced indexes; remaining: {after:?}"
     );
     assert!(

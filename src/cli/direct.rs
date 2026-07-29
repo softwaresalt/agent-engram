@@ -358,6 +358,7 @@ mod tests {
             cross_file_edges_dropped: 0,
             same_file_ambiguous_dropped: 0,
             dangling_edges_swept: 0,
+            files_reconciled: 0,
             errors: vec![],
             duration_ms: 123,
         }
