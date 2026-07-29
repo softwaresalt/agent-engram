@@ -66,14 +66,16 @@ risks re-introducing regressions on partial failure.
    reconciling files indexed under the OLD marker that are no longer discovered
    this pass** (renamed/deleted/newly-excluded) before advancing; otherwise
    `force` alone advances the marker while their stale artifacts survive.
-   **KNOWN GAP (as shipped in 101-F):** the forced-index route
-   (`index_workspace_impl`) advances the marker on `force` alone
-   (`code_graph.rs` ~1899-1900) but discovers only currently-present files
-   (`code_graph.rs` ~1229), so it does NOT yet reconcile
-   previously-indexed-now-excluded paths — for that route the "EVERY indexed
-   file" invariant is scoped to files visited this pass, and full prior-path
-   reconciliation awaits follow-up `92EE75BB`. The incremental
-   `sync --revalidate-code-graph` route is likewise scoped to discovered files.
+   **KNOWN GAP (as shipped in 101-F) — CLOSED by 103-F/096-S:** the
+   forced-index route (`index_workspace_impl`) advances the marker on `force`
+   alone (`code_graph.rs` ~1899-1900) but discovered only currently-present
+   files (`code_graph.rs` ~1229), so it did NOT reconcile
+   previously-indexed-now-excluded paths. **103-F (`92EE75BB`) added the
+   `indexed − discovered` file-set eviction + an orphan `calls_edge` sweep into
+   the certify block before the marker advances**, so the forced-index route now
+   reconciles the full persisted input set. The incremental
+   `sync --revalidate-code-graph` route remains scoped to discovered files by
+   design (an incremental route only revisits what changed).
 
 4. **Retract stale raw edges in EVERY teardown path, before deleting keying
    metadata.** `delete_functions_by_file` removes `function_meta` but NOT the raw
@@ -94,9 +96,10 @@ a *legacy already-orphaned* raw row (caller re-minted by a pre-fix ordinary sync
 is **non-traversable** and cannot surface a wrong target. Purging orphaned raw
 rows is a separate one-time GC (`calls_edge` rows whose `from`/`to` lacks
 `function_meta`), correctly triaged as a scoped follow-up rather than a release
-blocker. When a late review flags "the marker advances while a stale row
-survives," first ask: *is that row traversable?* If not, the correctness gate
-still holds.
+blocker — **now shipped as the 103-F/096-S orphan sweep
+(`retract_dangling_calls_edges`, run in both certify blocks).** When a late
+review flags "the marker advances while a stale row survives," first ask: *is
+that row traversable?* If not, the correctness gate still holds.
 
 ## CLI routing (get the docs right)
 
@@ -105,10 +108,10 @@ still holds.
 - `engram index --revalidate-code-graph` and `engram sync --full
   --revalidate-code-graph` → **forced full reparse** (always re-extracts every
   currently-discovered file, even when the marker matches — a hammer, NOT
-  churn-free). Caveat: it re-extracts only files present at index time and still
-  advances the marker on `force`, so previously-indexed-now-excluded paths are
-  NOT reconciled by this route (forced-index reconciliation gap, follow-up
-  `92EE75BB`).
+  churn-free). As of 103-F/096-S this route now reconciles the full persisted
+  input set: before advancing the marker it evicts `indexed − discovered` files
+  (previously-indexed-now-excluded paths) and sweeps orphaned `calls_edge` rows,
+  closing the former forced-index reconciliation gap.
 - Plain `engram sync --full` does **not** imply `--force`; it still hash-skips.
 
 ## Why it matters
@@ -117,7 +120,9 @@ This lets a shipped correctness fix reach existing workspaces on the operator's
 schedule, without churning routine syncs and without auto-running a risky
 migration. The fail-closed marker keeps a graph that is only partially migrated
 *over the files a pass actually visited* from being mistaken for a fully-migrated
-one, so a later `--revalidate` run finishes the job for those files. It does
-**not** yet cover previously-indexed paths that a later exclusion removes from
-discovery: the forced-index route can advance the marker without revisiting
-them, so whole-workspace reconciliation awaits follow-up `92EE75BB`.
+one, so a later `--revalidate` run finishes the job for those files. On the
+*incremental* `sync --revalidate-code-graph` route it does **not** cover
+previously-indexed paths that a later exclusion removes from discovery (by design
+— an incremental route only revisits what changed); the **forced-index route now
+reconciles them** via the 103-F/096-S `indexed − discovered` file-set eviction +
+orphan sweep before advancing the marker.
