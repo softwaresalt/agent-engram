@@ -58,8 +58,7 @@ radius and often isn't available in-range.
    # HTTP client — unused by engram — pulls rustls 0.21 + rustls-webpki 0.101.7,
    # i.e. RUSTSEC-2026-0098/0099/0104). We re-enable exactly the `compact`
    # capabilities engram uses: bundled SQLite storage + Datalog graph algorithms.
-   cozo = { version = "0.7", default-features = false, features = ["storage-sqlite",
-   "storage-sqlite-src", "graph-algo"], optional = true }
+   cozo = { version = "0.7", default-features = false, features = ["storage-sqlite", "storage-sqlite-src", "graph-algo"], optional = true }
    ```
 
 3. **Re-resolve and diff the lockfile.** `cargo update`/`cargo check`, then
