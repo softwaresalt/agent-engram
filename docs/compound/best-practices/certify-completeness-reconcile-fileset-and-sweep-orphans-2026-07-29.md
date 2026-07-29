@@ -40,15 +40,22 @@ files present *right now*: the forced-index route walks currently-discovered
 files and advances the marker on `force` alone. Two classes of stale state then
 survive the "current" certification:
 
-1. **Whole files that dropped out of discovery.** A file indexed under the old
-   marker that is now excluded (via `exclude_patterns`) but still on disk never
-   reappears in a future incremental sync's on-disk-deletion phase, so its nodes
-   and edges persist while the marker certifies the generation as current.
-2. **Orphaned raw edges.** `delete_functions_by_file` retires `function_meta`
-   but not the raw `calls_edge` rows, and same-file duplicate-name shadowing
-   (100-F) plus a marker advance can strand `calls_edge` rows whose `from`/`to`
-   no longer has a `function_meta`. No global GC existed (`rm_orphan_edges` was
-   lineage-only).
+1. **Whole files that dropped out of discovery — on the forced-index route
+   only.** The **incremental sync** path already reconciles this: it computes
+   `deleted_paths = indexed − discover_files()` and evicts each via
+   `handle_deleted_file` in its Phase 1 deletion sweep, and `discover_files`
+   honors `exclude_patterns`, so a newly-excluded-still-on-disk file is treated
+   as a deletion there. The **forced-index** (`index_workspace`) route had **no**
+   equivalent comparison — it walked only currently-discovered files and advanced
+   the marker on `force` — so a previously-indexed-now-excluded file kept its
+   nodes and edges while the marker certified the generation as current. This
+   route-specific gap is what U2 closes.
+2. **Legacy orphaned raw edges.** `delete_functions_by_file` retires
+   `function_meta` but not the raw `calls_edge` rows, so same-file duplicate-name
+   shadowing (100-F) plus a marker advance on a *pre-101-F ordinary sync* could
+   leave `calls_edge` rows whose `from`/`to` no longer has a `function_meta`
+   (already-orphaned, non-traversable). No global GC existed to reclaim them
+   (`rm_orphan_edges` was lineage-only).
 
 ## Pattern
 
@@ -56,14 +63,15 @@ Before advancing a completeness marker, reconcile the **full persisted input
 set** the marker claims to certify — do not trust "the files this pass walked".
 In the certify block, gated by the same marker-advance condition
 (`force || !any_hash_skipped`, no bypass), run two retraction-only
-reconciliations in dependency order:
+reconciliations:
 
 1. **File-set reconciliation (`indexed − discovered`).** Build the discovered
    relative-path set from the walked files; for every `list_code_files()` entry
    not in that set, evict it through the shared deletion primitive
-   (`handle_deleted_file`, which already retracts resolved + direct edges, clears
-   staged calls, and deletes the file's nodes). This reuses the proven eviction
-   path, so it cannot remove a cross-file edge or lose recall on kept files.
+   (`handle_deleted_file`, which retracts the file's resolved edges in **both**
+   directions + its same-file `direct` edges, clears staged calls, and deletes
+   the file's nodes). This reuses the proven eviction path, so it cannot remove a
+   cross-file edge or lose recall on kept files.
 2. **Orphan-edge sweep.** Then sweep `calls_edge` rows whose `from` **or** `to`
    lacks `function_meta`. Express the OR-predicate as an intermediate
    `orphan[from,to]` relation with two rules (auto-deduped by Datalog set
@@ -72,10 +80,12 @@ reconciliations in dependency order:
    yields an accurate swept count on the single-threaded certify path.
 3. **Then advance the marker.**
 
-**Order matters: eviction BEFORE the sweep.** File-set eviction *produces*
-orphaned edges (an evicted file's callers/callees vanish), so running the sweep
-after eviction cleans them in the same certify pass — a later pass is not
-required.
+**Order eviction BEFORE the sweep (defensive, not a hard dependency).** Because
+`handle_deleted_file` retracts an evicted file's edges in both directions,
+eviction is self-cleaning and does **not** itself strand dangling rows — the
+sweep is a legacy/final-state GC for orphans that accrued on *other* paths
+(pre-fix syncs, shadowing re-mints). Running eviction first simply certifies a
+single clean exit; idempotence holds either way.
 
 ## Observability
 

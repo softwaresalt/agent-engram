@@ -57,8 +57,11 @@ never `git add -A`).
   `index_workspace_impl` certify block, gated by `force || !any_hash_skipped`,
   compute `discovered_rel` from the walked file set and evict every
   `indexed − discovered` file via the proven `handle_deleted_file` eviction
-  primitive **before** the U1 orphan sweep (so edges orphaned by an eviction are
-  swept in the same pass). Added `files_reconciled` to `IndexResult`. The H5−
+  primitive **before** the U1 orphan sweep (defensive single-pass-clean order;
+  `handle_deleted_file` already retracts the evicted file's resolved edges in
+  both directions + its same-file direct edges, so the sweep is a legacy
+  final-state GC, not a cleanup of eviction-produced orphans). Added
+  `files_reconciled` to `IndexResult`. The H5−
   negative branch is structurally guaranteed: a discovered/hash-skipped file
   stays in `discovered_rel` (kept) and `any_hash_skipped` also skips the whole
   certify block.
@@ -93,7 +96,7 @@ fresh Copilot re-review at the fix HEAD raised **no** new threads.
 ## Gates + review + runtime
 
 - `cargo fmt --all -- --check` PASS; `cargo clippy --all-targets
-  --no-default-features --features cozo-backend,embeddings -D warnings
+  --no-default-features --features cozo-backend,embeddings -- -D warnings
   -D clippy::pedantic` PASS; `cargo test --lib` (CI feature set) **466/466**;
   both new integration suites **3/3 + 3/3**; recall 18/18 + revalidation +
   shadowing suites green. `cargo audit` = 1 pre-existing accepted advisory
@@ -129,27 +132,40 @@ logic version N" is only sound if the pass that advances it reconciles the
 **complete** persisted input set, not just the files it happened to walk. The
 101-F marker advanced on `force` alone while the forced-index route discovers
 only currently-present files, so two silent staleness leaks survived: (1)
-`calls_edge` rows orphaned when their keying `function_meta` was retired, and (2)
-whole files that dropped out of discovery (excluded-still-on-disk) kept their
-nodes/edges. The fix is two retraction-only reconciliations in the certify
-block, ordered **file-set eviction → orphan-edge sweep → marker advance** (evict
-first so its orphans are swept in the same pass), each reusing the proven
-same-file/lineage retraction primitives so no cross-file edge and no recall is
-lost. The residual subtlety — that eviction after the cross-file singleton
-post-pass forgoes a recall *recovery* opportunity — is fail-closed and correctly
-deferred (`7A317008`) rather than reordered under review pressure.
+legacy `calls_edge` rows already orphaned when their keying `function_meta` was
+retired by a pre-101-F ordinary sync (no global GC existed), and (2) whole files
+that dropped out of discovery (excluded-still-on-disk) kept their nodes/edges —
+because, unlike the incremental sync path (which reconciles `indexed − discovered`
+in its Phase 1 deletion sweep), the forced-index route had no such comparison.
+The fix is two retraction-only reconciliations in the certify block, ordered
+**file-set eviction → orphan-edge sweep → marker advance**. Eviction reuses the
+shared `handle_deleted_file` primitive, which retracts a file's resolved edges in
+**both** directions (`from` and `to`) plus its same-file `direct` edges, so
+eviction is self-cleaning and does not itself produce dangling rows; the orphan
+sweep is a global *final-state / legacy* GC for pre-existing orphans (e.g.
+same-file shadowing re-mints), and running it after eviction just certifies a
+single clean exit. Both are retraction-only and reuse proven same-file/lineage
+primitives, so no cross-file edge and no recall is lost. The residual subtlety —
+that eviction after the cross-file singleton post-pass forgoes a recall
+*recovery* opportunity — is fail-closed and correctly deferred (`7A317008`)
+rather than reordered under review pressure.
 
 ## Process learnings for next ship
 
 - **"Advance the completeness marker" ⇒ audit every input the marker claims
   to certify.** When a marker advances on `force`/singleton conditions, grep the
   route's discovery source: if it walks only currently-present files, indexed
-  artifacts that dropped out of discovery are silently certified stale. Reconcile
-  `indexed − discovered` (and sweep orphaned edges) before advancing.
-- **Order retraction reconciliations by their orphan-production dependency.**
-  File-set eviction *creates* orphaned edges; run it before the orphan sweep so a
-  single certify pass leaves the graph clean (mirrors the U2-before-U1 plan
-  guidance).
+  artifacts that dropped out of discovery are silently certified stale. The
+  incremental sync path already reconciled this via its Phase 1
+  `indexed − discovered` deletion sweep; the gap was that the **forced-index**
+  route had no equivalent — so reconcile `indexed − discovered` (and sweep
+  pre-existing orphans) before advancing.
+- **Order the reconciliations eviction → sweep for a single clean exit — but
+  know why.** `handle_deleted_file` retracts an evicted file's resolved edges in
+  both directions and its same-file direct edges, so eviction does *not* itself
+  produce dangling rows; the orphan sweep is a legacy/final-state GC. Ordering
+  eviction first is a defensive single-pass-clean choice (the plan notes
+  idempotence holds either way), not a hard orphan-production dependency.
 - **New observability fields need test assertions, not just DB assertions.**
   Both valid Copilot findings were "you assert the DB state but discard the
   result struct" — capture `IndexResult`/`SyncResult` and assert the new

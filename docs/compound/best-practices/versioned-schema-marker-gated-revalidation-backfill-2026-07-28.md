@@ -73,9 +73,11 @@ risks re-introducing regressions on partial failure.
    previously-indexed-now-excluded paths. **103-F (`92EE75BB`) added the
    `indexed − discovered` file-set eviction + an orphan `calls_edge` sweep into
    the certify block before the marker advances**, so the forced-index route now
-   reconciles the full persisted input set. The incremental
-   `sync --revalidate-code-graph` route remains scoped to discovered files by
-   design (an incremental route only revisits what changed).
+   reconciles the full persisted input set. (The incremental `sync` path already
+   reconciled newly-excluded/deleted files via its Phase 1 `indexed − discovered`
+   deletion sweep — `discover_files` honors `exclude_patterns`, so an exclusion is
+   treated as a deletion there; only the forced-index route lacked that
+   comparison.)
 
 4. **Retract stale raw edges in EVERY teardown path, before deleting keying
    metadata.** `delete_functions_by_file` removes `function_meta` but NOT the raw
@@ -120,9 +122,9 @@ This lets a shipped correctness fix reach existing workspaces on the operator's
 schedule, without churning routine syncs and without auto-running a risky
 migration. The fail-closed marker keeps a graph that is only partially migrated
 *over the files a pass actually visited* from being mistaken for a fully-migrated
-one, so a later `--revalidate` run finishes the job for those files. On the
-*incremental* `sync --revalidate-code-graph` route it does **not** cover
-previously-indexed paths that a later exclusion removes from discovery (by design
-— an incremental route only revisits what changed); the **forced-index route now
-reconciles them** via the 103-F/096-S `indexed − discovered` file-set eviction +
-orphan sweep before advancing the marker.
+one, so a later `--revalidate` run finishes the job for those files.
+Previously-indexed paths that a later exclusion (or deletion) removes from
+discovery are reconciled on **both** routes: the incremental `sync` path evicts
+them in its Phase 1 `indexed − discovered` deletion sweep, and the
+**forced-index route now** does the equivalent via the 103-F/096-S file-set
+eviction + orphan sweep before advancing the marker.
