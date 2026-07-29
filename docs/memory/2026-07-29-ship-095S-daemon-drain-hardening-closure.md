@@ -9,8 +9,6 @@ merge_commit: "315e538bc362cb7be603986e7c24d642a60a3700"
 status: "shipped"
 ---
 
-# Ship 095-S — merge closure memory
-
 ## Outcome
 
 Feature 104-F shipped via **PR #297** (merge commit

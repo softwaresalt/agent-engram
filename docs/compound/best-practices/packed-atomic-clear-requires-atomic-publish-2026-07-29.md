@@ -30,8 +30,6 @@ tags:
   - "104-F"
 ---
 
-# Packed-atomic wipe needs an atomic-mask publisher
-
 ## Context
 
 Feature 104-F consolidated three daemon pending-sync flags — `pending_sync` and
