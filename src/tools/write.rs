@@ -17,7 +17,7 @@ use crate::models::health::ScanProgress;
 use crate::server::state::SharedState;
 use crate::services::dehydration;
 use crate::services::hydration;
-use crate::tools::lifecycle::drain_pending_sync;
+use crate::tools::lifecycle::drain_pending_sync_to_completion;
 
 #[cfg(feature = "git-graph")]
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
@@ -167,7 +167,7 @@ pub async fn index_workspace(
     let result =
         index_workspace_inner(&state, &ws_path, &data_dir, &branch, code_graph, params).await;
     finalize_indexing_request(&state, &result, true, |state| {
-        Box::pin(drain_pending_sync(state))
+        Box::pin(drain_pending_sync_to_completion(state))
     })
     .await;
     result
@@ -266,13 +266,9 @@ pub async fn sync_workspace(
     // If indexing is already running, queue a sync to run after it finishes
     // rather than returning an error — callers get a "queued" status (044.004-T).
     if !state.try_start_indexing() {
-        // 101.002-T: preserve the queued sync's gate flags across coalescing,
-        // and publish them BEFORE set_pending_sync() so a concurrent drain can
-        // never observe pending_sync == true alongside a stale companion bit
-        // (which would downgrade the request to a routine no-op and strand the
-        // sticky bit). The queue decision runs before params are parsed, and the
-        // coalesced drain would otherwise pass both gates as false — silently
-        // dropping a queued --revalidate-code-graph or --backfill-python-canonical.
+        // 044.004-T / 101.002-T: parse the queued sync's gate flags so the
+        // coalesced drain runs the requested --revalidate-code-graph /
+        // --backfill-python-canonical rather than downgrading to a routine sync.
         let params_ref = params.as_ref();
         let queued_flag = |name: &str| -> bool {
             params_ref
@@ -280,13 +276,18 @@ pub async fn sync_workspace(
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         };
-        if queued_flag("revalidate_code_graph") {
-            state.set_pending_sync_revalidate();
-        }
-        if queued_flag("backfill_python_canonical") {
-            state.set_pending_sync_backfill_python();
-        }
-        state.set_pending_sync();
+        // 101.002-T / 104.002-T: publish the queued sync's gate flags and the
+        // pending bit in ONE atomic op (publish_pending_sync) so a concurrent
+        // drain never observes pending_sync == true alongside a stale companion
+        // bit, and a concurrent clear_all_pending_sync (hydration cancel /
+        // DB-fail) can never interleave to downgrade the request to a bare sync.
+        // The queue decision runs before params are parsed, and a coalesced
+        // drain would otherwise pass both gates as false — silently dropping a
+        // queued --revalidate-code-graph or --backfill-python-canonical.
+        state.publish_pending_sync(
+            queued_flag("revalidate_code_graph"),
+            queued_flag("backfill_python_canonical"),
+        );
         return Ok(
             json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
         );
@@ -298,7 +299,7 @@ pub async fn sync_workspace(
     let result =
         sync_workspace_inner(&state, &ws_path, &data_dir, &branch, code_graph, params).await;
     finalize_indexing_request(&state, &result, false, |state| {
-        Box::pin(drain_pending_sync(state))
+        Box::pin(drain_pending_sync_to_completion(state))
     })
     .await;
     result

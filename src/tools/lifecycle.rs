@@ -248,6 +248,11 @@ async fn background_db_hydration(
                 state.set_hydration_ready();
                 // Only release the lock if this task acquired it.
                 if acquired_lock {
+                    // 104.002-T (N1/N5): a cancelled generation must not drain
+                    // the queued heavy sync against a torn-down state — clear the
+                    // pending + companion bits atomically instead. The new
+                    // generation's own scan re-queues whatever is actually needed.
+                    state.clear_all_pending_sync();
                     state.finish_indexing().await;
                 }
                 return;
@@ -269,6 +274,10 @@ async fn background_db_hydration(
                 .await;
             state.set_hydration_ready();
             if acquired_lock {
+                // 104.002-T (N1): DB connect failed — clear the queued pending +
+                // companion bits atomically rather than leak them into a later
+                // unrelated sync (there is no live DB to drain against anyway).
+                state.clear_all_pending_sync();
                 state.finish_indexing().await;
             }
             return;
@@ -370,7 +379,7 @@ async fn background_db_hydration(
     // pending sync that was queued while we held the lock.
     if acquired_lock {
         state.finish_indexing().await;
-        drain_pending_sync(&state).await;
+        drain_pending_sync_to_completion(&state).await;
     }
 }
 
@@ -432,6 +441,41 @@ pub async fn drain_pending_sync(state: &AppState) {
             // remains set for the next drain.
             state.set_pending_sync();
         }
+    }
+}
+
+/// Drain the coalesced pending sync, looping until nothing remains (104.002-T).
+///
+/// A single [`drain_pending_sync`] pass is single-shot: a `pending_sync`
+/// re-armed *during* the drain (either a fresh request or the lost-lock
+/// re-queue) is left for an unspecified "next `finish_indexing` caller", which
+/// can stall the queued sync. This wrapper loops so the re-arm is handled here
+/// instead (N2). The loop is bounded by `MAX_DRAIN_ITERATIONS` with a warn guard
+/// against a pathological set/drain livelock (H3), and yields cooperatively each
+/// pass so a contended indexing lock lets the competing indexer make progress
+/// rather than being busy-spun.
+pub async fn drain_pending_sync_to_completion(state: &AppState) {
+    /// Upper bound on drain passes before deferring to the next
+    /// `finish_indexing` caller, guarding against a set/drain livelock (N2/H3).
+    const MAX_DRAIN_ITERATIONS: u32 = 64;
+
+    for _ in 0..MAX_DRAIN_ITERATIONS {
+        if !state.has_pending_sync() {
+            return;
+        }
+        drain_pending_sync(state).await;
+        // Cooperative yield: if the indexing lock is contended, drain_pending_sync
+        // re-queues rather than draining, so yield to let the holder finish
+        // instead of busy-spinning; also lets a re-armed pending settle.
+        tokio::task::yield_now().await;
+    }
+
+    if state.has_pending_sync() {
+        tracing::warn!(
+            max_iterations = MAX_DRAIN_ITERATIONS,
+            "drain_pending_sync_to_completion: reached iteration bound with a \
+             pending sync still queued; deferring to the next finish_indexing caller"
+        );
     }
 }
 
@@ -561,10 +605,247 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use sysinfo::System;
 
-    use super::get_daemon_status;
-    use crate::server::state::AppState;
+    use super::{background_db_hydration, drain_pending_sync_to_completion, get_daemon_status};
+    use crate::models::config::WorkspaceConfig;
+    use crate::server::state::{AppState, WorkspaceSnapshot};
+
+    /// Minimal bound-workspace fixture pointing at a scratch tempdir so the
+    /// coalesced drain enters its sync branch (and can re-queue on a lost lock).
+    fn test_snapshot(tmp: &tempfile::TempDir) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            workspace_id: "test-ws".to_owned(),
+            workspace_uuid: "00000000-0000-0000-0000-000000000000".to_owned(),
+            branch: "main".to_owned(),
+            data_dir: tmp.path().to_path_buf(),
+            path: tmp.path().display().to_string(),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 0,
+            file_mtimes: std::collections::HashMap::new(),
+        }
+    }
+
+    /// 104.001-T (T-leak, RED): a revalidation sync queued while indexing must
+    /// not leave its companion bits sticky when the hydration is cancelled. The
+    /// pre-fix cancel path releases the indexing lock without clearing the
+    /// pending/companion flags, so they leak into a later unrelated sync.
+    #[tokio::test]
+    async fn hydration_cancel_path_clears_pending_companion_bits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir = tmp.path().join("data");
+        let canonical = tmp.path().join("ws");
+        std::fs::create_dir_all(&canonical).expect("create ws dir");
+        let state = Arc::new(AppState::new(1));
+
+        // Queue a revalidation sync (companion + pending) as if requested while
+        // the daemon was indexing.
+        state.set_pending_sync_revalidate();
+        state.set_pending_sync();
+
+        // Cancellation is already signalled for this generation, so the first
+        // check_cancel! after the DB connects takes the cancel path.
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(true);
+
+        background_db_hydration(
+            Arc::clone(&state),
+            canonical,
+            data_dir,
+            "main".to_owned(),
+            cancel_rx,
+        )
+        .await;
+
+        assert!(
+            !state.take_pending_sync(),
+            "cancel path must not leave pending_sync set (companion-bit leak)"
+        );
+        assert!(
+            !state.take_pending_sync_revalidate(),
+            "cancel path must not leak the pending_sync_revalidate companion bit"
+        );
+        assert!(
+            !state.take_pending_sync_backfill_python(),
+            "cancel path must not leak the pending_sync_backfill_python companion bit"
+        );
+    }
+
+    /// 104.001-T (T-dbfail, RED): the DB-connect-failure path must also clear
+    /// the queued pending/companion flags rather than leak them. Reproduced by
+    /// pointing `data_dir` at a regular file so `connect_db` fails.
+    #[tokio::test]
+    async fn hydration_db_connect_failure_clears_pending_companion_bits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Point data_dir at a regular FILE so connect_db's create_dir_all fails
+        // deterministically, exercising the DB-connect-failure path.
+        let data_file = tmp.path().join("not-a-directory");
+        std::fs::write(&data_file, b"x").expect("write file");
+        let canonical = tmp.path().join("ws");
+        std::fs::create_dir_all(&canonical).expect("create ws dir");
+        let state = Arc::new(AppState::new(1));
+
+        state.set_pending_sync_backfill_python();
+        state.set_pending_sync();
+
+        // Cancellation stays false so hydration reaches connect_db (which fails).
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        background_db_hydration(
+            Arc::clone(&state),
+            canonical,
+            data_file,
+            "main".to_owned(),
+            cancel_rx,
+        )
+        .await;
+
+        assert!(
+            !state.take_pending_sync(),
+            "DB-connect-failure path must not leave pending_sync set (companion-bit leak)"
+        );
+        assert!(
+            !state.take_pending_sync_revalidate(),
+            "DB-connect-failure path must not leak the revalidate companion bit"
+        );
+        assert!(
+            !state.take_pending_sync_backfill_python(),
+            "DB-connect-failure path must not leak the backfill companion bit"
+        );
+    }
+
+    /// 104.001-T (T-loop, RED): a `pending_sync` re-armed during a drain (here
+    /// the lost-lock re-queue) must be self-drained by the loop wrapper without
+    /// relying on an external `finish_indexing` caller. Deterministic via the
+    /// current-thread runtime + explicit yields (no wall-clock sleeps): the test
+    /// holds the indexing lock so the first drain pass loses the race and
+    /// re-queues, then releases it so a *looping* drain can finish the work. The
+    /// single-shot placeholder stalls here (fails); the 104.002-T loop drains it.
+    #[tokio::test]
+    async fn loop_drain_self_drains_pending_rearmed_during_a_drain() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+
+        // Bind a workspace + config so the drain enters its sync branch and, on
+        // a lost indexing-lock race, re-queues pending.
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // Hold the indexing lock so the first drain pass loses the race and
+        // re-queues the pending sync (re-arm-during-drain, deterministic).
+        assert!(state.try_start_indexing(), "test holds the indexing lock");
+        state.set_pending_sync();
+
+        let drain_state = Arc::clone(&state);
+        let drain = tokio::spawn(async move {
+            drain_pending_sync_to_completion(&drain_state).await;
+        });
+
+        // Let the spawned drain run its first pass: it takes pending, fails to
+        // acquire the (held) lock, and re-queues pending.
+        tokio::task::yield_now().await;
+        assert!(
+            state.has_pending_sync(),
+            "first drain pass must re-queue pending while the indexing lock is contended"
+        );
+
+        // Release the lock; a loop-drain must now self-drain the re-queued
+        // pending WITHOUT any external finish_indexing caller.
+        state.finish_indexing().await;
+
+        drain.await.expect("drain task joins");
+
+        assert!(
+            !state.has_pending_sync(),
+            "loop-drain must self-drain the re-queued pending sync to completion"
+        );
+        assert!(
+            !state.is_indexing(),
+            "loop-drain must release the indexing lock after draining"
+        );
+    }
+
+    /// 104.002-T (H3): the loop self-drains after a pending sync is re-armed
+    /// *twice* during draining (two lost-lock re-queues), then terminates.
+    #[tokio::test]
+    async fn loop_drain_self_drains_after_two_rearms() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        assert!(state.try_start_indexing(), "test holds the indexing lock");
+        state.set_pending_sync();
+
+        let drain_state = Arc::clone(&state);
+        let drain = tokio::spawn(async move {
+            drain_pending_sync_to_completion(&drain_state).await;
+        });
+
+        // Two drain passes while the lock is held, each re-queues pending.
+        tokio::task::yield_now().await;
+        assert!(state.has_pending_sync(), "first pass must re-queue pending");
+        tokio::task::yield_now().await;
+        assert!(
+            state.has_pending_sync(),
+            "second pass must re-queue pending"
+        );
+
+        // Release the lock; the loop must self-drain to completion.
+        state.finish_indexing().await;
+        drain.await.expect("drain task joins");
+
+        assert!(
+            !state.has_pending_sync(),
+            "loop-drain must self-drain after two re-arms"
+        );
+        assert!(!state.is_indexing(), "loop-drain must release the lock");
+    }
+
+    /// 104.002-T (H3): when the indexing lock is never released, every drain
+    /// pass loses the race and re-queues; the bounded loop must still TERMINATE
+    /// (deferring to the lock holder) rather than spin forever.
+    #[tokio::test]
+    async fn loop_drain_is_bounded_when_lock_is_never_released() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // Hold the indexing lock for the entire drain so every pass re-queues.
+        assert!(state.try_start_indexing(), "test holds the indexing lock");
+        state.set_pending_sync();
+
+        // Must return (bounded) despite pending never clearing — a hang here
+        // would fail the test via the harness timeout.
+        drain_pending_sync_to_completion(&state).await;
+
+        assert!(
+            state.has_pending_sync(),
+            "pending remains queued for the externally-held lock holder to drain"
+        );
+        assert!(
+            state.is_indexing(),
+            "the externally-held indexing lock must be left untouched"
+        );
+    }
 
     /// Regression guard for 078.001-T: `get_daemon_status.memory_bytes` must
     /// report this process's resident memory, not system-wide RAM. Prior to the

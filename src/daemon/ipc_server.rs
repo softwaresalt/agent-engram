@@ -1218,7 +1218,10 @@ fn try_start_startup_sync(state: &AppState) -> bool {
 
 async fn finish_indexing_and_drain_pending_sync(state: &AppState) {
     state.finish_indexing().await;
-    crate::tools::lifecycle::drain_pending_sync(state).await;
+    // 104.002-T: bounded loop-drain (not single-shot) so a pending sync
+    // re-armed during this drain is self-drained here rather than stranded
+    // until the next finish_indexing caller (the B2 stall defect).
+    crate::tools::lifecycle::drain_pending_sync_to_completion(state).await;
 }
 
 /// Build a `running` scan-status snapshot reflecting embedding-backfill progress.
