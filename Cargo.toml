@@ -708,6 +708,11 @@ path = "tests/integration/orphan_calls_edge_sweep_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
 [[test]]
+name = "integration_forced_index_fileset_reconciliation"
+path = "tests/integration/forced_index_fileset_reconciliation_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
+[[test]]
 name = "unit_backlog_indexer"
 path = "tests/unit/backlog_indexer_test.rs"
 
