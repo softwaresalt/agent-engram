@@ -477,6 +477,28 @@ impl AppState {
             .fetch_or(Self::PENDING_SYNC_BIT, Ordering::SeqCst);
     }
 
+    /// Atomically publish a queued coalesced sync request — the requested
+    /// companion bits AND `pending_sync` in ONE `fetch_or` (104.002-T).
+    ///
+    /// A concurrent [`clear_all_pending_sync`](Self::clear_all_pending_sync)
+    /// (`store(0)`) can therefore never interleave *between* a companion write
+    /// and the `pending_sync` write: the publish is a single indivisible op, so
+    /// the flags are observed either fully published or (if the clear wins the
+    /// race) fully absent — never `pending_sync == true` with a stale/missing
+    /// companion bit. This is the atomic-mask publish that makes the N3/H1
+    /// no-downgrade invariant hold against the clear path (mirrors the
+    /// publish-before-pending ordering of 101.002-T with one atomic op).
+    pub fn publish_pending_sync(&self, revalidate: bool, backfill_python: bool) {
+        let mut mask = Self::PENDING_SYNC_BIT;
+        if revalidate {
+            mask |= Self::PENDING_SYNC_REVALIDATE_BIT;
+        }
+        if backfill_python {
+            mask |= Self::PENDING_SYNC_BACKFILL_PYTHON_BIT;
+        }
+        self.pending_sync_flags.fetch_or(mask, Ordering::SeqCst);
+    }
+
     /// Atomically clear and return the pending-sync flag.
     ///
     /// Returns `true` once after a successful [`set_pending_sync`] call,
@@ -500,11 +522,21 @@ impl AppState {
     /// Atomically clear `pending_sync` and both companion bits in a single store
     /// (104.002-T; N1/N3/H1).
     ///
-    /// Because all three bits live in one atomic, this wipe cannot interleave
-    /// with a concurrent `write.rs` publish to leave a lone companion bit without
-    /// its owning `pending_sync`. Used on the hydration cancellation and
-    /// DB-connect-failure paths, which release the indexing lock WITHOUT draining
-    /// (the new generation's own scan re-queues whatever is actually needed, N5).
+    /// Because all three bits live in one atomic AND queued requests are
+    /// published atomically via [`publish_pending_sync`](Self::publish_pending_sync),
+    /// this wipe cannot interleave with a concurrent publish to leave a lone
+    /// companion bit without its owning `pending_sync` (nor `pending_sync`
+    /// without its companion): the publish and the clear are each a single
+    /// indivisible op, so their SeqCst total order yields either
+    /// fully-published or fully-cleared, never a torn/downgraded state. Used on
+    /// the hydration cancellation and DB-connect-failure paths, which release
+    /// the indexing lock WITHOUT draining (the new generation's own scan
+    /// re-queues whatever is actually needed, N5).
+    ///
+    /// NOTE: this is a whole-queue wipe, not generation-scoped — a request
+    /// published by a *newer* generation in the cancel race window is also
+    /// cleared and relies on that generation's re-scan to re-publish. Closing
+    /// that residual gap needs a generation-owned queue (tracked as follow-up).
     pub fn clear_all_pending_sync(&self) {
         self.pending_sync_flags.store(0, Ordering::SeqCst);
     }
