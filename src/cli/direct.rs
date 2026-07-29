@@ -357,6 +357,8 @@ mod tests {
             tier2_count: 15,
             cross_file_edges_dropped: 0,
             same_file_ambiguous_dropped: 0,
+            dangling_edges_swept: 0,
+            files_reconciled: 0,
             errors: vec![],
             duration_ms: 123,
         }
@@ -375,6 +377,7 @@ mod tests {
             edges_created: 5,
             cross_file_edges_dropped: 0,
             same_file_ambiguous_dropped: 0,
+            dangling_edges_swept: 0,
             oversized_files_skipped: 0,
             errors: vec![],
             duration_ms: 45,
