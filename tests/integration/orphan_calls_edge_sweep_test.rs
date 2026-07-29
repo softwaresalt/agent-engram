@@ -110,8 +110,8 @@ async fn id_named(q: &CodeGraphQueries, name: &str) -> String {
         .expect("all_functions")
         .into_iter()
         .find(|f| f.name == name)
-        .map(|f| f.id)
         .unwrap_or_else(|| panic!("no live function named {name}"))
+        .id
 }
 
 /// Count `direct` `calls_edge` rows whose `from` OR `to` has no live
@@ -258,5 +258,71 @@ async fn force_index_sweeps_orphan_calls_edges() {
     assert!(
         has_live_unique_edge(&q2).await,
         "forced-index sweep must preserve the live caller_unique -> helper edge"
+    );
+}
+
+// ── Scenario 3: primitive removes exactly the orphans, idempotently ──────────
+
+/// The `retract_dangling_calls_edges` primitive removes exactly the orphan rows
+/// (both endpoint-dangling classes), preserves the live edge (A2), and is
+/// idempotent — a second immediate call sweeps zero (A5).
+#[test]
+async fn retract_dangling_primitive_exact_and_idempotent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_fixture(ws);
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Baseline: the fresh index leaves no orphans of either class.
+    assert!(
+        dangling_direct_pairs(&q).await.is_empty(),
+        "a fresh index leaves no orphan calls_edge rows"
+    );
+
+    // Inject exactly two orphan rows: fully-dangling + dangling-caller.
+    let helper = id_named(&q, "helper").await;
+    q.create_calls_edge(GHOST_CALLER, GHOST_CALLEE)
+        .await
+        .expect("inject fully-dangling orphan");
+    q.create_calls_edge(GHOST_CALLER2, &helper)
+        .await
+        .expect("inject dangling-caller orphan");
+
+    let swept = q
+        .retract_dangling_calls_edges()
+        .await
+        .expect("primitive sweep");
+    assert_eq!(
+        swept, 2,
+        "the sweep must remove exactly the two injected orphan rows (A2 — nothing else)"
+    );
+    assert!(
+        dangling_direct_pairs(&q).await.is_empty(),
+        "no orphan (either endpoint dangling) remains after the sweep"
+    );
+    assert!(
+        has_live_unique_edge(&q).await,
+        "the live caller_unique -> helper edge is preserved (A2 — no recall loss)"
+    );
+
+    // A5 idempotence: a second immediate sweep removes nothing.
+    let second = q
+        .retract_dangling_calls_edges()
+        .await
+        .expect("second sweep");
+    assert_eq!(
+        second, 0,
+        "a second immediate sweep is a strict no-op (A5 idempotence)"
+    );
+    assert!(
+        has_live_unique_edge(&q).await,
+        "the live edge survives the idempotent re-sweep"
     );
 }

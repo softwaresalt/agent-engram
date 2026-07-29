@@ -3635,6 +3635,59 @@ has_def[id] := *function_meta { id }
         Ok(u64::try_from(matched).unwrap_or(0))
     }
 
+    /// Retract every `calls_edge` row whose caller (`from`) OR callee (`to`) has
+    /// no live `function_meta` — a non-traversable **orphan** — and return the
+    /// number of rows swept (103.001-T / 685FAA80).
+    ///
+    /// There is otherwise NO global orphan GC for `calls_edge`
+    /// ([`Self::count_dangling_calls_edges`] only counts the dangling-callee
+    /// subset; `rm_orphan_edges` is lineage-only). Legacy same-file
+    /// duplicate-name `direct` edges left orphaned by a pre-101-F sync (their
+    /// endpoints re-minted or evicted) survive a forced-index / revalidation
+    /// generation-marker advance without this sweep, violating the H4 raw-row
+    /// hygiene invariant and inflating `calls_edge` cardinality.
+    ///
+    /// **Retraction-only, keyed on `function_meta` liveness** — a `calls_edge`
+    /// whose `from` AND `to` both resolve to a live `function_meta` is never
+    /// removed, so the sweep cannot drop a traversable (recall-bearing) edge
+    /// (A2). Scoped to `calls_edge`; lineage/concerns edges are untouched.
+    /// Wired into both generation-marker certify blocks (`index_workspace` and
+    /// the `--revalidate-code-graph` sync) BEFORE the marker advances; a failure
+    /// propagates so the marker stays fail-closed (A1).
+    pub async fn retract_dangling_calls_edges(&self) -> Result<u64, EngramError> {
+        // Count the orphans first (immutable): a `:rm` result carries only a
+        // status row, not a removed-row count, and this runs single-threaded on
+        // the certify path so the count equals the rows the retraction removes.
+        let count_script = r#"
+has_def[id] := *function_meta { id }
+orphan[from, to] := *calls_edge { from, to }, not has_def[from]
+orphan[from, to] := *calls_edge { from, to }, not has_def[to]
+?[count(from)] := orphan[from, to]
+"#;
+        let counted = self
+            .db
+            .run_script(count_script, BTreeMap::new(), ScriptMutability::Immutable)
+            .map_err(|e| map_db_err(e.to_string()))?;
+        let swept = extract_count(&counted);
+        if swept == 0 {
+            return Ok(0);
+        }
+        // Retract the same orphan set. `:rm calls_edge { from, to }` removes by
+        // the `{from, to}` primary key, so a live row (both endpoints resolved)
+        // is never selected. Keep the SQLITE_BUSY busy-retry wrapper for parity
+        // with the sibling mutable retract helpers.
+        let rm_script = r#"
+has_def[id] := *function_meta { id }
+orphan[from, to] := *calls_edge { from, to }, not has_def[from]
+orphan[from, to] := *calls_edge { from, to }, not has_def[to]
+?[from, to] := orphan[from, to]
+:rm calls_edge { from, to }
+"#;
+        self.run_script_busy_retry_mutable(rm_script, BTreeMap::new())
+            .await?;
+        Ok(swept)
+    }
+
     // ── Bulk concerns ─────────────────────────────────────────────
 
     /// List all concerns edges for multiple tasks, grouped by task ID.

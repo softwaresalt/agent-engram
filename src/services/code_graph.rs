@@ -1134,6 +1134,13 @@ pub struct IndexResult {
     /// investigation trigger.
     #[serde(default)]
     pub same_file_ambiguous_dropped: usize,
+    /// Number of orphaned `calls_edge` rows swept before the code-graph
+    /// generation marker advanced (103.001-T / 685FAA80). Non-traversable rows
+    /// whose caller or callee no longer resolves to a live `function_meta`;
+    /// reported for A6 observability so the CLI/API response does not silently
+    /// under-report the certify-path cleanup.
+    #[serde(default)]
+    pub dangling_edges_swept: u64,
     /// Per-file errors encountered (non-fatal).
     pub errors: Vec<FileError>,
     /// Total indexing duration in milliseconds.
@@ -1260,6 +1267,7 @@ async fn index_workspace_impl(
         tier2_count: 0,
         cross_file_edges_dropped: 0,
         same_file_ambiguous_dropped: 0,
+        dangling_edges_swept: 0,
         errors: Vec::new(),
         duration_ms: 0,
     };
@@ -1897,6 +1905,13 @@ async fn index_workspace_impl(
     // still carry a stale wrong same-file edge, so keep the old generation for
     // the gated revalidation to migrate (A3/C7-3, fail-closed).
     if result.errors.is_empty() && (force || !any_hash_skipped) {
+        // 103.001-T (U1/A1/A2): sweep orphaned `calls_edge` rows (no live
+        // `function_meta` on either endpoint) BEFORE certifying the generation,
+        // so the marker never advances over non-traversable stale raw rows
+        // (H4 hygiene). Retraction-only and keyed on `function_meta` liveness —
+        // a live edge is never removed (no recall loss). Fail-closed: a sweep
+        // error propagates via `?`, leaving the prior marker intact.
+        result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
         queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
     } else {
         debug!(
@@ -1956,6 +1971,11 @@ pub struct SyncResult {
     /// 013-D / 082-F).
     #[serde(default)]
     pub same_file_ambiguous_dropped: usize,
+    /// Number of orphaned `calls_edge` rows swept before the code-graph
+    /// generation marker advanced (103.001-T / 685FAA80). Non-traversable rows
+    /// whose caller or callee no longer resolves to a live `function_meta`.
+    #[serde(default)]
+    pub dangling_edges_swept: u64,
     /// Number of files skipped specifically because they exceeded
     /// [`CodeGraphConfig::max_file_size_bytes`].
     ///
@@ -2173,6 +2193,7 @@ pub async fn sync_workspace_with_progress(
         edges_created: 0,
         cross_file_edges_dropped: 0,
         same_file_ambiguous_dropped: 0,
+        dangling_edges_swept: 0,
         oversized_files_skipped: 0,
         errors: Vec::new(),
         duration_ms: 0,
@@ -2920,6 +2941,12 @@ pub async fn sync_workspace_with_progress(
             result.edges_created += resolved.resolved;
         }
         if result.errors.is_empty() && !revalidation_incomplete {
+            // 103.001-T (U1/A1/A2): sweep orphaned `calls_edge` rows before the
+            // revalidation certifies the generation, mirroring the forced-index
+            // route. Retraction-only, keyed on `function_meta` liveness (no
+            // recall loss); a sweep error propagates via `?` so the marker stays
+            // fail-closed.
+            result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
             queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
             debug!("code graph sync: code-graph revalidation complete; generation marker advanced");
         } else if revalidation_incomplete {
