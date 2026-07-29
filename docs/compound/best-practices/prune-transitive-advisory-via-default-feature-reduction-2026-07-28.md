@@ -48,15 +48,18 @@ radius and often isn't available in-range.
    vulnerable sub-tree hangs off exactly ONE default feature you don't use
    (`requests`), and that everything you DO use lives under the other defaults.
 
-2. **Disable defaults and re-enable exactly what you use.** In `Cargo.toml`:
+2. **Disable defaults and re-enable exactly what you use.** In `Cargo.toml`
+   (this is the verbatim entry as shipped — note `optional = true` is preserved
+   because cozo is gated behind engram's `cozo-backend` feature,
+   `cozo-backend = ["cozo"]`):
 
    ```toml
-   # default `compact` also enables `requests` (minreq HTTP client) which we
-   # never use and which drags in the vulnerable old rustls stack. Re-enable
-   # exactly the compact capabilities we rely on, minus `requests`.
-   cozo = { version = "0.7.6", default-features = false, features = [
-       "storage-sqlite", "storage-sqlite-src", "graph-algo",
-   ] }
+   # default-features disabled to drop cozo's `requests` feature (its `minreq`
+   # HTTP client — unused by engram — pulls rustls 0.21 + rustls-webpki 0.101.7,
+   # i.e. RUSTSEC-2026-0098/0099/0104). We re-enable exactly the `compact`
+   # capabilities engram uses: bundled SQLite storage + Datalog graph algorithms.
+   cozo = { version = "0.7", default-features = false, features = ["storage-sqlite",
+   "storage-sqlite-src", "graph-algo"], optional = true }
    ```
 
 3. **Re-resolve and diff the lockfile.** `cargo update`/`cargo check`, then
@@ -65,9 +68,12 @@ radius and often isn't available in-range.
    Here dependency count dropped 557 → 552 (minreq, rustls 0.21.12,
    rustls-webpki 0.101.7 all pruned) with no version bump.
 
-4. **Prove zero functional regression.** Full quality gates: `cargo fmt
-   --check` → `cargo clippy … -D pedantic` → full test suite → `cargo audit`.
-   The advisory count must drop and the suite must stay green.
+4. **Prove zero functional regression.** Full quality gates, in order, using
+   the verified repository commands:
+   `cargo fmt --all -- --check` →
+   `cargo clippy --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic` →
+   `cargo test --no-default-features --features cozo-backend,embeddings --all-targets` →
+   `cargo audit`. The advisory count must drop and the suite must stay green.
 
 ## When it does NOT apply (know the boundary)
 
