@@ -482,6 +482,15 @@ impl AppState {
             .is_ok()
     }
 
+    /// Non-consuming peek at the pending-sync flag.
+    ///
+    /// Unlike [`take_pending_sync`], this does not clear the flag. Used by the
+    /// bounded loop-drain (`drain_pending_sync_to_completion`, 104.002-T) to
+    /// decide whether another drain pass is required after a re-arm.
+    pub fn has_pending_sync(&self) -> bool {
+        self.pending_sync.load(Ordering::SeqCst)
+    }
+
     /// Mark the pending coalesced sync as a *revalidation* sync (101.002-T).
     ///
     /// Published BEFORE [`set_pending_sync`] when a `--revalidate-code-graph`
