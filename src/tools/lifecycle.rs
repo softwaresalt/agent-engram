@@ -248,6 +248,11 @@ async fn background_db_hydration(
                 state.set_hydration_ready();
                 // Only release the lock if this task acquired it.
                 if acquired_lock {
+                    // 104.002-T (N1/N5): a cancelled generation must not drain
+                    // the queued heavy sync against a torn-down state — clear the
+                    // pending + companion bits atomically instead. The new
+                    // generation's own scan re-queues whatever is actually needed.
+                    state.clear_all_pending_sync();
                     state.finish_indexing().await;
                 }
                 return;
@@ -269,6 +274,10 @@ async fn background_db_hydration(
                 .await;
             state.set_hydration_ready();
             if acquired_lock {
+                // 104.002-T (N1): DB connect failed — clear the queued pending +
+                // companion bits atomically rather than leak them into a later
+                // unrelated sync (there is no live DB to drain against anyway).
+                state.clear_all_pending_sync();
                 state.finish_indexing().await;
             }
             return;
@@ -370,7 +379,7 @@ async fn background_db_hydration(
     // pending sync that was queued while we held the lock.
     if acquired_lock {
         state.finish_indexing().await;
-        drain_pending_sync(&state).await;
+        drain_pending_sync_to_completion(&state).await;
     }
 }
 
@@ -439,14 +448,35 @@ pub async fn drain_pending_sync(state: &AppState) {
 ///
 /// A single [`drain_pending_sync`] pass is single-shot: a `pending_sync`
 /// re-armed *during* the drain (either a fresh request or the lost-lock
-/// re-queue) is left for an unspecified "next `finish_indexing` caller",
-/// which can stall the queued sync. This wrapper loops so the re-arm is
-/// handled here instead (N2).
-///
-/// NOTE(104.001-T RED): placeholder single-shot body — the bounded loop-drain
-/// (N2, max-iteration warn guard) lands in 104.002-T (GREEN).
+/// re-queue) is left for an unspecified "next `finish_indexing` caller", which
+/// can stall the queued sync. This wrapper loops so the re-arm is handled here
+/// instead (N2). The loop is bounded by `MAX_DRAIN_ITERATIONS` with a warn guard
+/// against a pathological set/drain livelock (H3), and yields cooperatively each
+/// pass so a contended indexing lock lets the competing indexer make progress
+/// rather than being busy-spun.
 pub async fn drain_pending_sync_to_completion(state: &AppState) {
-    drain_pending_sync(state).await;
+    /// Upper bound on drain passes before deferring to the next
+    /// `finish_indexing` caller, guarding against a set/drain livelock (N2/H3).
+    const MAX_DRAIN_ITERATIONS: u32 = 64;
+
+    for _ in 0..MAX_DRAIN_ITERATIONS {
+        if !state.has_pending_sync() {
+            return;
+        }
+        drain_pending_sync(state).await;
+        // Cooperative yield: if the indexing lock is contended, drain_pending_sync
+        // re-queues rather than draining, so yield to let the holder finish
+        // instead of busy-spinning; also lets a re-armed pending settle.
+        tokio::task::yield_now().await;
+    }
+
+    if state.has_pending_sync() {
+        tracing::warn!(
+            max_iterations = MAX_DRAIN_ITERATIONS,
+            "drain_pending_sync_to_completion: reached iteration bound with a \
+             pending sync still queued; deferring to the next finish_indexing caller"
+        );
+    }
 }
 
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
@@ -739,6 +769,81 @@ mod tests {
         assert!(
             !state.is_indexing(),
             "loop-drain must release the indexing lock after draining"
+        );
+    }
+
+    /// 104.002-T (H3): the loop self-drains after a pending sync is re-armed
+    /// *twice* during draining (two lost-lock re-queues), then terminates.
+    #[tokio::test]
+    async fn loop_drain_self_drains_after_two_rearms() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        assert!(state.try_start_indexing(), "test holds the indexing lock");
+        state.set_pending_sync();
+
+        let drain_state = Arc::clone(&state);
+        let drain = tokio::spawn(async move {
+            drain_pending_sync_to_completion(&drain_state).await;
+        });
+
+        // Two drain passes while the lock is held, each re-queues pending.
+        tokio::task::yield_now().await;
+        assert!(state.has_pending_sync(), "first pass must re-queue pending");
+        tokio::task::yield_now().await;
+        assert!(
+            state.has_pending_sync(),
+            "second pass must re-queue pending"
+        );
+
+        // Release the lock; the loop must self-drain to completion.
+        state.finish_indexing().await;
+        drain.await.expect("drain task joins");
+
+        assert!(
+            !state.has_pending_sync(),
+            "loop-drain must self-drain after two re-arms"
+        );
+        assert!(!state.is_indexing(), "loop-drain must release the lock");
+    }
+
+    /// 104.002-T (H3): when the indexing lock is never released, every drain
+    /// pass loses the race and re-queues; the bounded loop must still TERMINATE
+    /// (deferring to the lock holder) rather than spin forever.
+    #[tokio::test]
+    async fn loop_drain_is_bounded_when_lock_is_never_released() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // Hold the indexing lock for the entire drain so every pass re-queues.
+        assert!(state.try_start_indexing(), "test holds the indexing lock");
+        state.set_pending_sync();
+
+        // Must return (bounded) despite pending never clearing — a hang here
+        // would fail the test via the harness timeout.
+        drain_pending_sync_to_completion(&state).await;
+
+        assert!(
+            state.has_pending_sync(),
+            "pending remains queued for the externally-held lock holder to drain"
+        );
+        assert!(
+            state.is_indexing(),
+            "the externally-held indexing lock must be left untouched"
         );
     }
 

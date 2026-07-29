@@ -24,7 +24,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -156,23 +156,22 @@ pub struct AppState {
     connection_registry: ConnectionRegistry,
     rate_limiter: RateLimiter,
     indexing_in_progress: AtomicBool,
-    /// Set when `sync_workspace` is called while indexing is active.
-    /// Drained after `finish_indexing()` in `background_db_hydration`.
-    pending_sync: AtomicBool,
-    /// Sticky companion to `pending_sync`: set when a *revalidation* sync
-    /// (`--revalidate-code-graph`) is coalesced into the pending sync while
-    /// indexing is active. The coalesced drain (`drain_pending_sync`) reads this
-    /// so a queued revalidation is not silently downgraded to a routine sync
-    /// (101.002-T). OR-semantics: any queued revalidation upgrades the coalesced
-    /// drain, which is safe because revalidation is a superset of a routine sync.
-    pending_sync_revalidate: AtomicBool,
-    /// Sticky companion to `pending_sync`: set when a Python-canonical backfill
-    /// sync (`--backfill-python-canonical`) is coalesced into the pending sync
-    /// while indexing is active. Read by `drain_pending_sync` so a queued
-    /// backfill is not silently dropped (101.002-T; mirrors the 096-F flag). Both
-    /// companion flags are published BEFORE `pending_sync` so a concurrent drain
-    /// can never observe `pending_sync == true` with a stale companion bit.
-    pending_sync_backfill_python: AtomicBool,
+    /// Packed pending-sync request state (104.002-T): bit 0 = `pending_sync`
+    /// (a `sync_workspace` was requested while indexing was active, drained
+    /// after `finish_indexing()`); bit 1 = revalidation companion
+    /// (`--revalidate-code-graph`); bit 2 = Python-canonical backfill companion
+    /// (`--backfill-python-canonical`).
+    ///
+    /// The three bits share ONE atomic so [`AppState::clear_all_pending_sync`]
+    /// can wipe them in a single store (H1 atomicity): no interleaving with a
+    /// concurrent `write.rs` publish can leave a lone companion bit without its
+    /// owning `pending_sync`. Companion bits are still published BEFORE
+    /// `pending_sync` (N3) and consumed AFTER the indexing lock is acquired, so
+    /// a drain never observes `pending_sync` set with a stale/missing companion
+    /// (101.002-T). Sticky OR-semantics: a queued revalidation/backfill upgrades
+    /// the coalesced drain, which is safe because each is a superset of a routine
+    /// sync. See the `PENDING_SYNC_*_BIT` associated constants.
+    pending_sync_flags: AtomicU8,
     last_indexed_at: RwLock<Option<DateTime<Utc>>>,
     /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
     query_latencies: RwLock<VecDeque<u64>>,
@@ -223,9 +222,7 @@ impl AppState {
             connection_registry: ConnectionRegistry::new(),
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
             indexing_in_progress: AtomicBool::new(false),
-            pending_sync: AtomicBool::new(false),
-            pending_sync_revalidate: AtomicBool::new(false),
-            pending_sync_backfill_python: AtomicBool::new(false),
+            pending_sync_flags: AtomicU8::new(0),
             last_indexed_at: RwLock::new(None),
             query_latencies: RwLock::new(VecDeque::new()),
             tool_call_count: AtomicU64::new(0),
@@ -464,12 +461,20 @@ impl AppState {
         *self.last_indexed_at.write().await = Some(Utc::now());
     }
 
+    /// `pending_sync` bit in [`AppState::pending_sync_flags`] (104.002-T).
+    const PENDING_SYNC_BIT: u8 = 0b001;
+    /// Revalidation companion bit in [`AppState::pending_sync_flags`].
+    const PENDING_SYNC_REVALIDATE_BIT: u8 = 0b010;
+    /// Python-canonical backfill companion bit in [`AppState::pending_sync_flags`].
+    const PENDING_SYNC_BACKFILL_PYTHON_BIT: u8 = 0b100;
+
     /// Signal that a sync was requested while indexing was in progress.
     ///
     /// The next caller of [`finish_indexing`] that drains this flag (via
     /// [`take_pending_sync`]) is responsible for running one coalesced sync.
     pub fn set_pending_sync(&self) {
-        self.pending_sync.store(true, Ordering::SeqCst);
+        self.pending_sync_flags
+            .fetch_or(Self::PENDING_SYNC_BIT, Ordering::SeqCst);
     }
 
     /// Atomically clear and return the pending-sync flag.
@@ -477,9 +482,10 @@ impl AppState {
     /// Returns `true` once after a successful [`set_pending_sync`] call,
     /// then `false` until set again.
     pub fn take_pending_sync(&self) -> bool {
-        self.pending_sync
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        let prev = self
+            .pending_sync_flags
+            .fetch_and(!Self::PENDING_SYNC_BIT, Ordering::SeqCst);
+        prev & Self::PENDING_SYNC_BIT != 0
     }
 
     /// Non-consuming peek at the pending-sync flag.
@@ -488,7 +494,19 @@ impl AppState {
     /// bounded loop-drain (`drain_pending_sync_to_completion`, 104.002-T) to
     /// decide whether another drain pass is required after a re-arm.
     pub fn has_pending_sync(&self) -> bool {
-        self.pending_sync.load(Ordering::SeqCst)
+        self.pending_sync_flags.load(Ordering::SeqCst) & Self::PENDING_SYNC_BIT != 0
+    }
+
+    /// Atomically clear `pending_sync` and both companion bits in a single store
+    /// (104.002-T; N1/N3/H1).
+    ///
+    /// Because all three bits live in one atomic, this wipe cannot interleave
+    /// with a concurrent `write.rs` publish to leave a lone companion bit without
+    /// its owning `pending_sync`. Used on the hydration cancellation and
+    /// DB-connect-failure paths, which release the indexing lock WITHOUT draining
+    /// (the new generation's own scan re-queues whatever is actually needed, N5).
+    pub fn clear_all_pending_sync(&self) {
+        self.pending_sync_flags.store(0, Ordering::SeqCst);
     }
 
     /// Mark the pending coalesced sync as a *revalidation* sync (101.002-T).
@@ -500,7 +518,8 @@ impl AppState {
     /// queued revalidation upgrades the coalesced drain. Draining a revalidation
     /// as a routine sync would silently no-op the migration.
     pub fn set_pending_sync_revalidate(&self) {
-        self.pending_sync_revalidate.store(true, Ordering::SeqCst);
+        self.pending_sync_flags
+            .fetch_or(Self::PENDING_SYNC_REVALIDATE_BIT, Ordering::SeqCst);
     }
 
     /// Atomically clear and return the pending-sync-revalidate flag.
@@ -509,9 +528,10 @@ impl AppState {
     /// if the lock grab loses a race and the sync is re-queued, the flag is left
     /// set for the next drain.
     pub fn take_pending_sync_revalidate(&self) -> bool {
-        self.pending_sync_revalidate
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        let prev = self
+            .pending_sync_flags
+            .fetch_and(!Self::PENDING_SYNC_REVALIDATE_BIT, Ordering::SeqCst);
+        prev & Self::PENDING_SYNC_REVALIDATE_BIT != 0
     }
 
     /// Mark the pending coalesced sync as a Python-canonical *backfill* sync
@@ -520,8 +540,8 @@ impl AppState {
     /// Published BEFORE `set_pending_sync` so a concurrent drain cannot observe
     /// `pending_sync == true` while this companion bit is still false.
     pub fn set_pending_sync_backfill_python(&self) {
-        self.pending_sync_backfill_python
-            .store(true, Ordering::SeqCst);
+        self.pending_sync_flags
+            .fetch_or(Self::PENDING_SYNC_BACKFILL_PYTHON_BIT, Ordering::SeqCst);
     }
 
     /// Atomically clear and return the pending-sync-backfill-python flag.
@@ -529,9 +549,10 @@ impl AppState {
     /// Read AFTER acquiring the indexing lock (same re-queue safety as
     /// [`take_pending_sync_revalidate`]).
     pub fn take_pending_sync_backfill_python(&self) -> bool {
-        self.pending_sync_backfill_python
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        let prev = self
+            .pending_sync_flags
+            .fetch_and(!Self::PENDING_SYNC_BACKFILL_PYTHON_BIT, Ordering::SeqCst);
+        prev & Self::PENDING_SYNC_BACKFILL_PYTHON_BIT != 0
     }
 
     /// Get the timestamp of the last completed indexing operation.
