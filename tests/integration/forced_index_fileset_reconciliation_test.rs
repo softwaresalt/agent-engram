@@ -233,13 +233,23 @@ async fn second_forced_index_reconciles_zero() {
         .await
         .expect("initial index should succeed");
     // First forced index with a.rs excluded — evicts a.rs.
-    code_graph::index_workspace(ws, &data_dir, &branch, &config_excluding_a(), true)
+    let first = code_graph::index_workspace(ws, &data_dir, &branch, &config_excluding_a(), true)
         .await
         .expect("first forced re-index should succeed");
+    // A6 observability: the first run reports exactly one reconciled file.
+    assert_eq!(
+        first.files_reconciled, 1,
+        "the first forced re-index must report evicting the one excluded file (A6)"
+    );
     // Second forced index — a.rs already gone, nothing to reconcile.
-    code_graph::index_workspace(ws, &data_dir, &branch, &config_excluding_a(), true)
+    let second = code_graph::index_workspace(ws, &data_dir, &branch, &config_excluding_a(), true)
         .await
         .expect("second forced re-index should succeed");
+    // A5/H4 idempotence, surfaced via the API: the second run reconciles zero.
+    assert_eq!(
+        second.files_reconciled, 0,
+        "the second forced re-index must report zero reconciled files (A5/H4 idempotence, A6)"
+    );
 
     let db = connect_db(&data_dir, &branch).await.expect("db connect");
     let q = CodeGraphQueries::new(db);

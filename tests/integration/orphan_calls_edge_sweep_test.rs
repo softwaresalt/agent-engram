@@ -174,9 +174,17 @@ async fn revalidation_sweeps_orphan_calls_edges() {
         "precondition: injected orphan edges are present"
     );
 
-    code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, false, true, None)
-        .await
-        .expect("gated revalidation sync should succeed");
+    let sync_res = code_graph::sync_workspace_with_progress(
+        ws, &data_dir, &branch, &config, false, true, None,
+    )
+    .await
+    .expect("gated revalidation sync should succeed");
+    // A6 observability: the SyncResult reports the swept count (both injected
+    // orphan rows), not just a silently-cleaned database.
+    assert_eq!(
+        sync_res.dangling_edges_swept, 2,
+        "SyncResult.dangling_edges_swept must report the two swept orphan rows (A6)"
+    );
 
     let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
     let q2 = CodeGraphQueries::new(db2);
@@ -241,9 +249,14 @@ async fn force_index_sweeps_orphan_calls_edges() {
         "precondition: injected orphan is present before the forced index"
     );
 
-    code_graph::index_workspace(ws, &data_dir, &branch, &config, true)
+    let idx_res = code_graph::index_workspace(ws, &data_dir, &branch, &config, true)
         .await
         .expect("forced index should succeed");
+    // A6 observability: the IndexResult reports the single swept orphan row.
+    assert_eq!(
+        idx_res.dangling_edges_swept, 1,
+        "IndexResult.dangling_edges_swept must report the swept orphan row (A6)"
+    );
 
     let db2 = connect_db(&data_dir, &branch).await.expect("db reconnect");
     let q2 = CodeGraphQueries::new(db2);
