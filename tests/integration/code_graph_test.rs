@@ -500,6 +500,99 @@ async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
 }
 
 #[test]
+async fn sync_retracts_symbols_and_edges_when_file_truncated_to_zero_bytes() {
+    // P0-2022 (099.001-T): a previously-indexed file truncated to 0 bytes was
+    // skipped as `files_unchanged` by the sync path's zero-byte guard, leaving
+    // its symbols, code_file record, and calls edges stale in the graph. The
+    // guard is language-agnostic, so this asserts retraction for BOTH a Python
+    // file (which also owns an intra-file `direct` call edge) and a non-Python
+    // (Rust) file emptied in the same sync.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+
+    write_sample_file(
+        ws,
+        "pkg/mod_a.py",
+        "def alpha():\n    beta()\n\n\ndef beta():\n    return 1\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub fn tracked() {}\n");
+
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Preconditions: both files contributed symbols; the Python file owns an
+    // intra-file `direct` call edge (alpha -> beta).
+    assert!(
+        !q.get_symbol_identities_for_file("pkg/mod_a.py")
+            .await
+            .expect("py symbols")
+            .is_empty(),
+        "precondition: python file has symbols after index"
+    );
+    assert!(
+        !q.get_symbol_identities_for_file("src/lib.rs")
+            .await
+            .expect("rs symbols")
+            .is_empty(),
+        "precondition: rust file has symbols after index"
+    );
+    let direct_before = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        !direct_before.is_empty(),
+        "precondition: intra-file call produced a direct edge"
+    );
+
+    // Truncate BOTH tracked files to 0 bytes on disk.
+    fs::write(ws.join("pkg/mod_a.py"), "").expect("truncate py");
+    fs::write(ws.join("src/lib.rs"), "").expect("truncate rs");
+
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync should succeed");
+    assert!(
+        result.errors.is_empty(),
+        "emptied files must not surface as errors; got {:?}",
+        result.errors
+    );
+
+    // The now-empty files must have their prior symbols, code_file records, and
+    // calls edges retracted — not left stale as `files_unchanged`.
+    for path in ["pkg/mod_a.py", "src/lib.rs"] {
+        assert!(
+            q.get_symbol_identities_for_file(path)
+                .await
+                .expect("stale symbols")
+                .is_empty(),
+            "symbols for `{path}` must be retracted after truncation to 0 bytes"
+        );
+        assert!(
+            q.get_code_file_by_path(path)
+                .await
+                .expect("stale code_file")
+                .is_none(),
+            "code_file record for `{path}` must be retracted after truncation to 0 bytes"
+        );
+    }
+    let direct_after = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges after");
+    assert!(
+        direct_after.is_empty(),
+        "intra-file call edge must be retracted after the file is emptied; got {direct_after:?}"
+    );
+}
+
+#[test]
 async fn canonical_path_populated_and_distinct_across_modules() {
     // Option C Unit A / A6: indexing populates the additive canonical_path
     // column, and same-spelled impl methods in different modules get DISTINCT
@@ -991,6 +1084,102 @@ async fn python_package_topology_change_invalidates_descendant_canonical_paths()
     );
 }
 
+/// 099.003-T (C6-1 parity, P0-1283) — the `index` path must match the sync
+/// path: an `__init__.py` add/remove invalidates an unchanged descendant's
+/// canonical identity (and its cross-module canonical edge) on `index` alone,
+/// without deferring to a later sync. Against the pre-parity index path the
+/// descendant's bytes are hash-skipped, so cf stays fail-closed and the caller's
+/// canonical edge never materialises — the add assertions below fail (RED).
+#[test]
+async fn index_package_topology_change_invalidates_descendant_without_sync() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // `p` is initially an implicit namespace package (no __init__.py): cf fails
+    // closed, and the cross-module bare call from the top-level `caller` module
+    // cannot resolve to a canonical edge.
+    write_sample_file(ws, "p/mod.py", "def cf():\n    return 1\n");
+    write_sample_file(
+        ws,
+        "caller.py",
+        "from p.mod import cf\n\n\ndef run():\n    cf()\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf pre"),
+        vec![String::new()],
+        "before __init__.py, p is a namespace package: cf must be empty (fail closed)"
+    );
+    let canon_pre = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges pre");
+    assert!(
+        canon_pre.is_empty(),
+        "no canonical edge should resolve while p is a namespace package; got {canon_pre:?}"
+    );
+
+    // ADD p/__init__.py: `p` becomes a provable regular package. The descendant
+    // p/mod.py is byte-unchanged, so ONLY C6-1 topology invalidation on the index
+    // path can refresh cf and re-resolve the caller's canonical edge WITHOUT a
+    // subsequent sync.
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("re-index after add should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf added"),
+        vec!["p.mod.cf".to_owned()],
+        "adding p/__init__.py must recompute the unchanged descendant to `p.mod.cf` on index (C6-1 add)"
+    );
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    let canon_added = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges added");
+    assert!(
+        canon_added.contains(&(run_id, cf_id)),
+        "adding p/__init__.py must materialise the cross-module canonical edge on index; got {canon_added:?}"
+    );
+
+    // REMOVE p/__init__.py: `p` reverts to a namespace package. cf must invalidate
+    // back to empty and its canonical edge must be retracted, again on index alone.
+    std::fs::remove_file(ws.join("p/__init__.py")).expect("remove __init__.py");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("re-index after remove should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf removed"),
+        vec![String::new()],
+        "removing p/__init__.py must invalidate the unchanged descendant back to empty on index (C6-1 remove)"
+    );
+    let canon_removed = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges removed");
+    assert!(
+        canon_removed.is_empty(),
+        "removing p/__init__.py must retract the cross-module canonical edge on index; got {canon_removed:?}"
+    );
+}
+
 // ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
 
 /// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during
@@ -1135,6 +1324,10 @@ async fn assert_python_shadow_contest(source: &str) {
 
 /// T5a.4 — every coarse shadow-contest vector suppresses the same-file direct
 /// edge and routes the bare call into `python_bare` provenance staging.
+///
+/// 099.004-T: a PROVABLE function-local `from m import f` no longer belongs in
+/// this coarse table — it graduated to precise `python_local` resolution (see
+/// `python_function_local_import_stages_python_local_and_fails_closed_when_unindexed`).
 #[test]
 async fn python_bare_shadow_contest_routing_table() {
     for source in [
@@ -1143,11 +1336,73 @@ async fn python_bare_shadow_contest_routing_table() {
         "def parse():\n    return 0\nparse = factory()\ndef caller():\n    parse()\n",
         "def parse():\n    return 0\nclass parse:\n    pass\ndef caller():\n    parse()\n",
         "def parse():\n    return 0\ndel parse\ndef caller():\n    parse()\n",
-        "def parse():\n    return 0\ndef caller():\n    from bar import parse\n    parse()\n",
         "def parse():\n    return 0\nfrom .other import parse\ndef caller():\n    parse()\n",
     ] {
         assert_python_shadow_contest(source).await;
     }
+}
+
+/// 099.004-T (P1-760) — a PROVABLE function-local `from m import f` is staged
+/// with the precise `python_local` provenance (not the coarse `python_bare`),
+/// and when its module `m` is unindexed the edge layer still fails closed: no
+/// direct edge is minted to the same-file `parse` decoy. This is the staging
+/// counterpart of the resolved-target recall test in the acceptance corpus.
+#[test]
+async fn python_function_local_import_stages_python_local_and_fails_closed_when_unindexed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // `bar` is not a workspace module, so the canonical target `bar.parse` is
+    // unindexed and no edge is created — but the provenance is still python_local.
+    write_sample_file(
+        ws,
+        "case.py",
+        "def parse():\n    return 0\ndef caller():\n    from bar import parse\n    parse()\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let caller_id = q.find_symbols_by_name("caller").await.expect("find caller")[0]
+        .id
+        .clone();
+    let parse_id = q
+        .find_symbols_by_name("parse")
+        .await
+        .expect("find parse")
+        .into_iter()
+        .find(|symbol| symbol.table == "function")
+        .expect("parse function must be indexed")
+        .id;
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.caller_id == caller_id
+            && row.callee_name == "parse"
+            && row.qualifier_kind == "python_local"
+            && row.raw_qualifier == "bar.parse"),
+        "provable function-local import must be staged as python_local -> bar.parse; got {staged:?}"
+    );
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        !direct.contains(&(caller_id.clone(), parse_id.clone()))
+            && !canonical.contains(&(caller_id, parse_id)),
+        "unindexed function-local target must not mint an edge to the same-file decoy parse"
+    );
 }
 
 /// T5a.5 / C9-1 — the matched definition is not its own competitor: a sole
@@ -1277,7 +1532,9 @@ async fn python_extraction_version_gated_backfill_restores_canonical_edge() {
     q.retract_all_calls_resolved_canonical_edges()
         .await
         .expect("retract canonical edges");
-    q.set_python_extraction_version("0").expect("stale marker");
+    q.set_python_extraction_version("0")
+        .await
+        .expect("stale marker");
     let before = q
         .list_calls_edges_by_resolution("calls_resolved_canonical")
         .await
@@ -1338,7 +1595,9 @@ async fn python_extraction_version_ungated_sync_defers_without_churn() {
     q.retract_all_calls_resolved_canonical_edges()
         .await
         .expect("retract canonical edges");
-    q.set_python_extraction_version("0").expect("stale marker");
+    q.set_python_extraction_version("0")
+        .await
+        .expect("stale marker");
 
     // Plain sync (backfill gate OFF): must defer — no re-extraction, no churn.
     code_graph::sync_workspace(ws, &data_dir, &branch, &config)
@@ -1387,7 +1646,9 @@ async fn python_extraction_version_backfill_keeps_marker_on_py_error() {
     q.retract_all_calls_resolved_canonical_edges()
         .await
         .expect("retract canonical edges");
-    q.set_python_extraction_version("0").expect("stale marker");
+    q.set_python_extraction_version("0")
+        .await
+        .expect("stale marker");
 
     // A `.py` file with invalid UTF-8 fails `read_to_string` during the sync,
     // landing a per-file error in `SyncResult.errors` (has_python_file_errors).

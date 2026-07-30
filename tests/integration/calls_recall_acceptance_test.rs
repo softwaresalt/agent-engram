@@ -522,6 +522,117 @@ async fn python_fail_closed_vectors_emit_no_edge() {
     );
 }
 
+/// 099.004-T (P1-760 recall) — a PROVABLE function-local import resolves its
+/// calls to the exact canonical target, both for `from m import f; f()` and
+/// `import m; m.f()`, even when another module defines the same simple name.
+/// RED against the pre-fix production path, which reduced every function-local
+/// name to a boolean poison and never routed it through
+/// `ImportBindings::resolve_call`, so neither call resolved.
+#[test]
+async fn python_function_local_import_resolves_to_exact_target() {
+    let (_tmp, q) = index_python_fixture(&[
+        ("bar.py", "def parse():\n    return 1\n"),
+        ("baz.py", "def parse():\n    return 2\n"),
+        (
+            "caller.py",
+            "def run():\n    from bar import parse\n    parse()\n\n\n\
+             def run_mod():\n    import bar\n    bar.parse()\n",
+        ),
+    ])
+    .await;
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let run_mod_id = function_id_in(&q, "run_mod", "caller.py").await;
+    let bar_parse_id = function_id_in(&q, "parse", "bar.py").await;
+    let decoy_parse_id = function_id_in(&q, "parse", "baz.py").await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+
+    assert!(
+        canonical.contains(&(run_id, bar_parse_id.clone())),
+        "function-local `from bar import parse` must resolve to bar.parse; got {canonical:?}"
+    );
+    assert!(
+        canonical.contains(&(run_mod_id, bar_parse_id)),
+        "function-local `import bar` then `bar.parse()` must resolve to bar.parse; got {canonical:?}"
+    );
+    assert!(
+        canonical.iter().all(|(_, to)| to != &decoy_parse_id),
+        "no canonical edge may resolve to the decoy baz.parse; got {canonical:?}"
+    );
+}
+
+/// 099.004-T (fail-closed invariant) — adversarial function-local vectors must
+/// NEVER mint an edge: (a) use-before-import (UnboundLocalError), (b) a
+/// conditionally-imported name, and (c) a name rebound after its function-local
+/// import. This must hold both before AND after the recall enhancement — routing
+/// through `resolve_call` may only turn provable firm imports into edges, never
+/// these poisoned cases.
+#[test]
+async fn python_function_local_adversarial_cases_stay_fail_closed() {
+    // (a) use before the function-local import: the call precedes the import.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "a.py",
+            "def caller():\n    parse()\n    from bar import parse\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    assert_function_local_fails_closed(&q, "caller", "a.py", "parse", "bar.py").await;
+
+    // (b) conditionally imported function-local name (not a single unconditional
+    // binder): fail closed.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "b.py",
+            "def caller(flag):\n    if flag:\n        from bar import parse\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    assert_function_local_fails_closed(&q, "caller", "b.py", "parse", "bar.py").await;
+
+    // (c) rebound after the function-local import: two binders poison the name.
+    let (_tmp, q) = index_python_fixture(&[
+        (
+            "c.py",
+            "def caller():\n    from bar import parse\n    parse = None\n    parse()\n",
+        ),
+        ("bar.py", "def parse():\n    return 1\n"),
+    ])
+    .await;
+    assert_function_local_fails_closed(&q, "caller", "c.py", "parse", "bar.py").await;
+}
+
+/// Assert that `caller` in `caller_file` resolves NO canonical or singleton edge
+/// to `callee` in `callee_file` (a fail-closed function-local vector).
+#[allow(clippy::similar_names)] // caller/callee is the domain vocabulary here
+async fn assert_function_local_fails_closed(
+    q: &CodeGraphQueries,
+    caller: &str,
+    caller_file: &str,
+    callee: &str,
+    callee_file: &str,
+) {
+    let caller_id = function_id_in(q, caller, caller_file).await;
+    let callee_id = function_id_in(q, callee, callee_file).await;
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges");
+    let singleton = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("list singleton edges");
+    assert!(
+        !canonical.contains(&(caller_id.clone(), callee_id.clone()))
+            && !singleton.contains(&(caller_id, callee_id)),
+        "adversarial function-local vector must emit no edge; canonical={canonical:?} singleton={singleton:?}"
+    );
+}
+
 /// T5b.3b — a duplicate same-name import where one origin is an unindexed
 /// external module must still fail closed. Only the in-workspace `b.parse` is
 /// indexed, so the name is *unique* in the graph; the legacy name-only fallback

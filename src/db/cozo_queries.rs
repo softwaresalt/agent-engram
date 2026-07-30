@@ -1753,7 +1753,11 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     pub async fn rollback_calls_resolution(&self) -> Result<CallsResolutionRollback, EngramError> {
         let singleton_edges = self.retract_all_calls_resolved_singleton_edges().await?;
         let canonical_edges = self.retract_all_calls_resolved_canonical_edges().await?;
-        crate::db::cozo_backend::schema::rollback_calls_edge_resolution(&self.db)?;
+        let db = Arc::clone(&self.db);
+        crate::db::cozo_backend::schema::spawn_blocking_schema_write(move || {
+            crate::db::cozo_backend::schema::rollback_calls_edge_resolution(&db)
+        })
+        .await?;
         Ok(CallsResolutionRollback {
             singleton_edges,
             canonical_edges,
@@ -1788,12 +1792,17 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     ///
     /// # Errors
     /// Returns [`EngramError`] when the `schema_meta` upsert fails.
-    pub fn set_python_extraction_version(&self, version: &str) -> Result<(), EngramError> {
-        crate::db::cozo_backend::schema::set_schema_meta_version(
-            &self.db,
-            crate::db::cozo_backend::schema::PYTHON_CANONICAL_EXTRACTION_VERSION_KEY,
-            version,
-        )
+    pub async fn set_python_extraction_version(&self, version: &str) -> Result<(), EngramError> {
+        let db = Arc::clone(&self.db);
+        let version = version.to_owned();
+        crate::db::cozo_backend::schema::spawn_blocking_schema_write(move || {
+            crate::db::cozo_backend::schema::set_schema_meta_version(
+                &db,
+                crate::db::cozo_backend::schema::PYTHON_CANONICAL_EXTRACTION_VERSION_KEY,
+                &version,
+            )
+        })
+        .await
     }
 
     /// Read the durable code-graph extraction-generation marker (101-F) from
@@ -1824,15 +1833,20 @@ fn_emb[id, embedding] := *function_meta { id }, not fn_has_emb[id], embedding = 
     ///
     /// # Errors
     /// Returns [`EngramError`] when the `schema_meta` upsert fails.
-    pub fn set_code_graph_extraction_generation(
+    pub async fn set_code_graph_extraction_generation(
         &self,
         generation: &str,
     ) -> Result<(), EngramError> {
-        crate::db::cozo_backend::schema::set_schema_meta_version(
-            &self.db,
-            crate::db::cozo_backend::schema::CODE_GRAPH_EXTRACTION_GENERATION_KEY,
-            generation,
-        )
+        let db = Arc::clone(&self.db);
+        let generation = generation.to_owned();
+        crate::db::cozo_backend::schema::spawn_blocking_schema_write(move || {
+            crate::db::cozo_backend::schema::set_schema_meta_version(
+                &db,
+                crate::db::cozo_backend::schema::CODE_GRAPH_EXTRACTION_GENERATION_KEY,
+                &generation,
+            )
+        })
+        .await
     }
 
     /// Record a call site whose callee could not be resolved within the

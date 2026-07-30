@@ -241,6 +241,7 @@ async fn upgrade_revalidation_drops_wrong_edge_and_preserves_recall() {
         .await
         .expect("inject wrong same-file edge");
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("stale generation marker");
 
     // Precondition: the wrong edge is persisted as a direct edge.
@@ -328,6 +329,7 @@ async fn revalidation_partial_failure_keeps_old_marker_then_retries() {
         .await
         .expect("inject wrong same-file edge");
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("stale generation marker");
 
     // A source file with invalid UTF-8 fails `read_to_string` during the
@@ -407,6 +409,7 @@ async fn plain_sync_without_flag_is_noop_on_stale_generation() {
         .await
         .expect("inject wrong same-file edge");
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("stale generation marker");
 
     // Plain sync, revalidation gate OFF: opt-in means no re-extraction, no churn.
@@ -483,6 +486,7 @@ async fn forced_index_revalidation_drops_wrong_edge_and_preserves_recall() {
         .await
         .expect("inject wrong same-file edge");
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("stale generation marker");
 
     let before_direct = q

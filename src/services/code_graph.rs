@@ -16,7 +16,7 @@ use crate::db::connect_db;
 use crate::db::queries::{
     CodeGraphQueries, NoCanonicalTargetReason, ReresolveResult, StagedCallProvenanceRecord,
 };
-use crate::errors::EngramError;
+use crate::errors::{EngramError, SystemError};
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
@@ -304,6 +304,28 @@ fn should_stage_provenance_call(is_method: bool, is_qualified: bool, raw_qualifi
 
 /// Shared per-file Python lexical-shadow scan used by T5a's coarse contest
 /// gate and reusable by T5c's future order-aware winner selection.
+//
+// 099.005-T (cohesion follow-up — arch-strategist 096-F P2/P3): the
+// Python-specific shadow-index construction and staged-call canonical
+// resolution below (`PythonShadowIndex` through `python_target_for_staged_call`)
+// form a distinct concern from the Rust/orchestration flow that surrounds them.
+// A full relocation into `services::parsing::python_canonical` was evaluated and
+// deliberately deferred as in-place rather than extracted, for two reasons:
+//   1. Layering: the resolution decision helpers consume service-layer query
+//      types (`StagedCallProvenanceRecord`, `NoCanonicalTargetReason` from
+//      `db::cozo_queries`, and `CodeGraphQueries` for the per-file context
+//      builder). `python_canonical` is a `parsing`-layer module; hosting these
+//      helpers there would invert the dependency direction (parsing → db). The
+//      pure parsing pieces that COULD move (module-path derivation) already live
+//      in `python_canonical::module_path` (096.001-T), resolving the P3
+//      `module_path`-placement half of the finding.
+//   2. Cohesion boundary: the cluster is interleaved in source order with the
+//      Rust canonical-resolution helpers (`canonical_target_for_staged_call`,
+//      `rust_ctx_for_staged_file`) it shares orchestration with; a clean cut
+//      would require signature changes (threading primitives instead of the
+//      shared record types) that carry behavior-delta risk disproportionate to
+//      this low-priority style item. Tracked for the next dedicated
+//      python-canonical structural pass.
 struct PythonShadowIndex {
     imports: ImportBindings,
     module_binding_counts: HashMap<String, usize>,
@@ -719,20 +741,31 @@ async fn python_ctx_for_staged_file(
     python_packages: &HashSet<String>,
     queries: &CodeGraphQueries,
     rel_path: &str,
-) -> Option<PythonStagedContext> {
+) -> Result<PythonStagedContext, EngramError> {
+    // 099.002-T (C7-3): a transient source-read or DB failure in this post-pass
+    // context builder must PROPAGATE, not be swallowed. A swallowed failure lets
+    // the caller `continue` past an unmaterialized `.py`, and the extraction-
+    // version marker advance is gated behind this pass's `?` — so a silent
+    // failure here could advance the marker over an incomplete pass (fail closed
+    // toward retry instead).
     let full = ws_path.join(rel_path);
-    let source = tokio::fs::read_to_string(full).await.ok()?;
+    let source = tokio::fs::read_to_string(&full).await.map_err(|error| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!(
+                "python canonical post-pass: failed to read staged source '{rel_path}': {error}"
+            ),
+        })
+    })?;
     let is_regular_package =
         |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let module_path = python_module_path_for_file(rel_path, &is_regular_package);
     let caller_names = queries
         .get_functions_by_file(rel_path)
-        .await
-        .ok()?
+        .await?
         .into_iter()
         .map(|function| (function.id, function.name))
         .collect();
-    Some((module_path, PythonShadowIndex::build(&source), caller_names))
+    Ok((module_path, PythonShadowIndex::build(&source), caller_names))
 }
 
 /// The smallest module-scope definition position of `caller_name`, or
@@ -915,6 +948,19 @@ fn python_target_for_staged_call(
             Some(module) => python_bare_target(module, shadow, caller_name, callee),
             None => Err(NoCanonicalTargetReason::NoModuleContext),
         },
+        // 099.004-T (P1-760): a PROVABLE function-local import resolved at
+        // extraction time via `ImportBindings::resolve_call`. `raw_qualifier`
+        // already carries the exact canonical dotted target (e.g. "m.f") and the
+        // firm binding + call-site order were proven there, so trust it directly
+        // and bypass the module-scope contests. Empty (should not happen) fails
+        // closed.
+        "python_local" => {
+            if call.raw_qualifier.is_empty() {
+                Err(NoCanonicalTargetReason::CompetingBindings)
+            } else {
+                Ok(call.raw_qualifier.clone())
+            }
+        }
         _ => Err(NoCanonicalTargetReason::CompetingBindings),
     }
 }
@@ -989,22 +1035,26 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
-    let mut python_context_cache: HashMap<String, Option<PythonStagedContext>> = HashMap::new();
+    let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
         if is_py_path(&call.source_file) {
             if !python_context_cache.contains_key(&call.source_file) {
+                // 099.002-T: propagate a post-pass IO/DB failure (do NOT swallow
+                // it via `.ok()?` + `continue`), so the whole pass aborts and the
+                // extraction-version marker is not advanced over an incomplete
+                // materialization.
                 let ctx = python_ctx_for_staged_file(
                     ws_path,
                     python_packages,
                     queries,
                     &call.source_file,
                 )
-                .await;
+                .await?;
                 python_context_cache.insert(call.source_file.clone(), ctx);
             }
-            let Some(Some((module_path, shadow, caller_names))) =
+            let Some((module_path, shadow, caller_names)) =
                 python_context_cache.get(&call.source_file)
             else {
                 continue;
@@ -1232,6 +1282,11 @@ async fn index_workspace_impl(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    // 099.003-T (C6-1 parity): capture the prior snapshot BEFORE clearing so the
+    // index path — like sync — can detect a Python package-topology change and
+    // eagerly invalidate affected descendants, rather than deferring to the next
+    // sync via the marker gate. Load then clear, mirroring the sync sequence.
+    let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
     queries.clear_index_canonical_workspace_snapshot().await?;
 
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation
@@ -1252,6 +1307,39 @@ async fn index_workspace_impl(
         unsafe_prefixes: unsafe_prefixes.clone(),
         python_packages: python_packages.clone(),
     };
+    // 099.003-T (C6-1 parity): force per-file canonical recompute for Python
+    // descendants whose package ancestry changed since the last index. An
+    // `__init__.py` add/remove flips a directory's regular-package status
+    // WITHOUT changing a descendant's bytes, so the content-hash skip below would
+    // otherwise leave its canonical identity — and any derived cross-module
+    // canonical edges — stale until a later sync. Mirrors the sync path exactly.
+    let force_python_recompute: std::collections::HashSet<String> =
+        match previous_canonical_workspace.as_ref() {
+            Some(previous) => {
+                let changed: Vec<&String> = python_packages
+                    .symmetric_difference(&previous.python_packages)
+                    .collect();
+                if changed.is_empty() {
+                    std::collections::HashSet::new()
+                } else {
+                    files
+                        .iter()
+                        .filter_map(|p| p.strip_prefix(ws_path).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .filter(|rel| changed.iter().any(|dir| is_python_descendant(rel, dir)))
+                        .collect()
+                }
+            }
+            // No snapshot (legacy DB, or a prior run cleared it without rewriting):
+            // fail closed — recompute every current `.py` file so no stale
+            // topology can survive. Inert on a fresh index (nothing to skip).
+            None => files
+                .iter()
+                .filter_map(|p| p.strip_prefix(ws_path).ok())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .filter(|rel| is_py_path(rel))
+                .collect(),
+        };
     info!(
         files_found = files.len(),
         "code graph: discovered source files"
@@ -1357,8 +1445,9 @@ async fn index_workspace_impl(
             // Compute content hash.
             let content_hash = sha256_hex(&source);
 
-            // Skip unchanged files (unless forced).
-            if !force {
+            // Skip unchanged files (unless forced, or a Python package-topology
+            // change requires a canonical recompute of this descendant — 099.003-T).
+            if !force && !force_python_recompute.contains(&rel_path) {
                 if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
@@ -1894,7 +1983,9 @@ async fn index_workspace_impl(
     // Otherwise a skipped/failed `.py` may retain stale staging, so keep the old
     // marker and let the gated backfill migrate it (C7-3, fail-closed).
     if !has_python_file_errors(&result.errors) && (force || !python_hash_skipped) {
-        queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+        queries
+            .set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)
+            .await?;
     } else {
         debug!(
             force,
@@ -1953,7 +2044,9 @@ async fn index_workspace_impl(
         // a live edge is never removed (no recall loss). Fail-closed: a sweep
         // error propagates via `?`, leaving the prior marker intact.
         result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
-        queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+        queries
+            .set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)
+            .await?;
     } else {
         debug!(
             force,
@@ -2186,17 +2279,6 @@ pub async fn sync_workspace_with_progress(
     let codegraph_generation_current =
         stored_codegraph_generation.as_deref() == Some(CODE_GRAPH_EXTRACTION_GENERATION);
     let run_codegraph_revalidation = !codegraph_generation_current && revalidate_code_graph;
-    // 101.002-T (H2/A3 fail-closed): tracks whether any previously-indexed
-    // source file was BYPASSED (skipped without re-extraction AND without
-    // cleanup) during a revalidation pass — e.g. a file truncated to zero bytes
-    // after it was indexed. Such a file's pre-fix stale edges are neither
-    // re-derived under the 100-F guard nor retracted, so the extraction-
-    // generation marker must NOT advance this pass (it would falsely certify
-    // the stale edges as migrated). Mirrors the index path's `any_hash_skipped`
-    // gate. Oversized files are NOT counted here: they run `handle_deleted_file`,
-    // which retracts BOTH resolved and same-file direct edges (101.002-T), so no
-    // stale edge survives and bypassing extraction is safe.
-    let mut revalidation_incomplete = false;
     if !codegraph_generation_current && !run_codegraph_revalidation {
         debug!(
             stored = ?stored_codegraph_generation,
@@ -2272,17 +2354,13 @@ pub async fn sync_workspace_with_progress(
             // content-based checks that follow the file read.
             if let Ok(meta) = tokio::fs::metadata(file_path).await {
                 let meta_size = meta.len();
-                if meta_size == 0 {
-                    // 101.002-T: a file that was indexed with edges but is now
-                    // zero bytes is bypassed WITHOUT cleanup, so its pre-fix
-                    // stale edges survive. Refuse to advance the revalidation
-                    // marker this pass (fail-closed).
-                    if run_codegraph_revalidation && indexed_map.contains_key(&rel_path) {
-                        revalidation_incomplete = true;
-                    }
-                    result.files_unchanged += 1;
-                    break 'file;
-                }
+                // 099.001-T (P0-2022): do NOT short-circuit a zero-byte file
+                // here on filesystem metadata alone. Metadata can be racy during
+                // an atomic rewrite, so acting on it risks retracting a file
+                // that is only transiently empty. Reading a zero-byte file is
+                // cheap, so fall through to the authoritative content read and
+                // its zero-byte guard below, which decides retraction only after
+                // the emptiness is actually observed in the bytes.
                 if meta_size > config.max_file_size_bytes {
                     let stale_file_id = format!("code_file:{}", sha256_short(&rel_path));
                     let orphaned = handle_deleted_file(&queries, &rel_path, &stale_file_id).await?;
@@ -2312,13 +2390,24 @@ pub async fn sync_workspace_with_progress(
 
             let size_bytes = source.len() as u64;
             if size_bytes == 0 {
-                // Skip empty files (handles TOCTOU race between metadata and read).
-                // 101.002-T: same fail-closed guard as the metadata zero-byte
-                // branch — a previously-indexed file now empty leaves stale
-                // edges, so the revalidation marker must not advance this pass.
-                if run_codegraph_revalidation && indexed_map.contains_key(&rel_path) {
-                    revalidation_incomplete = true;
+                // 099.001-T (P0-2022): a previously-indexed file truncated to
+                // zero bytes must have its prior symbols, code_file record, and
+                // calls/concerns edges RETRACTED — not silently skipped as
+                // `files_unchanged`, which left the whole graph stale. We retract
+                // only AFTER an authoritative content read (never on racy
+                // metadata), so the original TOCTOU race is not reintroduced: a
+                // file transiently zero during an atomic rewrite is
+                // re-materialized on the next sync once its bytes reappear (the
+                // same one-cycle window as any other modification). Because the
+                // stale rows are gone, the revalidation marker may advance.
+                if let Some(indexed_file) = indexed_map.get(&rel_path) {
+                    let orphaned =
+                        handle_deleted_file(&queries, &rel_path, &indexed_file.id).await?;
+                    result.concerns_orphaned += orphaned;
+                    result.files_deleted += 1;
+                    break 'file;
                 }
+                // A never-indexed empty file has nothing to retract.
                 result.files_unchanged += 1;
                 break 'file;
             }
@@ -2952,7 +3041,9 @@ pub async fn sync_workspace_with_progress(
                 "code graph sync: Python backfill hit a .py file error — keeping prior extraction-version marker so the next sync retries the migration"
             );
         } else {
-            queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+            queries
+                .set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)
+                .await?;
             debug!(
                 resolved = resolved.resolved,
                 "code graph sync: Python extraction-version backfill complete; marker advanced"
@@ -2981,22 +3072,22 @@ pub async fn sync_workspace_with_progress(
             .await?;
             result.edges_created += resolved.resolved;
         }
-        if result.errors.is_empty() && !revalidation_incomplete {
+        if result.errors.is_empty() {
             // 103.001-T (U1/A1/A2): sweep orphaned `calls_edge` rows before the
             // revalidation certifies the generation, mirroring the forced-index
             // route. Retraction-only, keyed on `function_meta` liveness (no
             // recall loss); a sweep error propagates via `?` so the marker stays
             // fail-closed.
+            //
+            // 099.001-T: files truncated to zero bytes are no longer bypassed
+            // without cleanup — they run `handle_deleted_file` in the sync loop
+            // above (like oversized files), so no stale edge survives a
+            // revalidation pass and the marker may certify safely.
             result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
-            queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+            queries
+                .set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)
+                .await?;
             debug!("code graph sync: code-graph revalidation complete; generation marker advanced");
-        } else if revalidation_incomplete {
-            // 101.002-T (H2/A3): a previously-indexed source file was bypassed
-            // (e.g. truncated to zero bytes) so its pre-fix stale edges were not
-            // revalidated. Keep the prior marker; the next revalidation retries.
-            warn!(
-                "code graph sync: code-graph revalidation bypassed a previously-indexed file (now empty) — keeping prior generation marker so the next sync retries the migration"
-            );
         } else {
             warn!(
                 "code graph sync: code-graph revalidation hit a file error — keeping prior generation marker so the next sync retries the migration"
@@ -3770,6 +3861,82 @@ def caller_py():
         assert!(
             !direct.contains(&("run".to_owned(), "parse".to_owned())),
             "same-file ambiguous Python callee must not mint a first-match direct edge (013-D/082-F); direct edges: {direct:?}"
+        );
+        Ok(())
+    }
+
+    // ── 099.002-T (C7-3): post-pass IO/DB failure must abort, never silently
+    // advance the extraction-version marker ─────────────────────────────────
+    //
+    // rust-reviewer P1 (`code_graph.rs:686/693`). `python_ctx_for_staged_file`
+    // read the staged source with `.ok()?`, swallowing a transient read/DB
+    // failure inside the canonical reresolve post-pass; the caller then
+    // `continue`d, so the pass returned `Ok` despite an incomplete
+    // materialization. The extraction-version marker advance is gated behind the
+    // post-pass `?` (index `:1867`, sync `:2941`), so a swallowed failure could
+    // let the marker advance over an unmaterialized `.py`. This RED test injects
+    // a post-pass-only source-read fault (delete the staged file AFTER staging,
+    // before the post-pass re-read) and asserts the pass PROPAGATES the error so
+    // the marker stays put.
+    #[tokio::test]
+    async fn python_post_pass_read_failure_aborts_without_advancing_marker() -> anyhow::Result<()> {
+        let temp_root = repo_local_temp_root()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("py-postpass-fault-")
+            .tempdir_in(temp_root)?;
+        let ws = tmp.path();
+        write_file_result(ws, "app.py", "def run():\n    compute()\n")?;
+        write_file_result(ws, "helper.py", "def compute():\n    return 1\n")?;
+
+        let config = CodeGraphConfig::default();
+        let (data_dir, branch) = test_db_params(ws);
+
+        // Incremental sync stages the cross-module Python bare call WITHOUT
+        // running the canonical post-pass, so a durable `staged_call` row for
+        // `app.py` persists (T5a.2).
+        sync_workspace(ws, &data_dir, &branch, &config).await?;
+        let db = connect_db(&data_dir, &branch).await?;
+        let queries = CodeGraphQueries::new(db);
+
+        // Seed a stale marker: a (wrongly) successful post-pass would advance it.
+        queries.set_python_extraction_version("0").await?;
+
+        let staged = queries.list_staged_calls_with_provenance().await?;
+        assert!(
+            staged
+                .iter()
+                .any(|call| call.source_file == "app.py" && !call.qualifier_kind.is_empty()),
+            "precondition: app.py must have a staged qualified call; got {staged:?}"
+        );
+
+        // Inject a post-pass-only IO fault: remove app.py from disk after staging
+        // so the post-pass source re-read fails while the staged row still points
+        // at it. (The extraction loop is bypassed — this exercises only the
+        // reresolve post-pass read path.)
+        std::fs::remove_file(ws.join("app.py"))?;
+
+        let crates = canonical::discover_workspace_crates(ws);
+        let unsafe_prefixes: HashSet<String> = HashSet::new();
+        let python_packages: HashSet<String> = HashSet::new();
+
+        let outcome = reresolve_calls_edges_with_canonical_context(
+            &queries,
+            ws,
+            &crates,
+            &unsafe_prefixes,
+            &python_packages,
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a post-pass source-read failure must abort the pass (propagate the error), \
+             not swallow it via `.ok()?` + continue; got {outcome:?}"
+        );
+        assert_eq!(
+            queries.python_extraction_version()?,
+            Some("0".to_owned()),
+            "the extraction-version marker must stay put when the post-pass aborts (C7-3)"
         );
         Ok(())
     }

@@ -5,6 +5,9 @@
 
 use tree_sitter::{Node, Parser};
 
+use super::python_canonical::{
+    BindingKind, CallResolution, ImportBindings, extract_python_import_bindings,
+};
 use super::{
     ExtractedClass, ExtractedEdge, ExtractedFunction, ExtractedInterface, ExtractedSymbol,
     ParseResult,
@@ -36,7 +39,11 @@ pub(super) fn parse_python_source(source: &str) -> Result<ParseResult, crate::er
     let mut symbols = Vec::new();
     let mut edges = Vec::new();
 
-    extract_top_level(root, source, &mut symbols, &mut edges);
+    // 099.004-T (P1-760): capture the file's import bindings once so
+    // `extract_calls_from_body` can promote a PROVABLE function-local import
+    // (order-aware, fail-closed) to an exact canonical target.
+    let bindings = extract_python_import_bindings(source);
+    extract_top_level(root, source, &bindings, &mut symbols, &mut edges);
 
     Ok(ParseResult { symbols, edges })
 }
@@ -44,6 +51,7 @@ pub(super) fn parse_python_source(source: &str) -> Result<ParseResult, crate::er
 fn extract_top_level(
     root: Node<'_>,
     source: &str,
+    bindings: &ImportBindings,
     symbols: &mut Vec<ExtractedSymbol>,
     edges: &mut Vec<ExtractedEdge>,
 ) {
@@ -57,7 +65,7 @@ fn extract_top_level(
                     });
                     // Attribute call edges only to the owning top-level function
                     // (mirrors rust.rs placement after the Defines push).
-                    extract_calls_from_body(child, source, &func.name, edges);
+                    extract_calls_from_body(child, source, &func.name, bindings, edges);
                     symbols.push(ExtractedSymbol::Function(func));
                 }
             }
@@ -248,6 +256,7 @@ fn extract_calls_from_body(
     node: Node<'_>,
     source: &str,
     caller_name: &str,
+    bindings: &ImportBindings,
     edges: &mut Vec<ExtractedEdge>,
 ) {
     let Some(body) = node.child_by_field_name("body") else {
@@ -268,7 +277,8 @@ fn extract_calls_from_body(
             continue;
         }
         if current.kind() == "call" {
-            if let Some(call) = resolve_call_name(current, source) {
+            if let Some(mut call) = resolve_call_name(current, source) {
+                promote_function_local_import(&mut call, current.start_byte(), bindings);
                 edges.push(ExtractedEdge::Calls {
                     caller: caller_name.to_owned(),
                     callee: call.callee,
@@ -283,6 +293,55 @@ fn extract_calls_from_body(
         for child in current.children(&mut child_cursor) {
             stack.push(child);
         }
+    }
+}
+
+/// 099.004-T (P1-760) — promote a call whose name is a PROVABLE function-local
+/// import to an exact canonical target, resolved through
+/// [`ImportBindings::resolve_call`].
+///
+/// `resolve_call` returns `LocalImport` only for a firm, order-correct
+/// function-local import in the enclosing top-level function scope (F1). Every
+/// adversarial vector — use-before-import, a conditional/`try`-guarded import, a
+/// name rebound after its import, or a `global`/`nonlocal` dynamic rebind —
+/// returns `Poisoned`/`ModuleScope`, leaving the call untouched so it stays
+/// fail-closed (013-D). Top-level module imports also resolve to `ModuleScope`
+/// and keep flowing through the existing `"module"` / `"python_bare"` resolver
+/// arms, so this pass is purely additive for the function-local case.
+///
+/// On a hit the call is re-encoded as `qualifier_kind:"python_local"` with the
+/// full canonical dotted target in `raw_qualifier`; `python_target_for_staged_call`
+/// then trusts it directly (firmness + order were already proven here).
+fn promote_function_local_import(
+    call: &mut ResolvedCallName,
+    call_position: usize,
+    bindings: &ImportBindings,
+) {
+    match call.qualifier_kind.as_str() {
+        // Bare call `f()` originating from `from m import f` → canonical "m.f".
+        "" => {
+            if let CallResolution::LocalImport(binding) =
+                bindings.resolve_call(call_position, &call.callee)
+            {
+                if binding.kind == BindingKind::FromImportSymbol {
+                    call.is_qualified = true;
+                    call.raw_qualifier = binding.canonical_path.clone();
+                    "python_local".clone_into(&mut call.qualifier_kind);
+                }
+            }
+        }
+        // Module-qualified call `m.f()` originating from `import m` → "m.f".
+        "module" => {
+            if let CallResolution::LocalImport(binding) =
+                bindings.resolve_call(call_position, &call.raw_qualifier)
+            {
+                if binding.kind == BindingKind::ModuleImport {
+                    call.raw_qualifier = format!("{}.{}", binding.canonical_path, call.callee);
+                    "python_local".clone_into(&mut call.qualifier_kind);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

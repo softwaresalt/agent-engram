@@ -610,8 +610,11 @@ mod tests {
     use sysinfo::System;
 
     use super::{background_db_hydration, drain_pending_sync_to_completion, get_daemon_status};
-    use crate::models::config::WorkspaceConfig;
+    use crate::db::connect_db;
+    use crate::db::queries::CodeGraphQueries;
+    use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
     use crate::server::state::{AppState, WorkspaceSnapshot};
+    use crate::services::code_graph;
 
     /// Minimal bound-workspace fixture pointing at a scratch tempdir so the
     /// coalesced drain enters its sync branch (and can re-queue on a lost lock).
@@ -844,6 +847,135 @@ mod tests {
         assert!(
             state.is_indexing(),
             "the externally-held indexing lock must be left untouched"
+        );
+    }
+
+    // ── 099.007-T: a queued MCP sync carrying backfill_python_canonical=true
+    // must actually RUN the canonical backfill when it drains ────────────────
+    //
+    // When `sync_workspace({backfill_python_canonical:true})` arrives while the
+    // daemon is already indexing, write.rs coalesces it via
+    // `publish_pending_sync(revalidate, backfill_python)` and returns "queued".
+    // The drain must carry that intent into a GATED
+    // `sync_workspace_with_progress(.., backfill_python, ..)` — not downgrade to
+    // a routine (ungated) sync, which would defer the stale-marker migration
+    // (C12-5 no-op) and silently drop the requested backfill. The production
+    // carry-through landed in 101.002-T (drain took `backfill_python` instead of
+    // a hardcoded `false`); this is its missing END-TO-END regression guard.
+    //
+    // RED-capable: reverting the drain's `backfill_python` argument to `false`
+    // makes the coalesced sync ungated, so the pre-upgrade canonical edge is NOT
+    // restored and the extraction-version marker stays stale ("0") — both
+    // assertions below then fail.
+    #[tokio::test]
+    async fn queued_backfill_python_runs_gated_sync_on_drain() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&ws).expect("create ws dir");
+        std::fs::write(
+            ws.join("app.py"),
+            "from helper import compute\n\n\ndef run():\n    compute()\n",
+        )
+        .expect("write app.py");
+        std::fs::write(ws.join("helper.py"), "def compute():\n    return 1\n")
+            .expect("write helper");
+
+        let branch = "main";
+        let config = CodeGraphConfig::default();
+
+        // Fresh full index resolves the cross-module canonical edge and advances
+        // the extraction-version marker to the current version.
+        code_graph::index_workspace(&ws, &data_dir, branch, &config, false)
+            .await
+            .expect("index should succeed");
+
+        // Simulate the pre-upgrade state a backfill migration is meant to repair:
+        // retract the canonical edge and reset the marker to a stale version.
+        {
+            let db = connect_db(&data_dir, branch).await.expect("db connect");
+            let q = CodeGraphQueries::new(db);
+            q.retract_all_calls_resolved_canonical_edges()
+                .await
+                .expect("retract canonical edges");
+            q.set_python_extraction_version("0")
+                .await
+                .expect("stale marker");
+            let before = q
+                .list_calls_edges_by_resolution("calls_resolved_canonical")
+                .await
+                .expect("canonical edges");
+            assert!(
+                before.is_empty(),
+                "precondition: no canonical edge before the queued backfill drains; got {before:?}"
+            );
+        }
+
+        // Bind the workspace + config so the drain enters its real sync branch.
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(WorkspaceSnapshot {
+                workspace_id: "test-ws".to_owned(),
+                workspace_uuid: "00000000-0000-0000-0000-000000000000".to_owned(),
+                branch: branch.to_owned(),
+                data_dir: data_dir.clone(),
+                path: ws.display().to_string(),
+                last_flush: None,
+                stale_files: false,
+                connection_count: 0,
+                file_mtimes: std::collections::HashMap::new(),
+            })
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // Exactly what write.rs::sync_workspace publishes for a queued
+        // `sync_workspace({backfill_python_canonical:true})` while indexing runs.
+        state.publish_pending_sync(false, true);
+
+        // Drain: the coalesced sync must run the GATED backfill.
+        drain_pending_sync_to_completion(&state).await;
+
+        let db = connect_db(&data_dir, branch).await.expect("db reconnect");
+        let q = CodeGraphQueries::new(db);
+        let name_by_id: std::collections::HashMap<String, String> = q
+            .all_functions()
+            .await
+            .expect("all_functions")
+            .into_iter()
+            .map(|f| {
+                (
+                    f.id,
+                    format!("{}@{}", f.name, f.file_path.replace('\\', "/")),
+                )
+            })
+            .collect();
+        let restored: Vec<(String, String)> = q
+            .list_calls_edges_by_resolution("calls_resolved_canonical")
+            .await
+            .expect("canonical edges")
+            .into_iter()
+            .map(|(from, to)| {
+                (
+                    name_by_id.get(&from).cloned().unwrap_or(from),
+                    name_by_id.get(&to).cloned().unwrap_or(to),
+                )
+            })
+            .collect();
+        assert!(
+            restored.contains(&("run@app.py".to_owned(), "compute@helper.py".to_owned())),
+            "the queued backfill must re-materialize the cross-module canonical edge on drain; got {restored:?}"
+        );
+        assert_eq!(
+            q.python_extraction_version().expect("read marker"),
+            Some("1".to_owned()),
+            "a queued backfill that drains must advance the extraction-version marker (not defer as an ungated sync)"
+        );
+        assert!(
+            !state.has_pending_sync(),
+            "the drain must fully consume the queued pending sync"
         );
     }
 
