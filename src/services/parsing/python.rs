@@ -326,7 +326,7 @@ fn promote_function_local_import(
                 if binding.kind == BindingKind::FromImportSymbol {
                     call.is_qualified = true;
                     call.raw_qualifier = binding.canonical_path.clone();
-                    call.qualifier_kind = "python_local".to_owned();
+                    "python_local".clone_into(&mut call.qualifier_kind);
                 }
             }
         }
@@ -337,7 +337,7 @@ fn promote_function_local_import(
             {
                 if binding.kind == BindingKind::ModuleImport {
                     call.raw_qualifier = format!("{}.{}", binding.canonical_path, call.callee);
-                    call.qualifier_kind = "python_local".to_owned();
+                    "python_local".clone_into(&mut call.qualifier_kind);
                 }
             }
         }

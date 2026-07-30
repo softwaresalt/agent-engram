@@ -608,6 +608,7 @@ async fn python_function_local_adversarial_cases_stay_fail_closed() {
 
 /// Assert that `caller` in `caller_file` resolves NO canonical or singleton edge
 /// to `callee` in `callee_file` (a fail-closed function-local vector).
+#[allow(clippy::similar_names)] // caller/callee is the domain vocabulary here
 async fn assert_function_local_fails_closed(
     q: &CodeGraphQueries,
     caller: &str,
