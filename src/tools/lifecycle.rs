@@ -943,7 +943,10 @@ mod tests {
 
         // A holder acquired the lock, did its work, released, and ran its final
         // drain-check (nothing queued) then exited — the lock is now free & empty.
-        assert!(state.try_start_indexing(), "holder acquires the indexing lock");
+        assert!(
+            state.try_start_indexing(),
+            "holder acquires the indexing lock"
+        );
         state.finish_indexing().await; // holder releases
         assert!(
             !state.has_pending_sync(),

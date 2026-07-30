@@ -23,8 +23,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
