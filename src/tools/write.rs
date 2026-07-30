@@ -276,11 +276,14 @@ pub async fn sync_workspace(
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         };
-        // 101.002-T / 104.002-T: publish the queued sync's gate flags and the
-        // pending bit in ONE atomic op (publish_pending_sync) so a concurrent
-        // drain never observes pending_sync == true alongside a stale companion
-        // bit, and a concurrent clear_all_pending_sync (hydration cancel /
-        // DB-fail) can never interleave to downgrade the request to a bare sync.
+        // 101.002-T / 104.002-T / 105.001-T: publish the queued sync's gate
+        // flags and the pending bit in ONE locked op (publish_pending_sync) so a
+        // concurrent drain never observes pending_sync == true alongside a stale
+        // companion bit, and a concurrent clear_pending_sync_for_generation
+        // (hydration cancel / DB-fail) can never interleave to downgrade the
+        // request to a bare sync. The publish is tagged with the current sync
+        // generation, so a newer generation's request replaces (does not OR
+        // into) an older generation's stale bits.
         // The queue decision runs before params are parsed, and a coalesced
         // drain would otherwise pass both gates as false — silently dropping a
         // queued --revalidate-code-graph or --backfill-python-canonical.
