@@ -257,8 +257,35 @@ where
     )))
 }
 
-/// Durable `schema_meta` key recording that the 082.003-T `calls_edge.resolution`
-/// column was intentionally rolled back by an operator.
+/// Run a blocking, SQLITE_BUSY-retrying schema write off the async worker
+/// (099.006-T).
+///
+/// The synchronous busy-retry driver ([`retry_cozo_script`]) backs off between
+/// attempts with `std::thread::sleep`. When a schema-meta write is invoked from
+/// an `async fn` that runs directly on a Tokio worker (e.g. the extraction-marker
+/// upserts on the indexing hot path, or the operator migrate-down rollback), that
+/// blocking back-off stalls the worker and starves every other task multiplexed
+/// onto it during contention. Executing the whole blocking write on a
+/// `spawn_blocking` thread keeps the back-off off the runtime while leaving the
+/// retry/back-off semantics themselves completely unchanged — only *where* the
+/// blocking sleep runs.
+///
+/// `op` performs the actual (blocking) schema mutation, typically a call to
+/// [`set_schema_meta_version`] or [`rollback_calls_edge_resolution`]. It must be
+/// `Send + 'static`; callers move an owned `Arc<cozo::DbInstance>` clone into it.
+///
+/// # Errors
+/// Surfaces the [`EngramError`] returned by `op`, or a distinct error if the
+/// blocking task panics (join failure).
+pub(crate) async fn spawn_blocking_schema_write<F>(op: F) -> Result<(), EngramError>
+where
+    F: FnOnce() -> Result<(), EngramError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(op)
+        .await
+        .map_err(|join_err| map_db_err(format!("schema write task panicked: {join_err}")))?
+}
+
 ///
 /// While this marker is set, `migrate_calls_edge_resolution` refuses to re-add
 /// the column on subsequent bootstraps, so `migrate-down` survives daemon
@@ -1275,6 +1302,7 @@ mod tests {
 
     use super::{
         MAX_SCRIPT_ATTEMPTS, ScriptOutcome, busy_backoff, classify_script_error, retry_cozo_script,
+        spawn_blocking_schema_write,
     };
     use super::{
         PYTHON_CANONICAL_EXTRACTION_VERSION_KEY, schema_meta_version, schema_meta_version_matches,
@@ -1608,6 +1636,64 @@ mod tests {
             "must retry twice then succeed on the third try"
         );
         assert_eq!(sleeps, 2, "must back off before each retry");
+    }
+
+    // 099.006-T — the schema-meta busy-retry back-off must run OFF the Tokio
+    // worker so a concurrent runtime task keeps making progress during
+    // contention. On a single-thread runtime, a runtime-blocking
+    // `std::thread::sleep` (the pre-fix direct call) would monopolise the sole
+    // worker and stall the concurrent task; routing the blocking retry through
+    // `spawn_blocking_schema_write` yields the worker while the back-off sleeps
+    // off-thread. Back-off semantics are asserted preserved (two retries).
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_blocking_schema_write_yields_runtime_during_busy_backoff() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+        // A cooperatively-scheduled runtime task: it can only flip the flag if
+        // the schema write yields the single current-thread worker.
+        let progressed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&progressed);
+        let concurrent = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        // Drive the REAL busy-retry path: two transient SQLITE_BUSY results force
+        // two std::thread::sleep back-offs before success.
+        let attempts = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&attempts);
+        let result = spawn_blocking_schema_write(move || {
+            retry_cozo_script(
+                "async-safe busy retry",
+                false,
+                || {
+                    if counter.fetch_add(1, Ordering::SeqCst) < 2 {
+                        Err("database is locked")
+                    } else {
+                        Ok(())
+                    }
+                },
+                |attempt| std::thread::sleep(busy_backoff(attempt)),
+            )
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "busy retry must succeed within budget: {result:?}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "back-off semantics preserved: two retries then success"
+        );
+        assert!(
+            progressed.load(Ordering::SeqCst),
+            "a concurrent runtime task must make progress while the busy back-off \
+             runs off-worker (std::thread::sleep must NOT block the Tokio worker)"
+        );
+        concurrent.await.expect("concurrent task joins");
     }
 
     // A persistent busy is bounded and surfaces an EngramError (never a panic).

@@ -167,6 +167,7 @@ async fn revalidation_sweeps_orphan_calls_edges() {
         .expect("inject dangling-caller orphan");
     // Stale generation so the gated revalidation actually runs.
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("stale generation marker");
 
     assert!(

@@ -1961,7 +1961,9 @@ async fn index_workspace_impl(
     // Otherwise a skipped/failed `.py` may retain stale staging, so keep the old
     // marker and let the gated backfill migrate it (C7-3, fail-closed).
     if !has_python_file_errors(&result.errors) && (force || !python_hash_skipped) {
-        queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+        queries
+            .set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)
+            .await?;
     } else {
         debug!(
             force,
@@ -2020,7 +2022,9 @@ async fn index_workspace_impl(
         // a live edge is never removed (no recall loss). Fail-closed: a sweep
         // error propagates via `?`, leaving the prior marker intact.
         result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
-        queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+        queries
+            .set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)
+            .await?;
     } else {
         debug!(
             force,
@@ -3015,7 +3019,9 @@ pub async fn sync_workspace_with_progress(
                 "code graph sync: Python backfill hit a .py file error — keeping prior extraction-version marker so the next sync retries the migration"
             );
         } else {
-            queries.set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)?;
+            queries
+                .set_python_extraction_version(PYTHON_CANONICAL_EXTRACTION_VERSION)
+                .await?;
             debug!(
                 resolved = resolved.resolved,
                 "code graph sync: Python extraction-version backfill complete; marker advanced"
@@ -3056,7 +3062,9 @@ pub async fn sync_workspace_with_progress(
             // above (like oversized files), so no stale edge survives a
             // revalidation pass and the marker may certify safely.
             result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
-            queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
+            queries
+                .set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)
+                .await?;
             debug!("code graph sync: code-graph revalidation complete; generation marker advanced");
         } else {
             warn!(
@@ -3869,7 +3877,7 @@ def caller_py():
         let queries = CodeGraphQueries::new(db);
 
         // Seed a stale marker: a (wrongly) successful post-pass would advance it.
-        queries.set_python_extraction_version("0")?;
+        queries.set_python_extraction_version("0").await?;
 
         let staged = queries.list_staged_calls_with_provenance().await?;
         assert!(

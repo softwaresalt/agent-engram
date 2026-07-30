@@ -200,6 +200,7 @@ async fn stale_generation_revalidation_drops_wrong_same_file_edge() {
         .await
         .expect("inject wrong same-file edge");
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("stale generation marker");
 
     // Precondition: the stale wrong edge is persisted as a direct edge.
@@ -275,6 +276,7 @@ async fn matching_generation_revalidation_is_noop() {
         .expect("inject wrong same-file edge");
     // Matching (current) generation: revalidation must short-circuit.
     q.set_code_graph_extraction_generation("1")
+        .await
         .expect("current generation marker");
 
     code_graph::sync_workspace_with_progress(ws, &data_dir, &branch, &config, false, true, None)
@@ -333,12 +335,14 @@ async fn generation_marker_does_not_affect_content_hash() {
 
     // Round-trip the marker through the getter/setter.
     q.set_code_graph_extraction_generation("0")
+        .await
         .expect("set stale generation");
     assert_eq!(
         q.code_graph_extraction_generation().expect("read marker"),
         Some("0".to_owned()),
     );
     q.set_code_graph_extraction_generation("1")
+        .await
         .expect("advance generation");
     assert_eq!(
         q.code_graph_extraction_generation().expect("read marker"),

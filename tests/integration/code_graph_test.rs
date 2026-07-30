@@ -1532,7 +1532,9 @@ async fn python_extraction_version_gated_backfill_restores_canonical_edge() {
     q.retract_all_calls_resolved_canonical_edges()
         .await
         .expect("retract canonical edges");
-    q.set_python_extraction_version("0").expect("stale marker");
+    q.set_python_extraction_version("0")
+        .await
+        .expect("stale marker");
     let before = q
         .list_calls_edges_by_resolution("calls_resolved_canonical")
         .await
@@ -1593,7 +1595,9 @@ async fn python_extraction_version_ungated_sync_defers_without_churn() {
     q.retract_all_calls_resolved_canonical_edges()
         .await
         .expect("retract canonical edges");
-    q.set_python_extraction_version("0").expect("stale marker");
+    q.set_python_extraction_version("0")
+        .await
+        .expect("stale marker");
 
     // Plain sync (backfill gate OFF): must defer — no re-extraction, no churn.
     code_graph::sync_workspace(ws, &data_dir, &branch, &config)
@@ -1642,7 +1646,9 @@ async fn python_extraction_version_backfill_keeps_marker_on_py_error() {
     q.retract_all_calls_resolved_canonical_edges()
         .await
         .expect("retract canonical edges");
-    q.set_python_extraction_version("0").expect("stale marker");
+    q.set_python_extraction_version("0")
+        .await
+        .expect("stale marker");
 
     // A `.py` file with invalid UTF-8 fails `read_to_string` during the sync,
     // landing a per-file error in `SyncResult.errors` (has_python_file_errors).

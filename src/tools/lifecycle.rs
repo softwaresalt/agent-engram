@@ -898,7 +898,9 @@ mod tests {
             q.retract_all_calls_resolved_canonical_edges()
                 .await
                 .expect("retract canonical edges");
-            q.set_python_extraction_version("0").expect("stale marker");
+            q.set_python_extraction_version("0")
+                .await
+                .expect("stale marker");
             let before = q
                 .list_calls_edges_by_resolution("calls_resolved_canonical")
                 .await
