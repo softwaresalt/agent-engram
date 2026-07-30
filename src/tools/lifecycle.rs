@@ -912,6 +912,121 @@ mod tests {
         );
     }
 
+    // ── 105.002-T / R2: producer/consumer drain handoff (close the TOCTOU) ────
+    //
+    // The bounded snapshot-loop drain cannot close the window where a sync caller
+    // fails try_start_indexing while a holder owns the lock, is descheduled
+    // BEFORE publishing pending_sync, and resumes only AFTER the holder's final
+    // has_pending_sync peek returned false — stranding the request until an
+    // external index/sync/watcher tick. The fix is an atomic producer->lock-holder
+    // handoff: publish_pending_sync_and_try_reacquire re-attempts the lock after
+    // publishing; acquiring it makes the producer the guaranteed finisher
+    // (source_stash_id 0B5AAAD2, PR #297 Copilot thread).
+
+    /// 105.002-T AC1 (RED FIRST) + AC2 — intent-after-final-peek. Reproduce the
+    /// TOCTOU: a holder acquired, drained, released, and ran its final
+    /// has_pending peek (nothing queued) then exited; the descheduled producer
+    /// resumes and publishes intent only NOW. The backstop must re-acquire the
+    /// lock so a finisher is guaranteed WITHOUT an external tick. Fails under the
+    /// RED scaffold (publish-only, no re-attempt → returns false → no finisher).
+    #[tokio::test]
+    async fn r2_backstop_guarantees_finisher_when_intent_lands_after_final_peek() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // A holder acquired the lock, did its work, released, and ran its final
+        // drain-check (nothing queued) then exited — the lock is now free & empty.
+        assert!(state.try_start_indexing(), "holder acquires the indexing lock");
+        state.finish_indexing().await; // holder releases
+        assert!(
+            !state.has_pending_sync(),
+            "holder's final peek observes an empty queue → holder exits"
+        );
+
+        // The descheduled producer resumes and publishes intent + backstops.
+        let must_drain = state.publish_pending_sync_and_try_reacquire(false, false);
+        assert!(
+            must_drain,
+            "AC1: a publish landing after the holder exited must re-acquire the lock so a finisher is guaranteed (no lost wakeup)"
+        );
+        assert!(
+            state.is_indexing(),
+            "the backstop must hold the re-acquired indexing lock"
+        );
+
+        // The guaranteed finisher drains the queued request with no external tick.
+        state.finish_indexing().await;
+        drain_pending_sync_to_completion(&state).await;
+        assert!(
+            !state.has_pending_sync(),
+            "AC2: the backstopped request is guaranteed drained"
+        );
+        assert!(
+            !state.is_indexing(),
+            "the drain releases the indexing lock on completion"
+        );
+    }
+
+    /// 105.002-T AC4 — no lost-wakeup: BOTH interleavings + the R1 generation
+    /// seam. (1) intent-BEFORE-release: while a holder still holds the lock, the
+    /// backstop must NOT acquire (returns false) and the holder drains on release.
+    /// (2) generation seam: a backstopped request tagged with a newer generation
+    /// is NOT wiped by an older generation's cancel-clear (composes with R1).
+    #[tokio::test]
+    async fn r2_backstop_defers_to_active_holder_and_is_generation_aware() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // (1) intent-before-release: a holder currently holds the lock.
+        assert!(state.try_start_indexing(), "holder holds the indexing lock");
+        let must_drain = state.publish_pending_sync_and_try_reacquire(false, false);
+        assert!(
+            !must_drain,
+            "AC4: while a holder still holds the lock, the backstop must NOT acquire — the holder drains the queued intent on release"
+        );
+        assert!(
+            state.has_pending_sync(),
+            "the intent is queued for the current holder"
+        );
+
+        // The holder releases and drains the queued intent (no external tick).
+        state.finish_indexing().await;
+        drain_pending_sync_to_completion(&state).await;
+        assert!(
+            !state.has_pending_sync(),
+            "the holder drains the backstopped intent on release"
+        );
+
+        // (2) generation seam with R1: a newer-generation backstopped request
+        // must survive an older generation's cancel-clear.
+        let (old_gen, _old_rx) = state.begin_scan_generation().await;
+        let (_new_gen, _new_rx) = state.begin_scan_generation().await;
+        let _ = state.publish_pending_sync_and_try_reacquire(false, false); // tagged new gen
+        state.clear_pending_sync_for_generation(old_gen); // older-generation clear
+        assert!(
+            state.has_pending_sync(),
+            "AC4 seam with R1: an older generation's clear must not wipe a newer-generation backstopped request"
+        );
+        // Release the lock if the backstop acquired it.
+        if state.is_indexing() {
+            state.finish_indexing().await;
+        }
+    }
+
     /// 104.001-T (T-loop, RED): a `pending_sync` re-armed during a drain (here
     /// the lost-lock re-queue) must be self-drained by the loop wrapper without
     /// relying on an external `finish_indexing` caller. Deterministic via the

@@ -598,6 +598,52 @@ impl AppState {
         self.lock_pending_sync().publish(generation, mask);
     }
 
+    /// Publish a queued sync request AND backstop the producer/consumer drain
+    /// lost-wakeup (105.002-T / R2).
+    ///
+    /// The bounded snapshot-loop drain (`drain_pending_sync_to_completion`)
+    /// narrows but cannot close the window where a sync caller fails
+    /// [`try_start_indexing`](Self::try_start_indexing) while a holder owns the
+    /// lock, is descheduled BEFORE publishing its intent, and resumes only AFTER
+    /// the holder ran its final [`has_pending_sync`](Self::has_pending_sync) peek
+    /// and exited — stranding the request until an external index/sync/watcher
+    /// tick.
+    ///
+    /// This closes it with an atomic producer→lock-holder handoff. After
+    /// publishing the intent (under the pending mutex, so it is generation-tagged
+    /// and cannot be torn — R1), it RE-ATTEMPTS the indexing lock:
+    ///
+    /// * Returns `true` iff the re-attempt ACQUIRED the lock. That proves the
+    ///   prior holder had already released (and may already have run its final
+    ///   drain-check and exited): the caller is now the **guaranteed finisher**
+    ///   and MUST drain the queued request itself.
+    /// * Returns `false` iff the lock is still held. The current holder is then
+    ///   guaranteed to observe the just-published intent on its release-check.
+    ///
+    /// # Why the handoff has no lost wakeup
+    ///
+    /// The publish `P2` is sequenced-before this re-attempt `P3`. A holder's
+    /// release `finish_indexing` (a SeqCst `store(false)`) is sequenced-before
+    /// its drain-loop `has_pending_sync` read `chk`. Suppose the bad outcome:
+    /// the holder exits without draining (`chk` reads `false`) AND `P3` fails
+    /// (reads `indexing == true`). `P3` reading `true` places `P3` before
+    /// `store(false)` in the SeqCst total order, giving
+    /// `P2 →sb P3 →S store(false) →sb chk`, i.e. `P2` happens-before `chk` — which
+    /// forces `chk` to observe the published bit (`true`), contradicting the
+    /// assumption. So the bad interleaving is impossible: either the holder sees
+    /// the intent (`false` branch) or the producer re-acquires (`true` branch).
+    pub fn publish_pending_sync_and_try_reacquire(
+        &self,
+        revalidate: bool,
+        backfill_python: bool,
+    ) -> bool {
+        self.publish_pending_sync(revalidate, backfill_python);
+        // Backstop the drain lost-wakeup: re-attempt the indexing lock. Success
+        // proves the prior holder already released, so the caller is now the
+        // guaranteed finisher (see the ordering argument above).
+        self.try_start_indexing()
+    }
+
     /// Atomically clear and return the pending-sync flag.
     ///
     /// Returns `true` once after a successful publish/set of the pending bit,

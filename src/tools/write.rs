@@ -276,21 +276,34 @@ pub async fn sync_workspace(
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         };
-        // 101.002-T / 104.002-T / 105.001-T: publish the queued sync's gate
-        // flags and the pending bit in ONE locked op (publish_pending_sync) so a
-        // concurrent drain never observes pending_sync == true alongside a stale
-        // companion bit, and a concurrent clear_pending_sync_for_generation
-        // (hydration cancel / DB-fail) can never interleave to downgrade the
-        // request to a bare sync. The publish is tagged with the current sync
-        // generation, so a newer generation's request replaces (does not OR
-        // into) an older generation's stale bits.
+        // 101.002-T / 104.002-T / 105.001-T / 105.002-T: publish the queued
+        // sync's gate flags and the pending bit in ONE locked op
+        // (publish_pending_sync) so a concurrent drain never observes
+        // pending_sync == true alongside a stale companion bit, and a concurrent
+        // clear_pending_sync_for_generation (hydration cancel / DB-fail) can
+        // never interleave to downgrade the request to a bare sync. The publish
+        // is tagged with the current sync generation, so a newer generation's
+        // request replaces (does not OR into) an older generation's stale bits.
         // The queue decision runs before params are parsed, and a coalesced
         // drain would otherwise pass both gates as false — silently dropping a
         // queued --revalidate-code-graph or --backfill-python-canonical.
-        state.publish_pending_sync(
+        //
+        // 105.002-T (R2): the publish is ALSO the producer→lock-holder handoff.
+        // After publishing, re-attempt the indexing lock. If it acquires, the
+        // prior holder had already released (and may already have run its final
+        // drain-check and exited) — so THIS caller is the guaranteed finisher and
+        // must drain the queued request itself, closing the producer/consumer
+        // lost-wakeup without waiting for an external tick.
+        if state.publish_pending_sync_and_try_reacquire(
             queued_flag("revalidate_code_graph"),
             queued_flag("backfill_python_canonical"),
-        );
+        ) {
+            // Backstop acquired the lock: release it and drain the request we
+            // just queued (the bounded loop-drain re-acquires as needed and
+            // services the coalesced pending + companion bits).
+            state.finish_indexing().await;
+            drain_pending_sync_to_completion(&state).await;
+        }
         return Ok(
             json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
         );
