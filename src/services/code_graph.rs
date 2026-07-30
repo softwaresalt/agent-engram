@@ -304,6 +304,28 @@ fn should_stage_provenance_call(is_method: bool, is_qualified: bool, raw_qualifi
 
 /// Shared per-file Python lexical-shadow scan used by T5a's coarse contest
 /// gate and reusable by T5c's future order-aware winner selection.
+//
+// 099.005-T (cohesion follow-up — arch-strategist 096-F P2/P3): the
+// Python-specific shadow-index construction and staged-call canonical
+// resolution below (`PythonShadowIndex` through `python_target_for_staged_call`)
+// form a distinct concern from the Rust/orchestration flow that surrounds them.
+// A full relocation into `services::parsing::python_canonical` was evaluated and
+// deliberately deferred as in-place rather than extracted, for two reasons:
+//   1. Layering: the resolution decision helpers consume service-layer query
+//      types (`StagedCallProvenanceRecord`, `NoCanonicalTargetReason` from
+//      `db::cozo_queries`, and `CodeGraphQueries` for the per-file context
+//      builder). `python_canonical` is a `parsing`-layer module; hosting these
+//      helpers there would invert the dependency direction (parsing → db). The
+//      pure parsing pieces that COULD move (module-path derivation) already live
+//      in `python_canonical::module_path` (096.001-T), resolving the P3
+//      `module_path`-placement half of the finding.
+//   2. Cohesion boundary: the cluster is interleaved in source order with the
+//      Rust canonical-resolution helpers (`canonical_target_for_staged_call`,
+//      `rust_ctx_for_staged_file`) it shares orchestration with; a clean cut
+//      would require signature changes (threading primitives instead of the
+//      shared record types) that carry behavior-delta risk disproportionate to
+//      this low-priority style item. Tracked for the next dedicated
+//      python-canonical structural pass.
 struct PythonShadowIndex {
     imports: ImportBindings,
     module_binding_counts: HashMap<String, usize>,
