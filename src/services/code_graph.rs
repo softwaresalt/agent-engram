@@ -16,7 +16,7 @@ use crate::db::connect_db;
 use crate::db::queries::{
     CodeGraphQueries, NoCanonicalTargetReason, ReresolveResult, StagedCallProvenanceRecord,
 };
-use crate::errors::EngramError;
+use crate::errors::{EngramError, SystemError};
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
@@ -719,20 +719,31 @@ async fn python_ctx_for_staged_file(
     python_packages: &HashSet<String>,
     queries: &CodeGraphQueries,
     rel_path: &str,
-) -> Option<PythonStagedContext> {
+) -> Result<PythonStagedContext, EngramError> {
+    // 099.002-T (C7-3): a transient source-read or DB failure in this post-pass
+    // context builder must PROPAGATE, not be swallowed. A swallowed failure lets
+    // the caller `continue` past an unmaterialized `.py`, and the extraction-
+    // version marker advance is gated behind this pass's `?` — so a silent
+    // failure here could advance the marker over an incomplete pass (fail closed
+    // toward retry instead).
     let full = ws_path.join(rel_path);
-    let source = tokio::fs::read_to_string(full).await.ok()?;
+    let source = tokio::fs::read_to_string(&full).await.map_err(|error| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!(
+                "python canonical post-pass: failed to read staged source '{rel_path}': {error}"
+            ),
+        })
+    })?;
     let is_regular_package =
         |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let module_path = python_module_path_for_file(rel_path, &is_regular_package);
     let caller_names = queries
         .get_functions_by_file(rel_path)
-        .await
-        .ok()?
+        .await?
         .into_iter()
         .map(|function| (function.id, function.name))
         .collect();
-    Some((module_path, PythonShadowIndex::build(&source), caller_names))
+    Ok((module_path, PythonShadowIndex::build(&source), caller_names))
 }
 
 /// The smallest module-scope definition position of `caller_name`, or
@@ -989,22 +1000,26 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
-    let mut python_context_cache: HashMap<String, Option<PythonStagedContext>> = HashMap::new();
+    let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
         if is_py_path(&call.source_file) {
             if !python_context_cache.contains_key(&call.source_file) {
+                // 099.002-T: propagate a post-pass IO/DB failure (do NOT swallow
+                // it via `.ok()?` + `continue`), so the whole pass aborts and the
+                // extraction-version marker is not advanced over an incomplete
+                // materialization.
                 let ctx = python_ctx_for_staged_file(
                     ws_path,
                     python_packages,
                     queries,
                     &call.source_file,
                 )
-                .await;
+                .await?;
                 python_context_cache.insert(call.source_file.clone(), ctx);
             }
-            let Some(Some((module_path, shadow, caller_names))) =
+            let Some((module_path, shadow, caller_names)) =
                 python_context_cache.get(&call.source_file)
             else {
                 continue;
@@ -3770,6 +3785,82 @@ def caller_py():
         assert!(
             !direct.contains(&("run".to_owned(), "parse".to_owned())),
             "same-file ambiguous Python callee must not mint a first-match direct edge (013-D/082-F); direct edges: {direct:?}"
+        );
+        Ok(())
+    }
+
+    // ── 099.002-T (C7-3): post-pass IO/DB failure must abort, never silently
+    // advance the extraction-version marker ─────────────────────────────────
+    //
+    // rust-reviewer P1 (`code_graph.rs:686/693`). `python_ctx_for_staged_file`
+    // read the staged source with `.ok()?`, swallowing a transient read/DB
+    // failure inside the canonical reresolve post-pass; the caller then
+    // `continue`d, so the pass returned `Ok` despite an incomplete
+    // materialization. The extraction-version marker advance is gated behind the
+    // post-pass `?` (index `:1867`, sync `:2941`), so a swallowed failure could
+    // let the marker advance over an unmaterialized `.py`. This RED test injects
+    // a post-pass-only source-read fault (delete the staged file AFTER staging,
+    // before the post-pass re-read) and asserts the pass PROPAGATES the error so
+    // the marker stays put.
+    #[tokio::test]
+    async fn python_post_pass_read_failure_aborts_without_advancing_marker() -> anyhow::Result<()> {
+        let temp_root = repo_local_temp_root()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("py-postpass-fault-")
+            .tempdir_in(temp_root)?;
+        let ws = tmp.path();
+        write_file_result(ws, "app.py", "def run():\n    compute()\n")?;
+        write_file_result(ws, "helper.py", "def compute():\n    return 1\n")?;
+
+        let config = CodeGraphConfig::default();
+        let (data_dir, branch) = test_db_params(ws);
+
+        // Incremental sync stages the cross-module Python bare call WITHOUT
+        // running the canonical post-pass, so a durable `staged_call` row for
+        // `app.py` persists (T5a.2).
+        sync_workspace(ws, &data_dir, &branch, &config).await?;
+        let db = connect_db(&data_dir, &branch).await?;
+        let queries = CodeGraphQueries::new(db);
+
+        // Seed a stale marker: a (wrongly) successful post-pass would advance it.
+        queries.set_python_extraction_version("0")?;
+
+        let staged = queries.list_staged_calls_with_provenance().await?;
+        assert!(
+            staged
+                .iter()
+                .any(|call| call.source_file == "app.py" && !call.qualifier_kind.is_empty()),
+            "precondition: app.py must have a staged qualified call; got {staged:?}"
+        );
+
+        // Inject a post-pass-only IO fault: remove app.py from disk after staging
+        // so the post-pass source re-read fails while the staged row still points
+        // at it. (The extraction loop is bypassed — this exercises only the
+        // reresolve post-pass read path.)
+        std::fs::remove_file(ws.join("app.py"))?;
+
+        let crates = canonical::discover_workspace_crates(ws);
+        let unsafe_prefixes: HashSet<String> = HashSet::new();
+        let python_packages: HashSet<String> = HashSet::new();
+
+        let outcome = reresolve_calls_edges_with_canonical_context(
+            &queries,
+            ws,
+            &crates,
+            &unsafe_prefixes,
+            &python_packages,
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a post-pass source-read failure must abort the pass (propagate the error), \
+             not swallow it via `.ok()?` + continue; got {outcome:?}"
+        );
+        assert_eq!(
+            queries.python_extraction_version()?,
+            Some("0".to_owned()),
+            "the extraction-version marker must stay put when the post-pass aborts (C7-3)"
         );
         Ok(())
     }
