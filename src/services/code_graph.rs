@@ -1948,6 +1948,50 @@ async fn index_workspace_impl(
         );
     }
 
+    // ── R3 (105.003-T / 7A317008): forced-index file-set reconciliation runs
+    // BEFORE the cross-file post-pass ──
+    // The forced route walks only currently-discovered files, so a
+    // previously-indexed file that is now excluded (still on disk — it will
+    // never re-appear in a future incremental sync's on-disk-deletion phase)
+    // must be evicted HERE so the cross-file singleton post-pass below resolves
+    // against the POST-eviction set. When such an excluded duplicate was the
+    // ONLY reason a callee name looked ambiguous, evicting it first lets the
+    // post-pass recover the now-unique cross-file singleton (recall RECOVERY);
+    // evicting after the post-pass (the prior 103.002-T order) permanently
+    // withheld that edge. Gated by the SAME marker-advance condition
+    // (`result.errors.is_empty() && (force || !any_hash_skipped)`), which is
+    // stable at this point: the file-loop has fully populated `result.errors`,
+    // and the post-passes below only propagate errors via `?` without pushing
+    // to it — so a partial hash-skip index never evicts a still-valid file (H5
+    // negative branch: a discovered/hash-skipped file stays in `discovered_rel`
+    // and is kept). The dangling-edge sweep + generation marker still certify
+    // AFTER the post-pass (103-F order preserved, AC3), so any edge orphaned by
+    // an eviction is swept in that later pass.
+    if result.errors.is_empty() && (force || !any_hash_skipped) {
+        let discovered_rel: std::collections::HashSet<String> = files
+            .iter()
+            .filter_map(|p| {
+                p.strip_prefix(ws_path)
+                    .ok()
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+            })
+            .collect();
+        let indexed_files = queries.list_code_files().await?;
+        for indexed_file in &indexed_files {
+            if !discovered_rel.contains(&indexed_file.path) {
+                // A3: reuse the sync deletion primitive — no new eviction
+                // semantics. Direct edges are same-file by construction, so this
+                // never removes a cross-file edge (094-F invariants preserved).
+                handle_deleted_file(&queries, &indexed_file.path, &indexed_file.id).await?;
+                result.files_reconciled += 1;
+                debug!(
+                    path = %indexed_file.path,
+                    "code graph: forced-index reconciliation evicted a previously-indexed, no-longer-discovered file (pre-post-pass, R3)"
+                );
+            }
+        }
+    }
+
     // ── Post-pass: resolve staged cross-file calls (082.008-T) ──────
     // Full / --force index only — NOT the incremental sync path (performance
     // gate). Staged calls (082.002-T) whose callee name is unambiguous
@@ -2003,40 +2047,12 @@ async fn index_workspace_impl(
     // still carry a stale wrong same-file edge, so keep the old generation for
     // the gated revalidation to migrate (A3/C7-3, fail-closed).
     if result.errors.is_empty() && (force || !any_hash_skipped) {
-        // 103.002-T (U2/A3/H5): forced-index file-set reconciliation. The forced
-        // route walks only currently-discovered files, so a previously-indexed
-        // file that is now excluded (still on disk — it will never re-appear in a
-        // future incremental sync's on-disk-deletion phase) would keep its stale
-        // same-file `direct` edge + `function_meta` while this marker certifies
-        // its generation. Evict every `indexed − discovered` file via the sync
-        // path's proven eviction primitive BEFORE the U1 sweep, so edges orphaned
-        // by an eviction are then swept in the same pass. Gated by the same
-        // marker-advance condition (`force || !any_hash_skipped`), so a partial
-        // hash-skip index never evicts a still-valid file (H5 negative branch:
-        // a discovered/hash-skipped file stays in `discovered_rel` and is kept).
-        let discovered_rel: std::collections::HashSet<String> = files
-            .iter()
-            .filter_map(|p| {
-                p.strip_prefix(ws_path)
-                    .ok()
-                    .map(|r| r.to_string_lossy().replace('\\', "/"))
-            })
-            .collect();
-        let indexed_files = queries.list_code_files().await?;
-        for indexed_file in &indexed_files {
-            if !discovered_rel.contains(&indexed_file.path) {
-                // A3: reuse the sync deletion primitive — no new eviction
-                // semantics. Direct edges are same-file by construction, so this
-                // never removes a cross-file edge (094-F invariants preserved).
-                handle_deleted_file(&queries, &indexed_file.path, &indexed_file.id).await?;
-                result.files_reconciled += 1;
-                debug!(
-                    path = %indexed_file.path,
-                    "code graph: forced-index reconciliation evicted a previously-indexed, no-longer-discovered file"
-                );
-            }
-        }
-
+        // R3 (105.003-T): the forced-index file-set reconciliation (evicting
+        // every `indexed − discovered` file) has already run ABOVE, before the
+        // cross-file post-pass, so the post-pass resolved against the
+        // post-eviction set. Here we only sweep edges orphaned by that eviction
+        // (or otherwise) and then certify the generation.
+        //
         // 103.001-T (U1/A1/A2): sweep orphaned `calls_edge` rows (no live
         // `function_meta` on either endpoint) BEFORE certifying the generation,
         // so the marker never advances over non-traversable stale raw rows

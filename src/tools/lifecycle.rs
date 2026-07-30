@@ -184,14 +184,22 @@ pub async fn set_workspace(
     // Also reset the hydration-ready flag so `_health` gates "ready" on the
     // new cycle completing rather than inheriting the prior workspace's state.
     state.clear_hydration_ready();
-    let cancel_rx = state.begin_scan_generation().await;
+    let (sync_generation, cancel_rx) = state.begin_scan_generation().await;
 
     let state_bg = Arc::clone(&state);
     let canonical_bg = canonical.clone();
     let data_dir_bg = data_dir.clone();
     let branch_bg = branch.clone();
     let _task = tokio::spawn(async move {
-        background_db_hydration(state_bg, canonical_bg, data_dir_bg, branch_bg, cancel_rx).await;
+        background_db_hydration(
+            state_bg,
+            canonical_bg,
+            data_dir_bg,
+            branch_bg,
+            sync_generation,
+            cancel_rx,
+        )
+        .await;
     });
 
     Ok(WorkspaceBinding {
@@ -211,11 +219,19 @@ pub async fn set_workspace(
 /// Checks `cancel_rx` at each major step; when `true` is signalled by
 /// [`AppState::begin_scan_generation`], the task abandons its work (029-F WS-6
 /// CancellationToken requirement).
+///
+/// `sync_generation` is the generation this task owns (returned alongside
+/// `cancel_rx` by [`AppState::begin_scan_generation`]). The cancel and
+/// DB-connect-failure paths clear the pending-sync queue scoped to THIS
+/// generation ([`AppState::clear_pending_sync_for_generation`]) so they never
+/// wipe a *newer* generation's request published in the `set_workspace` cancel
+/// race window (105.001-T / R1).
 async fn background_db_hydration(
     state: Arc<AppState>,
     canonical: PathBuf,
     data_dir: PathBuf,
     branch: String,
+    sync_generation: u64,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     // Acquire the indexing lock immediately so the startup auto-sync task
@@ -248,11 +264,14 @@ async fn background_db_hydration(
                 state.set_hydration_ready();
                 // Only release the lock if this task acquired it.
                 if acquired_lock {
-                    // 104.002-T (N1/N5): a cancelled generation must not drain
-                    // the queued heavy sync against a torn-down state — clear the
-                    // pending + companion bits atomically instead. The new
-                    // generation's own scan re-queues whatever is actually needed.
-                    state.clear_all_pending_sync();
+                    // 104.002-T / 105.001-T (N1/N5): a cancelled generation must
+                    // not drain the queued heavy sync against a torn-down state —
+                    // clear the pending + companion bits scoped to THIS
+                    // generation. A newer generation's request published in the
+                    // cancel race window survives; this generation's own stale
+                    // bits are dropped. The new generation's scan re-queues
+                    // whatever it actually needs.
+                    state.clear_pending_sync_for_generation(sync_generation);
                     state.finish_indexing().await;
                 }
                 return;
@@ -274,10 +293,12 @@ async fn background_db_hydration(
                 .await;
             state.set_hydration_ready();
             if acquired_lock {
-                // 104.002-T (N1): DB connect failed — clear the queued pending +
-                // companion bits atomically rather than leak them into a later
-                // unrelated sync (there is no live DB to drain against anyway).
-                state.clear_all_pending_sync();
+                // 104.002-T / 105.001-T (N1): DB connect failed — clear the
+                // queued pending + companion bits scoped to THIS generation
+                // rather than leak them into a later unrelated sync (there is no
+                // live DB to drain against anyway). A newer generation's request
+                // is preserved.
+                state.clear_pending_sync_for_generation(sync_generation);
                 state.finish_indexing().await;
             }
             return;
@@ -658,6 +679,7 @@ mod tests {
             canonical,
             data_dir,
             "main".to_owned(),
+            0,
             cancel_rx,
         )
         .await;
@@ -701,6 +723,7 @@ mod tests {
             canonical,
             data_file,
             "main".to_owned(),
+            0,
             cancel_rx,
         )
         .await;
@@ -717,6 +740,294 @@ mod tests {
             !state.take_pending_sync_backfill_python(),
             "DB-connect-failure path must not leak the backfill companion bit"
         );
+    }
+
+    // ── 105.001-T / R1: generation-scoped pending-sync clear ─────────────────
+    //
+    // The cancel/DB-fail clears (lifecycle.rs:255/:280) must be scoped to the
+    // generation that OWNS the queue, not a whole-queue wipe. In the
+    // set_workspace cancel race window the new snapshot is installed (and its
+    // generation counter bumped) BEFORE the old hydration is cancelled; a sync
+    // against the NEW binding can lose the still-held indexing lock and publish
+    // its pending+companion bits, which the OLD generation's clear must NOT
+    // erase (source_stash_id B7F52777, PR #297 Copilot thread).
+
+    /// 105.001-T AC1 (RED FIRST) + AC2 — cancel-path variant. Drive the OLD
+    /// generation's cancel-path clear (lifecycle.rs:255) while the queue is
+    /// owned by a NEWER generation, and assert the newer generation's pending +
+    /// both companion bits SURVIVE. Fails pre-fix (whole-queue `store(0)` wipe
+    /// erases them); the RED scaffold's unconditional `clear_for_generation`
+    /// reproduces that failure. Deterministic — no wall-clock sleeps.
+    #[tokio::test]
+    async fn r1_cancel_path_preserves_newer_generation_pending_bits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir = tmp.path().join("data");
+        let canonical = tmp.path().join("ws");
+        std::fs::create_dir_all(&canonical).expect("create ws dir");
+        let state = Arc::new(AppState::new(1));
+
+        // OLD generation begins and captures its cancel receiver (generation 1).
+        let (old_gen, old_cancel_rx) = state.begin_scan_generation().await;
+
+        // set_workspace installs the NEW snapshot and cancels the old hydration:
+        // a fresh begin_scan_generation bumps to generation 2 and signals `true`
+        // on the old cancel channel, so the old task takes its cancel path.
+        let (_new_gen, _new_cancel_rx) = state.begin_scan_generation().await;
+
+        // A sync against the NEW binding loses the still-held indexing lock and
+        // publishes pending + BOTH companion bits (tagged with generation 2).
+        state.publish_pending_sync(true, true);
+
+        // Drive the OLD generation's cancel-path clear (lifecycle.rs:255).
+        background_db_hydration(
+            Arc::clone(&state),
+            canonical,
+            data_dir,
+            "main".to_owned(),
+            old_gen,
+            old_cancel_rx,
+        )
+        .await;
+
+        assert!(
+            state.take_pending_sync(),
+            "AC1/AC2: newer-generation pending_sync must survive the older generation's cancel-path clear"
+        );
+        assert!(
+            state.take_pending_sync_revalidate(),
+            "AC1/AC2: newer-generation --revalidate-code-graph intent must survive the older generation's clear"
+        );
+        assert!(
+            state.take_pending_sync_backfill_python(),
+            "AC1/AC2: newer-generation --backfill-python-canonical intent must survive the older generation's clear"
+        );
+    }
+
+    /// 105.001-T AC1 (RED FIRST) + AC2 — DB-connect-failure-path variant. Same
+    /// invariant driven through the `:280` clear: point `data_dir` at a regular
+    /// file so `connect_db` fails, and assert the newer generation's bits SURVIVE.
+    #[tokio::test]
+    async fn r1_db_connect_failure_path_preserves_newer_generation_pending_bits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Regular file at the data_dir path → connect_db's create_dir_all fails.
+        let data_file = tmp.path().join("not-a-directory");
+        std::fs::write(&data_file, b"x").expect("write file");
+        let canonical = tmp.path().join("ws");
+        std::fs::create_dir_all(&canonical).expect("create ws dir");
+        let state = Arc::new(AppState::new(1));
+
+        let (old_gen, old_cancel_rx) = state.begin_scan_generation().await;
+        let (_new_gen, _new_cancel_rx) = state.begin_scan_generation().await;
+
+        // NEW binding publishes pending + both companions (generation 2).
+        state.publish_pending_sync(true, true);
+
+        // DB-connect-failure fires before any cancel check, driving the :280 clear.
+        background_db_hydration(
+            Arc::clone(&state),
+            canonical,
+            data_file,
+            "main".to_owned(),
+            old_gen,
+            old_cancel_rx,
+        )
+        .await;
+
+        assert!(
+            state.take_pending_sync(),
+            "AC1/AC2: newer-generation pending_sync must survive the older generation's DB-fail clear"
+        );
+        assert!(
+            state.take_pending_sync_revalidate(),
+            "AC1/AC2: newer-generation revalidate intent must survive the older generation's DB-fail clear"
+        );
+        assert!(
+            state.take_pending_sync_backfill_python(),
+            "AC1/AC2: newer-generation backfill intent must survive the older generation's DB-fail clear"
+        );
+    }
+
+    /// 105.001-T AC4 (RED FIRST) — no false heavy sync. An OLD generation's
+    /// stale `--revalidate` / `--backfill-python` companion bits must NOT leak
+    /// into a NEWER generation's routine sync: a newer-generation publish
+    /// REPLACES the older generation's bits rather than OR-ing into them. Fails
+    /// under the RED scaffold's plain sticky-OR `publish`.
+    #[tokio::test]
+    async fn r1_older_generation_companion_does_not_leak_into_newer_routine_sync() {
+        let state = Arc::new(AppState::new(1));
+
+        // OLD generation (1) queues a revalidation + backfill sync.
+        let (_old_gen, _old_rx) = state.begin_scan_generation().await;
+        state.publish_pending_sync(true, true);
+
+        // NEW generation (2) binds and queues a ROUTINE sync (no companions).
+        let (_new_gen, _new_rx) = state.begin_scan_generation().await;
+        state.publish_pending_sync(false, false);
+
+        assert!(
+            state.take_pending_sync(),
+            "the newer generation's routine sync is still queued"
+        );
+        assert!(
+            !state.take_pending_sync_revalidate(),
+            "AC4: an older generation's --revalidate-code-graph must not leak into the newer generation's routine sync"
+        );
+        assert!(
+            !state.take_pending_sync_backfill_python(),
+            "AC4: an older generation's --backfill-python-canonical must not leak into the newer generation's routine sync"
+        );
+    }
+
+    /// 105.001-T AC3 — preserve the 104-F publish-order atomicity invariant. A
+    /// same-generation publish sets pending + companions as an indivisible unit,
+    /// and a same-generation clear removes them as an indivisible unit, so a
+    /// concurrent drain never observes `pending_sync == true` with a
+    /// stale/missing companion bit. The single mutex on `{generation, flags}`
+    /// makes the update all-or-nothing.
+    #[tokio::test]
+    async fn r1_same_generation_publish_and_clear_are_all_or_nothing() {
+        let state = Arc::new(AppState::new(1));
+        let (owner_gen, _rx) = state.begin_scan_generation().await;
+
+        // Publish sets pending + both companions together.
+        state.publish_pending_sync(true, true);
+        assert!(
+            state.has_pending_sync(),
+            "AC3: pending must be visible after an atomic publish"
+        );
+
+        // A same-generation clear removes the whole owned queue as a unit.
+        state.clear_pending_sync_for_generation(owner_gen);
+        assert!(
+            !state.take_pending_sync(),
+            "AC3: same-generation clear removes pending atomically"
+        );
+        assert!(
+            !state.take_pending_sync_revalidate(),
+            "AC3: same-generation clear removes the revalidate companion atomically"
+        );
+        assert!(
+            !state.take_pending_sync_backfill_python(),
+            "AC3: same-generation clear removes the backfill companion atomically"
+        );
+    }
+
+    // ── 105.002-T / R2: producer/consumer drain handoff (close the TOCTOU) ────
+    //
+    // The bounded snapshot-loop drain cannot close the window where a sync caller
+    // fails try_start_indexing while a holder owns the lock, is descheduled
+    // BEFORE publishing pending_sync, and resumes only AFTER the holder's final
+    // has_pending_sync peek returned false — stranding the request until an
+    // external index/sync/watcher tick. The fix is an atomic producer->lock-holder
+    // handoff: publish_pending_sync_and_try_reacquire re-attempts the lock after
+    // publishing; acquiring it makes the producer the guaranteed finisher
+    // (source_stash_id 0B5AAAD2, PR #297 Copilot thread).
+
+    /// 105.002-T AC1 (RED FIRST) + AC2 — intent-after-final-peek. Reproduce the
+    /// TOCTOU: a holder acquired, drained, released, and ran its final
+    /// has_pending peek (nothing queued) then exited; the descheduled producer
+    /// resumes and publishes intent only NOW. The backstop must re-acquire the
+    /// lock so a finisher is guaranteed WITHOUT an external tick. Fails under the
+    /// RED scaffold (publish-only, no re-attempt → returns false → no finisher).
+    #[tokio::test]
+    async fn r2_backstop_guarantees_finisher_when_intent_lands_after_final_peek() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // A holder acquired the lock, did its work, released, and ran its final
+        // drain-check (nothing queued) then exited — the lock is now free & empty.
+        assert!(
+            state.try_start_indexing(),
+            "holder acquires the indexing lock"
+        );
+        state.finish_indexing().await; // holder releases
+        assert!(
+            !state.has_pending_sync(),
+            "holder's final peek observes an empty queue → holder exits"
+        );
+
+        // The descheduled producer resumes and publishes intent + backstops.
+        let must_drain = state.publish_pending_sync_and_try_reacquire(false, false);
+        assert!(
+            must_drain,
+            "AC1: a publish landing after the holder exited must re-acquire the lock so a finisher is guaranteed (no lost wakeup)"
+        );
+        assert!(
+            state.is_indexing(),
+            "the backstop must hold the re-acquired indexing lock"
+        );
+
+        // The guaranteed finisher drains the queued request with no external tick.
+        state.finish_indexing().await;
+        drain_pending_sync_to_completion(&state).await;
+        assert!(
+            !state.has_pending_sync(),
+            "AC2: the backstopped request is guaranteed drained"
+        );
+        assert!(
+            !state.is_indexing(),
+            "the drain releases the indexing lock on completion"
+        );
+    }
+
+    /// 105.002-T AC4 — no lost-wakeup: BOTH interleavings + the R1 generation
+    /// seam. (1) intent-BEFORE-release: while a holder still holds the lock, the
+    /// backstop must NOT acquire (returns false) and the holder drains on release.
+    /// (2) generation seam: a backstopped request tagged with a newer generation
+    /// is NOT wiped by an older generation's cancel-clear (composes with R1).
+    #[tokio::test]
+    async fn r2_backstop_defers_to_active_holder_and_is_generation_aware() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new(1));
+        state
+            .set_workspace(test_snapshot(&tmp))
+            .await
+            .expect("set workspace");
+        state
+            .set_workspace_config(Some(WorkspaceConfig::default()))
+            .await;
+
+        // (1) intent-before-release: a holder currently holds the lock.
+        assert!(state.try_start_indexing(), "holder holds the indexing lock");
+        let must_drain = state.publish_pending_sync_and_try_reacquire(false, false);
+        assert!(
+            !must_drain,
+            "AC4: while a holder still holds the lock, the backstop must NOT acquire — the holder drains the queued intent on release"
+        );
+        assert!(
+            state.has_pending_sync(),
+            "the intent is queued for the current holder"
+        );
+
+        // The holder releases and drains the queued intent (no external tick).
+        state.finish_indexing().await;
+        drain_pending_sync_to_completion(&state).await;
+        assert!(
+            !state.has_pending_sync(),
+            "the holder drains the backstopped intent on release"
+        );
+
+        // (2) generation seam with R1: a newer-generation backstopped request
+        // must survive an older generation's cancel-clear.
+        let (old_gen, _old_rx) = state.begin_scan_generation().await;
+        let (_new_gen, _new_rx) = state.begin_scan_generation().await;
+        let _ = state.publish_pending_sync_and_try_reacquire(false, false); // tagged new gen
+        state.clear_pending_sync_for_generation(old_gen); // older-generation clear
+        assert!(
+            state.has_pending_sync(),
+            "AC4 seam with R1: an older generation's clear must not wipe a newer-generation backstopped request"
+        );
+        // Release the lock if the backstop acquired it.
+        if state.is_indexing() {
+            state.finish_indexing().await;
+        }
     }
 
     /// 104.001-T (T-loop, RED): a `pending_sync` re-armed during a drain (here
