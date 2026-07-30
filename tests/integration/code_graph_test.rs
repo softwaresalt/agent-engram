@@ -1084,6 +1084,102 @@ async fn python_package_topology_change_invalidates_descendant_canonical_paths()
     );
 }
 
+/// 099.003-T (C6-1 parity, P0-1283) — the `index` path must match the sync
+/// path: an `__init__.py` add/remove invalidates an unchanged descendant's
+/// canonical identity (and its cross-module canonical edge) on `index` alone,
+/// without deferring to a later sync. Against the pre-parity index path the
+/// descendant's bytes are hash-skipped, so cf stays fail-closed and the caller's
+/// canonical edge never materialises — the add assertions below fail (RED).
+#[test]
+async fn index_package_topology_change_invalidates_descendant_without_sync() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // `p` is initially an implicit namespace package (no __init__.py): cf fails
+    // closed, and the cross-module bare call from the top-level `caller` module
+    // cannot resolve to a canonical edge.
+    write_sample_file(ws, "p/mod.py", "def cf():\n    return 1\n");
+    write_sample_file(
+        ws,
+        "caller.py",
+        "from p.mod import cf\n\n\ndef run():\n    cf()\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf pre"),
+        vec![String::new()],
+        "before __init__.py, p is a namespace package: cf must be empty (fail closed)"
+    );
+    let canon_pre = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges pre");
+    assert!(
+        canon_pre.is_empty(),
+        "no canonical edge should resolve while p is a namespace package; got {canon_pre:?}"
+    );
+
+    // ADD p/__init__.py: `p` becomes a provable regular package. The descendant
+    // p/mod.py is byte-unchanged, so ONLY C6-1 topology invalidation on the index
+    // path can refresh cf and re-resolve the caller's canonical edge WITHOUT a
+    // subsequent sync.
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("re-index after add should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf added"),
+        vec!["p.mod.cf".to_owned()],
+        "adding p/__init__.py must recompute the unchanged descendant to `p.mod.cf` on index (C6-1 add)"
+    );
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    let canon_added = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges added");
+    assert!(
+        canon_added.contains(&(run_id, cf_id)),
+        "adding p/__init__.py must materialise the cross-module canonical edge on index; got {canon_added:?}"
+    );
+
+    // REMOVE p/__init__.py: `p` reverts to a namespace package. cf must invalidate
+    // back to empty and its canonical edge must be retracted, again on index alone.
+    std::fs::remove_file(ws.join("p/__init__.py")).expect("remove __init__.py");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("re-index after remove should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf removed"),
+        vec![String::new()],
+        "removing p/__init__.py must invalidate the unchanged descendant back to empty on index (C6-1 remove)"
+    );
+    let canon_removed = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges removed");
+    assert!(
+        canon_removed.is_empty(),
+        "removing p/__init__.py must retract the cross-module canonical edge on index; got {canon_removed:?}"
+    );
+}
+
 // ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
 
 /// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during

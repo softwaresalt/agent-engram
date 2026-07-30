@@ -1247,6 +1247,11 @@ async fn index_workspace_impl(
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
+    // 099.003-T (C6-1 parity): capture the prior snapshot BEFORE clearing so the
+    // index path — like sync — can detect a Python package-topology change and
+    // eagerly invalidate affected descendants, rather than deferring to the next
+    // sync via the marker gate. Load then clear, mirroring the sync sequence.
+    let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
     queries.clear_index_canonical_workspace_snapshot().await?;
 
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation
@@ -1267,6 +1272,39 @@ async fn index_workspace_impl(
         unsafe_prefixes: unsafe_prefixes.clone(),
         python_packages: python_packages.clone(),
     };
+    // 099.003-T (C6-1 parity): force per-file canonical recompute for Python
+    // descendants whose package ancestry changed since the last index. An
+    // `__init__.py` add/remove flips a directory's regular-package status
+    // WITHOUT changing a descendant's bytes, so the content-hash skip below would
+    // otherwise leave its canonical identity — and any derived cross-module
+    // canonical edges — stale until a later sync. Mirrors the sync path exactly.
+    let force_python_recompute: std::collections::HashSet<String> =
+        match previous_canonical_workspace.as_ref() {
+            Some(previous) => {
+                let changed: Vec<&String> = python_packages
+                    .symmetric_difference(&previous.python_packages)
+                    .collect();
+                if changed.is_empty() {
+                    std::collections::HashSet::new()
+                } else {
+                    files
+                        .iter()
+                        .filter_map(|p| p.strip_prefix(ws_path).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .filter(|rel| changed.iter().any(|dir| is_python_descendant(rel, dir)))
+                        .collect()
+                }
+            }
+            // No snapshot (legacy DB, or a prior run cleared it without rewriting):
+            // fail closed — recompute every current `.py` file so no stale
+            // topology can survive. Inert on a fresh index (nothing to skip).
+            None => files
+                .iter()
+                .filter_map(|p| p.strip_prefix(ws_path).ok())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .filter(|rel| is_py_path(rel))
+                .collect(),
+        };
     info!(
         files_found = files.len(),
         "code graph: discovered source files"
@@ -1372,8 +1410,9 @@ async fn index_workspace_impl(
             // Compute content hash.
             let content_hash = sha256_hex(&source);
 
-            // Skip unchanged files (unless forced).
-            if !force {
+            // Skip unchanged files (unless forced, or a Python package-topology
+            // change requires a canonical recompute of this descendant — 099.003-T).
+            if !force && !force_python_recompute.contains(&rel_path) {
                 if let Ok(Some(existing)) = queries.get_code_file_by_path(&rel_path).await {
                     if existing.content_hash == content_hash {
                         debug!(path = %rel_path, "code graph: skipping unchanged file");
