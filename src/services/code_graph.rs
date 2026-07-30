@@ -926,6 +926,19 @@ fn python_target_for_staged_call(
             Some(module) => python_bare_target(module, shadow, caller_name, callee),
             None => Err(NoCanonicalTargetReason::NoModuleContext),
         },
+        // 099.004-T (P1-760): a PROVABLE function-local import resolved at
+        // extraction time via `ImportBindings::resolve_call`. `raw_qualifier`
+        // already carries the exact canonical dotted target (e.g. "m.f") and the
+        // firm binding + call-site order were proven there, so trust it directly
+        // and bypass the module-scope contests. Empty (should not happen) fails
+        // closed.
+        "python_local" => {
+            if call.raw_qualifier.is_empty() {
+                Err(NoCanonicalTargetReason::CompetingBindings)
+            } else {
+                Ok(call.raw_qualifier.clone())
+            }
+        }
         _ => Err(NoCanonicalTargetReason::CompetingBindings),
     }
 }

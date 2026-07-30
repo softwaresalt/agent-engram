@@ -1324,6 +1324,10 @@ async fn assert_python_shadow_contest(source: &str) {
 
 /// T5a.4 — every coarse shadow-contest vector suppresses the same-file direct
 /// edge and routes the bare call into `python_bare` provenance staging.
+///
+/// 099.004-T: a PROVABLE function-local `from m import f` no longer belongs in
+/// this coarse table — it graduated to precise `python_local` resolution (see
+/// `python_function_local_import_stages_python_local_and_fails_closed_when_unindexed`).
 #[test]
 async fn python_bare_shadow_contest_routing_table() {
     for source in [
@@ -1332,11 +1336,73 @@ async fn python_bare_shadow_contest_routing_table() {
         "def parse():\n    return 0\nparse = factory()\ndef caller():\n    parse()\n",
         "def parse():\n    return 0\nclass parse:\n    pass\ndef caller():\n    parse()\n",
         "def parse():\n    return 0\ndel parse\ndef caller():\n    parse()\n",
-        "def parse():\n    return 0\ndef caller():\n    from bar import parse\n    parse()\n",
         "def parse():\n    return 0\nfrom .other import parse\ndef caller():\n    parse()\n",
     ] {
         assert_python_shadow_contest(source).await;
     }
+}
+
+/// 099.004-T (P1-760) — a PROVABLE function-local `from m import f` is staged
+/// with the precise `python_local` provenance (not the coarse `python_bare`),
+/// and when its module `m` is unindexed the edge layer still fails closed: no
+/// direct edge is minted to the same-file `parse` decoy. This is the staging
+/// counterpart of the resolved-target recall test in the acceptance corpus.
+#[test]
+async fn python_function_local_import_stages_python_local_and_fails_closed_when_unindexed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    // `bar` is not a workspace module, so the canonical target `bar.parse` is
+    // unindexed and no edge is created — but the provenance is still python_local.
+    write_sample_file(
+        ws,
+        "case.py",
+        "def parse():\n    return 0\ndef caller():\n    from bar import parse\n    parse()\n",
+    );
+
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("indexing should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let caller_id = q.find_symbols_by_name("caller").await.expect("find caller")[0]
+        .id
+        .clone();
+    let parse_id = q
+        .find_symbols_by_name("parse")
+        .await
+        .expect("find parse")
+        .into_iter()
+        .find(|symbol| symbol.table == "function")
+        .expect("parse function must be indexed")
+        .id;
+
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("staged calls");
+    assert!(
+        staged.iter().any(|row| row.caller_id == caller_id
+            && row.callee_name == "parse"
+            && row.qualifier_kind == "python_local"
+            && row.raw_qualifier == "bar.parse"),
+        "provable function-local import must be staged as python_local -> bar.parse; got {staged:?}"
+    );
+    let direct = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    let canonical = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("canonical edges");
+    assert!(
+        !direct.contains(&(caller_id.clone(), parse_id.clone()))
+            && !canonical.contains(&(caller_id, parse_id)),
+        "unindexed function-local target must not mint an edge to the same-file decoy parse"
+    );
 }
 
 /// T5a.5 / C9-1 — the matched definition is not its own competitor: a sole
