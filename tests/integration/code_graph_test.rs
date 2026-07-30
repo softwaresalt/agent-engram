@@ -500,6 +500,99 @@ async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
 }
 
 #[test]
+async fn sync_retracts_symbols_and_edges_when_file_truncated_to_zero_bytes() {
+    // P0-2022 (099.001-T): a previously-indexed file truncated to 0 bytes was
+    // skipped as `files_unchanged` by the sync path's zero-byte guard, leaving
+    // its symbols, code_file record, and calls edges stale in the graph. The
+    // guard is language-agnostic, so this asserts retraction for BOTH a Python
+    // file (which also owns an intra-file `direct` call edge) and a non-Python
+    // (Rust) file emptied in the same sync.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+
+    write_sample_file(
+        ws,
+        "pkg/mod_a.py",
+        "def alpha():\n    beta()\n\n\ndef beta():\n    return 1\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub fn tracked() {}\n");
+
+    let (data_dir, branch) = test_db_params(ws);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial index");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    // Preconditions: both files contributed symbols; the Python file owns an
+    // intra-file `direct` call edge (alpha -> beta).
+    assert!(
+        !q.get_symbol_identities_for_file("pkg/mod_a.py")
+            .await
+            .expect("py symbols")
+            .is_empty(),
+        "precondition: python file has symbols after index"
+    );
+    assert!(
+        !q.get_symbol_identities_for_file("src/lib.rs")
+            .await
+            .expect("rs symbols")
+            .is_empty(),
+        "precondition: rust file has symbols after index"
+    );
+    let direct_before = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges");
+    assert!(
+        !direct_before.is_empty(),
+        "precondition: intra-file call produced a direct edge"
+    );
+
+    // Truncate BOTH tracked files to 0 bytes on disk.
+    fs::write(ws.join("pkg/mod_a.py"), "").expect("truncate py");
+    fs::write(ws.join("src/lib.rs"), "").expect("truncate rs");
+
+    let result = code_graph::sync_workspace(ws, &data_dir, &branch, &config)
+        .await
+        .expect("sync should succeed");
+    assert!(
+        result.errors.is_empty(),
+        "emptied files must not surface as errors; got {:?}",
+        result.errors
+    );
+
+    // The now-empty files must have their prior symbols, code_file records, and
+    // calls edges retracted — not left stale as `files_unchanged`.
+    for path in ["pkg/mod_a.py", "src/lib.rs"] {
+        assert!(
+            q.get_symbol_identities_for_file(path)
+                .await
+                .expect("stale symbols")
+                .is_empty(),
+            "symbols for `{path}` must be retracted after truncation to 0 bytes"
+        );
+        assert!(
+            q.get_code_file_by_path(path)
+                .await
+                .expect("stale code_file")
+                .is_none(),
+            "code_file record for `{path}` must be retracted after truncation to 0 bytes"
+        );
+    }
+    let direct_after = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("direct edges after");
+    assert!(
+        direct_after.is_empty(),
+        "intra-file call edge must be retracted after the file is emptied; got {direct_after:?}"
+    );
+}
+
+#[test]
 async fn canonical_path_populated_and_distinct_across_modules() {
     // Option C Unit A / A6: indexing populates the additive canonical_path
     // column, and same-spelled impl methods in different modules get DISTINCT

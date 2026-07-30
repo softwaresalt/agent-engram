@@ -2201,17 +2201,6 @@ pub async fn sync_workspace_with_progress(
     let codegraph_generation_current =
         stored_codegraph_generation.as_deref() == Some(CODE_GRAPH_EXTRACTION_GENERATION);
     let run_codegraph_revalidation = !codegraph_generation_current && revalidate_code_graph;
-    // 101.002-T (H2/A3 fail-closed): tracks whether any previously-indexed
-    // source file was BYPASSED (skipped without re-extraction AND without
-    // cleanup) during a revalidation pass — e.g. a file truncated to zero bytes
-    // after it was indexed. Such a file's pre-fix stale edges are neither
-    // re-derived under the 100-F guard nor retracted, so the extraction-
-    // generation marker must NOT advance this pass (it would falsely certify
-    // the stale edges as migrated). Mirrors the index path's `any_hash_skipped`
-    // gate. Oversized files are NOT counted here: they run `handle_deleted_file`,
-    // which retracts BOTH resolved and same-file direct edges (101.002-T), so no
-    // stale edge survives and bypassing extraction is safe.
-    let mut revalidation_incomplete = false;
     if !codegraph_generation_current && !run_codegraph_revalidation {
         debug!(
             stored = ?stored_codegraph_generation,
@@ -2287,17 +2276,13 @@ pub async fn sync_workspace_with_progress(
             // content-based checks that follow the file read.
             if let Ok(meta) = tokio::fs::metadata(file_path).await {
                 let meta_size = meta.len();
-                if meta_size == 0 {
-                    // 101.002-T: a file that was indexed with edges but is now
-                    // zero bytes is bypassed WITHOUT cleanup, so its pre-fix
-                    // stale edges survive. Refuse to advance the revalidation
-                    // marker this pass (fail-closed).
-                    if run_codegraph_revalidation && indexed_map.contains_key(&rel_path) {
-                        revalidation_incomplete = true;
-                    }
-                    result.files_unchanged += 1;
-                    break 'file;
-                }
+                // 099.001-T (P0-2022): do NOT short-circuit a zero-byte file
+                // here on filesystem metadata alone. Metadata can be racy during
+                // an atomic rewrite, so acting on it risks retracting a file
+                // that is only transiently empty. Reading a zero-byte file is
+                // cheap, so fall through to the authoritative content read and
+                // its zero-byte guard below, which decides retraction only after
+                // the emptiness is actually observed in the bytes.
                 if meta_size > config.max_file_size_bytes {
                     let stale_file_id = format!("code_file:{}", sha256_short(&rel_path));
                     let orphaned = handle_deleted_file(&queries, &rel_path, &stale_file_id).await?;
@@ -2327,13 +2312,24 @@ pub async fn sync_workspace_with_progress(
 
             let size_bytes = source.len() as u64;
             if size_bytes == 0 {
-                // Skip empty files (handles TOCTOU race between metadata and read).
-                // 101.002-T: same fail-closed guard as the metadata zero-byte
-                // branch — a previously-indexed file now empty leaves stale
-                // edges, so the revalidation marker must not advance this pass.
-                if run_codegraph_revalidation && indexed_map.contains_key(&rel_path) {
-                    revalidation_incomplete = true;
+                // 099.001-T (P0-2022): a previously-indexed file truncated to
+                // zero bytes must have its prior symbols, code_file record, and
+                // calls/concerns edges RETRACTED — not silently skipped as
+                // `files_unchanged`, which left the whole graph stale. We retract
+                // only AFTER an authoritative content read (never on racy
+                // metadata), so the original TOCTOU race is not reintroduced: a
+                // file transiently zero during an atomic rewrite is
+                // re-materialized on the next sync once its bytes reappear (the
+                // same one-cycle window as any other modification). Because the
+                // stale rows are gone, the revalidation marker may advance.
+                if let Some(indexed_file) = indexed_map.get(&rel_path) {
+                    let orphaned =
+                        handle_deleted_file(&queries, &rel_path, &indexed_file.id).await?;
+                    result.concerns_orphaned += orphaned;
+                    result.files_deleted += 1;
+                    break 'file;
                 }
+                // A never-indexed empty file has nothing to retract.
                 result.files_unchanged += 1;
                 break 'file;
             }
@@ -2996,22 +2992,20 @@ pub async fn sync_workspace_with_progress(
             .await?;
             result.edges_created += resolved.resolved;
         }
-        if result.errors.is_empty() && !revalidation_incomplete {
+        if result.errors.is_empty() {
             // 103.001-T (U1/A1/A2): sweep orphaned `calls_edge` rows before the
             // revalidation certifies the generation, mirroring the forced-index
             // route. Retraction-only, keyed on `function_meta` liveness (no
             // recall loss); a sweep error propagates via `?` so the marker stays
             // fail-closed.
+            //
+            // 099.001-T: files truncated to zero bytes are no longer bypassed
+            // without cleanup — they run `handle_deleted_file` in the sync loop
+            // above (like oversized files), so no stale edge survives a
+            // revalidation pass and the marker may certify safely.
             result.dangling_edges_swept += queries.retract_dangling_calls_edges().await?;
             queries.set_code_graph_extraction_generation(CODE_GRAPH_EXTRACTION_GENERATION)?;
             debug!("code graph sync: code-graph revalidation complete; generation marker advanced");
-        } else if revalidation_incomplete {
-            // 101.002-T (H2/A3): a previously-indexed source file was bypassed
-            // (e.g. truncated to zero bytes) so its pre-fix stale edges were not
-            // revalidated. Keep the prior marker; the next revalidation retries.
-            warn!(
-                "code graph sync: code-graph revalidation bypassed a previously-indexed file (now empty) — keeping prior generation marker so the next sync retries the migration"
-            );
         } else {
             warn!(
                 "code graph sync: code-graph revalidation hit a file error — keeping prior generation marker so the next sync retries the migration"
