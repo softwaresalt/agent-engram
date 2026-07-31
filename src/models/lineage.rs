@@ -35,7 +35,13 @@ pub const LINEAGE_DERIVES_FROM: &str = "lineage_derives_from";
 /// notebook whose persisted version differs from this constant, so bumping it
 /// forces a lineage backfill of already-indexed notebooks. Bump on any change to
 /// the extraction/resolution behavior that alters emitted lineage.
-pub const CURRENT_EXTRACTOR_VERSION: &str = "1.0.0";
+///
+/// 1.0.0 → 1.1.0 (097-F X1, 097.006-T): the V2 quote/comment-aware INSERT
+/// normalizer, V5 storage-authority validation, W2 table-identifier validation,
+/// and W1 second-read chain invalidation all tighten emitted lineage, so
+/// already-indexed notebooks must re-extract to shed the older, less-precise
+/// (potentially false) edges (C4).
+pub const CURRENT_EXTRACTOR_VERSION: &str = "1.1.0";
 
 /// The kind of a resolved lineage dataset endpoint.
 ///
@@ -493,5 +499,18 @@ mod tests {
             .expect("valid unquoted identifiers bind");
         assert_eq!(ep.name, "cat.schema_2.table_v1");
         assert_eq!(ep.kind, DatasetKind::Table);
+    }
+
+    #[test]
+    fn current_extractor_version_is_bumped_for_v1_hardening_x1() {
+        // X1 (097.006-T, fan-in): V2/V5/W2/W1 change extractor output, so the
+        // version stamp must advance to force re-extraction of already-indexed
+        // notebooks (C4). The freshness token carries the new version so a
+        // notebook stamped at the prior version re-extracts.
+        assert_eq!(CURRENT_EXTRACTOR_VERSION, "1.1.0");
+        assert!(
+            lineage_freshness_token(&ctx()).starts_with("1.1.0:"),
+            "the freshness token carries the bumped extractor version"
+        );
     }
 }
