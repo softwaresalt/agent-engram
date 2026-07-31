@@ -863,6 +863,16 @@ name = "integration_lineage_precision_recall"
 path = "tests/integration/lineage_precision_recall_test.rs"
 required-features = ["cozo-backend"]
 
+[[test]]
+name = "integration_lineage_ingestion_e2e"
+path = "tests/integration/lineage_ingestion_e2e_test.rs"
+required-features = ["cozo-backend"]
+
+[[test]]
+name = "integration_lineage_extractor_version_rollout"
+path = "tests/integration/lineage_extractor_version_rollout_test.rs"
+required-features = ["cozo-backend"]
+
 # ── 062-F: Dedicated PBIP project-definition indexing ────────────────────────
 
 [[test]]

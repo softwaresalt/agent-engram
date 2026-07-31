@@ -1300,7 +1300,22 @@ pub(super) mod spark_lineage {
                     .as_deref()
                     .is_some_and(|s| invalidated_sessions.contains(s)) =>
                 {
-                    binding.insert(variable.clone(), endpoint.clone());
+                    // U2b/W1 (097.004-T): a resolved top-level read into a
+                    // variable that is already bound — or was already
+                    // invalidated by a prior re-read — makes the read->write
+                    // dataflow chain ambiguous. Per the U2b fail-closed
+                    // doctrine, invalidate the chain (drop the binding and mark
+                    // the name invalidated so no later read revives it) rather
+                    // than rebinding to the later read and minting a possibly
+                    // false edge. The first read of a variable still binds.
+                    if binding.contains_key(variable)
+                        || invalidated_sessions.contains(variable.as_str())
+                    {
+                        binding.remove(variable);
+                        invalidated_sessions.insert(variable.clone());
+                    } else {
+                        binding.insert(variable.clone(), endpoint.clone());
+                    }
                 }
                 // A nested-scope, unresolved, or untrusted-session read rebinds
                 // the variable to something ineligible — invalidate the prior
@@ -1514,6 +1529,34 @@ pub(super) mod spark_lineage {
                 ))
                 .is_empty(),
                 "session rebind invalidates later reads via spark (AR-29)"
+            );
+        }
+
+        #[test]
+        fn u2b_second_read_into_bound_variable_invalidates_no_edge() {
+            // W1 (097.004-T): a second resolved top-level read into an
+            // already-bound variable makes the read->write dataflow chain
+            // ambiguous. Per the U2b fail-closed doctrine it must invalidate
+            // (emit no edge), not rebind to the later read.
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/a\")\n",
+                    "df = spark.read.parquet(\"s3://bucket/b\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "a second read into an already-bound variable invalidates the chain"
+            );
+            // A third read must not revive the chain (fail-closed persists).
+            assert!(
+                candidates_for(concat!(
+                    "df = spark.read.parquet(\"s3://bucket/a\")\n",
+                    "df = spark.read.parquet(\"s3://bucket/b\")\n",
+                    "df = spark.read.parquet(\"s3://bucket/c\")\n",
+                    "df.write.saveAsTable(\"cat.sch.out\")\n",
+                ))
+                .is_empty(),
+                "a third read does not revive a poisoned binding"
             );
         }
 

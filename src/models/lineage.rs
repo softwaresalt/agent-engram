@@ -35,7 +35,13 @@ pub const LINEAGE_DERIVES_FROM: &str = "lineage_derives_from";
 /// notebook whose persisted version differs from this constant, so bumping it
 /// forces a lineage backfill of already-indexed notebooks. Bump on any change to
 /// the extraction/resolution behavior that alters emitted lineage.
-pub const CURRENT_EXTRACTOR_VERSION: &str = "1.0.0";
+///
+/// 1.0.0 → 1.1.0 (097-F X1, 097.006-T): the V2 quote/comment-aware INSERT
+/// normalizer, V5 storage-authority validation, W2 table-identifier validation,
+/// and W1 second-read chain invalidation all tighten emitted lineage, so
+/// already-indexed notebooks must re-extract to shed the older, less-precise
+/// (potentially false) edges (C4).
+pub const CURRENT_EXTRACTOR_VERSION: &str = "1.1.0";
 
 /// The kind of a resolved lineage dataset endpoint.
 ///
@@ -166,14 +172,15 @@ impl LineageAuthorityContext {
     /// Resolve a 3-part `catalog.schema.table` literal to a canonical,
     /// authority-embedded [`LineageEndpoint`], or `None` (fail closed).
     ///
-    /// Returns `None` for anything that is not exactly three non-empty
-    /// dot-separated parts, or whose catalog is not mapped to a trusted
-    /// metastore authority (AR-01). The resolved authority id is embedded in the
+    /// Returns `None` for anything that is not exactly three dot-separated
+    /// components each matching the unquoted Spark identifier grammar
+    /// (W2, 097.003-T), or whose catalog is not mapped to a trusted metastore
+    /// authority (AR-01). The resolved authority id is embedded in the
     /// `id` so two metastores sharing `catalog.schema.table` never collide.
     #[must_use]
     pub fn resolve_table(&self, literal: &str) -> Option<LineageEndpoint> {
         let parts: Vec<&str> = literal.split('.').collect();
-        if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+        if parts.len() != 3 || parts.iter().any(|p| !is_spark_unquoted_identifier(p)) {
             return None;
         }
         let catalog = parts[0];
@@ -214,10 +221,9 @@ impl LineageAuthorityContext {
         if scheme_end == 0 {
             return None;
         }
-        let trusted = self
-            .storage_authorities
-            .iter()
-            .any(|prefix| uri_matches_authority(literal, prefix));
+        let trusted = self.storage_authorities.iter().any(|prefix| {
+            is_valid_storage_authority(prefix) && uri_matches_authority(literal, prefix)
+        });
         if !trusted {
             return None;
         }
@@ -280,6 +286,43 @@ pub fn lineage_freshness_token(authority_ctx: &LineageAuthorityContext) -> Strin
         "{CURRENT_EXTRACTOR_VERSION}:{}",
         authority_ctx.config_fingerprint()
     )
+}
+
+/// Return `true` when `component` is a valid unquoted Spark SQL identifier.
+///
+/// The unquoted grammar is a leading ASCII letter or underscore followed by
+/// zero or more ASCII letters, digits, or underscores. Backtick-quoted
+/// identifiers (which may contain other characters) are out of scope: the
+/// normalizer only emits unquoted multipart names, so a component outside this
+/// grammar — a hyphen, whitespace, a leading digit, or the empty string — is
+/// malformed and must fail closed rather than bind spurious lineage
+/// (W2, 097.003-T).
+fn is_spark_unquoted_identifier(component: &str) -> bool {
+    let mut chars = component.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Return `true` when `prefix` is a well-formed storage authority.
+///
+/// A trusted allowlist entry must be a bare `scheme://authority`: a non-empty
+/// scheme, the `://` separator, a non-empty authority, and NO path, query, or
+/// fragment component (V5, 097.002-T). A path-bearing entry such as
+/// `s3://bucket/prefix` or an empty-authority entry such as `s3://` is
+/// malformed and is rejected so it can never bind a URI — otherwise the prefix
+/// path segment would be silently promoted into the authority.
+fn is_valid_storage_authority(prefix: &str) -> bool {
+    let Some(scheme_end) = prefix.find("://") else {
+        return false;
+    };
+    if scheme_end == 0 {
+        return false; // empty scheme
+    }
+    let authority = &prefix[scheme_end + 3..];
+    !authority.is_empty() && !authority.contains(['/', '?', '#'])
 }
 
 /// Return `true` when `uri` sits under the trusted `prefix` authority.
@@ -395,5 +438,105 @@ mod tests {
             .resolve_table("cat.sch.t")
             .expect("a normal pair resolves");
         assert_eq!(ok.id, "table::prod-metastore::cat.sch.t");
+    }
+
+    #[test]
+    fn resolve_path_rejects_path_bearing_storage_authority_prefix() {
+        // V5 (097.002-T): a storage-authority allowlist entry must be a bare
+        // `scheme://authority` with no path. A path-bearing prefix like
+        // `s3://bucket/prefix` is malformed and must never bind a URI, even one
+        // that textually extends it — otherwise the prefix's path segment is
+        // silently treated as part of the authority.
+        let c =
+            LineageAuthorityContext::new(BTreeMap::new(), vec!["s3://bucket/prefix".to_owned()]);
+        assert!(c.resolve_path("s3://bucket/prefix/data/file").is_none());
+    }
+
+    #[test]
+    fn resolve_path_rejects_empty_authority_prefix() {
+        // V5 (097.002-T): a prefix with an empty authority (`scheme://`) is
+        // malformed and must never bind a URI.
+        let c = LineageAuthorityContext::new(BTreeMap::new(), vec!["s3://".to_owned()]);
+        assert!(c.resolve_path("s3:///data/file").is_none());
+    }
+
+    #[test]
+    fn resolve_path_still_binds_valid_bare_authority() {
+        // V5 recall guard: a well-formed bare authority still binds.
+        let ep = ctx()
+            .resolve_path("s3://bucket/data/file")
+            .expect("a bare storage authority binds");
+        assert_eq!(ep.kind, DatasetKind::Path);
+        assert_eq!(ep.name, "s3://bucket/data/file");
+    }
+
+    #[test]
+    fn is_valid_storage_authority_rejects_malformed_prefixes() {
+        // V5 (097.002-T) AC1/AC3: the trust-boundary predicate must reject an
+        // empty scheme, an empty authority, a path segment, query/fragment
+        // components, and a missing `://` separator — any of which would let a
+        // malformed allowlist entry bind a URI.
+        for bad in [
+            "://bucket",       // empty scheme
+            "s3://",           // empty authority
+            "s3://bucket/pre", // path segment
+            "s3://bucket?x",   // query component in authority
+            "s3://bucket#f",   // fragment component in authority
+            "bucket",          // no scheme separator
+        ] {
+            assert!(
+                !is_valid_storage_authority(bad),
+                "malformed storage authority must be rejected: {bad:?}"
+            );
+        }
+        // Well-formed bare `scheme://authority` prefixes still validate.
+        assert!(is_valid_storage_authority("s3://bucket"));
+        assert!(is_valid_storage_authority(
+            "abfss://c@a.dfs.core.windows.net"
+        ));
+    }
+
+    #[test]
+    fn resolve_table_rejects_malformed_unquoted_identifier_components() {
+        // W2 (097.003-T): a 3-part name whose components fall outside the
+        // unquoted Spark identifier grammar is malformed and must fail closed
+        // rather than bind spurious lineage. A hyphen in the schema, a
+        // digit-leading table, and whitespace all disqualify the token.
+        let c = ctx();
+        assert!(
+            c.resolve_table("cat.sch-x.t").is_none(),
+            "a hyphen is not a valid unquoted identifier character"
+        );
+        assert!(
+            c.resolve_table("cat.sch.1t").is_none(),
+            "an unquoted identifier may not start with a digit"
+        );
+        assert!(
+            c.resolve_table("cat.sch.t bad").is_none(),
+            "whitespace is not a valid unquoted identifier character"
+        );
+    }
+
+    #[test]
+    fn resolve_table_still_binds_valid_identifier_components() {
+        // W2 recall guard: well-formed unquoted identifiers still bind.
+        let ep = ctx()
+            .resolve_table("cat.schema_2.table_v1")
+            .expect("valid unquoted identifiers bind");
+        assert_eq!(ep.name, "cat.schema_2.table_v1");
+        assert_eq!(ep.kind, DatasetKind::Table);
+    }
+
+    #[test]
+    fn current_extractor_version_is_bumped_for_v1_hardening_x1() {
+        // X1 (097.006-T, fan-in): V2/V5/W2/W1 change extractor output, so the
+        // version stamp must advance to force re-extraction of already-indexed
+        // notebooks (C4). The freshness token carries the new version so a
+        // notebook stamped at the prior version re-extracts.
+        assert_eq!(CURRENT_EXTRACTOR_VERSION, "1.1.0");
+        assert!(
+            lineage_freshness_token(&ctx()).starts_with("1.1.0:"),
+            "the freshness token carries the bumped extractor version"
+        );
     }
 }
