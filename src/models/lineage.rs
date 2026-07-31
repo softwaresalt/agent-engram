@@ -166,14 +166,15 @@ impl LineageAuthorityContext {
     /// Resolve a 3-part `catalog.schema.table` literal to a canonical,
     /// authority-embedded [`LineageEndpoint`], or `None` (fail closed).
     ///
-    /// Returns `None` for anything that is not exactly three non-empty
-    /// dot-separated parts, or whose catalog is not mapped to a trusted
-    /// metastore authority (AR-01). The resolved authority id is embedded in the
+    /// Returns `None` for anything that is not exactly three dot-separated
+    /// components each matching the unquoted Spark identifier grammar
+    /// (W2, 097.003-T), or whose catalog is not mapped to a trusted metastore
+    /// authority (AR-01). The resolved authority id is embedded in the
     /// `id` so two metastores sharing `catalog.schema.table` never collide.
     #[must_use]
     pub fn resolve_table(&self, literal: &str) -> Option<LineageEndpoint> {
         let parts: Vec<&str> = literal.split('.').collect();
-        if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+        if parts.len() != 3 || parts.iter().any(|p| !is_spark_unquoted_identifier(p)) {
             return None;
         }
         let catalog = parts[0];
@@ -280,6 +281,24 @@ pub fn lineage_freshness_token(authority_ctx: &LineageAuthorityContext) -> Strin
         "{CURRENT_EXTRACTOR_VERSION}:{}",
         authority_ctx.config_fingerprint()
     )
+}
+
+/// Return `true` when `component` is a valid unquoted Spark SQL identifier.
+///
+/// The unquoted grammar is a leading ASCII letter or underscore followed by
+/// zero or more ASCII letters, digits, or underscores. Backtick-quoted
+/// identifiers (which may contain other characters) are out of scope: the
+/// normalizer only emits unquoted multipart names, so a component outside this
+/// grammar — a hyphen, whitespace, a leading digit, or the empty string — is
+/// malformed and must fail closed rather than bind spurious lineage
+/// (W2, 097.003-T).
+fn is_spark_unquoted_identifier(component: &str) -> bool {
+    let mut chars = component.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Return `true` when `prefix` is a well-formed storage authority.
@@ -443,5 +462,36 @@ mod tests {
             .expect("a bare storage authority binds");
         assert_eq!(ep.kind, DatasetKind::Path);
         assert_eq!(ep.name, "s3://bucket/data/file");
+    }
+
+    #[test]
+    fn resolve_table_rejects_malformed_unquoted_identifier_components() {
+        // W2 (097.003-T): a 3-part name whose components fall outside the
+        // unquoted Spark identifier grammar is malformed and must fail closed
+        // rather than bind spurious lineage. A hyphen in the schema, a
+        // digit-leading table, and whitespace all disqualify the token.
+        let c = ctx();
+        assert!(
+            c.resolve_table("cat.sch-x.t").is_none(),
+            "a hyphen is not a valid unquoted identifier character"
+        );
+        assert!(
+            c.resolve_table("cat.sch.1t").is_none(),
+            "an unquoted identifier may not start with a digit"
+        );
+        assert!(
+            c.resolve_table("cat.sch.t bad").is_none(),
+            "whitespace is not a valid unquoted identifier character"
+        );
+    }
+
+    #[test]
+    fn resolve_table_still_binds_valid_identifier_components() {
+        // W2 recall guard: well-formed unquoted identifiers still bind.
+        let ep = ctx()
+            .resolve_table("cat.schema_2.table_v1")
+            .expect("valid unquoted identifiers bind");
+        assert_eq!(ep.name, "cat.schema_2.table_v1");
+        assert_eq!(ep.kind, DatasetKind::Table);
     }
 }
