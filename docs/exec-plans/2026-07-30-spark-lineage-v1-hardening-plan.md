@@ -263,9 +263,17 @@ rollback detail per the `plan-harden` skill.
 ### Rollback
 * **Trigger:** post-merge precision floor regression (any false
   `lineage_derives_from` edge) OR a re-extraction sweep failure.
-* **Procedure:** revert the `CURRENT_EXTRACTOR_VERSION` bump (restores old
-  freshness token → halts forced re-extraction) and revert the offending unit's
-  commit. Each unit is an independent commit to keep rollback granular.
+* **Procedure — distinguish load containment from a behavior rollback:**
+  * *Load containment* (a re-extraction sweep is failing or overloading):
+    pause/stop indexing to halt the sweep. Do **not** revert the version
+    constant — once notebooks are stamped `1.1.0`, reverting to `1.0.0` does not
+    halt re-extraction; the token mismatch (`1.1.0` stamp ≠ `1.0.0` current)
+    schedules **another** full sweep.
+  * *Behavior rollback* (undo a tightening that regressed): revert the offending
+    unit's commit **and** bump `CURRENT_EXTRACTOR_VERSION` to a *new* version
+    (e.g. `1.1.1`) so already-stamped notebooks re-extract against the reverted
+    extractor and persisted lineage is refreshed. Each unit is an independent
+    commit to keep the code revert granular.
 
 ### Monitoring / operational closure / operator checkpoints
 * **Signal:** lineage precision/recall metric emitted by
