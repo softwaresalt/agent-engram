@@ -489,10 +489,19 @@ pub(super) mod sql_lineage {
 
     /// Advance past a `delim`-quoted region (string literal or quoted
     /// identifier), honoring the SQL doubled-delimiter escape (`''`, `""`,
-    /// `` `` ``). `pos` is the first byte after the opening delimiter; returns the
-    /// index just past the closing delimiter, or `bytes.len()` if unterminated.
+    /// `` `` ``) and, for string literals (`'`/`"`), the backslash escape Spark
+    /// applies by default (`spark.sql.parser.escapedStringLiterals = false`), so
+    /// `\'`, `\"`, and `\\` stay inside the region. Backtick-quoted identifiers
+    /// do NOT process backslash escapes — only the doubled-delimiter form.
+    /// `pos` is the first byte after the opening delimiter; returns the index
+    /// just past the closing delimiter, or `bytes.len()` if unterminated.
     fn skip_quoted(bytes: &[u8], mut pos: usize, delim: u8) -> usize {
+        let backslash_escapes = delim != b'`';
         while pos < bytes.len() {
+            if backslash_escapes && bytes[pos] == b'\\' {
+                pos += 2; // escaped byte stays inside the region (may overrun to len)
+                continue;
+            }
             if bytes[pos] == delim {
                 if bytes.get(pos + 1) == Some(&delim) {
                     pos += 2; // doubled delimiter escape stays inside the region
@@ -725,6 +734,11 @@ pub(super) mod sql_lineage {
                 "SELECT 'INSERT OVERWRITE TABLE x' AS c FROM cat.sch.src",
                 "SELECT \"INSERT INTO TABLE\" FROM cat.sch.src",
                 "SELECT `INSERT OVERWRITE TABLE` FROM cat.sch.src",
+                // Backslash-escaped quote keeps the string literal open under
+                // Spark's default escaping, so the embedded INSERT stays inside
+                // the region and must NOT be rewritten (precision floor).
+                "SELECT 'a\\' INSERT OVERWRITE TABLE cat.sch.evil SELECT 1'",
+                "SELECT \"b\\\" INSERT INTO TABLE cat.sch.evil SELECT 1\" FROM cat.sch.src",
             ] {
                 assert_eq!(
                     normalize_spark_insert(src),
