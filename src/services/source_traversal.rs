@@ -290,7 +290,7 @@ pub(crate) fn reconcile_deleted_paths(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use tempfile::TempDir;
 
@@ -421,17 +421,17 @@ mod tests {
     /// tree and the thin wrapper still yields the file list.
     #[test]
     fn checked_collector_reports_complete_on_readable_tree() {
-        let workspace = TempDir::new().expect("workspace tempdir");
-        let dir = workspace.path().join("nb");
-        fs::create_dir_all(dir.join("sub")).expect("create nested dir");
-        fs::write(dir.join("a.ipynb"), "{}").expect("write a");
-        fs::write(dir.join("sub").join("b.ipynb"), "{}").expect("write b");
-
         fn is_ipynb(path: &std::path::Path) -> bool {
             path.extension()
                 .and_then(|e| e.to_str())
                 .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"))
         }
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let dir = workspace.path().join("nb");
+        fs::create_dir_all(dir.join("sub")).expect("create nested dir");
+        fs::write(dir.join("a.ipynb"), "{}").expect("write a");
+        fs::write(dir.join("sub").join("b.ipynb"), "{}").expect("write b");
 
         let collected = super::collect_files_in_workspace_checked(&dir, workspace.path(), is_ipynb);
         assert!(collected.complete, "a fully readable tree must be complete");
@@ -445,5 +445,149 @@ mod tests {
 
         let via_wrapper = super::collect_files_in_workspace(&dir, workspace.path(), is_ipynb);
         assert_eq!(via_wrapper.len(), collected.files.len());
+    }
+
+    // ── Deletion-sweep safety (migrated from the retired pub `compute_deleted_paths`
+    //    integration coverage; now exercised through the shared reconciler). ──
+
+    /// S-PIN-11 (migrated): the reconciler skips stored paths that would escape
+    /// the workspace root (absolute or parent-relative) and sweeps only the
+    /// safe, physically-absent workspace-relative path. A `complete: false`
+    /// collection isolates the physical-absence branch (no alias supersede).
+    #[test]
+    fn reconciler_ignores_escape_attempts() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let absolute = workspace
+            .path()
+            .join("outside.json")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let collected = CollectedFiles {
+            files: Vec::new(),
+            complete: false,
+        };
+
+        let deleted = reconcile_deleted_paths(
+            &[
+                absolute,
+                "../outside.json".to_string(),
+                "gone.json".to_string(),
+            ],
+            &collected,
+            workspace.path(),
+        );
+
+        assert_eq!(
+            deleted,
+            vec!["gone.json".to_string()],
+            "only safe workspace-relative paths participate in deletion sweeps"
+        );
+    }
+
+    /// S-PIN-23 (migrated): a workspace-relative symlink whose target now
+    /// resolves outside the workspace is swept as deleted rather than preserved
+    /// by following the link.
+    #[test]
+    fn reconciler_treats_outside_symlink_target_as_deleted() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let external = TempDir::new().expect("external tempdir");
+        let external_file = external.path().join("outside.tmdl");
+        fs::write(&external_file, "table Outside").expect("write external tmdl");
+
+        let link_path = workspace.path().join("linked.tmdl");
+        if !create_symlink_file(&external_file, &link_path) {
+            return;
+        }
+
+        let collected = CollectedFiles {
+            files: Vec::new(),
+            complete: false,
+        };
+        let deleted =
+            reconcile_deleted_paths(&stored(&["linked.tmdl"]), &collected, workspace.path());
+
+        assert_eq!(
+            deleted,
+            vec!["linked.tmdl".to_string()],
+            "symlinks resolving outside the workspace must be swept as deleted"
+        );
+    }
+
+    /// S-PIN-24 (migrated): final-component file symlinks and paths reached via
+    /// an outside-pointing directory symlink are swept as deleted, while a
+    /// regular in-workspace file is retained and an absent path is swept. A
+    /// `complete: false` collection isolates the physical-absence branch so the
+    /// live regular file is retained on presence alone.
+    #[test]
+    fn reconciler_reports_file_symlink_candidates_as_deleted() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let regular_path = workspace.path().join("regular.tmdl");
+        let symlink_target = workspace.path().join("target.tmdl");
+        let symlink_path = workspace.path().join("indexed.tmdl");
+        fs::write(&regular_path, "table Regular").expect("write regular tmdl");
+        fs::write(&symlink_target, "table Target").expect("write target tmdl");
+        if !create_symlink_file(&symlink_target, &symlink_path) {
+            return;
+        }
+
+        let external = TempDir::new().expect("external tempdir");
+        let external_dir = external.path().join("escape");
+        fs::create_dir_all(&external_dir).expect("create external dir");
+        fs::write(external_dir.join("outside.tmdl"), "table Outside").expect("write external tmdl");
+        if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
+            return;
+        }
+
+        let collected = CollectedFiles {
+            files: Vec::new(),
+            complete: false,
+        };
+        let deleted = reconcile_deleted_paths(
+            &stored(&[
+                "regular.tmdl",
+                "indexed.tmdl",
+                "linked-outside/outside.tmdl",
+                "absent.tmdl",
+            ]),
+            &collected,
+            workspace.path(),
+        );
+
+        assert_eq!(
+            deleted,
+            vec![
+                "indexed.tmdl".to_string(),
+                "linked-outside/outside.tmdl".to_string(),
+                "absent.tmdl".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(src, dst)
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(src, dst)
+    }
+
+    fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+        symlink_file(src, dst).is_ok()
+    }
+
+    fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+        symlink_dir(src, dst).is_ok()
     }
 }
