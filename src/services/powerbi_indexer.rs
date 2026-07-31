@@ -1337,14 +1337,15 @@ pub async fn index_powerbi_source(
     // file currently being indexed (P3).
     let model_scope_schemas = build_model_scope_schemas(&files, workspace_root, max_file_size);
 
-    // Build a map of existing content hashes for change detection.
-    let existing_hashes: HashMap<String, String> = queries
-        .select_content_records(Some("powerbi"))
-        .await?
-        .into_iter()
-        .filter(|record| record.source_path == source.path)
-        .map(|record| (record.file_path, record.content_hash))
-        .collect();
+    // 087.006-T (Unit D): source the hash-skip map from the durable completion
+    // marker (`powerbi_file_index_state`), NOT the content rows. A file counts
+    // as "previously indexed at hash H" only if its marker says so — decoupling
+    // the skip decision from possibly-partial content rows. A partial write
+    // (marker never written because a mid-file `?` aborted) therefore forces a
+    // reprocess on the next run (fail-closed) instead of hash-skipping and
+    // permanently dropping the file's missing summaries.
+    let existing_hashes: HashMap<String, String> =
+        queries.select_powerbi_index_state(&source.path).await?;
 
     // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
     // changed on this pass so unchanged siblings are reprocessed and their
@@ -1367,6 +1368,13 @@ pub async fn index_powerbi_source(
                 .delete_content_records_by_scope(prior_rel, "powerbi", &source.path)
                 .await?;
             queries.delete_powerbi_nodes_by_file_path(prior_rel).await?;
+            // 087.006-T: drop the stale completion marker alongside the stale
+            // content rows so a mid-rebuild failure leaves the file
+            // marker-absent (reprocess) rather than hash-skipped with an
+            // incomplete row set.
+            queries
+                .delete_powerbi_index_state_by_scope(prior_rel, &source.path)
+                .await?;
         }
     }
 
@@ -1487,6 +1495,14 @@ pub async fn index_powerbi_source(
                 queries.upsert_content_record(record).await?;
             }
 
+            // 087.006-T: write the completion marker LAST — only after every
+            // graph node, edge, and content record above succeeded. A `?` abort
+            // in any prior write leaves the marker absent ⇒ the next run
+            // recomputes `unchanged == false` and reprocesses (fail-closed).
+            queries
+                .upsert_powerbi_index_state(&rel_path, &source.path, &hash)
+                .await?;
+
             result.ingested += 1;
             continue;
         }
@@ -1504,6 +1520,10 @@ pub async fn index_powerbi_source(
                 .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
                 .await?;
             queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
+            // 087.006-T: drop the stale marker alongside the stale content rows.
+            queries
+                .delete_powerbi_index_state_by_scope(&rel_path, &source.path)
+                .await?;
         }
 
         let summaries = extract_entity_summaries_from_value(&json, &rel_path);
@@ -1567,6 +1587,12 @@ pub async fn index_powerbi_source(
         if !graph_edges.is_empty() {
             queries.upsert_powerbi_edges(&graph_edges).await?;
         }
+
+        // 087.006-T: write the completion marker LAST for the non-TMDL branch,
+        // after every content record + graph write for this file succeeded.
+        queries
+            .upsert_powerbi_index_state(&rel_path, &source.path, &hash)
+            .await?;
 
         result.ingested += 1;
     }
@@ -2129,6 +2155,154 @@ table Sales
             measure_summary.3.contains("DisplayFolder"),
             "measure summary should carry annotation context: {}",
             measure_summary.3
+        );
+    }
+
+    // ── 087.006-T (Unit D): PowerBI content-record atomicity via completion
+    //    marker. DB-backed durability fixtures against a temp-dir Cozo backend.
+
+    fn powerbi_source(path: &str) -> ContentSource {
+        ContentSource {
+            content_type: "powerbi".to_string(),
+            language: None,
+            path: path.to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        }
+    }
+
+    /// RF-6 (durability contract): a prior pass wrote content rows for a Power BI
+    /// file but never wrote the completion marker (a mid-file `?` abort, or a
+    /// pre-marker legacy index). The NEXT run must NOT hash-skip on the surviving
+    /// partial rows — it must reprocess and fully materialize the file's
+    /// summaries. The retired content-row-sourced hash-skip treats the partial
+    /// row as "already indexed at hash H" and permanently drops missing
+    /// summaries.
+    #[tokio::test]
+    async fn partial_write_without_marker_is_reprocessed_not_hash_skipped() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(model_dir.join("model.bim"), &model_json).expect("write model.bim");
+        let rel_path = "models/Sales.SemanticModel/model.bim";
+        let hash = compute_file_hash(model_json.as_bytes());
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-partial-write")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        // Seed a SINGLE partial content row at the file's real hash, with NO
+        // completion marker — the exact partial-write survivor state.
+        let partial = ContentRecord {
+            id: "cr_partial_survivor".to_string(),
+            content_type: "powerbi".to_string(),
+            file_path: rel_path.to_string(),
+            content_hash: hash.clone(),
+            content: "partial survivor".to_string(),
+            embedding: None,
+            source_path: source.path.clone(),
+            file_size_bytes: model_json.len() as u64,
+            ingested_at: Utc::now(),
+            record_kind: "powerbi_table".to_string(),
+            chunk_id: Some("partial:table".to_string()),
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        };
+        queries
+            .upsert_content_record(&partial)
+            .await
+            .expect("seed partial row");
+
+        let result = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("index powerbi");
+
+        assert_eq!(
+            result.unchanged, 0,
+            "a partial-write file (no marker) must not be hash-skipped"
+        );
+        assert!(
+            result.ingested >= 1,
+            "a partial-write file must be reprocessed"
+        );
+
+        let records = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select powerbi records");
+        let for_file: Vec<_> = records
+            .iter()
+            .filter(|record| record.file_path == rel_path)
+            .collect();
+        assert!(
+            for_file
+                .iter()
+                .any(|record| record.id != "cr_partial_survivor"),
+            "reprocessed file must materialize real summary records beyond the partial survivor; got {:?}",
+            for_file.iter().map(|record| &record.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// RF-7 (steady state): with a completion marker present at the current
+    /// hash, an unchanged file is hash-skipped (no needless reprocess); the
+    /// first run (marker absent) reprocesses exactly once and writes the marker.
+    #[tokio::test]
+    async fn marker_gated_steady_state_skips_unchanged_after_first_run() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace
+            .path()
+            .join("models")
+            .join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(model_dir.join("model.bim"), &model_json).expect("write model.bim");
+        let rel_path = "models/Sales.SemanticModel/model.bim";
+        let hash = compute_file_hash(model_json.as_bytes());
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-steady-state")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        // First run: marker absent ⇒ reprocess once, marker written.
+        let first = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("first index");
+        assert_eq!(first.unchanged, 0, "first run (no marker) reprocesses");
+        assert!(first.ingested >= 1, "first run ingests the model");
+
+        let markers = queries
+            .select_powerbi_index_state(&source.path)
+            .await
+            .expect("select markers");
+        assert_eq!(
+            markers.get(rel_path).map(String::as_str),
+            Some(hash.as_str()),
+            "completion marker is written at the file's hash after a full index"
+        );
+
+        // Second run: unchanged + marker present ⇒ hash-skipped.
+        let second = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("second index");
+        assert_eq!(second.ingested, 0, "unchanged file must not be reprocessed");
+        assert_eq!(
+            second.unchanged, 1,
+            "unchanged file is hash-skipped via the completion marker"
         );
     }
 }

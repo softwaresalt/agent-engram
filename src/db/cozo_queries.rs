@@ -6175,6 +6175,86 @@ referenced[id] := *lineage_edge { to_id: id }
         Ok(rows.first().map(|row| extract_str(row, 0)))
     }
 
+    // ── 087.006-T: Power BI content durability completion marker ───────────
+
+    /// Upsert the Power BI completion marker for one file at `content_hash`.
+    ///
+    /// Written **last**, after every graph node, edge, and content record for
+    /// the file has persisted, so the marker's presence is the authoritative
+    /// "fully indexed at `content_hash`" signal that gates the hash-skip
+    /// (087.006-T). Composite key `{file_path, source_path}`.
+    pub async fn upsert_powerbi_index_state(
+        &self,
+        file_path: &str,
+        source_path: &str,
+        content_hash: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[file_path, source_path, content_hash, completed_at] <- [[$file_path, $source_path, $content_hash, $completed_at]]
+:put powerbi_file_index_state { file_path, source_path => content_hash, completed_at }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        p.insert("source_path".to_owned(), DataValue::from(source_path));
+        p.insert("content_hash".to_owned(), DataValue::from(content_hash));
+        p.insert(
+            "completed_at".to_owned(),
+            DataValue::from(chrono::Utc::now().to_rfc3339().as_str()),
+        );
+        self.run_script_busy_retry_mutable(script, p).await?;
+        Ok(())
+    }
+
+    /// Read the Power BI completion markers for one source as a
+    /// `file_path -> content_hash` map.
+    ///
+    /// A file appears here **only if** its completion marker was written — i.e.
+    /// it was fully indexed at that hash. `index_powerbi_source` uses this map
+    /// as its hash-skip oracle so a partial write (marker absent) reprocesses
+    /// rather than hash-skips (087.006-T, fail-closed).
+    pub async fn select_powerbi_index_state(
+        &self,
+        source_path: &str,
+    ) -> Result<std::collections::HashMap<String, String>, EngramError> {
+        let script = r#"
+?[file_path, content_hash] :=
+    *powerbi_file_index_state { file_path, source_path, content_hash },
+    source_path = $source_path
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("source_path".to_owned(), DataValue::from(source_path));
+        let rows = self.run_script_busy_retry_immutable(script, p).await?.rows;
+        Ok(rows
+            .iter()
+            .map(|row| (extract_str(row, 0), extract_str(row, 1)))
+            .collect())
+    }
+
+    /// Delete the Power BI completion marker for one file scope.
+    ///
+    /// Called wherever the file's content rows are deleted (hash-change delete;
+    /// dirty-scope pre-delete; the deletion sweep) so a mid-flight failure can
+    /// never leave a stale marker that would wrongly hash-skip an incomplete
+    /// file (087.006-T / INV-5). Deleting an absent row is an idempotent no-op.
+    pub async fn delete_powerbi_index_state_by_scope(
+        &self,
+        file_path: &str,
+        source_path: &str,
+    ) -> Result<(), EngramError> {
+        let script = r#"
+?[file_path, source_path] :=
+    *powerbi_file_index_state { file_path, source_path },
+    file_path = $file_path,
+    source_path = $source_path
+:rm powerbi_file_index_state { file_path, source_path }
+"#;
+        let mut p = BTreeMap::new();
+        p.insert("file_path".to_owned(), DataValue::from(file_path));
+        p.insert("source_path".to_owned(), DataValue::from(source_path));
+        self.run_script_busy_retry_mutable(script, p).await?;
+        Ok(())
+    }
+
     /// Return all Power BI nodes, optionally filtered by `source_path`.
     pub async fn select_powerbi_nodes(
         &self,
@@ -6935,6 +7015,70 @@ mod tests {
             .await
             .expect("connect_db");
         (tmp, CodeGraphQueries::new(db))
+    }
+
+    /// 087.006-T (Unit D contract): `powerbi_file_index_state` completion-marker
+    /// upsert/select/delete round-trips, scoped by source — a re-upsert updates
+    /// the hash in place, and a scoped delete never touches another source's
+    /// marker.
+    #[tokio::test]
+    async fn powerbi_index_state_roundtrips_scoped_by_source() {
+        let (_tmp, q) = lineage_queries("powerbi-marker-roundtrip").await;
+
+        q.upsert_powerbi_index_state("models/A.SemanticModel/model.bim", "models", "hashA")
+            .await
+            .expect("upsert A");
+        q.upsert_powerbi_index_state("other/B.SemanticModel/model.bim", "other", "hashB")
+            .await
+            .expect("upsert B");
+
+        let models = q
+            .select_powerbi_index_state("models")
+            .await
+            .expect("select models");
+        assert_eq!(models.len(), 1, "only the in-source marker is returned");
+        assert_eq!(
+            models
+                .get("models/A.SemanticModel/model.bim")
+                .map(String::as_str),
+            Some("hashA")
+        );
+
+        // Re-upsert updates the hash in place (idempotent composite key).
+        q.upsert_powerbi_index_state("models/A.SemanticModel/model.bim", "models", "hashA2")
+            .await
+            .expect("re-upsert A");
+        let updated = q
+            .select_powerbi_index_state("models")
+            .await
+            .expect("select models updated");
+        assert_eq!(
+            updated
+                .get("models/A.SemanticModel/model.bim")
+                .map(String::as_str),
+            Some("hashA2"),
+            "re-upsert updates the marker hash in place"
+        );
+
+        // Scoped delete: removing A leaves B (a different source) untouched.
+        q.delete_powerbi_index_state_by_scope("models/A.SemanticModel/model.bim", "models")
+            .await
+            .expect("delete A");
+        assert!(
+            q.select_powerbi_index_state("models")
+                .await
+                .expect("select after delete")
+                .is_empty(),
+            "the deleted marker is gone from its source"
+        );
+        assert_eq!(
+            q.select_powerbi_index_state("other")
+                .await
+                .expect("select other")
+                .len(),
+            1,
+            "a marker in another source is untouched by the scoped delete"
+        );
     }
 
     // U1a': writers round-trip a node/edge/evidence, and re-asserting the same
