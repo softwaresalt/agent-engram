@@ -371,6 +371,22 @@ pub async fn sweep_deleted_notebook_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
+    // source root is indistinguishable from a fully-emptied tree by physical
+    // absence alone, so suppress the sweep entirely rather than risk
+    // mass-deleting live records when the root is transiently unavailable (e.g.
+    // an unmounted share). Legitimate source removal is handled by source
+    // de-registration, not the per-file sweep. Mirrors index_notebook_source's
+    // graceful skip so the indexer and sweep stay consistent.
+    let source_dir = workspace_root.join(&source.path);
+    if !source_dir.is_dir() {
+        debug!(
+            path = %source.path,
+            "notebook source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let records = queries.select_content_records(Some("notebook")).await?;
     let known_paths: Vec<String> = records
         .into_iter()
@@ -388,7 +404,6 @@ pub async fn sweep_deleted_notebook_files(
         // collected alias path on a `complete` pass. A partial pass (an
         // unreadable/unresolvable subtree) degrades to physical-absence-only,
         // so an alias-stale record is retained rather than wrongly deleted.
-        let source_dir = workspace_root.join(&source.path);
         let collected =
             collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
         reconcile_deleted_paths(&known_paths, &collected, workspace_root)
@@ -708,6 +723,39 @@ mod tests {
             remaining_notebook_paths(&queries, &source.path).await,
             vec!["nb/live.ipynb".to_string()],
             "the live notebook record is retained"
+        );
+    }
+
+    /// Fail-closed source-root guard (100-S review P1): when the notebook source
+    /// root is missing/unreadable the sweep must delete nothing — a transient
+    /// unmount is indistinguishable from a fully-emptied tree by physical
+    /// absence alone, so every live record is retained rather than mass-deleted.
+    #[tokio::test]
+    async fn sweep_skips_when_notebook_source_root_missing() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        // Deliberately do NOT create the `nb` source directory.
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-missing-root")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        seed_notebook_record(&queries, "nb/a.ipynb", &source.path).await;
+        seed_notebook_record(&queries, "nb/b.ipynb", &source.path).await;
+
+        let removed = super::sweep_deleted_notebook_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run notebook sweep");
+
+        assert_eq!(
+            removed, 0,
+            "a missing source root must sweep nothing (fail-closed)"
+        );
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/a.ipynb".to_string(), "nb/b.ipynb".to_string()],
+            "all live records are retained when the source root is unavailable"
         );
     }
 

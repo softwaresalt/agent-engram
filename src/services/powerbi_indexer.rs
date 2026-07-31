@@ -1577,6 +1577,22 @@ pub async fn sweep_deleted_powerbi_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
+    // source root is indistinguishable from a fully-emptied tree by physical
+    // absence alone, so suppress the sweep entirely rather than risk
+    // mass-deleting live records when the root is transiently unavailable (e.g.
+    // an unmounted share). Legitimate source removal is handled by source
+    // de-registration, not the per-file sweep. Mirrors index_powerbi_source's
+    // graceful skip so the indexer and sweep stay consistent.
+    let source_dir = workspace_root.join(&source.path);
+    if !source_dir.is_dir() {
+        debug!(
+            path = %source.path,
+            "Power BI source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let records = queries.select_content_records(Some("powerbi")).await?;
 
     // Collect unique workspace-relative file paths for this source.
@@ -1597,7 +1613,6 @@ pub async fn sweep_deleted_powerbi_files(
         // pass (an unreadable/unresolvable subtree) degrades to
         // physical-absence-only, so an alias-stale record is retained rather
         // than wrongly deleted.
-        let source_dir = workspace_root.join(&source.path);
         let collected =
             collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
         reconcile_deleted_paths(&known_paths, &collected, workspace_root)
@@ -2429,6 +2444,38 @@ table Sales
         assert!(
             !markers.contains_key("pbi/gone.bim"),
             "the swept path's completion marker is dropped (P2-2 / INV-5)"
+        );
+    }
+
+    /// Fail-closed source-root guard (100-S review P1): a missing/unreadable
+    /// Power BI source root must sweep nothing, retaining every live record
+    /// rather than mass-deleting on physical absence during a transient unmount.
+    #[tokio::test]
+    async fn powerbi_sweep_skips_when_source_root_missing() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        // Deliberately do NOT create the `pbi` source directory.
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-missing-root")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        seed_powerbi_record(&queries, "pbi/a.bim", &source.path).await;
+        seed_powerbi_record(&queries, "pbi/b.bim", &source.path).await;
+
+        let removed = sweep_deleted_powerbi_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run powerbi sweep");
+
+        assert_eq!(
+            removed, 0,
+            "a missing source root must sweep nothing (fail-closed)"
+        );
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec!["pbi/a.bim".to_string(), "pbi/b.bim".to_string()],
+            "all live records are retained when the source root is unavailable"
         );
     }
 }
