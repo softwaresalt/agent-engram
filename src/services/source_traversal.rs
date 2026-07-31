@@ -195,10 +195,27 @@ fn collect_symlinked_directory(
     complete: &mut bool,
     is_target_file: fn(&Path) -> bool,
 ) {
-    let Ok(canonical_target) = path.canonicalize() else {
-        // A broken symlink resolves to nothing — it is not a missed readable
-        // subtree, so completeness is preserved.
-        return;
+    let canonical_target = match path.canonicalize() {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A genuinely broken symlink resolves to nothing — it is not a
+            // missed readable subtree, so completeness is preserved.
+            return;
+        }
+        Err(error) => {
+            // 100-S Copilot review: a transient error (PermissionDenied, I/O)
+            // may hide an in-workspace subtree whose files are still indexed.
+            // Treating it as "broken" would leave `complete == true` and let
+            // the reconciler delete those records as not-collected, so the pass
+            // is no longer authoritative (fail-closed; INV-2).
+            warn!(
+                path = %path.display(),
+                %error,
+                "skipping symlinked directory whose target could not be resolved (fail-closed)"
+            );
+            *complete = false;
+            return;
+        }
     };
     if !canonical_target.starts_with(canonical_root) || !canonical_target.is_dir() {
         return;
@@ -222,6 +239,51 @@ fn entry_rank(file_type: &FileType) -> u8 {
         2
     } else {
         3
+    }
+}
+
+/// Fail-closed physical-absence oracle for the shared deletion reconciler.
+///
+/// Returns `true` only when the stored path is *provably* gone: a `NotFound`
+/// from `symlink_metadata`/`canonicalize`, a path that now resolves to a
+/// non-file, or one whose real target escapes the workspace. A transient error
+/// (`PermissionDenied`, other I/O) cannot prove absence — an unreadable parent
+/// directory still contains a live file — so the record is retained (`false`).
+/// The safety floor forbids deleting a live record we merely failed to stat.
+///
+/// This is intentionally distinct from the shared
+/// [`is_regular_file_in_workspace`], which the out-of-scope backlog/pbip
+/// `compute_deleted_paths` still call with their historical fail-open on
+/// transient errors (tracked as a separate follow-up).
+fn is_physically_absent(path: &Path, canonical_root: &Path) -> bool {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) => {
+            warn!(
+                path = %path.display(),
+                %error,
+                "retaining stored record: cannot stat path to prove absence (fail-closed)"
+            );
+            return false;
+        }
+    };
+    if !metadata.file_type().is_file() {
+        // The path exists but is no longer the regular file we stored (e.g. it
+        // was replaced by a directory): the original file is genuinely gone.
+        return true;
+    }
+    match path.canonicalize() {
+        Ok(canonical) => !canonical.starts_with(canonical_root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                path = %path.display(),
+                %error,
+                "retaining stored record: cannot canonicalize present path (fail-closed)"
+            );
+            false
+        }
     }
 }
 
@@ -303,7 +365,7 @@ pub(crate) fn reconcile_deleted_paths(
                 return None;
             };
             let candidate = workspace_root.join(relative_path);
-            let physically_absent = !is_regular_file_in_workspace(&candidate, &canonical_root);
+            let physically_absent = is_physically_absent(&candidate, &canonical_root);
             // INV-1/INV-2: an alias-stale record (still physically present) is
             // reconciled away only when the collection was
             // authoritative-complete; a partial pass retains it (fail-closed).
@@ -510,6 +572,92 @@ mod tests {
         assert!(
             !collected.complete,
             "per-entry metadata (or listing) failures must mark the pass non-authoritative (fail-closed)"
+        );
+    }
+
+    /// 100-S Copilot review (fail-closed physical-absence): a stored record
+    /// whose file is still present but cannot be stat'd — because a parent
+    /// directory lost its traverse bit — must be RETAINED, not swept. Pre-fix
+    /// `is_regular_file_in_workspace` returned `false` on the `PermissionDenied`
+    /// from `symlink_metadata`, so `physically_absent` became `true` and the
+    /// live record was deleted unconditionally (bypassing the `complete` gate).
+    /// `complete: false` isolates the physical-absence branch.
+    #[cfg(unix)]
+    #[test]
+    fn reconciler_retains_present_record_under_unreadable_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let locked = workspace.path().join("locked");
+        fs::create_dir_all(&locked).expect("create locked dir");
+        let keep = locked.join("keep.ipynb");
+        fs::write(&keep, "{}").expect("write keep");
+        // No traverse (execute) bit on the parent: symlink_metadata(keep) and
+        // canonicalize(keep) both fail with PermissionDenied (not NotFound).
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod locked 000");
+
+        let collected = CollectedFiles {
+            files: Vec::new(),
+            complete: false,
+        };
+        let deleted = reconcile_deleted_paths(
+            &stored(&["locked/keep.ipynb"]),
+            &collected,
+            workspace.path(),
+        );
+
+        // Restore perms so TempDir cleanup can remove the tree.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))
+            .expect("restore locked perms");
+
+        assert!(
+            deleted.is_empty(),
+            "a present-but-unreadable record must be retained (fail-closed); got {deleted:?}"
+        );
+    }
+
+    /// 100-S Copilot review (fail-closed symlinked-directory resolution): a
+    /// directory symlink whose target cannot be resolved because of a transient
+    /// (non-`NotFound`) error must mark the pass non-authoritative rather than
+    /// be treated as a harmless broken link. Otherwise its still-indexed files
+    /// go uncollected while `complete == true`, and the reconciler deletes them.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_dir_with_unresolvable_target_marks_pass_non_authoritative() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn is_ipynb(path: &std::path::Path) -> bool {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"))
+        }
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        // A real in-workspace subtree, reached only through an unreadable parent.
+        let gated = workspace.path().join("gated");
+        let target = gated.join("target");
+        fs::create_dir_all(&target).expect("create target");
+        fs::write(target.join("x.ipynb"), "{}").expect("write x");
+
+        // The scan root holds a directory symlink into the gated subtree.
+        let root = workspace.path().join("root");
+        fs::create_dir_all(&root).expect("create root");
+        std::os::unix::fs::symlink(&target, root.join("link")).expect("symlink");
+
+        // Drop the traverse bit on `gated` so canonicalize(link) fails with
+        // PermissionDenied (not NotFound) when resolving through it.
+        fs::set_permissions(&gated, fs::Permissions::from_mode(0o000)).expect("chmod gated 000");
+
+        let collected =
+            super::collect_files_in_workspace_checked(&root, workspace.path(), is_ipynb);
+
+        // Restore perms so TempDir cleanup can remove the tree.
+        fs::set_permissions(&gated, fs::Permissions::from_mode(0o755))
+            .expect("restore gated perms");
+
+        assert!(
+            !collected.complete,
+            "an unresolvable symlinked directory (transient error) must mark the pass non-authoritative (fail-closed)"
         );
     }
 
