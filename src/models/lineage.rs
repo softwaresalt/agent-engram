@@ -217,7 +217,7 @@ impl LineageAuthorityContext {
         let trusted = self
             .storage_authorities
             .iter()
-            .any(|prefix| uri_matches_authority(literal, prefix));
+            .any(|prefix| is_valid_storage_authority(prefix) && uri_matches_authority(literal, prefix));
         if !trusted {
             return None;
         }
@@ -280,6 +280,25 @@ pub fn lineage_freshness_token(authority_ctx: &LineageAuthorityContext) -> Strin
         "{CURRENT_EXTRACTOR_VERSION}:{}",
         authority_ctx.config_fingerprint()
     )
+}
+
+/// Return `true` when `prefix` is a well-formed storage authority.
+///
+/// A trusted allowlist entry must be a bare `scheme://authority`: a non-empty
+/// scheme, the `://` separator, a non-empty authority, and NO path, query, or
+/// fragment component (V5, 097.002-T). A path-bearing entry such as
+/// `s3://bucket/prefix` or an empty-authority entry such as `s3://` is
+/// malformed and is rejected so it can never bind a URI — otherwise the prefix
+/// path segment would be silently promoted into the authority.
+fn is_valid_storage_authority(prefix: &str) -> bool {
+    let Some(scheme_end) = prefix.find("://") else {
+        return false;
+    };
+    if scheme_end == 0 {
+        return false; // empty scheme
+    }
+    let authority = &prefix[scheme_end + 3..];
+    !authority.is_empty() && !authority.contains(['/', '?', '#'])
 }
 
 /// Return `true` when `uri` sits under the trusted `prefix` authority.
@@ -395,5 +414,34 @@ mod tests {
             .resolve_table("cat.sch.t")
             .expect("a normal pair resolves");
         assert_eq!(ok.id, "table::prod-metastore::cat.sch.t");
+    }
+
+    #[test]
+    fn resolve_path_rejects_path_bearing_storage_authority_prefix() {
+        // V5 (097.002-T): a storage-authority allowlist entry must be a bare
+        // `scheme://authority` with no path. A path-bearing prefix like
+        // `s3://bucket/prefix` is malformed and must never bind a URI, even one
+        // that textually extends it — otherwise the prefix's path segment is
+        // silently treated as part of the authority.
+        let c = LineageAuthorityContext::new(BTreeMap::new(), vec!["s3://bucket/prefix".to_owned()]);
+        assert!(c.resolve_path("s3://bucket/prefix/data/file").is_none());
+    }
+
+    #[test]
+    fn resolve_path_rejects_empty_authority_prefix() {
+        // V5 (097.002-T): a prefix with an empty authority (`scheme://`) is
+        // malformed and must never bind a URI.
+        let c = LineageAuthorityContext::new(BTreeMap::new(), vec!["s3://".to_owned()]);
+        assert!(c.resolve_path("s3:///data/file").is_none());
+    }
+
+    #[test]
+    fn resolve_path_still_binds_valid_bare_authority() {
+        // V5 recall guard: a well-formed bare authority still binds.
+        let ep = ctx()
+            .resolve_path("s3://bucket/data/file")
+            .expect("a bare storage authority binds");
+        assert_eq!(ep.kind, DatasetKind::Path);
+        assert_eq!(ep.name, "s3://bucket/data/file");
     }
 }
