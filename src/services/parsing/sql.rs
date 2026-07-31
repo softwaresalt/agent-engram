@@ -739,6 +739,11 @@ pub(super) mod sql_lineage {
                 // the region and must NOT be rewritten (precision floor).
                 "SELECT 'a\\' INSERT OVERWRITE TABLE cat.sch.evil SELECT 1'",
                 "SELECT \"b\\\" INSERT INTO TABLE cat.sch.evil SELECT 1\" FROM cat.sch.src",
+                // Doubled-delimiter escape keeps a string / backtick-identifier
+                // region open, so the embedded INSERT stays quoted and must NOT
+                // be rewritten (097.001-T AC2).
+                "SELECT 'a'' INSERT OVERWRITE TABLE cat.sch.evil SELECT 1' FROM cat.sch.src",
+                "SELECT `a`` INSERT OVERWRITE TABLE` FROM cat.sch.src",
             ] {
                 assert_eq!(
                     normalize_spark_insert(src),

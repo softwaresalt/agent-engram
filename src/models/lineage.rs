@@ -471,6 +471,32 @@ mod tests {
     }
 
     #[test]
+    fn is_valid_storage_authority_rejects_malformed_prefixes() {
+        // V5 (097.002-T) AC1/AC3: the trust-boundary predicate must reject an
+        // empty scheme, an empty authority, a path segment, query/fragment
+        // components, and a missing `://` separator — any of which would let a
+        // malformed allowlist entry bind a URI.
+        for bad in [
+            "://bucket",       // empty scheme
+            "s3://",           // empty authority
+            "s3://bucket/pre", // path segment
+            "s3://bucket?x",   // query component in authority
+            "s3://bucket#f",   // fragment component in authority
+            "bucket",          // no scheme separator
+        ] {
+            assert!(
+                !is_valid_storage_authority(bad),
+                "malformed storage authority must be rejected: {bad:?}"
+            );
+        }
+        // Well-formed bare `scheme://authority` prefixes still validate.
+        assert!(is_valid_storage_authority("s3://bucket"));
+        assert!(is_valid_storage_authority(
+            "abfss://c@a.dfs.core.windows.net"
+        ));
+    }
+
+    #[test]
     fn resolve_table_rejects_malformed_unquoted_identifier_components() {
         // W2 (097.003-T): a 3-part name whose components fall outside the
         // unquoted Spark identifier grammar is malformed and must fail closed
