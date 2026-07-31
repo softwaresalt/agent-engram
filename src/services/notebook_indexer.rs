@@ -619,7 +619,10 @@ mod tests {
             .await
             .expect("run notebook sweep");
 
-        assert_eq!(removed, 1, "exactly the alias-stale record is reconciled away");
+        assert_eq!(
+            removed, 1,
+            "exactly the alias-stale record is reconciled away"
+        );
         assert_eq!(
             remaining_notebook_paths(&queries, &source.path).await,
             vec!["nb/z/shared.ipynb".to_string()],

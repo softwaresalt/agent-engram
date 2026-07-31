@@ -137,7 +137,14 @@ fn collect_recursive(
 
     for (_, path, file_type) in entries {
         if file_type.is_dir() {
-            collect_recursive(&path, canonical_root, visited, files, complete, is_target_file);
+            collect_recursive(
+                &path,
+                canonical_root,
+                visited,
+                files,
+                complete,
+                is_target_file,
+            );
         } else if file_type.is_file() && is_target_file(&path) {
             files.push(path);
         } else if file_type.is_symlink() {
@@ -169,7 +176,14 @@ fn collect_symlinked_directory(
     if !canonical_target.starts_with(canonical_root) || !canonical_target.is_dir() {
         return;
     }
-    collect_recursive(path, canonical_root, visited, files, complete, is_target_file);
+    collect_recursive(
+        path,
+        canonical_root,
+        visited,
+        files,
+        complete,
+        is_target_file,
+    );
 }
 
 fn entry_rank(file_type: &FileType) -> u8 {
@@ -376,11 +390,8 @@ mod tests {
             complete: true,
         };
 
-        let deleted = reconcile_deleted_paths(
-            &stored(&["models/gone.tmdl"]),
-            &collected,
-            workspace.path(),
-        );
+        let deleted =
+            reconcile_deleted_paths(&stored(&["models/gone.tmdl"]), &collected, workspace.path());
 
         assert_eq!(deleted, vec!["models/gone.tmdl".to_owned()]);
     }
@@ -422,8 +433,7 @@ mod tests {
                 .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"))
         }
 
-        let collected =
-            super::collect_files_in_workspace_checked(&dir, workspace.path(), is_ipynb);
+        let collected = super::collect_files_in_workspace_checked(&dir, workspace.path(), is_ipynb);
         assert!(collected.complete, "a fully readable tree must be complete");
         let names: Vec<PathBuf> = collected
             .files

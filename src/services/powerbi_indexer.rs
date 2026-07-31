@@ -2235,10 +2235,7 @@ table Sales
     #[tokio::test]
     async fn marker_gated_steady_state_skips_unchanged_after_first_run() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
-        let model_dir = workspace
-            .path()
-            .join("models")
-            .join("Sales.SemanticModel");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
         std::fs::create_dir_all(&model_dir).expect("create model dir");
         let model_json =
             serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
@@ -2329,10 +2326,7 @@ table Sales
             .expect("seed powerbi content record");
     }
 
-    async fn remaining_powerbi_paths(
-        queries: &CodeGraphQueries,
-        source_path: &str,
-    ) -> Vec<String> {
+    async fn remaining_powerbi_paths(queries: &CodeGraphQueries, source_path: &str) -> Vec<String> {
         let mut paths: Vec<String> = queries
             .select_content_records(Some("powerbi"))
             .await
@@ -2374,7 +2368,10 @@ table Sales
             .await
             .expect("run powerbi sweep");
 
-        assert_eq!(removed, 1, "exactly the alias-stale record is reconciled away");
+        assert_eq!(
+            removed, 1,
+            "exactly the alias-stale record is reconciled away"
+        );
         assert_eq!(
             remaining_powerbi_paths(&queries, &source.path).await,
             vec!["pbi/z/model.bim".to_string()],
