@@ -20,11 +20,11 @@
 //! * `*.tmdl` — folder-based semantic model assets
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
@@ -35,7 +35,9 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    collect_files_in_workspace, collect_files_in_workspace_checked, reconcile_deleted_paths,
+};
 use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
@@ -80,56 +82,9 @@ pub fn compute_tmdl_dax_index_hash_for_version(content: &[u8], version: u32) -> 
     hex::encode(hasher.finalize())
 }
 
-/// Return the subset of `workspace_relative_paths` whose files no longer
-/// exist under `workspace_root`.
-///
-/// Each path in `workspace_relative_paths` is joined to `workspace_root`
-/// before the existence check so that workspace-relative record paths
-/// (as stored in `ContentRecord.file_path`) are handled correctly.
-#[must_use]
-pub fn compute_deleted_paths(
-    workspace_relative_paths: &[String],
-    workspace_root: &Path,
-) -> Vec<String> {
-    let Ok(canonical_root) = workspace_root.canonicalize() else {
-        return workspace_relative_paths.to_vec();
-    };
-
-    workspace_relative_paths
-        .iter()
-        .filter_map(|rel| {
-            let Some(relative_path) = workspace_relative_path(rel) else {
-                warn!(
-                    path = %rel,
-                    "skipping Power BI deletion sweep path that escapes the workspace root"
-                );
-                return None;
-            };
-
-            let candidate = workspace_root.join(relative_path);
-            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
-            is_deleted.then(|| rel.clone())
-        })
-        .collect()
-}
-
 fn last_path_component(path: &str) -> &str {
     let trimmed = path.trim_end_matches(['/', '\\']);
     trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
-}
-
-fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
-    let path = Path::new(rel_path);
-    if path.is_absolute()
-        || path.has_root()
-        || path.components().any(|component| {
-            component == Component::ParentDir || matches!(component, Component::Prefix(_))
-        })
-    {
-        return None;
-    }
-
-    Some(path.to_path_buf())
 }
 
 // ── File collection ───────────────────────────────────────────────────────
@@ -1633,7 +1588,20 @@ pub async fn sweep_deleted_powerbi_files(
         .into_iter()
         .collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let deleted = {
+        // 100-S Unit C: reconcile stored Power BI records against a
+        // completeness-aware collection of the source tree. Deletion is gated
+        // on an authoritative-complete full-index traversal (fail-closed): a
+        // stored record is swept only when it is physically absent, or
+        // superseded by a collected alias path on a `complete` pass. A partial
+        // pass (an unreadable/unresolvable subtree) degrades to
+        // physical-absence-only, so an alias-stale record is retained rather
+        // than wrongly deleted.
+        let source_dir = workspace_root.join(&source.path);
+        let collected =
+            collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
+        reconcile_deleted_paths(&known_paths, &collected, workspace_root)
+    };
     let mut removed = 0_usize;
 
     for path in &deleted {
@@ -1641,6 +1609,13 @@ pub async fn sweep_deleted_powerbi_files(
             .delete_content_records_by_scope(path, "powerbi", &source.path)
             .await?;
         queries.delete_powerbi_nodes_by_file_path(path).await?;
+        // P2-2 / INV-5: drop the stale `powerbi_file_index_state` marker for
+        // each swept path so marker hygiene stays consistent with the content
+        // records (a lingering marker would otherwise hash-skip a future
+        // re-add of the same path).
+        queries
+            .delete_powerbi_index_state_by_scope(path, &source.path)
+            .await?;
         removed += 1;
     }
 
@@ -2303,6 +2278,160 @@ table Sales
         assert_eq!(
             second.unchanged, 1,
             "unchanged file is hash-skipped via the completion marker"
+        );
+    }
+
+    // ── 087.005.003-ST (Unit C): fail-closed reconciler wiring + P2-2 marker
+    //    hygiene for the non-TMDL PowerBI deletion sweep.
+
+    #[cfg(unix)]
+    fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+        match std::os::unix::fs::symlink(src, dst) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create directory symlink: {error}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+        match std::os::windows::fs::symlink_dir(src, dst) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create directory symlink: {error}"),
+        }
+    }
+
+    async fn seed_powerbi_record(queries: &CodeGraphQueries, file_path: &str, source_path: &str) {
+        let record = ContentRecord {
+            id: format!("cr_{}", file_path.replace(['/', '.'], "_")),
+            content_type: "powerbi".to_string(),
+            file_path: file_path.to_string(),
+            content_hash: "seed-hash".to_string(),
+            content: "powerbi summary".to_string(),
+            embedding: None,
+            source_path: source_path.to_string(),
+            file_size_bytes: 2,
+            ingested_at: Utc::now(),
+            record_kind: "powerbi_semantic_model".to_string(),
+            chunk_id: None,
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        };
+        queries
+            .upsert_content_record(&record)
+            .await
+            .expect("seed powerbi content record");
+    }
+
+    async fn remaining_powerbi_paths(
+        queries: &CodeGraphQueries,
+        source_path: &str,
+    ) -> Vec<String> {
+        let mut paths: Vec<String> = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select powerbi records")
+            .into_iter()
+            .filter(|record| record.source_path == source_path)
+            .map(|record| record.file_path)
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// RF-2 (INV-1, alias-supersede for PowerBI): a directory alias makes the
+    /// same real model reachable under two stored paths. On an
+    /// authoritative-complete pass the sweep must drop the alias-stale record
+    /// and retain the collected path — the retired physical-existence sweep kept
+    /// BOTH (fail-open duplicate).
+    #[tokio::test]
+    async fn powerbi_sweep_drops_alias_superseded_record_on_complete_pass() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("pbi");
+        let real_dir = source_dir.join("z");
+        std::fs::create_dir_all(&real_dir).expect("create real dir");
+        std::fs::write(real_dir.join("model.bim"), "{}").expect("write model.bim");
+        if !create_symlink_dir(&real_dir, &source_dir.join("a")) {
+            return; // unprivileged Windows — directory symlink unsupported
+        }
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-alias-sweep")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        seed_powerbi_record(&queries, "pbi/z/model.bim", &source.path).await;
+        seed_powerbi_record(&queries, "pbi/a/model.bim", &source.path).await;
+
+        let removed = sweep_deleted_powerbi_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run powerbi sweep");
+
+        assert_eq!(removed, 1, "exactly the alias-stale record is reconciled away");
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec!["pbi/z/model.bim".to_string()],
+            "the collected (real-dir) path survives; the alias-stale duplicate is swept"
+        );
+    }
+
+    /// RF-8 (P2-2 / INV-5, marker hygiene): sweeping a genuinely-deleted PowerBI
+    /// file must also drop its `powerbi_file_index_state` completion marker, so a
+    /// deleted path never leaves a stale marker that would wrongly hash-skip a
+    /// future same-path file.
+    #[tokio::test]
+    async fn powerbi_sweep_drops_completion_marker_for_swept_paths() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("pbi");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        std::fs::write(source_dir.join("live.bim"), "{}").expect("write live.bim");
+        // `gone.bim` has a stored record + marker but no file on disk.
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-marker-hygiene")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        seed_powerbi_record(&queries, "pbi/live.bim", &source.path).await;
+        seed_powerbi_record(&queries, "pbi/gone.bim", &source.path).await;
+        queries
+            .upsert_powerbi_index_state("pbi/live.bim", &source.path, "h")
+            .await
+            .expect("seed live marker");
+        queries
+            .upsert_powerbi_index_state("pbi/gone.bim", &source.path, "h")
+            .await
+            .expect("seed gone marker");
+
+        let removed = sweep_deleted_powerbi_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run powerbi sweep");
+
+        assert_eq!(removed, 1, "the physically-absent record is swept");
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec!["pbi/live.bim".to_string()],
+            "the live record is retained"
+        );
+        let markers = queries
+            .select_powerbi_index_state(&source.path)
+            .await
+            .expect("select markers");
+        assert!(
+            markers.contains_key("pbi/live.bim"),
+            "the live file's marker is retained"
+        );
+        assert!(
+            !markers.contains_key("pbi/gone.bim"),
+            "the swept path's completion marker is dropped (P2-2 / INV-5)"
         );
     }
 }
