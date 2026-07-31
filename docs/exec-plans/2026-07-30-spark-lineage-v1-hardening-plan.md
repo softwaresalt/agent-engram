@@ -223,7 +223,9 @@ V4 (097.005-T)  (parallel; test-only; no edge — does not change extractor outp
   hold its precision floor (0 false edges) after all fixes.
 * **Operational closure artifact:** a rollout note in the shipment/closure
   recording the `1.0.0 → 1.1.0` extractor bump, its re-extraction implication,
-  and the rollback trigger (revert the const if the precision floor regresses).
+  and the rollback trigger (on a precision-floor regression, revert the
+  offending change AND bump to a new extractor version — never a stamp
+  downgrade, which only schedules another sweep; see the Rollback section).
 
 ---
 
@@ -387,8 +389,9 @@ Principles I–IV and Task Granularity all PASS (see `## Constitution Check`). N
 
 ### Runtime verification & closure readiness
 Present and specific: V4 (e2e edge), X1 (re-extraction), precision-floor
-regression guard, rollback trigger (version revert), owner (Ship), validation
-window (first full re-index). No gaps.
+regression guard, rollback trigger (revert the offending change plus a new
+extractor-version bump — never a stamp downgrade; see the Rollback section),
+owner (Ship), validation window (first full re-index). No gaps.
 
 ### Gate rationale
 Hardening required and satisfied; risky actions classified; no P0/P1; P2/P3 items
