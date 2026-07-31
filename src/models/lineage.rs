@@ -221,10 +221,9 @@ impl LineageAuthorityContext {
         if scheme_end == 0 {
             return None;
         }
-        let trusted = self
-            .storage_authorities
-            .iter()
-            .any(|prefix| is_valid_storage_authority(prefix) && uri_matches_authority(literal, prefix));
+        let trusted = self.storage_authorities.iter().any(|prefix| {
+            is_valid_storage_authority(prefix) && uri_matches_authority(literal, prefix)
+        });
         if !trusted {
             return None;
         }
@@ -448,7 +447,8 @@ mod tests {
         // `s3://bucket/prefix` is malformed and must never bind a URI, even one
         // that textually extends it — otherwise the prefix's path segment is
         // silently treated as part of the authority.
-        let c = LineageAuthorityContext::new(BTreeMap::new(), vec!["s3://bucket/prefix".to_owned()]);
+        let c =
+            LineageAuthorityContext::new(BTreeMap::new(), vec!["s3://bucket/prefix".to_owned()]);
         assert!(c.resolve_path("s3://bucket/prefix/data/file").is_none());
     }
 

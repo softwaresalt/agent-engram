@@ -739,7 +739,9 @@ pub(super) mod sql_lineage {
             // Recall preserved: a real `INSERT OVERWRITE/INTO TABLE` still
             // normalizes to the grammar-clean `INSERT INTO` form.
             assert_eq!(
-                normalize_spark_insert("INSERT OVERWRITE TABLE cat.sch.t SELECT x FROM cat.sch.src"),
+                normalize_spark_insert(
+                    "INSERT OVERWRITE TABLE cat.sch.t SELECT x FROM cat.sch.src"
+                ),
                 "INSERT INTO cat.sch.t SELECT x FROM cat.sch.src"
             );
             assert_eq!(
@@ -749,9 +751,7 @@ pub(super) mod sql_lineage {
             // A genuine INSERT that immediately follows a closed string region is
             // still reachable (the region scan does not swallow past its close).
             assert_eq!(
-                normalize_spark_insert(
-                    "SELECT 'x';INSERT OVERWRITE TABLE cat.sch.t SELECT 1"
-                ),
+                normalize_spark_insert("SELECT 'x';INSERT OVERWRITE TABLE cat.sch.t SELECT 1"),
                 "SELECT 'x';INSERT INTO cat.sch.t SELECT 1"
             );
         }
