@@ -428,6 +428,15 @@ pub(super) mod sql_lineage {
         let mut copy_from = 0usize;
         let mut i = 0usize;
         while i < bytes.len() {
+            // V2 (097.001-T): skip comment and quoted regions verbatim so an
+            // `INSERT … TABLE` token run inside a line/block comment, a string
+            // literal, or a quoted identifier is never rewritten. Skipped bytes
+            // stay in the `copy_from..` verbatim range (they are only ever
+            // rewritten in the normal, unquoted, uncommented lexer state).
+            if let Some(region_end) = skip_region(bytes, i) {
+                i = region_end;
+                continue;
+            }
             if is_word_boundary_before(bytes, i) && match_ci_word(bytes, i, b"INSERT") {
                 if let Some(end) = insert_table_prefix_end(bytes, i + b"INSERT".len()) {
                     out.push_str(&source[copy_from..i]);
@@ -441,6 +450,59 @@ pub(super) mod sql_lineage {
         }
         out.push_str(&source[copy_from..]);
         out
+    }
+
+    /// If a comment or quoted region begins at `pos`, return the byte index just
+    /// past its closing delimiter (or `bytes.len()` for an unterminated region);
+    /// otherwise `None`. Recognizes Spark-SQL line comments (`--`), block
+    /// comments (`/* */`), single-quoted string literals, `"`-quoted
+    /// identifiers, and `` ` ``-quoted identifiers.
+    fn skip_region(bytes: &[u8], pos: usize) -> Option<usize> {
+        match bytes[pos] {
+            b'-' if bytes.get(pos + 1) == Some(&b'-') => Some(skip_line_comment(bytes, pos + 2)),
+            b'/' if bytes.get(pos + 1) == Some(&b'*') => Some(skip_block_comment(bytes, pos + 2)),
+            delim @ (b'\'' | b'"' | b'`') => Some(skip_quoted(bytes, pos + 1, delim)),
+            _ => None,
+        }
+    }
+
+    /// Advance to the newline that ends a `--` line comment (the `\n` itself is
+    /// normal text), or to end-of-input. `pos` is the first byte after `--`.
+    fn skip_line_comment(bytes: &[u8], mut pos: usize) -> usize {
+        while pos < bytes.len() && bytes[pos] != b'\n' {
+            pos += 1;
+        }
+        pos
+    }
+
+    /// Advance past the `*/` that closes a `/* */` block comment, or to
+    /// end-of-input. `pos` is the first byte after the opening `/*`.
+    fn skip_block_comment(bytes: &[u8], mut pos: usize) -> usize {
+        while pos < bytes.len() {
+            if bytes[pos] == b'*' && bytes.get(pos + 1) == Some(&b'/') {
+                return pos + 2;
+            }
+            pos += 1;
+        }
+        bytes.len()
+    }
+
+    /// Advance past a `delim`-quoted region (string literal or quoted
+    /// identifier), honoring the SQL doubled-delimiter escape (`''`, `""`,
+    /// `` `` ``). `pos` is the first byte after the opening delimiter; returns the
+    /// index just past the closing delimiter, or `bytes.len()` if unterminated.
+    fn skip_quoted(bytes: &[u8], mut pos: usize, delim: u8) -> usize {
+        while pos < bytes.len() {
+            if bytes[pos] == delim {
+                if bytes.get(pos + 1) == Some(&delim) {
+                    pos += 2; // doubled delimiter escape stays inside the region
+                    continue;
+                }
+                return pos + 1;
+            }
+            pos += 1;
+        }
+        bytes.len()
     }
 
     /// After an `INSERT`, match `OVERWRITE TABLE` / `INTO TABLE` and return the
@@ -648,6 +710,67 @@ pub(super) mod sql_lineage {
                 0,
                 "a statement with a nested parse error emits no lineage (C3)"
             );
+        }
+
+        // ── V2 (097.001-T): quote/comment-aware INSERT normalizer ────────────
+
+        #[test]
+        fn normalize_skips_insert_inside_comments_strings_and_quoted_ids() {
+            // An `INSERT … TABLE` token run inside a line comment, block comment,
+            // single-quoted string, double-quoted identifier, or backtick
+            // identifier must NOT be rewritten (it is not a genuine statement).
+            for src in [
+                "-- INSERT OVERWRITE TABLE cat.sch.evil\nSELECT 1",
+                "/* INSERT INTO TABLE cat.sch.evil */ SELECT 1",
+                "SELECT 'INSERT OVERWRITE TABLE x' AS c FROM cat.sch.src",
+                "SELECT \"INSERT INTO TABLE\" FROM cat.sch.src",
+                "SELECT `INSERT OVERWRITE TABLE` FROM cat.sch.src",
+            ] {
+                assert_eq!(
+                    normalize_spark_insert(src),
+                    src,
+                    "INSERT inside a comment/string/quoted-id must not be rewritten: {src:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn normalize_rewrites_genuine_insert_table_prefix_outside_quotes() {
+            // Recall preserved: a real `INSERT OVERWRITE/INTO TABLE` still
+            // normalizes to the grammar-clean `INSERT INTO` form.
+            assert_eq!(
+                normalize_spark_insert("INSERT OVERWRITE TABLE cat.sch.t SELECT x FROM cat.sch.src"),
+                "INSERT INTO cat.sch.t SELECT x FROM cat.sch.src"
+            );
+            assert_eq!(
+                normalize_spark_insert("INSERT INTO TABLE cat.sch.t SELECT 1"),
+                "INSERT INTO cat.sch.t SELECT 1"
+            );
+            // A genuine INSERT that immediately follows a closed string region is
+            // still reachable (the region scan does not swallow past its close).
+            assert_eq!(
+                normalize_spark_insert(
+                    "SELECT 'x';INSERT OVERWRITE TABLE cat.sch.t SELECT 1"
+                ),
+                "SELECT 'x';INSERT INTO cat.sch.t SELECT 1"
+            );
+        }
+
+        #[test]
+        fn commented_insert_emits_no_edge_but_genuine_ctas_does() {
+            let ctx = trusted_ctx();
+            // A commented-out INSERT beside a genuine CTAS yields ONLY the CTAS
+            // edge (the comment must never mint spurious lineage).
+            let candidates = extract_sql_lineage(
+                concat!(
+                    "-- INSERT OVERWRITE TABLE cat.sch.evil SELECT y FROM cat.sch.bad\n",
+                    "CREATE TABLE cat.sch.t AS SELECT x FROM cat.sch.src",
+                ),
+                &ctx,
+            )
+            .expect("mixed");
+            assert_eq!(candidates.len(), 1, "only the genuine CTAS emits an edge");
+            assert_eq!(names(&candidates[0]).0, "cat.sch.t");
         }
     }
 }
