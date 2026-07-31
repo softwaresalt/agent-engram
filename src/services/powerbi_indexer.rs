@@ -1319,17 +1319,19 @@ pub async fn index_powerbi_source(
         if is_tmdl_rel_path(prior_rel)
             && dirty_scopes.contains(&canonical_tmdl_model_path(prior_rel))
         {
+            // 087.006-T (100-S review P1-B): drop the stale completion marker
+            // BEFORE the content rows so a mid-rebuild failure leaves the file
+            // marker-absent (reprocess on the next pass) rather than
+            // hash-skipped with an incomplete row set. Marker-first delete /
+            // marker-last write is the crash-safe ordering (mirrors the
+            // notebook sweep's freshness-stamp-first invalidation).
+            queries
+                .delete_powerbi_index_state_by_scope(prior_rel, &source.path)
+                .await?;
             queries
                 .delete_content_records_by_scope(prior_rel, "powerbi", &source.path)
                 .await?;
             queries.delete_powerbi_nodes_by_file_path(prior_rel).await?;
-            // 087.006-T: drop the stale completion marker alongside the stale
-            // content rows so a mid-rebuild failure leaves the file
-            // marker-absent (reprocess) rather than hash-skipped with an
-            // incomplete row set.
-            queries
-                .delete_powerbi_index_state_by_scope(prior_rel, &source.path)
-                .await?;
         }
     }
 
@@ -1471,14 +1473,16 @@ pub async fn index_powerbi_source(
         // Delete stale records whenever the hash changed (even if the new content
         // produces no recognisable entities), so orphaned rows do not accumulate.
         if existing_hashes.contains_key(&rel_path) {
+            // 087.006-T (100-S review P1-B): marker-first delete so a crash
+            // between the deletes reprocesses rather than hash-skips with an
+            // incomplete row set.
+            queries
+                .delete_powerbi_index_state_by_scope(&rel_path, &source.path)
+                .await?;
             queries
                 .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
                 .await?;
             queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
-            // 087.006-T: drop the stale marker alongside the stale content rows.
-            queries
-                .delete_powerbi_index_state_by_scope(&rel_path, &source.path)
-                .await?;
         }
 
         let summaries = extract_entity_summaries_from_value(&json, &rel_path);
@@ -1620,17 +1624,18 @@ pub async fn sweep_deleted_powerbi_files(
     let mut removed = 0_usize;
 
     for path in &deleted {
+        // P2-2 / INV-5 + 100-S review P1-B: drop the stale
+        // `powerbi_file_index_state` marker FIRST so a crash between the deletes
+        // leaves the swept path marker-absent (a future re-add reprocesses)
+        // rather than content-absent with a surviving marker that would
+        // hash-skip it. Marker-first delete keeps hygiene crash-safe.
+        queries
+            .delete_powerbi_index_state_by_scope(path, &source.path)
+            .await?;
         queries
             .delete_content_records_by_scope(path, "powerbi", &source.path)
             .await?;
         queries.delete_powerbi_nodes_by_file_path(path).await?;
-        // P2-2 / INV-5: drop the stale `powerbi_file_index_state` marker for
-        // each swept path so marker hygiene stays consistent with the content
-        // records (a lingering marker would otherwise hash-skip a future
-        // re-add of the same path).
-        queries
-            .delete_powerbi_index_state_by_scope(path, &source.path)
-            .await?;
         removed += 1;
     }
 

@@ -125,17 +125,44 @@ fn collect_recursive(
             return;
         }
     };
-    let mut entries: Vec<_> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let file_type = std::fs::symlink_metadata(&path).ok()?.file_type();
-            Some((entry_rank(&file_type), path, file_type))
-        })
-        .collect();
-    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let mut collected_entries: Vec<(u8, PathBuf, FileType)> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warn!(
+                    dir = %dir.display(),
+                    %error,
+                    "skipping unreadable directory entry during source traversal (fail-closed)"
+                );
+                // A dropped entry may hide a still-present indexed file, so the
+                // pass is no longer authoritative (fail-closed; INV-2). Never
+                // silently omit an entry while leaving `complete == true`, or a
+                // live record could be reconciled away as alias-stale.
+                *complete = false;
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) => {
+                warn!(
+                    path = %path.display(),
+                    %error,
+                    "skipping traversal entry whose metadata could not be read (fail-closed)"
+                );
+                // Same fail-closed rule: an unreadable entry degrades the pass.
+                *complete = false;
+                continue;
+            }
+        };
+        collected_entries.push((entry_rank(&file_type), path, file_type));
+    }
+    collected_entries
+        .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
 
-    for (_, path, file_type) in entries {
+    for (_, path, file_type) in collected_entries {
         if file_type.is_dir() {
             collect_recursive(
                 &path,
@@ -445,6 +472,45 @@ mod tests {
 
         let via_wrapper = super::collect_files_in_workspace(&dir, workspace.path(), is_ipynb);
         assert_eq!(via_wrapper.len(), collected.files.len());
+    }
+
+    /// 100-S review P1-A (fail-closed): a subdirectory whose entries can be
+    /// listed (read bit) but not stat'd (no execute/traverse bit) produces
+    /// per-entry `symlink_metadata` failures. The collector must flag the pass
+    /// non-authoritative (`complete == false`) rather than silently omit the
+    /// entries — otherwise the reconciler would treat a still-present record as
+    /// alias-stale and delete live content. (Pre-fix `entries.flatten()` +
+    /// `.ok()?` dropped such entries while leaving `complete == true`.)
+    #[cfg(unix)]
+    #[test]
+    fn per_entry_metadata_failure_marks_pass_non_authoritative() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn is_ipynb(path: &std::path::Path) -> bool {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"))
+        }
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let dir = workspace.path().join("nb");
+        let locked = dir.join("locked");
+        fs::create_dir_all(&locked).expect("create locked subdir");
+        fs::write(locked.join("a.ipynb"), "{}").expect("write a");
+        // Read bit but no execute bit: read_dir(locked) can list names, but
+        // symlink_metadata on each entry fails (no traverse permission).
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o444)).expect("chmod locked r--");
+
+        let collected = super::collect_files_in_workspace_checked(&dir, workspace.path(), is_ipynb);
+
+        // Restore perms so TempDir cleanup can remove the tree.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))
+            .expect("restore locked perms");
+
+        assert!(
+            !collected.complete,
+            "per-entry metadata (or listing) failures must mark the pass non-authoritative (fail-closed)"
+        );
     }
 
     // ── Deletion-sweep safety (migrated from the retired pub `compute_deleted_paths`
