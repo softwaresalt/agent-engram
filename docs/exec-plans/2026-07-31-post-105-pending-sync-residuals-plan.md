@@ -2,7 +2,8 @@
 title: "Post-105 pending-sync generation linearization and startup handoff"
 type: impl-plan
 date: 2026-07-31
-status: "blocked (final Stage concurrency review; GATE: BLOCK)"
+updated: 2026-08-01
+status: "reviewed (fresh 109-F alternate-decomposition PASS)"
 source: "docs/decisions/2026-07-31-post-105-pending-sync-residuals-deliberation.md"
 source_deliberation: "018-D"
 source_stash: ["FF55E51A", "88EB5FB1", "1E70A289"]
@@ -13,226 +14,256 @@ tags: ["daemon", "lifecycle", "pending-sync", "concurrency", "startup"]
 
 ## Problem Frame
 
-Archived feature `105-F` established a generation-tagged pending-sync queue and the R2 producer/finisher backstop. Concurrency re-review found that the first remediation named the wrong production producer and left startup generation capture underspecified.
+Archived feature `105-F` established a generation-tagged pending-sync queue and the R2 producer/finisher backstop. PR #302 found two residual producer windows, and the final prior Stage concurrency review proved that the lifecycle lost-lock re-arm is also generation-sensitive. The former four-task shape blocked because one GREEN needed `state.rs`, `write.rs`, and `lifecycle.rs` while its hard cap allowed at most two production files.
 
-- **G1 / FF55E51A:** `src/tools/lifecycle.rs::set_workspace` calls `set_workspace_and_config` and later `begin_scan_generation`. Today a queued sync can observe the new binding before the generation transition. The real queued-sync producer is `src/tools/write.rs::sync_workspace`, not `lifecycle.rs`. It snapshots graph handler context, loses `try_start_indexing`, and publishes a queued request. It must carry a generation proven consistent with that snapshot; a mismatch must retry within a fixed private budget and then fail closed, never be relabeled at publication.
-- **G2 / stale publisher:** a generation-G producer can pause after its snapshot and resume after G+1 owns the queue. Publication must compare the explicit G under `pending_sync`: newer replaces, equal OR-coalesces, and older is ignored.
-- **S1 / 88EB5FB1:** `src/daemon/ipc_server.rs::try_start_startup_sync` still fails the startup indexing-lock attempt and calls `set_pending_sync`. It must capture generation before that initial attempt and pass that exact token to the explicit-generation R2 publisher. The unqualified two-argument publisher is forbidden.
-- **D1 / 1E70A289:** comments in the same `state.rs` width overclaim same-lock generation capture and misuse a SeqCst total-order edge as a happens-before proof. Correct them without widening the task.
+On 2026-08-01 the operator authorized the safer alternate decomposition rather than a cap increase. This plan preserves total feature intent but separates four responsibilities: state ownership, the `write.rs` producer, the lifecycle claim/re-arm consumer, and startup handoff. Scope excludes 015-D IPC response behavior and all Python, Spark, SQL, PowerBI, deletion, schema, CLI-response, persistence, and Cozo work. No public API, schema, model, CLI, MCP, or response semantic change is authorized.
 
-Scope excludes 015-D IPC response behavior and all Python, Spark, SQL, PowerBI, deletion, schema, CLI-response, persistence, and Cozo work.
+## Provenance and Supersession
 
-## Final Stage Disposition
+- Source deliberation: `018-D`.
+- Source stash: `FF55E51A`, `88EB5FB1`, and `1E70A289`.
+- Archived predecessor `105-F` remains immutable.
+- The prior BLOCK and Harvest Shape repair remain historical evidence. This PASS supersedes their execution gate only because the operator authorized cap-compliant decomposition.
+- Shipments `102-S` and `103-S` are outside this mutation scope and remain untouched.
 
-**GATE: BLOCK. Do not execute or claim 104-S under the current caps.** The Concurrency Reviewer found that `src/tools/lifecycle.rs::drain_pending_sync` lost-lock re-arm is not generation-neutral. After G -> G+1 it can preserve old heavy companion bits, or relabel old intent through unqualified `set_pending_sync` as the current generation. A complete generation fix therefore requires `src/server/state.rs`, `src/tools/write.rs`, and `src/tools/lifecycle.rs`.
-
-That three-production-file fix exceeds 109.002-T / Unit 2's hard two-production-file generation GREEN cap. Moving the lifecycle correction into 109.004-T / Unit 4 would violate that task's `src/daemon/ipc_server.rs`-only startup GREEN cap. The shipment stop condition is met; Stage must not widen, split, or invent scope. Shipment 104-S, feature 109-F, and all four unstarted child tasks are blocked. A future operator-directed replan must explicitly decide whether to authorize a three-file generation GREEN cap or approve a different task/shipment decomposition before Stage can review and re-queue this work.
 ## Requirements Trace
 
 | Requirement | Implementation action | Verification |
 |---|---|---|
-| G1a: binding cannot be observed with a stale producer generation | Privately refactor state-owned `set_workspace_and_config` / `begin_scan_generation` semantics while leaving the lifecycle call sequence unchanged | Deterministic binding-visible-before-generation RED becomes GREEN |
-| G1b: stale producer cannot coalesce into a newer owner | `write.rs` validates generation before/after `snapshot_graph_handler_context`, retries mismatch, fails closed on exhaustion, and publishes accepted G explicitly | Paused G / owning G+1 / resumed G scenario has no heavy leak |
-| G1c: equal-generation behavior is preserved | Explicit publisher OR-coalesces equal-generation bits | One same-generation sticky control |
-| S1: startup producer has a guaranteed finisher | Capture G before startup lock attempt; on failure call explicit-generation publish/reacquire | Final-peek race and no-contention control |
-| Lock safety | Finish capacity validation and all other awaits before acquiring `scan_cancel` or `pending_sync`; no synchronous guard across await | Targeted review plus deterministic tests |
-| Publication completeness | Inventory every production publication/re-arm site and classify migration or neutrality | **Failed:** lifecycle re-arm is generation-sensitive and requires a third generation GREEN production file |
-| Preserve contracts | No public API/schema/model/CLI/MCP response change | Diff and structural review |
+| G1: binding, generation, cancellation, and queue floor transition coherently | `109.002-T` changes state-owned transition semantics | `109.001-T` G1a |
+| G2: newer replaces, equal OR-coalesces, older is ignored | `109.002-T` provides private explicit-generation publication | `109.001-T` G1b/G1c |
+| W1: binding-specific producer carries a validated token | `109.006-T` performs bounded before/after snapshot validation and explicit publication | `109.005-T` W1a/W1b/W1c |
+| L1: lost-lock re-arm preserves exact generation and companions | `109.008-T` atomically claims and explicitly republishes the full request | `109.007-T` L1a/L1b/L1c |
+| S1: startup has exactly one guaranteed finisher | `109.004-T` captures G before contention and uses explicit R2 handoff | `109.003-T` final-peek race/control |
+| Lock safety | Finish awaited acquisitions before synchronous queue critical sections; no synchronous guard crosses `.await` | Targeted review plus deterministic fixtures |
+| Contract safety | Private helpers only; public and serialized shapes frozen | Structural review |
+
+## Task Table
+
+Execution order is dependency-driven and alternates RED and GREEN for each responsibility.
+
+| Order | ID | Responsibility | Production files | Test scenarios | Function/helper cap | Target |
+|---:|---|---|---|---:|---|---|
+| 1 | `109.001-T` | RED state transition and queue publication | none; one `state.rs` test surface | 3 | <=3 test helpers | 70-90 min |
+| 2 | `109.002-T` | GREEN state-owned transition and explicit publisher | `src/server/state.rs` | 0 | <=4 production functions | 80-105 min |
+| 3 | `109.005-T` | RED write producer snapshot/token | none; one `write.rs` test surface | 3 | <=3 test helpers | 60-85 min |
+| 4 | `109.006-T` | GREEN write producer token adoption | `src/tools/write.rs` | 0 | <=2 production functions | 60-90 min |
+| 5 | `109.007-T` | RED lifecycle generation claim/re-arm | none; one `lifecycle.rs` test surface | 3 | <=3 test helpers | 60-85 min |
+| 6 | `109.008-T` | GREEN atomic claim and generation-qualified re-arm | `src/server/state.rs`, `src/tools/lifecycle.rs` | 0 | <=4 production functions | 75-105 min |
+| 7 | `109.003-T` | RED startup final-peek handoff | none; one `ipc_server.rs` test surface | 2 | <=2 test helpers | 60-80 min |
+| 8 | `109.004-T` | GREEN startup explicit-token backstop | `src/daemon/ipc_server.rs` | 0 | <=3 private production functions | 60-90 min |
+
+Every task has at most two production files, at most three scenarios, and a hard stop at 110 minutes. The `state.rs` plus `lifecycle.rs` pair in `109.008-T` is the only two-file GREEN: the queue owns the opaque generation claim while the consumer must atomically claim and republish it. Splitting that private seam would leave an unused or non-buildable intermediate API, so two files are the smallest coherent width and do not widen any cap.
 
 ## Implementation Units
 
-### Unit 1 — RED generation-transition harness
+### Unit 1 - RED state transition and publication (`109.001-T`)
 
-**Backlog shape:** tests-only task; target 70–90 minutes.
+Add exactly three deterministic state-level scenarios with explicit steps and no sleeps:
+1. G1a: a new binding becomes visible while old G still owns the queue; old-generation clear loses new-binding intent before the fix.
+2. G1b: explicit G resumes after G+1 establishes the queue floor; pre-fix G is relabeled or coalesced, while post-fix G is ignored with no heavy leak.
+3. G1c: same-G explicit requests preserve sticky OR-coalescing.
 
-Add exactly three deterministic scenarios, never sleeps:
+Use one `state.rs` test surface and at most three helpers. The harness must compile and fail only the target assertions. Stop for a second surface, fourth scenario, public hook, process-global mutation, daemon/IPC harness, sleep, or 100 minutes.
 
-1. **G1a stale transition order:** expose the new workspace/config binding while the old generation still owns the queue, publish through the queued-sync producer seam, run old-generation clear, and show the new-binding request is lost pre-fix.
-2. **G1b stale publisher:** capture explicit G with the producer binding snapshot, pause before publication, establish a G+1 owner, resume G, and show pre-fix relabel/heavy leakage; post-fix G is ignored.
-3. **G1c same-generation control:** two requests carrying the same generation preserve sticky OR-coalescing.
+### Unit 2 - GREEN state ownership (`109.002-T`)
 
-Exercise the `state.rs` transition/publisher seam and the real `write.rs` queued producer seam. Private/unit access or a narrow `cfg(test)` seam is allowed; no public test API.
+In `src/server/state.rs` only:
+- make binding/config, next generation, cancellation ownership, and the pending queue generation floor one logical state transition;
+- complete async lock acquisitions and capacity validation before any synchronous pending queue critical section;
+- provide private explicit-generation publish/reacquire behavior where newer replaces, equal OR-coalesces the complete mask, and older is ignored; and
+- correct proof comments so SeqCst is not presented as a mutex happens-before proof.
 
-**Files cap:** at most two test surfaces (`src/server/state.rs`, `src/tools/write.rs`); no production behavior change.
-**Function/scenario cap:** at most three helpers and exactly three scenarios.
-**Stop trigger:** return blocked for a third surface, fourth scenario, wall-clock sleep, process-global mutation, daemon/IPC harness, public hook, or 110 minutes.
+G1a/G1b/G1c must pass and capacity failure must publish nothing. Maximum four production functions. Stop for a second production file, fifth function, public contract, unresolved lock order, guard across `.await`, second queue/state machine, unsafe code, or 110 minutes.
 
-### Unit 2 — GREEN binding/generation/publish linearization
+### Unit 3 - RED write producer (`109.005-T`)
 
-**Backlog shape:** source-only task; target 80–110 minutes; depends on Unit 1.
+At the real queued-sync seam in `write.rs`, add exactly three deterministic scenarios:
+1. W1a: one mismatch around `snapshot_graph_handler_context` followed by a stable retry yields one accepted G.
+2. W1b: repeated mismatch exhausts a fixed budget before indexing lock acquisition or publication and returns an existing internal error.
+3. W1c: accepted G pauses before failed-lock publication, G+1 owns the queue, and resumed G is not relabeled and leaks no heavy bit.
 
-**BLOCKED — do not execute.** The current cap permits only `src/server/state.rs` and `src/tools/write.rs`, but the complete fix also requires `src/tools/lifecycle.rs` to make drain re-arm generation-qualified. The prior two-file design below is superseded by the final review finding; it is retained only to show why the cap cannot be met.
+Use one test surface and at most three helpers. No daemon, IPC timing, public seam, or sleep. Stop if the harness cannot compile while failing only target assertions or at 100 minutes.
 
-1. **State-owned transition with unchanged lifecycle caller.** Privately refactor `set_workspace_and_config` / `begin_scan_generation` semantics so the existing lifecycle sequence publishes the binding/config, advanced generation, and fresh cancellation ownership as one state transition. `lifecycle.rs` is not edited. Acquire workspace then config; complete their awaited acquisitions and the workspace-capacity validation before awaiting `scan_cancel`. Once `scan_cancel` is acquired, perform no further await before the transition is complete. Acquire `pending_sync`, if required by the chosen private implementation, only after every await. No `std::sync::MutexGuard` may cross `.await`. `begin_scan_generation` returns the generation/receiver prepared by that transition rather than creating a binding-visible gap.
-2. **Validated producer snapshot in `write.rs`.** Before `try_start_indexing`, read generation, await `snapshot_graph_handler_context`, then read generation again. Accept only equal before/after values. On mismatch, retry using a fixed small private budget; on exhaustion return an existing internal error before taking the indexing lock or publishing. Never continue with the later value and never reread generation to relabel after contention.
-3. **Explicit publication.** Carry accepted G through the failed-lock/pause path into an explicit-generation `publish_pending_sync_and_try_reacquire(G, revalidate, backfill)` path. Under `pending_sync`, newer replaces, equal OR-coalesces, and older is ignored. Preserve generation-scoped clear and companion+pending atomicity.
-4. **Proof comments.** State that the generation is validated with the producer binding snapshot and supplied explicitly. Restate R2 through `pending_sync` mutex critical-section order; SeqCst remains only the indexing-flag ordering.
+### Unit 4 - GREEN write producer (`109.006-T`)
 
-The four-production-function budget is hard and covers the state transition pair, the explicit publish/reacquire path, and the `write.rs` queued-sync flow. Existing unqualified helpers with no production callers are not widened or adopted; their cleanup is deferred.
+In `src/tools/write.rs` only, read G, await `snapshot_graph_handler_context`, then read G again. Accept a match, retry mismatch within a fixed private budget, and fail closed before `try_start_indexing` or publication on exhaustion. Carry accepted G through contention to the explicit-generation publish/reacquire path and never reread current G to relabel. Preserve queued response and gate flags. Maximum two production functions. Stop for a second production file, unbounded retry, later-generation fallback, lock before certification, contract change, or 110 minutes.
 
-**Files cap:** `src/server/state.rs` + `src/tools/write.rs` only.
-**Function cap:** at most four production functions plus nearby comments.
-**Stop trigger:** return blocked at a third production file, fifth production function, any `lifecycle.rs` edit, mismatch fallback/relabel, unbounded retry, unresolved lock order, synchronous guard across await, public contract/model change, second queue/state machine, unsafe code, or 110 minutes.
+### Unit 5 - RED lifecycle claim/re-arm (`109.007-T`)
 
-### Unit 3 — RED startup final-peek harness
+Add exactly three deterministic scenarios to the private `lifecycle.rs` test surface using a private or `cfg(test)` pause seam:
+1. L1a: a bare G request is consumed, G+1 advances the queue floor, then lost-lock re-arm resumes; current unqualified re-arm relabels old intent, while the fix ignores G.
+2. L1b: a G request with heavy companions is claimed, G+1 publishes a routine owner, then old re-arm resumes; no G companion may survive or leak into G+1.
+3. L1c: same-G lost-lock re-arm republishes pending plus companions and remains drainable.
 
-**Backlog shape:** tests-only task; target 60–80 minutes; depends on Unit 2.
+One surface, at most three helpers, no sleep, real daemon, or public seam. Stop for a second test file, fourth scenario, or 100 minutes.
 
-Add one deterministic startup race in the private `ipc_server` test surface. Startup captures G before the initial indexing-lock attempt; the attempt fails; publication pauses; the holder releases and completes its final empty pending-sync peek; then startup resumes publication with the same G. Assert that the same-generation startup path guarantees a finisher without an external watcher/index/sync/timer tick. Include one no-contention control.
+### Unit 6 - GREEN lifecycle claim/re-arm (`109.008-T`)
 
-**Files cap:** one test surface in `src/daemon/ipc_server.rs` or one focused test file, not both.
-**Scenario cap:** one race plus one control.
-**Stop trigger:** return blocked for a third scenario, real daemon, IPC timing, sleep, public seam, or 110 minutes.
+In `src/server/state.rs` and `src/tools/lifecycle.rs` only:
+- atomically claim the complete pending request as an opaque private token containing generation and pending/revalidate/backfill bits, leaving no heavy companion behind;
+- on lost indexing lock, republish exactly that token through explicit-generation semantics: older ignored, equal full-mask coalesced, and newer ownership never overwritten;
+- on acquired lock, drain claimed companions exactly once; and
+- preserve the bounded 64-pass drain and every existing `finish_indexing` drain call site.
 
-### Unit 4 — GREEN startup producer backstop
+Maximum four production functions across both files. No synchronous guard crosses `.await`. Stop for a third production file, fifth function, public token, recursion, unbounded drain, second queue, or 110 minutes.
 
-**Backlog shape:** source-only task; target 60–90 minutes; depends on Unit 3.
+### Unit 7 - RED startup handoff (`109.003-T`)
 
-**BLOCKED by Unit 2 and may not absorb the lifecycle correction.** Doing so would violate this unit's `src/daemon/ipc_server.rs`-only production cap.
+In one private `ipc_server.rs` test surface, add one final-peek race and one no-contention control. Startup captures G before the initial lock attempt, loses the attempt, pauses publication, lets the holder release and finish its final empty peek, then resumes with the same G. The race fails before the fix and passes with one guaranteed finisher. Stop for a third scenario, second test surface, real daemon, IPC timing, sleep, public hook, or 100 minutes.
 
-In `src/daemon/ipc_server.rs`, capture `current_sync_generation` before the initial `try_start_indexing` attempt. If the attempt fails, pass that exact token to `publish_pending_sync_and_try_reacquire(G, false, false)`. Never call `set_pending_sync` or an unqualified two-argument publisher from production startup. If G became stale before publication, the state publisher ignores it; it must not stamp the current generation.
+### Unit 8 - GREEN startup handoff (`109.004-T`)
 
-Distinguish only initial owner, queued-under-holder, and producer-reacquired outcomes. A reacquiring producer releases the indexing flag, drains exactly once, and returns without running the normal startup body twice. Complete awaits before any `pending_sync` guard and never carry a synchronous guard across await.
-
-**Files cap:** `src/daemon/ipc_server.rs` only.
-**Function cap:** at most three private functions.
-**Stop trigger:** return blocked on post-failure generation capture, unqualified publisher use, recursion/double-drain, second state machine, synchronous guard across await, behavior outside startup coordination, or 110 minutes.
+In `src/daemon/ipc_server.rs` only, capture G before initial `try_start_indexing`. On failure, pass exact G to explicit-generation publish/reacquire. Distinguish initial owner, queued-under-holder, and producer-reacquired outcomes privately. A reacquirer releases and drains exactly once, then returns without running the normal startup body twice. Preserve retry/backoff, registry ingestion, embedding backfill, flush, bounded drain, and responses. Stop for a second production file, fourth function, post-failure capture, unqualified publisher, recursion/double-drain, guard across `.await`, or 110 minutes.
 
 ## Production Publication Inventory
 
-Planning-time targeted source inventory found these production sites:
+| Site | Disposition |
+|---|---|
+| `src/tools/write.rs::sync_workspace` failed-lock branch | `109.005-T`/`109.006-T`: validate snapshot G, then explicit publish/reacquire. |
+| `src/tools/lifecycle.rs::drain_pending_sync` lost-lock branch | `109.007-T`/`109.008-T`: full-mask generation-owned claim and exact republish. |
+| `src/daemon/ipc_server.rs::try_start_startup_sync` failed-lock branch | `109.003-T`/`109.004-T`: pre-attempt G and explicit R2 handoff. |
+| Unqualified state helpers with no remaining production caller | Deferred cleanup; do not widen this release unit. |
 
-| Production site | Current role | Disposition |
-|---|---|---|
-| `src/tools/write.rs::sync_workspace` failed-lock branch | Publishes queued sync plus revalidate/backfill companions through publish/reacquire | **Migrate in 109.002-T.** Validate G around `snapshot_graph_handler_context`; retry/fail closed on mismatch; pass explicit G. |
-| `src/daemon/ipc_server.rs::try_start_startup_sync` failed-lock branch | Calls `set_pending_sync` for startup intent | **Migrate in 109.004-T.** Capture G before the lock attempt and call only explicit-generation publish/reacquire. |
-| `src/tools/lifecycle.rs::drain_pending_sync` lost-lock branch | Re-arms a pending bit already consumed by the drain | **BLOCKER; not generation-neutral.** After G -> G+1 it can preserve old heavy companions or relabel old intent through unqualified `set_pending_sync` as the current generation. Correctness requires a `lifecycle.rs` production edit in the same generation fix as `state.rs` + `write.rs`. |
-| `src/server/state.rs` unqualified publish/companion helpers | Primitive/test compatibility surface; no additional production caller found | **Deferred.** Do not use them from 109.002-T or 109.004-T; cleanup would exceed this remediation. |
-
-Consumers (`take_*`, `clear_pending_sync_for_generation`, `has_pending_sync`) are not publication sites. Test-only calls are not production inventory. Final review failed the lifecycle-neutrality proof: the required three-file generation fix breaches Unit 2, while assigning the lifecycle edit to Unit 4 breaches its startup-only cap. This is an activated stop condition, not an advisory; no implementation may start until an operator-directed replan and explicit cap/decomposition decision passes review.
+Consumers such as `clear_pending_sync_for_generation` and `has_pending_sync` are not extra producers. No lifecycle site is classified as generation-neutral.
 
 ## Dependency Graph
 
 ```text
-Unit 1 RED generation harness (2 stale-order + 1 same-G control)
-  -> Unit 2 GREEN state.rs + write.rs
-     -> Unit 3 RED startup harness
-        -> Unit 4 GREEN ipc_server.rs
+109.001-T RED state
+  -> 109.002-T GREEN state
+     -> 109.005-T RED write producer
+        -> 109.006-T GREEN write producer
+           -> 109.007-T RED lifecycle claim/re-arm
+              -> 109.008-T GREEN lifecycle claim/re-arm
+                 -> 109.003-T RED startup
+                    -> 109.004-T GREEN startup
 ```
 
-The Unit 3 dependency on Unit 2 is semantic: startup must consume the corrected explicit-generation primitive. Shipments 102-S and 103-S precede 104-S only by operator order, not technical dependency.
+The explicit graph is authoritative even if the shipment manifest stores appended members in another order. Shipments `102-S` and `103-S` precede `104-S` by operator order only, not technical dependency.
 
-## Decisions and Rationale
+## Verification Plan
 
-1. **Use the real producer.** Unit 2 targets `write.rs`, not `lifecycle.rs`; the latter caller sequence remains unchanged while state owns transition semantics.
-2. **Bound mismatch handling.** A torn before/after generation snapshot retries within a fixed private budget and then fails closed before lock/publish. Relabeling is forbidden.
-3. **Capture startup generation before contention.** The startup token identifies the producer before the failed attempt; publication cannot choose a later generation.
-4. **Keep three RED scenarios.** The two stale-order cases and one same-generation control satisfy 109.001-T without exceeding its cap.
-5. **Block on the non-neutral lifecycle remainder.** Lifecycle drain re-arm can carry stale heavy companions or relabel old intent after G -> G+1. The complete fix needs `state.rs` + `write.rs` + `lifecycle.rs`, which activates the Unit 2 third-file stop condition.
-6. **Do not reopen 105-F or fold 015-D.** Archived predecessor evidence remains immutable and IPC response behavior is a different width.
+Stage validates plan/backlog structure only. Ship records compiling-but-failing RED evidence before each GREEN, then runs:
+1. deterministic G1a/G1b/G1c;
+2. deterministic W1a/W1b/W1c;
+3. deterministic L1a/L1b/L1c;
+4. startup final-peek race and no-contention control;
+5. publication and every-`finish_indexing` drain-site inventory;
+6. `cargo fmt --all -- --check`;
+7. `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`;
+8. `cargo dev-test`; and
+9. `cargo audit`.
 
-## Risks and Caveats
+Any flaky timing harness, cap breach, unclassified publication site, public seam, second queue, unbounded retry/drain, synchronous guard across `.await`, or task over 110 minutes returns the affected task and `104-S` blocked.
 
-- **Atomicity gap:** merely moving the generation read does not bind it to the workspace snapshot. Mitigation: state transition invariant plus before/after validation, bounded retry, fail closed.
-- **Reverse stale leak:** publication-time reread can relabel G as G+1. Mitigation: explicit token only; older ignored under mutex.
-- **Deadlock:** async workspace/config/scan-cancel locks interact with synchronous pending mutex. Mitigation: workspace -> config -> scan_cancel -> pending_sync; capacity validation and all other awaits before scan_cancel/pending; no synchronous guard across await.
-- **Startup double execution:** reacquiring producer could drain and continue normal startup. Mitigation: explicit outcome and exactly-one-finisher assertion.
-- **Lifecycle re-arm is generation-sensitive:** it can preserve stale heavy companions or relabel through unqualified `set_pending_sync` after G -> G+1. Disposition: GATE BLOCK; future operator replan/cap decision required.
-- **Scope expansion:** helper cleanup could consume the function cap. Mitigation: defer unqualified no-production-caller helpers and prohibit their use.
+## Risks, Rollback, and Monitoring
 
-## Plan Hardening Signals
+### Risks and mitigations
 
-| Signal | Present | Reason |
-|---|---|---|
-| Public API, schema, or contract change | no | All changes are private; serialized and CLI/MCP contracts are frozen |
-| Security/auth/permission/compliance | no | No trust boundary or credential behavior |
-| Migration/backfill/destructive/irreversible | no | In-memory coordination only |
-| External integration/operator checkpoint | no | No external dependency |
-| High runtime, rollout, or rollback risk | yes | Concurrency ordering can silently drop, relabel, or duplicate work |
+- Torn binding/snapshot: state owns the queue floor; write validates around the snapshot.
+- Stale relabel or heavy leak: explicit tokens only; older ignored, equal full-mask coalesced, newer replaces.
+- Claim/re-arm tear: atomically move the complete mask into an opaque claim and republish the same claim.
+- Deadlock: finish async acquisitions first; no synchronous guard crosses `.await`.
+- Duplicate startup body/drain: explicit outcome plus exactly-one-finisher assertion.
+- Scope creep: per-card file/function/scenario caps and hard 110-minute stops.
 
-**Requires plan hardening: yes.**
+### Rollback
+
+Rollback is release-unit commit revert plus daemon restart. No migration reversal, cache repair, full reindex, or user-workspace mutation is expected. Do not partially roll back one state/write/lifecycle unit while leaving dependent units active.
+
+### Monitoring
+
+| SLI | Healthy | Block/rollback trigger | Owner/window |
+|---|---|---|---|
+| State generation fixtures | G1a/G1b/G1c deterministic pass | drop, relabel, heavy leak, same-G regression | Ship; targeted gate |
+| Producer snapshot fixtures | bounded retry; no publish on exhaustion | later-G fallback or lock/publish after exhaustion | Ship; targeted gate |
+| Lifecycle claim/re-arm | L1a/L1b/L1c pass with no stale companions | old intent runs as G+1, heavy leak, or same-G loss | Ship; targeted gate |
+| Startup finisher | exactly one finisher and no duplicate body | stranded request or duplicate body | Ship; targeted gate |
+| Runtime drain | zero attributable bound warnings; within existing 30-second debug budget | warning or controlled restart over budget | Ship; three restarts plus 15 min |
+| Publication inventory | every site matches this plan | any unclassified producer/re-arm | Ship; pre-merge |
 
 ## Plan Hardening
 
-### Protected invariants
+Hardening is required because a partial concurrency fix can silently drop, relabel, or over-upgrade work. Consulted strict-safety and concurrency instructions plus:
+- `docs/compound/best-practices/packed-atomic-clear-requires-atomic-publish-2026-07-29.md`;
+- `docs/compound/concurrency-issues/pending-sync-drain-must-cover-all-finish-indexing-sites-2026-05-09.md`; and
+- `docs/compound/concurrency-issues/atomicbool-drain-race-take-before-lock-2026-05-09.md`.
 
-- The unchanged lifecycle call sequence cannot expose a new binding with an old generation.
-- Every binding-specific producer carries a generation validated with its snapshot; mismatch retries then fails closed.
-- Under `pending_sync`, newer replaces, equal OR-coalesces, and older is ignored.
-- Startup captures generation before the initial lock attempt and never uses the unqualified publisher.
-- Every failed producer/holder handoff has exactly one guaranteed finisher.
-- Lifecycle lost-lock re-arm preserves the original generation and companion ownership; it never relabels via unqualified `set_pending_sync` after G -> G+1.
-- Drain remains bounded; no synchronous mutex guard crosses await; no public behavior or persistence changes.
+Protected invariants are coherent generation floor ownership, explicit producer tokens, atomic full-mask claim/republish, complete drain coverage, exactly one startup finisher, bounded retry/drain, no guard across `.await`, and frozen contracts.
 
-### Risk actions
+**ProposedAction PA-1A**
+- summary: state-owned binding/generation floor and explicit publisher
+- targets: `src/server/state.rs`
+- change_kind: shared runtime coordination edit
+- ActionRisk: moderate
+- rollback: revert release-unit commit and restart daemon
+- approval_required: no additional Stage approval; operator authorized this decomposition
+- ActionResult: approved, not executed
 
-**ProposedAction PA-1**
-summary: state/write generation linearization plus generation-qualified lifecycle drain re-arm
-targets: `src/server/state.rs`, `src/tools/write.rs`, `src/tools/lifecycle.rs`
-change_kind: shared runtime coordination edit
-ActionRisk: moderate
-rollback: revert feature commit and restart daemon; no data repair/reindex
-approval_required: operator replan and explicit generation GREEN cap/decomposition decision
-ActionResult: blocked by the current two-production-file cap
+**ProposedAction PA-1B**
+- summary: validated write producer token adoption
+- targets: `src/tools/write.rs`
+- change_kind: shared runtime coordination edit
+- ActionRisk: moderate
+- rollback: revert release-unit commit and restart daemon
+- approval_required: no additional Stage approval
+- ActionResult: approved, not executed
+
+**ProposedAction PA-1C**
+- summary: generation-owned lifecycle claim and lost-lock re-arm
+- targets: `src/server/state.rs`, `src/tools/lifecycle.rs`
+- change_kind: shared runtime coordination edit
+- ActionRisk: moderate
+- rollback: revert release-unit commit and restart daemon
+- approval_required: no additional Stage approval
+- ActionResult: approved, not executed
 
 **ProposedAction PA-2**
-summary: pre-lock startup generation capture and explicit-token R2 handoff
-targets: `src/daemon/ipc_server.rs`
-change_kind: daemon startup coordination edit
-ActionRisk: moderate
-rollback: revert feature commit and restart daemon
-approval_required: blocked pending the PA-1 operator replan/cap decision
-ActionResult: blocked by the invalid upstream generation GREEN
-
-### Dark-mode execution order and stop triggers
-
-1. Keep 102-S and 103-S queued in existing operator order; this disposition does not modify them.
-2. Do not claim or execute 104-S. Block 104-S, 109-F, and all unstarted child tasks.
-3. Resume only after an operator-directed replan explicitly authorizes a three-file generation GREEN cap or approves different task/shipment decomposition and a new review returns PASS.
-
-Activated stop condition: the complete generation fix requires a third Unit-2 production file (`lifecycle.rs`). Immediate stop conditions: 110 minutes on a card; Unit 2 exceeds two production files/four production functions; Unit 1 exceeds two test surfaces/three scenarios; Unit 4 exceeds one production file/three private functions; any lifecycle production edit; any public contract/schema/model change; unbounded retry; snapshot mismatch relabel/fallback; generation captured after startup lock failure; production use of an unqualified publisher; synchronous guard across await; unresolved inventory/lock order; timing RED; second queue/state machine; unsafe code; recursion/double-drain; or unprovable exactly-one-finisher.
-
-### Monitoring, rollback, and observation
-
-| SLI | Healthy | Rollback/block trigger | Owner/window |
-|---|---|---|---|
-| generation fixtures | G1a survives old clear; resumed G ignored after G+1; same-G sticky OR preserved | any drop, relabel, heavy leak, or control regression | Ship; targeted gate + 15 minutes |
-| snapshot validation | mismatch retries within fixed budget; exhaustion publishes nothing | fallback to later generation, lock acquisition, or publication after exhaustion | Ship; targeted gate |
-| startup fixture | one guaranteed finisher; zero duplicate startup bodies | stranded request or duplicate body | Ship; targeted gate + three restarts |
-| publication inventory | all production sites match the table | any unclassified binding-specific producer/unqualified startup publisher | Ship; pre-merge |
-| drain/startup runtime | zero bound warnings; completion within 30-second debug budget | attributable warning or one restart over budget | Ship; three restarts + 15 minutes |
-
-Rollback is commit revert plus daemon restart. No migration reversal, cache repair, or full reindex is expected.
+- summary: pre-lock startup generation capture and explicit-token R2 handoff
+- targets: `src/daemon/ipc_server.rs`
+- change_kind: daemon startup coordination edit
+- ActionRisk: moderate
+- rollback: revert release-unit commit and restart daemon
+- approval_required: no additional Stage approval
+- ActionResult: approved, not executed
 
 ## Runtime Verification and Closure
 
-No runtime verification or implementation is authorized under this blocked plan. The future reviewed plan must cover generation-qualified lifecycle re-arm together with the state/write changes, retain deterministic stale-order and startup controls, and restate monitoring/rollback. Validation in this Stage cycle is backlog/plan structure only.
+Stage performed no implementation or runtime verification. Ship must execute the Verification Plan, retain monitoring/rollback triggers through operational closure, and return blocked on any stop condition.
 
 ## Harvest Shape
 
-Use the existing medium-priority feature 109-F and queued tasks 109.001-T through 109.004-T in strict dependency order. Keep shipment 104-S queued. Do not create tasks, alter unrelated stash, or change shipment lifecycle. Unit 2 references only `state.rs` + `write.rs`; Unit 4 references `## Harvest Shape
+Existing shipment `104-S` remains the only release unit and existing feature `109-F` remains the covering feature. No replacement feature or shipment is created.
 
-Existing shipment 104-S, feature 109-F, and tasks 109.001-T through 109.004-T are blocked; no new task or shipment is created. Keep 102-S and 103-S queued with their existing order metadata. Stage must not widen, split, or invent remediation scope. A future operator-directed replan must make the cap/decomposition decision before any item can return to queued.
+- Existing tasks: `109.001-T`, `109.002-T`, `109.003-T`, `109.004-T`.
+- New tasks: `109.005-T`, `109.006-T`, `109.007-T`, `109.008-T`.
+- Order: `109.001-T` -> `109.002-T` -> `109.005-T` -> `109.006-T` -> `109.007-T` -> `109.008-T` -> `109.003-T` -> `109.004-T`.
 
-## Plan Review — GATE: BLOCK
+The shipment manifest may append new members after existing ones; dependency order is authoritative. Parent feature is already in `104-S`. Keep `operator_order = 3` and do not mutate `102-S` or `103-S`.
 
-**Review mode:** final narrow Stage concurrency review-cycle disposition for 104-S/109-F only. No implementation, build, test, lint, commit, push, task/shipment creation, shipment claim, or stash mutation occurred.
+## Plan Review - Fresh 109-F Alternate-Decomposition Cycle: PASS
 
-**Hardening gate:** failed under the current caps. The lifecycle lost-lock re-arm is generation-sensitive, so the complete generation fix requires three production files while Unit 2 permits two. Unit 4 cannot absorb `lifecycle.rs` because it is capped to `src/daemon/ipc_server.rs` only.
+**Review mode:** complete Stage plan review under the configured `.Stage` frontmatter model. No model override or cross-model dispatch occurred; persona lenses ran under the caller model.
+
+**Gate decision: PASS.** Plan hardening is required and satisfied. No P0, P1, P2, or P3 finding remains. The real three-file cap conflict is resolved by coherent state, write, lifecycle, and startup widths with explicit RED-before-GREEN pairs. No task exceeds two production files, three scenarios, four production functions, 105 planned minutes, or the 110-minute hard stop.
 
 ### Findings
 
-- **P0:** none.
-- **P1 BLOCK — lifecycle drain re-arm is not generation-neutral:** after G -> G+1 it can preserve old heavy companions or relabel old intent through unqualified `set_pending_sync` as the current generation.
-- **P1 BLOCK — no cap-compliant complete fix:** correcting the invariant requires `src/server/state.rs` + `src/tools/write.rs` + `src/tools/lifecycle.rs`, exceeding 109.002-T / Unit 2's two-production-file cap.
-- **P1 BLOCK — startup GREEN cannot absorb the edit:** moving `lifecycle.rs` into 109.004-T / Unit 4 violates its `src/daemon/ipc_server.rs`-only cap.
-- **Disposition:** shipment stop conditions apply. Do not widen, split, or invent scope; block the existing shipment/feature/tasks and require a future operator replan/cap decision.
+- P0: none.
+- P1 fixed - production-file cap conflict: replaced the three-file GREEN with one-file state/write tasks and a cohesive two-file state+lifecycle claim/re-arm task.
+- P1 fixed - missing lifecycle RED: added `109.007-T` before `109.008-T`.
+- P1 fixed - inconsistent caps: task table, units, graph, stop triggers, verification, and Harvest Shape now agree.
+- P2/P3: none.
 
 ### Persona decisions
 
-- **Constitution Reviewer:** PASS on Stage role boundaries and the decision not to implement or invent scope.
-- **Rust/Concurrency Reviewer:** **BLOCK** — the prior lifecycle-neutrality proof is invalid.
-- **Scope Boundary Auditor:** **BLOCK** — the complete three-file fix breaches Unit 2, and transferring it breaches Unit 4.
-- **Architecture Strategist:** **BLOCK** pending a generation-qualified lifecycle re-arm design under operator-approved caps.
+- Constitution Reviewer: PASS. Test-first pairs, one responsibility per card, traceability, and under-two-hour stops are explicit.
+- Rust/Concurrency Reviewer: PASS. Queue floor, opaque full-mask claim, explicit republish, and no-guard-across-await constraints directly cover the identified race without a second queue.
+- Scope Boundary Auditor: PASS. Only `109.008-T` has two production files, justified as the smallest buildable private seam; all other GREEN tasks are one file.
+- Learnings Researcher: PASS. Atomic full-mask publish, explicit re-arm after take-before-lock, and all-finish-site drain coverage are preserved.
+- Architecture Strategist: PASS. The graph establishes primitives before producer and consumer migration, then startup handoff.
+- Agent-Native Parity Reviewer: PASS. Queued response, CLI/MCP fields, and user/agent behavior remain frozen.
+- Security Lens Reviewer: not triggered; no auth, credential, sensitive-data, or external trust-boundary change.
 
-**Decision:** **GATE BLOCK.** 104-S and 109-F remain non-executable. A future operator must explicitly choose whether to authorize a three-production-file generation GREEN cap or approve different task/shipment decomposition; Stage then must replan and re-review before re-queueing.
+**Decision:** PASS. Harvest the four new tasks, wire the full dependency chain, add them to `104-S`, then return `104-S`, `109-F`, and all eight tasks to queued.
