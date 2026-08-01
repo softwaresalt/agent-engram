@@ -42,10 +42,13 @@ archiving the stash entry:
 2. **Add a semantic link** where an artifact-to-artifact target exists (e.g.
    `related_to` / `spike_ref` to a deliberation), since `add_link` operates on
    artifacts, not stash IDs.
-3. **Archive with a descriptive reason** that names the promotion target, e.g.
-   `backlogit stash archive <STASH_ID> --reason "harvested → <artifact ID>
-   (shipment <SHIP_ID>)"` when the CLI supports `--reason`; otherwise record the
-   promotion in the artifact comment (step 1) which is the authoritative link.
+3. **Archive the stash entry.** `backlogit stash archive <STASH_ID>` records only
+   the generic `reason: archived` — the CLI (v1.7.0) has no `--reason` flag
+   (verified 2026-07-31) — so the archived JSONL row cannot carry the promotion
+   target. The artifact comment (step 1) is therefore the authoritative forward
+   link. If a future `backlogit` release adds `--reason`, pass
+   `--reason "harvested -> <artifact ID> (shipment <SHIP_ID>)"` as a secondary
+   trail.
 4. **Record the mapping in the session memory doc** (`docs/memory/<date>/…`)
    under a "Deliverables / provenance" section, as a secondary durable trail.
 
@@ -71,6 +74,19 @@ Provenance table:
 
 ## Disposition
 
-Resolved in-cycle by Stage (backlog bookkeeping + convention). D2416925 archived
-with a descriptive reason pointing at this doc. No Ship shipment — this is
+Resolved in-cycle by Stage (backlog bookkeeping + convention). D2416925 was
+archived with the tool's generic `reason: archived` on the JSONL row; the
+descriptive promotion provenance lives in this convention doc and the Cycle-3
+session memory, not in the archived record. No Ship shipment — this is
 Stage-domain process work, not build/PR/code.
+
+### Reconciliation (2026-07-31, Stage drain-closeout)
+
+An earlier draft of this Disposition asserted that D2416925 was "archived with a
+descriptive reason pointing at this doc." The archive record
+(`.backlogit/archive/stash.jsonl`) instead stores the generic `reason: archived`,
+because `backlogit stash archive` (v1.7.0) does not accept a `--reason` flag
+(verified 2026-07-31). We softened the wording to match what the archive actually
+stores rather than rewrite the historical archive row. This confirms the
+convention's own fallback: when the CLI cannot carry a descriptive reason, the
+artifact comment plus this doc are the authoritative promotion links.
