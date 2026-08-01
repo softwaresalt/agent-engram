@@ -17,7 +17,7 @@ citations:
   - "docs/closure/2026-07-30-087-powerbi-durability-adversarial-review.md (P1-A per-entry completeness; P1-B marker-first ordering; 3 independent reviewers, both P1s flagged by 2 vendors and missed by the frontier model)"
   - "src/services/source_traversal.rs (collect_recursive: explicit per-entry error handling — on DirEntry err or symlink_metadata err, warn! + *complete=false + continue; mirrors the read_dir error branch; INV-2)"
   - "src/services/powerbi_indexer.rs (all three delete blocks now delete_powerbi_index_state_by_scope FIRST, then delete_content_records_by_scope + delete_powerbi_nodes_by_file_path: dirty-scope pre-delete ~L1319, non-TMDL hash-change ~L1472, sweep_deleted_powerbi_files ~L1624)"
-  - "src/services/notebook_indexer.rs:414 (in-repo precedent: invalidate the freshness stamp BEFORE the scope-delete cascade so a partial failure reprocesses rather than hash-skips — the oracle-first convention Unit D initially deviated from)"
+  - "src/services/notebook_indexer.rs (in-repo precedent for oracle-first teardown at two levels: content records — the content hash-skip oracle — deleted FIRST ~L414; lineage freshness stamp invalidated ~L420 before its own delete_lineage_by_scope cascade ~L421 — the convention Unit D initially deviated from in the powerbi delete path)"
   - "fix commit 3449a361 fix(indexing): fail-closed traversal completeness + marker-first delete ordering"
   - "docs/compound/best-practices/certify-completeness-reconcile-fileset-and-sweep-orphans-2026-07-29.md (companion: reconcile the full input set before advancing a marker)"
 tags:
@@ -78,10 +78,18 @@ queries.delete_content_records_by_scope(path, "powerbi", &source.path).await?;
 queries.delete_powerbi_nodes_by_file_path(path).await?;
 ```
 
-The notebook sweep already codified this: *"invalidate the freshness stamp before
+The notebook sweep already codified the same principle at two levels: it deletes
+the content records — the notebook content hash-skip oracle — FIRST at
+`notebook_indexer.rs` ~L414, and then invalidates the lineage freshness stamp
+(`delete_lineage_index_state`, ~L420) BEFORE its own `delete_lineage_by_scope`
+cascade (~L421), where the comment reads *"invalidate the freshness stamp before
 the scope-delete cascade so a partial failure re-processes rather than
-hash-skips"* (`notebook_indexer.rs:414`). Unit D deviated from the established
-convention; the fix restored it in all three blocks.
+hash-skips"*. The content-records-first delete is the direct precedent for the
+powerbi marker-first ordering; the nested lineage ordering is the same oracle-first
+rule applied to a second durable stamp. (Notebook skipping gates on the content
+hash and the freshness stamp jointly, so removing the content records first is
+what makes the composite skip fail closed.) Unit D deviated from this established
+convention in the powerbi delete path; the fix restored it in all three blocks.
 
 > **Rule:** the value that gates "may I skip this?" is the LAST thing you write
 > and the FIRST thing you delete. Publish durable state after its payload; retract

@@ -11,10 +11,14 @@
 ## Problem frame
 
 Both tasks sit on the canonical call-resolution path in
-`src/services/code_graph.rs` and are governed by the fail-closed invariant
-(resolution may only DROP edges, never mint a false one). Both are
-correctness-neutral today. Because they share the subsystem and the invariant,
-we deliberate them together while keeping a distinct recommendation for each.
+`src/services/code_graph.rs`, where the fail-closed invariant (resolution may only
+DROP edges, never mint a false one) governs the resolution stage. 091.019 stays
+within that invariant — a missing facade edge, the safe direction. 091.021 does
+NOT: its stale-`unsafe_prefixes` window is a narrow FALSE-edge TOCTOU at the
+index-build stage that the resolution-stage invariant does not cover, bounded
+instead by requiring a concurrent mid-index remap and self-healing on reindex.
+Because they share the subsystem, we deliberate them together while keeping a
+distinct recommendation for each.
 
 ### 091.019-T — apply the A4 `ReexportMap` before the canonical match
 
@@ -46,14 +50,26 @@ that gains a `#[path]` or `#[cfg]` mod remap between the two reads can otherwise
 leave the prefix set stale. The trade-off is peak memory scaling with total
 source, so the cache must be drained per file and bounded against the
 max-file-size guard, and the sync path (changed-files-only) must scope the
-snapshot to avoid holding all source. This is correctness-neutral today: purely
-performance and robustness. A `force_prepass_cache_miss` seam already exists
+snapshot to avoid holding all source. This is NOT purely performance: a stale
+`unsafe_prefixes` set can fail to drop a now-unsafe canonical definition/target
+(`code_graph.rs` gates on `is_under_unsafe_module_prefix` @ ~222 and ~709), so it
+would emit a canonical edge that a fresh snapshot would suppress — a narrow
+FALSE-edge window. It is bounded: it requires a file to gain a `#[path]`/`#[cfg]`
+remap DURING an in-progress index pass (a concurrent-modification TOCTOU, not
+steady state), and it self-heals on the next clean full index with no measured
+occurrence — so the deferral is robustness hardening against a rare race, not an
+active correctness bug. A `force_prepass_cache_miss` seam already exists
 (@ ~1278, verified).
 
 ## Shared trade-offs
 
-- Neither item is a false-edge risk; the fail-closed invariant bounds the blast
-  radius for both.
+- The two items differ in risk direction. 091.019 is a MISSING-edge only (a
+  `pub use` facade call produces no edge) — the safe direction, bounded by the
+  fail-closed invariant. 091.021 is different: its stale-`unsafe_prefixes` TOCTOU
+  is a narrow FALSE-edge window (a not-yet-dropped unsafe target under a mid-index
+  remap race) that the resolution-stage fail-closed invariant does NOT cover; it
+  is bounded instead by requiring a concurrent mid-pass modification and by
+  self-healing on the next clean full index.
 - Both are substantial. 091.019 flips on re-export canonicalization, a
   precision-sensitive change that must be adversarially reviewed on its own with
   an exactly-one-target precision gate plus regression fixtures. 091.021 threads
@@ -74,8 +90,8 @@ performance and robustness. A `force_prepass_cache_miss` seam already exists
   plan-harden for the index/sync/post-pass blast radius plus the memory bound)
   and regression/benchmark acceptance.
 - **Option C — hold at the status quo.** Zero work. The missing facade edge
-  (091.019) and the second read plus bounded TOCTOU (091.021) persist, both
-  correctness-neutral.
+  (091.019, safe direction) and the second read plus the bounded stale-prefix
+  false-edge TOCTOU (091.021) persist.
 
 ## Chosen direction
 
@@ -94,8 +110,11 @@ the acceptance already demands a benchmarked reduction. When picked up it needs
 plan-harden for the cross-pass blast radius (pre-pass, main, sync, post-pass) and
 a bounded-peak-memory design (per-file drain plus the max-file-size guard), with
 the global-prefix TOCTOU regression fixture and byte-identical canonical-edge
-output versus the pre-091.016 baseline as acceptance. It is correctness-neutral,
-so there is no urgency.
+output versus the pre-091.016 baseline as acceptance. Urgency is low but NOT
+because it is correctness-neutral: the stale-prefix TOCTOU is a real-but-narrow
+false-edge window (concurrent mid-index remap only, self-healing on reindex, no
+measured occurrence), so it is deferred as robustness hardening rather than an
+active-bug fix.
 
 Why defer-as-future-feature and NOT build-later-as-a-task: both cards are
 feature-sized (new precision behavior; a cross-pass pipeline rework) and each
