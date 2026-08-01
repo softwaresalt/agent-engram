@@ -47,7 +47,7 @@ Execution posture: test-first / RED.
 - Scenario 3: a unique-caller control still stages/resolves the exact canonical target in the corresponding paths.
 - Compile and fail for the expected wrong-origin attribution before the production fix; no sleeps or timing dependence.
 
-Width check: one test file, at most three scenarios, tests domain only, approximately two hours.
+Width check: one test file, at most three deterministic scenarios, tests domain only, <=110 minutes.
 
 ### U2 — Ambiguity-aware qualified caller staging (code only)
 
@@ -61,13 +61,13 @@ Execution posture: GREEN implementation.
 - Do not change the implementation semantics of `find_function_id` or `find_unique_function_id`, the staged-call relation/key, Python target resolution, or extraction-version behavior. Update the nearby helper and call-site doc comments that currently describe ambiguity-aware lookup as direct-edge-only or qualified caller attribution as intentionally first-match, so documentation matches the new four-site use.
 - Make U1 GREEN and preserve the unique-caller control.
 
-Width check: one source file, two mirrored sites, code-graph domain only, approximately two hours.
+Width check: one source file, two mirrored sites, code-graph domain only, at most three deterministic verification scenarios, <=110 minutes.
 
 ## Dependency Graph
 
 `U1 (RED regression harness) -> U2 (GREEN staging guard)`
 
-No external or cross-feature dependency is required.
+No external or cross-feature dependency is required. Each task remains <=2 files, <=3 deterministic scenarios, and <=110 minutes; public and storage contracts remain unchanged.
 
 ## Risks and Caveats
 
@@ -144,7 +144,7 @@ Additional guardrails:
 
 ### Persona results
 
-- Constitution Reviewer: PASS. RED-before-GREEN, one-file widths, three-scenario cap, and two-hour rule remain intact.
+- Constitution Reviewer: PASS. RED-before-GREEN, one-file widths, three-scenario cap, and explicit <=110-minute limit remains intact.
 - Rust Reviewer: PASS. Typed unique-only attribution and unchanged storage/error contracts remain coherent.
 - Scope Boundary Auditor: PASS. Ship runtime work is disposable-fixture-only; deployed-workspace action belongs solely to the operator.
 - Learnings Researcher: PASS. Zero-false-edge and no-last-wins guidance remains preserved.

@@ -153,15 +153,35 @@ After tool availability probing (Step 0.0), and before any subsequent semantic s
    Orchestrator dispatched the request, require its supplied batch ID to
    exactly match. Resolve, preflight, and compare active or queued members only
    within that exact batch; never include a missing or different batch merely
-   because its order is lower. Record the validated member IDs, batch IDs,
-   states, and order values as the pre-claim snapshot. Halt if a same-batch
+   because its order is lower.
+   - Load the request manifest's complete exact
+     `custom_fields.operator_predecessors` ID list. Require a present,
+     well-formed list with no duplicates. Resolve every exact ID with
+     `backlogit_get_shipment` or the registry-declared repository-equivalent
+     lookup capable of reading terminal shipment records; absence from active
+     or queued lists is never completion proof.
+   - Require the predecessor list to contain exactly every lower-order member
+     of the same exact non-empty batch, with no omitted or extra IDs. Each
+     predecessor must exist, be queryable, have the same exact
+     `operator_batch`, have a unique `operator_order` lower than the request's,
+     and have positive terminal shipment evidence: `shipped` or the
+     repository-equivalent merged terminal state, plus merge evidence when
+     repository policy requires it.
+   - Fail closed on a missing list or predecessor, or on any omitted, blocked,
+     unknown, unqueryable, queued, active, or otherwise non-terminal
+     predecessor. An empty predecessor list is valid only for the unique
+     lowest-order member. Never treat a shipment from another batch as a
+     predecessor.
+   Record the validated member IDs, batch IDs, states, order values, exact
+   predecessor IDs, resolved predecessor identities, terminal states, and
+   required merge evidence as the pre-claim snapshot. Halt if a same-batch
    shipment is `active` or any earlier-order same-batch member remains
    `queued`. Do not trust prior selection by Orchestrator—the same validation
    is mandatory for Orchestrator and direct shipment-ID entry paths.
-5. **Branch Creation Gate (P-011, NON-NEGOTIABLE)**: Before claiming (the first workspace mutation), ensure a feature branch is active:
+5. **Branch Creation Gate (P-011, NON-NEGOTIABLE)**: Before claiming (the first backlog mutation), ensure a feature branch is active:
    - Check current branch:
      `git branch --show-current`
-   - If already on a branch matching this shipment (e.g., `feat/{slug}` or `chore/{slug}`): log `BRANCH_OK: {branch_name}` and proceed.
+   - If already on a branch matching this shipment (e.g., `feat/{slug}` or `chore/{slug}`): log `BRANCH_OK: {branch_name}` and continue to the universal clean-worktree gate.
    - If on `main` (the default branch):
      a. Verify the worktree is clean:
         `git status --short`
@@ -174,23 +194,44 @@ After tool availability probing (Step 0.0), and before any subsequent semantic s
         `git checkout -b feat/{feature-slug}` (features) or `git checkout -b chore/{chore-slug}` (chores)
      e. Log `BRANCH_CREATED: {branch_name}`.
    - If on any other non-shipment branch: halt with `BRANCH_MISMATCH: currently on {branch_name}`.
+   - **Universal Clean-Worktree Gate (All Allowed Branch Paths)**: After the
+     matching shipment branch is selected or created, run:
+     `git status --short`
+     Require no output. This gate applies both when Ship started on the
+     matching shipment branch and when it created the branch from `main`. If
+     any output appears, halt before claim. Never sweep, stash, discard, or
+     otherwise alter unrelated changes to make the gate pass.
    - Note: all git commands above are run as separate sequential steps, not chained.
-6. **Immediate Pre-Claim Revalidation**: For an operator-ordered batch,
-   immediately before `backlogit_claim_shipment`, repeat those read operations
-   to re-fetch the requested shipment and the ordered members. For a request
-   with `custom_fields.operator_batch`, restrict active and queued members to
-   the same exact batch ID and revalidate the request's exact batch ID and
-   `operator_order`; otherwise retain the existing ordered-set checks. Re-run
-   the missing, mismatched, duplicate, active, lowest-order, and earlier-member
-   checks without considering other batches for a batch-aware request.
-   Compare the result with the pre-claim snapshot. If batch membership,
-   shipment state, queued state, batch ID, or any
-   `custom_fields.operator_order` value changed, halt rather than claim. If
-   unchanged, claim the shipment via
-   `backlogit_claim_shipment` (first backlog mutation, only after the branch
-   gate passes). This read-then-claim sequence is a fail-closed precondition
-   check, not an atomic operation; do not claim atomicity or race protection
-   that the external backlogit tool does not provide.
+6. **Immediate Pre-Claim Revalidation and Cleanliness Gate**:
+   - For an operator-ordered batch, immediately before
+     `backlogit_claim_shipment`, repeat the authoritative reads to re-fetch the
+     requested shipment, the complete exact `operator_predecessors` list, and
+     every exact predecessor by ID. Revalidate predecessor set completeness,
+     resolved identities, same-batch membership, unique lower orders, positive
+     terminal states, and required merge evidence. Restrict active and queued
+     comparisons to the same exact batch and re-run the missing, omitted,
+     mismatched, duplicate, active, lowest-order, earlier-member, and terminal
+     evidence checks without considering other batches. Missing, blocked,
+     unknown, unqueryable, queued, active, or otherwise non-terminal
+     predecessors fail closed; absence from queued or active lists never
+     proves completion.
+   - Compare the result with the pre-claim snapshot, including request and
+     ordered-member IDs, membership, shipment and queued states, batch IDs,
+     `operator_order` values, and every exact predecessor ID, resolved
+     identity, terminal state, and required merge-evidence value. If any value
+     changed or cannot be revalidated, halt rather than claim.
+   - On every shipment path, after all applicable read-only revalidation and
+     directly before the first backlog mutation, run `git status --short`
+     again. Require no output. If any output appears, halt without claiming;
+     never sweep, stash, discard, or otherwise alter unrelated changes.
+   - Only when every applicable check is unchanged and the repeated
+     clean-worktree gate passes, claim via `backlogit_claim_shipment` (the
+     first backlog mutation, only after the branch gate passes).
+   This read-then-claim sequence is a fail-closed precondition check, not an
+   atomic operation; do not claim atomicity or race protection that the
+   external backlogit tool does not provide. Historical predecessor merge
+   evidence proves only predecessor completion and never authorizes the
+   current shipment's merge.
 
 ### Step 1: Pre-Flight Checks
 
