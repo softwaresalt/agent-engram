@@ -69,19 +69,19 @@ model_routing:
     model_provider: "anthropic"       # e.g., openai, anthropic — leave empty for default
     model_family: "claude-haiku-4.5"           # Resolved into Tier 1 agent frontmatter
   tier2:
-    model: claude-sonnet-4.6              # Standard: orchestration, code, review (e.g., claude-sonnet-4.6)
+    model: claude-sonnet-5              # Standard: orchestration, code, review (e.g., claude-sonnet-4.6)
     reasoning_effort: "high"
     model_provider: "anthropic"
-    model_family: "claude-sonnet-4.6"
+    model_family: "claude-sonnet-5"
   tier3:
     model: claude-opus-4.8              # Frontier: planning, architecture, analysis (e.g., claude-opus-4.6)
     reasoning_effort: "high"
     model_provider: "anthropic"
     model_family: "claude-opus-4.8"
   orchestrator:
-    model_family: "claude-opus-4.8"     # Orchestrator model override (default: claude-opus-4.8)
-    reasoning_effort: "high"
-    model_provider: "anthropic"
+    model_family: "gpt-5.6-sol"     # Orchestrator model override (default: claude-opus-4.8)
+    reasoning_effort: "xhigh"
+    model_provider: "openai"
 
 # AI CLI tool startup configuration
 # Resolves copilot in the generated start.ps1 and start.sh scripts.
