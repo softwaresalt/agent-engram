@@ -98,12 +98,13 @@ Before any pipeline work begins, verify tool availability per P-012. Probe requi
 
 **Trigger**: A `queued` shipment exists AND no other top-level release unit is `active`, unless the operator explicitly supplies `skip_policy: P-001`.
 
-1. If the operator designated an ordered batch, require every shipment in that batch to have a unique structured `custom_fields.operator_order`. Halt on any missing or duplicate value; do not fall back to priority.
-2. Select the lowest-order queued shipment from an operator-ordered batch before applying ordinary priority selection. Otherwise, select the highest-priority queued shipment.
-3. Enforce P-001. Pipelined mode permits Stage alongside the one active Ship release; it does not authorize another Ship execution. Only an explicit operator `skip_policy: P-001` overrides this gate.
-4. Invoke the **Ship** subagent with the `shipment_id`. Require Ship, immediately before claim, to re-read the ordered batch and halt if any lower-order shipment remains `queued`.
-5. Receive Ship's output: record merge SHA and any follow-up stash items.
-6. If Ship halts or fails: surface the failure to the operator.
+1. If the operator designated an ordered batch, require every intended member to have a unique structured `custom_fields.operator_order`. Halt on any missing or duplicate value; do not fall back to priority.
+2. **Shared-batch gate**: When an ordered candidate has `custom_fields.operator_batch`, require one exact, non-empty batch ID on every intended member; halt on missing or mismatched membership. Resolve and preflight active and queued members using only that exact batch ID. Halt if a same-batch shipment is already `active` or an earlier-order same-batch shipment remains `queued`. Never compare or select a shipment with a missing or different batch ID merely because its `operator_order` is lower.
+3. Select the lowest-order queued shipment from the validated operator-ordered batch before applying ordinary priority selection. Otherwise, select the highest-priority queued shipment.
+4. Enforce P-001. Pipelined mode permits Stage alongside the one active Ship release; it does not authorize another Ship execution. Only an explicit operator `skip_policy: P-001` overrides this gate.
+5. Invoke the **Ship** subagent with the `shipment_id` and, for a batch-aware ordered shipment, the exact `operator_batch` ID. Validate that the dispatched ID still exactly matches the selected shipment. Require Ship, immediately before claim, to re-read the same exact batch and revalidate its batch ID and `operator_order`; Ship must halt if a same-batch shipment is `active` or any earlier-order same-batch shipment remains `queued`.
+6. Receive Ship's output: record merge SHA and any follow-up stash items.
+7. If Ship halts or fails: surface the failure to the operator.
 
 ### Step 3: Iteration Decision
 

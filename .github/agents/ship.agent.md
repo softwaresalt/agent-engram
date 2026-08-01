@@ -144,15 +144,19 @@ After tool availability probing (Step 0.0), and before any subsequent semantic s
    P-001; it does not bypass ordered-batch validation or P-011.
 4. **Operator-Ordered Batch Gate (FAIL CLOSED)**: When the requested shipment
    belongs to an operator-ordered batch, call `backlogit_get_shipment` for the
-   request and `backlogit_list_shipments` filtered to `queued`, then read every
-   queued member of that batch. Require every queued batch member to have a
-   non-missing `custom_fields.operator_order`, and require those values to be
-   unique. Halt on a missing or duplicate value; do not fall back to priority
-   or invocation order. Record the validated queued member IDs, states, and
-   order values as the pre-claim snapshot. The requested shipment is selectable
-   only when it has the lowest queued `operator_order`; if any earlier-order
-   batch member remains `queued`, halt rather than selecting or claiming the
-   request. Do not trust prior selection by Orchestrator—the same validation
+   request and `backlogit_list_shipments` filtered separately to `active` and
+   `queued`. Require every intended ordered member to have a non-missing,
+   unique `custom_fields.operator_order`; halt rather than falling back to
+   priority or invocation order. When the request has
+   `custom_fields.operator_batch`, require an exact, non-empty batch ID on
+   every intended member and halt on missing or mismatched membership. If
+   Orchestrator dispatched the request, require its supplied batch ID to
+   exactly match. Resolve, preflight, and compare active or queued members only
+   within that exact batch; never include a missing or different batch merely
+   because its order is lower. Record the validated member IDs, batch IDs,
+   states, and order values as the pre-claim snapshot. Halt if a same-batch
+   shipment is `active` or any earlier-order same-batch member remains
+   `queued`. Do not trust prior selection by Orchestrator—the same validation
    is mandatory for Orchestrator and direct shipment-ID entry paths.
 5. **Branch Creation Gate (P-011, NON-NEGOTIABLE)**: Before claiming (the first workspace mutation), ensure a feature branch is active:
    - Check current branch:
@@ -173,11 +177,16 @@ After tool availability probing (Step 0.0), and before any subsequent semantic s
    - Note: all git commands above are run as separate sequential steps, not chained.
 6. **Immediate Pre-Claim Revalidation**: For an operator-ordered batch,
    immediately before `backlogit_claim_shipment`, repeat those read operations
-   to re-fetch the requested shipment and all queued members of the same batch.
-   Re-run the missing, duplicate, lowest-order, and earlier-member checks, then
-   compare the result with the pre-claim snapshot. If batch membership,
-   shipment state, queued state, or any `custom_fields.operator_order` value
-   changed, halt rather than claim. If unchanged, claim the shipment via
+   to re-fetch the requested shipment and the ordered members. For a request
+   with `custom_fields.operator_batch`, restrict active and queued members to
+   the same exact batch ID and revalidate the request's exact batch ID and
+   `operator_order`; otherwise retain the existing ordered-set checks. Re-run
+   the missing, mismatched, duplicate, active, lowest-order, and earlier-member
+   checks without considering other batches for a batch-aware request.
+   Compare the result with the pre-claim snapshot. If batch membership,
+   shipment state, queued state, batch ID, or any
+   `custom_fields.operator_order` value changed, halt rather than claim. If
+   unchanged, claim the shipment via
    `backlogit_claim_shipment` (first backlog mutation, only after the branch
    gate passes). This read-then-claim sequence is a fail-closed precondition
    check, not an atomic operation; do not claim atomicity or race protection
