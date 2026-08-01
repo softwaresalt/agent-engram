@@ -1,6 +1,7 @@
 ---
 title: "Ordinary index fail-closed retry and empty-file eviction"
 type: impl-plan
+doc_type: plan
 date: 2026-07-31
 source: docs/decisions/2026-07-31-ordinary-index-fail-closed-followups-decision.md
 source_stash: [6487F516, 75DAF33D]

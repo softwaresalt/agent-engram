@@ -1,6 +1,8 @@
 ---
 title: "Reduced Stage integration for 102-S and 103-S"
 type: integration-plan
+doc_type: plan
+source: "operator-approved recovery from branch 107-stage-102-104-integration"
 status: "reviewed-pass"
 date: 2026-08-01
 source_branch: "107-stage-102-104-integration"
@@ -107,7 +109,12 @@ The following paths and classes must not enter the immediate pull request, even 
 
 Before Ship treats the reduced Stage package as ready:
 
-- backlog index sync must succeed;
+- the new worktree must not inherit a divergent `.backlogit/backlogit.db*`
+  cache; verify the cache is absent before first sync, or remove only those
+  gitignored disposable cache files and rebuild from Markdown before semantic
+  reads;
+- the resulting empty-cache backlog index sync must succeed; never run sync
+  over a cache that may contain the preserved mixed branch state;
 - exact reads must show `102-S` and `103-S` exist and are queued;
 - `102-S.custom_fields.operator_predecessors` must be exactly `[]`;
 - `103-S.custom_fields.operator_predecessors` must be exactly `[102-S]`;

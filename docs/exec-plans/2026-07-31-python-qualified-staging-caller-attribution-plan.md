@@ -1,4 +1,10 @@
-# Python qualified-staging caller attribution fail-closed plan
+---
+title: "Python qualified-staging caller attribution fail-closed plan"
+doc_type: plan
+source: "docs/decisions/2026-07-31-python-qualified-staging-caller-attribution-decision.md"
+date: 2026-07-31
+status: "reviewed and hardened"
+---
 
 Origin: `docs/decisions/2026-07-31-python-qualified-staging-caller-attribution-decision.md`
 Source stash: `42FB7CC5`

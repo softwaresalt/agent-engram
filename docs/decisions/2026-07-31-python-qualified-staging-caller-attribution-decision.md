@@ -1,4 +1,10 @@
-# Python qualified-staging caller attribution decision
+---
+title: "Python qualified-staging caller attribution decision"
+doc_type: decision
+source: "stash 42FB7CC5; PR #301 review follow-up to 099.004-T"
+date: 2026-07-31
+status: selected-for-planning
+---
 
 ## Provenance
 

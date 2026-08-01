@@ -1,6 +1,8 @@
 ---
 title: "Ordinary index fail-closed retry and empty-file eviction"
 type: staging-decision
+doc_type: decision
+source: "stashes 6487F516 and 75DAF33D; PR #301 residual review"
 date: 2026-07-31
 source_stash: [6487F516, 75DAF33D]
 priority: medium

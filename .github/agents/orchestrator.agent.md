@@ -109,22 +109,28 @@ Before any pipeline work begins, verify tool availability per P-012. Probe requi
    same-batch shipment remains `queued`. Never compare or select a shipment
    with a missing or different batch ID merely because its `operator_order`
    is lower.
-3. **Positive predecessor proof (FAIL CLOSED)**: Load the candidate manifest's
-   complete exact `custom_fields.operator_predecessors` ID list and resolve
-   every listed ID through an authoritative shipment lookup, including
-   terminal records; absence from queued or active results is never completion
-   proof. Require the list to contain exactly every lower-order member of the
-   same exact non-empty `operator_batch`, with no duplicate, omitted, or extra
-   IDs. Each predecessor must exist, be queryable, have that same exact batch
-   ID, have a unique `operator_order` lower than the candidate's, and have
-   positive terminal shipment evidence: `shipped` or the repository-equivalent
-   merged terminal state, plus merge evidence when repository policy requires
-   it. A missing list or predecessor, or any blocked, unknown, unqueryable,
-   queued, active, or otherwise non-terminal predecessor, fails closed. An
-   empty list is valid only for the unique lowest-order member. Never treat a
-   shipment from another batch as a predecessor. Record the exact predecessor
-   IDs, resolved identities, batch IDs, orders, terminal states, and required
-   merge evidence in the dispatch pre-claim snapshot.
+3. **Authoritative roster and positive predecessor proof (FAIL CLOSED)**:
+   Before comparing `custom_fields.operator_predecessors`, use only
+   registry-declared MCP or CLI shipment surfaces to enumerate authoritative
+   shipments for the candidate's exact non-empty `operator_batch` across every
+   state, including queued, active, blocked, and terminal/archive records, and
+   construct the complete same-batch roster. If the tool cannot enumerate all
+   states or any record is unqueryable, halt. Never use absence from
+   active/queued as completion. Load the candidate manifest's complete exact
+   `custom_fields.operator_predecessors` ID list and resolve every listed ID
+   through an authoritative shipment lookup, including terminal records.
+   Require the candidate predecessor list to equal every lower-order roster
+   member exactly, with no duplicate, omitted, or extra IDs. Each predecessor
+   must exist, be queryable, have that same exact batch ID, have a unique
+   `operator_order` lower than the candidate's, and have positive terminal
+   shipment evidence: `shipped` or the repository-equivalent merged terminal
+   state, plus merge evidence when repository policy requires it. A missing
+   list or predecessor, or any blocked, unknown, unqueryable, queued, active,
+   or otherwise non-terminal predecessor, fails closed. An empty list is valid
+   only for the unique lowest-order member. Never treat a shipment from another
+   batch as a predecessor. Record the exact predecessor IDs, resolved
+   identities, batch IDs, orders, terminal states, and required merge evidence
+   in the dispatch pre-claim snapshot.
 4. Select the lowest-order queued shipment from the validated
    operator-ordered batch before applying ordinary priority selection.
    Otherwise, select the highest-priority queued shipment.
