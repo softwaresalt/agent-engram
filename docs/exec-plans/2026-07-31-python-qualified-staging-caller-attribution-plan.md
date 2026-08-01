@@ -2,7 +2,7 @@
 
 Origin: `docs/decisions/2026-07-31-python-qualified-staging-caller-attribution-decision.md`  
 Source stash: `42FB7CC5`  
-Planning state: hardened; plan-review PASS
+Planning state: hardened; Ship-report P1 remediated; targeted re-review PASS
 
 ## Problem Frame
 
@@ -74,15 +74,15 @@ No external or cross-feature dependency is required.
 - Fail-closed behavior intentionally drops recall for a rare ambiguous caller; this is the existing `016-D` policy, not a new trade-off.
 - Fixing only one producer would create index/sync divergence; both sites are release-blocking.
 - A test that checks only edge row existence can miss wrong-origin attribution; fixtures must assert exact caller and target IDs.
-- If PR #301 behavior has already shipped in a published binary, persisted wrong-origin edges may require a full reindex to be removed. Ship must check release exposure before merge and add an operator reindex checkpoint if exposure exists.
+- Ship must detect whether PR #301 behavior shipped. If exposure exists, Ship prepares an operator-approved, target-workspace-specific full-reindex handoff; it must not automatically mutate any user or deployed workspace. Reindex verification is recorded only after the operator executes the handoff or explicitly approves execution for that named workspace. If no affected binary shipped, closure records no migration/backfill.
 - The incremental sync path defers canonical post-pass work, so its regression should inspect staged provenance rather than expect immediate canonical resolution.
 
 ## Plan Hardening Signals
 
 - Public API, schema, or contract change: absent. Internal edge-admission behavior only; no exposed request/response or storage shape changes.
 - Security, auth, permission, or compliance-sensitive behavior: absent.
-- Migration, backfill, destructive data/config action, or irreversible step: absent in the planned change. Conditional reindex is an operator checkpoint only if an affected build was already released.
-- External integration, operator checkpoint, or external dependency: conditional. Release exposure check may require an operator reindex checkpoint.
+- Migration, backfill, destructive data/config action, or irreversible step: absent in the planned change. A released affected build creates only a target-workspace-specific handoff for operator approval; Ship performs no automatic workspace mutation.
+- External integration, operator checkpoint, or external dependency: conditional. Exposure requires a named-workspace full-reindex handoff, operator execution or explicit approval, then verification; no exposure requires a no migration/backfill record.
 - High runtime, rollout, or rollback risk: present. The change controls persisted call-graph edge origin and must preserve zero false edges across two producers.
 
 Requires plan hardening: yes
@@ -98,14 +98,16 @@ Before closure, Ship must prove on a temporary Python corpus:
 3. A unique caller still resolves the exact canonical target.
 4. The ambiguity-drop signal increases for the duplicate-caller case.
 
+Deployed-workspace disposition is separate from temporary-corpus verification. Ship only detects release exposure. If an affected binary shipped, Ship prepares an operator-approved handoff naming the exact target workspace and full-reindex command/procedure; Ship must not automatically mutate user/deployed workspaces. Verify that target only after the operator executes the handoff or explicitly approves execution. If no affected binary shipped, record no migration/backfill.
+
 Monitoring plan:
 
 - SLI: wrong-origin edges on the adversarial target-identity corpus. Baseline before fix: one arbitrary edge is possible; healthy after fix: zero.
 - SLI: unique-caller canonical edge count. Healthy: unchanged and non-zero.
 - Signal/query: targeted integration output plus staged/canonical edge query during runtime verification; no external dashboard exists.
 - Alert/rollback threshold: any wrong-origin edge, any index/sync asymmetry, or loss of the unique-caller control.
-- Owner and window: Ship/operator for the merge verification and the first full-index plus incremental-sync cycle after merge; record the result in operational closure.
-- Rollback: revert the two qualified-staging caller-lookup substitutions. No schema or data-format rollback is required. If an affected build was released, force a full reindex after rollback or correction to refresh persisted edges.
+- Owner and window: Ship owns release-exposure detection and handoff preparation; the operator owns execution or explicit approval for each named deployed workspace. Ship verifies only after that checkpoint and records the result in operational closure.
+- Rollback: revert the two qualified-staging caller-lookup substitutions. No schema or data-format rollback is required. For an exposed target workspace, prepare the same operator-approved, target-specific full-reindex handoff after rollback or correction; never run it automatically.
 
 ## Plan Hardening
 
@@ -116,19 +118,19 @@ Reinforcing guidance consulted: strict-safety instructions, release-observabilit
 ProposedAction: replace first-match caller attribution with typed unique-only attribution at the two qualified staging producers.  
 ActionRisk: moderate — shared runtime code-graph behavior changes, but no public contract, schema, migration, or destructive action.  
 Approval required: yes; the operator explicitly approved non-destructive Stage planning/backlog mutation in the request.  
-Rollback: revert the two guarded call-site edits and reindex any exposed affected workspace.  
+Rollback: revert the two guarded call-site edits; for any exposed named workspace, prepare an operator-approved full-reindex handoff and verify only after operator execution or explicit approval.<br>
 ActionResult: approved for planning; implementation remains Ship-owned.
 
 Additional guardrails:
 
 - U1 must be RED for the expected first-match attribution, then GREEN only after U2.
 - Review must reject any last-wins inference, global `find_function_id` semantic change, schema/key change, or single-path fix.
-- Release exposure is a Ship pre-merge checkpoint. If an affected binary has shipped, the closure plan must include a full reindex instruction and verification; otherwise record that no backfill is needed.
+- Release exposure detection is the Ship pre-merge checkpoint. If an affected binary shipped, Ship prepares an operator-approved handoff for the exact target workspace and does not mutate it automatically; verification follows only operator execution or explicit approval. If no affected binary shipped, record no migration/backfill.
 - No destructive commands or automatic data migration are part of this shipment.
 
 ## Plan Review
 
-Gate decision: **PASS** after one review-fix cycle.  
+Gate decision: **PASS** after the original review-fix cycle plus targeted Ship-report P1 remediation/re-review.<br>
 Review date: 2026-07-31  
 Hardening required: yes; satisfied by the `Plan Hardening` section and strict-safety action record.
 
@@ -151,6 +153,7 @@ None.
 #### P1
 
 - Resolved in cycle 1: stale helper/call-site documentation would have contradicted the expanded ambiguity-aware usage. U2 now includes same-file comment maintenance without changing helper semantics.
+- Resolved after Ship report-only review: the conditional reindex wording now limits Ship to exposure detection and an operator-approved, target-workspace-specific handoff; prohibits automatic user/deployed workspace mutation; requires verification only after operator execution or explicit approval; and requires a no migration/backfill record when no affected binary shipped.
 
 #### P2
 
@@ -162,4 +165,4 @@ None.
 
 ### Gate rationale
 
-The reviewed plan preserves the governing zero-false-edge invariant, asserts exact caller and target identity, covers both producers, preserves a unique-caller control, and supplies monitoring, rollback, ownership, and a release-exposure checkpoint. No unresolved P0 or P1 finding remains. The plan is ready for harvest.
+The re-reviewed plan preserves the governing zero-false-edge invariant, exact caller/target identity, producer symmetry, and unique-caller control. Release exposure handling is now handoff-only and operator-controlled for a named workspace, with no automatic deployed-workspace mutation and an explicit no migration/backfill disposition when no affected binary shipped. No unresolved P0 or P1 finding remains; implementation scope and dependencies are unchanged.
