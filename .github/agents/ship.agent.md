@@ -133,10 +133,28 @@ After tool availability probing (Step 0.0), and before any subsequent semantic s
 ### Step 0.5: Work Intake
 
 1. Identify the shipment or feature to work on (read-only — do not claim yet).
-   * If a shipment exists, record its ID for use in step 4.
+   * If a shipment exists, record its ID for use in step 6.
    * Otherwise, select queued tasks from the backlog.
 2. Verify all tasks have clear scope and acceptance criteria.
-3. **Branch Creation Gate (P-011, NON-NEGOTIABLE)**: Before claiming (the first workspace mutation), ensure a feature branch is active:
+3. **Entry-Path and Single-Release Gate (P-001)**: Apply the same gates whether
+   Ship receives a shipment ID directly or is invoked by Orchestrator.
+   Before branch creation or claim, verify that no backlog tasks are `Active`
+   under another top-level release unit. Halt on conflict unless the operator
+   explicitly supplied `skip_policy: P-001`. That exact skip overrides only
+   P-001; it does not bypass ordered-batch validation or P-011.
+4. **Operator-Ordered Batch Gate (FAIL CLOSED)**: When the requested shipment
+   belongs to an operator-ordered batch, call `backlogit_get_shipment` for the
+   request and `backlogit_list_shipments` filtered to `queued`, then read every
+   queued member of that batch. Require every queued batch member to have a
+   non-missing `custom_fields.operator_order`, and require those values to be
+   unique. Halt on a missing or duplicate value; do not fall back to priority
+   or invocation order. Record the validated queued member IDs, states, and
+   order values as the pre-claim snapshot. The requested shipment is selectable
+   only when it has the lowest queued `operator_order`; if any earlier-order
+   batch member remains `queued`, halt rather than selecting or claiming the
+   request. Do not trust prior selection by Orchestrator—the same validation
+   is mandatory for Orchestrator and direct shipment-ID entry paths.
+5. **Branch Creation Gate (P-011, NON-NEGOTIABLE)**: Before claiming (the first workspace mutation), ensure a feature branch is active:
    - Check current branch:
      `git branch --show-current`
    - If already on a branch matching this shipment (e.g., `feat/{slug}` or `chore/{slug}`): log `BRANCH_OK: {branch_name}` and proceed.
@@ -153,7 +171,17 @@ After tool availability probing (Step 0.0), and before any subsequent semantic s
      e. Log `BRANCH_CREATED: {branch_name}`.
    - If on any other non-shipment branch: halt with `BRANCH_MISMATCH: currently on {branch_name}`.
    - Note: all git commands above are run as separate sequential steps, not chained.
-4. Claim the shipment via `backlogit_claim_shipment` (first mutation, only after branch gate passes).
+6. **Immediate Pre-Claim Revalidation**: For an operator-ordered batch,
+   immediately before `backlogit_claim_shipment`, repeat those read operations
+   to re-fetch the requested shipment and all queued members of the same batch.
+   Re-run the missing, duplicate, lowest-order, and earlier-member checks, then
+   compare the result with the pre-claim snapshot. If batch membership,
+   shipment state, queued state, or any `custom_fields.operator_order` value
+   changed, halt rather than claim. If unchanged, claim the shipment via
+   `backlogit_claim_shipment` (first backlog mutation, only after the branch
+   gate passes). This read-then-claim sequence is a fail-closed precondition
+   check, not an atomic operation; do not claim atomicity or race protection
+   that the external backlogit tool does not provide.
 
 ### Step 1: Pre-Flight Checks
 

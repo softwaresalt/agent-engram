@@ -1,40 +1,47 @@
 ---
 type: stage-memory
-timestamp: 2026-08-01T00:42:00-07:00
+timestamp: 2026-08-01T01:30:00-07:00
 agent: stage
 branch: 107-stage-102-104-integration
-scope: 109-F fresh pre-PR finding remediation and review
+head: 59f53eed6a58e8f3119f7b13b680b95fc81d7863
+scope: 109-F startup guardrail correction and fresh review
 ---
 
-# 109-F fresh finding-remediation PASS
+# 109-F startup guardrail correction PASS
 
 ## Outcome
 
-Remediated the current pre-PR findings in Stage-owned planning/backlog/review/memory artifacts only. The valid checkpoint `checkpoint-20260801-065754.json` remained available as history. Invalid `checkpoint-20260801-065720.json` remained excluded/untracked and was neither repaired nor used.
+Corrected the Stage-owned startup guardrail regression in 109-F/104-S planning, backlog, accepted review, checkpoint, and memory artifacts only. Fresh hardening and complete Stage persona review ran under the configured `.Stage` model with no override. Gate: PASS; open P0/P1/P2/P3: none.
 
-Fresh plan hardening and full persona review ran under the configured `.Stage` model with no override. Gate: PASS; open P0/P1/P2/P3: none. Shipment `104-S`, feature `109-F`, and tasks `109.001-T` through `109.008-T` remain queued. No shipment was claimed or closed.
+Shipment `104-S`, feature `109-F`, and all eight tasks remain queued. Manifest order, task statuses, dependencies, and `operator_order: 3` are unchanged. No source, tests, config, agents, unrelated backlog/stash, build, lint, commit, push, PR, shipment claim, or shipment close operation occurred.
 
-## Authoritative dependency and manifest order
+## Authoritative chain
 
 `109.001-T -> 109.002-T -> 109.005-T -> 109.006-T -> 109.007-T -> 109.008-T -> 109.003-T -> 109.004-T`.
 
-`104-S.custom_fields.items` now stores `109-F` followed by that same topological order. `operator_order` remains 3.
+`104-S.custom_fields.items` remains `109-F` followed by that exact topological order.
 
-## Remediated decisions
+## Corrected guardrails
 
-- `109.002-T` is a <=2-file `state.rs` + `lifecycle.rs` GREEN. State coherently publishes binding/config, next generation, cancellation ownership, and queue floor and returns one opaque `pub(crate)` transition token containing the generation-specific cancel receiver. Lifecycle consumes it once; it no longer calls a separate begin-generation operation after binding.
-- `109.006-T` exposes a crate-private opaque generation token in `DispatchSnapshot` or its existing equivalent. `write.rs` adopts it directly. There is no before/after retry, retry budget, exhaustion error, later-generation fallback, or response change.
-- `109.007-T` has exactly three scenarios: combined stale lost-lock pending/heavy, stale acquired-lock claim after the exact workspace/config/generation snapshot advances, and same-G re-arm/drain.
-- `109.008-T` atomically claims the full mask and validates the claim against the exact snapshot before acquired-lock routine sync/revalidation/backfill. Lost-lock re-arm republishes the exact token.
-- `109.003-T` explicitly permits a private cfg(test)-only pause seam between failed CAS and publication; no public, serialized, feature-enabled, or release seam is allowed.
-- All cross-module transition/generation/claim APIs are `pub(crate)` with private fields. Legacy unqualified pending publishers are `pub(crate)` compatibility only and have no production caller after migration.
-- Function caps count every added, modified, removed, renamed, and visibility-only production function. Every GREEN must leave a buildable intermediate tree.
-- Every task stays <=2 production files, <=3 scenarios, and <=110 minutes.
+- `109.004-T` is startup-only: `src/daemon/ipc_server.rs`, <=3 private production-function touches, 60-90 minutes. `state.rs`, any second file, a fourth/non-private function, and compatibility-wrapper work are STOP conditions.
+- `109.006-T` remains `state.rs` + `write.rs` and <=4 functions. Its optional fourth slot may be one existing `PendingSyncState` total-order/floor helper so retained fresh-at-call wrappers ignore an operation older than an advanced floor.
+- `109.008-T` remains `state.rs` + `lifecycle.rs` and <=4 functions. State/lifecycle production-caller migration reuses the already-counted `drain_pending_sync` touch; module-level deprecation documentation adds no fifth function.
+- Final production search after startup migration still requires zero unqualified publisher callers.
+- If retained external-wrapper compatibility proof cannot fit the earlier <=4 caps, the residual is a non-blocking P2 follow-up. It never widens startup.
+- Public `DispatchSnapshot`, queued status/message, response/error behavior, guard order, completion inventory, and all prior RED/GREEN caps remain unchanged.
 
-## Artifact scope
+## Fresh review
 
-Changed the 109 plan, accepted review 109.001-R, feature/task cards, 104-S manifest, this memory, and the current session memory. No source, tests, config, agents, stash, dependencies, commit, push, PR, or shipment lifecycle operation occurred. `025-S`, `081-S`, `015-D`, and `017-D` were untouched.
+Accepted review `109.001-R` records the fresh PASS under the configured `.Stage` model. Constitution, Rust/concurrency, scope, learnings, architecture, and agent-native parity lenses returned no findings. Security review was not triggered. Open P0/P1/P2/P3: none.
 
-## Validation and next step
+Current production inventory was used only as planning evidence: the qualified write handoff maps to `109.006-T`, lifecycle lost-lock re-arm maps to `109.008-T`, and startup handoff maps to `109.004-T`. Stage ran no builds, tests, linters, or implementation work.
 
-Backlog structural validation, targeted wording checks, manifest-order checks, diff checks, and final index sync are required before handoff. Ship may later claim only under its own workflow and must begin with `109.001-T`; any cap, API-containment, buildability, public-seam, or exact-snapshot validation breach returns the task and shipment blocked.
+## Continuity
+
+Resolved superseded valid checkpoint `checkpoint-20260801-081329.json`. Created and validated schema-v1 successor `checkpoint-20260801-083004.json`. Invalid `checkpoint-20260801-065720.json` remains excluded and untouched.
+
+The scoped artifacts updated in this correction are the 109 plan, shipment `104-S`, feature `109-F`, task cards `109.004-T`, `109.006-T`, and `109.008-T`, accepted review `109.001-R`, this memory, backlogit keyed memory, and the two continuity checkpoints above. Other pre-existing working-tree changes were not edited.
+
+## Next step
+
+Ship may later claim `104-S` only under its own workflow. It must begin with `109.001-T` and return the affected task and shipment blocked on any file/function/scenario/time cap, public-snapshot/API containment, guard order, completion inventory, buildability, zero-internal-caller, or RED-to-GREEN closure breach. A residual retained-wrapper proof gap is P2 follow-up only and never startup scope.
