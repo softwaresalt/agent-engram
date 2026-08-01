@@ -1,10 +1,10 @@
 //! Notebook content indexer for `.ipynb` sources.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
@@ -17,7 +17,9 @@ use crate::models::notebook::{NotebookCellRecord, NotebookIndexResult};
 use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::notebook_extract::{extract_notebook, route_notebook_lineage};
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    collect_files_in_workspace, collect_files_in_workspace_checked, reconcile_deleted_paths,
+};
 
 /// Notebook lineage extraction seam (095-F, Unit U1b / AR-04/G6).
 ///
@@ -78,46 +80,6 @@ fn is_notebook_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-}
-
-fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
-    let path = Path::new(rel_path);
-    if path.is_absolute()
-        || path.has_root()
-        || path.components().any(|component| {
-            component == Component::ParentDir || matches!(component, Component::Prefix(_))
-        })
-    {
-        return None;
-    }
-
-    Some(path.to_path_buf())
-}
-
-fn compute_deleted_paths(
-    workspace_relative_paths: &[String],
-    workspace_root: &Path,
-) -> Vec<String> {
-    let Ok(canonical_root) = workspace_root.canonicalize() else {
-        return workspace_relative_paths.to_vec();
-    };
-
-    workspace_relative_paths
-        .iter()
-        .filter_map(|rel| {
-            let Some(relative_path) = workspace_relative_path(rel) else {
-                warn!(
-                    path = %rel,
-                    "skipping notebook deletion sweep path that escapes the workspace root"
-                );
-                return None;
-            };
-
-            let candidate = workspace_root.join(relative_path);
-            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
-            is_deleted.then(|| rel.clone())
-        })
-        .collect()
 }
 
 fn summary_record_content(
@@ -409,6 +371,22 @@ pub async fn sweep_deleted_notebook_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
+    // source root is indistinguishable from a fully-emptied tree by physical
+    // absence alone, so suppress the sweep entirely rather than risk
+    // mass-deleting live records when the root is transiently unavailable (e.g.
+    // an unmounted share). Legitimate source removal is handled by source
+    // de-registration, not the per-file sweep. Mirrors index_notebook_source's
+    // graceful skip so the indexer and sweep stay consistent.
+    let source_dir = workspace_root.join(&source.path);
+    if !source_dir.is_dir() {
+        debug!(
+            path = %source.path,
+            "notebook source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let records = queries.select_content_records(Some("notebook")).await?;
     let known_paths: Vec<String> = records
         .into_iter()
@@ -418,7 +396,18 @@ pub async fn sweep_deleted_notebook_files(
         .into_iter()
         .collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let deleted = {
+        // 100-S Unit B: reconcile stored records against a completeness-aware
+        // collection of the source tree. Deletion is gated on an
+        // authoritative-complete full-index traversal (fail-closed): a stored
+        // record is swept only when it is physically absent, or superseded by a
+        // collected alias path on a `complete` pass. A partial pass (an
+        // unreadable/unresolvable subtree) degrades to physical-absence-only,
+        // so an alias-stale record is retained rather than wrongly deleted.
+        let collected =
+            collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
+        reconcile_deleted_paths(&known_paths, &collected, workspace_root)
+    };
     let mut removed = 0_usize;
 
     for path in &deleted {
@@ -552,48 +541,225 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {
+    // ── 087-F fail-closed deletion-sweep reconciler wiring (100-S, Unit B) ──
+    //
+    // DB-backed regression fixtures for the notebook deletion sweep. They seed
+    // stored `ContentRecord`s directly, materialize the on-disk tree, then run
+    // the real `sweep_deleted_notebook_files` against a temp-dir Cozo backend
+    // (isolated from `.engram`).
+    use crate::db::queries::CodeGraphQueries;
+    use crate::models::content::ContentRecord;
+    use crate::models::registry::{ContentSource, ContentSourceStatus};
+
+    fn notebook_source(path: &str) -> ContentSource {
+        ContentSource {
+            content_type: "notebook".to_string(),
+            language: None,
+            path: path.to_string(),
+            pattern: None,
+            optional: false,
+            status: ContentSourceStatus::default(),
+        }
+    }
+
+    async fn seed_notebook_record(queries: &CodeGraphQueries, file_path: &str, source_path: &str) {
+        let record = ContentRecord {
+            id: format!("cr_{}", file_path.replace(['/', '.'], "_")),
+            content_type: "notebook".to_string(),
+            file_path: file_path.to_string(),
+            content_hash: "seed-hash".to_string(),
+            content: "notebook summary".to_string(),
+            embedding: None,
+            source_path: source_path.to_string(),
+            file_size_bytes: 2,
+            ingested_at: chrono::Utc::now(),
+            record_kind: "notebook_summary".to_string(),
+            chunk_id: None,
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        };
+        queries
+            .upsert_content_record(&record)
+            .await
+            .expect("seed notebook content record");
+    }
+
+    async fn remaining_notebook_paths(
+        queries: &CodeGraphQueries,
+        source_path: &str,
+    ) -> Vec<String> {
+        let mut paths: Vec<String> = queries
+            .select_content_records(Some("notebook"))
+            .await
+            .expect("select notebook records")
+            .into_iter()
+            .filter(|record| record.source_path == source_path)
+            .map(|record| record.file_path)
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// RF-1 (INV-1, alias-supersede): a directory alias makes the same real
+    /// notebook reachable under two stored paths. On an authoritative-complete
+    /// pass the sweep must drop the alias-stale record and retain the one path
+    /// traversal actually collected (the real dir outranks the alias symlink) —
+    /// the retired physical-existence sweep kept BOTH (fail-open duplicate).
+    #[tokio::test]
+    async fn sweep_drops_alias_superseded_notebook_record_on_complete_pass() {
         let workspace = TempDir::new().expect("workspace tempdir");
-        let regular_path = workspace.path().join("regular.ipynb");
-        let symlink_target = workspace.path().join("target.ipynb");
-        let symlink_path = workspace.path().join("indexed.ipynb");
-        fs::write(&regular_path, "{}").expect("write regular notebook");
-        fs::write(&symlink_target, "{}").expect("write target notebook");
-        if !create_symlink_file(&symlink_target, &symlink_path) {
-            return;
+        let source_dir = workspace.path().join("nb");
+        let real_dir = source_dir.join("z");
+        fs::create_dir_all(&real_dir).expect("create real notebook dir");
+        fs::write(real_dir.join("shared.ipynb"), "{}").expect("write notebook");
+        if !create_symlink_dir(&real_dir, &source_dir.join("a")) {
+            return; // unprivileged Windows — directory symlink unsupported
         }
 
-        let external = TempDir::new().expect("external tempdir");
-        let external_dir = external.path().join("escape");
-        fs::create_dir_all(&external_dir).expect("create external dir");
-        fs::write(external_dir.join("outside.ipynb"), "{}").expect("write external notebook");
-        if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
-            return;
-        }
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-alias-sweep")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        seed_notebook_record(&queries, "nb/z/shared.ipynb", &source.path).await;
+        seed_notebook_record(&queries, "nb/a/shared.ipynb", &source.path).await;
 
-        let deleted = super::compute_deleted_paths(
-            &[
-                "regular.ipynb".to_string(),
-                "indexed.ipynb".to_string(),
-                "linked-outside/outside.ipynb".to_string(),
-                "absent.ipynb".to_string(),
-            ],
-            workspace.path(),
-        );
+        let removed = super::sweep_deleted_notebook_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run notebook sweep");
 
         assert_eq!(
-            deleted,
+            removed, 1,
+            "exactly the alias-stale record is reconciled away"
+        );
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/z/shared.ipynb".to_string()],
+            "the collected (real-dir) path survives; the alias-stale duplicate is swept"
+        );
+    }
+
+    /// RF-3 (INV-2, non-authoritative pass): an unreadable sibling subtree makes
+    /// the collection non-authoritative (`complete == false`). The alias-stale
+    /// record is then RETAINED — fail-closed keeps a harmless duplicate rather
+    /// than risk deleting a live record on a partial pass.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sweep_retains_alias_stale_notebook_when_pass_non_authoritative() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("nb");
+        let real_dir = source_dir.join("z");
+        fs::create_dir_all(&real_dir).expect("create real notebook dir");
+        fs::write(real_dir.join("shared.ipynb"), "{}").expect("write notebook");
+        if !create_symlink_dir(&real_dir, &source_dir.join("a")) {
+            return;
+        }
+        // An unreadable sibling subtree trips the non-authoritative flag.
+        let locked_dir = source_dir.join("locked");
+        fs::create_dir_all(&locked_dir).expect("create locked dir");
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000))
+            .expect("chmod locked dir");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-nonauth-sweep")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        seed_notebook_record(&queries, "nb/z/shared.ipynb", &source.path).await;
+        seed_notebook_record(&queries, "nb/a/shared.ipynb", &source.path).await;
+
+        let removed = super::sweep_deleted_notebook_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run notebook sweep");
+
+        // Restore permissions so TempDir cleanup can remove the tree.
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755))
+            .expect("restore locked dir perms");
+
+        assert_eq!(removed, 0, "a non-authoritative pass deletes nothing here");
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
             vec![
-                "indexed.ipynb".to_string(),
-                "linked-outside/outside.ipynb".to_string(),
-                "absent.ipynb".to_string(),
-            ]
+                "nb/a/shared.ipynb".to_string(),
+                "nb/z/shared.ipynb".to_string()
+            ],
+            "both records are retained on a partial pass (fail-closed)"
+        );
+    }
+
+    /// RF-5 (genuine deletion): a stored record whose file is truly gone is
+    /// swept regardless of completeness, while a live sibling is retained.
+    #[tokio::test]
+    async fn sweep_removes_genuinely_deleted_notebook_and_keeps_live() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("nb");
+        fs::create_dir_all(&source_dir).expect("create notebook dir");
+        fs::write(source_dir.join("live.ipynb"), "{}").expect("write live notebook");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-genuine-delete")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        seed_notebook_record(&queries, "nb/live.ipynb", &source.path).await;
+        seed_notebook_record(&queries, "nb/gone.ipynb", &source.path).await;
+
+        let removed = super::sweep_deleted_notebook_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run notebook sweep");
+
+        assert_eq!(removed, 1, "the physically-absent record is swept");
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/live.ipynb".to_string()],
+            "the live notebook record is retained"
+        );
+    }
+
+    /// Fail-closed source-root guard (100-S review P1): when the notebook source
+    /// root is missing/unreadable the sweep must delete nothing — a transient
+    /// unmount is indistinguishable from a fully-emptied tree by physical
+    /// absence alone, so every live record is retained rather than mass-deleted.
+    #[tokio::test]
+    async fn sweep_skips_when_notebook_source_root_missing() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        // Deliberately do NOT create the `nb` source directory.
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-missing-root")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        seed_notebook_record(&queries, "nb/a.ipynb", &source.path).await;
+        seed_notebook_record(&queries, "nb/b.ipynb", &source.path).await;
+
+        let removed = super::sweep_deleted_notebook_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run notebook sweep");
+
+        assert_eq!(
+            removed, 0,
+            "a missing source root must sweep nothing (fail-closed)"
+        );
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/a.ipynb".to_string(), "nb/b.ipynb".to_string()],
+            "all live records are retained when the source root is unavailable"
         );
     }
 
     // ── 095-F U1b: authority-context propagation seam (AR-04/G6) ──────────
-
     use super::{DefaultNotebookLineageExtractor, NotebookLineageExtractor};
     use crate::models::lineage::LineageAuthorityContext;
     use crate::models::notebook::NotebookCellRecord;

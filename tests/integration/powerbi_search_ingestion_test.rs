@@ -1,55 +1,21 @@
 //! Integration tests for Power BI search ingestion (061.004-T).
 //!
 //! Validates the pure helper functions exported by [`powerbi_indexer`]:
-//! hash-based change detection, deletion sweep, file collection, and
-//! entity-summary extraction.  These tests run without a `CozoDB` instance,
+//! hash-based change detection, file collection, and entity-summary
+//! extraction.  These tests run without a `CozoDB` instance,
 //! mirroring the precedent set by `backlog_indexer_test.rs`.
 //!
-//! Tests: S-PIN-01 through S-PIN-24
+//! Note: the deletion-sweep pure-helper tests (former S-PIN-03/04/11/23/24,
+//! against the retired `compute_deleted_paths`) migrated to the in-crate
+//! `source_traversal` reconciler suite when the shared fail-closed reconciler
+//! replaced the per-collector sweep (100-S Unit C).
 
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 
 use engram::services::powerbi_indexer::{
-    collect_powerbi_files, compute_deleted_paths, compute_file_hash, extract_entity_summaries,
+    collect_powerbi_files, compute_file_hash, extract_entity_summaries,
 };
-
-#[cfg(unix)]
-fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(src, dst)
-}
-
-#[cfg(windows)]
-fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(src, dst)
-}
-
-fn create_symlink_file(src: &Path, dst: &Path) -> bool {
-    match symlink_file(src, dst) {
-        Ok(()) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
-        Err(error) => panic!("create file symlink: {error}"),
-    }
-}
-
-#[cfg(unix)]
-fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(src, dst)
-}
-
-#[cfg(windows)]
-fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(src, dst)
-}
-
-fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
-    match symlink_dir(src, dst) {
-        Ok(()) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
-        Err(error) => panic!("create directory symlink: {error}"),
-    }
-}
 
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
@@ -80,150 +46,6 @@ fn compute_file_hash_differs_for_changed_content() {
     let h1 = compute_file_hash(original);
     let h2 = compute_file_hash(changed);
     assert_ne!(h1, h2, "changed content must produce a different hash");
-}
-
-// ── Deletion sweep ────────────────────────────────────────────────────────
-
-/// S-PIN-03: `compute_deleted_paths` detects a file that no longer exists.
-#[test]
-fn compute_deleted_paths_detects_removed_file() {
-    let dir = TempDir::new().expect("tempdir");
-
-    // Create one live file.
-    let live_path = dir.path().join("live.json");
-    fs::write(&live_path, r#"{"tables":[]}"#).expect("write live file");
-
-    // Normalise paths to forward-slash workspace-relative form.
-    let root = dir.path();
-    let live_rel = live_path
-        .strip_prefix(root)
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "/");
-    let gone_rel = "gone.json".to_string();
-
-    let known = vec![live_rel.clone(), gone_rel.clone()];
-    let deleted = compute_deleted_paths(&known, root);
-
-    assert_eq!(
-        deleted.len(),
-        1,
-        "only gone.json should be returned as deleted"
-    );
-    assert!(
-        deleted[0].contains("gone.json"),
-        "deleted path should reference gone.json"
-    );
-}
-
-/// S-PIN-04: When all known files still exist, no paths are returned as deleted.
-#[test]
-fn compute_deleted_paths_returns_empty_when_all_files_exist() {
-    let dir = TempDir::new().expect("tempdir");
-    let file = dir.path().join("model.bim");
-    fs::write(&file, r#"{"model":{"tables":[]}}"#).expect("write file");
-
-    let root = dir.path();
-    let rel = file
-        .strip_prefix(root)
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let deleted = compute_deleted_paths(&[rel], root);
-    assert!(deleted.is_empty(), "no files should be reported deleted");
-}
-
-/// S-PIN-11: Deletion sweeps ignore paths that could escape the workspace root.
-#[test]
-fn compute_deleted_paths_ignores_escape_attempts() {
-    let dir = TempDir::new().expect("tempdir");
-    let absolute = dir
-        .path()
-        .join("outside.json")
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let deleted = compute_deleted_paths(
-        &[
-            absolute,
-            "../outside.json".to_string(),
-            "gone.json".to_string(),
-        ],
-        dir.path(),
-    );
-
-    assert_eq!(
-        deleted,
-        vec!["gone.json".to_string()],
-        "only safe workspace-relative paths should participate in deletion sweeps"
-    );
-}
-
-/// S-PIN-23: a workspace-relative symlink that now resolves outside the
-/// workspace is treated as ineligible/deleted instead of preserved by
-/// `Path::exists` following the symlink.
-#[test]
-fn compute_deleted_paths_treats_outside_symlink_target_as_deleted() {
-    let workspace = TempDir::new().expect("workspace tempdir");
-    let external = TempDir::new().expect("external tempdir");
-    let external_file = external.path().join("outside.tmdl");
-    fs::write(&external_file, "table Outside").expect("write external tmdl");
-
-    let link_path = workspace.path().join("linked.tmdl");
-    if !create_symlink_file(&external_file, &link_path) {
-        return;
-    }
-
-    let deleted = compute_deleted_paths(&["linked.tmdl".to_string()], workspace.path());
-
-    assert_eq!(
-        deleted,
-        vec!["linked.tmdl".to_string()],
-        "symlinks resolving outside the workspace must be swept as deleted"
-    );
-}
-
-/// S-PIN-24: deletion sweeps mirror collectors by treating final-component
-/// file symlinks as deleted while preserving regular files and absent paths.
-#[test]
-fn compute_deleted_paths_reports_file_symlink_candidates_as_deleted() {
-    let workspace = TempDir::new().expect("workspace tempdir");
-    let regular_path = workspace.path().join("regular.tmdl");
-    let symlink_target = workspace.path().join("target.tmdl");
-    let symlink_path = workspace.path().join("indexed.tmdl");
-    fs::write(&regular_path, "table Regular").expect("write regular tmdl");
-    fs::write(&symlink_target, "table Target").expect("write target tmdl");
-    if !create_symlink_file(&symlink_target, &symlink_path) {
-        return;
-    }
-
-    let external = TempDir::new().expect("external tempdir");
-    let external_dir = external.path().join("escape");
-    fs::create_dir_all(&external_dir).expect("create external dir");
-    fs::write(external_dir.join("outside.tmdl"), "table Outside").expect("write external tmdl");
-    if !create_symlink_dir(&external_dir, &workspace.path().join("linked-outside")) {
-        return;
-    }
-
-    let deleted = compute_deleted_paths(
-        &[
-            "regular.tmdl".to_string(),
-            "indexed.tmdl".to_string(),
-            "linked-outside/outside.tmdl".to_string(),
-            "absent.tmdl".to_string(),
-        ],
-        workspace.path(),
-    );
-
-    assert_eq!(
-        deleted,
-        vec![
-            "indexed.tmdl".to_string(),
-            "linked-outside/outside.tmdl".to_string(),
-            "absent.tmdl".to_string(),
-        ]
-    );
 }
 
 // ── File collection ───────────────────────────────────────────────────────

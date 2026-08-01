@@ -20,11 +20,11 @@
 //! * `*.tmdl` — folder-based semantic model assets
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
@@ -35,7 +35,9 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    collect_files_in_workspace, collect_files_in_workspace_checked, reconcile_deleted_paths,
+};
 use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
 // ── Hash helpers ──────────────────────────────────────────────────────────
@@ -80,56 +82,9 @@ pub fn compute_tmdl_dax_index_hash_for_version(content: &[u8], version: u32) -> 
     hex::encode(hasher.finalize())
 }
 
-/// Return the subset of `workspace_relative_paths` whose files no longer
-/// exist under `workspace_root`.
-///
-/// Each path in `workspace_relative_paths` is joined to `workspace_root`
-/// before the existence check so that workspace-relative record paths
-/// (as stored in `ContentRecord.file_path`) are handled correctly.
-#[must_use]
-pub fn compute_deleted_paths(
-    workspace_relative_paths: &[String],
-    workspace_root: &Path,
-) -> Vec<String> {
-    let Ok(canonical_root) = workspace_root.canonicalize() else {
-        return workspace_relative_paths.to_vec();
-    };
-
-    workspace_relative_paths
-        .iter()
-        .filter_map(|rel| {
-            let Some(relative_path) = workspace_relative_path(rel) else {
-                warn!(
-                    path = %rel,
-                    "skipping Power BI deletion sweep path that escapes the workspace root"
-                );
-                return None;
-            };
-
-            let candidate = workspace_root.join(relative_path);
-            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
-            is_deleted.then(|| rel.clone())
-        })
-        .collect()
-}
-
 fn last_path_component(path: &str) -> &str {
     let trimmed = path.trim_end_matches(['/', '\\']);
     trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
-}
-
-fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
-    let path = Path::new(rel_path);
-    if path.is_absolute()
-        || path.has_root()
-        || path.components().any(|component| {
-            component == Component::ParentDir || matches!(component, Component::Prefix(_))
-        })
-    {
-        return None;
-    }
-
-    Some(path.to_path_buf())
 }
 
 // ── File collection ───────────────────────────────────────────────────────
@@ -1337,14 +1292,15 @@ pub async fn index_powerbi_source(
     // file currently being indexed (P3).
     let model_scope_schemas = build_model_scope_schemas(&files, workspace_root, max_file_size);
 
-    // Build a map of existing content hashes for change detection.
-    let existing_hashes: HashMap<String, String> = queries
-        .select_content_records(Some("powerbi"))
-        .await?
-        .into_iter()
-        .filter(|record| record.source_path == source.path)
-        .map(|record| (record.file_path, record.content_hash))
-        .collect();
+    // 087.006-T (Unit D): source the hash-skip map from the durable completion
+    // marker (`powerbi_file_index_state`), NOT the content rows. A file counts
+    // as "previously indexed at hash H" only if its marker says so — decoupling
+    // the skip decision from possibly-partial content rows. A partial write
+    // (marker never written because a mid-file `?` aborted) therefore forces a
+    // reprocess on the next run (fail-closed) instead of hash-skipping and
+    // permanently dropping the file's missing summaries.
+    let existing_hashes: HashMap<String, String> =
+        queries.select_powerbi_index_state(&source.path).await?;
 
     // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
     // changed on this pass so unchanged siblings are reprocessed and their
@@ -1363,6 +1319,15 @@ pub async fn index_powerbi_source(
         if is_tmdl_rel_path(prior_rel)
             && dirty_scopes.contains(&canonical_tmdl_model_path(prior_rel))
         {
+            // 087.006-T (100-S review P1-B): drop the stale completion marker
+            // BEFORE the content rows so a mid-rebuild failure leaves the file
+            // marker-absent (reprocess on the next pass) rather than
+            // hash-skipped with an incomplete row set. Marker-first delete /
+            // marker-last write is the crash-safe ordering (mirrors the
+            // notebook sweep's freshness-stamp-first invalidation).
+            queries
+                .delete_powerbi_index_state_by_scope(prior_rel, &source.path)
+                .await?;
             queries
                 .delete_content_records_by_scope(prior_rel, "powerbi", &source.path)
                 .await?;
@@ -1487,6 +1452,14 @@ pub async fn index_powerbi_source(
                 queries.upsert_content_record(record).await?;
             }
 
+            // 087.006-T: write the completion marker LAST — only after every
+            // graph node, edge, and content record above succeeded. A `?` abort
+            // in any prior write leaves the marker absent ⇒ the next run
+            // recomputes `unchanged == false` and reprocesses (fail-closed).
+            queries
+                .upsert_powerbi_index_state(&rel_path, &source.path, &hash)
+                .await?;
+
             result.ingested += 1;
             continue;
         }
@@ -1500,6 +1473,12 @@ pub async fn index_powerbi_source(
         // Delete stale records whenever the hash changed (even if the new content
         // produces no recognisable entities), so orphaned rows do not accumulate.
         if existing_hashes.contains_key(&rel_path) {
+            // 087.006-T (100-S review P1-B): marker-first delete so a crash
+            // between the deletes reprocesses rather than hash-skips with an
+            // incomplete row set.
+            queries
+                .delete_powerbi_index_state_by_scope(&rel_path, &source.path)
+                .await?;
             queries
                 .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
                 .await?;
@@ -1568,6 +1547,12 @@ pub async fn index_powerbi_source(
             queries.upsert_powerbi_edges(&graph_edges).await?;
         }
 
+        // 087.006-T: write the completion marker LAST for the non-TMDL branch,
+        // after every content record + graph write for this file succeeded.
+        queries
+            .upsert_powerbi_index_state(&rel_path, &source.path, &hash)
+            .await?;
+
         result.ingested += 1;
     }
 
@@ -1596,6 +1581,22 @@ pub async fn sweep_deleted_powerbi_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
+    // source root is indistinguishable from a fully-emptied tree by physical
+    // absence alone, so suppress the sweep entirely rather than risk
+    // mass-deleting live records when the root is transiently unavailable (e.g.
+    // an unmounted share). Legitimate source removal is handled by source
+    // de-registration, not the per-file sweep. Mirrors index_powerbi_source's
+    // graceful skip so the indexer and sweep stay consistent.
+    let source_dir = workspace_root.join(&source.path);
+    if !source_dir.is_dir() {
+        debug!(
+            path = %source.path,
+            "Power BI source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let records = queries.select_content_records(Some("powerbi")).await?;
 
     // Collect unique workspace-relative file paths for this source.
@@ -1607,10 +1608,30 @@ pub async fn sweep_deleted_powerbi_files(
         .into_iter()
         .collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let deleted = {
+        // 100-S Unit C: reconcile stored Power BI records against a
+        // completeness-aware collection of the source tree. Deletion is gated
+        // on an authoritative-complete full-index traversal (fail-closed): a
+        // stored record is swept only when it is physically absent, or
+        // superseded by a collected alias path on a `complete` pass. A partial
+        // pass (an unreadable/unresolvable subtree) degrades to
+        // physical-absence-only, so an alias-stale record is retained rather
+        // than wrongly deleted.
+        let collected =
+            collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
+        reconcile_deleted_paths(&known_paths, &collected, workspace_root)
+    };
     let mut removed = 0_usize;
 
     for path in &deleted {
+        // P2-2 / INV-5 + 100-S review P1-B: drop the stale
+        // `powerbi_file_index_state` marker FIRST so a crash between the deletes
+        // leaves the swept path marker-absent (a future re-add reprocesses)
+        // rather than content-absent with a surviving marker that would
+        // hash-skip it. Marker-first delete keeps hygiene crash-safe.
+        queries
+            .delete_powerbi_index_state_by_scope(path, &source.path)
+            .await?;
         queries
             .delete_content_records_by_scope(path, "powerbi", &source.path)
             .await?;
@@ -2129,6 +2150,337 @@ table Sales
             measure_summary.3.contains("DisplayFolder"),
             "measure summary should carry annotation context: {}",
             measure_summary.3
+        );
+    }
+
+    // ── 087.006-T (Unit D): PowerBI content-record atomicity via completion
+    //    marker. DB-backed durability fixtures against a temp-dir Cozo backend.
+
+    fn powerbi_source(path: &str) -> ContentSource {
+        ContentSource {
+            content_type: "powerbi".to_string(),
+            language: None,
+            path: path.to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        }
+    }
+
+    /// RF-6 (durability contract): a prior pass wrote content rows for a Power BI
+    /// file but never wrote the completion marker (a mid-file `?` abort, or a
+    /// pre-marker legacy index). The NEXT run must NOT hash-skip on the surviving
+    /// partial rows — it must reprocess and fully materialize the file's
+    /// summaries. The retired content-row-sourced hash-skip treats the partial
+    /// row as "already indexed at hash H" and permanently drops missing
+    /// summaries.
+    #[tokio::test]
+    async fn partial_write_without_marker_is_reprocessed_not_hash_skipped() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(model_dir.join("model.bim"), &model_json).expect("write model.bim");
+        let rel_path = "models/Sales.SemanticModel/model.bim";
+        let hash = compute_file_hash(model_json.as_bytes());
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-partial-write")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        // Seed a SINGLE partial content row at the file's real hash, with NO
+        // completion marker — the exact partial-write survivor state.
+        let partial = ContentRecord {
+            id: "cr_partial_survivor".to_string(),
+            content_type: "powerbi".to_string(),
+            file_path: rel_path.to_string(),
+            content_hash: hash.clone(),
+            content: "partial survivor".to_string(),
+            embedding: None,
+            source_path: source.path.clone(),
+            file_size_bytes: model_json.len() as u64,
+            ingested_at: Utc::now(),
+            record_kind: "powerbi_table".to_string(),
+            chunk_id: Some("partial:table".to_string()),
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        };
+        queries
+            .upsert_content_record(&partial)
+            .await
+            .expect("seed partial row");
+
+        let result = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("index powerbi");
+
+        assert_eq!(
+            result.unchanged, 0,
+            "a partial-write file (no marker) must not be hash-skipped"
+        );
+        assert!(
+            result.ingested >= 1,
+            "a partial-write file must be reprocessed"
+        );
+
+        let records = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select powerbi records");
+        let for_file: Vec<_> = records
+            .iter()
+            .filter(|record| record.file_path == rel_path)
+            .collect();
+        assert!(
+            for_file
+                .iter()
+                .any(|record| record.id != "cr_partial_survivor"),
+            "reprocessed file must materialize real summary records beyond the partial survivor; got {:?}",
+            for_file.iter().map(|record| &record.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// RF-7 (steady state): with a completion marker present at the current
+    /// hash, an unchanged file is hash-skipped (no needless reprocess); the
+    /// first run (marker absent) reprocesses exactly once and writes the marker.
+    #[tokio::test]
+    async fn marker_gated_steady_state_skips_unchanged_after_first_run() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(model_dir.join("model.bim"), &model_json).expect("write model.bim");
+        let rel_path = "models/Sales.SemanticModel/model.bim";
+        let hash = compute_file_hash(model_json.as_bytes());
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-steady-state")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        // First run: marker absent ⇒ reprocess once, marker written.
+        let first = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("first index");
+        assert_eq!(first.unchanged, 0, "first run (no marker) reprocesses");
+        assert!(first.ingested >= 1, "first run ingests the model");
+
+        let markers = queries
+            .select_powerbi_index_state(&source.path)
+            .await
+            .expect("select markers");
+        assert_eq!(
+            markers.get(rel_path).map(String::as_str),
+            Some(hash.as_str()),
+            "completion marker is written at the file's hash after a full index"
+        );
+
+        // Second run: unchanged + marker present ⇒ hash-skipped.
+        let second = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("second index");
+        assert_eq!(second.ingested, 0, "unchanged file must not be reprocessed");
+        assert_eq!(
+            second.unchanged, 1,
+            "unchanged file is hash-skipped via the completion marker"
+        );
+    }
+
+    // ── 087.005.003-ST (Unit C): fail-closed reconciler wiring + P2-2 marker
+    //    hygiene for the non-TMDL PowerBI deletion sweep.
+
+    #[cfg(unix)]
+    fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+        match std::os::unix::fs::symlink(src, dst) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create directory symlink: {error}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+        match std::os::windows::fs::symlink_dir(src, dst) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create directory symlink: {error}"),
+        }
+    }
+
+    async fn seed_powerbi_record(queries: &CodeGraphQueries, file_path: &str, source_path: &str) {
+        let record = ContentRecord {
+            id: format!("cr_{}", file_path.replace(['/', '.'], "_")),
+            content_type: "powerbi".to_string(),
+            file_path: file_path.to_string(),
+            content_hash: "seed-hash".to_string(),
+            content: "powerbi summary".to_string(),
+            embedding: None,
+            source_path: source_path.to_string(),
+            file_size_bytes: 2,
+            ingested_at: Utc::now(),
+            record_kind: "powerbi_semantic_model".to_string(),
+            chunk_id: None,
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        };
+        queries
+            .upsert_content_record(&record)
+            .await
+            .expect("seed powerbi content record");
+    }
+
+    async fn remaining_powerbi_paths(queries: &CodeGraphQueries, source_path: &str) -> Vec<String> {
+        let mut paths: Vec<String> = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select powerbi records")
+            .into_iter()
+            .filter(|record| record.source_path == source_path)
+            .map(|record| record.file_path)
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// RF-2 (INV-1, alias-supersede for PowerBI): a directory alias makes the
+    /// same real model reachable under two stored paths. On an
+    /// authoritative-complete pass the sweep must drop the alias-stale record
+    /// and retain the collected path — the retired physical-existence sweep kept
+    /// BOTH (fail-open duplicate).
+    #[tokio::test]
+    async fn powerbi_sweep_drops_alias_superseded_record_on_complete_pass() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("pbi");
+        let real_dir = source_dir.join("z");
+        std::fs::create_dir_all(&real_dir).expect("create real dir");
+        std::fs::write(real_dir.join("model.bim"), "{}").expect("write model.bim");
+        if !create_symlink_dir(&real_dir, &source_dir.join("a")) {
+            return; // unprivileged Windows — directory symlink unsupported
+        }
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-alias-sweep")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        seed_powerbi_record(&queries, "pbi/z/model.bim", &source.path).await;
+        seed_powerbi_record(&queries, "pbi/a/model.bim", &source.path).await;
+
+        let removed = sweep_deleted_powerbi_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run powerbi sweep");
+
+        assert_eq!(
+            removed, 1,
+            "exactly the alias-stale record is reconciled away"
+        );
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec!["pbi/z/model.bim".to_string()],
+            "the collected (real-dir) path survives; the alias-stale duplicate is swept"
+        );
+    }
+
+    /// RF-8 (P2-2 / INV-5, marker hygiene): sweeping a genuinely-deleted PowerBI
+    /// file must also drop its `powerbi_file_index_state` completion marker, so a
+    /// deleted path never leaves a stale marker that would wrongly hash-skip a
+    /// future same-path file.
+    #[tokio::test]
+    async fn powerbi_sweep_drops_completion_marker_for_swept_paths() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("pbi");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        std::fs::write(source_dir.join("live.bim"), "{}").expect("write live.bim");
+        // `gone.bim` has a stored record + marker but no file on disk.
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-marker-hygiene")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        seed_powerbi_record(&queries, "pbi/live.bim", &source.path).await;
+        seed_powerbi_record(&queries, "pbi/gone.bim", &source.path).await;
+        queries
+            .upsert_powerbi_index_state("pbi/live.bim", &source.path, "h")
+            .await
+            .expect("seed live marker");
+        queries
+            .upsert_powerbi_index_state("pbi/gone.bim", &source.path, "h")
+            .await
+            .expect("seed gone marker");
+
+        let removed = sweep_deleted_powerbi_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run powerbi sweep");
+
+        assert_eq!(removed, 1, "the physically-absent record is swept");
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec!["pbi/live.bim".to_string()],
+            "the live record is retained"
+        );
+        let markers = queries
+            .select_powerbi_index_state(&source.path)
+            .await
+            .expect("select markers");
+        assert!(
+            markers.contains_key("pbi/live.bim"),
+            "the live file's marker is retained"
+        );
+        assert!(
+            !markers.contains_key("pbi/gone.bim"),
+            "the swept path's completion marker is dropped (P2-2 / INV-5)"
+        );
+    }
+
+    /// Fail-closed source-root guard (100-S review P1): a missing/unreadable
+    /// Power BI source root must sweep nothing, retaining every live record
+    /// rather than mass-deleting on physical absence during a transient unmount.
+    #[tokio::test]
+    async fn powerbi_sweep_skips_when_source_root_missing() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        // Deliberately do NOT create the `pbi` source directory.
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-missing-root")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        seed_powerbi_record(&queries, "pbi/a.bim", &source.path).await;
+        seed_powerbi_record(&queries, "pbi/b.bim", &source.path).await;
+
+        let removed = sweep_deleted_powerbi_files(&source, workspace.path(), &queries)
+            .await
+            .expect("run powerbi sweep");
+
+        assert_eq!(
+            removed, 0,
+            "a missing source root must sweep nothing (fail-closed)"
+        );
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec!["pbi/a.bim".to_string(), "pbi/b.bim".to_string()],
+            "all live records are retained when the source root is unavailable"
         );
     }
 }

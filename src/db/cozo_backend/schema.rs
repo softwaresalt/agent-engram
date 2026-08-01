@@ -90,6 +90,8 @@ fn run_scripts(cozo_db: &cozo::DbInstance) -> Result<(), EngramError> {
         CREATE_LINEAGE_EDGE,
         CREATE_LINEAGE_EDGE_EVIDENCE,
         CREATE_LINEAGE_INDEX_STATE,
+        // 087.006-T: Power BI content-record durability completion marker
+        CREATE_POWERBI_FILE_INDEX_STATE,
     ];
 
     for script in &scripts {
@@ -1293,6 +1295,27 @@ pub const CREATE_LINEAGE_INDEX_STATE: &str = r#"
     =>
     extractor_version: String,
     indexed_at: String,
+}
+"#;
+
+/// CozoScript `:create` for `powerbi_file_index_state` — the Power BI content
+/// durability completion marker (087.006-T).
+///
+/// Composite key `{file_path, source_path}`. A row is written **only after**
+/// every graph node, edge, and content record for that file has persisted, so
+/// the marker is the authoritative "fully indexed at `content_hash`" signal.
+/// `index_powerbi_source` gates its hash-skip on this marker rather than on the
+/// (possibly partial) `content_record` rows, so a mid-file write failure leaves
+/// the marker absent and forces a safe reprocess (fail-closed) instead of
+/// permanently hash-skipping the missing summaries. Mirrors the `file_hash` /
+/// `lineage_index_state` completion-marker precedent.
+pub const CREATE_POWERBI_FILE_INDEX_STATE: &str = r#"
+:create powerbi_file_index_state {
+    file_path: String,
+    source_path: String
+    =>
+    content_hash: String,
+    completed_at: String,
 }
 "#;
 
