@@ -61,7 +61,7 @@ Deferred low: `99AFF44B`, `05EA3D39`, `FDE88E46`, `1E70A289`, `21A4D1DE`, `7AB15
 - Execute `107.001-T` RED before `107.002-T` GREEN.
 - Verify exact caller and target identity on full index and incremental sync, not edge existence alone.
 - Require zero wrong-origin edges, no arbitrary staged caller row, a non-zero ambiguity-drop signal, and an unchanged unique-caller control.
-- Check whether an affected PR #301 binary was already published. If yes, include and verify a full reindex checkpoint to clear persisted wrong-origin edges; if no, record that no backfill is needed.
+- Check whether an affected PR #301 binary was published. If exposed, Ship only writes a target-specific operator handoff; the operator alone runs and verifies any full reindex. Ship never executes it, even after approval, and never mutates or repairs the workspace. If not exposed, record no migration/backfill.
 - Roll back on any wrong-origin edge, producer asymmetry, or unique-caller recall loss.
 
 ## Workspace notes and failed approaches

@@ -3,7 +3,7 @@ name: _Orchestrator
 description: "Coordinates the Stage → Ship pipeline for continuous iteration: routes stash intake through Stage and queued shipments through Ship"
 maturity: stable
 tools: vscode, execute, read, agent, edit, search, web, 'microsoft-docs/*', 'backlogit/*', ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo
-model_routing: "Tier 2 (Standard)"  # DEPRECATED — use model_tier
+model_routing: "Tier 3 (Frontier)"  # DEPRECATED — use model_tier
 model_tier: 3
 max_subagent_tier: 3
 reasoning_effort: "xhigh"
@@ -96,13 +96,14 @@ Before any pipeline work begins, verify tool availability per P-012. Probe requi
 
 ### Step 2: Route to Ship (when a queued shipment is ready)
 
-**Trigger**: A `queued` shipment exists AND no active Ship shipment blocks (or pipelined mode permits).
+**Trigger**: A `queued` shipment exists AND no other top-level release unit is `active`, unless the operator explicitly supplies `skip_policy: P-001`.
 
-1. Select the highest-priority queued shipment.
-2. Enforce P-001: confirm no other top-level release unit is `active` (unless pipelined mode).
-3. Invoke the **Ship** subagent with the `shipment_id`.
-4. Receive Ship's output: record merge SHA and any follow-up stash items.
-5. If Ship halts or fails: surface the failure to the operator.
+1. If the operator designated an ordered batch, require every shipment in that batch to have a unique structured `custom_fields.operator_order`. Halt on any missing or duplicate value; do not fall back to priority.
+2. Select the lowest-order queued shipment from an operator-ordered batch before applying ordinary priority selection. Otherwise, select the highest-priority queued shipment.
+3. Enforce P-001. Pipelined mode permits Stage alongside the one active Ship release; it does not authorize another Ship execution. Only an explicit operator `skip_policy: P-001` overrides this gate.
+4. Invoke the **Ship** subagent with the `shipment_id`. Require Ship, immediately before claim, to re-read the ordered batch and halt if any lower-order shipment remains `queued`.
+5. Receive Ship's output: record merge SHA and any follow-up stash items.
+6. If Ship halts or fails: surface the failure to the operator.
 
 ### Step 3: Iteration Decision
 
@@ -127,7 +128,7 @@ Present the session outcome: shipments planned, executed, and archived; stash en
 
 ## Model Routing
 
-This agent operates at **Tier 2 (Standard)** — orchestration and coordination.
+This agent operates at **Tier 3 (Frontier)** — orchestration and coordination.
 
 ## Subagent Depth
 

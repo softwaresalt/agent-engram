@@ -53,10 +53,14 @@ Deferred active stash IDs: `5765BAAB`, `FF55E51A`, `88EB5FB1`, `98CF66D5`, `9588
 
 1. Claim and complete higher-priority `102-S` first.
 2. Claim `103-S` without changing planning scope.
-3. Execute `108.002-T` before `108.001-T`; both require TDD/harness-ready handling and disposable fixtures.
-4. Stop and return blocked on a public test seam, flaky timing/permission test, broader non-empty teardown, control recall loss, contract widening, task >2h/>2 files/>4 scenarios, or any need to repair an operator workspace.
+3. Execute `108.002-T` before `108.001-T`; both require TDD/harness-ready handling in disposable fixtures only. Ship never reads for repair, reindexes, repairs, or mutates an operator workspace. Released exposure receives an operator-only target handoff.
+4. Stop and return blocked on a public seam, flaky timing/permission test, broader non-empty teardown, control recall loss, contract widening, task >2h/>2 files, a fourth 108.002-T scenario, or any operator-workspace read/repair/reindex/mutation. Approval does not widen Ship scope.
 5. Runtime rollback triggers: current snapshot published after partial error, live/read-failed file eviction, non-zero dangling rows, wrong edge, lost control edge, or clean-path permanent reparse.
 
 ## Boundary confirmation
 
 Stage did not modify source/tests/config, run builds/tests/linters, create or switch branches, commit/push, create PRs, claim/close shipments, or perform Ship work.
+
+## Fresh containment/scenario review — 2026-08-01
+
+This section is the current disposition. `108.002-T` has exactly three RED scenarios/phases preserving portable read-failure, retry-state, and clean-control evidence. Ship uses disposable fixtures only and never reads for repair, reindexes, repairs, or mutates an operator workspace, even after approval. If released exposure needs workspace action, Ship writes a target-specific operator handoff and the operator alone executes it. Fresh hardening/persona review under the configured `.Stage` model returned PASS with no open P0-P3.

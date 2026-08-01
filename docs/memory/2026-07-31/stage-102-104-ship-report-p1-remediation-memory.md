@@ -11,7 +11,7 @@ Remediated only the valid Ship report-only P1 findings in the existing 102-S/103
 ## Decisions
 
 - 104-S generation ownership: a producer carries the generation captured atomically with its workspace/config snapshot into publication. Under pending_sync, newer replaces, equal coalesces, and older is ignored. The paused-G then owning-G+1 RED case remains required.
-- 102-S release exposure: Ship detects exposure and prepares an operator-approved handoff for a named target workspace. No automatic user/deployed workspace mutation; verification follows operator execution or explicit approval. No affected binary means record no migration/backfill.
+- 102-S release exposure: Ship only detects exposure and writes a target-specific operator handoff. The operator alone runs and verifies any full reindex. Ship never executes it, even after approval, and never mutates or repairs the workspace. No affected binary means no migration/backfill.
 - Shipment order: priority plus custom_fields.operator_order encode 102-S=1, 103-S=2, 104-S=3 without technical dependencies.
 
 ## Validation
@@ -105,3 +105,19 @@ No source, tests, config, agents, stash, task/shipment creation, shipment claim/
 - Targeted `git diff --check` passed.
 - Backlogit SQL/MCP state checks passed: 104-S, 109-F, and 109.001-T through 109.004-T are blocked; 109.001-R remains accepted with the block label; 102-S/103-S remain queued with operator_order 1/2 and unchanged update timestamps from session intake.
 - Full backlogit doctor reported no findings; the working-tree path set gained no source, tests, config, agents, or stash changes. End-of-session backlog index sync is the final action after these checks.
+
+
+## 2026-08-01 fresh pre-PR findings remediation — current superseding disposition
+
+This section supersedes every earlier 102-S reindex-execution statement and every earlier 109-F technical PASS statement in this memory.
+
+- 102-S/107-F: Ship only detects release exposure and writes a target-specific operator handoff. The operator alone runs and verifies any deployed/user-workspace full reindex; Ship never executes it after approval and never mutates or repairs that workspace.
+- 109.002-T: two-file `state.rs` + `lifecycle.rs` GREEN returns/consumes one opaque `pub(crate)` transition token containing the generation-specific cancel receiver.
+- 109.006-T: `DispatchSnapshot` exposes a crate-private opaque generation token and `write.rs` adopts it directly; no mismatch retry, exhaustion error, or response change.
+- 109.007/109.008: exactly three RED scenarios cover combined stale lost-lock pending/heavy, stale acquired-lock validation against the exact workspace/config/generation snapshot, and same-G re-arm/drain.
+- 109.003-T explicitly permits only a private cfg(test)-only pause seam between failed CAS and publication.
+- All cross-module token APIs are `pub(crate)` with private fields; legacy unqualified publishers do not remain a public bypass. Function caps count every touched production function and intermediate states must build.
+- 104-S manifest items are now topological after 109-F.
+- Fresh hardening/persona review under the configured `.Stage` model returned PASS with no open P0-P3.
+
+No source, tests, config, agents, stash, commit, push, PR, shipment claim/close, or forbidden 025-S/081-S/015-D/017-D state changed.

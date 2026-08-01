@@ -6,7 +6,7 @@ source: docs/decisions/2026-07-31-ordinary-index-fail-closed-followups-decision.
 source_stash: [6487F516, 75DAF33D]
 priority: medium
 width: "non-forced full-index reconciliation in src/services/code_graph.rs"
-status: "reviewed + hardened — gate PASS"
+status: "reviewed + hardened — fresh containment/scenario PASS"
 ---
 
 ## Problem frame
@@ -19,7 +19,7 @@ The sync path already provides the model for authoritative empty-read eviction t
 
 | Requirement | Implementation action | Verification |
 |---|---|---|
-| R1 Preserve topology retry state after partial index errors | Gate canonical snapshot publication on `result.errors.is_empty()`; on error restore the loaded previous snapshot, or leave absent when none existed | Synthetic error-policy test covers previous and absent cases; clean topology control still advances |
+| R1 Preserve topology retry state after partial index errors | Gate canonical snapshot publication on `result.errors.is_empty()`; on error restore the loaded previous snapshot, or leave absent when none existed | Portable invalid-UTF-8 fixture proves the real read-error path, retained retry state, and a clean control |
 | R2 Retry on the next clean ordinary index | Preserve old/absent snapshot so package symmetric-difference logic remains conservative | Existing package-topology ordinary-index test remains green; targeted policy assertions prove the retry input is retained |
 | R3 Evict a previously indexed zero-byte file after authoritative content read | Before hash/parse, use the shared `handle_deleted_file` primitive when the code-file record exists | Regression with an emptied file plus unchanged sibling asserts path state and all call edges are removed |
 | R4 Never delete on metadata/read failure | Keep the zero-byte decision after successful `read_to_string`; read errors retain old graph state and are reported | Negative assertions in both units; no metadata-only deletion |
@@ -29,32 +29,30 @@ The sync path already provides the model for authoritative empty-read eviction t
 
 ### Unit 1 — Fail-closed canonical snapshot publication and retry state
 
-**Source:** stash `6487F516`.  
-**Width:** full-index canonical-topology persistence.  
-**Files:** `src/services/code_graph.rs`; optionally one focused test file if the policy cannot be tested inline without exposing internals.  
-**Functions:** snapshot finalization helper plus the existing `index_workspace_impl` call site; fewer than five functions.  
-**Scenarios:** two error-state cases plus one existing clean control.  
-**Estimate:** 60–100 minutes.  
+**Source:** stash `6487F516`.
+**Width:** full-index canonical-topology persistence.
+**Files:** `src/services/code_graph.rs` plus at most one focused integration test.
+**Functions:** snapshot finalization plus the existing `index_workspace_impl` call site; fewer than five production functions.
+**Scenarios:** exactly three deterministic scenarios/phases; no fourth case.
+**Estimate:** 70–100 minutes.
 **Execution posture:** test-first.
 
-1. RED: introduce a focused policy test around snapshot finalization with a synthetic `FileError`:
-   - when a previous snapshot exists and the current run has an error, the stored snapshot remains the previous topology;
-   - when no previous snapshot exists and the current run has an error, no current snapshot is published;
-   - a clean run publishes the current topology.
-2. GREEN: replace the unconditional `replace_index_canonical_workspace_snapshot(&canonical_workspace)` with a private, fallible finalization step. Publish current only for an error-free run. Otherwise restore the previously loaded snapshot when present; if absent, leave the relation empty so the next ordinary index recomputes every Python file conservatively.
-3. Keep the helper private or crate-internal; do not add an MCP/CLI/public API or a feature flag solely for testing. If a deterministic test would require a public failpoint, stop and return the item to Stage rather than widening the contract.
-4. Preserve error propagation: failure to restore/publish the snapshot returns `EngramError` and must not advance extraction markers.
+1. **R1a portable read-failure:** initial ordinary index of valid `p/mod.py` without `p/__init__.py`; add the package marker, replace the descendant with invalid UTF-8, run ordinary index, and assert the targeted read error, retained prior snapshot (or absent state when there was no prior), and unchanged extraction markers.
+2. **R1b retry-state evidence:** restore the exact original valid bytes and run ordinary index. Despite the original matching hash, preserved old/absent topology state forces parsing and canonical identity becomes `p.mod.cf`.
+3. **R1c clean control:** run one further clean ordinary index and assert current topology is published and the unchanged descendant hash-skips, proving no permanent reparse loop.
 
-**Atomic exit:** a partial index cannot certify the new topology snapshot, while a clean index still publishes it.
+GREEN publishes current topology only for an error-free run; otherwise it restores the loaded previous snapshot or leaves the relation absent. Snapshot restore/publish failure propagates as `EngramError` before marker certification. No synthetic-only test, public failpoint, permission/timing fixture, schema retry relation, or response change is allowed.
+
+**Atomic exit:** a partial index cannot certify current topology, the next clean run retains its retry obligation, and a subsequent clean control converges.
 
 ### Unit 2 — Authoritative empty-file eviction parity on ordinary index
 
-**Source:** stash `75DAF33D`.  
-**Width:** full-index file teardown.  
-**Files:** `src/services/code_graph.rs` plus one focused integration test, preferably `tests/integration/index_fail_closed_reconciliation_test.rs`.  
-**Functions:** `index_workspace_impl` and existing test helpers; fewer than five functions.  
-**Scenarios:** one positive eviction case and one never-indexed-empty/no-op control.  
-**Estimate:** 60–100 minutes.  
+**Source:** stash `75DAF33D`.
+**Width:** full-index file teardown.
+**Files:** `src/services/code_graph.rs` plus one focused integration test, preferably `tests/integration/index_fail_closed_reconciliation_test.rs`.
+**Functions:** `index_workspace_impl` and existing test helpers; fewer than five functions.
+**Scenarios:** one positive eviction case and one never-indexed-empty/no-op control.
+**Estimate:** 60–100 minutes.
 **Execution posture:** test-first.
 
 1. RED: index an ordinary workspace containing an edge-bearing file and an unrelated control file. Rewrite the edge-bearing file to zero bytes, leave the control byte-identical, run non-forced `index_workspace`, and assert:
@@ -90,7 +88,7 @@ Unit 2 depends on Unit 1 only for execution order and same-file conflict avoidan
 - Restoring the prior snapshot is an additional DB write on an error path. Its failure must propagate and keep extraction markers uncertified.
 - Empty-file eviction deletes derived graph state. The authoritative content read and unchanged-file control are mandatory safety floors.
 - Both tasks touch `index_workspace_impl`; dependency order is required to avoid conflict and accidental loss of Unit 1 invariants.
-- A private synthetic policy test is less end-to-end than a real cross-platform read failure. Ship must not replace determinism with permission-dependent or timing-dependent tests.
+- The RED must exercise the real portable invalid-UTF-8 read-error path. Ship uses disposable fixtures only and must not substitute permission-dependent, timing-dependent, or operator-workspace tests.
 - General non-empty stale-direct-edge teardown is intentionally not claimed. If the RED fixture proves the defect is broader, stop and return the expanded scope to Stage.
 
 ## Plan hardening signals
@@ -120,7 +118,7 @@ Runtime surface: ordinary full indexing of files truncated to zero bytes. Before
 - **SLIs:** index error count, files reconciled, dangling call rows, target edge presence for unchanged controls, and canonical identity after a topology retry.
 - **Baseline:** clean focused fixtures report zero errors and zero dangling edges; unchanged control edges remain present.
 - **Rollback trigger:** any live/unreadable file is evicted, any new wrong edge appears, a partial run publishes current topology, or an empty path retains graph rows.
-- **Rollback:** revert the release unit and run a clean forced reindex on affected derived workspaces; no source data or schema rollback is needed.
+- **Rollback:** stop release and revert the release-unit code. Ship does not repair or mutate any operator workspace. If released exposure needs derived-state repair, Ship writes a target-specific operator handoff and the operator alone decides and executes it; no source data or schema rollback is needed.
 - **Observation window:** Ship/operator watches the first clean and first partial ordinary-index cycles in runtime verification and records outcome in operational closure.
 - **Owner:** Ship during implementation and immediate post-merge validation; operator for released-binary observation.
 
@@ -166,8 +164,8 @@ Daemon startup/IPC hangs (`015-D`), sync-generation races (`FF55E51A`, `88EB5FB1
 - **summary:** treat an authoritative zero-byte content read as deletion of derived graph state through `handle_deleted_file`.
 - **targets:** the per-file ordinary-index loop and focused tests.
 - **change_kind:** derived-index row deletion; no source-file or schema mutation.
-- **rollback:** revert the implementation and force-reindex affected derived workspaces from unchanged source files.
-- **approval_required:** no additional approval for temp-fixture execution; any operator-workspace repair reindex is a human checkpoint.
+- **rollback:** revert the implementation. Ship may rebuild only disposable fixture state; any released target receives an operator-only handoff.
+- **approval_required:** no additional approval for disposable-fixture execution; Ship is never authorized to repair or mutate an operator workspace.
 - **ActionRisk:** moderate.
 - **ActionResult:** planned.
 
@@ -190,7 +188,7 @@ Daemon startup/IPC hangs (`015-D`), sync-generation races (`FF55E51A`, `88EB5FB1
 | Owner | Ship during branch/runtime verification; operator for released-binary observation |
 | Observation window | Targeted RED/GREEN plus one clean and one partial ordinary-index cycle before merge; first ordinary-index cycle after release if the binary reaches users |
 | Rollback trigger | A live file is evicted, a wrong edge appears, retry state is erased, control recall falls, or the clean path loops/reparses indefinitely |
-| Rollback procedure | Stop release, revert the release-unit commit, and rebuild derived graph state from source with a verified forced reindex; no schema/data migration rollback |
+| Rollback procedure | Stop release and revert the release-unit commit. Rebuild only disposable fixture state. For released exposure, write a target-specific operator handoff; the operator alone executes any workspace repair. |
 
 ### Dark-mode execution conditions and stop triggers
 
@@ -201,56 +199,44 @@ Ship may execute unattended only in temporary test workspaces and only after hig
 3. the defect proves to include non-empty changed-file teardown or another subsystem;
 4. cleanup touches any path other than the authoritatively empty file or loses the unchanged control;
 5. snapshot restore/publish ordering cannot guarantee markers remain uncertified after failure;
-6. either task exceeds the two-hour/single-width budget or needs more than two implementation files/four scenarios;
+6. either task exceeds the two-hour/single-width budget or needs more than two implementation files; Unit 1 exceeds three scenarios or Unit 2 exceeds its declared scenario cap;
 7. any build/test gate exposes a regression outside the declared full-index surface;
-8. repair would require mutating an operator workspace rather than a disposable fixture — pause for human approval.
+8. any step would read, repair, reindex, or otherwise mutate an operator workspace — stop and return blocked; approval does not convert that action into Ship scope.
 
 No unresolved operator decision blocks safe staging.
 
-### Unit 1 verification amendment — deterministic end-to-end read failure
+### Unit 1 verification amendment — exactly three deterministic scenarios
 
-This amendment is authoritative and supersedes the earlier synthetic-policy-only option. No failpoint or injectable reader is needed. Use invalid UTF-8 bytes to make `tokio::fs::read_to_string` fail deterministically and portably while file discovery still includes the `.py` path:
-
-1. Initial ordinary index: `p/mod.py` contains valid bytes and `p/__init__.py` is absent; record the valid bytes and confirm the function canonical path is empty.
-2. Add `p/__init__.py`, replace `p/mod.py` with invalid UTF-8 bytes, then run ordinary index. Assert exactly the targeted read error is present and the stored canonical-workspace snapshot remains the previous topology (or is absent under the no-prior variant).
-3. Restore the exact original valid bytes to `p/mod.py` and run ordinary index again. Because its hash matches the originally indexed content, only preserved old/absent topology state can force recomputation past hash-skip. Assert `files_parsed` includes the descendant and its canonical path becomes `p.mod.cf`.
-4. Run one additional clean ordinary index and assert the current snapshot is now published and the descendant hash-skips, preventing a permanent reparse loop.
-
-This fixture is cross-platform, sleep-free, private-surface-free, and exercises the actual `result.errors` flow plus the next-run retry obligation end to end. Unit 1 remains within two files and four scenarios.
+This amendment is authoritative. Unit 1 has exactly three scenarios/phases: R1a portable invalid-UTF-8 read failure with snapshot/marker retention, R1b restored-byte retry-state recomputation past the matching hash, and R1c one clean publication/hash-skip control. The previous no-prior state remains a production invariant but may be covered within R1a setup or existing tests; it must not create a fourth RED scenario. No public failpoint, injectable reader, permission trick, sleep, or operator workspace is permitted.
 
 ### Unit 2 accounting amendment — preserve the wire contract
 
 This amendment is authoritative and supersedes the earlier instruction to increment reconciliation accounting. `IndexResult.files_reconciled` is documented specifically for previously indexed files evicted by forced-index indexed-minus-discovered reconciliation. Do not repurpose that public response field for an on-disk empty file. Count the zero-byte path as `files_skipped` after teardown, and make acceptance depend on persisted-state assertions rather than a new or redefined counter. No response schema or field semantics change is allowed.
 
-## Plan review
+## Plan Review - Fresh Containment and Scenario-Width Cycle: PASS
 
-**Gate decision: PASS**  
-**Review cycles:** 1 remediation cycle; no open P0/P1/P2 findings.  
-**Hardening:** required and satisfied.  
-**Model routing:** all personas evaluated with the configured Stage model because reviewer-subagent files/tooling were unavailable; no model override. Cross-model diversity is preferred but not gate-blocking.
+**Review date:** 2026-08-01
+**Hardening:** required and satisfied.
+**Model routing:** configured `.Stage` model with no override; all persona lenses used the caller model.
 
-### Remediated gate findings
+**Gate:** PASS. No open P0, P1, P2, or P3 finding remains.
 
-| ID | Persona | Severity | Finding | Disposition |
-|---|---|---|---|---|
-| PR-1 | Rust Reviewer / Constitution Reviewer | P1 | The initial synthetic snapshot-policy test did not prove the actual per-file `result.errors` path or next-clean-index retry end to end | Fixed before gate: the Unit 1 verification amendment uses deterministic invalid UTF-8, restores original bytes, and proves recomputation past an otherwise matching hash, with no public seam |
-| PR-2 | Agent-Native Parity / Scope Boundary | P1 | Reusing `IndexResult.files_reconciled` for empty on-disk files would change a documented response-field meaning tied to forced indexed-minus-discovered eviction | Fixed before gate: Unit 2 accounting amendment uses existing `files_skipped`; acceptance relies on persisted-state checks and no wire semantics change |
+### Findings
 
-### Final persona results
+- P0: none.
+- P1 resolved: Ship execution is limited to disposable fixtures. Ship never reads for repair, reindexes, repairs, or otherwise mutates an operator workspace, even after approval; released exposure receives a target-specific operator handoff for operator-only execution.
+- P1 resolved: `108.002-T` RED is exactly three scenarios/phases while retaining portable read-failure, retry-state, and clean-control evidence.
+- P2 resolved from the original cycle: `files_reconciled` semantics remain unchanged and Unit 2 relies on persisted-state assertions.
+- P3: none.
 
-- **Constitution Reviewer:** PASS. Both units are test-first, bounded below two hours, avoid unsafe/error swallowing, and leave all build/source execution to Ship.
-- **Rust Reviewer:** PASS. Existing `Result<_, EngramError>` and `?` propagation are preserved; no unwrap/expect is planned in production; deterministic invalid UTF-8 avoids OS-specific permission tricks and public failpoints.
-- **Scope Boundary Auditor:** PASS. Two tasks remain within one full-index service width and at most two files each. Unit 2 is serialized after Unit 1 because both edit `index_workspace_impl`. Daemon lifecycle, sync, schema, CLI, PowerBI, Spark, and generalized non-empty teardown stay excluded.
-- **Learnings Researcher:** PASS. The plan incorporates the hash-skip/revalidation learning and preserves 101-F/103-F/105-F clean-pass marker, eviction, post-pass, and dangling-sweep order. No known compound resolution is contradicted.
-- **Architecture Strategist:** PASS. Snapshot retry is solved by conservative state restoration rather than a new retry relation; empty cleanup reuses `handle_deleted_file` rather than duplicating teardown.
-- **Agent-Native Parity Reviewer:** PASS. Direct CLI and daemon/MCP routes share the same service implementation; no new tool, flag, response field, or divergent path is introduced.
-- **Security Lens:** not triggered; no auth, secrets, external trust boundary, or sensitive-data surface.
-- **Adversarial review:** not triggered; final review has fewer than three P0/P1 findings and the work is not security/compliance-sensitive.
+### Persona results
 
-### Runtime verification and closure check
+- Constitution Reviewer: PASS. Both tasks remain test-first, <=2 files, <=100 minutes, and single-width.
+- Rust Reviewer: PASS. Invalid UTF-8 exercises the real fallible read path and `EngramError` propagation without a public seam.
+- Scope Boundary Auditor: PASS. Runtime work is disposable-fixture-only; no operator-workspace mutation or generalized teardown enters scope.
+- Learnings Researcher: PASS. Hash-skip retry and clean-pass marker guidance remain preserved.
+- Architecture Strategist: PASS. Conservative snapshot restoration and shared teardown remain the minimal designs.
+- Agent-Native Parity Reviewer: PASS. No CLI/MCP field, response meaning, or route divergence changes.
+- Security Lens Reviewer: not triggered.
 
-PASS. The hardened plan names clean and partial fixtures, raw-row checks, marker/snapshot checks, unchanged controls, monitoring signals, baseline, alert threshold, owner, observation window, rollback triggers, and dark-mode stop conditions. Runtime actions are limited to disposable fixtures unless a human explicitly approves operator-workspace repair.
-
-### Harvest authorization
-
-The plan is structurally complete, hardened, reviewed, and cleared for harvest into one parent feature with two single-width tasks. Parent-first creation is mandatory. Preserve stash provenance on each task, wire Unit 2 as blocked by Unit 1, add the parent before children to the shipment, and archive only stash `6487F516` and `75DAF33D` after hierarchy and shipment verification.
+**Decision:** keep 108-F, its two tasks, and queued 103-S. Execute `108.002-T` before `108.001-T` in disposable fixtures only.
