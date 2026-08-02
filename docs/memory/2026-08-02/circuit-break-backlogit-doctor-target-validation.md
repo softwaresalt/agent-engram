@@ -12,7 +12,15 @@ attempts: 5
 
 ## Failure Chain
 
-Five parallel target checks returned the same scope error: path outside workspace storage root for queue/... or archive/... targets.
+Five checks were launched in one parallel batch before any result returned:
+
+1. `queue/104-S.md`
+2. `queue/109-F.md`
+3. `archive/109.001-R-plan-review-post-105-pending-sync-generation-and-startup-han.md`
+4. `queue/109.001-T.md`
+5. `queue/109.013-T.md`
+
+Every check returned the same scope error: path outside workspace storage root. The universal breaker threshold is three attempts; checks four and five were already in flight when the first three failures became observable. The optional operation was stopped after that batch and was not retried.
 
 ## Context
 

@@ -12,8 +12,6 @@ head_examined: "538e0ab95ce1ad2ecb77925950f89e63d6d74f58"
 tags: ["daemon", "pending-sync", "generation", "ownership", "concurrency"]
 ---
 
-# Post-105 sync coordinator redesign
-
 ## Executive decision
 
 Freeze the current 109-F implementation plan and retain all existing provenance. The next executable work is one bounded proof task, `109.013-T`, for a single authoritative synchronization coordinator. Shipment `104-S`, feature `109-F`, and the twelve existing implementation tasks remain blocked until that proof closes the public compatibility and deterministic RED questions and a revised implementation plan receives a fresh PASS.

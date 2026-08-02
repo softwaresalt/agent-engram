@@ -12,8 +12,6 @@ time_box: "110 minutes"
 tags: ["spike", "concurrency", "pending-sync", "compatibility", "red-proof"]
 ---
 
-# Bounded proof for post-105 sync coordinator
-
 ## Problem frame
 
 The current 109-F implementation plan failed three adversarial review cycles because it never established one authority for generation, indexing ownership, pending-mask ownership, and hydration handoff. Source evidence supports a mutex-protected `SyncCoordinator`, but two source-coupled questions remain unsafe to settle through more prose:
@@ -118,19 +116,21 @@ Hardening is required because the spike probes public synchronization contracts 
 
 Reinforcing sources: strict-safety instructions; concurrency instructions; circuit breaker instructions; the packed-mask, take-before-lock, finish-and-drain, public-visibility, and review-divergence compound learnings; and the current source contracts listed in the redesign decision.
 
-**ProposedAction PA-1**  
-Summary: create temporary co-located private RED proof in at most `state.rs` and `lifecycle.rs`.  
-ActionRisk: moderate.  
-Approval required: future build-capable executor follows normal Ship safeguards; Stage does not execute.  
-Rollback: discard the temporary proof changes after evidence capture unless a later reviewed implementation plan explicitly retains them.  
-ActionResult: planned.
+**ProposedAction PA-1**
 
-**ProposedAction PA-2**  
-Summary: classify public compatibility without widening public API.  
-ActionRisk: moderate.  
-Approval required: any semver-visible change requires a new operator decision and cannot be inferred from spike success.  
-Rollback: retain existing public signatures and report pivot if no safe adapter exists.  
-ActionResult: planned.
+* Summary: create temporary co-located private RED proof in at most `state.rs` and `lifecycle.rs`
+* ActionRisk: moderate
+* Approval required: future build-capable executor follows normal Ship safeguards; Stage does not execute
+* Rollback: discard the temporary proof changes after evidence capture unless a later reviewed implementation plan explicitly retains them
+* ActionResult: planned
+
+**ProposedAction PA-2**
+
+* Summary: classify public compatibility without widening public API
+* ActionRisk: moderate
+* Approval required: any semver-visible change requires a new operator decision and cannot be inferred from spike success
+* Rollback: retain existing public signatures and report pivot if no safe adapter exists
+* ActionResult: planned
 
 Stop and report pivot if the proof requires a public test seam, a third production file, a fifth scenario, sleeps, a second queue, a double drain, a mutex across await, or a public contract change.
 
@@ -153,7 +153,6 @@ Stop and report pivot if the proof requires a public test seam, a third producti
 ### Gate rationale
 
 The plan is executable as a bounded investigation and cannot leak into implementation by status or shipment membership. A successful spike is necessary but not sufficient to re-queue `104-S`. The implementation architecture still requires a revised hardened plan and a fresh zero-P0/P1 PASS.
-
 
 ## Phase 5A current-main revalidation and acceptance contract
 
@@ -195,23 +194,25 @@ The spike has no runtime rollout. Its findings must carry these requirements int
 
 Requires plan hardening: **yes — satisfied**. Concurrency authority, public compatibility, and future runtime rollback are high-blast-radius signals. The hardened stop conditions remain: public test seam, third proof file, fifth scenario, release-mode production behavior, second queue, producer reacquire, double drain, mutex across await, semver-visible change without a new decision, or work beyond 110 minutes.
 
-**ProposedAction PA-3**  
-Summary: execute compile-then-fail proof only in disposable test state.  
-Targets: co-located #[cfg(test)] modules in state.rs and lifecycle.rs.  
-Change kind: temporary research edit.  
-ActionRisk: moderate.  
-Approval required: normal Ship execution safeguards; no 104-S claim.  
-Rollback: discard all temporary edits after evidence capture.  
-ActionResult: planned.
+**ProposedAction PA-3**
 
-**ProposedAction PA-4**  
-Summary: carry monitoring and full-release-unit rollback obligations into the replacement implementation plan.  
-Targets: future plan and operational closure only.  
-Change kind: planning constraint.  
-ActionRisk: high for eventual runtime implementation; no runtime action in this spike.  
-Approval required: fresh Stage hardening and zero-P0/P1 review before requeue.  
-Rollback: keep 104-S, 109-F, and implementation tasks blocked.  
-ActionResult: planned.
+* Summary: execute compile-then-fail proof only in disposable test state
+* Targets: co-located `#[cfg(test)]` modules in `state.rs` and `lifecycle.rs`
+* Change kind: temporary research edit
+* ActionRisk: moderate
+* Approval required: normal Ship execution safeguards; no 104-S claim
+* Rollback: discard all temporary edits after evidence capture
+* ActionResult: planned
+
+**ProposedAction PA-4**
+
+* Summary: carry monitoring and full-release-unit rollback obligations into the replacement implementation plan
+* Targets: future plan and operational closure only
+* Change kind: planning constraint
+* ActionRisk: high for eventual runtime implementation; no runtime action in this spike
+* Approval required: fresh Stage hardening and zero-P0/P1 review before requeue
+* Rollback: keep 104-S, 109-F, and implementation tasks blocked
+* ActionResult: planned
 
 ## Plan Review — Phase 5A current-main gate
 

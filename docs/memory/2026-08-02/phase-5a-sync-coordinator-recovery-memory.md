@@ -10,8 +10,6 @@ blocked_shipment: 104-S
 spike_shipment: 106-S
 ---
 
-# Phase 5A sync coordinator planning recovery
-
 ## Outcome
 
 Recovered the minimal final 104/109 planning state from commit 044c1c50049ecc32db93b94e9f8ca75eedcd7f2d without branch switching, merge, cherry-pick, source edits, Cargo/build/test execution, commits, pushes, PRs, worktrees, or shipment claims. .Stage frontmatter was verified as Anthropic claude-opus-4.8, Tier 3/high reasoning, with no override.
@@ -26,7 +24,7 @@ Recovered the minimal final 104/109 planning state from commit 044c1c50049ecc32d
 - docs/exec-plans/2026-08-01-post-105-sync-coordinator-spike-plan.md
 - docs/exec-plans/2026-07-31-post-105-pending-sync-residuals-plan.md as superseded/blocked traceability
 
-No 102/103 artifact, preserved-branch stash mutation, old checkpoint, duplicate incident evidence, or old residuals deliberation was restored. Dangling references to the omitted old deliberation were reconciled to the final redesign decision and spike plan.
+No 102/103 artifact, preserved-branch stash mutation, old checkpoint, duplicate incident evidence, or old residuals deliberation was restored. Live dangling references to the omitted old deliberation were reconciled to the final redesign decision and spike plan; the superseded plan keeps only explicit commit-qualified historical provenance for `018-D`.
 
 ## Current-main revalidation
 
