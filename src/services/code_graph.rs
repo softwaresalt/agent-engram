@@ -974,13 +974,27 @@ async fn reresolve_calls_edges_with_canonical_context(
     unsafe_prefixes: &HashSet<String>,
     python_packages: &HashSet<String>,
 ) -> Result<ReresolveResult, EngramError> {
-    let mut result = queries.reresolve_calls_edges().await?;
     let staged: Vec<_> = queries
         .list_staged_calls_with_provenance()
         .await?
         .into_iter()
         .filter(|call| !call.qualifier_kind.is_empty())
         .collect();
+    // Preflight every fallible Python context before the bare-name pass or any
+    // canonical-edge retraction mutates the graph. A staged source can survive
+    // a per-file read failure, and discovering that failure after retraction
+    // would destroy the caller's last known-good canonical edge.
+    let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
+    for call in &staged {
+        if is_py_path(&call.source_file) && !python_context_cache.contains_key(&call.source_file) {
+            let ctx =
+                python_ctx_for_staged_file(ws_path, python_packages, queries, &call.source_file)
+                    .await?;
+            python_context_cache.insert(call.source_file.clone(), ctx);
+        }
+    }
+
+    let mut result = queries.reresolve_calls_edges().await?;
     if staged.is_empty() {
         return Ok(result);
     }
@@ -1035,25 +1049,10 @@ async fn reresolve_calls_edges_with_canonical_context(
     let canonical_index = queries.function_ids_by_canonical_path().await?;
     let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
         HashMap::new();
-    let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
         if is_py_path(&call.source_file) {
-            if !python_context_cache.contains_key(&call.source_file) {
-                // 099.002-T: propagate a post-pass IO/DB failure (do NOT swallow
-                // it via `.ok()?` + `continue`), so the whole pass aborts and the
-                // extraction-version marker is not advanced over an incomplete
-                // materialization.
-                let ctx = python_ctx_for_staged_file(
-                    ws_path,
-                    python_packages,
-                    queries,
-                    &call.source_file,
-                )
-                .await?;
-                python_context_cache.insert(call.source_file.clone(), ctx);
-            }
             let Some((module_path, shadow, caller_names)) =
                 python_context_cache.get(&call.source_file)
             else {
@@ -2015,14 +2014,27 @@ async fn index_workspace_impl(
     // gate). Staged calls (082.002-T) whose callee name is unambiguous
     // (exactly one workspace-global definition) become calls_resolved_singleton
     // edges; ambiguous / unmatched names are skipped to bound false edges.
-    let resolved_calls = reresolve_calls_edges_with_canonical_context(
+    let resolved_calls = match reresolve_calls_edges_with_canonical_context(
         &queries,
         ws_path,
         &crates,
         &unsafe_prefixes,
         &python_packages,
     )
-    .await?;
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            // The snapshot was cleared before discovery. Restore the prior
+            // topology before preserving the post-pass error contract.
+            if let Some(previous) = previous_canonical_workspace.as_ref() {
+                queries
+                    .replace_index_canonical_workspace_snapshot(previous)
+                    .await?;
+            }
+            return Err(error);
+        }
+    };
     // Post-pass singletons are real edge records: include them in the reported
     // edges_created so full-index CLI/API responses do not underreport (082.008-T).
     result.edges_created += resolved_calls.resolved;

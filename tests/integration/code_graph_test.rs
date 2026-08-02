@@ -1836,6 +1836,100 @@ async fn ordinary_index_read_error_retains_topology_snapshot_for_retry() {
     );
 }
 
+/// 108.002-T (R2 regression) — a staged Python source read failure in the canonical
+/// post-pass must propagate without clearing the prior topology snapshot or
+/// retracting the caller's existing canonical edge.
+#[test]
+async fn ordinary_index_post_pass_read_error_preserves_canonical_state() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    write_sample_file(ws, "p/mod.py", "def cf():\n    return 1\n");
+    write_sample_file(ws, "q/mod.py", "def unrelated():\n    return 2\n");
+    write_sample_file(
+        ws,
+        "caller.py",
+        "from p.mod import cf\n\n\ndef run():\n    cf()\n",
+    );
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let initial_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load initial topology snapshot")
+        .expect("initial index must publish a topology snapshot");
+    assert_eq!(
+        initial_snapshot.python_packages,
+        std::collections::HashSet::from(["p".to_owned()]),
+        "the initial snapshot must precede the unrelated q package drift"
+    );
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    let prior_edge = (run_id, cf_id);
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list staged calls");
+    assert!(
+        staged.iter().any(|call| {
+            call.source_file == "caller.py"
+                && call.callee_name == "cf"
+                && !call.qualifier_kind.is_empty()
+        }),
+        "precondition: caller.py must retain its staged Python call; got {staged:?}"
+    );
+    let initial_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list initial canonical edges");
+    assert!(
+        initial_edges.contains(&prior_edge),
+        "precondition: the staged call must have an existing canonical edge; got {initial_edges:?}"
+    );
+
+    // Drift an unrelated package so the prior snapshot is cleared for an
+    // ordinary-index retry, then make the staged caller unreadable. Its
+    // per-file read failure leaves the old staged call for the post-pass.
+    write_sample_file(ws, "q/__init__.py", "# package marker\n");
+    fs::write(ws.join("caller.py"), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("replace staged caller with invalid UTF-8");
+    let error = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect_err("the staged-source post-pass read error must propagate");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("python canonical post-pass") && error_message.contains("caller.py"),
+        "the propagated error must identify the staged Python source; got {error_message}"
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after post-pass error");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load topology snapshot after post-pass error"),
+        Some(initial_snapshot),
+        "a post-pass error must restore the prior topology snapshot"
+    );
+    let retained_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges after post-pass error");
+    assert!(
+        retained_edges.contains(&prior_edge),
+        "preflight must leave the prior canonical edge intact; got {retained_edges:?}"
+    );
+}
+
 // ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
 
 /// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during
