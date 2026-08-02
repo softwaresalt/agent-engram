@@ -5,7 +5,7 @@ date: 2026-07-31
 updated: 2026-08-01
 status: "superseded-blocked (current-head adversarial architecture failure; redesign spike required)"
 source: "docs/decisions/2026-08-01-post-105-sync-coordinator-redesign-decision.md"
-source_deliberation: "018-D"
+historical_source: "044c1c50049ecc32db93b94e9f8ca75eedcd7f2d:.backlogit/archive/018-D.md"
 source_stash: ["FF55E51A", "88EB5FB1", "1E70A289"]
 relates_to: ["105-F"]
 width: "daemon lifecycle pending-sync state machine only"
@@ -20,7 +20,7 @@ This correction makes wrapper floor safety P1 and closes it in `109.009-T` and `
 
 ## Provenance, Scope, and Batch Contract
 
-- Source deliberation: `018-D`; source stash: `FF55E51A`, `88EB5FB1`, `1E70A289`.
+- Historical source deliberation: `018-D`, preserved at commit `044c1c50049ecc32db93b94e9f8ca75eedcd7f2d` as `.backlogit/archive/018-D.md` and intentionally omitted from the minimal recovery; source stash: `FF55E51A`, `88EB5FB1`, `1E70A289`.
 - Archived `105-F` remains immutable. Excluded scopes `015-D`, `017-D`, `025-S`, `081-S`, blocked work, and stash work remain untouched.
 - `102-S`, `103-S`, and `104-S` share `custom_fields.operator_batch: 102-104-integration`, preserve `operator_order` 1, 2, and 3, and carry exact `operator_predecessors` lists `[]`, `[102-S]`, and `[102-S, 103-S]`.
 - Predecessor validation is fail closed. Every listed predecessor ID must exist and have positive terminal shipment evidence such as shipped/merged. Absence, omission, blocked, unknown, unqueryable, or non-terminal state is never inferred as complete.
