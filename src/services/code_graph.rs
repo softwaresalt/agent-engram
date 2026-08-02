@@ -1429,6 +1429,10 @@ async fn index_workspace_impl(
             if source.is_empty() {
                 if let Some(existing) = queries.get_code_file_by_path(&rel_path).await? {
                     handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                    debug!(
+                        path = %rel_path,
+                        "code graph: ordinary index evicted authoritative empty file"
+                    );
                 }
                 result.files_skipped += 1;
                 break 'file;
