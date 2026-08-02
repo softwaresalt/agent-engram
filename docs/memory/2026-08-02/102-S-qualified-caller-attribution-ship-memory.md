@@ -9,8 +9,6 @@ date: 2026-08-02
 author: ship
 ---
 
-# 102-S Ship Memory
-
 ## Outcome
 
 Shipment 102-S shipped through PR #307 as merge commit `89ce5419`. The feature
