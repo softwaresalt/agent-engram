@@ -49,24 +49,26 @@ Line references are from base head `f10ab572082bb93e9f68f65f25095d82edfa512a`.
 | Public method | Current contract | Single-authority classification | Required mapping |
 |---|---|---|---|
 | `is_indexing(&self) -> bool` | Observe global indexing flag | Stable observer | Return whether the coordinator has any owner |
-| `try_start_indexing(&self) -> bool` | Claim global owner without token or kind | Stable legacy claim adapter | One atomic current-floor request with `OwnerKind::LegacyPublic`; production callers migrate to token-qualified permits |
-| `finish_indexing(&self)` | Clear global owner and update timestamp | Stable legacy completion adapter | Complete only the sequenced legacy owner in the coordinator; stale or mismatched completion cannot clear a newer owner |
+| `try_start_indexing(&self) -> bool` | Claim global owner without returning identity | Incompatible with sequenced completion | Replace ownership use with a permit-returning API; the boolean signature cannot identify the owner later |
+| `finish_indexing(&self)` | Clear whichever global owner is current | Incompatible with stale-completion rejection | Require `OwnerPermit` or an RAII guard; unchanged `finish_indexing(&self)` cannot distinguish stale owner A from current owner B |
 | `current_sync_generation(&self) -> u64` | Observe raw generation | Stable observer | Return the coordinator floor; internal callers use opaque `GenerationToken` |
 | `set_pending_sync(&self)` | Arm routine bit at current generation | Stable public adapter | Atomically request a complete routine mask at the current floor |
 | `publish_pending_sync(&self, bool, bool)` | Publish routine plus companions | Stable public adapter | Atomically merge one complete `WorkMask` |
-| `publish_pending_sync_and_try_reacquire(&self, bool, bool) -> bool` | Publish, then attempt producer reacquire | Stable public adapter with changed implementation | One atomic `request` maps `Acquired` to `true` and `Queued` or `Stale` to `false`; no second acquisition occurs |
-| `take_pending_sync(&self) -> bool` | Clear only the routine bit | Stable legacy claim adapter, internal use forbidden | Atomically move the complete mask into `OwnerKind::LegacySplitTake`; never leave a companion-only pending mask |
+| `publish_pending_sync_and_try_reacquire(&self, bool, bool) -> bool` | Publish, then claim without returning owner identity | Incompatible when `true` means ownership | Replace with permit-bearing `request`; a boolean acquisition recreates tokenless completion |
+| `take_pending_sync(&self) -> bool` | Clear only the routine bit without returning the complete mask | Incompatible with whole-mask ownership | Replace with an API that returns a permit and complete `WorkMask`; no safe concurrent continuation exists for the split boolean calls |
 | `has_pending_sync(&self) -> bool` | Peek routine bit | Stable observer | Observe whether a complete pending mask exists |
-| `clear_pending_sync_for_generation(&self, u64)` | Generation-scoped queue clear | Stable legacy adapter, internal use forbidden | Convert the raw generation to a guarded cancellation/complete action that cannot clear a newer floor or owner |
-| `set_pending_sync_revalidate(&self)` | Stage a revalidate companion before routine | Stable only for the documented paired-call contract | Atomically request routine plus revalidate; exact standalone companion-only behavior is intentionally not representable |
-| `take_pending_sync_revalidate(&self) -> bool` | Clear one companion bit | Stable legacy claim continuation | Consume the bit from the coordinator's `LegacySplitTake` owner mask |
-| `set_pending_sync_backfill_python(&self)` | Stage a backfill companion before routine | Stable only for the documented paired-call contract | Atomically request routine plus backfill; exact standalone companion-only behavior is intentionally not representable |
-| `take_pending_sync_backfill_python(&self) -> bool` | Clear one companion bit | Stable legacy claim continuation | Consume the bit from the coordinator's `LegacySplitTake` owner mask |
+| `clear_pending_sync_for_generation(&self, u64)` | Accept an untrusted raw generation to clear work | Incompatible with opaque token qualification | Replace internal use with exact permit cancellation/completion; retaining this public mutator requires a separate compatibility decision |
+| `set_pending_sync_revalidate(&self)` | Stage a companion-only intermediate state | Incompatible with the complete-mask invariant | Replace with one complete-mask request; retaining the old standalone behavior would require a forbidden second staging authority |
+| `take_pending_sync_revalidate(&self) -> bool` | Continue a global split take without owner identity | Incompatible with whole-mask ownership | Consume from a returned `WorkMask`, not global state |
+| `set_pending_sync_backfill_python(&self)` | Stage a companion-only intermediate state | Incompatible with the complete-mask invariant | Replace with one complete-mask request; retaining the old standalone behavior would require a forbidden second staging authority |
+| `take_pending_sync_backfill_python(&self) -> bool` | Continue a global split take without owner identity | Incompatible with whole-mask ownership | Consume from a returned `WorkMask`, not global state |
 | `begin_scan_generation(&self)` | Advance generation and replace cancellation channel | Signature-compatible lifecycle adapter | The new private install operation must publish binding, cancellation ownership, and floor together, then return an opaque token |
 
-The split-take bridge is viable only as an owner kind inside the same coordinator. A separate extracted-mask cache would be a forbidden second authority. All in-repository production callers must stop using split takes, raw generation clears, and legacy claims before GREEN is complete.
+The original signature-preservation assumption is rejected. A tokenless `finish_indexing(&self)` cannot reject this deterministic sequence: owner A acquires and completes, owner B acquires, then a stale second completion from A clears B. Both owners have the same hidden kind, and the call carries no permit or sequence. Thread-local or side-map ownership would be a second authority and is not valid for async callers.
 
-The two standalone companion setters have no in-repository production or external-test caller. Their documented paired-call intent can be preserved by atomically adding the routine bit. Stage should explicitly record this safety-strengthening compatibility decision and deprecate companion-only sequencing.
+The split-take bridge has the same identity problem. A global legacy cursor cannot associate later companion calls with the caller that consumed the routine bit, while an extracted-mask cache is a forbidden second authority. The standalone companion setters also require a behavior change because companion-only staging violates the complete-mask invariant.
+
+Stage must therefore choose an explicit compatibility path before implementation planning: a permit-bearing public API with a semver decision, removal or visibility reduction of the ownership mutators, or deferral of Option A. In-repository callers and tests can migrate, but that does not prove downstream compatibility.
 
 ## Production caller inventory
 
@@ -95,20 +97,20 @@ No external test calls the standalone companion setters or companion take method
 
 | File | Direct calls | Compatibility constrained |
 |---|---|---|
-| `tests/contract/read_test.rs` | `try_start_indexing` at `302`, `324`, `346` | Boolean legacy claim remains available for read-while-indexing contracts |
-| `tests/contract/write_test.rs` | `try_start_indexing` at `108`, `150`, `185`; `take_pending_sync` at `159` | Index-in-progress and queued-response behavior; routine take returns true once |
-| `tests/integration/indexing_resilience_test.rs` | `try_start_indexing` at `54`, `75`, `99`, `125`, `156`; `take_pending_sync` at `135`, `141`; `finish_indexing` at `157` | Read availability, queued sync, one-shot take, and post-finish release |
+| `tests/contract/read_test.rs` | `try_start_indexing` at `302`, `324`, `346` | Migrate fixture ownership to a returned permit while preserving tool behavior |
+| `tests/contract/write_test.rs` | `try_start_indexing` at `108`, `150`, `185`; `take_pending_sync` at `159` | Migrate fixtures and assert queued response through complete-mask observation |
+| `tests/integration/indexing_resilience_test.rs` | `try_start_indexing` at `54`, `75`, `99`, `125`, `156`; `take_pending_sync` at `135`, `141`; `finish_indexing` at `157` | Migrate start/finish to permits and replace split-take assertions |
 
 Co-located tests in `src/tools/lifecycle.rs` and `src/daemon/ipc_server.rs` also exercise generation clear, companion bits, producer reacquire, bounded drain, and startup helpers. They are migration tests, not justification for retaining internal legacy paths.
 
 ## Recommended authoritative API
 
-Proceed with Option A, using one private `Mutex<SyncCoordinator>` and one private `Notify`:
+Option A remains the recommended internal authority, using one private `Mutex<SyncCoordinator>` and one private `Notify`, but it cannot proceed until Stage resolves the public compatibility break:
 
 ```text
 GenerationToken(u64)
 WorkMask { routine, revalidate, backfill_python }
-OwnerKind { Index, Sync, Hydration, Startup, Watcher, LegacyPublic, LegacySplitTake }
+OwnerKind { Index, Sync, Hydration, Startup, Watcher }
 OwnerPermit { generation, sequence, kind, work_mask }
 
 request(token, work_mask, owner_kind)
@@ -118,7 +120,7 @@ complete(owner_permit)
   -> Transferred(OwnerPermit) | Released | Stale
 ```
 
-`OwnerPermit` must be opaque and sequence-qualified. `complete` accepts only the exact permit and moves the complete pending mask to one successor or releases and notifies. Public wrappers enter this same coordinator; none stores ownership or a mask elsewhere.
+`OwnerPermit` must be opaque and sequence-qualified. `complete` accepts only the exact permit and moves the complete pending mask to one successor or releases and notifies. Observers and request-only publishers can remain signature-compatible wrappers, but ownership, completion, generation-clear, and split-take mutators need an explicit API compatibility decision.
 
 ## State diagram
 
@@ -231,19 +233,20 @@ right: 1
 
 The deterministic order was: startup claim fails, current owner releases and observes no pending work, then startup sets pending. Neither side owns execution. One coordinator request removes this try-then-set gap.
 
-## Actionable replacement-plan slices
+## Actionable pivot and conditional replacement-plan slices
 
 Each slice must remain at most two production files, four deterministic scenarios, and 110 minutes:
 
-1. `state.rs`: coordinator types, token, permit, mask, request/complete transitions, and S1/S2/S4 RED-to-GREEN
-2. `state.rs` plus compatibility tests: public observer, legacy claim, publish, and split-take adapters; explicit companion-setter decision
-3. `state.rs` plus `lifecycle.rs`: coherent generation install and cancellation-aware hydration permit; bind S3 to the private production admission seam
-4. `state.rs` plus `lifecycle.rs`: whole-mask completion handoff; remove split consumption, re-arm, and bounded double-drain authority
-5. `state.rs` plus `write.rs`: migrate index/sync callers and preserve queued JSON response without producer reacquire
-6. `state.rs` plus `ipc_server.rs`: migrate startup and watcher callers to typed permits and one request linearization
-7. Tests and closure: prove zero internal legacy callers, external compatibility, monitoring, and full release-unit rollback
+1. Stage compatibility decision: approve a permit-bearing API/semver break, reduce ownership-mutator visibility, or defer Option A
+2. `state.rs`: coordinator types, token, permit, mask, request/complete transitions, and S1/S2/S4 RED-to-GREEN
+3. `state.rs` plus compatibility tests: stable observers/publishers and the approved ownership API; remove any proposed tokenless legacy owner bridge
+4. `state.rs` plus `lifecycle.rs`: coherent generation install and cancellation-aware hydration permit; bind S3 to the private production admission seam
+5. `state.rs` plus `lifecycle.rs`: whole-mask completion handoff; remove split consumption, re-arm, and bounded double-drain authority
+6. `state.rs` plus `write.rs`: migrate index/sync callers and preserve queued JSON response without producer reacquire
+7. `state.rs` plus `ipc_server.rs`: migrate startup and watcher callers to typed permits and one request linearization
+8. Tests and closure: prove zero tokenless ownership callers, approved compatibility, monitoring, and full release-unit rollback
 
-Dependency order is `1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7`. Stage may split RED and GREEN milestones further but must not reorder callers ahead of the primitive and adapters.
+Dependency order is `1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8`. No implementation task may be harvested until decision slice 1 is approved and freshly reviewed.
 
 ## Monitoring and rollback obligations
 
@@ -255,21 +258,22 @@ The replacement plan must verify:
 * exactly one executor after startup/release arbitration
 * zero stale completion clearing a newer owner
 * zero producer reacquire and bounded-drain exhaustion paths
-* unchanged queued CLI/MCP response and external Rust compatibility
+* unchanged queued CLI/MCP response and the explicitly approved Rust API compatibility level
 
 Rollback is a full coordinator release-unit revert followed by daemon restart. Partial rollback after caller migration is forbidden. There is no schema or data rollback.
 
 ## Remaining unknowns
 
 * The S3 proof is a compiling private reference transition, not yet a production-coupled seam; the replacement plan must couple it without making anything public.
-* The `LegacySplitTake` adapter needs focused GREEN tests proving it remains inside the coordinator and auto-releases when its mask is exhausted.
-* Standalone companion-setter behavior must be documented as a safety-strengthening complete-mask request; any demand for companion-only staging requires a semver decision and would invalidate Option A's invariant.
+* Public ownership completion cannot remain tokenless while guaranteeing stale-completion rejection; Stage must choose the API/semver path.
+* Split takes cannot be safely associated with an owner without a returned permit and complete mask.
+* Standalone companion-setter behavior requires a compatibility decision because companion-only staging invalidates Option A's invariant.
 * Exact successor selection policy between queued owner kinds remains a Stage planning decision, but it must be deterministic and cannot introduce a second queue.
 
 ## Recommendation
 
-**PROCEED to Stage-owned findings and a fresh hardened replacement plan; do not proceed directly to implementation. Confidence: medium-high.**
+**PIVOT to a Stage-owned public compatibility decision before any replacement implementation plan. Confidence: high.**
 
-All four required RED shapes compiled and failed only their intended deterministic assertions. The current code validates the single-authority assumptions, and the public signatures can map to one coordinator if split takes become a legacy owner kind and standalone companion setters atomically request a complete mask. The remaining S3 coupling and legacy-adapter details are bounded implementation-plan obligations, not reasons to widen this spike.
+All four required RED shapes compiled and failed only their intended deterministic assertions, so the current multi-authority defects and the private harness locations are proven. The spike rejects the assumption that every public ownership method can preserve its signature while also enforcing exact sequenced completion and whole-mask ownership. Option A is internally viable, but planning must pivot through an explicit permit-bearing API, visibility, and semver decision.
 
-Stage must independently assess this evidence, author `docs/decisions/2026-08-01-post-105-sync-coordinator-spike-findings.md`, and run fresh hardening and zero-P0/P1 review before changing any blocked status.
+Stage must independently assess this evidence, author `docs/decisions/2026-08-01-post-105-sync-coordinator-spike-findings.md` with a PIVOT disposition, and decide whether to approve a permit-bearing compatibility change or defer Option A. Only an approved decision may seed a fresh hardened plan and zero-P0/P1 review. No blocked status changes before those gates.
