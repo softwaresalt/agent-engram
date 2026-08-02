@@ -1,18 +1,19 @@
 ---
-title: "Pre-merge operational closure — 102-S qualified Python caller attribution"
+title: "Operational closure — 102-S qualified Python caller attribution"
 doc_type: closure
 source: "102-S / 107-F / PR #307"
 description: >-
-  Pre-merge release-readiness record for fail-closed qualified Python caller
-  attribution in full indexing and incremental sync.
+  Post-merge closure record for fail-closed qualified Python caller attribution
+  in full indexing and incremental sync.
 topic: "Fail-closed qualified Python caller attribution"
 depth: closure
-decision_status: "READY WITH CONDITIONS — CI and explicit merge approval"
+decision_status: "SHIPPED — post-release observation pending"
 author: ship
 date: 2026-08-02
-verdict: "READY WITH CONDITIONS"
+verdict: SHIPPED
 pr: 307
-target_commit: "2c86d147e6b7585a2a7f7b7da3fb2152452ba43d"
+merge_commit: "89ce54193ad8c1340e5b8b440f9190a276b72196"
+target_commit: "89ce54193ad8c1340e5b8b440f9190a276b72196"
 branch: "feat/107-qualified-staging-caller-attribution"
 linked_artifacts:
   - "102-S"
@@ -65,10 +66,10 @@ condition for that gate. `cargo audit --no-fetch` reports the existing
 - PR #301 merged on 2026-07-30, after the latest GitHub release (`v0.2.0`,
   2026-06-16). No release tag contains its merge commit. Therefore the reviewed
   policy requires **no migration/backfill** and no deployed-workspace mutation.
-- Copilot reviewed current implementation HEAD `2c86d147` and generated no new
-  comments after its one coverage finding was fixed and resolved.
-- Merge remains forbidden until CI is green and the operator separately
-  approves this exact PR and HEAD.
+- Copilot reviewed final PR HEAD `a54bd3f2` and generated no new comments after
+  its one coverage finding was fixed and resolved.
+- CI passed, the operator approved the exact PR and HEAD, and PR #307 merged
+  with merge commit `89ce5419`.
 
 ## Deployment and Rollout Path
 
@@ -83,10 +84,10 @@ workflow.
   Python provenance in full indexing and incremental sync.
 - **ActionRisk:** high, because the admission decision affects persisted graph
   origin even though storage and public contracts are unchanged.
-- **Approval:** implementation, build/test, CI, and PR activity were explicitly
-  approved. Merge is not approved.
-- **ActionResult:** implementation applied and verified on disposable data;
-  merge blocked pending green CI and explicit operator approval.
+- **Approval:** implementation, build/test, CI, PR activity, and merge of the
+  exact reviewed HEAD were explicitly approved.
+- **ActionResult:** applied and merged as `89ce5419`; post-release observation
+  remains pending.
 - **Containment:** Ship does not reindex, mutate, or repair any user or deployed
   workspace.
 
@@ -111,9 +112,9 @@ queries and ambiguity counter must be observed.
 ## Rollback
 
 Rollback triggers are any wrong-origin edge, producer asymmetry, or loss of the
-unique-caller control. Before merge, revert production commit `70485480` and
-restart the daemon. After merge, revert the PR #307 merge commit with
-`git revert -m 1 <PR-307-merge-sha>`, rebuild, and restart the daemon.
+unique-caller control. Revert the PR #307 merge commit with
+`git revert -m 1 89ce54193ad8c1340e5b8b440f9190a276b72196`, rebuild, and restart
+the daemon.
 
 If a future released binary exposes the change in a named workspace, Ship may
 write a target-specific full-reindex handoff after rollback or correction, but
@@ -130,7 +131,7 @@ is authorized.
 
 ## Readiness
 
-**READY WITH CONDITIONS.** Runtime verification and current-HEAD Copilot review
-are clean. Readiness still requires green PR CI and separate operator approval
-to merge PR #307 at the exact reviewed HEAD. Shipment 102-S remains active until
-positive merged/shipped evidence exists; 103-S must remain queued.
+**SHIPPED.** Runtime verification, CI, and exact-HEAD Copilot review were clean.
+PR #307 merged with merge commit `89ce5419`, and backlogit archived shipment
+102-S with that merge evidence. Post-release observation remains pending and
+must not be inferred complete.
