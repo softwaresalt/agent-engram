@@ -50,7 +50,8 @@ Line references are from base head `f10ab572082bb93e9f68f65f25095d82edfa512a`.
 |---|---|---|---|
 | `is_indexing(&self) -> bool` | Observe global indexing flag | Stable observer | Return whether the coordinator has any owner |
 | `try_start_indexing(&self) -> bool` | Claim global owner without returning identity | Incompatible with sequenced completion | Replace ownership use with a permit-returning API; the boolean signature cannot identify the owner later |
-| `finish_indexing(&self)` | Clear whichever global owner is current | Incompatible with stale-completion rejection | Require `OwnerPermit` or an RAII guard; unchanged `finish_indexing(&self)` cannot distinguish stale owner A from current owner B |
+| `finish_indexing(&self)` | Clear whichever global owner is current and update `last_indexed_at` | Incompatible with stale-completion rejection | Require `OwnerPermit` or an RAII guard; valid completion updates `last_indexed_at` exactly once after releasing the coordinator guard, while stale completion neither clears an owner nor updates time |
+| `last_indexed_at(&self)` | Observe the latest completed indexing time | Stable observer | Read the timestamp recorded only by valid permit completion |
 | `current_sync_generation(&self) -> u64` | Observe raw generation | Stable observer | Return the coordinator floor; internal callers use opaque `GenerationToken` |
 | `set_pending_sync(&self)` | Arm routine bit at current generation | Stable public adapter | Atomically request a complete routine mask at the current floor |
 | `publish_pending_sync(&self, bool, bool)` | Publish routine plus companions | Stable public adapter | Atomically merge one complete `WorkMask` |
@@ -79,6 +80,7 @@ Stage must therefore choose an explicit compatibility path before implementation
 | `try_start_indexing` | `src/tools/write.rs:268` | Sync claim or queued response | `request(token, sync mask, Sync)` |
 | publish/reacquire | `src/tools/write.rs:297-304` | Queued sync producer backstop | One atomic request; remove producer reacquire and separate finish/drain |
 | `finish_indexing` | `src/tools/write.rs:470` | Shared index/sync finalizer | `complete(permit)` and act on transfer/release outcome |
+| `last_indexed_at` | `src/tools/doctor.rs:115-135` | Distinguish not-yet-indexed from healthy session state | Stable observer; valid completion preserves the health timestamp |
 | `begin_scan_generation` | `src/tools/lifecycle.rs:187` | Bind generation and cancellation | Move into coherent binding install returning `GenerationToken` |
 | `try_start_indexing` | `src/tools/lifecycle.rs:250` | Hydration claim, currently ignored on failure | Cancellation-aware permit acquisition before any DB/file work |
 | generation clear/finish | `src/tools/lifecycle.rs:274-275,301-302` | Hydration cancel and DB-failure exits | `complete` or cancel the exact sequenced hydration permit |
@@ -120,7 +122,7 @@ complete(owner_permit)
   -> Transferred(OwnerPermit) | Released | Stale
 ```
 
-`OwnerPermit` must be opaque and sequence-qualified. `complete` accepts only the exact permit and moves the complete pending mask to one successor or releases and notifies. Observers and request-only publishers can remain signature-compatible wrappers, but ownership, completion, generation-clear, and split-take mutators need an explicit API compatibility decision.
+`OwnerPermit` must be opaque and sequence-qualified. `complete` accepts only the exact permit and moves the complete pending mask to one successor or releases and notifies. An async completion wrapper validates and transitions under the coordinator mutex, drops that guard, and updates `last_indexed_at` exactly once only for a valid completion; no mutex guard crosses the timestamp await. Stale completion does not update health state. Observers and request-only publishers can remain signature-compatible wrappers, but ownership, completion, generation-clear, and split-take mutators need an explicit API compatibility decision.
 
 ## State diagram
 
@@ -238,7 +240,7 @@ The deterministic order was: startup claim fails, current owner releases and obs
 Each slice must remain at most two production files, four deterministic scenarios, and 110 minutes:
 
 1. Stage compatibility decision: approve a permit-bearing API/semver break, reduce ownership-mutator visibility, or defer Option A
-2. `state.rs`: coordinator types, token, permit, mask, request/complete transitions, and S1/S2/S4 RED-to-GREEN
+2. `state.rs`: coordinator types, token, permit, mask, request/complete transitions, valid-only completion timestamp, and S1/S2/S4 RED-to-GREEN
 3. `state.rs` plus compatibility tests: stable observers/publishers and the approved ownership API; remove any proposed tokenless legacy owner bridge
 4. `state.rs` plus `lifecycle.rs`: coherent generation install and cancellation-aware hydration permit; bind S3 to the private production admission seam
 5. `state.rs` plus `lifecycle.rs`: whole-mask completion handoff; remove split consumption, re-arm, and bounded double-drain authority
@@ -257,6 +259,7 @@ The replacement plan must verify:
 * zero DB/file work before hydration permit
 * exactly one executor after startup/release arbitration
 * zero stale completion clearing a newer owner
+* valid completion updates `last_indexed_at` exactly once; stale completion does not update it
 * zero producer reacquire and bounded-drain exhaustion paths
 * unchanged queued CLI/MCP response and the explicitly approved Rust API compatibility level
 
