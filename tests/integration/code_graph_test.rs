@@ -499,6 +499,479 @@ async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
     );
 }
 
+/// 108.001-T — an ordinary, non-forced index treats a tracked Rust file that
+/// becomes empty as absent while leaving an unchanged control file byte-for-byte
+/// and graph-for-graph intact.
+#[test]
+#[allow(clippy::too_many_lines)]
+async fn ordinary_index_retracts_indexed_rust_file_truncated_to_zero_bytes() {
+    const CONTROL_PATH: &str = "src/lib.rs";
+    const EMPTIED_PATH: &str = "src/doomed.rs";
+    const STALE_GENERATION: &str = "task-108.001-stale";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(
+        ws,
+        CONTROL_PATH,
+        r"
+pub mod doomed;
+
+pub fn control_entry() {
+    control_leaf();
+}
+
+pub fn control_leaf() {}
+pub fn singleton_target() {}
+",
+    );
+    write_sample_file(
+        ws,
+        EMPTIED_PATH,
+        r"
+use crate::singleton_target;
+
+pub fn doomed_entry() {
+    doomed_leaf();
+    singleton_target();
+    crate::doomed::canonical_target();
+    unresolved_target();
+}
+
+pub fn doomed_leaf() {}
+pub fn canonical_target() {}
+",
+    );
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let control_file_before = q
+        .get_code_file_by_path(CONTROL_PATH)
+        .await
+        .expect("read control code file")
+        .expect("control code file must be indexed");
+    let mut control_functions_before: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read functions")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_before.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut control_symbols_before = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_before.sort_by(|left, right| left.1.cmp(&right.1));
+
+    let control_entry_id = function_id_in(&q, "control_entry", CONTROL_PATH).await;
+    let control_leaf_id = function_id_in(&q, "control_leaf", CONTROL_PATH).await;
+    let singleton_target_id = function_id_in(&q, "singleton_target", CONTROL_PATH).await;
+    let doomed_entry_id = function_id_in(&q, "doomed_entry", EMPTIED_PATH).await;
+    let doomed_leaf_id = function_id_in(&q, "doomed_leaf", EMPTIED_PATH).await;
+    let canonical_target_id = function_id_in(&q, "canonical_target", EMPTIED_PATH).await;
+
+    let direct_before = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("read initial direct edges");
+    assert!(
+        direct_before.contains(&(control_entry_id.clone(), control_leaf_id.clone()))
+            && direct_before.contains(&(doomed_entry_id.clone(), doomed_leaf_id)),
+        "setup must create both control and doomed direct edges; got {direct_before:?}"
+    );
+    let singleton_before = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("read initial singleton edges");
+    assert!(
+        singleton_before.contains(&(doomed_entry_id.clone(), singleton_target_id)),
+        "setup must resolve the doomed cross-file call; got {singleton_before:?}"
+    );
+    let canonical_before = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("read initial canonical edges");
+    assert!(
+        canonical_before.contains(&(doomed_entry_id.clone(), canonical_target_id)),
+        "setup must resolve the doomed canonical call; got {canonical_before:?}"
+    );
+    let staged_before = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("read initial staged calls");
+    assert!(
+        staged_before
+            .iter()
+            .any(|call| call.source_file == EMPTIED_PATH
+                && call.callee_name == "unresolved_target"),
+        "setup must retain a dangling staged call; got {staged_before:?}"
+    );
+
+    q.set_code_graph_extraction_generation(STALE_GENERATION)
+        .await
+        .expect("set stale generation marker");
+    fs::write(ws.join(EMPTIED_PATH), []).expect("truncate tracked Rust file");
+
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index after truncation should succeed");
+    assert!(
+        result.errors.is_empty(),
+        "empty-file cleanup must be error-free; got {:?}",
+        result.errors
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after truncation");
+    let q = CodeGraphQueries::new(db);
+
+    assert!(
+        q.get_code_file_by_path(EMPTIED_PATH)
+            .await
+            .expect("read emptied code file")
+            .is_none(),
+        "ordinary index must retract the code-file record for an indexed path truncated to zero bytes"
+    );
+    assert!(
+        q.get_symbol_identities_for_file(EMPTIED_PATH)
+            .await
+            .expect("read emptied symbols")
+            .is_empty(),
+        "ordinary index must retract every symbol owned by the emptied path"
+    );
+    assert!(
+        q.all_function_metas()
+            .await
+            .expect("read function metadata")
+            .iter()
+            .all(|function| function.file_path != EMPTIED_PATH),
+        "ordinary index must retract function metadata owned by the emptied path"
+    );
+    assert!(
+        q.list_staged_calls_with_provenance()
+            .await
+            .expect("read staged calls after cleanup")
+            .iter()
+            .all(|call| call.source_file != EMPTIED_PATH),
+        "ordinary index must retract staged calls owned by the emptied path"
+    );
+    assert!(
+        q.list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await
+            .expect("read singleton edges after cleanup")
+            .is_empty(),
+        "ordinary index must retract resolved singleton edges owned by the emptied path"
+    );
+    assert!(
+        q.list_calls_edges_by_resolution("calls_resolved_canonical")
+            .await
+            .expect("read canonical edges after cleanup")
+            .is_empty(),
+        "ordinary index must retract resolved canonical edges owned by the emptied path"
+    );
+    assert_eq!(
+        q.list_calls_edges_by_resolution("direct")
+            .await
+            .expect("read direct edges after cleanup"),
+        vec![(control_entry_id, control_leaf_id)],
+        "ordinary index must retract the emptied path's direct edge and preserve the control edge"
+    );
+    assert_eq!(
+        q.count_calls_edges()
+            .await
+            .expect("count raw calls-edge rows"),
+        1,
+        "only the live control calls-edge row may remain"
+    );
+    assert_eq!(
+        q.count_dangling_calls_edges()
+            .await
+            .expect("count dangling calls-edge rows"),
+        0,
+        "targeted empty-file cleanup must leave no raw dangling calls-edge rows"
+    );
+
+    assert_eq!(
+        q.get_code_file_by_path(CONTROL_PATH)
+            .await
+            .expect("read control code file after cleanup"),
+        Some(control_file_before),
+        "the unchanged control code-file identity and hash must remain exact"
+    );
+    let mut control_functions_after: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read functions after cleanup")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_after.sort_by(|left, right| left.id.cmp(&right.id));
+    assert_eq!(
+        control_functions_after, control_functions_before,
+        "the unchanged control functions must remain exact"
+    );
+    let mut control_symbols_after = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols after cleanup")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_after.sort_by(|left, right| left.1.cmp(&right.1));
+    assert_eq!(
+        control_symbols_after, control_symbols_before,
+        "the unchanged control symbols must remain exact"
+    );
+
+    assert_eq!(
+        result.dangling_edges_swept, 0,
+        "targeted cleanup must not rely on the later dangling-edge sweep"
+    );
+    assert_eq!(
+        q.code_graph_extraction_generation()
+            .expect("read generation marker after cleanup"),
+        Some(STALE_GENERATION.to_owned()),
+        "the hash-skipped run must leave the stale generation marker behind"
+    );
+    assert_eq!(
+        result.files_reconciled, 0,
+        "ordinary empty-file cleanup is not forced file-set reconciliation"
+    );
+    assert_eq!(
+        result.files_parsed, 0,
+        "neither the empty path nor unchanged control should be parsed"
+    );
+    assert_eq!(
+        result.files_skipped, 2,
+        "the empty path and unchanged control must both count as skipped"
+    );
+}
+
+/// 108.001-T — a never-indexed empty Rust file is a no-op during an ordinary,
+/// non-forced index and cannot disturb an unchanged live control graph.
+#[test]
+#[allow(clippy::too_many_lines)]
+async fn ordinary_index_skips_never_indexed_empty_rust_file_without_creating_state() {
+    const CONTROL_PATH: &str = "src/control.rs";
+    const EMPTY_PATH: &str = "src/empty.rs";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(
+        ws,
+        CONTROL_PATH,
+        r"
+pub fn control_entry() {
+    control_leaf();
+}
+
+pub fn control_leaf() {}
+",
+    );
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let control_file_before = q
+        .get_code_file_by_path(CONTROL_PATH)
+        .await
+        .expect("read control code file")
+        .expect("control code file must be indexed");
+    let mut control_functions_before: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read control functions")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_before.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut control_symbols_before = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_before.sort_by(|left, right| left.1.cmp(&right.1));
+    let control_entry_id = function_id_in(&q, "control_entry", CONTROL_PATH).await;
+    let control_leaf_id = function_id_in(&q, "control_leaf", CONTROL_PATH).await;
+    assert_eq!(
+        q.list_calls_edges_by_resolution("direct")
+            .await
+            .expect("read initial direct edges"),
+        vec![(control_entry_id.clone(), control_leaf_id.clone())],
+        "setup must establish the live control direct edge"
+    );
+    assert!(
+        q.get_code_file_by_path(EMPTY_PATH)
+            .await
+            .expect("read absent empty path")
+            .is_none(),
+        "setup must not contain the never-indexed path"
+    );
+
+    fs::write(ws.join(EMPTY_PATH), []).expect("create never-indexed empty Rust file");
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index with an empty new path should succeed");
+    assert!(
+        result.errors.is_empty(),
+        "an empty new path must be error-free; got {:?}",
+        result.errors
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after no-op index");
+    let q = CodeGraphQueries::new(db);
+    assert!(
+        q.get_code_file_by_path(EMPTY_PATH)
+            .await
+            .expect("read never-indexed empty path")
+            .is_none(),
+        "ordinary index must not create a code-file record for a never-indexed empty Rust path"
+    );
+    assert!(
+        q.get_symbol_identities_for_file(EMPTY_PATH)
+            .await
+            .expect("read empty-path symbols")
+            .is_empty(),
+        "a never-indexed empty Rust path must create no symbols"
+    );
+    assert!(
+        q.all_function_metas()
+            .await
+            .expect("read function metadata")
+            .iter()
+            .all(|function| function.file_path != EMPTY_PATH),
+        "a never-indexed empty Rust path must create no function metadata"
+    );
+    assert!(
+        q.list_staged_calls_with_provenance()
+            .await
+            .expect("read staged calls")
+            .iter()
+            .all(|call| call.source_file != EMPTY_PATH),
+        "a never-indexed empty Rust path must create no staged calls"
+    );
+
+    assert_eq!(
+        q.get_code_file_by_path(CONTROL_PATH)
+            .await
+            .expect("read control code file after no-op"),
+        Some(control_file_before),
+        "the unchanged control code-file identity and hash must remain exact"
+    );
+    let mut control_functions_after: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read control functions after no-op")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_after.sort_by(|left, right| left.id.cmp(&right.id));
+    assert_eq!(
+        control_functions_after, control_functions_before,
+        "the unchanged control functions must remain exact"
+    );
+    let mut control_symbols_after = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols after no-op")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_after.sort_by(|left, right| left.1.cmp(&right.1));
+    assert_eq!(
+        control_symbols_after, control_symbols_before,
+        "the unchanged control symbols must remain exact"
+    );
+    assert_eq!(
+        q.list_calls_edges_by_resolution("direct")
+            .await
+            .expect("read control direct edge after no-op"),
+        vec![(control_entry_id, control_leaf_id)],
+        "the unchanged control direct edge must remain live and exact"
+    );
+    assert_eq!(
+        q.count_dangling_calls_edges()
+            .await
+            .expect("count dangling calls-edge rows"),
+        0,
+        "the no-op empty path must not create dangling calls-edge rows"
+    );
+    assert_eq!(
+        result.files_reconciled, 0,
+        "a never-indexed empty path is not forced file-set reconciliation"
+    );
+    assert_eq!(
+        result.files_parsed, 0,
+        "neither the empty path nor unchanged control should be parsed"
+    );
+    assert_eq!(
+        result.files_skipped, 2,
+        "the never-indexed empty path and unchanged control must both count as skipped"
+    );
+}
+
 #[test]
 async fn sync_retracts_symbols_and_edges_when_file_truncated_to_zero_bytes() {
     // P0-2022 (099.001-T): a previously-indexed file truncated to 0 bytes was
@@ -1177,6 +1650,375 @@ async fn index_package_topology_change_invalidates_descendant_without_sync() {
     assert!(
         canon_removed.is_empty(),
         "removing p/__init__.py must retract the cross-module canonical edge on index; got {canon_removed:?}"
+    );
+}
+
+/// 108.002-T (R1) — an ordinary index that observes package-topology drift but
+/// cannot read an affected descendant must retain the prior topology snapshot.
+/// That retained snapshot makes the next ordinary index retry the descendant
+/// even when its restored bytes match the previously indexed content hash.
+#[test]
+#[allow(clippy::too_many_lines)]
+async fn ordinary_index_read_error_retains_topology_snapshot_for_retry() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let original_source = "def cf():\n    return 1\n";
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    // R1a: establish the prior no-package topology, then make `p` a regular
+    // package while its already-indexed descendant is unreadable as UTF-8.
+    write_sample_file(ws, "p/mod.py", original_source);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let initial_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load initial topology snapshot");
+    assert!(
+        initial_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.python_packages.is_empty()),
+        "initial index must publish the no-package topology"
+    );
+    let initial_python_marker = q
+        .python_extraction_version()
+        .expect("read initial Python extraction marker");
+    let initial_code_graph_marker = q
+        .code_graph_extraction_generation()
+        .expect("read initial code-graph marker");
+    assert!(
+        initial_python_marker.is_some() && initial_code_graph_marker.is_some(),
+        "initial clean index must establish both extraction markers"
+    );
+    let initial_cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query initial cf"),
+        vec![String::new()],
+        "without p/__init__.py, cf must initially fail closed"
+    );
+
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    fs::write(ws.join("p/mod.py"), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("replace descendant with invalid UTF-8");
+    let failed = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index should return targeted per-file errors");
+    assert_eq!(
+        failed.errors.len(),
+        1,
+        "the invalid descendant must produce exactly one targeted error"
+    );
+    let read_error = failed.errors.first().expect("targeted read error");
+    assert_eq!(read_error.file, "p/mod.py");
+    assert!(
+        read_error.error.starts_with("read error:") && read_error.error.contains("UTF-8"),
+        "p/mod.py must report its invalid UTF-8 as a read error; got {read_error:?}"
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after read error");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        function_id_in(&q, "cf", "p/mod.py").await,
+        initial_cf_id,
+        "failed extraction must leave the prior descendant node intact"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf after read error"),
+        vec![String::new()],
+        "failed extraction must leave the prior fail-closed canonical identity intact"
+    );
+    assert_eq!(
+        q.python_extraction_version()
+            .expect("read Python marker after failure"),
+        initial_python_marker,
+        "a Python read error must not advance the extraction marker"
+    );
+    assert_eq!(
+        q.code_graph_extraction_generation()
+            .expect("read code-graph marker after failure"),
+        initial_code_graph_marker,
+        "a read error must not advance the code-graph marker"
+    );
+    let failed_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load topology snapshot after failure");
+    assert_eq!(
+        failed_snapshot, initial_snapshot,
+        "a targeted read failure must retain the prior topology snapshot so the next ordinary index retries"
+    );
+
+    // R1b: restoring the exact original bytes also restores the original hash,
+    // but the retained no-package snapshot must force a topology reparse.
+    fs::write(ws.join("p/mod.py"), original_source.as_bytes())
+        .expect("restore exact original descendant bytes");
+    assert_eq!(
+        fs::read(ws.join("p/mod.py")).expect("read restored descendant"),
+        original_source.as_bytes(),
+        "the retry fixture must exactly match the initially indexed bytes"
+    );
+    let retry = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("retry ordinary index should succeed");
+    assert!(
+        retry.errors.is_empty(),
+        "restored retry must be clean; got {:?}",
+        retry.errors
+    );
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after retry");
+    let q = CodeGraphQueries::new(db);
+    let retry_cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    assert_ne!(
+        retry_cf_id, initial_cf_id,
+        "retained topology drift must reparse p/mod.py despite its restored hash"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query retried cf"),
+        vec!["p.mod.cf".to_owned()],
+        "the retry must publish cf under the newly proven regular package"
+    );
+
+    // R1c: after the clean retry publishes the current topology, one more clean
+    // ordinary index must hash-skip both unchanged files rather than loop.
+    let clean = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("clean control ordinary index should succeed");
+    assert!(
+        clean.errors.is_empty(),
+        "clean control must not report errors"
+    );
+    assert_eq!(
+        clean.files_parsed, 0,
+        "published topology must prevent a permanent descendant reparse loop"
+    );
+    assert_eq!(
+        clean.files_skipped, 2,
+        "the unchanged package marker and descendant must both hash-skip"
+    );
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after clean control");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        function_id_in(&q, "cf", "p/mod.py").await,
+        retry_cf_id,
+        "the clean control must retain the retried descendant node"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query clean-control cf"),
+        vec!["p.mod.cf".to_owned()]
+    );
+    let clean_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load clean-control topology snapshot")
+        .expect("clean control must publish a topology snapshot");
+    assert_eq!(
+        clean_snapshot.python_packages,
+        std::collections::HashSet::from(["p".to_owned()]),
+        "clean control must publish the current regular-package topology"
+    );
+}
+
+/// 108.002-T (R2 regression) — a staged Python source read failure in the canonical
+/// post-pass must propagate without clearing the prior topology snapshot or
+/// retracting the caller's existing canonical edge.
+#[test]
+async fn ordinary_index_post_pass_read_error_preserves_canonical_state() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    write_sample_file(ws, "p/mod.py", "def cf():\n    return 1\n");
+    write_sample_file(ws, "q/mod.py", "def unrelated():\n    return 2\n");
+    write_sample_file(
+        ws,
+        "caller.py",
+        "from p.mod import cf\n\n\ndef run():\n    cf()\n",
+    );
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let initial_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load initial topology snapshot")
+        .expect("initial index must publish a topology snapshot");
+    assert_eq!(
+        initial_snapshot.python_packages,
+        std::collections::HashSet::from(["p".to_owned()]),
+        "the initial snapshot must precede the unrelated q package drift"
+    );
+    let run_id = function_id_in(&q, "run", "caller.py").await;
+    let cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    let prior_edge = (run_id, cf_id);
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list staged calls");
+    assert!(
+        staged.iter().any(|call| {
+            call.source_file == "caller.py"
+                && call.callee_name == "cf"
+                && !call.qualifier_kind.is_empty()
+        }),
+        "precondition: caller.py must retain its staged Python call; got {staged:?}"
+    );
+    let initial_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list initial canonical edges");
+    assert!(
+        initial_edges.contains(&prior_edge),
+        "precondition: the staged call must have an existing canonical edge; got {initial_edges:?}"
+    );
+
+    // Drift an unrelated package so the prior snapshot is cleared for an
+    // ordinary-index retry, then make the staged caller unreadable. Its
+    // per-file read failure leaves the old staged call for the post-pass.
+    write_sample_file(ws, "q/__init__.py", "# package marker\n");
+    fs::write(ws.join("caller.py"), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("replace staged caller with invalid UTF-8");
+    let error = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect_err("the staged-source post-pass read error must propagate");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("python canonical post-pass") && error_message.contains("caller.py"),
+        "the propagated error must identify the staged Python source; got {error_message}"
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after post-pass error");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load topology snapshot after post-pass error"),
+        Some(initial_snapshot),
+        "a post-pass error must restore the prior topology snapshot"
+    );
+    let retained_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges after post-pass error");
+    assert!(
+        retained_edges.contains(&prior_edge),
+        "preflight must leave the prior canonical edge intact; got {retained_edges:?}"
+    );
+}
+
+/// 108.002-T (R2 Rust regression) — a staged Rust source read failure in the
+/// canonical post-pass must propagate without clearing the prior workspace
+/// snapshot or retracting the caller's existing canonical edge.
+#[test]
+async fn ordinary_index_rust_post_pass_read_error_preserves_canonical_state() {
+    const CALLER_PATH: &str = "src/caller.rs";
+    const TARGET_PATH: &str = "src/target.rs";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub mod caller;\npub mod target;\n");
+    write_sample_file(
+        ws,
+        CALLER_PATH,
+        "pub fn run() {\n    crate::target::callee();\n}\n",
+    );
+    write_sample_file(ws, TARGET_PATH, "pub fn callee() {}\n");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let initial_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load initial workspace snapshot")
+        .expect("initial index must publish a workspace snapshot");
+    let run_id = function_id_in(&q, "run", CALLER_PATH).await;
+    let callee_id = function_id_in(&q, "callee", TARGET_PATH).await;
+    let prior_edge = (run_id, callee_id);
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list staged calls");
+    assert!(
+        staged.iter().any(|call| {
+            call.source_file == CALLER_PATH
+                && call.callee_name == "callee"
+                && !call.qualifier_kind.is_empty()
+        }),
+        "precondition: caller.rs must retain its staged Rust call; got {staged:?}"
+    );
+    let initial_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list initial canonical edges");
+    assert!(
+        initial_edges.contains(&prior_edge),
+        "precondition: the staged Rust call must have an existing canonical edge; got {initial_edges:?}"
+    );
+
+    fs::write(ws.join(CALLER_PATH), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("replace staged Rust caller with invalid UTF-8");
+    let error = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect_err("the staged Rust source read error must propagate");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("rust canonical post-pass") && error_message.contains(CALLER_PATH),
+        "the propagated error must identify the staged Rust source; got {error_message}"
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after Rust post-pass error");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load workspace snapshot after Rust post-pass error"),
+        Some(initial_snapshot),
+        "a Rust post-pass error must restore the prior workspace snapshot"
+    );
+    let retained_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges after Rust post-pass error");
+    assert!(
+        retained_edges.contains(&prior_edge),
+        "Rust preflight must leave the prior canonical edge intact; got {retained_edges:?}"
     );
 }
 

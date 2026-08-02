@@ -721,10 +721,24 @@ async fn rust_ctx_for_staged_file(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     rel_path: &str,
-) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+) -> Result<Option<RustCanonicalContext>, EngramError> {
+    // 108.002-T: preserve an unresolvable module layout as `Ok(None)`, but
+    // propagate source-read failures so the post-pass cannot certify a graph
+    // after silently dropping the caller's last-known-good canonical edge.
     let full = ws_path.join(rel_path);
-    let source = tokio::fs::read_to_string(full).await.ok()?;
-    rust_canonical_ctx(crates, Language::Rust, rel_path, &source)
+    let source = tokio::fs::read_to_string(&full).await.map_err(|error| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!(
+                "rust canonical post-pass: failed to read staged source '{rel_path}': {error}"
+            ),
+        })
+    })?;
+    Ok(rust_canonical_ctx(
+        crates,
+        Language::Rust,
+        rel_path,
+        &source,
+    ))
 }
 
 /// Per-file Python staged-call context: the caller module path (if derivable),
@@ -974,13 +988,34 @@ async fn reresolve_calls_edges_with_canonical_context(
     unsafe_prefixes: &HashSet<String>,
     python_packages: &HashSet<String>,
 ) -> Result<ReresolveResult, EngramError> {
-    let mut result = queries.reresolve_calls_edges().await?;
     let staged: Vec<_> = queries
         .list_staged_calls_with_provenance()
         .await?
         .into_iter()
         .filter(|call| !call.qualifier_kind.is_empty())
         .collect();
+    // 108.002-T: preflight every fallible staged-source context before the
+    // bare-name pass or any canonical-edge retraction mutates the graph. A
+    // staged source can survive a per-file read failure, and discovering that
+    // failure after retraction would destroy the caller's last-known-good
+    // canonical edge.
+    let mut rust_context_cache: HashMap<String, Option<RustCanonicalContext>> = HashMap::new();
+    let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
+    for call in &staged {
+        if is_py_path(&call.source_file) && !python_context_cache.contains_key(&call.source_file) {
+            let ctx =
+                python_ctx_for_staged_file(ws_path, python_packages, queries, &call.source_file)
+                    .await?;
+            python_context_cache.insert(call.source_file.clone(), ctx);
+        } else if !is_py_path(&call.source_file)
+            && !rust_context_cache.contains_key(&call.source_file)
+        {
+            let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await?;
+            rust_context_cache.insert(call.source_file.clone(), ctx);
+        }
+    }
+
+    let mut result = queries.reresolve_calls_edges().await?;
     if staged.is_empty() {
         return Ok(result);
     }
@@ -1033,27 +1068,10 @@ async fn reresolve_calls_edges_with_canonical_context(
     }
 
     let canonical_index = queries.function_ids_by_canonical_path().await?;
-    let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
-        HashMap::new();
-    let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
         if is_py_path(&call.source_file) {
-            if !python_context_cache.contains_key(&call.source_file) {
-                // 099.002-T: propagate a post-pass IO/DB failure (do NOT swallow
-                // it via `.ok()?` + `continue`), so the whole pass aborts and the
-                // extraction-version marker is not advanced over an incomplete
-                // materialization.
-                let ctx = python_ctx_for_staged_file(
-                    ws_path,
-                    python_packages,
-                    queries,
-                    &call.source_file,
-                )
-                .await?;
-                python_context_cache.insert(call.source_file.clone(), ctx);
-            }
             let Some((module_path, shadow, caller_names)) =
                 python_context_cache.get(&call.source_file)
             else {
@@ -1107,12 +1125,8 @@ async fn reresolve_calls_edges_with_canonical_context(
             }
             continue;
         }
-        if !context_cache.contains_key(&call.source_file) {
-            let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await;
-            context_cache.insert(call.source_file.clone(), ctx);
-        }
         let target_id = {
-            let Some(Some((module, use_graph))) = context_cache.get(&call.source_file) else {
+            let Some(Some((module, use_graph))) = rust_context_cache.get(&call.source_file) else {
                 continue;
             };
             let Some(target) =
@@ -1425,6 +1439,18 @@ async fn index_workspace_impl(
                     break 'file;
                 }
             };
+
+            if source.is_empty() {
+                if let Some(existing) = queries.get_code_file_by_path(&rel_path).await? {
+                    handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                    debug!(
+                        path = %rel_path,
+                        "code graph: ordinary index evicted authoritative empty file"
+                    );
+                }
+                result.files_skipped += 1;
+                break 'file;
+            }
 
             // Secondary size guard: protects against metadata races (TOCTOU).
             let size_bytes = source.len() as u64;
@@ -2003,14 +2029,27 @@ async fn index_workspace_impl(
     // gate). Staged calls (082.002-T) whose callee name is unambiguous
     // (exactly one workspace-global definition) become calls_resolved_singleton
     // edges; ambiguous / unmatched names are skipped to bound false edges.
-    let resolved_calls = reresolve_calls_edges_with_canonical_context(
+    let resolved_calls = match reresolve_calls_edges_with_canonical_context(
         &queries,
         ws_path,
         &crates,
         &unsafe_prefixes,
         &python_packages,
     )
-    .await?;
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            // The snapshot was cleared before discovery. Restore the prior
+            // topology before preserving the post-pass error contract.
+            if let Some(previous) = previous_canonical_workspace.as_ref() {
+                queries
+                    .replace_index_canonical_workspace_snapshot(previous)
+                    .await?;
+            }
+            return Err(error);
+        }
+    };
     // Post-pass singletons are real edge records: include them in the reported
     // edges_created so full-index CLI/API responses do not underreport (082.008-T).
     result.edges_created += resolved_calls.resolved;
@@ -2021,9 +2060,19 @@ async fn index_workspace_impl(
             "code graph: resolved cross-file singleton calls edges"
         );
     }
-    queries
-        .replace_index_canonical_workspace_snapshot(&canonical_workspace)
-        .await?;
+    // Publish only a fully observed workspace topology. A per-file failure may
+    // have left unchanged-hash descendants stale under the newly discovered
+    // topology, so retain the prior snapshot to force the next index to retry
+    // that drift. With no prior snapshot, the relation remains cleared.
+    if result.errors.is_empty() {
+        queries
+            .replace_index_canonical_workspace_snapshot(&canonical_workspace)
+            .await?;
+    } else if let Some(previous) = previous_canonical_workspace.as_ref() {
+        queries
+            .replace_index_canonical_workspace_snapshot(previous)
+            .await?;
+    }
 
     // ── T7 (096.010-T): advance the Python extraction-version marker ──
     // A full index re-runs the workspace-global canonical post-pass over every
