@@ -1,6 +1,7 @@
 ---
 title: "Post-105 pending-sync generation linearization and startup handoff"
 type: impl-plan
+doc_type: plan
 date: 2026-07-31
 updated: 2026-08-01
 status: "superseded-blocked (current-head adversarial architecture failure; redesign spike required)"

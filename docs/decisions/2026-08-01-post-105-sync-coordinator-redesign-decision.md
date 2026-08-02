@@ -1,6 +1,8 @@
 ---
 title: "Post-105 sync coordinator redesign"
 type: decision
+doc_type: decision
+source: "109-F review failure recovery from 044c1c50049ecc32db93b94e9f8ca75eedcd7f2d"
 date: 2026-08-01
 status: "decided-with-spike-gate"
 feature: "109-F"

@@ -1,6 +1,7 @@
 ---
 title: "Bounded proof for post-105 sync coordinator"
 type: impl-plan
+doc_type: plan
 execution_posture: spike
 status: "reviewed-pass-for-spike-only"
 date: 2026-08-01
