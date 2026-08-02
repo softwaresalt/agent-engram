@@ -1426,6 +1426,14 @@ async fn index_workspace_impl(
                 }
             };
 
+            if source.is_empty() {
+                if let Some(existing) = queries.get_code_file_by_path(&rel_path).await? {
+                    handle_deleted_file(&queries, &rel_path, &existing.id).await?;
+                }
+                result.files_skipped += 1;
+                break 'file;
+            }
+
             // Secondary size guard: protects against metadata races (TOCTOU).
             let size_bytes = source.len() as u64;
             if size_bytes > config.max_file_size_bytes {
