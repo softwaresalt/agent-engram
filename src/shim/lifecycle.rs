@@ -10,7 +10,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
-use sysinfo::{Pid, System};
 use tracing::{debug, info, instrument};
 
 use crate::daemon::ipc_server::ipc_endpoint;
@@ -184,7 +183,7 @@ async fn ensure_daemon_running_inner(
 
             let pid_hint = live_daemon_pid(workspace)?;
             info!(
-                pid = pid_hint.unwrap_or_default(),
+                pid = pid_hint.as_ref().map_or(0, |pid_file| pid_file.pid),
                 error = %e,
                 "version mismatch detected — respawning daemon"
             );
@@ -200,7 +199,7 @@ async fn ensure_daemon_running_inner(
             if respawns_remaining > 0 {
                 if let Some(pid_hint) = live_daemon_pid(workspace)? {
                     info!(
-                        pid = pid_hint,
+                        pid = pid_hint.pid,
                         error = %e,
                         "health probe failed against live daemon — respawning"
                     );
@@ -241,7 +240,7 @@ async fn ensure_daemon_running_inner(
                         "live daemon PID has unreachable pipe — respawning"
                     );
                     let next_endpoint =
-                        respawn_daemon(workspace, &endpoint, Some(pid_file.pid)).await?;
+                        respawn_daemon(workspace, &endpoint, Some(pid_file)).await?;
                     return Box::pin(ensure_daemon_running_inner(
                         workspace,
                         next_endpoint,
@@ -309,7 +308,7 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
 async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
-    pid_hint: Option<u32>,
+    pid_hint: Option<PidFile>,
 ) -> Result<String, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
@@ -375,7 +374,10 @@ async fn request_shutdown(endpoint: &str) {
     }
 }
 
-async fn wait_for_daemon_exit(endpoint: &str, pid_hint: Option<u32>) -> Result<(), EngramError> {
+async fn wait_for_daemon_exit(
+    endpoint: &str,
+    pid_hint: Option<PidFile>,
+) -> Result<(), EngramError> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(SHUTDOWN_WAIT_TIMEOUT_MS);
 
     loop {
@@ -383,7 +385,11 @@ async fn wait_for_daemon_exit(endpoint: &str, pid_hint: Option<u32>) -> Result<(
             crate::shim::ipc_client::probe(endpoint, Duration::from_millis(PIPE_PROBE_TIMEOUT_MS))
                 .await
                 .is_ok();
-        let pid_alive = pid_hint.is_some_and(is_process_alive);
+        let pid_alive = if let Some(pid_file) = pid_hint.as_ref() {
+            pid_file.verify_alive()?
+        } else {
+            false
+        };
 
         if !endpoint_reachable && !pid_alive {
             return Ok(());
@@ -399,25 +405,16 @@ async fn wait_for_daemon_exit(endpoint: &str, pid_hint: Option<u32>) -> Result<(
     }
 }
 
-fn live_daemon_pid(workspace: &Path) -> Result<Option<u32>, EngramError> {
+fn live_daemon_pid(workspace: &Path) -> Result<Option<PidFile>, EngramError> {
     let Some(pid_file) = PidFile::read(workspace) else {
         return Ok(None);
     };
 
     if pid_file.verify_alive()? {
-        Ok(Some(pid_file.pid))
+        Ok(Some(pid_file))
     } else {
         Ok(None)
     }
-}
-
-fn is_process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-
-    let mut system = System::new();
-    system.refresh_process(Pid::from_u32(pid))
 }
 
 /// Poll the health endpoint with exponential backoff until the daemon is ready.

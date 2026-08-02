@@ -322,6 +322,20 @@ impl HarnessWithoutOwnership {
     pub fn ipc_path(&self) -> &Path {
         &self.ipc_path
     }
+
+    /// Kill the daemon, wait for it to exit, and return its exact process ID.
+    ///
+    /// The reaped [`Child`] handle remains owned by this harness.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the process cannot be killed or waited on.
+    pub fn kill_and_wait(&mut self) -> std::io::Result<u32> {
+        let pid = self.child.id();
+        self.child.kill()?;
+        self.child.wait()?;
+        Ok(pid)
+    }
 }
 
 impl Drop for HarnessWithoutOwnership {
