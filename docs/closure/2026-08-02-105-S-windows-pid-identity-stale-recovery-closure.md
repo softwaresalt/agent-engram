@@ -118,9 +118,14 @@ was read, repaired, reindexed, modified, or deleted.
 
 ## Monitoring Plan
 
-The owner is Ship for merge verification and the repository operator for the
-first 24 hours or first three Windows daemon restart/recovery events,
-whichever is later.
+The owner is Ship for merge verification and the repository operator after the
+first released binary containing PR #310 is installed. The observation window
+starts at that installation, covers at least 24 hours and the first three
+Windows daemon restart/recovery events, and has a hard stop at seven days. If
+fewer than three events occur by day seven, close the window as
+`healthy-no-event`, `degraded`, or `rolled-back` rather than leaving it open
+indefinitely. Record the outcome and observed event count in this closure
+artifact through a follow-up documentation PR.
 
 | Signal | Healthy | Rollback trigger |
 |---|---|---|
