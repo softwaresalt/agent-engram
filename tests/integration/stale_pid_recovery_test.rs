@@ -126,8 +126,8 @@ async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
     let recovered_pid_file =
         PidFile::read(&workspace_path).expect("recovery must rewrite structured PID metadata");
     assert_ne!(
-        recovered_pid_file.pid, killed_pid,
-        "recovery must replace the killed child PID with a different process"
+        recovered_pid_file, stale_pid_file,
+        "recovery must replace the killed child with a different PID/start identity"
     );
     assert!(
         recovered_pid_file
