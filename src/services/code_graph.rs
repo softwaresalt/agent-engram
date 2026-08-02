@@ -1176,9 +1176,9 @@ pub struct IndexResult {
     pub tier2_count: usize,
     /// Number of cross-file import/call edges dropped (deferred to future phase).
     pub cross_file_edges_dropped: usize,
-    /// Number of same-file duplicate-name bare calls for which a first-match
-    /// direct edge was withheld (staged for the fail-closed post-pass or
-    /// dropped) rather than bound to a shadowed target (deliberation 014-D /
+    /// Number of same-file duplicate-name calls for which a first-match edge or
+    /// provenance row was withheld (staged for the fail-closed post-pass or
+    /// dropped) rather than bound to a shadowed function (deliberation 014-D /
     /// 013-D / 082-F). A nonzero-but-bounded value on an adversarial corpus is
     /// the positive signal; an unexpected spike on real repos is the
     /// investigation trigger.
@@ -1764,24 +1764,30 @@ async fn index_workspace_impl(
                             ) {
                                 continue;
                             }
-                            if let Some(from_id) = find_function_id(&function_ids, caller) {
-                                let enclosing_canonical_type =
-                                    enclosing_canonical_type_for_function(
-                                        &crates,
-                                        rust_ctx.as_ref(),
-                                        &unsafe_prefixes,
-                                        caller,
-                                    );
-                                queries
-                                    .put_staged_call_with_provenance(
-                                        &from_id,
-                                        callee,
-                                        &rel_path,
-                                        raw_qualifier,
-                                        qualifier_kind,
-                                        &enclosing_canonical_type,
-                                    )
-                                    .await?;
+                            match find_unique_function_id(&function_ids, caller) {
+                                UniqueFunctionId::Unique(from_id) => {
+                                    let enclosing_canonical_type =
+                                        enclosing_canonical_type_for_function(
+                                            &crates,
+                                            rust_ctx.as_ref(),
+                                            &unsafe_prefixes,
+                                            caller,
+                                        );
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            raw_qualifier,
+                                            qualifier_kind,
+                                            &enclosing_canonical_type,
+                                        )
+                                        .await?;
+                                }
+                                UniqueFunctionId::Ambiguous => {
+                                    result.same_file_ambiguous_dropped += 1;
+                                }
+                                UniqueFunctionId::NotFound => {}
                             }
                             continue;
                         }
@@ -1795,7 +1801,7 @@ async fn index_workspace_impl(
                         // closed instead of minting a first-match (wrong-target)
                         // direct edge (deliberation 014-D / 013-D / 082-F). The
                         // shared `find_function_id` stays byte-identical for its
-                        // other consumers (caller attribution, resolve path).
+                        // remaining resolve-path consumer.
                         match (
                             find_unique_function_id(&function_ids, caller),
                             find_unique_function_id(&function_ids, callee),
@@ -2115,9 +2121,9 @@ pub struct SyncResult {
     pub edges_created: usize,
     /// Number of cross-file import/call edges dropped (deferred to future phase).
     pub cross_file_edges_dropped: usize,
-    /// Number of same-file duplicate-name bare calls for which a first-match
-    /// direct edge was withheld (staged for the fail-closed post-pass or
-    /// dropped) rather than bound to a shadowed target (deliberation 014-D /
+    /// Number of same-file duplicate-name calls for which a first-match edge or
+    /// provenance row was withheld (staged for the fail-closed post-pass or
+    /// dropped) rather than bound to a shadowed function (deliberation 014-D /
     /// 013-D / 082-F).
     #[serde(default)]
     pub same_file_ambiguous_dropped: usize,
@@ -2843,24 +2849,30 @@ pub async fn sync_workspace_with_progress(
                             ) {
                                 continue;
                             }
-                            if let Some(from_id) = find_function_id(&new_function_ids, caller) {
-                                let enclosing_canonical_type =
-                                    enclosing_canonical_type_for_function(
-                                        &crates,
-                                        rust_ctx.as_ref(),
-                                        &unsafe_prefixes,
-                                        caller,
-                                    );
-                                queries
-                                    .put_staged_call_with_provenance(
-                                        &from_id,
-                                        callee,
-                                        &rel_path,
-                                        raw_qualifier,
-                                        qualifier_kind,
-                                        &enclosing_canonical_type,
-                                    )
-                                    .await?;
+                            match find_unique_function_id(&new_function_ids, caller) {
+                                UniqueFunctionId::Unique(from_id) => {
+                                    let enclosing_canonical_type =
+                                        enclosing_canonical_type_for_function(
+                                            &crates,
+                                            rust_ctx.as_ref(),
+                                            &unsafe_prefixes,
+                                            caller,
+                                        );
+                                    queries
+                                        .put_staged_call_with_provenance(
+                                            &from_id,
+                                            callee,
+                                            &rel_path,
+                                            raw_qualifier,
+                                            qualifier_kind,
+                                            &enclosing_canonical_type,
+                                        )
+                                        .await?;
+                                }
+                                UniqueFunctionId::Ambiguous => {
+                                    result.same_file_ambiguous_dropped += 1;
+                                }
+                                UniqueFunctionId::NotFound => {}
                             }
                             continue;
                         }
@@ -3433,13 +3445,12 @@ fn find_function_id(ids: &[(String, String)], name: &str) -> Option<String> {
         .map(|(_, id)| id.clone())
 }
 
-/// Outcome of an ambiguity-aware same-file function-id lookup, used ONLY at the
-/// two direct-edge minting sites (deliberation 014-D / 013-D no-false-edge /
-/// 082-F target-correctness). Unlike [`find_function_id`] — which first-matches
-/// and is intentionally left byte-identical for its caller-attribution and
-/// resolve-path consumers — this distinguishes a same-file duplicate-name shadow
-/// so the minting sites can fail closed instead of binding a bare call to the
-/// earlier (shadowed) definition.
+/// Outcome of an ambiguity-aware same-file function-id lookup used at direct-edge
+/// minting and provenance-staging sites (deliberation 014-D / 013-D no-false-edge
+/// / 082-F target-correctness). Unlike [`find_function_id`] — which
+/// first-matches — this distinguishes a same-file duplicate-name shadow so
+/// callers can fail closed instead of binding a call to the earlier (shadowed)
+/// definition.
 enum UniqueFunctionId {
     /// Exactly one same-file candidate matched the name.
     Unique(String),
@@ -3453,10 +3464,9 @@ enum UniqueFunctionId {
 
 /// Resolve `name` to a function id ONLY when it is unambiguous within this
 /// file's `ids`. Returns [`UniqueFunctionId::Ambiguous`] when more than one
-/// candidate shares the name so the direct-edge minting sites can fail closed
+/// candidate shares the name so edge and staging sites can fail closed
 /// (deliberation 014-D). Language-agnostic: it never applies last-wins, which
-/// would be unsound for Rust. `find_function_id` is unchanged for every other
-/// consumer.
+/// would be unsound for Rust.
 fn find_unique_function_id(ids: &[(String, String)], name: &str) -> UniqueFunctionId {
     let mut matches = ids.iter().filter(|(n, _)| n == name);
     match (matches.next(), matches.next()) {
