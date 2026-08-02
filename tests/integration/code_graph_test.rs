@@ -1180,6 +1180,189 @@ async fn index_package_topology_change_invalidates_descendant_without_sync() {
     );
 }
 
+/// 108.002-T (R1) — an ordinary index that observes package-topology drift but
+/// cannot read an affected descendant must retain the prior topology snapshot.
+/// That retained snapshot makes the next ordinary index retry the descendant
+/// even when its restored bytes match the previously indexed content hash.
+#[test]
+#[allow(clippy::too_many_lines)]
+async fn ordinary_index_read_error_retains_topology_snapshot_for_retry() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let original_source = "def cf():\n    return 1\n";
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    // R1a: establish the prior no-package topology, then make `p` a regular
+    // package while its already-indexed descendant is unreadable as UTF-8.
+    write_sample_file(ws, "p/mod.py", original_source);
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let initial_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load initial topology snapshot");
+    assert!(
+        initial_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.python_packages.is_empty()),
+        "initial index must publish the no-package topology"
+    );
+    let initial_python_marker = q
+        .python_extraction_version()
+        .expect("read initial Python extraction marker");
+    let initial_code_graph_marker = q
+        .code_graph_extraction_generation()
+        .expect("read initial code-graph marker");
+    assert!(
+        initial_python_marker.is_some() && initial_code_graph_marker.is_some(),
+        "initial clean index must establish both extraction markers"
+    );
+    let initial_cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query initial cf"),
+        vec![String::new()],
+        "without p/__init__.py, cf must initially fail closed"
+    );
+
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    fs::write(ws.join("p/mod.py"), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("replace descendant with invalid UTF-8");
+    let failed = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index should return targeted per-file errors");
+    assert_eq!(
+        failed.errors.len(),
+        1,
+        "the invalid descendant must produce exactly one targeted error"
+    );
+    let read_error = failed.errors.first().expect("targeted read error");
+    assert_eq!(read_error.file, "p/mod.py");
+    assert!(
+        read_error.error.starts_with("read error:") && read_error.error.contains("UTF-8"),
+        "p/mod.py must report its invalid UTF-8 as a read error; got {read_error:?}"
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after read error");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        function_id_in(&q, "cf", "p/mod.py").await,
+        initial_cf_id,
+        "failed extraction must leave the prior descendant node intact"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query cf after read error"),
+        vec![String::new()],
+        "failed extraction must leave the prior fail-closed canonical identity intact"
+    );
+    assert_eq!(
+        q.python_extraction_version()
+            .expect("read Python marker after failure"),
+        initial_python_marker,
+        "a Python read error must not advance the extraction marker"
+    );
+    assert_eq!(
+        q.code_graph_extraction_generation()
+            .expect("read code-graph marker after failure"),
+        initial_code_graph_marker,
+        "a read error must not advance the code-graph marker"
+    );
+    let failed_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load topology snapshot after failure");
+    assert_eq!(
+        failed_snapshot, initial_snapshot,
+        "a targeted read failure must retain the prior topology snapshot so the next ordinary index retries"
+    );
+
+    // R1b: restoring the exact original bytes also restores the original hash,
+    // but the retained no-package snapshot must force a topology reparse.
+    fs::write(ws.join("p/mod.py"), original_source.as_bytes())
+        .expect("restore exact original descendant bytes");
+    assert_eq!(
+        fs::read(ws.join("p/mod.py")).expect("read restored descendant"),
+        original_source.as_bytes(),
+        "the retry fixture must exactly match the initially indexed bytes"
+    );
+    let retry = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("retry ordinary index should succeed");
+    assert!(
+        retry.errors.is_empty(),
+        "restored retry must be clean; got {:?}",
+        retry.errors
+    );
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after retry");
+    let q = CodeGraphQueries::new(db);
+    let retry_cf_id = function_id_in(&q, "cf", "p/mod.py").await;
+    assert_ne!(
+        retry_cf_id, initial_cf_id,
+        "retained topology drift must reparse p/mod.py despite its restored hash"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query retried cf"),
+        vec!["p.mod.cf".to_owned()],
+        "the retry must publish cf under the newly proven regular package"
+    );
+
+    // R1c: after the clean retry publishes the current topology, one more clean
+    // ordinary index must hash-skip both unchanged files rather than loop.
+    let clean = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("clean control ordinary index should succeed");
+    assert!(
+        clean.errors.is_empty(),
+        "clean control must not report errors"
+    );
+    assert_eq!(
+        clean.files_parsed, 0,
+        "published topology must prevent a permanent descendant reparse loop"
+    );
+    assert_eq!(
+        clean.files_skipped, 2,
+        "the unchanged package marker and descendant must both hash-skip"
+    );
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after clean control");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        function_id_in(&q, "cf", "p/mod.py").await,
+        retry_cf_id,
+        "the clean control must retain the retried descendant node"
+    );
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query clean-control cf"),
+        vec!["p.mod.cf".to_owned()]
+    );
+    let clean_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load clean-control topology snapshot")
+        .expect("clean control must publish a topology snapshot");
+    assert_eq!(
+        clean_snapshot.python_packages,
+        std::collections::HashSet::from(["p".to_owned()]),
+        "clean control must publish the current regular-package topology"
+    );
+}
+
 // ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
 
 /// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during
