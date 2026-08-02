@@ -68,12 +68,13 @@ async fn shim_recovers_from_stale_pid_file() {
 
 /// Scenario 2: dead-daemon runtime state must not require manual cleanup before restart.
 ///
-/// Simulates a daemon crash (SIGKILL via drop) that leaves stale runtime state
-/// (PID file, IPC socket, lock files) in `.engram/run/`. The subsequent call to
+/// Simulates a forced daemon crash that leaves stale runtime state (PID file,
+/// IPC socket, lock files) in `.engram/run/`. The subsequent call to
 /// `ensure_daemon_running` must start a fresh daemon without operator intervention.
 #[tokio::test]
 async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let workspace = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("workspace tempdir");
     let workspace_path = workspace.path().canonicalize().expect("canonicalize");
 
     let git_dir = workspace_path.join(".git");
@@ -81,7 +82,7 @@ async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
     // Start first daemon and verify it is healthy.
-    let harness =
+    let mut harness =
         helpers::DaemonHarness::spawn_for_workspace(&workspace_path, Duration::from_secs(20))
             .await
             .expect("first daemon must spawn");
@@ -92,12 +93,21 @@ async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
         "first daemon must be healthy before crash simulation"
     );
 
-    // Crash simulation: drop kills the daemon process (SIGKILL) without
-    // graceful shutdown, leaving stale runtime state in .engram/run/.
-    drop(harness);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stale_pid_file =
+        PidFile::read(&workspace_path).expect("first daemon must write structured PID metadata");
 
-    // Stale endpoint must no longer respond.
+    // Crash simulation: kill and reap the daemon without graceful shutdown,
+    // leaving stale runtime state in .engram/run/.
+    let killed_pid = harness
+        .kill_and_wait()
+        .expect("first daemon must be killed and reaped");
+    assert_eq!(
+        stale_pid_file.pid, killed_pid,
+        "stale PID metadata must identify the exact child process that was killed"
+    );
+
+    // A successful wait proves process exit; its stale endpoint must no longer
+    // respond.
     assert!(
         !check_health(&stale_endpoint).await,
         "stale endpoint must not respond after crash"
@@ -112,6 +122,19 @@ async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
     .await
     .expect("dead-daemon recovery must complete before timeout")
     .expect("daemon must start cleanly from dead runtime state without manual cleanup");
+
+    let recovered_pid_file =
+        PidFile::read(&workspace_path).expect("recovery must rewrite structured PID metadata");
+    assert_ne!(
+        recovered_pid_file.pid, killed_pid,
+        "recovery must replace the killed child PID with a different process"
+    );
+    assert!(
+        recovered_pid_file
+            .verify_alive()
+            .expect("recovered PID verification must succeed"),
+        "rewritten PID metadata must identify a live process"
+    );
 
     let endpoint = ipc_endpoint(&workspace_path).expect("endpoint must resolve after recovery");
     assert!(
