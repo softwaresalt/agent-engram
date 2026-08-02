@@ -132,7 +132,7 @@ artifact through a follow-up documentation PR.
 | Stale recovery | No timeout or manual cleanup | Any new `ShutdownTimeout` |
 | Replacement safety | One live daemon and lock holder | Any duplicate live daemon or lock bypass |
 | Identity health | PID/workspace/pipe checks green | Matching live structured identity classified dead |
-| Legacy upgrade | Reachable numeric daemon remains manageable | Legitimate legacy daemon killed or silently replaced |
+| Legacy upgrade | Reachable numeric daemon remains manageable | Any legitimate legacy daemon becomes unreachable or unmanageable, is killed, or is silently replaced |
 
 Existing reliability counters are not emitted on every shim path, so the
 observation window uses `daemon-status`, process identity, lock behavior, and
