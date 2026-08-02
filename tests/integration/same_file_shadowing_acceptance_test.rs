@@ -418,7 +418,7 @@ async fn qualified_staging_full_index_drops_ambiguous_duplicate_caller() {
 
     let config = CodeGraphConfig::default();
     let (data_dir, branch) = test_db_params(ws);
-    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
         .await
         .expect("index qualified duplicate-caller fixture");
     let q = CodeGraphQueries::new(connect_db(&data_dir, &branch).await.expect("connect_db"));
@@ -429,6 +429,28 @@ async fn qualified_staging_full_index_drops_ambiguous_duplicate_caller() {
         2,
         "fixture must index both top-level dispatch definitions; got {duplicate_callers:?}"
     );
+    let duplicate_ids: HashSet<&String> = duplicate_callers
+        .iter()
+        .map(|(_, caller_id)| caller_id)
+        .collect();
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list staged calls");
+    let rows_keyed_to_duplicates: Vec<_> = staged
+        .iter()
+        .filter(|row| duplicate_ids.contains(&row.caller_id))
+        .collect();
+
+    assert!(
+        rows_keyed_to_duplicates.is_empty() && result.same_file_ambiguous_dropped > 0,
+        "full index must drop ambiguous qualified caller provenance and count it; \
+         callers by source line: {duplicate_callers:?}, \
+         staged rows keyed to duplicates: {rows_keyed_to_duplicates:?}, \
+         same_file_ambiguous_dropped: {}",
+        result.same_file_ambiguous_dropped
+    );
+
     let trusted_target_id = exact_function_id(&q, "trusted", "target.py").await;
     let canonical = q
         .list_calls_edges_by_resolution("calls_resolved_canonical")
