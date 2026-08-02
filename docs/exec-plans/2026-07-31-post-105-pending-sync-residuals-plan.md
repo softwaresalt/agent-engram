@@ -3,7 +3,7 @@ title: "Post-105 pending-sync generation linearization and startup handoff"
 type: impl-plan
 date: 2026-07-31
 updated: 2026-08-01
-status: "reviewed (authorized review-fix PASS; P2 rustdoc only)"
+status: "superseded-blocked (current-head adversarial architecture failure; redesign spike required)"
 source: "docs/decisions/2026-07-31-post-105-pending-sync-residuals-deliberation.md"
 source_deliberation: "018-D"
 source_stash: ["FF55E51A", "88EB5FB1", "1E70A289"]
@@ -254,3 +254,20 @@ This is elevated concurrency work. Protected invariants are wrapper floor safety
 - Batch proof: PASS. Exact predecessor lists are structured and fail closed.
 
 **Decision:** retain all items queued for Ship. No P1 remains. The rustdoc-only P2 cannot widen implementation scope.
+
+
+## Supersession and quarantine - 2026-08-01
+
+This historical implementation plan is preserved but no longer executable. Operator-provided current-head adversarial review failed three cycles on the same architecture P1s:
+
+1. retained public wrapper and generation qualification contract;
+2. hydration ownership before DB work;
+3. one authoritative arbitration and full-mask owner;
+4. compiling deterministic RED proof; and
+5. fail-closed predecessor and backlog-index checks.
+
+The prior content-only PASS and all task provenance above remain as history, but accepted review `109.001-R` is superseded and rejected. Shipment `104-S`, feature `109-F`, and tasks `109.001-T` through `109.012-T` are blocked.
+
+The redesign decision is `docs/decisions/2026-08-01-post-105-sync-coordinator-redesign-decision.md`. Only bounded proof task `109.013-T` is queued, outside `104-S`, under `docs/exec-plans/2026-08-01-post-105-sync-coordinator-spike-plan.md`.
+
+Do not re-queue implementation from this plan. Restart requires spike findings, a revised single-authority implementation plan, plan hardening, a fresh zero-P0/P1 PASS, width-safe harvest, successful backlog index sync, and exact positive terminal shipped or merged evidence for predecessors `102-S` and `103-S`.
