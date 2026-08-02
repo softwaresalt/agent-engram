@@ -7,10 +7,10 @@ description: >-
   index topology retry preservation and authoritative empty-file eviction.
 topic: "Ordinary-index fail-closed retry and empty-file eviction"
 depth: closure
-decision_status: "BLOCKED — operator-workspace cache containment incident"
+decision_status: "READY — local gates and report-only review passed"
 author: ship
 date: 2026-08-02
-verdict: BLOCKED
+verdict: READY
 branch: "feat/108-ordinary-index-fail-closed"
 linked_artifacts:
   - "103-S"
@@ -115,8 +115,8 @@ same private implementation.
 * Monitoring: structured log, result fields, snapshot queries, raw-row checks,
   thresholds, owner, and observation window are defined
 * Local gates: formatting, strict Clippy, `cargo dev-test`, and targeted
-  runtime suites passed; the exact all-target gate is not complete because of
-  the containment incident recorded below
+  runtime suites passed; the hybrid hermetic `cargo test --all-targets` gate
+  completed successfully at the reviewed branch head
 
 ## Observability
 
@@ -147,27 +147,22 @@ deployment, fleet rollout, feature flag, migration, or automatic workspace
 repair. A later tagged binary release follows the repository release workflow.
 After release, run only the disposable observations in the monitoring plan.
 
-## Safety Incident and Blocker
+## Resolved Validation Incident
 
-The first exact `cargo test --all-targets` attempt inherited
-`ENGRAM_DATA_DIR=C:\Source\GitHub\engram\.engram`. An unrelated retrieval
-evaluation test then reported seven records from the persistent `main` branch
-database instead of an empty temporary workspace. The isolated retry reproduced
-that read. This proves the test process contacted the preserved operator data
-directory outside this worktree; other test binaries may also have written
-derived fixture state there.
+Earlier shared-data all-target attempts were non-hermetic because unrelated
+test binaries reused one branch database. A per-test runner proved isolation
+but expanded the suite to 1,453 processes and was operationally unsuitable.
+The final untracked session runner uses one unique `ENGRAM_DATA_DIR` per test
+binary, serializes each binary, and isolates only `contract_evaluation` and
+`integration_retrieval_eval_thresholds` per test.
 
-No cleanup, reindex, repair, deletion, or further inspection of that data
-directory was attempted. A later run using a worktree-local shared directory
-exposed expected cross-test contamination. The final run removed
-`ENGRAM_DATA_DIR` for process-local temporary isolation and showed no test
-failure in the captured output, but exceeded the command-capture window before
-the entire all-target suite could provide a terminal result.
-
-This is a shipment stop condition. Resume requires the operator to classify the
-persistent `.engram` cache as disposable or provide a target-specific recovery
-decision, and to confirm that further gates run with `ENGRAM_DATA_DIR` unset.
-Ship must not repair or rebuild that operator cache.
+The two allowlisted binaries passed 5/5 and 4/4 respectively, the ordinary
+whole-binary proof passed, and the complete hybrid hermetic
+`cargo test --all-targets` gate reached exit code zero after the final review
+remediations. Process snapshots retained the same seven operator-owned
+`C:\Tools\engram.exe` baseline PIDs with zero new target-built or
+hermetic-root process leaks. The repository-root `.engram` directory was not
+inspected, modified, repaired, deleted, or reindexed.
 
 ## Monitoring Plan
 
@@ -198,9 +193,9 @@ requires a separate target-specific handoff and operator-executed action.
 
 ## Readiness
 
-**BLOCKED.** The implementation and targeted runtime verification pass, but the
-operator-data containment invariant was breached by the inherited test
-environment and the exact all-target gate lacks a terminal pass. Do not create
-or merge the implementation PR until the operator supplies the recovery
-decision above. Exact-HEAD review, CI, merge, and release observation remain
+**READY FOR PR.** Targeted runtime verification, formatting, strict Clippy,
+504/504 library tests, the hybrid hermetic all-target suite, and report-only
+review pass. The accepted audit baseline remains one transitive
+`RUSTSEC-2026-0041` vulnerability plus 13 allowed warnings with no dependency
+change. Exact-HEAD CI, Copilot review, merge, and post-merge observation remain
 pending.
