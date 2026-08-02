@@ -7,10 +7,10 @@ description: >-
   preservation and authoritative empty-file eviction.
 topic: "Ordinary-index fail-closed runtime verification"
 depth: closure
-decision_status: "READY — disposable runtime and hermetic gates passed"
+decision_status: "SHIPPED — merge and post-merge verification passed"
 author: ship
 date: 2026-08-02
-verdict: READY
+verdict: SHIPPED
 branch: "feat/108-ordinary-index-fail-closed"
 linked_artifacts:
   - "103-S"
@@ -23,11 +23,12 @@ linked_artifacts:
 
 * **Surface:** background-job / daemon-shared ordinary indexing
 * **Mode:** API-level integration through the private production service
-* **Build:** feature-branch HEAD `9714dc14`, including fail-closed Python and
-  Rust staged-source post-pass remediation
+* **Build:** PR #312 merge
+  `5c9d466ebff883ae8ae6e71008968f986707e882`, including fail-closed Python
+  and Rust staged-source post-pass remediation
 * **Fixtures:** temporary directories only for the targeted 103-S scenarios
-* **Risky actions:** PA-1 and PA-2 are high risk and applied on the branch;
-  merge and release remain pending
+* **Risky actions:** PA-1 and PA-2 are high risk and merged after mandatory
+  gates; tagged-binary release remains pending
 
 ## Targeted Runtime Evidence
 
@@ -43,6 +44,7 @@ linked_artifacts:
 | strict all-target Clippy | PASS | warnings and pedantic lints |
 | `cargo dev-test` | PASS | 504 library tests |
 | hybrid hermetic `cargo test --all-targets` | PASS | all targets completed with isolated data |
+| post-merge ordinary-index filter | PASS, 5/5 | merged snapshot, post-pass, and empty-file behavior |
 
 The three-phase topology scenario observed a portable invalid-UTF-8 error,
 retained the prior snapshot, recomputed canonical identity after restoring the
@@ -64,13 +66,15 @@ The repository-root `.engram` directory remained untouched.
 
 ## Verdict
 
-**READY.** The changed runtime surface, adjacent controls, strict local gates,
-and hybrid hermetic all-target suite pass. Report-only review has no remaining
-P0/P1 findings. Merge and post-merge runtime observation remain pending.
+**SHIPPED.** The changed runtime surface, adjacent controls, strict local
+gates, hybrid hermetic all-target suite, current-head CI/Copilot review, merge,
+and post-merge 5/5 disposable observation pass. No target-built or
+hermetic-root process leak was observed.
 
 ## Closure Handoff
 
-* Runtime surface verdict: functionally and operationally READY
+* Runtime surface verdict: functionally and operationally SHIPPED
 * Monitoring and rollback: recorded in the companion readiness artifact
-* Remaining gate: exact-HEAD PR CI and Copilot review
-* Next safe action: push the reviewed head and begin the PR lifecycle
+* Remaining observation: tagged-binary post-release monitoring window
+* Next safe action: operator executes only the documented disposable
+  post-release observations after a binary release

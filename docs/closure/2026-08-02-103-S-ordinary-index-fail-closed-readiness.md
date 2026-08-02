@@ -7,10 +7,10 @@ description: >-
   index topology retry preservation and authoritative empty-file eviction.
 topic: "Ordinary-index fail-closed retry and empty-file eviction"
 depth: closure
-decision_status: "READY — local gates and report-only review passed"
+decision_status: "SHIPPED — PR #312 merged and backlog scope archived"
 author: ship
 date: 2026-08-02
-verdict: READY
+verdict: SHIPPED
 branch: "feat/108-ordinary-index-fail-closed"
 linked_artifacts:
   - "103-S"
@@ -49,8 +49,9 @@ meaning.
   build/test, CI, PR, and merge activity for 103-S after all gates pass.
 - **Approval required:** satisfied for the branch implementation and an exact
   reviewed-HEAD merge; no gate bypass is authorized.
-- **ActionResult:** applied on the feature branch by `ac6d21f7`; merge and
-  release observation remain pending.
+- **ActionResult:** merged through PR #312 as
+  `5c9d466ebff883ae8ae6e71008968f986707e882`; release observation remains
+  pending.
 - **Rollback:** revert the release-unit merge. An absent snapshot causes
   conservative recomputation; no source data or schema rollback is needed.
 
@@ -68,8 +69,9 @@ meaning.
 - **Approval required:** satisfied for disposable-fixture execution and the
   exact reviewed-HEAD merge. Ship remains unauthorized to repair, reindex, or
   mutate an operator workspace.
-- **ActionResult:** applied on the feature branch by `63f97d30`; merge and
-  release observation remain pending.
+- **ActionResult:** merged through PR #312 as
+  `5c9d466ebff883ae8ae6e71008968f986707e882`; release observation remains
+  pending.
 - **Rollback:** revert the release-unit merge. If a future released binary
   affects a named workspace, provide a target-specific handoff; only the
   operator decides and executes any workspace rebuild.
@@ -193,9 +195,11 @@ requires a separate target-specific handoff and operator-executed action.
 
 ## Readiness
 
-**READY FOR PR.** Targeted runtime verification, formatting, strict Clippy,
-504/504 library tests, the hybrid hermetic all-target suite, and report-only
-review pass. The accepted audit baseline remains one transitive
-`RUSTSEC-2026-0041` vulnerability plus 13 allowed warnings with no dependency
-change. Exact-HEAD CI, Copilot review, merge, and post-merge observation remain
-pending.
+**SHIPPED.** PR #312 passed current-head CI, paginated exact-head Copilot
+review, reviewer removal, zero unresolved threads, clean mergeability, and
+merge-only repository settings before merge commit
+`5c9d466ebff883ae8ae6e71008968f986707e882`. Post-merge disposable
+ordinary-index verification passed 5/5 with no target-built process leak.
+Backlogit archived 103-S, 108-F, 108.001-T, and 108.002-T with the merge SHA.
+The accepted audit baseline remains one transitive `RUSTSEC-2026-0041`
+vulnerability plus 13 allowed warnings with no dependency change.
