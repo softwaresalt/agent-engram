@@ -721,10 +721,24 @@ async fn rust_ctx_for_staged_file(
     ws_path: &Path,
     crates: &canonical::WorkspaceCrates,
     rel_path: &str,
-) -> Option<(canonical::ModulePath, canonical::UseGraph)> {
+) -> Result<Option<RustCanonicalContext>, EngramError> {
+    // 108.002-T: preserve an unresolvable module layout as `Ok(None)`, but
+    // propagate source-read failures so the post-pass cannot certify a graph
+    // after silently dropping the caller's last-known-good canonical edge.
     let full = ws_path.join(rel_path);
-    let source = tokio::fs::read_to_string(full).await.ok()?;
-    rust_canonical_ctx(crates, Language::Rust, rel_path, &source)
+    let source = tokio::fs::read_to_string(&full).await.map_err(|error| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!(
+                "rust canonical post-pass: failed to read staged source '{rel_path}': {error}"
+            ),
+        })
+    })?;
+    Ok(rust_canonical_ctx(
+        crates,
+        Language::Rust,
+        rel_path,
+        &source,
+    ))
 }
 
 /// Per-file Python staged-call context: the caller module path (if derivable),
@@ -980,10 +994,12 @@ async fn reresolve_calls_edges_with_canonical_context(
         .into_iter()
         .filter(|call| !call.qualifier_kind.is_empty())
         .collect();
-    // Preflight every fallible Python context before the bare-name pass or any
-    // canonical-edge retraction mutates the graph. A staged source can survive
-    // a per-file read failure, and discovering that failure after retraction
-    // would destroy the caller's last known-good canonical edge.
+    // 108.002-T: preflight every fallible staged-source context before the
+    // bare-name pass or any canonical-edge retraction mutates the graph. A
+    // staged source can survive a per-file read failure, and discovering that
+    // failure after retraction would destroy the caller's last-known-good
+    // canonical edge.
+    let mut rust_context_cache: HashMap<String, Option<RustCanonicalContext>> = HashMap::new();
     let mut python_context_cache: HashMap<String, PythonStagedContext> = HashMap::new();
     for call in &staged {
         if is_py_path(&call.source_file) && !python_context_cache.contains_key(&call.source_file) {
@@ -991,6 +1007,11 @@ async fn reresolve_calls_edges_with_canonical_context(
                 python_ctx_for_staged_file(ws_path, python_packages, queries, &call.source_file)
                     .await?;
             python_context_cache.insert(call.source_file.clone(), ctx);
+        } else if !is_py_path(&call.source_file)
+            && !rust_context_cache.contains_key(&call.source_file)
+        {
+            let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await?;
+            rust_context_cache.insert(call.source_file.clone(), ctx);
         }
     }
 
@@ -1047,8 +1068,6 @@ async fn reresolve_calls_edges_with_canonical_context(
     }
 
     let canonical_index = queries.function_ids_by_canonical_path().await?;
-    let mut context_cache: HashMap<String, Option<(canonical::ModulePath, canonical::UseGraph)>> =
-        HashMap::new();
 
     for call in &staged {
         result.lookups += 1;
@@ -1106,12 +1125,8 @@ async fn reresolve_calls_edges_with_canonical_context(
             }
             continue;
         }
-        if !context_cache.contains_key(&call.source_file) {
-            let ctx = rust_ctx_for_staged_file(ws_path, crates, &call.source_file).await;
-            context_cache.insert(call.source_file.clone(), ctx);
-        }
         let target_id = {
-            let Some(Some((module, use_graph))) = context_cache.get(&call.source_file) else {
+            let Some(Some((module, use_graph))) = rust_context_cache.get(&call.source_file) else {
                 continue;
             };
             let Some(target) =

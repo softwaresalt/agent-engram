@@ -1930,6 +1930,98 @@ async fn ordinary_index_post_pass_read_error_preserves_canonical_state() {
     );
 }
 
+/// 108.002-T (R2 Rust regression) — a staged Rust source read failure in the
+/// canonical post-pass must propagate without clearing the prior workspace
+/// snapshot or retracting the caller's existing canonical edge.
+#[test]
+async fn ordinary_index_rust_post_pass_read_error_preserves_canonical_state() {
+    const CALLER_PATH: &str = "src/caller.rs";
+    const TARGET_PATH: &str = "src/target.rs";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(ws, "src/lib.rs", "pub mod caller;\npub mod target;\n");
+    write_sample_file(
+        ws,
+        CALLER_PATH,
+        "pub fn run() {\n    crate::target::callee();\n}\n",
+    );
+    write_sample_file(ws, TARGET_PATH, "pub fn callee() {}\n");
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let initial_snapshot = q
+        .load_index_canonical_workspace_snapshot()
+        .await
+        .expect("load initial workspace snapshot")
+        .expect("initial index must publish a workspace snapshot");
+    let run_id = function_id_in(&q, "run", CALLER_PATH).await;
+    let callee_id = function_id_in(&q, "callee", TARGET_PATH).await;
+    let prior_edge = (run_id, callee_id);
+    let staged = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("list staged calls");
+    assert!(
+        staged.iter().any(|call| {
+            call.source_file == CALLER_PATH
+                && call.callee_name == "callee"
+                && !call.qualifier_kind.is_empty()
+        }),
+        "precondition: caller.rs must retain its staged Rust call; got {staged:?}"
+    );
+    let initial_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list initial canonical edges");
+    assert!(
+        initial_edges.contains(&prior_edge),
+        "precondition: the staged Rust call must have an existing canonical edge; got {initial_edges:?}"
+    );
+
+    fs::write(ws.join(CALLER_PATH), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("replace staged Rust caller with invalid UTF-8");
+    let error = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect_err("the staged Rust source read error must propagate");
+    let error_message = error.to_string();
+    assert!(
+        error_message.contains("rust canonical post-pass") && error_message.contains(CALLER_PATH),
+        "the propagated error must identify the staged Rust source; got {error_message}"
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after Rust post-pass error");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load workspace snapshot after Rust post-pass error"),
+        Some(initial_snapshot),
+        "a Rust post-pass error must restore the prior workspace snapshot"
+    );
+    let retained_edges = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("list canonical edges after Rust post-pass error");
+    assert!(
+        retained_edges.contains(&prior_edge),
+        "Rust preflight must leave the prior canonical edge intact; got {retained_edges:?}"
+    );
+}
+
 // ── 096-F (T5a): Python bare-call provenance staging ─────────────────────────
 
 /// T5a.1 — a cross-file Python bare call uses `python_bare` provenance during
