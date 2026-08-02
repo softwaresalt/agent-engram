@@ -92,10 +92,22 @@ impl PidFile {
             return Ok(false);
         };
 
-        let start_time_matches = self.start_time_unix <= UNKNOWN_START_TIME_UNIX
-            || process.start_time() == self.start_time_unix;
+        if self.start_time_unix > UNKNOWN_START_TIME_UNIX
+            && process.start_time() != self.start_time_unix
+        {
+            return Ok(false);
+        }
 
-        Ok(start_time_matches)
+        if !system.refresh_process(process_id) {
+            return Ok(false);
+        }
+
+        let Some(process) = system.process(process_id) else {
+            return Ok(false);
+        };
+
+        Ok(self.start_time_unix <= UNKNOWN_START_TIME_UNIX
+            || process.start_time() == self.start_time_unix)
     }
 
     /// Persist the PID file via a same-directory temp file and atomic rename.
