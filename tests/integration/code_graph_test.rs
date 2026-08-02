@@ -499,6 +499,479 @@ async fn index_workspace_removes_stale_records_when_file_becomes_oversized() {
     );
 }
 
+/// 108.001-T — an ordinary, non-forced index treats a tracked Rust file that
+/// becomes empty as absent while leaving an unchanged control file byte-for-byte
+/// and graph-for-graph intact.
+#[test]
+#[allow(clippy::too_many_lines)]
+async fn ordinary_index_retracts_indexed_rust_file_truncated_to_zero_bytes() {
+    const CONTROL_PATH: &str = "src/lib.rs";
+    const EMPTIED_PATH: &str = "src/doomed.rs";
+    const STALE_GENERATION: &str = "task-108.001-stale";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(
+        ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write_sample_file(
+        ws,
+        CONTROL_PATH,
+        r"
+pub mod doomed;
+
+pub fn control_entry() {
+    control_leaf();
+}
+
+pub fn control_leaf() {}
+pub fn singleton_target() {}
+",
+    );
+    write_sample_file(
+        ws,
+        EMPTIED_PATH,
+        r"
+use crate::singleton_target;
+
+pub fn doomed_entry() {
+    doomed_leaf();
+    singleton_target();
+    crate::doomed::canonical_target();
+    unresolved_target();
+}
+
+pub fn doomed_leaf() {}
+pub fn canonical_target() {}
+",
+    );
+
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+
+    let control_file_before = q
+        .get_code_file_by_path(CONTROL_PATH)
+        .await
+        .expect("read control code file")
+        .expect("control code file must be indexed");
+    let mut control_functions_before: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read functions")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_before.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut control_symbols_before = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_before.sort_by(|left, right| left.1.cmp(&right.1));
+
+    let control_entry_id = function_id_in(&q, "control_entry", CONTROL_PATH).await;
+    let control_leaf_id = function_id_in(&q, "control_leaf", CONTROL_PATH).await;
+    let singleton_target_id = function_id_in(&q, "singleton_target", CONTROL_PATH).await;
+    let doomed_entry_id = function_id_in(&q, "doomed_entry", EMPTIED_PATH).await;
+    let doomed_leaf_id = function_id_in(&q, "doomed_leaf", EMPTIED_PATH).await;
+    let canonical_target_id = function_id_in(&q, "canonical_target", EMPTIED_PATH).await;
+
+    let direct_before = q
+        .list_calls_edges_by_resolution("direct")
+        .await
+        .expect("read initial direct edges");
+    assert!(
+        direct_before.contains(&(control_entry_id.clone(), control_leaf_id.clone()))
+            && direct_before.contains(&(doomed_entry_id.clone(), doomed_leaf_id)),
+        "setup must create both control and doomed direct edges; got {direct_before:?}"
+    );
+    let singleton_before = q
+        .list_calls_edges_by_resolution("calls_resolved_singleton")
+        .await
+        .expect("read initial singleton edges");
+    assert!(
+        singleton_before.contains(&(doomed_entry_id.clone(), singleton_target_id)),
+        "setup must resolve the doomed cross-file call; got {singleton_before:?}"
+    );
+    let canonical_before = q
+        .list_calls_edges_by_resolution("calls_resolved_canonical")
+        .await
+        .expect("read initial canonical edges");
+    assert!(
+        canonical_before.contains(&(doomed_entry_id.clone(), canonical_target_id)),
+        "setup must resolve the doomed canonical call; got {canonical_before:?}"
+    );
+    let staged_before = q
+        .list_staged_calls_with_provenance()
+        .await
+        .expect("read initial staged calls");
+    assert!(
+        staged_before
+            .iter()
+            .any(|call| call.source_file == EMPTIED_PATH
+                && call.callee_name == "unresolved_target"),
+        "setup must retain a dangling staged call; got {staged_before:?}"
+    );
+
+    q.set_code_graph_extraction_generation(STALE_GENERATION)
+        .await
+        .expect("set stale generation marker");
+    fs::write(ws.join(EMPTIED_PATH), []).expect("truncate tracked Rust file");
+
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index after truncation should succeed");
+    assert!(
+        result.errors.is_empty(),
+        "empty-file cleanup must be error-free; got {:?}",
+        result.errors
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after truncation");
+    let q = CodeGraphQueries::new(db);
+
+    assert!(
+        q.get_code_file_by_path(EMPTIED_PATH)
+            .await
+            .expect("read emptied code file")
+            .is_none(),
+        "ordinary index must retract the code-file record for an indexed path truncated to zero bytes"
+    );
+    assert!(
+        q.get_symbol_identities_for_file(EMPTIED_PATH)
+            .await
+            .expect("read emptied symbols")
+            .is_empty(),
+        "ordinary index must retract every symbol owned by the emptied path"
+    );
+    assert!(
+        q.all_function_metas()
+            .await
+            .expect("read function metadata")
+            .iter()
+            .all(|function| function.file_path != EMPTIED_PATH),
+        "ordinary index must retract function metadata owned by the emptied path"
+    );
+    assert!(
+        q.list_staged_calls_with_provenance()
+            .await
+            .expect("read staged calls after cleanup")
+            .iter()
+            .all(|call| call.source_file != EMPTIED_PATH),
+        "ordinary index must retract staged calls owned by the emptied path"
+    );
+    assert!(
+        q.list_calls_edges_by_resolution("calls_resolved_singleton")
+            .await
+            .expect("read singleton edges after cleanup")
+            .is_empty(),
+        "ordinary index must retract resolved singleton edges owned by the emptied path"
+    );
+    assert!(
+        q.list_calls_edges_by_resolution("calls_resolved_canonical")
+            .await
+            .expect("read canonical edges after cleanup")
+            .is_empty(),
+        "ordinary index must retract resolved canonical edges owned by the emptied path"
+    );
+    assert_eq!(
+        q.list_calls_edges_by_resolution("direct")
+            .await
+            .expect("read direct edges after cleanup"),
+        vec![(control_entry_id, control_leaf_id)],
+        "ordinary index must retract the emptied path's direct edge and preserve the control edge"
+    );
+    assert_eq!(
+        q.count_calls_edges()
+            .await
+            .expect("count raw calls-edge rows"),
+        1,
+        "only the live control calls-edge row may remain"
+    );
+    assert_eq!(
+        q.count_dangling_calls_edges()
+            .await
+            .expect("count dangling calls-edge rows"),
+        0,
+        "targeted empty-file cleanup must leave no raw dangling calls-edge rows"
+    );
+
+    assert_eq!(
+        q.get_code_file_by_path(CONTROL_PATH)
+            .await
+            .expect("read control code file after cleanup"),
+        Some(control_file_before),
+        "the unchanged control code-file identity and hash must remain exact"
+    );
+    let mut control_functions_after: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read functions after cleanup")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_after.sort_by(|left, right| left.id.cmp(&right.id));
+    assert_eq!(
+        control_functions_after, control_functions_before,
+        "the unchanged control functions must remain exact"
+    );
+    let mut control_symbols_after = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols after cleanup")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_after.sort_by(|left, right| left.1.cmp(&right.1));
+    assert_eq!(
+        control_symbols_after, control_symbols_before,
+        "the unchanged control symbols must remain exact"
+    );
+
+    assert_eq!(
+        result.dangling_edges_swept, 0,
+        "targeted cleanup must not rely on the later dangling-edge sweep"
+    );
+    assert_eq!(
+        q.code_graph_extraction_generation()
+            .expect("read generation marker after cleanup"),
+        Some(STALE_GENERATION.to_owned()),
+        "the hash-skipped run must leave the stale generation marker behind"
+    );
+    assert_eq!(
+        result.files_reconciled, 0,
+        "ordinary empty-file cleanup is not forced file-set reconciliation"
+    );
+    assert_eq!(
+        result.files_parsed, 0,
+        "neither the empty path nor unchanged control should be parsed"
+    );
+    assert_eq!(
+        result.files_skipped, 2,
+        "the empty path and unchanged control must both count as skipped"
+    );
+}
+
+/// 108.001-T — a never-indexed empty Rust file is a no-op during an ordinary,
+/// non-forced index and cannot disturb an unchanged live control graph.
+#[test]
+#[allow(clippy::too_many_lines)]
+async fn ordinary_index_skips_never_indexed_empty_rust_file_without_creating_state() {
+    const CONTROL_PATH: &str = "src/control.rs";
+    const EMPTY_PATH: &str = "src/empty.rs";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+
+    write_sample_file(
+        ws,
+        CONTROL_PATH,
+        r"
+pub fn control_entry() {
+    control_leaf();
+}
+
+pub fn control_leaf() {}
+",
+    );
+    code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("initial ordinary index should succeed");
+
+    let db = connect_db(&data_dir, &branch).await.expect("db connect");
+    let q = CodeGraphQueries::new(db);
+    let control_file_before = q
+        .get_code_file_by_path(CONTROL_PATH)
+        .await
+        .expect("read control code file")
+        .expect("control code file must be indexed");
+    let mut control_functions_before: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read control functions")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_before.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut control_symbols_before = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_before.sort_by(|left, right| left.1.cmp(&right.1));
+    let control_entry_id = function_id_in(&q, "control_entry", CONTROL_PATH).await;
+    let control_leaf_id = function_id_in(&q, "control_leaf", CONTROL_PATH).await;
+    assert_eq!(
+        q.list_calls_edges_by_resolution("direct")
+            .await
+            .expect("read initial direct edges"),
+        vec![(control_entry_id.clone(), control_leaf_id.clone())],
+        "setup must establish the live control direct edge"
+    );
+    assert!(
+        q.get_code_file_by_path(EMPTY_PATH)
+            .await
+            .expect("read absent empty path")
+            .is_none(),
+        "setup must not contain the never-indexed path"
+    );
+
+    fs::write(ws.join(EMPTY_PATH), []).expect("create never-indexed empty Rust file");
+    let result = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index with an empty new path should succeed");
+    assert!(
+        result.errors.is_empty(),
+        "an empty new path must be error-free; got {:?}",
+        result.errors
+    );
+
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after no-op index");
+    let q = CodeGraphQueries::new(db);
+    assert!(
+        q.get_code_file_by_path(EMPTY_PATH)
+            .await
+            .expect("read never-indexed empty path")
+            .is_none(),
+        "ordinary index must not create a code-file record for a never-indexed empty Rust path"
+    );
+    assert!(
+        q.get_symbol_identities_for_file(EMPTY_PATH)
+            .await
+            .expect("read empty-path symbols")
+            .is_empty(),
+        "a never-indexed empty Rust path must create no symbols"
+    );
+    assert!(
+        q.all_function_metas()
+            .await
+            .expect("read function metadata")
+            .iter()
+            .all(|function| function.file_path != EMPTY_PATH),
+        "a never-indexed empty Rust path must create no function metadata"
+    );
+    assert!(
+        q.list_staged_calls_with_provenance()
+            .await
+            .expect("read staged calls")
+            .iter()
+            .all(|call| call.source_file != EMPTY_PATH),
+        "a never-indexed empty Rust path must create no staged calls"
+    );
+
+    assert_eq!(
+        q.get_code_file_by_path(CONTROL_PATH)
+            .await
+            .expect("read control code file after no-op"),
+        Some(control_file_before),
+        "the unchanged control code-file identity and hash must remain exact"
+    );
+    let mut control_functions_after: Vec<_> = q
+        .all_functions()
+        .await
+        .expect("read control functions after no-op")
+        .into_iter()
+        .filter(|function| function.file_path == CONTROL_PATH)
+        .collect();
+    control_functions_after.sort_by(|left, right| left.id.cmp(&right.id));
+    assert_eq!(
+        control_functions_after, control_functions_before,
+        "the unchanged control functions must remain exact"
+    );
+    let mut control_symbols_after = q
+        .get_symbol_identities_for_file(CONTROL_PATH)
+        .await
+        .expect("read control symbols after no-op")
+        .into_iter()
+        .map(|symbol| {
+            (
+                symbol.table,
+                symbol.id,
+                symbol.name,
+                symbol.file_path,
+                symbol.body_hash,
+                symbol.embedding,
+            )
+        })
+        .collect::<Vec<_>>();
+    control_symbols_after.sort_by(|left, right| left.1.cmp(&right.1));
+    assert_eq!(
+        control_symbols_after, control_symbols_before,
+        "the unchanged control symbols must remain exact"
+    );
+    assert_eq!(
+        q.list_calls_edges_by_resolution("direct")
+            .await
+            .expect("read control direct edge after no-op"),
+        vec![(control_entry_id, control_leaf_id)],
+        "the unchanged control direct edge must remain live and exact"
+    );
+    assert_eq!(
+        q.count_dangling_calls_edges()
+            .await
+            .expect("count dangling calls-edge rows"),
+        0,
+        "the no-op empty path must not create dangling calls-edge rows"
+    );
+    assert_eq!(
+        result.files_reconciled, 0,
+        "a never-indexed empty path is not forced file-set reconciliation"
+    );
+    assert_eq!(
+        result.files_parsed, 0,
+        "neither the empty path nor unchanged control should be parsed"
+    );
+    assert_eq!(
+        result.files_skipped, 2,
+        "the never-indexed empty path and unchanged control must both count as skipped"
+    );
+}
+
 #[test]
 async fn sync_retracts_symbols_and_edges_when_file_truncated_to_zero_bytes() {
     // P0-2022 (099.001-T): a previously-indexed file truncated to 0 bytes was
