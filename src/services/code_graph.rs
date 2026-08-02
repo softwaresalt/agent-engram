@@ -2021,9 +2021,19 @@ async fn index_workspace_impl(
             "code graph: resolved cross-file singleton calls edges"
         );
     }
-    queries
-        .replace_index_canonical_workspace_snapshot(&canonical_workspace)
-        .await?;
+    // Publish only a fully observed workspace topology. A per-file failure may
+    // have left unchanged-hash descendants stale under the newly discovered
+    // topology, so retain the prior snapshot to force the next index to retry
+    // that drift. With no prior snapshot, the relation remains cleared.
+    if result.errors.is_empty() {
+        queries
+            .replace_index_canonical_workspace_snapshot(&canonical_workspace)
+            .await?;
+    } else if let Some(previous) = previous_canonical_workspace.as_ref() {
+        queries
+            .replace_index_canonical_workspace_snapshot(previous)
+            .await?;
+    }
 
     // ── T7 (096.010-T): advance the Python extraction-version marker ──
     // A full index re-runs the workspace-global canonical post-pass over every
