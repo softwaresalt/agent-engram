@@ -24,7 +24,7 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 
 ## Source and compatibility decision
 
-- Source basis: HEAD `feb5f7c84dc189dfebce840a7811aec3acfe4b53`; current source equals main after temporary spike edits were removed.
+- Source basis: exact review HEAD `d6321504137445a94b4134718355b87cceb75db6`; targeted source reinspection confirms that only hydration consumes the existing generation-cancellation receiver, while Index/Sync and both watcher drivers do not.
 - Evidence basis: `docs/research/2026-08-02-106-sync-coordinator-spike-execution-evidence.md`, reviewed evidence commit `b5d5802e`.
 - Package contract: `Cargo.toml` has `publish = false`; Engram ships a binary. No public Rust permit API is added.
 - API decision: opaque `GenerationToken`, `OwnerPermit`, `OwnerKind`, and `WorkMask` are `pub(crate)` at most, with private fields. The permit is non-`Clone`, owns an `Arc<CoordinatorCell>`, and has mandatory non-awaiting RAII abandonment cleanup.
@@ -36,10 +36,10 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 | Requirement | Implementation action | Verification units |
 |---|---|---|
 | One authority | Replace owner flag, generation, mask, timestamp, and handoff with one `Arc<CoordinatorCell>` | `109.014-T` -> `109.015-T` |
-| Drop/cancellation safety | Armed RAII permit republishes authoritative owned mask OR pending, clears exact owner, and wakes one | `109.014-T` / `109.015-T` |
+| Drop/cancellation safety | Every permit carries the current generation cancellation receiver; armed Drop either recovers a running owner or acknowledges a retirement barrier once | `109.014-T` / `109.015-T` |
 | Successful finish disarms cleanup | Exact completion disarms old permit before Drop and writes timestamp once | `109.014-T` / `109.015-T` |
-| Binding-aware generation retirement | One lock transition retires old identity; same-binding advance promotes owner mask OR pending, while distinct-binding advance transfers zero old-workspace bits and starts new-binding reconciliation | `109.016-T` -> `109.017-T` |
-| Stale finish/Drop isolation | Old permit after rebind/replacement returns stale/no-op and cannot mutate current generation | `109.016-T` / `109.017-T` |
+| Binding-aware generation retirement | One lock transition advances binding/floor but retains the retired driver behind a quiescence barrier; same-binding work lives in the barrier while distinct-binding carries zero old bits | `109.016-T` -> `109.017-T` |
+| Quiescence and stale isolation | No successor acquires before the exact retired permit acknowledges exit; later finish/Drop is stale and cannot mutate or wake | `109.016-T` / `109.017-T`; driver matrices in `109.018-T`-`109.025-T` and `109.031-T` |
 | Hydration owns before I/O | Pre-acquisition cancel is zero-permit; post-acquisition cancel relies on RAII | `109.018-T` -> `109.019-T` |
 | Full-mask single successor | Completion or abandonment exposes one whole mask to one successor | `109.020-T` -> `109.021-T` |
 | Write migration | Index/sync use guarded permits; exact queued JSON; no producer reacquire | `109.022-T` -> `109.023-T` |
@@ -51,73 +51,94 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 
 ## Authoritative design
 
-### State and RAII ownership
+### State, cancellation, and RAII ownership
 
 ```text
 CoordinatorCell { state: std::sync::Mutex<SyncCoordinator>, notify: Notify }
 BindingIdentity { workspace_uuid, workspace_id }  // private exact equality; workspace_id includes path/branch
 SyncCoordinator {
   floor, binding_identity: BindingIdentity, next_sequence,
-  owner: Option<OwnerRecord>, pending: Option<WorkMask>, last_indexed_at
+  phase: Idle | Running(OwnerRecord) | Retiring(RetirementBarrier),
+  pending: Option<WorkMask>, generation_cancel, last_indexed_at
 }
 GenerationToken(u64)
 WorkMask { routine, revalidate, backfill_python }
 OwnerKind { Index, Sync, Hydration, Startup, Watcher }
 OwnerIdentity { generation, sequence, kind }
-OwnerPermit { cell: Arc<CoordinatorCell>, identity, work_mask, cleanup_armed }
+OwnerRecord { identity, binding_identity, work_mask }
+RetirementBarrier {
+  retired_identity, retired_binding, target_generation, target_binding,
+  deferred: WorkMask
+}
+OwnerPermit {
+  cell: Arc<CoordinatorCell>, identity, binding_snapshot, work_mask,
+  cancel_rx: watch::Receiver<bool>, cleanup_armed
+}
 ```
 
-`AppState` owns one private `Arc<CoordinatorCell>`. Permits clone the cell, remain non-`Clone`, and expose no public fields. `Notify` stores neither work nor identity. The coordinator owner record, not the permit copy, is authoritative for the owned mask.
+`AppState` owns one private `Arc<CoordinatorCell>`. Permits clone the cell, remain non-`Clone`, and expose no public fields. The existing `tokio::sync::watch` facility becomes the per-generation cancellation broadcast; every acquired `OwnerPermit` receives a receiver clone, and pre-acquisition generation waiters receive the same signal. `Notify` stores neither work nor identity.
+
+The coordinator phase is the sole authority. `pending` is used only in `Idle`/`Running`. During `Retiring`, `RetirementBarrier.deferred` is the sole current-generation work location; the retired permit retains an immutable old binding snapshot and a non-authoritative mask copy only so it can stop safely. No current permit exists and no successor can acquire until the barrier is acknowledged.
+
+Every driver owns its permit around the complete DB/file-capable future. Rebind signals its receiver. The driver either observes cancellation and explicitly acknowledges only after its DB/file-capable future has been dropped or joined, or task cancellation/panic unwinds that future before armed `Drop` acknowledges. A detached task with DB, file, coordinator, or workspace-mutation authority is forbidden; discovering one is a stop-and-replan condition. A CPU-only parse worker may finish after its parent future is dropped only when it holds no such authority.
 
 ### Request transition
 
 `request(token, mask, kind)` returns fallible `Acquired(permit) | Queued | Stale` after validating under the coordinator lock.
 
-- Busy current producers OR a complete mask into the one pending slot; empty-mask waiters publish nothing.
-- Stale requests mutate nothing.
-- With no owner, a non-empty request atomically takes `pending OR requested` into one `Sync` permit; concurrent requesters cannot take it twice.
-- With no owner, empty-mask Index/Hydration may acquire while pending remains, then transfer pending on exact completion. This preserves hydration-before-DB ordering on a fresh binding.
-- Sequence exhaustion fails before mutation. No Drop/rebind path preallocates an owner whose permit has no recipient.
+- In `Running`, a current producer ORs one complete mask into ordinary `pending`; an empty-mask waiter publishes no work. Stale requests mutate nothing.
+- In `Retiring`, no request can acquire. A current-token non-empty request ORs into `RetirementBarrier.deferred`; an empty-mask waiter publishes no work and waits for the mandatory acknowledgment notification. The caller receives `Queued`. Thus same-binding `0b111` and all later current-generation requests remain in one authoritative barrier slot. Old-token requests remain stale.
+- A rebind that arrives while already retiring retargets the same barrier, never creates another retired owner: equal target binding preserves and retags `deferred`; a distinct target binding discards the previous target-binding work before accepting later requests for the newest token.
+- In `Idle`, a non-empty request atomically takes `pending OR requested` into one `Sync` permit; concurrent requesters cannot take it twice. An empty-mask Index/Hydration request may acquire and transfer pending on exact completion.
+- Each acquisition clones the current generation cancellation receiver into the permit. Sequence exhaustion fails before mutation. No path installs an owner without returning its permit.
 
-### Explicit completion transition
+Public behavior remains mapped at the caller boundary: busy Index retains `IndexInProgress`, busy Sync retains the exact queued JSON, and internal Hydration/Startup/Watcher paths wait on `Notify` then recheck. `Queued` never authorizes execution.
+
+### Explicit completion and retirement acknowledgment
 
 `complete(mut permit)` consumes the permit and compares generation, sequence, and kind under the mutex.
 
-- Exact completion with pending clears pending and installs one armed `Sync` successor returned as `Transferred`.
-- Exact completion without pending releases and returns `Released`; one waiter is notified after unlock.
-- Both exact outcomes write `last_indexed_at` once in the same current-permit transition and set `cleanup_armed = false` before old-permit destruction.
-- Stale completion disarms only the local permit and returns `Stale`; coordinator state, notification, and timestamp stay unchanged.
+- An exact `Running` match follows the accepted rule: pending installs one armed `Sync` successor returned as `Transferred`; no pending returns `Released`. Both write `last_indexed_at` once and disarm the old permit.
+- An exact `Retiring` match is not ordinary success and not stale: it is `RetirementAcknowledged`. Only after the driver has quiesced does this terminal move `deferred` to the latest target generation ordinary pending slot, clear the barrier, disarm the old permit, and perform exactly one unconditional post-unlock `notify_one`. It writes no completion timestamp and never returns a successor permit to the retired driver.
+- Any later or identity-mismatched terminal disarms only its local guard and returns `Stale`. It cannot mutate phase, pending/deferred mask, floor, binding, notification count, or timestamp.
 
-No standard mutex crosses `.await`. Keeping timestamp in coordinator state removes the prior transition-to-timestamp cancellation gap.
+The coordinator lock linearizes completion versus rebind. Completion first is a regular current terminal before publication. Rebind first converts that same terminal into the unique retirement acknowledgment. No standard mutex crosses `.await`.
 
 ### Mandatory Drop transition
 
-`OwnerPermit::drop` is the cancellation guard. If armed, it locks synchronously with poison recovery. Only exact owner identity may act. Exact Drop computes `recovery = owner.work_mask OR pending`, clears owner, stores non-empty recovery in the one pending slot, unlocks, and calls `notify_one` once. It never allocates sequence, awaits, spawns, updates timestamp, or panics. Stale Drop is a strict no-op and cannot clear or republish over a replacement.
+`OwnerPermit::drop` is the mandatory terminal guard. If armed, it locks synchronously with poison recovery.
 
-The next current request is the sole possible successor. A sync-capable request takes recovery once; an empty-mask owner may run first and transfers recovery on completion. Cancellation cannot strand ownership and no caller-optional cleanup exists.
+- An exact `Running` match retains the accepted abandonment rule: compute authoritative `owner.work_mask OR pending`, clear the owner, publish the non-empty union once, unlock, and notify once.
+- An exact `Retiring` match acknowledges quiescence. It does not OR the old permit mask again because that mask already lives in `RetirementBarrier.deferred`. It publishes deferred to ordinary pending, clears the barrier, and performs the same single post-unlock wake as explicit acknowledgment, without a timestamp.
+- Any identity mismatch is a strict no-op. Drop never allocates a sequence, awaits, spawns, or panics.
 
-### One atomic generation/binding advance
+The DB/file-capable child future must be gone before the permit may Drop. If a driver hangs or ignores cancellation, the barrier deliberately stays closed and no timeout force-clears it; monitoring triggers full-unit rollback/restart instead of overlapping drivers.
 
-Prepare the new workspace/config/cancellation tuple, derive its private exact `BindingIdentity` from stable workspace UUID plus the path/branch-derived workspace ID, and validate capacity before mutation. Generation is not binding identity: rebinding the exact workspace may advance generation without changing binding identity. Acquire binding write guards in documented order, then coordinator mutex; do not await afterward. One coordinator-locked publication:
+### One atomic generation/binding advance and quiescence barrier
 
-1. compares current and prepared binding identities, then removes and invalidates prior owner identity;
-2. computes `retiring = prior_owner.work_mask OR prior_pending` from authoritative state;
-3. branches by binding equality:
-   - **same binding, newer generation:** publish non-empty `retiring` as the new generation pending mask; specifically owner `0b101 OR` pending `0b010 = 0b111`;
-   - **distinct binding:** publish none of `retiring`; old routine/revalidate/backfill work remains old-workspace intent and cannot run against the new workspace;
-4. swaps workspace, config, and cancellation ownership behind held guards;
-5. advances binding identity and floor together and resets hydration readiness; and
-6. synchronously signals old cancellation.
+Prepare the complete workspace/config/new-cancellation tuple, derive exact `BindingIdentity`, and validate capacity before mutation. Acquire binding write guards in documented order, then the coordinator mutex; do not await afterward. One publication advances the visible binding and floor but never makes a successor runnable while an old driver remains:
 
-It deliberately leaves `owner = None`; a successor without a recipient would strand ownership. After all guards drop, invoke `notify_one` at most once only when same-binding retirement exposed promoted work, then return the new opaque token. Distinct-binding retirement emits no coordinator wake for discarded work. Old cancellation terminates the old driver; the new binding follows startup bind/hydration/offline-change detection to reconcile durable file state. Non-durable revalidate/backfill intent is not inferred from the old mask: a producer reissues it only through `request(new_token, ...)` after determining it applies to the new binding.
+1. replace the current generation cancellation sender and retain the old sender for synchronous signaling after publication;
+2. if phase is `Running`, remove ordinary pending and convert the exact owner to `Retiring`:
+   - **same binding:** initialize `deferred = owner.work_mask OR pending` under the new generation, including `0b101 OR 0b010 = 0b111`;
+   - **distinct binding:** initialize `deferred = 0` and transfer no old routine/revalidate/backfill bit;
+3. if phase is already `Retiring`, retain the same retired identity: an equal new target binding preserves/retags deferred, while a distinct new target discards deferred from the superseded target; never stack barriers or allocate a successor;
+4. if phase is `Idle`, same-binding pending is retagged under the new generation and distinct-binding pending is discarded;
+5. swap workspace/config, advance binding identity and floor together, reset hydration readiness, and install the new generation cancellation channel.
 
-Old owners retain an immutable old binding snapshot/cancellation receiver and cannot reread or operate against the new binding. Later finish returns `Stale`; later Drop sees no match. A partially completed old-binding operation may leave durable effects, but the relevant binding reconciliation path discovers them; the retirement transition never converts old intent into new-binding work. Exactness means one owner/pending location and one driver launch within one binding, not exactly-once external side effects.
+After all guards release, signal the old generation cancellation sender. This reaches a receiver held by every active `OwnerKind` and by pre-acquisition waiters. **Do not notify a successor at rebind.** In the active-owner case, `RetirementBarrier.deferred` is the sole authoritative current-generation work location while the retired driver unwinds against its immutable old snapshot. Current-token requests coalesce into that field and cannot acquire.
 
-### Hydration and process-abort boundary
+Only exact explicit terminal or armed Drop of the retired permit acknowledges exit. The acknowledgment atomically publishes the latest deferred mask to ordinary pending, clears the barrier, and wakes exactly once after unlock when work or a waiter exists. The successor then competes through normal `request` and cannot overlap the old driver. Same-binding replay may reconcile work already partly attempted, but there is never duplicate authoritative ownership or concurrent same-database execution. Distinct-binding acknowledgment exposes only requests issued for the latest new binding; durable state still uses new-binding startup/hydration/offline-change reconciliation and non-durable intent still requires a new-token request.
 
-Hydration registers `Notified` before final request check and selects notification versus cancellation without a standard mutex. Cancellation before acquisition exits with no permit/mutation. After acquisition, normal/handled failure explicitly completes and disarms; task cancellation or panic relies on Drop. DB/file work begins only after `Acquired(Hydration)`.
+Every Index, Sync, Hydration, Startup, and both legacy/v2 Watcher driver must hold its permit and immutable binding snapshot for its whole DB/file-capable future, observe cancellation, and reach one terminal. Cancellation may drop a cancellation-safe operation future; any non-cancellation-safe or detached DB/file mutator must be joined before acknowledgment. Old normal completion after retirement is the acknowledgment and writes no timestamp. Any terminal after acknowledgment is stale and harmless.
 
-Rust Drop is not claimed for process abort. Restart reconstructs in-memory authority; bind/hydration and offline-change detection reconcile durable files. Non-durable revalidate/backfill intent must be reissued. Runtime invariant failure uses full release-unit revert and daemon restart.
+### Hydration, driver cancellation, and process-abort boundary
+
+Hydration registers `Notified` before final request check and selects notification versus its generation cancellation receiver without a standard mutex. Cancellation before acquisition exits with no permit or acknowledgment. After acquisition, Hydration follows the same barrier rule as every other owner: no DB/file boundary before `Acquired`, and on rebind it drops or joins DB/file-capable work before explicit acknowledgment or armed Drop.
+
+Index/Sync wrap the complete write driver in the permit lifetime. Startup and both watcher loops do the same for each acquired execution. They check cancellation before starting another phase and select it against cancellable waits. A cancellation observation suppresses flush, drain, or any later phase; acknowledgment occurs only when the current DB/file-capable phase has actually ended. Deterministic activity counters, not sleeps, prove `max_active_db_drivers == 1` and zero old-driver work after acknowledgment for every `OwnerKind`.
+
+Rust Drop is not claimed for process abort. Restart reconstructs in-memory authority; bind/hydration and offline-change detection reconcile durable files. Non-durable revalidate/backfill intent must be reissued. Runtime invariant failure or a stuck retirement barrier uses full release-unit revert and daemon restart.
 
 ### Compatibility boundary
 
@@ -129,67 +150,73 @@ Safe observers may remain stable. Request-only publication may only be crate-pri
 
 ## Protected invariants
 
-1. The coordinator cell is sole authority for binding floor, exact binding identity, owner identity, full mask, handoff, and completion timestamp.
-2. Within one in-process binding, each `WorkMask` bit exists in exactly one location: owner or pending.
-3. Same-binding generation advance atomically retires old identity and promotes `owner mask OR pending`; `0b101 OR 0b010 = 0b111` is mandatory.
-4. Distinct-binding workspace advance retires/cancels old identity and transfers zero old routine/revalidate/backfill bits; durable state uses new-binding startup bind/hydration/offline-change reconciliation and non-durable intent requires a new-token reissue.
-5. Exact Drop republishes the same-binding union, clears owner once, and wakes at most one; stale Drop changes nothing.
-6. Exact completion disarms Drop and updates `last_indexed_at` once; stale completion/Drop update zero times.
-7. No transition installs owner without returning its permit; distinct-binding discard causes no coordinator wake.
-8. Hydration does zero DB/file I/O before ownership; pre-acquisition cancel has no permit to complete.
-9. Old owners use immutable old binding snapshots and cannot mutate/launch new-generation or new-binding work.
-10. No mutex crosses await; Drop never awaits, spawns, or panics.
-11. No second queue, double drain, split consumption, producer reacquire, sleeps, unsafe, or public test seam.
-12. No CLI/MCP/wire/schema/persistence/config/queued-response regression.
-13. No exactly-once or RAII claim crosses process abort; reconciliation, qualified reissue, and full rollback are explicit.
+1. The coordinator cell is sole authority for binding floor, exact binding identity, owner phase, full mask, handoff, cancellation generation, and completion timestamp.
+2. In `Idle`/`Running`, each set `WorkMask` bit exists in exactly one of owner or ordinary pending; in `Retiring`, all current-generation work exists only in `RetirementBarrier.deferred`.
+3. Every `OwnerKind` receives and observes generation cancellation. No successor permit can be acquired or run until the exact retired permit acknowledges that all DB/file-capable work has exited.
+4. Same-binding active-owner advance atomically moves `owner mask OR pending` into the barrier under the new generation; `0b101 OR 0b010 = 0b111` is mandatory and new requests coalesce there.
+5. Distinct-binding advance moves zero old routine/revalidate/backfill bits; only latest-binding requests may accumulate behind the barrier, durable state uses new-binding reconciliation, and non-durable intent requires new-token reissue.
+6. A second rebind during retirement retargets one barrier: same target binding preserves deferred work; distinct target binding discards superseded-target work; no second retired owner or successor appears.
+7. Exact retirement acknowledgment, whether explicit terminal or Drop, publishes deferred/clears the barrier once and performs exactly one post-unlock wake. It never timestamps or returns a successor to the retired driver.
+8. Exact running Drop republishes authoritative owner mask OR pending, clears owner once, and wakes at most one. Exact running completion disarms Drop and timestamps once.
+9. Stale request, finish, acknowledgment, and Drop mutate and notify zero times.
+10. Hydration does zero DB/file I/O before acquisition. Index/Sync/Hydration/Startup/Watcher retain immutable binding snapshots and permits for their complete DB/file-capable futures.
+11. No detached DB/file/workspace mutator can survive acknowledgment; failure to prove quiescence blocks the release unit. A stuck driver keeps the barrier closed.
+12. No mutex crosses await; Drop never awaits, spawns, or panics.
+13. No second queue, double drain, split consumption, producer reacquire, sleeps, unsafe, or public test seam.
+14. No CLI/MCP/wire/schema/persistence/config/queued-response regression.
+15. No exactly-once or RAII claim crosses process abort; restart reconciliation, qualified reissue, and full rollback remain explicit.
 
 ## Implementation units
 
 Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer than five production functions, and has `<=4` deterministic scenarios. RED tasks change zero release behavior. GREEN starts only after its direct RED compiles and fails intended assertions. No partial migration is mergeable/releasable.
 
-### 1. `109.014-T` — RED: permit completion/Drop lifecycle
+### 1. `109.014-T` — RED: permit cancellation, completion, and Drop lifecycle
 
 - Files: `src/server/state.rs` only.
-- Scenarios (4): current Drop republishes authoritative owned mask OR pending and clears owner once; one later requester takes that union once; exact completion disarms Drop and does not republish on destruction; exact transfer/release writes timestamp once while stale explicit completion writes zero.
-- Assert one notification for exact abandonment/release and zero for stale Drop with a private deterministic collaborator.
+- Scenarios (4): an `OwnerKind` fixture matrix proves every acquired permit carries and observes its generation cancellation receiver; exact current Drop republishes authoritative owned mask OR pending and clears owner once; one later requester takes that union once; a terminal matrix proves exact completion disarms Drop/timestamps once while stale completion/Drop mutates and wakes zero times.
+- Use private deterministic cancellation and notification counters; no driver source or release behavior changes.
 - Dependency: `109.013-T` terminal, while status remains blocked until the existing Stage requeue gate.
 
-### 2. `109.015-T` — GREEN: authoritative RAII coordinator core
+### 2. `109.015-T` — GREEN: cancellation-bearing RAII coordinator core
 
 - Files: `src/server/state.rs` only.
-- At most four production functions cover cell initialization/request, explicit completion, Drop abandonment, and observer/update behavior.
-- Implement authoritative owner mask, completion disarm, synchronous poison-safe Drop, and timestamp-in-transition. No caller-optional cleanup, async Drop work, second queue, or tokenless bridge.
+- Exactly four production-function touches: existing AppState construction initializes the cell; request clones the receiver; complete handles exact running terminals; OwnerPermit Drop handles running abandonment.
+- Implement `Idle/Running` authority, a generation cancellation receiver in every permit, authoritative owner mask, completion disarm, synchronous poison-safe running Drop, and timestamp-in-transition. The `Retiring` branch is added only by `109.017-T` after its RED.
+- No caller-optional cleanup, async Drop work, second queue, tokenless bridge, or owner without a permit.
 - Dependency: `109.014-T`.
 
-### 3. `109.016-T` — RED: binding-aware retirement and stale isolation
+### 3. `109.016-T` — RED: active rebind quiescence and stale isolation
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (4 maximum): complete old/new binding-token-cancel-floor tuple; `u64::MAX` no mutation; a parameterized binding-relation fixture where active owner `0b101` plus pending `0b010` becomes one new-generation `0b111` pending mask for the same binding but zero inherited bits for a distinct binding; a stale-terminal matrix proving old explicit finish and old Drop leave replacement owner/mask/floor/binding/notification/timestamp unchanged in both relation rows.
-- The distinct-binding row uses private lifecycle collaborators/counters, not live DB work: it proves old cancellation, zero old-mask transfer, handoff to startup bind/hydration/offline-change reconciliation for durable files, and acceptance of companion intent only after explicit new-token reissue.
-- Fixture rows do not increase the scenario count beyond four.
+- Scenarios (4 maximum): complete old/new binding-token-cancel-floor tuple; `u64::MAX` no mutation; one parameterized active-rebind matrix over same/distinct binding, every `OwnerKind`, and explicit/Drop acknowledgment; one repeated-rebind/stale-terminal matrix.
+- The active matrix seeds owner `0b101` plus pending `0b010`. Same binding must expose `0b111` only in `RetirementBarrier.deferred`; distinct binding must expose zero old bits. Current-token requests coalesce in deferred, cancellation reaches the retired permit, and attempted successor acquisition remains blocked until exit acknowledgment.
+- Ack must move the latest deferred mask to ordinary pending, clear the barrier, and wake exactly once; deterministic activity counters remain at one and old work count cannot increase after ack. Repeated same-target rebind preserves deferred; distinct retarget discards superseded-target work. Later finish/Drop is stale and changes nothing.
+- Fixture rows do not increase the scenario count. No live DB/file work or release behavior.
 - Dependency: `109.015-T`.
 
-### 4. `109.017-T` — GREEN: atomic binding advance and owner retirement
+### 4. `109.017-T` — GREEN: atomic binding advance and quiescence barrier
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- At most four functions cover prepared identity/install, one coordinator publication with the binding-equality branch, retirement/promotion-or-discard, and lifecycle reconciliation/reissue entry.
-- Acquire async binding guards before coordinator; no await under standard mutex. Signal old cancellation synchronously. Notify at most one after unlock only for same-binding promoted work; distinct-binding discard relies on cancellation plus the new startup/hydration path.
-- Preserve `DispatchSnapshot`, wire, schema, config format, persistence, and the current no-cross-binding companion contract.
+- At most four production functions cover prepared identity/install, one coordinator publication, retirement acknowledgment, and lifecycle wait/reissue entry.
+- A running-owner rebind advances tuple/floor, installs one `RetirementBarrier`, moves same-binding union or zero distinct-binding old bits into `deferred`, installs the new generation cancellation channel, and signals the old channel only after unlock. It never clears the barrier, notifies a successor, or permits acquisition before exact ack.
+- Current requests coalesce behind the barrier. Exact explicit terminal or Drop publishes/wakes once; stale terminals do nothing. A rebind while retiring retargets the same barrier by target-binding equality.
+- Acquire async binding guards before coordinator; no standard mutex across await. Preserve dispatch snapshot, wire, schema, config, persistence, and new-binding reconciliation/reissue rules.
 - Dependency: `109.016-T`.
 
-### 5. `109.018-T` — RED: hydration admission and exact exit classes
+### 5. `109.018-T` — RED: hydration admission, cancellation, and quiescent ack
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (3): held owner prevents pre-DB signal; pre-acquisition cancel exits with no permit/completion/Drop mutation/signal; acquired DB-connect failure explicitly completes its exact permit, disarms cleanup, and preserves transferred newer mask.
-- Bind S3 to a private production collaborator, not a reference-only transition.
+- Scenarios (3): held owner prevents pre-DB signal; a phase matrix covers pre-acquisition cancellation plus same/distinct active rebind after Hydration acquisition; acquired DB-connect failure explicitly completes/disarms.
+- The active rows prove cancellation is observed, no new permit starts before Hydration drops/joins DB/file-capable work and acknowledges, acknowledgment wakes once, and no old work occurs after ack. Pre-acquisition cancellation has no permit or ack.
+- Bind the harness to a private production collaborator; no live DB timing.
 - Dependency: `109.017-T`.
 
 ### 6. `109.019-T` — GREEN: cancellation-aware hydration guard
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- At most four functions cover notify/retry admission, hydration body, and exact-exit finalization.
-- Register `Notified` before recheck. Pre-acquisition cancellation exits without completion. After acquisition, normal/handled failure explicitly complete/disarm; cancellation/panic is recovered only by mandatory Drop.
-- No DB/file work before permit and no cleanup convention left to callers.
+- At most four functions cover notify/retry admission, permit cancellation observation, hydration body, and exact-exit finalization.
+- Register `Notified` before recheck. Pre-acquisition generation cancellation exits without ack. After acquisition, select cancellation at safe boundaries; drop or join all DB/file-capable work before explicit retirement ack or armed Drop. Normal/handled failure completes/disarms.
+- No DB/file work before permit, detached mutator, forced barrier timeout, or caller-optional cleanup.
 - Dependency: `109.018-T`.
 
 ### 7. `109.020-T` — RED: transferred-mask lifecycle driver
@@ -206,31 +233,36 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 - Explicit success consumes/disarms; cancellation/panic relies on Drop. The next current request is the only recovery successor. No recursive/double drain.
 - Dependency: `109.020-T`.
 
-### 9. `109.022-T` — RED: write ownership and queued contract
+### 9. `109.022-T` — RED: Index/Sync ownership, active rebind, and queued contract
 
 - Files: `src/server/state.rs`, `src/tools/write.rs`.
-- Scenarios (3): full index exact guarded permit; busy sync exact queued JSON/full mask/no reacquire; stale qualified snapshot no execution.
-- Preserve scan-progress shape; no public seam.
+- Scenarios (3): an Index/Sync × same/distinct-binding active-rebind matrix; busy Sync exact queued JSON/full mask/no reacquire; stale qualified snapshot no execution.
+- The matrix proves both owner kinds receive cancellation, retain immutable snapshots, drop/join DB/file-capable work before ack, never overlap a successor, never perform work after ack, and preserve same-binding barrier union versus distinct-binding zero carryover.
+- Preserve scan progress and existing Index error behavior. Narrow targets compile before intended failures; no public seam.
 - Dependency: `109.021-T`.
 
-### 10. `109.023-T` — GREEN: write caller migration
+### 10. `109.023-T` — GREEN: write caller cancellation and permit migration
 
 - Files: `src/server/state.rs`, `src/tools/write.rs`.
-- At most four functions migrate index/sync/finalization to guarded permits. Explicit returns disarm; cancellation/panic cannot strand ownership.
-- Delete producer reacquire and separate finish/drain. Preserve exact queued JSON and MCP/CLI errors.
+- At most four functions migrate Index/Sync admission, cancellation-aware driver lifetime, and finalization to exact permits.
+- Each complete DB/file-capable future is inside the permit lifetime and selected against permit cancellation. On retirement, stop later phases, drop/join mutation-capable work, then acknowledge; ordinary success completes/disarms. No successor starts before ack.
+- Delete producer reacquire and separate finish/drain. Preserve busy Index error, exact queued Sync JSON, progress, and MCP/CLI errors.
 - Dependency: `109.022-T`.
 
-### 11. `109.024-T` — RED: startup and watcher arbitration
+### 11. `109.024-T` — RED: Startup/Watcher arbitration and active rebind
 
 - Files: `src/server/state.rs`, `src/daemon/ipc_server.rs`.
-- Scenarios (4): startup just before release transfers once; startup just after release acquires once; each watcher completes/disarms its permit; stale watcher finish/Drop cannot execute or clear current owner.
-- Barriers/oneshots only.
+- Scenarios (4 maximum): a startup-before/after-release fixture; Startup active same/distinct rebind; legacy/v2 Watcher × same/distinct active-rebind matrix; stale watcher terminal matrix.
+- Active rows prove cancellation observation, immutable snapshots, no successor acquisition before DB/file-capable exit ack, `max_active_db_drivers == 1`, one ack wake, and zero old work after ack. Both watcher loops are covered.
+- Stale finish/Drop cannot clear or execute a replacement. Barriers/oneshots/counters only.
 - Dependency: `109.023-T`.
 
-### 12. `109.025-T` — GREEN: startup and watcher guarded-permit migration
+### 12. `109.025-T` — GREEN: Startup and both Watcher cancellation migration
 
 - Files: `src/server/state.rs`, `src/daemon/ipc_server.rs`.
-- At most four functions cover watcher paths, startup request, and completion. Remove try-then-set and finish-then-drain. RAII protects every permit until explicit disarm.
+- At most four functions cover Startup, the legacy watcher, the v2 watcher, and shared terminal handling.
+- Every acquired Startup/Watcher permit wraps its full DB/file-capable execution and observes cancellation. Retirement suppresses later flush/drain phases, quiesces mutation-capable work, then acknowledges; ordinary success completes/disarms.
+- Remove try-then-set and finish-then-drain. No detached mutator, forced barrier clear, overlap, or response/schema change.
 - Dependency: `109.024-T`.
 
 ### 13. `109.026-T` — compatibility migration: contract tests
@@ -264,11 +296,12 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 - Verify zero tokenless owner, generation-clear, split-take, companion-only, producer-reacquire, bounded/double-drain, and caller-optional cleanup paths across `src/` and `tests/`.
 - Dependency: `109.029-T`.
 
-### 18. `109.031-T` — Windows/runtime/release validation
+### 18. `109.031-T` — deterministic quiescence, Windows runtime, and release validation
 
 - Production files: zero; closure/checklist docs only if needed.
-- At most four scenarios: normal bind/hydration/complete-disarm; queued sync plus dropped-owner full-mask recovery/exact response; one same-binding/distinct-binding rebind matrix with active owner/pending, stale finish/Drop, zero cross-workspace companion carryover, and forced DB failure reconciliation; startup/watcher Windows named-pipe handoff.
-- Deterministic fixtures prove races. Smoke is observational. Verify restart reconciliation and record non-durable intent reissue; never claim Drop on process abort.
+- At most four scenarios: normal bind/Hydration/complete-disarm; queued Sync plus running Drop recovery/exact response; one deterministic `OwnerKind × same/distinct binding × explicit/Drop ack` active-rebind matrix with forced DB-failure rows; Startup/legacy-watcher/v2-watcher Windows named-pipe handoff smoke.
+- The matrix proves cancellation delivery, same-binding `0b111` location, distinct-binding zero carryover, request coalescing during retirement, no acquisition before ack, exactly one ack publication/wake, `max_active_db_drivers == 1`, zero old work after ack, and stale-terminal no-op. Fixture rows stay one scenario.
+- Smoke is observational; deterministic fixtures prove races. Verify restart reconciliation and qualified non-durable reissue; never claim Drop on process abort.
 - Dependency: `109.030-T`.
 
 ## Dependency graph
@@ -290,19 +323,22 @@ This chain is intentionally narrow. The four production modules migrate by respo
 
 ## Deterministic test strategy
 
-- Private co-located harnesses access coordinator, Drop, notification, and admission seams; no public seam.
+- Private co-located harnesses access coordinator phase, cancellation delivery, Drop/ack, notification, and driver activity counters; no public seam.
 - Every RED first passes narrow `cargo test --lib --no-run <target>`, then fails only its named assertion. Missing symbols/visibility are not RED.
-- Use direct transitions, `Barrier`, oneshot, or `Notify`, with private notification counters. No sleeps, yields, permission races, live-daemon race proof, or wall-clock assertions.
-- Required proofs: same-binding active-owner retirement preserves `0b101 OR 0b010 == 0b111`; the same seed under a distinct binding transfers zero old bits and routes durable state to new-binding startup bind/hydration/offline-change reconciliation; only a new-token request can reissue non-durable companion intent; stale old finish and Drop leave replacement byte-for-byte unchanged in both rows; current Drop clears owner/republishes once; one successor takes recovery once; explicit completion disarms Drop; timestamp writes once only for exact explicit completion.
-- Hydration distinguishes pre-acquisition cancellation (zero permit/mutation) from post-acquisition RAII cleanup. Handled DB failure explicitly completes/disarms.
-- Static inventory confirms no legacy symbols, caller-optional cleanup, or direct tokenless setup.
+- Use direct transitions, `Barrier`, oneshot, or `Notify`. No sleeps, yields, permission races, live-daemon race proof, or wall-clock assertions.
+- One parameterized relation/kind/terminal matrix proves: every `OwnerKind` receives cancellation; same-binding `0b101 OR 0b010 == 0b111` lives only in the barrier; distinct binding starts with zero old bits; current requests coalesce behind the barrier; no successor acquires before explicit/Drop ack; ack publishes/wakes exactly once; `max_active_db_drivers == 1`; old work count cannot increase after ack; later terminals are no-ops.
+- A repeated-rebind fixture proves same-target preservation and distinct-target discard while retaining one retired identity.
+- Ordinary current Drop clears owner/republishes once; one successor takes recovery once; ordinary completion disarms and timestamps once. Hydration distinguishes zero-permit pre-acquisition cancellation from acquired retirement acknowledgment.
+- Static inventory confirms no legacy symbols, caller-optional cleanup, detached DB/file mutator, or direct tokenless setup.
 - Process abort is restart reconciliation/intent reissue, never a Drop path. Windows smoke checks liveness only.
 
 ## Migration and atomicity
 
-Intermediate branch commits may checkpoint execution, but none is mergeable/releasable/runtime-valid. The final PR must contain coordinator cell, RAII Drop, binding-aware retirement, every caller migration, and visibility cleanup. Tokenless completion, split-mask cache, second authority, or caller-optional cancellation cleanup stops the unit.
+Intermediate branch commits may checkpoint execution, but none is mergeable/releasable/runtime-valid. The final PR must contain coordinator cell, cancellation-bearing RAII permits, the retirement barrier, every driver migration, and visibility cleanup. Tokenless completion, split-mask cache, second authority, caller-optional cancellation cleanup, or a driver that cannot prove quiescence stops the unit.
 
-Binding transition is one logical publication: prepare/check the new exact identity first; acquire async binding guards in fixed order; then one no-await coordinator transition retires identity, computes the authoritative union, branches on binding equality, publishes binding/cancel/floor, and records whether one post-unlock wake is needed. Same-binding retirement promotes the full union, including `0b101 OR 0b010 = 0b111`. Distinct-binding retirement discards the old mask, signals old cancellation, and leaves durable recovery to new-binding startup bind/hydration/offline-change detection; non-durable intent requires an explicit new-token reissue. Old and returned-new token are never current together. Stale finish/Drop cannot mutate replacement.
+Binding transition is one logical publication. It advances binding/config/floor and installs a new cancellation channel under the fixed lock order. With an active owner it moves same-binding union or zero distinct-binding old bits into one `RetirementBarrier.deferred` slot, leaves the retired identity as the barrier key, then signals the old channel after unlock. It performs no coordinator wake and exposes no successor permit. Current requests coalesce behind the barrier. Only exact explicit terminal or Drop after DB/file-capable exit publishes deferred to ordinary pending, clears the barrier, and wakes once. A later rebind retargets the same barrier rather than bypassing it.
+
+Each driver captures its immutable binding snapshot before DB/file execution and never rereads the current binding for old work. Cancellation-aware wrappers may drop cancellation-safe futures; non-cancellation-safe mutation work must be joined. No timeout opens a stuck barrier. This fail-closed wait is required to prevent same-database overlap and duplicate authoritative work.
 
 No storage, schema, config-format, or wire migration exists. Process death is outside Rust Drop: restart hydration/offline reconciliation covers durable files, non-durable companion intent is reissued only for the applicable current binding, and invariant failure rolls back the complete unit then restarts. No exactly-once side-effect claim crosses process death or binding identity.
 
@@ -323,16 +359,16 @@ Stage performs this transaction only after a new session starts and index sync s
 
 Ship owns implementation and closure. Required proof before merge:
 
-- deterministic S1-S4 and added timestamp/generation/cancellation controls pass;
-- zero legacy caller inventory;
+- deterministic S1-S4 plus generation/cancellation/quiescence controls pass;
+- every Index, Sync, Hydration, Startup, legacy Watcher, and v2 Watcher permit receives cancellation and has exactly one terminal: ordinary completion/abandonment or retirement acknowledgment;
+- no successor acquisition/start precedes ack, `max_active_db_drivers == 1`, and no old DB/file-capable work occurs after ack;
+- same-binding barrier holds one `0b111` union, distinct binding carries zero old bits, requests coalesce in the barrier, and ack publishes/wakes exactly once;
+- zero legacy caller and detached mutation-capable child inventory;
 - exact queued JSON and MCP/CLI schema snapshots unchanged;
-- no DB/file boundary before hydration permit;
-- every acquired owner sequence has exactly one exact terminal transition in fixture logs: explicit completion or RAII abandonment;
-- pending masks transfer whole and only once;
-- no bounded-drain warning path remains;
-- Windows named-pipe daemon bind, hydration, queued sync, cancellation, startup, and watcher smoke succeeds in a disposable workspace.
+- no DB/file boundary before hydration permit; pending masks transfer whole and only once; no bounded-drain warning remains;
+- Windows named-pipe bind, hydration, queued sync, cancellation, startup, and both watcher smoke paths succeed in a disposable workspace.
 
-Operational closure records a manual monitoring checklist if no metric sink exists, a pre-deploy audit, a 15-minute Windows post-startup observation window owned by Ship, and full-release-unit rollback evidence. Roll back on wrong-generation execution, stale finish/Drop mutation, duplicate/missing executor, orphaned/full-mask loss, pre-permit I/O, stuck owner, timestamp count violation, queued response change, or Windows daemon/IPC liveness regression.
+Operational closure records cancellation/ack traces, barrier duration, a manual monitoring checklist if no metric sink exists, a pre-deploy audit, a 15-minute Windows post-startup observation window owned by Ship, and full-release-unit rollback evidence. Roll back on missing cancellation delivery, acknowledgment before mutation-capable exit, successor-before-ack, active-driver count above one, work after ack, stuck barrier, duplicate/missing wake, wrong-generation execution, stale terminal mutation, mask loss, pre-permit I/O, timestamp violation, queued response change, or Windows IPC regression.
 
 Rollback is the complete coordinator release-unit revert followed by daemon restart. Partial rollback after permit caller migration is forbidden. There is no data/schema rollback.
 
@@ -341,7 +377,7 @@ Rollback is the complete coordinator release-unit revert followed by daemon rest
 - Select A, not B: no supported published Rust contract; public permits would expand support burden.
 - Select A, not C: private REDs and internal callers prove migration feasibility.
 - Mutex, not packed atomic: full-width generations and readable transition diagnostics outweigh unproven lock-free benefit.
-- Completing driver receives pending mask: guarantees one successor without a second queue or producer reacquire.
+- Ordinary completion may return one transferred successor; retirement acknowledgment never does. It publishes pending and wakes one only after quiescence, so no successor overlaps the retired driver.
 - Normalize transferred work to `OwnerKind::Sync`: queued public behavior is coalesced sync, not producer-affine execution.
 - Private tests over public seams: protects API containment and deterministic scheduling.
 - Full release-unit rollback: caller signatures and ownership semantics cannot be partially reverted safely.
@@ -353,9 +389,10 @@ Rollback is the complete coordinator release-unit revert followed by daemon rest
 | Hidden downstream Rust consumer | `publish = false` evidence; stop before source mutation if a supported contract is produced. |
 | Partial migration exposes tokenless completion | No partial merge/release; final zero-caller inventory is gate-blocking. |
 | Completion/Drop/timestamp gap | Timestamp is written in the exact coordinator transition; old permit is disarmed before destruction; deterministic completion-versus-Drop counter proof. |
-| Hydration lost wake/cancellation | Register before recheck; pre-acquisition cancel is zero-permit; post-acquisition cancel is mandatory RAII Drop. |
-| Successor duplication | Completion returns one successor; Drop and same-binding retirement never preallocate inaccessible owner and notify at most one; distinct-binding discard notifies none through the coordinator; no producer reacquire. |
-| Mask loss or cross-binding companion leak | Drop and same-binding retirement use authoritative `owner mask OR pending`; distinct-binding retirement discards that old-workspace union and invokes new-binding reconciliation/reissue rules; one pending slot, no split APIs. |
+| Hydration or driver cancellation gap | Every permit receives the generation receiver; pre-acquisition cancellation is zero-permit and active drivers must quiesce DB/file work before acknowledgment. |
+| Successor duplication/overlap | A RetirementBarrier blocks every request; only exact exit ack clears it and emits one wake. Activity counters prove no successor-before-ack and max one DB driver. |
+| Mask loss or cross-binding companion leak | Same-binding union and new requests live only in barrier.deferred; distinct retarget discards old/superseded-target masks; ack publishes the latest deferred mask once. |
+| Stuck or non-quiescent driver | No timeout bypass; barrier remains closed, structured logs/observation detect it, and Ship performs full-unit rollback/restart. |
 | Windows-only runtime behavior | Deterministic tests plus disposable Windows named-pipe validation. |
 | Review drift toward old design | Old tasks marked superseded; forbidden-symbol inventory and P0/P1 gate. |
 
@@ -403,8 +440,10 @@ Stop and return the release unit blocked if any implementation requires:
 8. a partial merge, deployment, or rollback of the caller migration;
 9. source mutation before exact visibility/caller reinspection confirms `publish = false` and no new supported Rust contract;
 10. failure to compile a RED before executing it;
-11. caller-optional cleanup, async/spawn work in Drop, or stale Drop touching replacement owner;
-12. an exactly-once or RAII recovery claim across process abort.
+11. caller-optional cleanup, async/spawn work in Drop, stale Drop touching replacement state, or any OwnerKind without a cancellation receiver and deterministic observation proof;
+12. clearing/bypassing a retirement barrier before exact driver exit acknowledgment, or acknowledging while a DB/file/workspace mutation-capable child remains live;
+13. a timeout that force-opens a stuck barrier or any successor-before-ack path;
+14. an exactly-once or RAII recovery claim across process abort.
 
 The source cutover is one release boundary. Width-safe tasks may checkpoint separately on the feature branch, but no checkpoint is eligible for PR merge or runtime use before `109.030-T` removes every legacy mutator and the aggregate source compiles. If the executor cannot stage the cutover without an unsafe compatibility bridge, it stops and returns the plan to Stage; it does not widen scope.
 
@@ -412,7 +451,7 @@ The source cutover is one release boundary. Width-safe tasks may checkpoint sepa
 
 **ProposedAction PA-1**
 
-- Summary: replace four independent synchronization authorities with one `Arc`-owned permit coordinator whose exact completion disarms mandatory RAII cleanup.
+- Summary: replace four independent synchronization authorities with one `Arc`-owned permit coordinator whose per-generation cancellation receiver and exact exit-ack barrier prevent old/new driver overlap.
 - Targets: `src/server/state.rs`, then responsibility-isolated migrations in `lifecycle.rs`, `write.rs`, and `ipc_server.rs`.
 - Change kind: high-blast-radius shared runtime edit.
 - ActionRisk: high.
@@ -456,13 +495,13 @@ There is no required new metrics sink. Ship records a structured manual checklis
 
 | SLI / signal | Query or observation | Healthy baseline | Alert / rollback threshold | Owner |
 |---|---|---|---|---|
-| Owner sequence balance | Structured acquire/complete/abandon logs | Every acquired sequence has one exact completion or abandonment; stale finish/Drop mutate nothing | Missing/duplicate terminal transition, wrong sequence, or stale mutation | Ship |
-| Full-mask handoff | Deterministic counters plus transfer log fields (`binding`, `generation`, `sequence`, `mask`) | Same binding: one `0b111` transfer to one successor and pending empty at transfer; distinct binding: zero inherited old bits | Orphan/split mask, duplicate successor, pending retained after transfer, or any old-binding companion on the new binding | Ship |
+| Owner sequence balance | Structured acquire/complete/abandon/retire-ack logs | Every sequence has one ordinary terminal or one retirement acknowledgment; later terminals mutate nothing | Missing/duplicate terminal, wrong identity, or stale mutation | Ship |
+| Full-mask/barrier location | Deterministic fields for phase, binding, generation, sequence, mask | Same binding: one 0b111 barrier mask then one pending publication; distinct binding: zero inherited bits | Mask in two locations, early publication, split/lost mask, or cross-binding companion | Ship |
 | Hydration admission | Private pre-DB fixture counter and Windows hydration logs | Counter/log boundary remains zero before permit | Any DB/file boundary before `Acquired(Hydration)` | Ship |
-| Startup/release execution | S4 counters and startup structured logs | Exactly one executor | Zero or more than one executor | Ship |
+| Driver quiescence | Cancellation/ack/activity counters for all OwnerKind rows | Cancellation delivered; no successor before ack; max active DB drivers 1; no old work after ack; one wake | Missing observation/ack, overlap, post-ack work, duplicate wake, or stuck barrier | Ship |
 | Timestamp completion | Private timestamp-write counter and doctor health observation | One write per valid current completion, zero per stale/mismatch | Any missing, duplicate, or stale-triggered write | Ship |
 | Queued contract | Contract snapshot of status/message and MCP schema | Byte-equivalent status/message and unchanged schema | Any response/schema/error mapping change | Ship |
-| Windows runtime liveness | `daemon-status`, `workspace-status`, named-pipe command completion, logs | One daemon, responsive IPC, no stuck owner/drain warning | IPC timeout/hang, stuck owner, drain-bound warning, duplicate daemon, or uncompleted queued work | Ship |
+| Windows runtime liveness | daemon-status, workspace-status, named-pipe completion, barrier logs | One daemon, responsive IPC, no stuck retirement/drain warning | IPC timeout/hang, stuck barrier, duplicate daemon, or uncompleted queued work | Ship |
 
 ### Pre-deploy audit
 
@@ -470,7 +509,7 @@ Before merge, Ship records:
 
 - `publish = false` and no supported Rust-library contract introduced;
 - all 18 replacement tasks complete and old tasks remain superseded;
-- zero forbidden legacy callers, zero public permit/test seams, and zero caller-optional cleanup paths;
+- zero forbidden legacy callers, zero public permit/test seams, zero caller-optional cleanup, and cancellation plus quiescent acknowledgment coverage for every OwnerKind;
 - no Cargo dependency, feature, schema, persistence, wire, or config delta;
 - exact queued response/schema snapshots unchanged;
 - deterministic suite and Windows disposable-runtime evidence attached;
@@ -479,9 +518,9 @@ Before merge, Ship records:
 
 ### Observation window and rollback
 
-Ship owns an active 15-minute post-startup observation window on Windows after all deterministic gates pass. Exercise one normal bind/hydration, one queued sync, one same-binding/distinct-binding rebind cancellation and forced-DB-failure matrix, and one startup/watcher handoff. The live smoke observes liveness and logs only; deterministic fixtures remain the race proof.
+Ship owns an active 15-minute post-startup observation window on Windows after all deterministic gates pass. Exercise one normal bind/hydration, one queued sync, the deterministic all-OwnerKind same/distinct active-rebind and forced-DB-failure matrix, and one Startup/legacy-Watcher/v2-Watcher handoff. The live smoke observes liveness and barrier logs only; deterministic fixtures remain the race proof.
 
-Immediate rollback triggers are any wrong-generation execution, cross-binding companion execution, stale completion mutation, duplicate/missing executor, orphan/split mask, pre-permit DB/file I/O, stuck owner after cancel/failure, invalid timestamp count, queued contract drift, drain-bound warning, or named-pipe liveness regression. Rollback means revert the entire coordinator/caller/test release unit, restart the prior daemon, verify one healthy bind/status cycle, and record the outcome. No partial source rollback and no data/schema action.
+Immediate rollback triggers are missing cancellation or acknowledgment, acknowledgment before DB/file-capable exit, successor-before-ack, more than one active DB driver, post-ack old work, stuck barrier, duplicate/missing wake, wrong-generation or cross-binding execution, stale mutation, orphan/split mask, pre-permit I/O, timestamp/queued-contract drift, or named-pipe regression. Rollback means revert the entire coordinator/caller/test release unit, restart the prior daemon, verify one healthy bind/status cycle, and record the outcome. No partial source rollback and no data/schema action.
 
 ### Operator and agent checkpoints
 
@@ -494,52 +533,54 @@ Immediate rollback triggers are any wrong-generation execution, cross-binding co
 
 ### PR #316 lifecycle hardening delta
 
-- **Trigger:** owner lifecycle spans completion, cancellation/panic, same-binding generation replacement, distinct-binding workspace replacement, and restart. `ActionRisk: high`.
-- **Guardrail:** `OwnerPermit` holds `Arc<CoordinatorCell>` and armed cleanup; exact Drop is synchronous, poison-safe, non-panicking, and notifies only after unlock.
-- **Binding rule:** exact private binding equality uses stable workspace UUID plus path/branch workspace ID. Same binding preserves `0b101 OR 0b010 = 0b111`; distinct binding transfers zero old bits, cancels old work, and delegates durable recovery to new-binding startup bind/hydration/offline-change detection. Non-durable intent requires a new-token reissue.
-- **Atomicity:** generation install prepares/checks first, then one coordinator transition retires identity and either publishes the same-binding union or discards the distinct-binding union. It never creates a successor without a recipient.
-- **Verification:** four core scenarios and four binding scenarios use relation/terminal fixture matrices to cover Drop republish, one-successor take, completion disarm/timestamp once, same-binding union, distinct-binding zero carryover/reconciliation, and stale finish/Drop isolation without exceeding task caps.
-- **Abort boundary:** no Drop claim on process abort. Restart reconciliation handles durable state; non-durable flags are reissued only for the applicable current binding; full-unit revert/restart is rollback.
-- **ActionResult:** applied to plan and blocked task scopes; implementation remains unapproved until the existing post-106 requeue gate.
+- **Trigger:** discussion `r3701136926` proves that generation cancellation currently reaches only Hydration while Index/Sync and both watcher drivers can outlive owner clearing. `ActionRisk: high`.
+- **Guardrail:** every `OwnerPermit` receives the generation cancellation receiver and retains its immutable binding snapshot for the complete DB/file-capable future. Exact Drop remains synchronous, poison-safe, and non-panicking.
+- **Barrier rule:** active rebind advances binding/floor but converts the owner to one `RetirementBarrier`. Same binding stores `0b101 OR 0b010 = 0b111` in `deferred`; distinct binding stores zero old bits. Current requests coalesce there and no request acquires.
+- **Acknowledgment rule:** explicit terminal or armed Drop clears the barrier only after mutation-capable work exits, publishes deferred, and wakes exactly once. Stale terminals remain no-ops; a stuck driver keeps the barrier closed.
+- **Driver proof:** fixture matrices cover Index, Sync, Hydration, Startup, legacy Watcher, and v2 Watcher under same/distinct rebind, explicit/Drop acknowledgment, repeated rebind, and forced failure without exceeding four scenarios per task.
+- **Abort boundary:** no Drop claim on process abort. Restart reconciliation handles durable state; applicable non-durable flags are reissued; full-unit revert/restart is rollback.
+- **ActionResult:** applied to plan, findings, and blocked task scopes; implementation remains unapproved until the existing post-106 requeue gate.
 
 ## Superseded Plan Reviews
 
 - The pre-cycle-1 PASS at PR head `897406cc` was superseded by `discussion_r3700752674` and `discussion_r3700752695`.
-- Review cycle 1 was superseded at exact head `436436587d7383bf4f97a2699b8aa473703d37df` because six new comments exposed its unsafe unconditional cross-binding promotion rule.
+- The unconditional cross-binding promotion review was superseded at head `436436587d7383bf4f97a2699b8aa473703d37df` by six binding-isolation comments.
+- The binding-aware PASS recorded at base HEAD `d6321504137445a94b4134718355b87cceb75db6` was superseded by P1 `discussion_r3701136926` / `PRRT_kwDORJEduc6V2olJ` because it cleared owner before Index/Sync/Watcher exit.
 
 ## Plan Review
 
-**Review cycle:** 2 (fresh review after binding-aware PR #316 remediation)
-**Model routing verification:** `.github/agents/stage.agent.md` declares `.Stage`, Tier 3/high reasoning, provider `anthropic`, family `claude-opus-4.8`; no model override was supplied.
-**Execution surface:** no subagent invocation surface was exposed in this session, so `.Stage` directly applied every always-on and triggered persona under the configured routing, as allowed by the skill fallback.
+**Review-fix cycle:** 2/3
+**Fresh plan-review revision:** 3 (quiescence-barrier remediation)
+**Model routing verification:** `.github/agents/stage.agent.md` declares `.Stage`, Tier 3/high reasoning, provider `anthropic`, family `claude-opus-4.8`; no override was supplied.
+**Execution surface:** no subagent invocation surface was exposed, so `.Stage` directly applied all always-on and triggered personas under the configured routing, as allowed by the skill fallback.
 **Gate: PASS**
 **Open P0: 0. Open P1: 0. Open P2: 0. Open P3: 0.**
 **Plan hardening:** required, rerun, and satisfied.
 
 ### Gate rationale
 
-All six new bot threads are valid manifestations of one P1 contradiction with the existing generation-isolation contract at `src/tools/lifecycle.rs:850-878`. The plan now makes generation and binding separate dimensions. Same-binding retirement preserves all authoritative work and proves owner `0b101 OR` pending `0b010 = 0b111`, leaves no inaccessible owner, and permits at most one post-unlock wake. Distinct-binding retirement atomically retires/cancels old identity and transfers zero old routine/revalidate/backfill bits, so old-workspace heavy intent cannot execute against the new workspace. New-binding startup bind/hydration/offline-change detection reconciles durable files; non-durable intent enters only through a new-token-qualified request when applicable.
+The reported P1 is valid: current generation cancellation is hydration-only, and the prior plan would expose promoted work while retired Index/Sync/Watcher code could still use the same database. The revised state machine closes that gap. Active rebind advances binding/floor but changes `Running` to one `Retiring` barrier, signals the receiver held by every owner kind, and admits no successor. Same-binding `0b111` lives only in barrier deferred; distinct binding carries zero old bits. Current requests coalesce there. Only exact explicit terminal or armed Drop after DB/file-capable exit publishes deferred, clears the barrier, and performs one unconditional wake. Repeated rebind retargets the same barrier and stale terminals remain no-ops.
 
-Stale old explicit finish and Drop are identity-mismatched no-ops after either relation row installs the replacement. The four-scenario cap remains intact by parameterizing binding relation and stale terminal kind as fixtures rather than adding scenarios. Ownership, process-abort, monitoring, rollback, and blocked pipeline rules remain explicit.
+The driver-specific RED/GREEN pairs cover Hydration, Index/Sync, Startup, legacy Watcher, and v2 Watcher with relation/kind/terminal fixture matrices. They prove no successor-before-ack, max one DB driver, no old work after ack, and one publication/wake while retaining every existing time, file, function, scenario, status, and dependency cap. A non-quiescent driver fails closed behind the barrier; process abort remains restart reconciliation/full rollback.
 
 ### Persona verdicts
 
-- **Constitution Reviewer — PASS.** Stage changes only the decision, blocked plan/backlog descriptions, and existing handoff memory. TDD order, two-hour caps, role boundary, and all blocked/active lifecycle constraints remain explicit.
-- **Rust Reviewer — PASS.** Private `BindingIdentity` equality is separate from generation. One synchronous coordinator critical section computes the authoritative union and branches before publication; stale permit identity prevents old finish/Drop from mutating either replacement. No mutex crosses await and Drop behavior is unchanged for live same-binding abandonment.
-- **Scope Boundary Auditor — PASS.** `109.016/017` stay within two production files, fewer than five production functions, 110 minutes, and four scenarios through fixture matrices. No public API, Cargo, wire, schema, config-format, or persistence expansion appears.
-- **Learnings Researcher — PASS.** The new rule preserves whole-mask same-binding atomicity while honoring the established newer-binding companion replacement test and the existing take-before-lock/finish-site learnings. No old-workspace companion flag is replayed into a new workspace.
-- **Architecture Strategist — PASS.** Binding equality selects exactly one outcome under one lock: promote the complete union for the same binding or discard it for a distinct binding. Durable reconciliation and qualified non-durable reissue are lifecycle responsibilities, not a second queue or authority.
-- **Agent-Native Parity Reviewer — PASS.** Exact queued JSON, CLI/MCP schemas/errors, workspace binding behavior, health meaning, and startup behavior remain frozen; deterministic and Windows runtime matrices cover the internal change.
-- **Security Lens Reviewer — PASS.** Distinct workspace data is not crossed by inherited heavy-work intent. No trust-boundary, sensitive-data, credential, or logging expansion is introduced.
+- **Constitution Reviewer — PASS.** Only the existing decision, blocked plan/backlog scopes, and existing handoff memory are changed. TDD order, `<=110 minutes`, `<=2` production files, `<5` production functions, `<=4` scenarios, and Stage role boundaries remain explicit.
+- **Rust Reviewer — PASS.** `watch::Receiver` is already available and can be cloned into non-Clone permits. The `Idle | Running | Retiring` mutex state gives one authority; rebind/terminal races are lock-linearized; no standard mutex crosses await; Drop performs only synchronous exact-identity transitions.
+- **Scope Boundary Auditor — PASS.** Quiescence is allocated to the existing state/lifecycle, hydration, write, IPC, and final-validation tasks. Matrices add rows, not scenarios; no Cargo, source, test, schema, config, wire, persistence, task-status, or dependency expansion occurs in Stage.
+- **Learnings Researcher — PASS.** The barrier preserves whole-mask atomicity and removes producer reacquire/double drain while respecting newer-binding replacement and the prior take-before-lock/finish-site learnings. No second queue or companion authority is introduced.
+- **Architecture Strategist — PASS.** `RetirementBarrier.deferred` is the exact sole union location while quiescing. Request coalescing, repeated-rebind retargeting, exact ack publication, unconditional single wake, and fail-closed stuck-driver behavior prevent inaccessible owners and old/new overlap.
+- **Agent-Native Parity Reviewer — PASS.** Busy Index behavior, exact queued Sync JSON, MCP/CLI schemas/errors, health meaning, startup behavior, and persisted formats remain frozen. Internal `Queued` never authorizes execution.
+- **Security Lens Reviewer — PASS.** Distinct-binding retirement transfers zero old-workspace bits and no old snapshot can authorize new-binding work. No credential, secret, trust-boundary, or sensitive logging expansion appears.
 
 ### Internal consistency checks
 
-- `109.014/015` still own four current-binding completion/Drop scenarios.
-- `109.016/017` own four scenarios: tuple, overflow, binding-relation retirement matrix, and stale-terminal matrix. Fixture rows do not widen the cap.
-- `109.031` uses one runtime relation matrix inside its existing four scenarios and retains process-abort reconciliation rather than a Drop claim.
-- Same binding preserves `0b111`; distinct binding inherits zero old bits and only the new lifecycle may reconcile/reissue.
-- Dependency chain remains `109.013 -> 109.014 -> ... -> 109.031`; `106-S`/`109.013-T` remain active and `104-S`/`109-F`/all old and replacement tasks remain blocked and unclaimed.
+- `109.014/015` add the receiver and ordinary completion/Drop lifecycle within four scenarios/functions.
+- `109.016/017` own four tuple/overflow/active-rebind/repeated-rebind matrices and the exact barrier/ack transition.
+- `109.018/019` cover Hydration; `109.022/023` cover Index/Sync; `109.024/025` cover Startup and both watcher loops; `109.031` consolidates all-owner deterministic/runtime evidence.
+- Same binding stores `0b111` only in deferred; distinct binding stores zero old bits; current requests coalesce; ack publishes/wakes once; stale terminals mutate zero state.
+- Dependency chain remains `109.013 -> 109.014 -> ... -> 109.031`. `106-S`/`109.013-T` remain active; `104-S`/`109-F`/all old and replacement tasks remain blocked and unclaimed.
 
 ### Review decision
 
-The binding-aware plan has no open P0-P3 findings and passes only as blocked replacement scope. PASS does not authorize source/test/Cargo work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, shipment claim/closure, Git/PR operations, replies, or thread resolution. Ship may later commit/push these uncommitted planning changes and reply to the six threads; the existing post-106 Stage transaction remains the sole requeue gate.
+The cancellation-plus-acknowledgment plan has no open P0-P3 findings and passes only as blocked replacement scope. PASS does not authorize source/test/Cargo work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, shipment claim/closure, Git/PR operations, replies, or thread resolution. Ship may later commit these uncommitted planning changes and post the suggested reply; the existing post-106 Stage transaction remains the sole requeue gate.
