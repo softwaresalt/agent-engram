@@ -250,7 +250,7 @@ impl WorkMask {
     const REVALIDATE: u8 = 0b010;
     const BACKFILL_PYTHON: u8 = 0b100;
 
-    const fn from_bits(bits: u8) -> Self {
+    pub(crate) const fn from_bits(bits: u8) -> Self {
         Self(bits & (Self::ROUTINE | Self::REVALIDATE | Self::BACKFILL_PYTHON))
     }
 
@@ -262,7 +262,7 @@ impl WorkMask {
         Self::from_bits(self.0 | other.0)
     }
 
-    const fn bits(self) -> u8 {
+    pub(crate) const fn bits(self) -> u8 {
         self.0
     }
 }
@@ -716,6 +716,10 @@ impl AdmissionGuard {
 }
 
 impl OwnerPermit {
+    pub(crate) const fn work_bits(&self) -> u8 {
+        self.work_mask.bits()
+    }
+
     pub(crate) async fn run_until_cancelled<F>(&mut self, operation: F) -> Option<F::Output>
     where
         F: std::future::Future,
@@ -1335,6 +1339,17 @@ impl AppState {
     /// then `false` until set again.
     pub fn take_pending_sync(&self) -> bool {
         self.lock_pending_sync().take(Self::PENDING_SYNC_BIT)
+    }
+
+    /// Atomically move the complete legacy ingress mask into coordinator admission.
+    pub(crate) fn take_pending_work_mask(&self) -> WorkMask {
+        let mut pending = self.lock_pending_sync();
+        if !pending.has(Self::PENDING_SYNC_BIT) {
+            return WorkMask::default();
+        }
+        let mask = WorkMask::from_bits(pending.flags);
+        pending.flags = 0;
+        mask
     }
 
     /// Non-consuming peek at the pending-sync flag.

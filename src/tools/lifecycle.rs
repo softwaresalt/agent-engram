@@ -14,8 +14,11 @@ use crate::db::workspace::{
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::health::{HealthReport, ScanProgress};
-use crate::server::state::{AdmissionGuard, AppState, CoordinatorError, WorkspaceSnapshot};
-use crate::server::state::{CoordinatorCell, DriverTaskGuard};
+use crate::server::state::CoordinatorCell;
+use crate::server::state::{
+    AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DriverTaskGuard, OwnerKind,
+    OwnerPermit, RequestOutcome, WorkspaceSnapshot,
+};
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -289,6 +292,60 @@ struct HydrationProbe {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy)]
+enum HandoffProbeExit {
+    Handled,
+    EarlyReturn,
+    AwaitCancellation,
+}
+
+#[cfg(test)]
+struct HandoffProbe {
+    exit: HandoffProbeExit,
+    coordinator: Arc<CoordinatorCell>,
+    runs: Arc<std::sync::atomic::AtomicUsize>,
+    mask_bits: Arc<std::sync::atomic::AtomicUsize>,
+    active_io: Arc<std::sync::atomic::AtomicUsize>,
+    owner_active: Arc<std::sync::atomic::AtomicUsize>,
+    entered: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(test)]
+impl HandoffProbe {
+    async fn run(mut self, mask_bits: u8) -> HandoffTerminal {
+        struct ActiveIo(Arc<std::sync::atomic::AtomicUsize>);
+
+        impl Drop for ActiveIo {
+            fn drop(&mut self) {
+                self.0.store(0, Ordering::SeqCst);
+            }
+        }
+
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        self.mask_bits
+            .store(usize::from(mask_bits), Ordering::SeqCst);
+        self.owner_active.store(
+            usize::from(!self.coordinator.test_is_idle()),
+            Ordering::SeqCst,
+        );
+        self.active_io.store(1, Ordering::SeqCst);
+        let _active = ActiveIo(Arc::clone(&self.active_io));
+        if let Some(entered) = self.entered.take() {
+            let _ = entered.send(());
+        }
+        if matches!(self.exit, HandoffProbeExit::AwaitCancellation) {
+            std::future::pending::<()>().await;
+        }
+        match self.exit {
+            HandoffProbeExit::Handled | HandoffProbeExit::AwaitCancellation => {
+                HandoffTerminal::Handled
+            }
+            HandoffProbeExit::EarlyReturn => HandoffTerminal::EarlyReturn,
+        }
+    }
+}
+
+#[cfg(test)]
 impl HydrationProbe {
     async fn run(mut self) -> HydrationProbeExit {
         struct ActiveIo(Arc<std::sync::atomic::AtomicUsize>);
@@ -316,6 +373,13 @@ impl HydrationProbe {
 enum HydrationTerminal {
     Handled,
     DbFailure,
+    #[cfg(test)]
+    EarlyReturn,
+}
+
+#[derive(Clone, Copy)]
+enum HandoffTerminal {
+    Handled,
     #[cfg(test)]
     EarlyReturn,
 }
@@ -470,18 +534,22 @@ async fn background_db_hydration(
     };
 
     match permit.run_until_cancelled(operation).await {
-        Some(HydrationTerminal::Handled) => {
-            if acquired_lock {
-                state.finish_indexing().await;
-            }
-            let _ = CoordinatorCell::complete(permit);
-        }
-        Some(HydrationTerminal::DbFailure) => {
-            if acquired_lock {
+        Some(terminal @ (HydrationTerminal::Handled | HydrationTerminal::DbFailure)) => {
+            if acquired_lock && matches!(terminal, HydrationTerminal::DbFailure) {
                 state.clear_pending_sync_for_generation(sync_generation);
+            }
+            if acquired_lock {
                 state.finish_indexing().await;
             }
-            let _ = CoordinatorCell::complete(permit);
+            if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
+                drive_transferred_sync(
+                    &state,
+                    successor,
+                    #[cfg(test)]
+                    None,
+                )
+                .await;
+            }
         }
         #[cfg(test)]
         Some(HydrationTerminal::EarlyReturn) => {
@@ -499,99 +567,91 @@ async fn background_db_hydration(
     }
 }
 
-/// Drain a sync request that was queued while an indexing operation held the lock.
-///
-/// Called from every [`AppState::finish_indexing`] site so that a
-/// `sync_workspace` request queued during indexing is eventually executed.
-/// Multiple concurrent queue requests are coalesced into a single sync run.
-///
-/// # Race safety
-///
-/// The pending-sync flag is only consumed *after* the indexing lock is
-/// successfully acquired, preventing the flag from being cleared when the
-/// lock is unavailable. If `try_start_indexing` fails, the flag is re-set
-/// so the next `finish_indexing` caller can drain it.
-pub async fn drain_pending_sync(state: &AppState) {
-    if !state.take_pending_sync() {
-        return;
-    }
-    tracing::info!("drain_pending_sync: running coalesced sync after indexing completed");
-    if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
-        if state.try_start_indexing() {
-            let ws_path = PathBuf::from(&snapshot.path);
-            // 101.002-T: drain the pending gate flags AFTER acquiring the
-            // indexing lock so that, if the lock grab below had failed and the
-            // sync were re-queued, the flags would survive for the next drain.
-            // A coalesced revalidation/backfill must not be downgraded to a
-            // routine sync that silently drops the requested migration.
-            let revalidate = state.take_pending_sync_revalidate();
-            let backfill_python = state.take_pending_sync_backfill_python();
-            match crate::services::code_graph::sync_workspace_with_progress(
-                &ws_path,
-                &snapshot.data_dir,
-                &snapshot.branch,
-                &ws_config.code_graph,
-                backfill_python,
-                revalidate,
-                None,
-            )
-            .await
-            {
-                Ok(result) => tracing::info!(
-                    files_added = result.files_added,
-                    files_modified = result.files_modified,
-                    revalidate,
-                    backfill_python,
-                    "drain_pending_sync: coalesced sync complete"
-                ),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "drain_pending_sync: coalesced sync failed"
-                ),
-            }
-            state.finish_indexing().await;
-        } else {
-            // Another indexer grabbed the lock before we could; re-queue so
-            // the next finish_indexing caller can drain it. The
-            // pending-revalidate flag was intentionally NOT taken above, so it
-            // remains set for the next drain.
-            state.set_pending_sync();
+async fn drive_transferred_sync(
+    state: &AppState,
+    mut permit: OwnerPermit,
+    #[cfg(test)] test_probe: Option<HandoffProbe>,
+) {
+    let work_mask = permit.work_bits();
+    let operation = async {
+        #[cfg(test)]
+        if let Some(probe) = test_probe {
+            return probe.run(work_mask).await;
         }
+
+        let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await else {
+            return HandoffTerminal::Handled;
+        };
+        let ws_path = PathBuf::from(&snapshot.path);
+        let revalidate = work_mask & 0b010 != 0;
+        let backfill_python = work_mask & 0b100 != 0;
+        match crate::services::code_graph::sync_workspace_with_progress(
+            &ws_path,
+            &snapshot.data_dir,
+            &snapshot.branch,
+            &ws_config.code_graph,
+            backfill_python,
+            revalidate,
+            None,
+        )
+        .await
+        {
+            Ok(result) => tracing::info!(
+                files_added = result.files_added,
+                files_modified = result.files_modified,
+                revalidate,
+                backfill_python,
+                "transferred sync complete"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                revalidate,
+                backfill_python,
+                "transferred sync failed"
+            ),
+        }
+        HandoffTerminal::Handled
+    };
+
+    match permit.run_until_cancelled(operation).await {
+        Some(HandoffTerminal::Handled) => {
+            if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
+                drop(successor);
+            }
+        }
+        #[cfg(test)]
+        Some(HandoffTerminal::EarlyReturn) => {}
+        None => {}
     }
 }
 
-/// Drain the coalesced pending sync, looping until nothing remains (104.002-T).
+/// Compatibility ingress used by not-yet-migrated callers.
 ///
-/// A single [`drain_pending_sync`] pass is single-shot: a `pending_sync`
-/// re-armed *during* the drain (either a fresh request or the lost-lock
-/// re-queue) is left for an unspecified "next `finish_indexing` caller", which
-/// can stall the queued sync. This wrapper loops so the re-arm is handled here
-/// instead (N2). The loop is bounded by `MAX_DRAIN_ITERATIONS` with a warn guard
-/// against a pathological set/drain livelock (H3), and yields cooperatively each
-/// pass so a contended indexing lock lets the competing indexer make progress
-/// rather than being busy-spun.
+/// The complete legacy mask is moved once into coordinator admission. This
+/// function does not poll, re-arm, reacquire the legacy owner, or run a second
+/// drain pass.
 pub async fn drain_pending_sync_to_completion(state: &AppState) {
-    /// Upper bound on drain passes before deferring to the next
-    /// `finish_indexing` caller, guarding against a set/drain livelock (N2/H3).
-    const MAX_DRAIN_ITERATIONS: u32 = 64;
-
-    for _ in 0..MAX_DRAIN_ITERATIONS {
-        if !state.has_pending_sync() {
-            return;
-        }
-        drain_pending_sync(state).await;
-        // Cooperative yield: if the indexing lock is contended, drain_pending_sync
-        // re-queues rather than draining, so yield to let the holder finish
-        // instead of busy-spinning; also lets a re-armed pending settle.
-        tokio::task::yield_now().await;
+    let work_mask = state.take_pending_work_mask();
+    if work_mask.bits() == 0 {
+        return;
     }
-
-    if state.has_pending_sync() {
-        tracing::warn!(
-            max_iterations = MAX_DRAIN_ITERATIONS,
-            "drain_pending_sync_to_completion: reached iteration bound with a \
-             pending sync still queued; deferring to the next finish_indexing caller"
-        );
+    match CoordinatorCell::request(state.coordinator.admission(), work_mask, OwnerKind::Sync) {
+        Ok(RequestOutcome::Acquired(permit)) => {
+            drive_transferred_sync(
+                state,
+                permit,
+                #[cfg(test)]
+                None,
+            )
+            .await;
+        }
+        Ok(RequestOutcome::Enqueued | RequestOutcome::Stale) => {}
+        Ok(RequestOutcome::Waiting(_)) => {
+            tracing::error!("non-empty sync work unexpectedly became an empty waiter");
+        }
+        Err(error) => {
+            tracing::error!(%error, "pending sync coordinator admission failed");
+        }
     }
 }
 
@@ -728,15 +788,16 @@ mod tests {
     use sysinfo::System;
 
     use super::{
-        HydrationProbe, HydrationProbeExit, background_db_hydration,
-        drain_pending_sync_to_completion, get_daemon_status,
+        HandoffProbe, HandoffProbeExit, HydrationProbe, HydrationProbeExit,
+        background_db_hydration, drain_pending_sync_to_completion, drive_transferred_sync,
+        get_daemon_status,
     };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
     use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
     use crate::server::state::{
-        AppState, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
-        WorkMask, WorkspaceSnapshot,
+        AppState, CompletionOutcome, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit,
+        RequestOutcome, WorkMask, WorkspaceSnapshot,
     };
     use crate::services::code_graph;
 
@@ -803,6 +864,79 @@ mod tests {
             io_starts,
             active_io,
         )
+    }
+
+    fn handoff_probe(
+        state: &AppState,
+        exit: HandoffProbeExit,
+        entered: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> (
+        HandoffProbe,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mask_bits = Arc::new(AtomicUsize::new(0));
+        let active_io = Arc::new(AtomicUsize::new(0));
+        let owner_active = Arc::new(AtomicUsize::new(0));
+        (
+            HandoffProbe {
+                exit,
+                coordinator: Arc::clone(&state.coordinator),
+                runs: Arc::clone(&runs),
+                mask_bits: Arc::clone(&mask_bits),
+                active_io: Arc::clone(&active_io),
+                owner_active: Arc::clone(&owner_active),
+                entered,
+            },
+            runs,
+            mask_bits,
+            active_io,
+            owner_active,
+        )
+    }
+
+    fn transferred_successor(state: &AppState, bits: u8) -> OwnerPermit {
+        let owner = acquired(
+            request_empty(state, OwnerKind::Hydration)
+                .unwrap_or_else(|error| panic!("hydration owner request: {error}")),
+        );
+        assert!(matches!(
+            CoordinatorCell::request(
+                state.coordinator.admission(),
+                WorkMask::from_bits(bits),
+                OwnerKind::Sync,
+            ),
+            Ok(RequestOutcome::Enqueued)
+        ));
+        match CoordinatorCell::complete(owner) {
+            CompletionOutcome::Transferred(successor) => successor,
+            CompletionOutcome::Released => panic!("full mask was not transferred"),
+            CompletionOutcome::RetirementAcknowledged => {
+                panic!("ordinary completion acknowledged retirement")
+            }
+            CompletionOutcome::SequenceExhausted(_) => panic!("owner sequence exhausted"),
+            CompletionOutcome::Stale => panic!("current hydration completion was stale"),
+        }
+    }
+
+    fn recover_full_mask_once(state: &AppState) {
+        let recovery = acquired(
+            CoordinatorCell::request(
+                state.coordinator.admission(),
+                WorkMask::from_bits(0b001),
+                OwnerKind::Sync,
+            )
+            .unwrap_or_else(|error| panic!("recovery request: {error}")),
+        );
+        assert_eq!(recovery.work_bits(), 0b111);
+        assert!(matches!(
+            CoordinatorCell::complete(recovery),
+            CompletionOutcome::Released
+        ));
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
     }
 
     async fn finish_driver(mut driver: DriverTaskGuard, abort: bool) {
@@ -944,6 +1078,90 @@ mod tests {
             assert!(state.coordinator.test_is_idle());
             assert_eq!(state.coordinator.test_notification_calls(), 1);
             assert_eq!(state.coordinator.test_pending_bits(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn transferred_full_mask_executes_once_under_one_successor() {
+        let state = Arc::new(AppState::new(1));
+        let _ = publish_test_binding(&state, coordinator_snapshot("handoff", "handoff")).await;
+        let successor = transferred_successor(&state, 0b111);
+        let (probe, runs, mask_bits, active_io, owner_active) =
+            handoff_probe(&state, HandoffProbeExit::Handled, None);
+
+        drive_transferred_sync(&state, successor, Some(probe)).await;
+
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(mask_bits.load(Ordering::SeqCst), 0b111);
+        assert_eq!(active_io.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            owner_active.load(Ordering::SeqCst),
+            1,
+            "transferred permit must remain authoritative for the whole drive"
+        );
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
+    }
+
+    #[tokio::test]
+    async fn lost_transferred_successor_republishes_once_for_one_recovery() {
+        for mode in [
+            HandoffProbeExit::EarlyReturn,
+            HandoffProbeExit::AwaitCancellation,
+            HandoffProbeExit::Handled,
+        ] {
+            let state = Arc::new(AppState::new(1));
+            let _ =
+                publish_test_binding(&state, coordinator_snapshot("handoff-loss", "handoff-loss"))
+                    .await;
+            let successor = transferred_successor(&state, 0b111);
+            let is_early = matches!(mode, HandoffProbeExit::EarlyReturn);
+            let is_abort = matches!(mode, HandoffProbeExit::Handled);
+
+            if is_early {
+                let (probe, _runs, _mask, active_io, owner_active) =
+                    handoff_probe(&state, mode, None);
+                drive_transferred_sync(&state, successor, Some(probe)).await;
+                assert_eq!(active_io.load(Ordering::SeqCst), 0);
+                assert_eq!(owner_active.load(Ordering::SeqCst), 1);
+            } else {
+                let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+                let (probe, _runs, _mask, active_io, owner_active) = handoff_probe(
+                    &state,
+                    HandoffProbeExit::AwaitCancellation,
+                    Some(entered_tx),
+                );
+                let task_state = Arc::clone(&state);
+                let driver = DriverTaskGuard {
+                    task: Some(tokio::spawn(async move {
+                        drive_transferred_sync(&task_state, successor, Some(probe)).await;
+                    })),
+                };
+                entered_rx
+                    .await
+                    .unwrap_or_else(|error| panic!("handoff did not enter drive: {error}"));
+                assert!(
+                    !state.coordinator.test_is_idle(),
+                    "successor ownership ended before its DB/file future"
+                );
+                assert_eq!(owner_active.load(Ordering::SeqCst), 1);
+
+                if !is_abort {
+                    let _ = publish_test_binding(
+                        &state,
+                        coordinator_snapshot("handoff-rebound", "handoff-loss"),
+                    )
+                    .await;
+                }
+                finish_driver(driver, is_abort).await;
+                assert_eq!(active_io.load(Ordering::SeqCst), 0);
+            }
+
+            assert!(state.coordinator.test_is_idle());
+            assert_eq!(state.coordinator.test_pending_bits(), 0b111);
+            assert_eq!(state.coordinator.test_notification_calls(), 1);
+            recover_full_mask_once(&state);
+            assert_eq!(state.coordinator.test_notification_calls(), 2);
         }
     }
 
@@ -1344,135 +1562,20 @@ mod tests {
         }
     }
 
-    /// 104.001-T (T-loop, RED): a `pending_sync` re-armed during a drain (here
-    /// the lost-lock re-queue) must be self-drained by the loop wrapper without
-    /// relying on an external `finish_indexing` caller. Deterministic via the
-    /// current-thread runtime + explicit yields (no wall-clock sleeps): the test
-    /// holds the indexing lock so the first drain pass loses the race and
-    /// re-queues, then releases it so a *looping* drain can finish the work. The
-    /// single-shot placeholder stalls here (fails); the 104.002-T loop drains it.
-    #[tokio::test]
-    async fn loop_drain_self_drains_pending_rearmed_during_a_drain() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let state = Arc::new(AppState::new(1));
+    /// The compatibility ingress moves all three legacy bits in one locked
+    /// transition. The transferred-mask driver tests above own execution and
+    /// recovery; no bounded loop or producer reacquire remains here.
+    #[test]
+    fn legacy_ingress_moves_one_complete_mask() {
+        let state = AppState::new(1);
+        state.publish_pending_sync(true, true);
 
-        // Bind a workspace + config so the drain enters its sync branch and, on
-        // a lost indexing-lock race, re-queues pending.
-        state
-            .set_workspace(test_snapshot(&tmp))
-            .await
-            .expect("set workspace");
-        state
-            .set_workspace_config(Some(WorkspaceConfig::default()))
-            .await;
+        let mask = state.take_pending_work_mask();
 
-        // Hold the indexing lock so the first drain pass loses the race and
-        // re-queues the pending sync (re-arm-during-drain, deterministic).
-        assert!(state.try_start_indexing(), "test holds the indexing lock");
-        state.set_pending_sync();
-
-        let drain_state = Arc::clone(&state);
-        let drain = tokio::spawn(async move {
-            drain_pending_sync_to_completion(&drain_state).await;
-        });
-
-        // Let the spawned drain run its first pass: it takes pending, fails to
-        // acquire the (held) lock, and re-queues pending.
-        tokio::task::yield_now().await;
-        assert!(
-            state.has_pending_sync(),
-            "first drain pass must re-queue pending while the indexing lock is contended"
-        );
-
-        // Release the lock; a loop-drain must now self-drain the re-queued
-        // pending WITHOUT any external finish_indexing caller.
-        state.finish_indexing().await;
-
-        drain.await.expect("drain task joins");
-
-        assert!(
-            !state.has_pending_sync(),
-            "loop-drain must self-drain the re-queued pending sync to completion"
-        );
-        assert!(
-            !state.is_indexing(),
-            "loop-drain must release the indexing lock after draining"
-        );
-    }
-
-    /// 104.002-T (H3): the loop self-drains after a pending sync is re-armed
-    /// *twice* during draining (two lost-lock re-queues), then terminates.
-    #[tokio::test]
-    async fn loop_drain_self_drains_after_two_rearms() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let state = Arc::new(AppState::new(1));
-        state
-            .set_workspace(test_snapshot(&tmp))
-            .await
-            .expect("set workspace");
-        state
-            .set_workspace_config(Some(WorkspaceConfig::default()))
-            .await;
-
-        assert!(state.try_start_indexing(), "test holds the indexing lock");
-        state.set_pending_sync();
-
-        let drain_state = Arc::clone(&state);
-        let drain = tokio::spawn(async move {
-            drain_pending_sync_to_completion(&drain_state).await;
-        });
-
-        // Two drain passes while the lock is held, each re-queues pending.
-        tokio::task::yield_now().await;
-        assert!(state.has_pending_sync(), "first pass must re-queue pending");
-        tokio::task::yield_now().await;
-        assert!(
-            state.has_pending_sync(),
-            "second pass must re-queue pending"
-        );
-
-        // Release the lock; the loop must self-drain to completion.
-        state.finish_indexing().await;
-        drain.await.expect("drain task joins");
-
-        assert!(
-            !state.has_pending_sync(),
-            "loop-drain must self-drain after two re-arms"
-        );
-        assert!(!state.is_indexing(), "loop-drain must release the lock");
-    }
-
-    /// 104.002-T (H3): when the indexing lock is never released, every drain
-    /// pass loses the race and re-queues; the bounded loop must still TERMINATE
-    /// (deferring to the lock holder) rather than spin forever.
-    #[tokio::test]
-    async fn loop_drain_is_bounded_when_lock_is_never_released() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let state = Arc::new(AppState::new(1));
-        state
-            .set_workspace(test_snapshot(&tmp))
-            .await
-            .expect("set workspace");
-        state
-            .set_workspace_config(Some(WorkspaceConfig::default()))
-            .await;
-
-        // Hold the indexing lock for the entire drain so every pass re-queues.
-        assert!(state.try_start_indexing(), "test holds the indexing lock");
-        state.set_pending_sync();
-
-        // Must return (bounded) despite pending never clearing — a hang here
-        // would fail the test via the harness timeout.
-        drain_pending_sync_to_completion(&state).await;
-
-        assert!(
-            state.has_pending_sync(),
-            "pending remains queued for the externally-held lock holder to drain"
-        );
-        assert!(
-            state.is_indexing(),
-            "the externally-held indexing lock must be left untouched"
-        );
+        assert_eq!(mask.bits(), 0b111);
+        assert!(!state.has_pending_sync());
+        assert!(!state.take_pending_sync_revalidate());
+        assert!(!state.take_pending_sync_backfill_python());
     }
 
     // ── 099.007-T: a queued MCP sync carrying backfill_python_canonical=true
