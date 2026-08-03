@@ -680,14 +680,19 @@ impl CoordinatorCell {
 
 #[allow(dead_code)]
 impl AdmissionGuard {
-    pub(crate) async fn acquire_hydration(
+    pub(crate) async fn acquire_hydration(self) -> Result<Option<OwnerPermit>, CoordinatorError> {
+        self.acquire_background(OwnerKind::Hydration).await
+    }
+
+    pub(crate) async fn acquire_background(
         mut self,
+        kind: OwnerKind,
     ) -> Result<Option<OwnerPermit>, CoordinatorError> {
         loop {
             if *self.cancel_rx.borrow() {
                 return Ok(None);
             }
-            match CoordinatorCell::request(self, WorkMask::default(), OwnerKind::Hydration)? {
+            match CoordinatorCell::request(self, WorkMask::default(), kind)? {
                 RequestOutcome::Acquired(permit) => return Ok(Some(permit)),
                 RequestOutcome::Waiting(mut waiting) => {
                     let cancelled = tokio::select! {
@@ -2236,6 +2241,126 @@ mod coordinator_tests {
                 CoordinatorCell::complete(permit),
                 CompletionOutcome::Released
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_and_watcher_empty_owner_release_passes_one_waiter_baton() {
+        for owner_kind in [OwnerKind::Hydration, OwnerKind::Startup, OwnerKind::Watcher] {
+            let cell = coordinator_cell("daemon-baton");
+            let owner = acquired(request(admission(&cell), WorkMask::default(), owner_kind));
+            let mut startup = waiting(request(
+                admission(&cell),
+                WorkMask::default(),
+                OwnerKind::Startup,
+            ));
+            let mut watcher = waiting(request(
+                admission(&cell),
+                WorkMask::default(),
+                OwnerKind::Watcher,
+            ));
+
+            assert!(matches!(
+                CoordinatorCell::complete(owner),
+                CompletionOutcome::Released
+            ));
+            assert!(notification_is_ready(&mut startup.enabled_notification).await);
+            assert!(!notification_is_ready(&mut watcher.enabled_notification).await);
+
+            rearm(&mut startup);
+            let startup_owner = acquired(request(startup, WorkMask::default(), OwnerKind::Startup));
+            assert!(matches!(
+                CoordinatorCell::complete(startup_owner),
+                CompletionOutcome::Released
+            ));
+            assert!(notification_is_ready(&mut watcher.enabled_notification).await);
+            rearm(&mut watcher);
+            let watcher_owner = acquired(request(watcher, WorkMask::default(), OwnerKind::Watcher));
+            assert!(matches!(
+                CoordinatorCell::complete(watcher_owner),
+                CompletionOutcome::Released
+            ));
+            assert_eq!(cell.test_notification_calls(), 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_and_watcher_rebind_waits_for_drop_ack_and_isolates_stale_terminal() {
+        for kind in [OwnerKind::Startup, OwnerKind::Watcher] {
+            for same_binding in [true, false] {
+                let state = AppState::new(2);
+                let _ = publish(&state, workspace("old", "uuid-old", "id-old")).await;
+                let permit = acquired(request(
+                    admission(&state.coordinator),
+                    WorkMask::default(),
+                    kind,
+                ));
+                let retired_identity = permit.identity;
+                assert!(matches!(
+                    request(
+                        admission(&state.coordinator),
+                        WorkMask::from_bits(0b111),
+                        OwnerKind::Sync
+                    ),
+                    RequestOutcome::Enqueued
+                ));
+
+                let target = if same_binding {
+                    workspace("same", "uuid-old", "id-old")
+                } else {
+                    workspace("new", "uuid-new", "id-new")
+                };
+                let _ = publish(&state, target).await;
+                assert!(state.coordinator.test_is_retiring());
+                assert_eq!(state.coordinator.test_notification_calls(), 0);
+                drop(permit);
+                assert!(state.coordinator.test_is_idle());
+                assert_eq!(state.coordinator.test_notification_calls(), 1);
+                assert_eq!(
+                    state.coordinator.test_pending_bits(),
+                    if same_binding { 0b111 } else { 0 }
+                );
+
+                let before_stale = {
+                    let coordinator = state.coordinator.lock();
+                    (
+                        coordinator.floor,
+                        coordinator.binding_identity.clone(),
+                        coordinator.pending,
+                        coordinator.last_indexed_at,
+                        state.coordinator.test_notification_calls(),
+                    )
+                };
+                let stale = OwnerPermit {
+                    ownership: Some(PermitOwnership {
+                        cell: Arc::clone(&state.coordinator),
+                        token: GenerationToken {
+                            floor: 1,
+                            binding_identity: binding("old"),
+                        },
+                        binding_snapshot: binding("old"),
+                        cancel_rx: state.coordinator.lock().generation_cancel.subscribe(),
+                    }),
+                    identity: retired_identity,
+                    work_mask: WorkMask::default(),
+                    cleanup_armed: true,
+                };
+                assert!(matches!(
+                    CoordinatorCell::complete(stale),
+                    CompletionOutcome::Stale
+                ));
+                let after_stale = {
+                    let coordinator = state.coordinator.lock();
+                    (
+                        coordinator.floor,
+                        coordinator.binding_identity.clone(),
+                        coordinator.pending,
+                        coordinator.last_indexed_at,
+                        state.coordinator.test_notification_calls(),
+                    )
+                };
+                assert_eq!(before_stale, after_stale);
+            }
         }
     }
 }
